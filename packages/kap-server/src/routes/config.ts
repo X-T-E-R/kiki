@@ -4,6 +4,7 @@ import {
   FAST_MODEL_SECTION,
   IConfigService,
   IEventService,
+  IModelService,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
@@ -85,6 +86,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       success: { data: configResponseSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.MODEL_NOT_FOUND]: {},
       },
       description: 'Update the global Kiki configuration (merge by default)',
       tags: ['config'],
@@ -100,6 +102,21 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         );
         delete camelPatch['replaceDomains'];
         delete camelPatch[REQUEST_IDENTITY_SECTION];
+        const subagent = camelPatch[SUBAGENT_SECTION];
+        const requestedModels = [
+          [FAST_MODEL_SECTION, camelPatch[FAST_MODEL_SECTION]],
+          ['subagent.default_model', isPlainObject(subagent) ? subagent['defaultModel'] : undefined],
+        ] as const;
+        if (requestedModels.some(([, model]) => typeof model === 'string')) {
+          const models = core.accessor.get(IModelService);
+          await models.ready;
+          for (const [field, model] of requestedModels) {
+            if (typeof model === 'string' && models.resolveId(model) === undefined) {
+              reply.send(errEnvelope(ErrorCode.MODEL_NOT_FOUND, `${field}: unknown model alias "${model}"`, req.id));
+              return;
+            }
+          }
+        }
         if (camelPatch['yolo'] === true) {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }

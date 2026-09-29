@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -100,6 +100,16 @@ describe('relay-v1 REST and cold wire contract', () => {
     const rejected = await request<unknown>(`/api/sessions/${id}/agents/${child.id}/context-strategy`, 'PATCH', { strategy: 'fresh' });
     expect(rejected.code).not.toBe(0);
     expect((await request<{ strategy: string; source: string }>(path)).data).toMatchObject({ strategy: 'summarize', source: 'session' });
+  });
+
+  it('persists only the selected global context strategy', async () => {
+    const id = await create();
+    const path = `/api/sessions/${id}/agents/main/context-strategy`;
+    const saved = await request<{ strategy: string; source: string }>(path, 'PATCH', { strategy: 'fresh', save: 'global' });
+    expect(saved.code, saved.msg).toBe(0);
+    const text = await readFile(join(home, 'config.toml'), 'utf8');
+    expect(text).toContain('context_strategy = "fresh"');
+    expect(text).not.toContain('compaction_soft_context_size');
   });
 
   it('runs explicit REST relay without a model call and restores the exact window from durable wire', async () => {

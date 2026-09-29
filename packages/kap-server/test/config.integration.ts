@@ -384,14 +384,24 @@ describe('server-v2 /api/config', () => {
     expect((await getConfig()).subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: [] });
   });
 
-  it('round-trips the subagent default_model and top-level fast_model, emitting each patch as ConfigChanged and clearing both with null', async () => {
-    await boot();
+  it('validates and round-trips the subagent default_model and top-level fast_model', async () => {
+    await boot('[models."explore/fast"]\nprovider = "openai"\nmodel = "fast"\n[models."kimi-code/kimi-k2"]\nprovider = "openai"\nmodel = "kimi-k2"\n');
     const events: ConfigChanged[] = [];
     const subscription = (server as RunningServer).core.accessor
       .get(IEventService)
       .onDidPublish((event) => { if (event instanceof ConfigChanged) events.push(event); });
 
     try {
+      for (const patch of [{ fast_model: 'missing-model' }, { subagent: { default_model: 'missing-model' } }]) {
+        const res = await authedFetch(server as RunningServer, base, '/api/config', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
+        });
+        const invalid = await res.json() as Envelope<unknown>;
+        expect(invalid.code).toBe(ErrorCode.MODEL_NOT_FOUND);
+        expect(invalid.msg).toContain('unknown model alias');
+      }
+      expect(events).toHaveLength(0);
+      expect((await getConfig()).fast_model).toBeUndefined();
       const set = await patchConfig({
         subagent: { default_model: 'explore/fast', timeout_ms: 60_000 },
         fast_model: 'kimi-code/kimi-k2',

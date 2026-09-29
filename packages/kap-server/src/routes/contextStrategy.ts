@@ -1,5 +1,4 @@
 import { IAgentFullCompactionService, IAgentLifecycleService, IConfigService, MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
-import type { LoopControl } from '@kiki/agent-core-v2/agent/loop/configSection';
 import { contextStrategyStatusSchema, contextStrategyWriteSchema } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -38,7 +37,7 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
       const compact = agent.accessor.get(IAgentFullCompactionService);
       if (req.body.save === 'global') {
         const config = core.accessor.get(IConfigService);
-        await config.replace('loopControl', { ...config.get<LoopControl>('loopControl'), contextStrategy: req.body.strategy ?? compact.getContextStrategy().strategy });
+        await config.set('loopControl', { contextStrategy: req.body.strategy ?? compact.getContextStrategy().strategy });
         compact.setContextStrategyOverride(null);
       } else compact.setContextStrategyOverride(req.body.strategy);
       reply.send(okEnvelope(compact.getContextStrategy(), req.id));
