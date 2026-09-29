@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
 import { IConfigService } from '#/app/config/config';
-import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
+import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IMemoryStore, type MemoryType } from '#/app/memory/memoryStore';
 import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -29,9 +30,8 @@ function scopes(session: ISessionContext): readonly MemoryScope[] {
 function resolveScope(kind: 'global' | 'workspace', session: ISessionContext): MemoryScope {
   return kind === 'global' ? { kind: 'global' } : { kind: 'workspace', workspaceId: session.workspaceId };
 }
-function available(config: IConfigService, session: ISessionContext): boolean {
-  const settings = config.get<MemoryConfig>(MEMORY_SECTION);
-  return memoryEnabled(settings, session.workspaceId) && settings.approval !== 'off';
+function available(snapshot: ICapabilitySnapshotService, session: ISessionContext): boolean {
+  return snapshot.memoryAvailable(session.workspaceId);
 }
 
 export interface IMemoryWriteTool extends AgentTool<z.infer<typeof writeSchema>> { readonly _serviceBrand: undefined }
@@ -41,12 +41,12 @@ export class MemoryWriteTool implements IMemoryWriteTool {
   readonly name = 'MemoryWrite';
   readonly description = 'Save reusable user preferences, user feedback, verified project facts, or reference pointers. Do not save transient tasks.';
   readonly parameters = toInputJsonSchema(writeSchema);
-  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @IConfigService private readonly config: IConfigService) {}
+  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @IConfigService private readonly config: IConfigService, @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService) {}
   resolveExecution(args: z.infer<typeof writeSchema>): ToolExecution {
     const parsed = writeSchema.safeParse(args);
     if (!parsed.success) return { isError: true, output: parsed.error.message };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${parsed.data.title.slice(0, 70)}`, execute: async ({ turnId }) => {
-      if (this.session.ephemeral === true || !available(this.config, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (this.session.ephemeral === true || !available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const result = await this.store.put({
           action: parsed.data.action, scope: resolveScope(parsed.data.scope, this.session), type: parsed.data.type,
@@ -68,12 +68,12 @@ export class MemorySearchTool implements IMemorySearchTool {
   readonly name = 'MemorySearch';
   readonly description = 'Search reusable user preferences, feedback, project facts, and reference pointers.';
   readonly parameters = toInputJsonSchema(searchSchema);
-  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @IConfigService private readonly config: IConfigService) {}
+  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService) {}
   resolveExecution(args: z.infer<typeof searchSchema>): ToolExecution {
     const parsed = searchSchema.safeParse(args);
     if (!parsed.success) return { isError: true, output: parsed.error.message };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.config, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const targets = parsed.data.scope === undefined ? scopes(this.session) : [resolveScope(parsed.data.scope, this.session)];
         const hits = await this.store.search(targets, parsed.data.query, parsed.data.type as MemoryType | undefined, parsed.data.include_superseded);
@@ -90,12 +90,12 @@ export class MemoryReadTool implements IMemoryReadTool {
   readonly name = 'MemoryRead';
   readonly description = 'Read saved user preferences, feedback, project facts, or reference pointers by memory ID.';
   readonly parameters = toInputJsonSchema(readSchema);
-  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @IConfigService private readonly config: IConfigService) {}
+  constructor(@IMemoryStore private readonly store: IMemoryStore, @ISessionContext private readonly session: ISessionContext, @IConfigService private readonly config: IConfigService, @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService) {}
   resolveExecution(args: z.infer<typeof readSchema>): ToolExecution {
     const parsed = readSchema.safeParse(args);
     if (!parsed.success || (parsed.data?.id === undefined && parsed.data?.ids === undefined)) return { isError: true, output: 'Provide id or ids (up to 10).' };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.config, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const items = await Promise.all((parsed.data.ids ?? [parsed.data.id!]).map(async (id) => {
           for (const scope of scopes(this.session)) {
@@ -111,7 +111,7 @@ export class MemoryReadTool implements IMemoryReadTool {
 }
 
 const when = (accessor: ServicesAccessor): boolean =>
-  accessor.get(IAgentScopeContext).agentId === 'main' && available(accessor.get(IConfigService), accessor.get(ISessionContext));
+  accessor.get(IAgentScopeContext).agentId === 'main';
 registerAgentToolService(IMemoryWriteTool, MemoryWriteTool, { name: 'MemoryWrite', domain: 'memory', when: (accessor) => !accessor.get(ISessionContext).ephemeral && when(accessor) });
 registerAgentToolService(IMemorySearchTool, MemorySearchTool, { name: 'MemorySearch', domain: 'memory', when });
 registerAgentToolService(IMemoryReadTool, MemoryReadTool, { name: 'MemoryRead', domain: 'memory', when });
