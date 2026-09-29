@@ -5188,7 +5188,6 @@ export const en = {
   'st.notify.field.privateGrantHint': 'JSON object that allows one exact private-network endpoint. Leave empty for public endpoints.',
   'st.notify.advanced': 'Advanced',
   'st.notify.jsonInvalid': 'Enter a JSON object, such as {"host": "10.0.0.5"}.',
-} as const;
   // Spaces (multi-home)
   'st.section.spaces': 'Spaces',
   'st.purpose.spaces': 'A space has its own conversations, memory and workspaces. Settings and accounts carry over from the main space unless you change them in the space.',
@@ -5327,3 +5326,4 @@ export const en = {
   'sidebar.space.otherPending.other': '{count} sessions in other spaces need you',
   'sidebar.space.openWindow': 'Open window',
   'sidebar.space.starting': 'Starting {name}…',
+} as const;

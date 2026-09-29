@@ -5140,7 +5140,6 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.notify.field.privateGrantHint': '允许一个精确私网地址的 JSON 对象。公网地址留空即可。',
   'st.notify.advanced': '高级',
   'st.notify.jsonInvalid': '请输入 JSON 对象，例如 {"host": "10.0.0.5"}。',
-};
   // Spaces (multi-home)
   'st.section.spaces': '空间',
   'st.purpose.spaces': '每个空间有自己的对话、记忆和工作区。设置和账号默认沿用主空间，在空间里改了哪项就只在那个空间生效。',
@@ -5279,3 +5278,4 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'sidebar.space.otherPending.other': '其他空间有 {count} 个会话需要你处理',
   'sidebar.space.openWindow': '在新窗口打开',
   'sidebar.space.starting': '正在启动 {name}…',
+};
