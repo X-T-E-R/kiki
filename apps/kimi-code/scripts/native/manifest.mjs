@@ -13,6 +13,12 @@ export const KAP_SEARCH_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const KAP_SQLITE_QUERY_WORKER_ASSET = Object.freeze({
+  key: 'kap-sqlite-query-worker',
+  relativePath: 'runtime/kap-server/sqlite-query-worker.mjs',
+  mode: 0o644,
+});
+
 export const PLUGIN_HOST_RUNNER_ASSET = Object.freeze({
   key: 'plugin-host-runner',
   relativePath: 'runtime/plugin/hostRunner.mjs',

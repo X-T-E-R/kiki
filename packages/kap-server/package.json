@@ -29,6 +29,10 @@
       "types": "./src/search/worker/runtime.ts",
       "default": "./src/search/worker/runtime.ts"
     },
+    "./sqlite-indexer-runtime": {
+      "types": "./src/search/sqlite/indexerEntry.ts",
+      "default": "./src/search/sqlite/indexerEntry.ts"
+    },
     "./model-pricing-runtime": {
       "types": "./src/pricing/runtime.ts",
       "default": "./src/pricing/runtime.ts"

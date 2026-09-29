@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 
 import { matchSingleMediaPathTag } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { normalizeLiteral, tokenize } from '@kiki/minidb';
@@ -62,6 +62,9 @@ export interface SqliteIndexOptions {
   readonly walPauseBytes?: number;
   readonly walRetryMs?: number;
   readonly idleCheckpointMs?: number;
+  readonly afterBatch?: () => Promise<void>;
+  readonly batchMaxDocs?: () => number;
+  readonly batchMaxChars?: () => number;
 }
 
 export interface SqliteSyncStatus {
@@ -136,7 +139,8 @@ export class SqliteSearchIndex {
   private readFiles = new Set<string>();
 
   private constructor(readonly db: DatabaseSync, readonly indexSubagentToolOutput: boolean,
-    private readonly path: string, private readonly options: SqliteIndexOptions) {
+    private readonly path: string, private readonly options: SqliteIndexOptions, readOnly = false) {
+    if (readOnly) return;
     const inflight = db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined;
     if (inflight) {
       db.exec('BEGIN');
@@ -155,6 +159,19 @@ export class SqliteSearchIndex {
     const db = await openSearchDatabase(path);
     try { return new SqliteSearchIndex(db, options.indexSubagentToolOutput ?? false, path, options); }
     catch (error) { db.close(); throw error; }
+  }
+
+  static openReader(path: string): SqliteSearchIndex {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-16384; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000');
+      return new SqliteSearchIndex(db, false, path, {}, true);
+    } catch (error) { db.close(); throw error; }
+  }
+
+  clearInflightOnBudgetExit(): void {
+    if (this.db.isTransaction) this.db.exec('ROLLBACK');
+    this.db.prepare("DELETE FROM meta WHERE k='inflight'").run();
   }
 
   get syncStatus(): SqliteSyncStatus {
@@ -211,7 +228,9 @@ export class SqliteSearchIndex {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined;
-      if (!this.closed && !this.walStuck) this.checkpoint('TRUNCATE');
+      if (this.closed || this.walStuck || this.db.isTransaction) return;
+      try { this.checkpoint('TRUNCATE'); }
+      catch { this.scheduleRetry(); }
     }, this.options.idleCheckpointMs ?? 30_000);
     this.idleTimer.unref();
   }
@@ -377,6 +396,7 @@ export class SqliteSearchIndex {
       docs = 0;
       textBytes = 0;
       this.afterCommit();
+      await this.options.afterBatch?.();
       db.exec('BEGIN');
     };
     db.exec('BEGIN');
@@ -454,7 +474,8 @@ export class SqliteSearchIndex {
           pending = Buffer.alloc(0);
           dropping = false;
           start = nl + 1;
-          if (docs >= MAX_BATCH_DOCS || textBytes >= MAX_BATCH_CHARS) await commit();
+          if (docs >= (this.options.batchMaxDocs?.() ?? MAX_BATCH_DOCS) ||
+            textBytes >= (this.options.batchMaxChars?.() ?? MAX_BATCH_CHARS)) await commit();
           if (this.walStuck) break;
         }
         if (pending.length > MAX_LINE) { dropping = true; pending = Buffer.alloc(0); skipped++; }
@@ -493,8 +514,22 @@ export class SqliteSearchIndex {
       if (!terms.length) matchedIds = [];
       else {
         const expression = terms.map(quoteTerm).join(q.op === 'OR' ? ' OR ' : ' AND ');
-        matchedIds = db.prepare('SELECT rowid FROM docs_terms WHERE docs_terms MATCH ? LIMIT ?')
-          .all(expression, budgets.maxTextHits + 1) as { rowid: number }[];
+        if (q.sort === 'time_desc' && page.kind === 'first' && q.container === undefined &&
+          q.workspaceId === undefined && q.role === undefined && q.startTime === undefined &&
+          q.endTime === undefined) {
+          matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms
+            JOIN docs d ON d.id=docs_terms.rowid JOIN sessions s ON s.id=d.session_id
+            LEFT JOIN files f ON f.id=d.file_id WHERE docs_terms MATCH ?
+            ORDER BY d.time DESC, CASE WHEN d.role='title'
+              THEN char(0)||'title'||char(92)||d.session_id
+              ELSE d.session_id||'/'||f.agent_id||'/'||
+                CASE WHEN f.path=s.dir||char(92)||'wire.jsonl' OR f.path=s.dir||'/wire.jsonl'
+                  THEN 'root' ELSE 'agents' END||':'||d.line_offset||':'||d.ord END ASC LIMIT ?`)
+            .all(expression, Math.min(65, budgets.maxTextHits + 1)) as { rowid: number }[];
+        } else {
+          matchedIds = db.prepare('SELECT rowid FROM docs_terms WHERE docs_terms MATCH ? LIMIT ?')
+            .all(expression, budgets.maxTextHits + 1) as { rowid: number }[];
+        }
       }
     } else if (Array.from(literal).length >= 3) {
       matchedIds = db.prepare('SELECT rowid FROM docs_tri WHERE docs_tri MATCH ? LIMIT ?')
@@ -516,10 +551,10 @@ export class SqliteSearchIndex {
       dfs.set(term, (db.prepare('SELECT count(*) AS n FROM docs_terms WHERE docs_terms MATCH ?')
         .get(quoteTerm(term)) as { n: number }).n);
     }
+    const candidate = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?');
     for (const { rowid } of matchedIds) {
-      if (Date.now() > deadlineAt) { incomplete ??= 'deadline'; break; }
-      const hit = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?')
-        .get(rowid) as { id: number; file_id: number | null; session_id: string; line_offset: number; ord: number;
+      if (Date.now() > deadlineAt - 25) { incomplete ??= 'deadline'; break; }
+      const hit = candidate.get(rowid) as { id: number; file_id: number | null; session_id: string; line_offset: number; ord: number;
           role: MessageDoc['role'] | 'title'; time: number; turn: number | null; step_id: string | null;
           text: string; workspace_id: string; title: string; identity: string; dir: string;
           agent_id: string | null; path: string | null } | undefined;

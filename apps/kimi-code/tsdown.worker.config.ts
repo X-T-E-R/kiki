@@ -47,4 +47,5 @@ function workerConfig(name: string, entry: string) {
 export default [
   workerConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
   workerConfig('search-worker', '../../packages/kap-server/src/search/worker/entry.ts'),
+  workerConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
 ];

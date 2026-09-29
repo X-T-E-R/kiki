@@ -7,6 +7,8 @@
 
 import '@kiki/node-sdk/native-fs-watch-error-guard';
 import { initializeNbSearchWorkerEntry } from './native/nb-search-worker';
+import { runSqliteIndexerCommand } from '@kiki/kap-server/sqlite-indexer-runtime';
+import { isSea } from 'node:sea';
 
 import {
   flushDiagnosticLogs,
@@ -27,7 +29,7 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile } from './native/native-assets';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getKapSqliteQueryWorkerFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -75,6 +77,14 @@ export async function handleMainCommand(
 
 export function main(): void {
   process.title = PROCESS_NAME;
+  if (process.argv[1] === '__search-indexer' || process.argv[2] === '__search-indexer') {
+    const path = process.argv[1] === '__search-indexer' ? process.argv[2] : process.argv[3];
+    void runSqliteIndexerCommand(path ?? '').then(
+      () => process.exit(0),
+      (error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exit(1); },
+    );
+    return;
+  }
   if (initializeNbSearchWorkerEntry()) return;
   bootstrap();
 }
@@ -108,6 +118,11 @@ function bootstrap(): void {
         ? `search-worker:failed code=${searchWorkerInstall.errorCode} sha256=${searchWorkerInstall.assetSha256 ?? 'unknown'}`
         : `search-worker:${searchWorkerInstall.status}`,
   );
+  if (isSea()) {
+    const queryWorker = getKapSqliteQueryWorkerFile();
+    if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
+    process.env['KIKI_SQLITE_INDEXER_SEA'] = '1';
+  }
   const pricingInstall = installKapModelPricing();
   startupTrace(
     pricingInstall.status === 'installed'
