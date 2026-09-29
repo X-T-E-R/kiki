@@ -547,9 +547,20 @@ export class SqliteSearchIndex {
     const terms = q.termsQuery ?? [...new Set(tokenize(q.query))];
     const literal = q.literalQuery ?? normalizeLiteral(q.query);
     let matchedIds: { rowid: number; rank?: number }[];
-    const ranked = q.mode === 'terms' && q.sort === 'score' &&
-      q.container === undefined && q.workspaceId === undefined && q.role === undefined &&
-      q.startTime === undefined && q.endTime === undefined;
+    const filters: string[] = [];
+    const filterValues: (string | number)[] = [];
+    if (q.container?.sessionId !== undefined) { filters.push('d.session_id=?'); filterValues.push(q.container.sessionId); }
+    if (q.container?.agentId !== undefined) {
+      filters.push("d.role!='title' AND f.agent_id=?"); filterValues.push(q.container.agentId);
+    }
+    if (q.workspaceId !== undefined) { filters.push('s.workspace_id=?'); filterValues.push(q.workspaceId); }
+    if (q.role !== undefined) { filters.push('d.role=?'); filterValues.push(q.role); }
+    if (q.startTime !== undefined) { filters.push('d.time>=?'); filterValues.push(q.startTime); }
+    if (q.endTime !== undefined) { filters.push('d.time<=?'); filterValues.push(q.endTime); }
+    const joins = (table: string) => `JOIN docs d ON d.id=${table}.rowid
+      JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id`;
+    const scopedWhere = filters.length ? ` AND ${filters.join(' AND ')}` : '';
+    const ranked = q.mode === 'terms' && q.sort === 'score' && filters.length === 0;
     if (q.mode === 'terms') {
       if (!terms.length) matchedIds = [];
       else {
@@ -557,43 +568,47 @@ export class SqliteSearchIndex {
         if (ranked) {
           matchedIds = db.prepare('SELECT rowid, rank FROM docs_terms WHERE docs_terms MATCH ? ORDER BY rank LIMIT ?')
             .all(expression, Math.min(budgets.maxTextHits, 64) + 1) as { rowid: number; rank: number }[];
-        } else if (q.sort === 'time_desc' && page.kind === 'first' && q.container === undefined &&
-          q.workspaceId === undefined && q.role === undefined && q.startTime === undefined &&
-          q.endTime === undefined) {
-          matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms
-            JOIN docs d ON d.id=docs_terms.rowid JOIN sessions s ON s.id=d.session_id
-            LEFT JOIN files f ON f.id=d.file_id WHERE docs_terms MATCH ?
+        } else if (q.sort === 'time_desc' && page.kind === 'first') {
+          matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}
+            WHERE docs_terms MATCH ?${scopedWhere}
             ORDER BY d.time DESC, CASE WHEN d.role='title'
               THEN char(0)||'title'||char(92)||d.session_id
               ELSE d.session_id||'/'||f.agent_id||'/'||
                 CASE WHEN f.path=s.dir||char(92)||'wire.jsonl' OR f.path=s.dir||'/wire.jsonl'
                   THEN 'root' ELSE 'agents' END||':'||d.line_offset||':'||d.ord END ASC LIMIT ?`)
-            .all(expression, Math.min(65, budgets.maxTextHits + 1)) as { rowid: number }[];
+            .all(expression, ...filterValues, Math.min(65, budgets.maxTextHits + 1)) as { rowid: number }[];
         } else {
-          matchedIds = db.prepare('SELECT rowid FROM docs_terms WHERE docs_terms MATCH ? LIMIT ?')
-            .all(expression, budgets.maxTextHits + 1) as { rowid: number }[];
+          matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}
+            WHERE docs_terms MATCH ?${scopedWhere} LIMIT ?`)
+            .all(expression, ...filterValues, budgets.maxTextHits + 1) as { rowid: number }[];
         }
       }
     } else if (Array.from(literal).length >= 3) {
-      matchedIds = db.prepare('SELECT rowid FROM docs_tri WHERE docs_tri MATCH ? LIMIT ?')
-        .all(quoteTerm(literal), budgets.literalCandidateCap + 1) as { rowid: number }[];
+      matchedIds = db.prepare(`SELECT docs_tri.rowid FROM docs_tri ${joins('docs_tri')}
+        WHERE docs_tri MATCH ?${scopedWhere} LIMIT ?`)
+        .all(quoteTerm(literal), ...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[];
     } else {
       const cjk = /^[\u3400-\u9fff\u3040-\u30ff\uff00-\uffef]{2}$/.test(literal);
       matchedIds = cjk
-        ? db.prepare('SELECT rowid FROM docs_terms WHERE docs_terms MATCH ? LIMIT ?')
-          .all(quoteTerm(literal), budgets.literalCandidateCap + 1) as { rowid: number }[]
-        : db.prepare('SELECT id AS rowid FROM docs LIMIT ?')
-          .all(budgets.literalCandidateCap + 1) as { rowid: number }[];
+        ? db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}
+          WHERE docs_terms MATCH ?${scopedWhere} LIMIT ?`)
+          .all(quoteTerm(literal), ...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[]
+        : db.prepare(`SELECT d.id AS rowid FROM docs d JOIN sessions s ON s.id=d.session_id
+          LEFT JOIN files f ON f.id=d.file_id WHERE 1=1${scopedWhere} LIMIT ?`)
+          .all(...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[];
     }
     const cap = ranked ? Math.min(budgets.maxTextHits, 64) :
       q.mode === 'terms' ? budgets.maxTextHits : budgets.literalCandidateCap;
     if (matchedIds.length > cap) { matchedIds.length = cap; incomplete = 'candidate_cap'; }
     const rows: { key: string; value: MessageDoc | TitleDoc; score: number }[] = [];
-    const N = q.mode === 'terms' && !ranked ? (db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n : 0;
+    const N = q.mode === 'terms' && !ranked ? (db.prepare(`SELECT count(*) AS n FROM docs d
+      JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id
+      WHERE 1=1${scopedWhere}`).get(...filterValues) as { n: number }).n : 0;
     const dfs = new Map<string, number>();
     if (q.mode === 'terms' && !ranked) for (const term of terms) {
-      dfs.set(term, (db.prepare('SELECT count(*) AS n FROM docs_terms WHERE docs_terms MATCH ?')
-        .get(quoteTerm(term)) as { n: number }).n);
+      dfs.set(term, (db.prepare(`SELECT count(*) AS n FROM docs_terms ${joins('docs_terms')}
+        WHERE docs_terms MATCH ?${scopedWhere}`)
+        .get(quoteTerm(term), ...filterValues) as { n: number }).n);
     }
     const candidate = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?');
     for (const { rowid, rank } of matchedIds) {

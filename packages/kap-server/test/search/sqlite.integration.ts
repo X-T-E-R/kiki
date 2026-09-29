@@ -133,6 +133,30 @@ describe('SQLite derived search index', () => {
     await expect(index.search(q('梨子'), first.pageToken)).rejects.toMatchObject({ reason: 'invalid_page_token' });
   });
 
+  it('applies session, workspace, agent, role and time filters before candidate caps', async () => {
+    await wire([user('target needle')]);
+    await index.syncSession(session());
+    for (const id of ['other-a', 'other-b']) {
+      const dir = join(home, id);
+      await mkdir(join(dir, 'agents', 'main'), { recursive: true });
+      await writeFile(join(dir, 'agents', 'main', 'wire.jsonl'), `${user('target needle')}\n`);
+      await index.syncSession({ id, dir, workspaceId: 'other', updatedAt: T });
+    }
+    const budgets = { literalCandidateCap: 1, maxTextHits: 1,
+      postingsVisitBudget: 100, queryDeadlineMs: 10_000, queryTextBudgetChars: 100_000 };
+    for (const mode of ['terms', 'literal'] as const) {
+      for (const sort of ['time_asc', 'time_desc'] as const) {
+        const result = await index.search({ ...q('target needle', mode, sort),
+          container: { sessionId: 's1', agentId: 'main' }, workspaceId: 'w', role: 'user',
+          startTime: T, endTime: T }, undefined, budgets);
+        expect(result.rows.map((row) => row.value.sessionId)).toEqual(['s1']);
+        expect(result.incomplete).toBeUndefined();
+      }
+    }
+    const short = await index.search({ ...q('ta', 'literal'), container: { sessionId: 's1' } }, undefined, budgets);
+    expect(short.rows.map((row) => row.value.sessionId)).toEqual(['s1']);
+  });
+
   it('rejects foreign and unknown databases before mutating their schema; resets an old owned schema', async () => {
     const foreign = join(home, 'foreign.sqlite');
     const db = new DatabaseSync(foreign);
