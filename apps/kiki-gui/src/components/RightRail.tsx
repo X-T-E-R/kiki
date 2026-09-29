@@ -490,6 +490,18 @@ export function RightRail({
   });
 
 
+  // Turning the page remounts every control on it, so a press that turned it
+  // (opening an agent from a row or a Needs-you link) would leave focus on
+  // <body>. Keep keyboard users in place: the new page's heading takes it.
+  const railRef = useRef<HTMLElement>(null);
+  const focusInRail = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusInRail.current) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    railRef.current?.querySelector<HTMLElement>('[data-rail-owner-heading]')?.focus({ preventScroll: true });
+  }, [focusedAgentId]);
+
   const agentPanelKey = `${state.sessionId}:${focusedAgentId}`;
   return (
     <div className="app-rail-shell">
@@ -508,6 +520,13 @@ export function RightRail({
         style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
         data-session-rail
         data-inspector-agent={focusedAgentId}
+        ref={railRef}
+        onFocus={() => { focusInRail.current = true; }}
+        // A removed control blurs with no related target; only a real move
+        // out of the rail clears the flag.
+        onBlur={(event) => {
+          if (event.relatedTarget !== null && !event.currentTarget.contains(event.relatedTarget as Node)) focusInRail.current = false;
+        }}
       >
       <div data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
       <RailCrumbs

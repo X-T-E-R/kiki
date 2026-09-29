@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,7 @@ import { buildAgentForest, createViewState, type ApprovalBlock } from '@kiki/ses
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
 import { PreviewFocusBridge } from './SessionView';
+import { useInspectorFocusTracking } from './inspectorFocus';
 
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ part = 'all', agentId }: { part?: string; agentId: string }) =>
@@ -383,6 +385,122 @@ describe('RightRail shared chapters', () => {
     // preview opens, and the rail does not turn to the agent on its own.
     expect(opened).toEqual(['agent-1']);
     expect(onInspectMain).not.toHaveBeenCalled();
+  });
+});
+
+describe('opening a subagent: timeline card and rail are one entry', () => {
+  // The session view's wiring, reduced to what an open depends on: the
+  // document-level inspector tracker pins the rail to the pressed agent, and
+  // the timeline card and every rail entry call the same openAgent.
+  function Harness({ openAgent, sessionPending }: {
+    openAgent: (agentId: string) => void;
+    sessionPending: readonly ApprovalBlock[];
+  }) {
+    const [pinned, setPinned] = useState<string | undefined>(undefined);
+    useInspectorFocusTracking({ onPin: setPinned, isKnown: (id) => familyForest.byId[id] !== undefined });
+    // An opened agent tab turns the rail to it (PreviewFocusBridge).
+    const open = (agentId: string) => { openAgent(agentId); setPinned(agentId); };
+    return (
+      <>
+        <div className="conversation-center">
+          <div data-subagent-id="worker">
+            <button type="button" data-agent-open="worker" onClick={() => { open('worker'); }}>Worker</button>
+          </div>
+        </div>
+        <RightRail
+          state={createViewState('sess-1')}
+          forest={familyForest}
+          selectedAgentId={pinned}
+          subagent={pinned === undefined ? undefined : { agentId: pinned, block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined }}
+          onCancelTask={() => {}}
+          onOpenSubagent={open}
+          onInspectMain={() => { setPinned(undefined); }}
+          sessionPending={sessionPending}
+        />
+      </>
+    );
+  }
+  const familyForest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main' },
+    { agentId: 'worker', parentAgentId: 'main', name: 'Worker', status: 'suspended' },
+  ]);
+  const pendingFromWorker: ApprovalBlock = {
+    kind: 'approval',
+    id: 'approval-w1',
+    request: {
+      approval_id: 'w1', session_id: 'sess-1', tool_call_id: 'c1', tool_name: 'Bash', action: 'Run: ls', tool_input_display: undefined,
+      created_at: '2026-01-01T00:00:00.000Z', expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+    originAgentId: 'worker',
+  };
+
+  /** A real press: pointerdown, pointerup, click, with the focus a click gives
+   * (jsdom has no PointerEvent; the tracker reads only `button`).
+   * A browser runs a microtask checkpoint between the listeners of a
+   * user-initiated event, so an update a capture listener schedules renders
+   * before the control's own onClick. A script-dispatched event has no such
+   * checkpoint; the flushSync listener stands in for it (without it, a pin
+   * that remounts the pressed control would pass here and fail in use). */
+  async function press(element: HTMLElement) {
+    const checkpoint = () => { flushSync(() => {}); };
+    await act(async () => {
+      for (const type of ['pointerdown', 'pointerup', 'click']) document.addEventListener(type, checkpoint, true);
+      try {
+        element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        element.focus();
+        element.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0 }));
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+      } finally {
+        for (const type of ['pointerdown', 'pointerup', 'click']) document.removeEventListener(type, checkpoint, true);
+      }
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  }
+
+  async function openFrom(entry: 'timeline' | 'roster' | 'needs-you') {
+    const opened: string[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <Harness openAgent={(id) => { opened.push(id); }} sessionPending={[pendingFromWorker]} />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    const selector = {
+      timeline: '[data-agent-open="worker"]',
+      roster: '[data-agent-tree] [data-agent-id="worker"]',
+      'needs-you': '[data-needs-you-from="worker"]',
+    }[entry];
+    const target = () => container.querySelector<HTMLElement>(selector)!;
+    await press(target());
+    const first = { opened: [...opened], rail: container.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent') };
+    const focusOnBody = document.activeElement === document.body;
+    // Pressing it again, where the turned page still shows it (a roster row
+    // moves off: Worker's own page lists Worker's children, not Worker).
+    const stillThere = target() !== null;
+    if (stillThere) await press(target());
+    return { first, again: stillThere ? [...opened] : undefined, focusOnBody };
+  }
+
+  it('opens the same agent with the same call and the same rail from every entry', async () => {
+    const timeline = await openFrom('timeline');
+    expect(timeline.first).toEqual({ opened: ['worker'], rail: 'worker' });
+    expect(timeline.again).toEqual(['worker', 'worker']);
+    expect(timeline.focusOnBody).toBe(false);
+    for (const entry of ['roster', 'needs-you'] as const) {
+      const rail = await openFrom(entry);
+      expect({ entry, ...rail.first }).toEqual({ entry, ...timeline.first });
+      if (rail.again !== undefined) expect(rail.again).toEqual(timeline.again);
+      // The page turn never drops keyboard focus to <body>.
+      expect(rail.focusOnBody).toBe(false);
+    }
   });
 });
 describe('preview focus bridge', () => {

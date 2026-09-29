@@ -1,5 +1,6 @@
 /**
- * Session > Parent > Current breadcrumb for the agent detail header.
+ * Session > Parent > Current breadcrumb for the agent detail header, and the
+ * agent's relations (parent, children, siblings) beneath it.
  */
 
 import { memo, useState } from 'react';
@@ -11,20 +12,8 @@ import {
   type AgentTreeNode,
 } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { RelatedAgentRow, useMinuteClock } from './agent-panel/InspectorAgents';
 import { DisclosureChevron } from './icons';
-
-export const RELATED_AGENT_PREVIEW_LIMIT = 4;
-
-/**
- * Whole-block auto-collapse: with more related agents than this the relations
- * strip starts folded to a one-line summary (each group still expands on its
- * own once the block is opened).
- */
-export const RELATED_AGENTS_AUTO_COLLAPSE = RELATED_AGENT_PREVIEW_LIMIT;
-
-function agentPillClass(): string {
-  return 'inline-flex min-w-0 max-w-56 items-baseline rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent';
-}
 
 function uniqueAgentNodes(nodes: readonly AgentTreeNode[]): readonly AgentTreeNode[] {
   const seen = new Set<string>();
@@ -60,49 +49,6 @@ export function relatedAgentNodes(
     children: uniqueAgentNodes(agentChildren(forest, currentAgentId)),
   };
 }
-
-const RelationGroup = memo(function RelationGroup({
-  nodes,
-  label,
-  moreLabel,
-  onOpen,
-}: {
-  nodes: readonly AgentTreeNode[];
-  label: string;
-  moreLabel: (count: number) => string;
-  onOpen: (agentId: string) => void;
-}) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? nodes : nodes.slice(0, RELATED_AGENT_PREVIEW_LIMIT);
-  const hiddenCount = nodes.length - RELATED_AGENT_PREVIEW_LIMIT;
-  return (
-    <>
-      {visible.map((node) => (
-        <button
-          key={node.agentId}
-          type="button"
-          onClick={() => { onOpen(node.agentId); }}
-          title={node.label}
-          className={agentPillClass()}
-        >
-          <span className="shrink-0">{label}:</span>{' '}
-          <span className="min-w-0 truncate">{node.label}</span>
-        </button>
-      ))}
-      {hiddenCount > 0 ? (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => { setExpanded((value) => !value); }}
-          className="rounded-full border border-dashed border-hairline px-2 py-0.5 text-ink-faint transition-colors hover:border-accent hover:text-accent"
-        >
-          {expanded ? t('sv.showFewerAgents') : moreLabel(hiddenCount)}
-        </button>
-      ) : null}
-    </>
-  );
-});
 
 interface AgentBreadcrumbProps {
   crumbs: readonly AgentTreeNode[];
@@ -172,73 +118,115 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
   previous.onOpenAgent === next.onOpenAgent,
 );
 
+/**
+ * An agent's neighbours. The parent and the children are the ways up and
+ * down, so both are always listed, one roster row each. Siblings can run to
+ * hundreds; they fold behind a one-line count and page in once opened.
+ * Every row opens through `onOpen`, the same entry the timeline card uses.
+ */
 export const AgentRelations = memo(function AgentRelations({
   forest,
   currentAgentId,
   onOpen,
-  defaultOpen,
 }: {
   forest: AgentForest;
   currentAgentId: string;
   onOpen: (agentId: string) => void;
-  /** Test/embedding override; defaults to expanded for small relation sets. */
-  defaultOpen?: boolean;
 }) {
   const { t } = useI18n();
+  const now = useMinuteClock();
   const related = relatedAgentNodes(forest, currentAgentId);
   const parent = related.parent?.agentId === MAIN_AGENT_ID ? undefined : related.parent;
-  const totalCount =
-    (parent === undefined ? 0 : 1) + related.siblings.length + related.children.length;
-  const [open, setOpen] = useState(defaultOpen ?? totalCount <= RELATED_AGENTS_AUTO_COLLAPSE);
-  if (totalCount === 0) {
+  const [siblingsOpen, setSiblingsOpen] = useState(false);
+  const [siblingsAll, setSiblingsAll] = useState(false);
+  if (parent === undefined && related.siblings.length === 0 && related.children.length === 0) {
     return <p className="text-ink-faint">{t('sv.noRelatedAgents')}</p>;
   }
-  const summary = [
-    parent === undefined ? undefined : `${t('sv.parentAgents')} 1`,
-    related.siblings.length > 0 ? `${t('sv.siblingAgents')} ${related.siblings.length}` : undefined,
-    related.children.length > 0 ? `${t('sv.childAgents')} ${related.children.length}` : undefined,
-  ].filter((part) => part !== undefined);
+  const siblings = siblingsAll ? related.siblings : related.siblings.slice(0, SIBLING_PAGE);
+  const hiddenSiblings = related.siblings.length - siblings.length;
   return (
-    <div data-agent-relations>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => { setOpen((value) => !value); }}
-        className="flex min-w-0 items-center gap-1.5 text-ink-faint transition-colors hover:text-ink-soft"
-      >
-        <DisclosureChevron open={open} className="text-current" />
-        <span className="shrink-0 font-medium">{t('sv.relatedAgents')}</span>
-        {!open ? (
-          <span className="min-w-0 truncate text-ink-faint/70">{summary.join(' · ')}</span>
-        ) : null}
-      </button>
-      {open ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {parent !== undefined ? (
-            <button
-              type="button"
-              onClick={() => { onOpen(parent.agentId); }}
-              title={parent.label}
-              className={agentPillClass()}
-            >
-              <span className="shrink-0">{t('sv.parentAgents')}:</span>{' '}
-              <span className="min-w-0 truncate">{parent.label}</span>
-            </button>
+    <div data-agent-relations className="space-y-1">
+      {parent !== undefined ? (
+        <RelationList kind="parent" label={t('sv.parentAgents')} nodes={[parent]} now={now} onOpen={onOpen} />
+      ) : null}
+      {related.children.length > 0 ? (
+        <RelationList
+          kind="children" label={t('sv.childAgents')} count={related.children.length}
+          nodes={related.children} now={now} onOpen={onOpen}
+        />
+      ) : null}
+      {related.siblings.length > 0 ? (
+        <div data-relations-group="siblings">
+          <button
+            type="button"
+            aria-expanded={siblingsOpen}
+            data-relations-toggle="siblings"
+            onClick={() => { setSiblingsOpen((value) => !value); }}
+            className={GROUP_HEAD_BUTTON}
+          >
+            <DisclosureChevron open={siblingsOpen} className="text-current" />
+            <span className="font-medium">{t('sv.siblingAgents')}</span>
+            <span className="tabular-nums">{related.siblings.length}</span>
+          </button>
+          {siblingsOpen ? (
+            <div role="list" className="mt-0.5">
+              {siblings.map((node) => (
+                <div key={node.agentId} role="listitem">
+                  <RelatedAgentRow node={node} now={now} onSelect={onOpen} />
+                </div>
+              ))}
+              {hiddenSiblings > 0 ? (
+                <button
+                  type="button"
+                  data-relations-more="siblings"
+                  onClick={() => { setSiblingsAll(true); }}
+                  className="ml-3.5 h-8 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                >
+                  {t('sv.moreSiblingAgents', { count: hiddenSiblings })}
+                </button>
+              ) : null}
+            </div>
           ) : null}
-          <RelationGroup
-            nodes={related.siblings}
-            label={t('sv.siblingAgents')}
-            moreLabel={(count) => t('sv.moreSiblingAgents', { count })}
-            onOpen={onOpen}
-          />
-          <RelationGroup
-            nodes={related.children}
-            label={t('sv.childAgents')}
-            moreLabel={(count) => t('sv.moreChildAgents', { count })}
-            onOpen={onOpen}
-          />
         </div>
       ) : null}
     </div>
   );
 });
+
+/** Siblings shown once the fold is opened, before "Show N more". */
+export const SIBLING_PAGE = 20;
+
+const GROUP_HEAD_BUTTON =
+  '-ml-1 flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9';
+
+function RelationList({
+  kind,
+  label,
+  count,
+  nodes,
+  now,
+  onOpen,
+}: {
+  kind: 'parent' | 'children';
+  label: string;
+  count?: number;
+  nodes: readonly AgentTreeNode[];
+  now: number;
+  onOpen: (agentId: string) => void;
+}) {
+  return (
+    <section data-relations-group={kind} aria-label={label}>
+      <h3 className="flex h-6 items-center gap-1.5 text-ink-faint">
+        <span className="font-medium">{label}</span>
+        {count !== undefined ? <span className="tabular-nums">{count}</span> : null}
+      </h3>
+      <div role="list">
+        {nodes.map((node) => (
+          <div key={node.agentId} role="listitem">
+            <RelatedAgentRow node={node} now={now} onSelect={onOpen} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

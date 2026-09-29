@@ -20,7 +20,7 @@ import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
-import { buildRoster, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
+import { buildRoster, rosterBucket, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
 import { plainFailure } from './failureText';
 
 /** Fixed status-mark column: every marked row puts its text at the same x. */
@@ -142,7 +142,7 @@ export const RailCrumbs = memo(function RailCrumbs({
             <span aria-hidden className="shrink-0 text-hairline-strong">/</span>
           </span>
         ))}
-        <h2 aria-current="page" className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink" title={label(current)}>
+        <h2 aria-current="page" tabIndex={-1} data-rail-owner-heading="" className="min-w-0 truncate rounded outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent font-display text-[15px] font-semibold tracking-tight text-ink" title={label(current)}>
           <span className="sr-only">{t('inspector.viewing')}: </span>
           {label(current)}
         </h2>
@@ -245,11 +245,14 @@ const RosterAgent = memo(function RosterAgent({
   now,
   onSelect,
   onToggle,
+  flat = false,
 }: {
   row: RosterAgentRow;
   now: number;
   onSelect: (agentId: string) => void;
   onToggle: (agentId: string) => void;
+  /** A flat list: no fold column, text starts at the mark. */
+  flat?: boolean;
 }) {
   const { t, tp } = useI18n();
   const { node, bucket, depth } = row;
@@ -300,7 +303,7 @@ const RosterAgent = memo(function RosterAgent({
         >
           <DisclosureChevron open={row.expanded} />
         </button>
-      ) : <span aria-hidden className="w-6 shrink-0" />}
+      ) : flat ? null : <span aria-hidden className="w-6 shrink-0" />}
       <button
         type="button"
         data-agent-id={node.agentId}
@@ -321,7 +324,7 @@ const RosterAgent = memo(function RosterAgent({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2 leading-5">
-            <span className={`max-w-[70%] shrink-0 truncate text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{node.label}</span>
+            <span data-agent-name="" className={`${flat ? 'min-w-0 [overflow-wrap:anywhere]' : 'max-w-[70%] shrink-0 truncate'} text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{node.label}</span>
             {model !== undefined ? <span className="min-w-0 truncate text-[11.5px] text-ink-faint">{model}</span> : null}
             <span
               data-agent-status={node.status}
@@ -508,8 +511,39 @@ export const AgentRoster = memo(function AgentRoster({
   );
 });
 
+/**
+ * One agent drawn exactly like a roster row (mark, name, state, what it is
+ * doing), for lists outside the roster such as an agent's parent and
+ * children. No fold toggle: these lists are flat.
+ */
+export const RelatedAgentRow = memo(function RelatedAgentRow({
+  node,
+  now,
+  onSelect,
+}: {
+  node: AgentTreeNode;
+  /** From useMinuteClock in the list owner: one timer per list, not per row. */
+  now: number;
+  onSelect: (agentId: string) => void;
+}) {
+  const row: RosterAgentRow = {
+    kind: 'agent',
+    node,
+    bucket: rosterBucket(node, NO_WAITING),
+    depth: 0,
+    childCount: 0,
+    expanded: false,
+    waitingBelow: 0,
+    path: [],
+  };
+  return <RosterAgent row={row} now={now} onSelect={onSelect} onToggle={ignoreToggle} flat />;
+});
+
+const NO_WAITING: ReadonlySet<string> = new Set();
+const ignoreToggle = () => {};
+
 /** Wall clock at minute granularity: elapsed labels on rows are coarse. */
-function useMinuteClock(): number {
+export function useMinuteClock(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => { setNow(Date.now()); }, 30_000);

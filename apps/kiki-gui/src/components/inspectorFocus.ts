@@ -99,44 +99,38 @@ export function useInspectorFocusTracking({
     let dwell: ReturnType<typeof setTimeout> | undefined;
     let pending: string | undefined;
 
-    const pin = (target: EventTarget | null) => {
+    const resolvePin = (target: EventTarget | null): (() => void) | undefined => {
       const agentId = resolveInspectorTarget(target);
-      if (agentId === null) return;
-      if (agentId === MAIN_AGENT_ID) {
-        onPinRef.current(undefined);
-        return;
-      }
-      if (isKnownRef.current(agentId)) onPinRef.current(agentId);
+      if (agentId === null) return undefined;
+      if (agentId === MAIN_AGENT_ID) return () => { onPinRef.current(undefined); };
+      return isKnownRef.current(agentId) ? () => { onPinRef.current(agentId); } : undefined;
     };
-    // A press inside the inspector pins on click, not on pointerdown: pinning
-    // re-lays the rail out (the page turns), which would move the pressed
-    // control out from under the pointer and swallow the click.
-    let railPress = false;
-    let railPressReset: ReturnType<typeof setTimeout> | undefined;
+    const pin = (target: EventTarget | null) => { resolvePin(target)?.(); };
+    // Inside the inspector a pin turns the rail's page, which remounts every
+    // control on it. Pinning before the control's own click handler has run
+    // would detach the pressed button and swallow the click (a roster row
+    // would retarget the rail but never open the agent). So a rail press
+    // pins only after its click has been dispatched, and keyboard focus
+    // moving through the rail never pins at all.
+    let deferredPin: ReturnType<typeof setTimeout> | undefined;
     const inRail = (target: EventTarget | null) =>
       target instanceof Element && target.closest('[data-session-rail]') !== null;
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      if (inRail(event.target)) {
-        railPress = true;
-        return;
-      }
+      if (inRail(event.target)) return;
       pin(event.target);
-    };
-    const onPointerEnd = () => {
-      // A press dragged off its control never clicks; release the flag after
-      // the click (if any) has been dispatched.
-      if (!railPress) return;
-      if (railPressReset !== undefined) clearTimeout(railPressReset);
-      railPressReset = setTimeout(() => { railPress = false; }, 0);
     };
     const onClick = (event: MouseEvent) => {
-      if (!railPress) return;
-      railPress = false;
-      pin(event.target);
+      if (!inRail(event.target)) return;
+      // Resolve now, while the target is still attached; apply once the
+      // click's handlers have run.
+      const apply = resolvePin(event.target);
+      if (apply === undefined) return;
+      if (deferredPin !== undefined) clearTimeout(deferredPin);
+      deferredPin = setTimeout(() => { deferredPin = undefined; apply(); }, 0);
     };
     const onFocusIn = (event: FocusEvent) => {
-      if (railPress) return;
+      if (inRail(event.target)) return;
       pin(event.target);
     };
     const onPointerOver = (event: PointerEvent) => {
@@ -162,22 +156,18 @@ export function useInspectorFocusTracking({
     };
 
     document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('pointerup', onPointerEnd, true);
-    document.addEventListener('pointercancel', onPointerEnd, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('pointerover', onPointerOver, true);
     document.documentElement.addEventListener('pointerleave', onLeaveWindow);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('pointerup', onPointerEnd, true);
-      document.removeEventListener('pointercancel', onPointerEnd, true);
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('focusin', onFocusIn, true);
       document.removeEventListener('pointerover', onPointerOver, true);
       document.documentElement.removeEventListener('pointerleave', onLeaveWindow);
       if (dwell !== undefined) clearTimeout(dwell);
-      if (railPressReset !== undefined) clearTimeout(railPressReset);
+      if (deferredPin !== undefined) clearTimeout(deferredPin);
       setPeek(undefined);
     };
   }, []);

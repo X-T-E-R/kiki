@@ -26,7 +26,7 @@ import { I18nProvider } from '../i18n';
 import {
   AgentBreadcrumb,
   AgentRelations,
-  RELATED_AGENT_PREVIEW_LIMIT,
+  SIBLING_PAGE,
   relatedAgentNodes,
 } from './AgentBreadcrumb';
 import { AgentTreeView } from './AgentTreeView';
@@ -1339,79 +1339,64 @@ describe('agent tree chrome', () => {
     expect(html).toContain('data-agent-id="agent-review"');
   });
 
-  it('bounds sibling and child chips to the current parent while keeping a more entry', () => {
-    const crowded = buildAgentForest(
+  it('lists the parent and children open by default and folds siblings to a count', async () => {
+    const family = buildAgentForest(
       [],
       [
         { agentId: 'main', name: 'Main' },
-        { agentId: 'agent-1', parentAgentId: 'main', name: 'Current' },
-        ...Array.from({ length: 6 }, (_, index) => ({
-          agentId: `agent-${index + 2}`,
-          parentAgentId: 'main',
-          name: `Peer ${index + 2}`,
+        { agentId: 'lead', parentAgentId: 'main', name: 'Composer state variants for the settings sheet' },
+        { agentId: 'agent-1', parentAgentId: 'lead', name: 'Current' },
+        ...Array.from({ length: SIBLING_PAGE + 5 }, (_, index) => ({
+          agentId: `peer-${index + 1}`,
+          parentAgentId: 'lead',
+          name: `Peer ${index + 1}`,
         })),
-        ...Array.from({ length: 6 }, (_, index) => ({
-          agentId: `child-${index + 1}`,
-          parentAgentId: 'agent-1',
-          name: `Child ${index + 1}`,
-        })),
+        { agentId: 'child-1', parentAgentId: 'agent-1', name: 'Child 1' },
+        { agentId: 'child-2', parentAgentId: 'agent-1', name: 'Child 2' },
       ],
     );
-    const related = relatedAgentNodes(crowded, 'agent-1');
-    expect(related.siblings).toHaveLength(6);
-    expect(related.siblings.every((node) => node.parentAgentId === 'main')).toBe(true);
-    expect(new Set(related.siblings.map((node) => node.agentId)).size).toBe(6);
-    expect(RELATED_AGENT_PREVIEW_LIMIT).toBe(4);
+    const related = relatedAgentNodes(family, 'agent-1');
+    expect(related.siblings).toHaveLength(SIBLING_PAGE + 5);
+    expect(related.siblings.every((node) => node.parentAgentId === 'lead')).toBe(true);
 
-    // Crowded relation sets start folded to a one-line summary.
-    const collapsed = renderToStaticMarkup(
-      <I18nProvider>
-        <AgentRelations forest={crowded} currentAgentId="agent-1" onOpen={() => {}} />
-      </I18nProvider>,
-    );
-    expect(collapsed).toContain('data-agent-relations');
-    expect(collapsed).toContain('aria-expanded="false"');
-    expect(collapsed).toContain('Related agents');
-    expect(collapsed).toContain('Siblings 6');
-    expect(collapsed).toContain('Children 6');
-    expect(collapsed).not.toContain('Peer 5');
+    const opened: string[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <AgentRelations forest={family} currentAgentId="agent-1" onOpen={(id) => { opened.push(id); }} />
+        </I18nProvider>,
+      );
+    });
+    const group = (kind: string) => container.querySelector(`[data-relations-group="${kind}"]`)!;
+    // Parent: one full row with the whole name (never a truncated chip label).
+    const parentRows = group('parent').querySelectorAll('[data-agent-id]');
+    expect([...parentRows].map((row) => row.getAttribute('data-agent-id'))).toEqual(['lead']);
+    expect(parentRows[0]!.textContent).toContain('Composer state variants for the settings sheet');
+    // Children: listed at the same time, one row each.
+    expect([...group('children').querySelectorAll('[data-agent-id]')].map((row) => row.getAttribute('data-agent-id')))
+      .toEqual(['child-1', 'child-2']);
+    // Siblings: folded to one count line.
+    const toggle = container.querySelector<HTMLButtonElement>('[data-relations-toggle="siblings"]')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain(`Siblings${SIBLING_PAGE + 5}`);
+    expect(group('siblings').querySelector('[data-agent-id]')).toBeNull();
 
-    // Opened (defaultOpen override, as after a click), each group still
-    // previews four pills with a "+N" entry of its own.
-    const html = renderToStaticMarkup(
-      <I18nProvider>
-        <AgentRelations forest={crowded} currentAgentId="agent-1" onOpen={() => {}} defaultOpen />
-      </I18nProvider>,
-    );
-    expect(html).toContain('Peer 5');
-    expect(html).not.toContain('Peer 6');
-    expect(html).toContain('Show 2 more siblings');
-    expect(html).toContain('Child 4');
-    expect(html).not.toContain('Child 5');
-    expect(html).toContain('Show 2 more children');
-  });
+    await act(async () => { toggle.click(); });
+    expect(group('siblings').querySelectorAll('[data-agent-id]')).toHaveLength(SIBLING_PAGE);
+    const more = container.querySelector<HTMLButtonElement>('[data-relations-more="siblings"]')!;
+    expect(more.textContent).toBe('Show 5 more siblings');
+    await act(async () => { more.click(); });
+    expect(group('siblings').querySelectorAll('[data-agent-id]')).toHaveLength(SIBLING_PAGE + 5);
 
-  it('truncates long agent names in relation pills with a tooltip', () => {
-    const longNamed = buildAgentForest(
-      [],
-      [
-        { agentId: 'main', name: 'Main' },
-        { agentId: 'agent-1', parentAgentId: 'main', name: 'Current' },
-        {
-          agentId: 'agent-2',
-          parentAgentId: 'main',
-          name: 'A very long sibling agent name that would otherwise overflow the relations strip entirely',
-        },
-      ],
-    );
-    const html = renderToStaticMarkup(
-      <I18nProvider>
-        <AgentRelations forest={longNamed} currentAgentId="agent-1" onOpen={() => {}} />
-      </I18nProvider>,
-    );
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('title="A very long sibling agent name');
-    expect(html).toContain('truncate');
+    // Every row opens through the one handler the timeline card uses.
+    await act(async () => { group('parent').querySelector<HTMLButtonElement>('[data-agent-id="lead"]')!.click(); });
+    await act(async () => { group('children').querySelector<HTMLButtonElement>('[data-agent-id="child-2"]')!.click(); });
+    expect(opened).toEqual(['lead', 'child-2']);
+    await act(async () => { root.unmount(); });
+    container.remove();
   });
 
   it('keeps the RightRail subagent section in a bounded scroll region', () => {
