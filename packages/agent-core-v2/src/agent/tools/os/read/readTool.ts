@@ -270,8 +270,9 @@ export class ReadTool implements IReadTool {
           }
           try {
             const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
-            if (currentPath !== path) {
-              return { isError: true, output: 'File target changed after path admission. Retry the tool call.' };
+            if ((env.pathClass === 'win32' ? currentPath.toLowerCase() : currentPath) !==
+              (env.pathClass === 'win32' ? path.toLowerCase() : path)) {
+              return { isError: true, output: `File target changed after path admission: admitted "${path}", actual "${currentPath}". Use the actual absolute path or resolve a changed link first.` };
             }
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };

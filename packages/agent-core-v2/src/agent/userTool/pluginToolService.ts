@@ -109,7 +109,10 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
           }
           for (const target of fileTargets) {
             const actual = await resolveRealPathAccessPath(target.raw, { env, workspace, operation: target.operation }, current.runtime.fs!);
-            if (actual !== target.path) return { isError: true, output: 'Plugin file target changed after path admission. Retry the tool call.' };
+            if ((env.pathClass === 'win32' ? actual.toLowerCase() : actual) !==
+              (env.pathClass === 'win32' ? target.path.toLowerCase() : target.path)) {
+              return { isError: true, output: `Plugin file target changed after path admission: admitted "${target.path}", actual "${actual}". Use the actual absolute path or resolve a changed link first.` };
+            }
           }
           const resolvedArgs = { ...(args as Record<string, unknown>) };
           const approvedPaths: string[] = [];

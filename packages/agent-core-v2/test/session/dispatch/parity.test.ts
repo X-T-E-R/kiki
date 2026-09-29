@@ -460,6 +460,8 @@ interface TaskRecord {
 }
 
 interface LaneOptions {
+  readonly pathClass?: 'posix' | 'win32';
+  readonly workDir?: string;
   readonly capacity?: { readonly maxDirectChildren: number; readonly maxTotalSubagents: number };
   readonly defaultProfile?: string;
   readonly profile?: AgentProfile;
@@ -529,7 +531,7 @@ function createLane(
 
   const runtime = new FakeRuntime(
     { workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' },
-    { capabilities: ['process'] },
+    { capabilities: ['process'], pathClass: options.pathClass },
   );
 
   const runtimeService = {
@@ -1014,7 +1016,7 @@ function createLane(
   });
   ix.stub(ISessionWorkspaceContext, {
     _serviceBrand: undefined,
-    workDir: '/workspace',
+    workDir: options.workDir ?? '/workspace',
     additionalDirs: [],
   });
   ix.stub(ISessionManager, { onWillCloseSession: undefined });
@@ -1497,6 +1499,32 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.subagentRun).toHaveBeenCalledTimes(1);
     lane.completions[0]!.resolve({ summary: 'child done' });
     await started.completion;
+  });
+
+  it('dispatches a Windows profile_file when realpath uses different drive casing and separators', async () => {
+    const lane = createLane(disposables, 'internal', { pathClass: 'win32', workDir: 'E:\\Creator' });
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\n---\nFILE ROLE');
+    Object.defineProperty(runtime, 'fs', { value: {
+      realpath: async (path: string) => path.replace(/\\\\/g, '/').replace(/^E:/i, 'e:'), readText,
+    } });
+    const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('profile_source: profile_file');
+    expect(readText).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a profile_file whose realpath leaves the allowed workspace', async () => {
+    const lane = createLane(disposables, 'internal');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\n---\nFILE ROLE');
+    Object.defineProperty(runtime, 'fs', { value: {
+      realpath: async () => '/outside/custom.md', readText,
+    } });
+    const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('outside runtime workspace');
+    expect(readText).not.toHaveBeenCalled();
   });
 
   it('loads profile_file through AgentRun without registering its name or hardening unmarked recommendations', async () => {

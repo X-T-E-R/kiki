@@ -109,7 +109,6 @@ export async function loadDispatchProfileFile(
   }), view.workDir, true);
   const lexical = guardedPath(path);
   const realpath = guardedPath(await runtime.fs.realpath(lexical));
-  if (realpath !== lexical) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Profile file target changed after path admission. Retry the tool call.');
   const fs = agentProfilesHostFs(runtime.fs);
   const guardedFs = { ...fs, readFile: (candidate: string) => fs.readFile(guardedPath(candidate)) };
   const definition = parseAgentFileText({

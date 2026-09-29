@@ -89,7 +89,10 @@ export class SkillTool implements ISkillTool {
           if (lease.runtime.identity.generation !== inspected.identity.generation) return errorResult('Runtime changed before execution. Retry the tool call.');
           const actualPath = resolvePathAccessPath(await lease.runtime.fs!.realpath(lexicalPath), pathOptions);
           view.resolve(actualPath, view.workDir, true);
-          if (actualPath !== path) return errorResult('Skill file target changed after path admission. Retry the tool call.');
+          if ((inspected.environment.pathClass === 'win32' ? actualPath.toLowerCase() : actualPath) !==
+            (inspected.environment.pathClass === 'win32' ? path.toLowerCase() : path)) {
+            return errorResult(`Skill file target changed after path admission: admitted "${path}", actual "${actualPath}". Use the actual absolute path or resolve a changed link first.`);
+          }
           await this.catalog.ready;
           for (const entry of this.catalog.catalog.listSkills()) {
             if (entry.metadata.promptCommand !== true || entry.source === 'builtin') continue;
