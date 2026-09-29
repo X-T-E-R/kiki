@@ -40,6 +40,13 @@ export interface SessionMetaUpdatedEvent {
   readonly patch?: Record<string, unknown>;
 }
 
+export interface SessionWorktreeChangedEvent {
+  readonly type: 'session.worktree.changed';
+  readonly worktreeId: string;
+  readonly state: string;
+  readonly inspection?: unknown;
+}
+
 export interface SessionCreatedEvent {
   readonly type: 'event.session.created';
   readonly session: Session;
@@ -243,6 +250,7 @@ export type AgentEvent =
   | AgentCreatedEvent
   | AgentDisposedEvent
   | SessionMetaUpdatedEvent
+  | SessionWorktreeChangedEvent
   | SessionCreatedEvent
   | SessionHistoryRewrittenEvent
   | WorkspaceCreatedEvent

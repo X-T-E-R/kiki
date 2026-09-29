@@ -1534,6 +1534,57 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it('names the renewal strategy on compaction markers, including fallbacks', () => {
+    const marker = (markerId: string, payload?: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: 'compaction', payload, at: FIXED_AT });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          marker('c-legacy', { summary: 'older record without a strategy' }),
+          marker('c-summarize', { strategy: 'summarize', summary: 'the summary text' }),
+          marker('c-fresh', { strategy: 'relay' }),
+          marker('c-fallback', { strategy: 'summarize', fallbackFrom: 'relay', reasonCodes: ['notes_missing'] }),
+          marker('c-rescue', { strategy: 'relay', fallbackFrom: 'summarize' }),
+        ],
+      }),
+    );
+    const keys = projected.blocks.map((block) => (block.kind === 'notice' ? block.i18n?.key : undefined));
+    expect(keys).toEqual([
+      'transcript.marker.compactionSummarize',
+      'transcript.marker.compactionSummarize',
+      'transcript.marker.compactionFresh',
+      'transcript.marker.compactionFallback',
+      'transcript.marker.compactionRescue',
+    ]);
+  });
+
+  it('carries external-engine records as executor notes on their turn', () => {
+    const marker = (markerId: string, name: string, payload: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: name, payload, at: FIXED_AT });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated' } }),
+          marker('h-1', 'executor.prompt.delivery', { turnId: 2, origin: 'user', method: 'next_turn_preamble', status: 'queued' }),
+          marker('h-bad', 'executor.prompt.delivery', { method: 'teleport', status: 'delivered' }),
+          marker('c-1', 'executor.compaction', { turnId: 2, kind: 'compaction', value: { threadId: 'thr' } }),
+          marker('x-1', 'executor.diff', { turnId: 2, kind: 'diff', value: '@@ -1 +1 @@\n-a\n+b' }),
+        ],
+      }),
+    );
+    const notes = projected.blocks.map((block) => (block.kind === 'notice' ? [block.turnId, block.executor] : undefined));
+    expect(notes).toEqual([
+      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated' }],
+      ['t2', { kind: 'hint', method: 'next_turn_preamble', status: 'queued', origin: 'user' }],
+      // An unrecognized delivery shape falls back to a plain marker notice.
+      [undefined, undefined],
+      ['t2', { kind: 'compaction' }],
+      ['t2', { kind: 'diff', diff: '@@ -1 +1 @@\n-a\n+b' }],
+    ]);
+  });
+
   it('suppresses the redundant live cron marker and preserves interruption ownership', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),

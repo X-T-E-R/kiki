@@ -64,6 +64,7 @@ export interface ToolUpdate {
 
 export interface ExecutableToolContext {
   readonly turnId: number;
+  readonly step?: number;
   readonly toolCallId: string;
   readonly trace?: LLMRequestTrace;
   readonly metadata?: unknown;

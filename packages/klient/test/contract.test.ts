@@ -176,6 +176,14 @@ describe('prompt lifecycle events', () => {
 });
 
 describe('session prompt command contract', () => {
+  it('exposes the edit-hold command', () => {
+    const hold = sessionCommandContract.hold;
+    expect(hold.method).toBe('POST');
+    expect(hold.suffix).toBe('/prompts/{target}:hold');
+    expect(hold.input.parse({ target: 'p1', body: { held: true } })).toEqual({ target: 'p1', body: { held: true } });
+    expect(hold.output.parse({ prompt_id: 'p1', held: false })).toEqual({ prompt_id: 'p1', held: false });
+  });
+
   it('exposes the timing command with its own body and PromptItem result', () => {
     const timing = sessionCommandContract.timing;
     expect(timing.method).toBe('POST');

@@ -15,6 +15,7 @@ import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { toolDisplayName } from '../lib/pluginCatalog';
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { FilePathLink, MediaPartList } from './mediaPreview';
@@ -23,6 +24,41 @@ import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/Activi
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
+
+/** The engine's bridge for dynamically loaded tools (MCP, plugin, deferred). */
+const CALL_TOOL_BRIDGE = 'CallTool';
+
+/**
+ * The tool a row should be labelled with. While the model streams a bridged
+ * call, the frame is named `CallTool` and its argument text reads
+ * `{"name":"plugin__x__y","arguments":{…}}`; the engine swaps in the real
+ * name only once the call starts. Read the inner name as soon as it is
+ * complete in the stream, so the row never flashes the bridge's name.
+ * Undefined means the name has not streamed yet.
+ */
+export function resolvedToolName(block: Pick<ToolBlock, 'name' | 'argsText' | 'args'>): string | undefined {
+  if (block.name !== CALL_TOOL_BRIDGE) return block.name;
+  const fromArgs = typeof block.args === 'object' && block.args !== null
+    ? (block.args as Record<string, unknown>)['name']
+    : undefined;
+  if (typeof fromArgs === 'string' && fromArgs !== '') return fromArgs;
+  const match = /"name"\s*:\s*"((?:[^"\\]|\\.)+)"/.exec(block.argsText);
+  return match?.[1];
+}
+
+/** The streamed `arguments` object text of a bridged call, without the envelope. */
+function bridgedArgsText(text: string): string {
+  const match = /"arguments"\s*:\s*/.exec(text);
+  if (match === null) return '';
+  const inner = text.slice(match.index + match[0].length).trimEnd();
+  return inner.endsWith('}}') ? inner.slice(0, -1) : inner;
+}
+
+/** The bridged call's own arguments, for the summary and the input well. */
+function bridgedArgs(block: ToolBlock): unknown {
+  if (block.name !== CALL_TOOL_BRIDGE || typeof block.args !== 'object' || block.args === null) return block.args;
+  return (block.args as Record<string, unknown>)['arguments'] ?? block.args;
+}
 
 /**
  * Which drawn icon names a tool's KIND of action. Several tools share one
@@ -317,7 +353,7 @@ function truncateJson(value: unknown, truncatedNote: string, limit = 6000): stri
 }
 
 export const ToolCard = memo(function ToolCard({
-  block,
+  block: sourceBlock,
   agentId = 'main',
   agentNames,
   onOpenAgent,
@@ -333,6 +369,13 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  // A bridged call reads as the tool it calls, from the first streamed name
+  // on; until that name has streamed the row says "Calling a tool".
+  const bridged = sourceBlock.name === CALL_TOOL_BRIDGE;
+  const realName = resolvedToolName(sourceBlock);
+  const block: ToolBlock = bridged
+    ? { ...sourceBlock, name: realName ?? sourceBlock.name, args: bridgedArgs(sourceBlock), argsText: realName === undefined ? '' : bridgedArgsText(sourceBlock.argsText) }
+    : sourceBlock;
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
   const memoryRow = isMemoryToolName(block.name);
@@ -404,7 +447,9 @@ export const ToolCard = memo(function ToolCard({
       attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId }}
       glyph={<Icon name={toolIcon(block)} />}
       tone={tone}
-      label={block.name}
+      // Plugin and MCP tools read by their own name; the runtime id
+      // (`plugin__<id>__<tool>`) stays available on hover.
+      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{toolDisplayName(block.name)}</span>}
       detail={target}
       expanded={expanded}
       onToggle={() => { setExpanded((value) => !value); }}

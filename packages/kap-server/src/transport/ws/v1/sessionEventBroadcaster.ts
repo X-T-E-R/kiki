@@ -1145,6 +1145,15 @@ export class SessionEventBroadcaster {
 
   private onCoreEvent(event: Event2<any>): void {
     const corePayload = (event as { readonly payload?: unknown }).payload;
+    if (event.type === 'session.worktree.changed') {
+      const payload = corePayload as { sessionId?: string; worktreeId?: string; state?: string; inspection?: unknown } | undefined;
+      if (typeof payload?.sessionId !== 'string' || typeof payload.worktreeId !== 'string' || typeof payload.state !== 'string') return;
+      void this.dispatchSessionEvent(payload.sessionId, {
+        type: 'session.worktree.changed', agentId: 'main', sessionId: payload.sessionId,
+        worktreeId: payload.worktreeId, state: payload.state, inspection: payload.inspection,
+      } as Event).catch((error: unknown) => this.logDispatchError(payload.sessionId!, 'session.worktree.changed', error));
+      return;
+    }
     if (event.type === 'event.session.created') {
       const payload = sessionCreatedPayload(corePayload);
       if (payload === undefined) return;
@@ -1713,6 +1722,7 @@ function legacyTaskEvent(event: Event2<any>, agentId: string, sessionId: string)
 function isGlobalEvent(type: string): boolean {
   return (
     type === 'session.meta.updated' ||
+    type === 'session.worktree.changed' ||
     type.startsWith('event.session.') ||
     type.startsWith('event.workspace.') ||
     type.startsWith('event.config.') ||

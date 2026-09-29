@@ -1,5 +1,6 @@
 import { tsImport } from 'tsx/esm/api';
 import { filterOpsForGrade, gradeFor, redactSnapshotForGrade } from './fixture-transcript.mjs';
+import { browseFolder } from './fixture-worktrees.mjs';
 
 function now() { return new Date().toISOString(); }
 
@@ -233,7 +234,15 @@ export class FixtureKlient {
         const [modelId] = args;
         const item = modelItems().find((entry) => entry.id === modelId);
         if (item === undefined) throw invalid('model.not_found', 40413);
-        return { ...item, max_input_size: item.max_input_size, issues: [], revision: revisionOf(item), provider_source: 'provider' };
+        return {
+          effective_parameters: {},
+          parameter_sources: {},
+          ...item,
+          max_input_size: item.max_input_size,
+          issues: [],
+          revision: revisionOf(item),
+          provider_source: 'provider',
+        };
       }
       case 'modelCatalogMutation.updateModel': {
         const [modelId, patch] = args;
@@ -250,10 +259,14 @@ export class FixtureKlient {
         if (patch.max_context_size !== undefined) next.max_context_size = patch.max_context_size ?? 0;
         if (patch.capabilities !== undefined) next.capabilities = patch.capabilities ?? undefined;
         if (patch.support_efforts !== undefined) next.support_efforts = patch.support_efforts ?? undefined;
+        if (patch.auto_compact !== undefined) {
+          if (patch.auto_compact === null) delete next.auto_compact;
+          else next.auto_compact = patch.auto_compact;
+        }
         items[index] = next;
         server.models = items;
         server.modelsDeclared = true;
-        return { ...next, issues: [], revision: revisionOf(next), provider_source: 'provider' };
+        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider' };
       }
       case 'modelCatalogMutation.createModel': {
         const [input] = args;
@@ -356,12 +369,48 @@ export class FixtureKlient {
           : providerItems().filter((entry) => entry.id === options.providerId).map((entry) => entry.id);
         return { changed: [], unchanged: selected, failed: [] };
       }
-      case 'oauthService.listMethods':
-        return [
+      case 'providerDiscovery.listDiscoveredModels':
+        return { items: structuredClone(server.scenario?.data.discoveredModels ?? []) };
+      case 'oauthService.listMethods': {
+        // The contract requires `account` / `quota`; older scenario seeds omit
+        // them, which reads as unknown (the real server's answer when it
+        // cannot tell).
+        const unknown = { state: 'unknown' };
+        const methods = server.scenario?.data.oauthMethods ?? [
           { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: false },
           { id: 'github-copilot', label: 'GitHub Copilot', provider: 'managed:github-copilot', protocol: 'openai', signed_in: false },
           { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false },
         ];
+        return structuredClone(methods).map((method) => ({ account: unknown, quota: unknown, ...method }));
+      }
+      // Config service: only the domains the Defaults card writes directly
+      // (`subagent.defaultModel`, `fastModel`), mirrored into the REST config
+      // projection so GET /config reads them back.
+      case 'configService.inspect': {
+        const [domain] = args;
+        const value = domain === 'subagent' ? server.config.subagent : domain === 'fastModel' ? server.config.fast_model : undefined;
+        return { value: structuredClone(value), userValue: structuredClone(value) };
+      }
+      case 'configService.set': {
+        const [domain, patch] = args;
+        if (domain !== 'subagent') throw invalid(`fixture: config.set(${domain}) is not mocked`, 40001);
+        server.config.subagent = { ...(server.config.subagent ?? {}), ...patch };
+        return undefined;
+      }
+      case 'configService.replace': {
+        const [domain, value] = args;
+        if (domain === 'fastModel') {
+          if (value === null || value === undefined) delete server.config.fast_model;
+          else server.config.fast_model = value;
+          return undefined;
+        }
+        if (domain === 'subagent') {
+          if (value === null || value === undefined) delete server.config.subagent;
+          else server.config.subagent = structuredClone(value);
+          return undefined;
+        }
+        throw invalid(`fixture: config.replace(${domain}) is not mocked`, 40001);
+      }
       case 'oauthService.getFlow': {
         const [requested] = args;
         const current = server.oauthOverride ?? server.scenario?.data.oauth ?? null;
@@ -481,6 +530,8 @@ export class FixtureKlient {
         const name = target.name ?? target.server?.name ?? 'server';
         return { success: true, output: `fixture probe reached ${name}` };
       }
+      case 'hostFolderBrowser.browse':
+        return browseFolder(server, args[0]);
       case 'workspaceService.list':
         return workspaceItems();
       case 'workspaceService.get': {

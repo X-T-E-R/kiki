@@ -1,7 +1,7 @@
 import type {
   ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, EditMessageRequest, ForkSessionRequest,
   PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult,
-  PromptSteerResult, PromptTimingRequest, PromptTimingResult, TurnAbortResponse,
+  PromptSteerResult, PromptTimingRequest, PromptTimingResult, PromptHoldRequest, PromptHoldResult, TurnAbortResponse,
   PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
   QuestionResolveResult, RegenerateMessageRequest, Session,
 } from '@kiki/protocol';
@@ -20,6 +20,7 @@ export interface SessionCommandsFacade {
   move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replace(promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   timing(promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;
+  hold(promptId: string, body: PromptHoldRequest): Promise<PromptHoldResult>;
   steer(promptId: string): Promise<PromptSteerResult>;
   approve(approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult>;
   answer(questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult>;
@@ -52,6 +53,7 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     move: (target, body) => invoke('move', { target, body }),
     replace: (target, body) => invoke('replace', { target, body }),
     timing: (target, body) => invoke('timing', { target, body }),
+    hold: (target, body) => invoke('hold', { target, body }),
     steer: (target) => invoke('steer', { target }),
     approve: (target, body) => invoke('approve', { target, body }),
     answer: (target, body) => invoke('answer', { target, body }),

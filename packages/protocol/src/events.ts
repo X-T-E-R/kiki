@@ -456,6 +456,10 @@ export interface CompactionResult {
    * compatibility.
    */
   readonly droppedCount?: number;
+  readonly strategy?: 'summarize' | 'relay';
+  readonly shapeVersion?: number;
+  readonly reasonCodes?: readonly string[];
+  readonly fallbackFrom?: 'relay' | 'summarize';
 }
 
 export interface ToolUpdate {
@@ -565,6 +569,8 @@ export interface AgentStatusUpdatedEvent {
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly autoCompactTokens?: number;
+  readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
+  readonly contextStrategySource?: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor';
   /** The effective layer; legacy means no auto_compact key was configured. */
   readonly autoCompactSource?: 'session' | 'profile' | 'model' | 'global' | 'legacy';
   readonly effectiveMaxContextTokens?: number;
@@ -586,6 +592,13 @@ export interface SessionMetaUpdatedEvent {
   readonly type: 'session.meta.updated';
   readonly title?: string;
   readonly patch?: Record<string, unknown>;
+}
+
+export interface SessionWorktreeChangedEvent {
+  readonly type: 'session.worktree.changed';
+  readonly worktreeId: string;
+  readonly state: string;
+  readonly inspection?: import('./rest/worktree').WorktreeInspection;
 }
 
 export interface SessionCreatedEvent {
@@ -1144,6 +1157,7 @@ export type AgentEvent =
   | AgentStatusUpdatedEvent
   | AgentDisposedEvent
   | SessionMetaUpdatedEvent
+  | SessionWorktreeChangedEvent
   | SessionCreatedEvent
   | SessionHistoryRewrittenEvent
   | WorkspaceCreatedEvent
@@ -1609,6 +1623,10 @@ export const compactionResultSchema = z.object({
   keptUserMessageCount: z.number().optional(),
   keptHeadUserMessageCount: z.number().optional(),
   droppedCount: z.number().optional(),
+  strategy: z.enum(['summarize', 'relay']).optional(),
+  shapeVersion: z.number().int().positive().optional(),
+  reasonCodes: z.array(z.string()).optional(),
+  fallbackFrom: z.enum(['relay', 'summarize']).optional(),
 }) satisfies z.ZodType<CompactionResult>;
 
 export const toolUpdateSchema = z.object({
@@ -1700,6 +1718,8 @@ export const agentStatusUpdatedEventSchema = z.object({
   thinkingEffort: z.string().optional(),
   contextTokens: z.number().optional(),
   maxContextTokens: z.number().optional(),
+  contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
+  contextStrategySource: z.enum(['session', 'profile', 'global', 'default', 'subagent', 'executor']).optional(),
   contextUsage: z.number().optional(),
   planMode: z.boolean().optional(),
   swarmMode: z.boolean().optional(),
@@ -1718,6 +1738,16 @@ export const sessionMetaUpdatedEventSchema = z.object({
   title: z.string().optional(),
   patch: z.record(z.string(), z.unknown()).optional(),
 }) satisfies z.ZodType<SessionMetaUpdatedEvent>;
+
+export const sessionWorktreeChangedEventSchema = z.object({
+  type: z.literal('session.worktree.changed'),
+  worktreeId: z.string(),
+  state: z.string(),
+  inspection: z.object({
+    inspectedAt: z.number(), failed: z.boolean(), dirtyFiles: z.number(), untrackedFiles: z.number(),
+    aheadOfBase: z.number(), unpushedCommits: z.number(), ignoredNonDisposable: z.array(z.string()), foreignLock: z.string().optional(),
+  }).optional(),
+}) satisfies z.ZodType<SessionWorktreeChangedEvent>;
 
 export const sessionCreatedEventSchema = z.object({
   type: z.literal('event.session.created'),
@@ -2195,6 +2225,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentStatusUpdatedEventSchema,
   agentDisposedEventSchema,
   sessionMetaUpdatedEventSchema,
+  sessionWorktreeChangedEventSchema,
   sessionCreatedEventSchema,
   sessionHistoryRewrittenEventSchema,
   workspaceCreatedEventSchema,

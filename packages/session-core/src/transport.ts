@@ -20,6 +20,8 @@ import type {
   PromptSubmitResult,
   PromptTimingRequest,
   PromptTimingResult,
+  PromptHoldRequest,
+  PromptHoldResult,
   QuestionDismissResult,
   QuestionResolveRequest,
   QuestionResolveResult,
@@ -456,6 +458,8 @@ export interface SessionTransport {
   movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   timingPrompt(sessionId: string, promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;
+  /** Edit hold for a queued prompt (`POST …:hold`); optional for older transports. */
+  holdPrompt?(sessionId: string, promptId: string, body: PromptHoldRequest): Promise<PromptHoldResult>;
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult>;
   resolveApproval(
     sessionId: string,

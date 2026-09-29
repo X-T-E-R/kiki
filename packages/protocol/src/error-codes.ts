@@ -81,6 +81,7 @@ export const ErrorCode = {
   /** named agent profile does not exist in the requested editable scope */
   AGENT_PROFILE_NOT_FOUND: 40422,
   MEMORY_NOT_FOUND: 40423,
+  SSH_HOST_NOT_FOUND: 40424,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -262,6 +263,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.THREAD_NOT_FOUND]: 'thread.not_found',
   [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agent_profile.not_found',
   [ErrorCode.MEMORY_NOT_FOUND]: 'memory.not_found',
+  [ErrorCode.SSH_HOST_NOT_FOUND]: 'ssh.host_not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',

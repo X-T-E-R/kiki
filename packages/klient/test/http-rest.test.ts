@@ -51,6 +51,99 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('posts typed rendered-prompt previews to an encoded agent profile path', async () => {
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/agents/reviewer%2Fcodex/executor-prompt:preview');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ executor: 'codex-app-server', workspace: 'wd-1' });
+      return envelope({ executor: 'codex-app-server', delivery: { requested: 'append', actual: 'append', downgraded: false },
+        blocks: [{ id: 'body', text: 'Review code' }], text: 'Review code' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.agents.previewExecutorPrompt('reviewer/codex', {
+        executor: 'codex-app-server', workspace: 'wd-1',
+      })).resolves.toMatchObject({ blocks: [{ id: 'body', text: 'Review code' }] });
+    } finally {
+      await channel.close();
+    }
+  });
+
+  it('routes managed worktree methods with encoded ids and loss confirmation', async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET',
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      if (url.pathname.endsWith(':gc')) return envelope({ candidates: [] });
+      if (url.pathname.endsWith(':remove')) return envelope({ outcome: 'removed' });
+      if (url.pathname.endsWith(':inspect')) return envelope({ failed: false });
+      if (url.pathname === '/api/worktrees') return envelope({ worktrees: [] });
+      return envelope({ id: 'wt/a' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.worktrees.list({ workspace_id: 'workspace-1', state: 'ready' });
+      await channel.rest.worktrees.get('wt/a');
+      await channel.rest.worktrees.inspect('wt/a');
+      await channel.rest.worktrees.remove('wt/a', { confirmLoss: { dirty: true, ignored: false, unpushed: false } });
+      await channel.rest.worktrees.gc(true);
+      expect(calls).toEqual([
+        { url: '/api/worktrees?workspace_id=workspace-1&state=ready', method: 'GET', body: undefined },
+        { url: '/api/worktrees/wt%2Fa', method: 'GET', body: undefined },
+        { url: '/api/worktrees/wt%2Fa:inspect', method: 'POST', body: {} },
+        { url: '/api/worktrees/wt%2Fa:remove', method: 'POST', body: { confirmLoss: { dirty: true, ignored: false, unpushed: false } } },
+        { url: '/api/worktrees:gc', method: 'POST', body: { dryRun: true } },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
+
+  it('routes SSH management through typed authenticated REST methods', async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
+      if (url.pathname.endsWith(':status')) return envelope({ hostId: 'dev', state: 'idle', generation: 0 });
+      if (url.pathname === '/api/ssh/connection-approval') return envelope({ enabled: init?.method !== 'PUT' });
+      if (url.pathname.includes('/ssh/approvals/')) return envelope({ resolved: true });
+      if (url.pathname.endsWith('/ssh/hosts/dev') && init?.method === 'PUT') return envelope({ host: { id: 'dev', name: 'Dev', source: 'kiki' } });
+      if (url.pathname.endsWith('/ssh/hosts/dev') && init?.method === 'DELETE') return envelope({ removed: true });
+      return envelope({ hosts: [] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'server-token', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.ssh.list('workspace-1');
+      await expect(channel.rest.ssh.upsert('dev', { name: 'Dev', roots: ['/home/tester'] }, 'workspace-1'))
+        .resolves.toMatchObject({ host: { id: 'dev', name: 'Dev' } });
+      await expect(channel.rest.ssh.status('dev')).resolves.toMatchObject({ state: 'idle', generation: 0 });
+      await expect(channel.rest.ssh.connectionApproval()).resolves.toEqual({ enabled: true });
+      await expect(channel.rest.ssh.setConnectionApproval(false)).resolves.toEqual({ enabled: false });
+      await expect(channel.rest.ssh.sessionHosts('session/one')).resolves.toEqual({ hosts: [] });
+      await expect(channel.rest.ssh.addSessionHost('session/one', 'dev')).resolves.toMatchObject({ host: { id: 'dev' } });
+      await expect(channel.rest.ssh.removeSessionHost('session/one', 'dev')).resolves.toEqual({ removed: true });
+      await expect(channel.rest.ssh.submitApproval('session/one', 'approval/one', {
+        decision: 'approved', credential: { password: 'TEST_SECRET', save: 'session' },
+      })).resolves.toEqual({ resolved: true });
+      expect(calls).toEqual([
+        { url: '/api/ssh/hosts?workspace_id=workspace-1', method: 'GET', body: undefined },
+        { url: '/api/ssh/hosts/dev?workspace_id=workspace-1', method: 'PUT', body: { name: 'Dev', roots: ['/home/tester'] } },
+        { url: '/api/ssh/hosts/dev:status', method: 'GET', body: undefined },
+        { url: '/api/ssh/connection-approval', method: 'GET', body: undefined },
+        { url: '/api/ssh/connection-approval', method: 'PUT', body: { enabled: false } },
+        { url: '/api/sessions/session%2Fone/ssh/hosts', method: 'GET', body: undefined },
+        { url: '/api/sessions/session%2Fone/ssh/hosts/dev', method: 'PUT', body: {} },
+        { url: '/api/sessions/session%2Fone/ssh/hosts/dev', method: 'DELETE', body: undefined },
+        { url: '/api/sessions/session%2Fone/ssh/approvals/approval%2Fone', method: 'POST',
+          body: { decision: 'approved', credential: { password: 'TEST_SECRET', save: 'session' } } },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('reads built-in skill content by name without passing its URI to the file endpoint', async () => {
     const fetchMock = vi.fn(async (input: string | URL) => {
       expect(new URL(String(input)).pathname).toBe('/api/skills/kiki%2Fops:content');
@@ -92,6 +185,32 @@ describe('HTTP REST domains', () => {
     const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'server-token', fetch: fetchMock as typeof fetch });
     try {
       await expect(channel.rest.providers.probe(draft)).resolves.toEqual({ ok: true, models: ['claude-example'] });
+    } finally {
+      await channel.close();
+    }
+  });
+
+  it('routes saved provider tests, health history and executor listings over authenticated REST', async () => {
+    const seen: Array<{ path: string; method: string; body: unknown }> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
+      const path = new URL(String(input)).pathname;
+      seen.push({ path, method: init?.method ?? 'GET',
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      return envelope(path === '/api/executors' ? { items: [] }
+        : path.endsWith(':health') ? { items: [] }
+          : { provider_id: 'gateway/one', ok: true, checked_at: 1, duration_ms: 1 });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'server-token', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.providers.test('gateway/one');
+      await channel.rest.providers.health();
+      await channel.rest.executors.list();
+      expect(seen).toEqual([
+        { path: '/api/providers/gateway%2Fone:test', method: 'POST', body: {} },
+        { path: '/api/providers:health', method: 'GET', body: undefined },
+        { path: '/api/executors', method: 'GET', body: undefined },
+      ]);
     } finally {
       await channel.close();
     }

@@ -29,6 +29,13 @@ import { chromium } from 'playwright';
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { selectProofOutput } from './visual-proof-options.mjs';
 import { assertTimelineIntegrity, drainTimeline, installTimelineMonitor } from './timeline-integrity.mjs';
+import { createContextCompactWalker } from './visual-proof-context-compact.mjs';
+import { createCapabilitiesWalker } from './visual-proof-capabilities.mjs';
+import { createProfileEditorWalker } from './visual-proof-profile-editor.mjs';
+import { createModelsPageWalker } from './visual-proof-models-page.mjs';
+import { createSettingsIaWalker } from './visual-proof-settings-ia.mjs';
+import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
+import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
 
 /**
  * Scenarios whose walk exercises the transcript list (streaming, folding,
@@ -185,8 +192,8 @@ const STRINGS = {
     workspaceRenameTitle: 'Rename workspace',
     removeButton: 'Unregister',
     save: 'Save',
-    onePromptQueued: '1 prompt queued',
-    queueBarPattern: /prompts? queued/,
+    onePromptQueued: '1 queued',
+    queueBarPattern: /\d+ queued/,
     // A user stop renders as ONE tail line ("Stopped by you · Resume").
     promptAborted: 'Stopped by you',
     archiveDownloaded: 'Session archive downloaded.',
@@ -240,7 +247,7 @@ const STRINGS = {
     removeQueued: 'Remove',
     clearQueue: 'Clear all',
     queueClearTitle: 'Clear 1 queued prompts?',
-    twoPromptsQueued: '2 prompts queued',
+    twoPromptsQueued: '2 queued',
     togglePanelAria: 'Toggle panel',
     openMenuAria: 'Open session menu',
     sessionActionsAria: 'Session actions',
@@ -390,8 +397,8 @@ const STRINGS = {
     workspaceRenameTitle: '重命名工作区',
     removeButton: '注销',
     save: '保存',
-    onePromptQueued: '1 条消息已排队',
-    queueBarPattern: /条消息已排队/,
+    onePromptQueued: '1 条排队',
+    queueBarPattern: /\d+ 条排队/,
     promptAborted: '已由你停止',
     archiveDownloaded: '会话归档已下载。',
     undoTitle: '撤销最后一轮？',
@@ -443,7 +450,7 @@ const STRINGS = {
     removeQueued: '移除',
     clearQueue: '全部清除',
     queueClearTitle: '清除 1 条排队消息？',
-    twoPromptsQueued: '2 条消息已排队',
+    twoPromptsQueued: '2 条排队',
     togglePanelAria: '切换面板',
     openMenuAria: '打开会话菜单',
     sessionActionsAria: '会话操作',
@@ -962,34 +969,27 @@ async function scenarioSubagents() {
   }
   const rail = page.locator('[data-session-rail]');
   const railToggle = page.locator('[data-rail-toggle]');
-  // The board launcher lives inside the open session rail only — Esc closes
-  // the rail via the session view's window keydown handler, so never assume
-  // the rail is still open; make every step explicit.
+  // Esc closes the rail via the session view's window keydown handler, so
+  // never assume the rail is still open; make every step explicit.
   const ensureRailOpen = async () => {
     if (await rail.count() === 0) {
       await railToggle.click();
       await rail.waitFor({ timeout: 10_000 });
     }
   };
-  const launcher = page.locator('[data-session-task-board]');
-  // The inspector's board link opens the /board page pre-filtered to this
-  // session's workspace; Back returns to the session.
-  const openBoardFromRail = async () => {
-    await ensureRailOpen();
+  // The board's one entry is the sidebar nav row, pre-filtered to this
+  // session's workspace; the inspector does not repeat it.
+  const launcher = page.locator('aside [data-nav-board]');
+  const openBoardFromNav = async () => {
     await launcher.click();
     await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
     if (!/\/board\?workspace=/.test(page.url())) throw new Error(`board link lost the workspace scope: ${page.url()}`);
     await page.goBack();
     await page.waitForSelector('[data-rail-toggle]', { timeout: 10_000 });
   };
-  await openBoardFromRail();
-  // With the rail closed there must be no rail board entry anywhere (the
-  // sidebar nav row is the global entry).
   await ensureRailOpen();
-  await railToggle.click();
-  if (await rail.count() !== 0) throw new Error('rail did not close');
-  if (await launcher.count() !== 0) throw new Error('board launcher leaked outside the rail');
-  await openBoardFromRail();
+  if (await rail.locator('[data-session-task-board]').count() !== 0) throw new Error('inspector still repeats the board link');
+  await openBoardFromNav();
   await ensureRailOpen();
   await page.locator('[data-subagent-id="agent-research"]').click();
   // Subagent panels open as preview-workspace tabs by default — no route change.
@@ -1007,21 +1007,23 @@ async function scenarioSubagents() {
     await page.locator('[data-agent-rail-toggle]').click();
     await rail.waitFor({ timeout: 5_000 });
   }
-  await launcher.scrollIntoViewIfNeeded();
-  const launcherBox = await launcher.boundingBox();
+  // The narrow rail's tail (folded setup / session rows) stays inside it.
+  const tail = rail.locator('[data-inspector-tail]');
+  await tail.scrollIntoViewIfNeeded();
+  const tailBox = await tail.boundingBox();
   const railBox = await rail.boundingBox();
-  if (launcherBox === null || railBox === null
-    || launcherBox.x < railBox.x - 1 || launcherBox.y < railBox.y - 1
-    || launcherBox.x + launcherBox.width > railBox.x + railBox.width + 1
-    || launcherBox.y + launcherBox.height > railBox.y + railBox.height + 1) {
-    throw new Error('narrow rail board launcher is not contained in the rail');
+  if (tailBox === null || railBox === null
+    || tailBox.x < railBox.x - 1 || tailBox.y < railBox.y - 1
+    || tailBox.x + tailBox.width > railBox.x + railBox.width + 1
+    || tailBox.y + tailBox.height > railBox.y + railBox.height + 1) {
+    throw new Error('narrow rail tail is not contained in the rail');
   }
   await page.locator('[data-agent-panel-scroll]').evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);
   await shot('subagents-relief-narrow');
-  await launcher.click();
+  await page.goto(page.url().replace(/\/s\/[^?]+/, '/board'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
-  console.log('[check] narrow rail board link opened the /board page');
+  console.log('[check] narrow viewport opened the /board page');
   await page.waitForTimeout(400);
   await shot('board-page-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -1036,10 +1038,15 @@ async function scenarioSubagents() {
 
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
-  // Goal state floats above the composer as its own card; the right rail no
-  // longer carries the objective as resident prose.
+  // Goal state is the composer card's top row whose detail expands in the
+  // card; the right rail no longer carries the objective as resident prose.
+  const goalTab = page.locator('[data-composer-header] [data-header-toggle="goal"]');
+  await goalTab.waitFor({ timeout: 10_000 });
+  if (!((await goalTab.innerText()).includes('Prepare the release evidence bundle'))) {
+    throw new Error('composer row must name the goal objective');
+  }
+  await openGoalDrawer();
   const goalCard = page.locator('[data-goal-card]');
-  await goalCard.waitFor({ timeout: 10_000 });
   const initialGoalCardText = await goalCard.textContent();
   if (initialGoalCardText === null || !initialGoalCardText.includes('Prepare the release evidence bundle')) {
     throw new Error(`goal card must be visible on load, got "${initialGoalCardText}"`);
@@ -1073,10 +1080,11 @@ async function scenarioGoalSwarm() {
   // The card tracks the goal as it evolves — the updated objective and the
   // follow-up timing stay visible without reopening anything.
   await page.waitForFunction(
-    () => document.querySelector('[data-goal-card]')?.textContent?.includes('Ship the fixture release') === true,
+    () => document.querySelector('[data-header-toggle="goal"]')?.textContent?.includes('Ship the fixture release') === true,
     undefined,
     { timeout: 10_000 },
   );
+  await openGoalDrawer();
   const goalCardText = await goalCard.textContent();
   if (goalCardText === null || !goalCardText.includes(S.goalFollowUpSubagents)) {
     throw new Error(`goal card must trace the follow-up timing, got "${goalCardText}"`);
@@ -1087,9 +1095,9 @@ async function scenarioGoalSwarm() {
 
 async function scenarioGoalQueue() {
   await selectSession('Fixture: goal + queue');
-  // The goal rides above the composer as a card with its follow-up timing.
+  // The goal rides in the composer's top row; its detail shows the follow-up.
+  await openGoalDrawer();
   const card = page.locator('[data-goal-card]');
-  await card.waitFor({ timeout: 10_000 });
   const cardText = await card.textContent();
   if (cardText === null || !cardText.includes('Prepare the release evidence bundle')) {
     throw new Error(`goal card must show the objective, got "${cardText}"`);
@@ -1103,12 +1111,14 @@ async function scenarioGoalQueue() {
   await shot('goal-queue-recovery-hold');
   await hold.locator(`button:has-text("${S.queueRecoveredDismiss}")`).click();
   await page.waitForSelector('[data-recovery-hold]', { state: 'detached', timeout: 5000 });
-  // The strip defaults to expanded, so each queued row's own append-timing
-  // dropdown is reachable directly; the fixture seeds them differently.
+  // The queue rests as row text; open its detail, then each row's own
+  // append-timing dropdown sits in the row's hover-revealed action group.
+  // The fixture seeds the two rows differently.
+  await openQueueStrip();
   const changelog = page.locator('select[data-timing-picker="prompt_fx_gq_changelog"]');
   const artifacts = page.locator('select[data-timing-picker="prompt_fx_gq_artifacts"]');
-  await changelog.waitFor({ timeout: 10_000 });
-  await artifacts.waitFor({ timeout: 10_000 });
+  await changelog.waitFor({ state: 'attached', timeout: 10_000 });
+  await artifacts.waitFor({ state: 'attached', timeout: 10_000 });
   if ((await changelog.inputValue()) !== 'agent_idle') {
     throw new Error(`changelog row must start on agent_idle, got "${await changelog.inputValue()}"`);
   }
@@ -1118,6 +1128,7 @@ async function scenarioGoalQueue() {
   // Re-time the first row: the select is React-controlled, so its value snaps
   // back until the fixture's revision bump lands; the row action also disables
   // the select while the round trip is pending. Poll for both settled signals.
+  await page.locator('[data-queue-item="prompt_fx_gq_changelog"]').hover();
   await changelog.selectOption('tasks_done');
   await page.waitForFunction(
     () => {
@@ -1254,6 +1265,32 @@ async function scenarioBusyRail() {
   await waitForText('fixture build (vite)');
   await page.waitForTimeout(500);
   await shot('busy-rail');
+}
+
+async function scenarioRailScale() {
+  // A 65-agent, three-level fleet: approvals from nested workers bubble to the
+  // rail's top and resolve in place; the roster stays grouped and folded.
+  await selectSession('Fixture: agent fleet');
+  await openInspector();
+  const items = page.locator('[data-needs-you-item]');
+  await items.first().waitFor({ timeout: 15_000 });
+  if (await items.count() !== 2) throw new Error(`expected 2 bubbled approvals, got ${await items.count()}`);
+  const summary = page.locator('[data-roster-summary]');
+  await summary.waitFor({ timeout: 10_000 });
+  for (const [bucket, expected] of Object.entries({ waiting: 2, running: 16, failed: 6, done: 41 })) {
+    const count = await summary.locator(`[data-roster-filter="${bucket}"]`).getAttribute('data-roster-count');
+    if (count !== String(expected)) throw new Error(`roster summary ${bucket} count wrong: ${count} (expected ${expected})`);
+  }
+  await page.locator('[data-roster-toggle="agent-docs"]').click();
+  await page.waitForTimeout(300);
+  await shot('rail-scale');
+  await page.locator('[data-needs-you-approve="approval_fleet_api"]').click();
+  await page.locator('[data-needs-you-item="approval_fleet_api"]').waitFor({ state: 'detached', timeout: 10_000 });
+  await selectSession('Fixture: idle overview');
+  await openInspector();
+  await page.locator('[data-inspector-overview]').waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('rail-scale-idle');
 }
 
 async function scenarioLongTranscript() {
@@ -1535,7 +1572,9 @@ async function scenarioComposerModes() {
   await wizard.waitFor({ timeout: 10_000 });
   await page.waitForTimeout(450);
   await shot('composer-onboarding-welcome-dark-1440');
-  for (let step = 0; step < 3; step += 1) {
+  // Walk forward until the permissions step (welcome → appearance → model →
+  // workspace → permissions); a step count would break when a step is added.
+  for (let step = 0; step < 6 && await wizard.locator('[data-permission-choice]').count() === 0; step += 1) {
     await wizard.locator('button[data-autofocus]').last().click();
     await page.waitForTimeout(350);
   }
@@ -1875,13 +1914,14 @@ async function scenarioSettings() {
   await shot('settings-plugins-uninstall');
   await page.locator('[role="alertdialog"]').getByRole('button', { name: S.cancel, exact: true }).click();
 
-  // Automation leaf: tool policy plus the raw hooks editor.
-  await page.locator('nav [data-settings-nav-leaf="automation"]').click();
+  // Permissions leaf (IA v2): default mode, reviewer, tool policy. Hooks have their own leaf.
+  await page.locator('nav [data-settings-nav-leaf="permissions"]').click();
   await page.waitForSelector('#st-card-tools', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
-  await page.waitForSelector('#st-card-hooks', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-automation');
+  await page.locator('nav [data-settings-nav-leaf="hooks"]').click();
+  await page.waitForSelector('#st-card-hooks', { timeout: 10_000 });
 
   // Legacy redirect proof (redesign §10.2 rule 3): the retired capabilities
   // section still resolves — a precise card hash follows the card across the
@@ -1985,11 +2025,11 @@ async function scenarioSettingsSearch() {
 }
 
 async function scenarioSettingsWrite() {
-  const generalUrl = `${WEB_URL}/settings/ai?tab=defaults&server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
-  const tasksUrl = `${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const generalUrl = `${WEB_URL}/settings/permissions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const tasksUrl = `${WEB_URL}/settings/sessions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   await page.goto(generalUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-permission-defaults', { timeout: 10_000 });
-  const permissionModeGroup = page.locator('#st-card-permission-defaults [role="group"][aria-labelledby="default-permission-mode-label"]');
+  const permissionModeGroup = page.locator('#st-card-permission-defaults [role="group"]');
   const permissionPending = page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/config');
   await permissionModeGroup.getByRole('button', { name: S.permissionModeAuto, exact: true }).click();
@@ -2044,7 +2084,7 @@ async function scenarioSettingsWrite() {
     throw new Error(`server defaults did not survive general reload: mode=${persistedGeneral.data?.default_permission_mode} plan=${persistedGeneral.data?.default_plan_mode} code=${persistedGeneral.code}`);
   }
   await page.waitForFunction(({ auto }) => {
-    const group = document.querySelector('#st-card-permission-defaults [role="group"][aria-labelledby="default-permission-mode-label"]');
+    const group = document.querySelector('#st-card-permission-defaults [role="group"]');
     const button = [...(group?.querySelectorAll('button') ?? [])].find((node) => node.textContent?.trim() === auto);
     return button?.getAttribute('aria-pressed') === 'true';
   }, { auto: S.permissionModeAuto }, { timeout: 10_000 });
@@ -2082,7 +2122,7 @@ async function scenarioSettingsInvalid() {
   // Client-side validation with no server round-trip: the plan-enter approval
   // timeout floor (5s) rejects an under-floor draft on Save, retains it for
   // correction, and Discard restores the server-known value.
-  await page.goto(`${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/sessions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-defaults', { timeout: 10_000 });
@@ -2113,14 +2153,12 @@ async function scenarioSettingsBrowserEditable() {
   });
   const mainAgents = page.locator('#st-card-main-agents');
   await mainAgents.waitFor({ state: 'visible', timeout: 10_000 });
-  await mainAgents.locator('[data-agent-list-item="reviewer"]').click();
-  await mainAgents.getByRole('tab', { name: 'Instructions' }).click();
-  const editor = mainAgents.locator('[data-agent-detail="reviewer"] textarea');
+  await mainAgents.locator('[data-team-open="reviewer"]').click();
+  const editor = page.locator('[data-agent-detail="reviewer"] #profile-prompt');
   await editor.waitFor({ state: 'visible', timeout: 10_000 });
   if (await editor.isDisabled()) {
     throw new Error('browser agent editor remained disabled after the server response');
   }
-  await mainAgents.scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('settings-browser-editable');
 }
@@ -2193,10 +2231,10 @@ async function scenarioSettingsAgents() {
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('#st-card-main-agents [data-agent-list-item="agent"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-agent-detail="agent"]', { timeout: 10_000 });
-  if (!(await page.locator('[data-agent-detail="agent"] h3').textContent())?.includes('Kiki')) {
-    throw new Error('the default agent must display as Kiki in the unified list');
+  // Team table + editor sheet (the full walk lives in the profile-editor scenario).
+  await page.waitForSelector('#st-card-main-agents [data-team-row="agent"]', { timeout: 10_000 });
+  if (!(await page.locator('[data-team-open="agent"]').textContent())?.includes('Kiki')) {
+    throw new Error('the default agent must display as Kiki in the team table');
   }
   if (await page.locator('#st-card-subagent-profiles').count()) {
     throw new Error('a separate subagent list must not render on the Agents leaf');
@@ -2204,42 +2242,43 @@ async function scenarioSettingsAgents() {
   await shot('settings-agents-main');
 
   const list = page.locator('#st-card-main-agents');
-  await list.getByRole('button', { name: 'Subagent', exact: true }).click();
-  await page.waitForSelector('[data-agent-list-item="reviewer"]', { timeout: 5000 });
-  if (await list.locator('[data-agent-list-item="agent"]').count()) {
+  await list.locator('[data-team-filter="subagent"]').click();
+  await page.waitForSelector('[data-team-row="reviewer"]', { timeout: 5000 });
+  if (await list.locator('[data-team-row="agent"]').count()) {
     throw new Error('the Subagent filter must hide main agents');
   }
-  await list.locator('[data-agent-list-item="reviewer"]').click();
-  await list.getByRole('tab', { name: 'Instructions' }).click();
+  await shot('settings-agents-filtered');
+  await list.locator('[data-team-open="reviewer"]').click();
+  const prompt = page.locator('[data-agent-detail="reviewer"] #profile-prompt');
+  await prompt.waitFor({ timeout: 5000 });
   await shot('settings-agents-instructions');
-  const prompt = list.locator('[data-agent-detail="reviewer"] textarea');
   const savedPrompt = await prompt.inputValue();
   await prompt.fill(`${savedPrompt}\nVisual proof unsaved draft`);
-  await list.getByRole('button', { name: 'Main', exact: true }).click();
+  await page.locator('[role="dialog"] [data-agent-back]').click();
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
   await shot('settings-agents-dirty-guard');
   await page.click(`text=${S.dirtyDiscard}`);
-  await list.locator('[data-agent-list-item="agent"]').waitFor({ timeout: 5000 });
-  await shot('settings-agents-filtered');
+  await page.waitForSelector('[data-profile-editor]', { state: 'detached', timeout: 5000 });
 
-  await list.getByRole('button', { name: 'New agent' }).click();
+  await list.locator('[data-team-filter="all"]').click();
+  await list.locator('[data-profile-new]').click();
   await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
-  for (const template of ['Implementer', 'Reviewer', 'Duplicate current']) {
-    if (!(await list.getByRole('button', { name: template, exact: true }).isVisible())) {
-      throw new Error(`missing agent creation template: ${template}`);
-    }
+  for (const start of ['copy', 'template', 'blank']) {
+    if (!(await page.locator(`[data-new-start="${start}"]`).isVisible())) throw new Error(`missing agent creation start: ${start}`);
   }
-  await list.locator('[data-agent-create] input:not([type])').fill('visual-proof-helper');
-  await list.locator('[data-agent-create] textarea').first().fill('Visual proof agent');
-  await list.locator('[data-agent-create] textarea').last().fill('Help the user.');
+  await page.locator('[data-new-start="blank"]').click();
+  await page.locator('#new-profile-name').fill('visual-proof-helper');
+  await page.locator('#new-profile-description').fill('Visual proof agent');
+  await page.locator('#new-profile-prompt').fill('Help the user.');
   await page.waitForTimeout(300); // let the Save button's colour transition settle
   await shot('settings-agents-new');
-  await list.getByRole('button', { name: 'Discard changes' }).click();
-  await list.getByRole('button', { name: 'All', exact: true }).click();
-  await list.locator('[data-agent-list-item="reviewer"]').click();
-  await list.getByRole('tab', { name: 'Advanced' }).click();
-  await page.waitForSelector('[data-agent-profile="reviewer"]', { timeout: 5000 });
+  await page.locator('[role="dialog"] [data-agent-back]').click();
+  await page.click(`text=${S.dirtyDiscard}`).catch(() => undefined);
+  await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
+  await list.locator('[data-team-open="reviewer"]').click();
+  await page.locator('[data-profile-section="advanced"] > summary').click();
   await shot('settings-agents-advanced');
+  await page.locator('[role="dialog"] [data-agent-back]').click();
   await resizeViewport(390);
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflows) throw new Error('unified agents settings overflow the mobile viewport');
@@ -2254,7 +2293,7 @@ async function scenarioSettingsAgents() {
   }
   await shot('settings-agents-subagent-rules');
 
-  await page.goto(`${WEB_URL}/settings/ai?tab=defaults&server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/permissions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-reviewer', { timeout: 10_000 });
@@ -2309,13 +2348,15 @@ async function scenarioSettingsShipped() {
   // Managed copies now live in the same Agents list as main agents. The
   // governance leaf retains only the server-wide default target and limits.
   await page.locator('nav [data-settings-nav-leaf="agents"]').click();
-  await page.waitForSelector('#st-card-main-agents [data-agent-list-item="general"]', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-main-agents [data-team-row="general"]', { timeout: 10_000 });
   const tombstone = page.locator('#st-card-main-agents [data-shipped-removed="plan"]');
   await tombstone.waitFor({ timeout: 5000 });
   await tombstone.getByText(S.shippedBadgeRemoved, { exact: true }).waitFor({ timeout: 5000 });
-  await page.locator('[data-agent-list-item="general"]').click();
-  await page.locator('#st-card-main-agents').getByRole('tab', { name: 'Advanced' }).click();
-  const generalRow = page.locator('#st-card-main-agents [data-agent-profile="general"]');
+  await page.waitForTimeout(500); // let the catalog refetch settle before opening a row
+  await page.locator('[data-team-open="general"]').click();
+  await page.waitForSelector('[data-agent-detail="general"]', { timeout: 5000 });
+  await shot('settings-subagents-shipped-open');
+  const generalRow = page.locator('[data-agent-detail="general"]');
   await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
   await generalRow.getByText(S.shippedBadgeModified, { exact: true }).waitFor({ timeout: 5000 });
   await shot('settings-subagents-shipped');
@@ -2333,6 +2374,8 @@ async function scenarioSettingsShipped() {
   await dialog.locator('button', { hasText: S.shippedRestore }).click();
   await generalRow.locator('[data-shipped-status="clean"]').waitFor({ timeout: 5000 });
   await page.getByText(S.shippedRestored, { exact: false }).waitFor({ timeout: 5000 });
+  await generalRow.locator('[data-agent-back]').click();
+  await page.waitForSelector('[data-profile-editor]', { state: 'detached', timeout: 5000 });
 
   await page.locator('nav [data-settings-nav-leaf="subagents"]').click();
   await page.waitForSelector('#st-card-subagent-default-target', { timeout: 5000 });
@@ -2738,6 +2781,35 @@ async function scenarioResponsive() {
   }
 }
 
+/**
+ * Queue rows rest as one summary line tucked behind the composer and keep
+ * their actions in a hover-revealed group: open the strip when it is folded,
+ * then point at the row the way a user would before reaching its action.
+ */
+async function queueRowAction(row, label) {
+  await openQueueStrip();
+  await row.hover();
+  return row.locator(`button[aria-label="${label}"]`);
+}
+
+/** The queue's rows grow inside the composer card: open them from the row. */
+async function openQueueStrip() {
+  const tab = page.locator('[data-composer-header] [data-header-toggle="queue"]');
+  if ((await tab.getAttribute('aria-expanded')) !== 'true') await tab.click();
+  await page.locator('[data-queue-strip]').waitFor({ state: 'visible', timeout: 5000 });
+  // Let the detail's rise land before a row is hovered or shot.
+  await page.waitForTimeout(500);
+}
+
+/** The goal's detail grows inside the composer card: open it from the row. */
+async function openGoalDrawer() {
+  const tab = page.locator('[data-composer-header] [data-header-toggle="goal"]');
+  await tab.waitFor({ timeout: 10_000 });
+  if ((await tab.getAttribute('aria-expanded')) !== 'true') await tab.click();
+  await page.locator('[data-goal-card]').waitFor({ state: 'visible', timeout: 5000 });
+  await page.waitForTimeout(500);
+}
+
 async function scenarioQueue() {
   await selectSession('Fixture: queue');
   await sendPrompt('A: hold the floor.');
@@ -2775,7 +2847,7 @@ async function scenarioQueue() {
   await sendPrompt('B: cancel me.');
   await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   const cancelRow = page.locator('[data-queue-strip] li', { hasText: 'B: cancel me.' });
-  await cancelRow.locator(`button[aria-label="${S.removeQueued}"]`).click();
+  await (await queueRowAction(cancelRow, S.removeQueued)).click();
   await cancelRow.locator(`button[aria-label="${S.queueRemoveConfirm}"]`).click();
   await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
   if ((await page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: cancel me.' }).count()) !== 0) {
@@ -2798,51 +2870,62 @@ async function scenarioQueue() {
   await sendPrompt('B: steer me in.');
   // Back-to-back queueing must wait out the previous send's draft clear,
   // otherwise the next fill is wiped before Enter fires.
-  await page.waitForSelector('[data-queue-strip] li', { timeout: 10_000 });
+  await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
   await sendPrompt('C: clear me out.');
   await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
+  await openQueueStrip();
   const strip = page.locator('[data-queue-strip]');
   if ((await strip.locator('li').count()) !== 2) {
     throw new Error(`expected 2 queue-strip rows, saw ${await strip.locator('li').count()}`);
   }
-  // Multi-prompt default: the rows stay expanded under the count header…
-  const collapseToggle = strip.locator(`button[aria-label="${S.queueExpandAria}"]`);
-  if ((await collapseToggle.getAttribute('aria-expanded')) !== 'true') {
-    throw new Error('queue strip did not default to expanded with 2 prompts');
+  // At rest the queue is text in the composer's top row ("2 queued");
+  // its rows expand inside the card and collapse again on Escape.
+  const queueTab = page.locator('[data-composer-header] [data-header-toggle="queue"]');
+  // The detail stays as the user left it (the cancel step above opened it);
+  // Escape from its half collapses it back to the resting row.
+  if ((await queueTab.getAttribute('aria-expanded')) === 'true') {
+    await queueTab.focus();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+  }
+  if ((await queueTab.getAttribute('aria-expanded')) !== 'false') {
+    throw new Error('queue detail did not default to collapsed');
+  }
+  if (!((await queueTab.innerText()).includes(S.twoPromptsQueued))) {
+    throw new Error('composer row does not carry the queue count');
+  }
+  await page.waitForTimeout(400);
+  await shot('queue-collapsed');
+  await openQueueStrip();
+  if ((await queueTab.getAttribute('aria-expanded')) !== 'true') {
+    throw new Error('queue half did not expand its rows');
   }
   if ((await strip.locator('li:visible').count()) !== 2) {
-    throw new Error('expanded queue strip hid its rows');
+    throw new Error('expanded queue detail hid its rows');
   }
   // Let the rows' anim-enter fade finish before the shot.
   await page.waitForTimeout(600);
   await shot('queue-two-rows');
-  // …and the header collapses them on demand, then expands them again.
-  await collapseToggle.click();
-  if ((await collapseToggle.getAttribute('aria-expanded')) !== 'false') {
-    throw new Error('queue strip toggle did not collapse');
-  }
-  if ((await strip.locator('li:visible').count()) !== 0) {
-    throw new Error('collapsed queue strip still shows rows');
-  }
-  await shot('queue-collapsed');
-  await collapseToggle.click();
-  if ((await strip.locator('li:visible').count()) !== 2) {
-    throw new Error('queue strip toggle did not re-expand the rows');
-  }
 
   // Edit round-trip: the row's Edit parks its text in the composer (banner +
   // confirm icon + row badge), Enter replaces the prompt AT ITS SLOT.
-  await strip.locator('li', { hasText: 'C: clear me out.' })
-    .locator(`button[aria-label="${S.queueEditRowAria}"]`)
-    .click();
+  await (await queueRowAction(strip.locator('li', { hasText: 'C: clear me out.' }), S.queueEditRowAria)).click();
   await page.waitForFunction(() => document.querySelector('textarea')?.value === 'C: clear me out.');
   await page.waitForSelector(`text=${S.queueEditBanner}`, { timeout: 5000 });
   if ((await page.locator(`button[aria-label="${S.queueEditConfirmAria}"]`).count()) !== 1) {
     throw new Error('composer send button did not switch to the queue-edit confirm');
   }
-  if ((await strip.locator('li', { hasText: S.queueEditingBadge }).count()) !== 1) {
-    throw new Error('edited row did not pick up the editing badge');
+  if ((await strip.locator('li [data-queue-edit-status]').count()) !== 1) {
+    throw new Error('edited row did not pick up its editing status');
+  }
+  // Edit hold: C (#2) is edited, so B (#1, ahead) still sends as usual and
+  // the notice says so; nothing sits behind C.
+  if ((await strip.locator('[data-queue-hold-notice]').count()) !== 1) {
+    throw new Error('queue detail did not explain the edit hold');
+  }
+  if ((await strip.locator('[data-queue-waits-hint]').count()) !== 0) {
+    throw new Error('a row ahead of the edit was marked as waiting');
   }
   // The banner and badge mount with anim-enter — let the fade land.
   await page.waitForTimeout(300);
@@ -2893,9 +2976,7 @@ async function scenarioQueue() {
   // Send now (wire steer): B leaves the queue immediately while A keeps
   // running; the strip drops to one row and B's user block lands in the
   // transcript. C stays parked without any transcript trace.
-  await strip.locator('li', { hasText: 'B: steer me in.' })
-    .locator(`button[aria-label="${S.sendNow}"]`)
-    .click();
+  await (await queueRowAction(strip.locator('li', { hasText: 'B: steer me in.' }), S.sendNow)).click();
   await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   if ((await strip.locator('li').count()) !== 1) throw new Error('steered prompt stayed in the strip');
   const steeredBlock = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: steer me in.' });
@@ -2909,6 +2990,7 @@ async function scenarioQueue() {
 
   // Clear all empties the queue: confirm the dialog, then the strip and the
   // bar disappear; the cleared prompt never touches the transcript.
+  await openQueueStrip();
   await page.getByRole('button', { name: S.clearQueue }).click();
   const clearDialog = page.getByRole('alertdialog', { name: S.queueClearTitle });
   await clearDialog.waitFor({ timeout: 5000 });
@@ -2925,13 +3007,12 @@ async function scenarioQueue() {
   // Two-step remove: the first click only arms the row's Remove ("Remove?"),
   // the second actually drops the parked prompt.
   await sendPrompt('B: remove me.');
-  await page.waitForSelector('[data-queue-strip] li', { timeout: 10_000 });
+  await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
   await sendPrompt('C: remove me too.');
   await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
-  // The strip defaults to expanded, so the row actions are directly reachable.
   const removeRow = strip.locator('li', { hasText: 'B: remove me.' });
-  await removeRow.locator(`button[aria-label="${S.removeQueued}"]`).click();
+  await (await queueRowAction(removeRow, S.removeQueued)).click();
   // Armed, not executed: both rows are still there and the button now asks.
   await page.waitForSelector(`button[aria-label="${S.queueRemoveConfirm}"]`, { timeout: 5000 });
   if ((await strip.locator('li').count()) !== 2) {
@@ -2950,6 +3031,7 @@ async function scenarioQueue() {
   }
   await shot('queue-remove-confirmed');
   // Leave the session clean: clear the leftover row, then release the floor.
+  await openQueueStrip();
   await page.getByRole('button', { name: S.clearQueue }).click();
   const tailClearDialog = page.getByRole('alertdialog', { name: S.queueClearTitle });
   await tailClearDialog.waitFor({ timeout: 5000 });
@@ -3034,7 +3116,7 @@ async function scenarioBurst() {
   // after the storm, so B deterministically lands in the server queue). A
   // queued prompt shows in the strip only — never in the transcript.
   try {
-    await page.waitForSelector('[data-queue-strip] li', { timeout: 30_000 });
+    await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 30_000 });
   } catch (error) {
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
@@ -4284,6 +4366,59 @@ async function scenarioContextRing() {
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
 }
 
+/** Settings IA v2: nav blocks, owned pages, storage line, search, redirects (scripts/visual-proof-settings-ia.mjs). */
+async function scenarioSettingsIa() {
+  const walk = createSettingsIaWalker({
+    page, shot, resizeViewport, setProofTheme,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
+/** Agents team view + profile editor (scripts/visual-proof-profile-editor.mjs). */
+async function scenarioProfileEditor() {
+  const walk = createProfileEditorWalker({
+    page, shot, resizeViewport, setProofTheme, control,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
+/** Settings › Models & providers (scripts/visual-proof-models-page.mjs). */
+const modelsPageWalker = () => createModelsPageWalker({
+  page, shot, resizeViewport, setProofTheme,
+  webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+});
+async function scenarioModelsPage() { await modelsPageWalker().populated(); }
+
+/** Worktree isolation: /new opt-in, branch marks, Worktrees card, archive option (scripts/visual-proof-worktrees.mjs). */
+async function scenarioWorktrees() {
+  const walk = createWorktreesWalker({
+    page, shot, resizeViewport, setProofTheme, control,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+  });
+  await walk();
+}
+async function scenarioModelsPageEmpty() { await modelsPageWalker().empty(); }
+
+/** Native SSH: settings, composer hosts, SSH approval cards (scripts/visual-proof-native-ssh.mjs). */
+async function scenarioNativeSsh() {
+  const walk = createNativeSshWalker({
+    page, shot, resizeViewport, setProofTheme, control,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+  });
+  await walk();
+}
+
+/** Automatic-compaction point: panel, model editor, profile editor (scripts/visual-proof-context-compact.mjs). */
+async function scenarioContextCompact() {
+  const walk = createContextCompactWalker({
+    page, shot, selectSession, resizeViewport, setProofTheme, control,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 /**
  * /memory, all three states. Off → the turn-on guide (nav entry present, one
  * switch, no console). On → the entry console: global list, type filter,
@@ -4633,80 +4768,13 @@ async function scenarioI18n() {
 
 // ---------------------------------------------------------------------------
 
-/**
- * /capabilities retired in the batch-3 settings split (redesign §10.2 rule
- * 3): the shim redirects a bare visit to /settings/skills with a split
- * signpost, the relocated catalog still groups/filters/expands, and the MCP
- * restart round-trip now lives on the MCP settings leaf.
- */
+/** /capabilities and the settings Skills / MCP / Plugins leaves (scripts/visual-proof-capabilities.mjs). */
 async function scenarioCapabilities() {
-  const url = `${WEB_URL}/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
-  const skillsUrl = `${WEB_URL}/settings/skills?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#st-card-caps', { timeout: 10_000 });
-  const redirected = page.url();
-  if (!redirected.includes('/settings/skills') || !redirected.includes('from=capabilities')) {
-    throw new Error(`capabilities shim must land on /settings/skills?from=capabilities, got ${redirected}`);
-  }
-  await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
-  // Plugin skill rows (MCP servers live on the MCP leaf after the split).
-  await page.waitForSelector('text=web-research', { timeout: 10_000 });
-  await page.waitForTimeout(400);
-  await shot('capabilities-shim-skills');
-
-  // The builtin group starts collapsed; expand it for the density check.
-  await page.locator('[data-capability-group="builtin"] > button').click();
-  await page.waitForSelector('text=kiki-ops', { timeout: 5000 });
-  await page.waitForTimeout(300);
-  await shot('capabilities-builtin-expanded');
-
-  // Client-side filter with no matches → page-level empty state.
-  await page.fill(`input[aria-label="${S.capFilterAria}"]`, 'zzz-no-match');
-  await page.waitForSelector(`text=${S.capEmptyFilter}`, { timeout: 5000 });
-  await shot('capabilities-filter-empty');
-
-  // MCP restart round-trip (scoped to the status card row — "Restart" is
-  // generic). The flow moved from /capabilities to the MCP settings leaf.
-  await page.goto(`${WEB_URL}/settings/mcp?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
-    waitUntil: 'domcontentloaded',
+  const walk = createCapabilitiesWalker({
+    page, shot, setProofTheme, control,
+    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
   });
-  await page.waitForSelector('#st-card-mcp-status', { timeout: 10_000 });
-  await page.locator('#st-card-mcp-status div.rounded-lg', { hasText: 'fixture-fs' }).locator('button').click();
-  await page.waitForSelector(`text=${S.capRestartRequested}`, { timeout: 5000 });
-  await shot('capabilities-mcp-restart');
-
-  // Mobile width: hamburger header, single-column cards on the skills leaf.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
-  await page.waitForTimeout(400);
-  await shot('capabilities-mobile');
-  await page.setViewportSize({ width: 1440, height: 900 });
-
-  // No workspace registered → quiet hint inside the relocated catalog.
-  await page.route('**/api/workspaces', (route) =>
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({ code: 0, msg: 'success', data: { items: [] }, request_id: 'req_fixture' }),
-    }),
-  );
-  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.capNoWorkspace}`, { timeout: 10_000 });
-  await shot('capabilities-no-workspace');
-  await page.unroute('**/api/workspaces');
-
-  // Workspace listing failure → inline error on the skills leaf.
-  await page.route('**/api/workspaces', (route) =>
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({ code: 50001, msg: 'fixture boom', data: null, request_id: 'req_fixture' }),
-    }),
-  );
-  await page.goto(skillsUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('text=fixture boom', { timeout: 10_000 });
-  await shot('capabilities-load-failed');
-  await page.unroute('**/api/workspaces');
+  await walk();
 }
 
 /**
@@ -4739,11 +4807,15 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(450);
   await shot('onboarding-1-welcome');
 
+  // Welcome → "Make it yours" (theme, palette, picture) → model.
+  await wizardButton(S.onboardingNext).click();
+  await wizard().locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   await wizardButton(S.onboardingNext).click();
   await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
   await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
   await shot('onboarding-2-model-light');
   await shot('onboarding-2-model');
+  // Back to the appearance step for the theme, then forward again.
   await wizardButton(S.onboardingBack).click();
   await wizardButton(LOCALE === 'zh' ? '暗色' : 'Dark').click();
   await wizardButton(S.onboardingNext).click();
@@ -5060,13 +5132,13 @@ async function scenarioSettingsAppearance() {
   // Shared shell on a draft-bearing leaf, clean and dirty.
   for (const [path, label] of [['/settings/general', 'general'], ['/settings/tasks', 'tasks'], ['/settings/ai?tab=providers', 'providers']]) {
     await page.goto(link(path), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-settings-intro]', { timeout: 15_000 });
+    await page.waitForSelector('[data-settings-page-title]', { timeout: 15_000 });
     await page.waitForTimeout(500);
     await shot(`settings-shell-${label}`);
   }
   await setLook('paper', 'dark');
   await page.goto(link('/settings/tasks'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-settings-intro]', { timeout: 15_000 });
+  await page.waitForSelector('[data-settings-page-title]', { timeout: 15_000 });
   await page.waitForTimeout(500);
   await shot('settings-shell-tasks-dark');
 
@@ -5125,6 +5197,7 @@ const SCENARIOS = [
   ['settings-agents', scenarioSettingsAgents],
   ['settings-shipped', scenarioSettingsShipped],
   ['settings-nbsearch', scenarioSettingsNbSearch],
+  ['settings-ia', scenarioSettingsIa],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['selection-annotate', scenarioSelectionAnnotate],
@@ -5137,6 +5210,12 @@ const SCENARIOS = [
   ['thread-relations', scenarioThreadRelations],
   ['activity-inbox', scenarioActivityInbox],
   ['context-ring', scenarioContextRing],
+  ['context-compact', scenarioContextCompact],
+  ['models-page', scenarioModelsPage],
+  ['models-page-empty', scenarioModelsPageEmpty],
+  ['worktrees', scenarioWorktrees],
+  ['native-ssh', scenarioNativeSsh],
+  ['profile-editor', scenarioProfileEditor],
   ['usage-dashboard', scenarioUsageDashboard],
   ['workspace-tools', scenarioWorkspaceTools],
   ['terminal', scenarioTerminal],
@@ -5145,6 +5224,7 @@ const SCENARIOS = [
   ['settings-appearance', scenarioSettingsAppearance],
   ['i18n', scenarioI18n],
   ['rewrite-flow', scenarioRewriteFlow],
+  ['rail-scale', scenarioRailScale],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
   ['responsive', scenarioResponsive],

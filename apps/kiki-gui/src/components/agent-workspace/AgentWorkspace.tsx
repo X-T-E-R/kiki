@@ -47,6 +47,7 @@ import {
 } from '../ConversationShell';
 import { Composer } from '../Composer';
 import type { ContextMeterUsage } from '../ContextMeter';
+import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
 import { Icon } from '../icons';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
@@ -648,6 +649,16 @@ function ChildAgentWorkspace({
   const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
   const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
+  // This agent's own compaction point: a child never inherits its parent's
+  // session override, so the read and write address this agent id.
+  const contextAutoCompact = useContextMeterAutoCompact({
+    sessionId: agentKnown && !agentTerminal ? sessionId : undefined,
+    agentId,
+    modelId: displayModel,
+    modelLabel: resolvedDisplayModel?.display_name ?? displayModel,
+    maxContextTokens: displayMaxContextTokens,
+    running: headerBusy,
+  });
   // The composer footer's context meter is the same one the main session
   // renders; its cumulative card reads THIS agent's projected lifetime totals.
   // Per-agent projections price nothing, so the cost stays unknown (null)
@@ -709,6 +720,7 @@ function ChildAgentWorkspace({
           planMode={false} efforts={supportedEfforts} effort={displayEffort}
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
+          contextAutoCompact={contextAutoCompact}
           sessionUsage={composerUsage} sessionId={sessionId} agentProfileCatalogMode={{ mode: 'disabled' }}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}

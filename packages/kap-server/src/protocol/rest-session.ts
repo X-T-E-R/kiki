@@ -132,6 +132,7 @@ export const compactSessionRequestSchema = z.preprocess(
   (value) => value === undefined ? {} : value,
   z.object({
     instruction: z.string().optional(),
+    strategy: z.enum(['summarize', 'relay']).optional(),
   }),
 );
 export type CompactSessionRequest = z.infer<typeof compactSessionRequestSchema>;

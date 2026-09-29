@@ -1167,6 +1167,33 @@ describe('explicit unknown timing', () => {
     return container;
   }
 
+  it('names a streaming CallTool bridge by the tool it calls, never by the bridge', async () => {
+    // Mid-stream: only the bridge name and a partial argument text exist.
+    const pending = await renderToolCard(toolBlock({
+      toolCallId: 't-bridge-early', name: 'CallTool', status: 'running', args: undefined, argsText: '{"na',
+    }));
+    expect(pending.textContent).not.toContain('CallTool');
+    expect(pending.textContent).toContain('Calling a tool');
+    const streamed = await renderToolCard(toolBlock({
+      toolCallId: 't-bridge', name: 'CallTool', status: 'running', args: undefined,
+      argsText: '{"name":"plugin__kiki-office__office_view","arguments":{"file":"deck.pptx"',
+    }));
+    expect(streamed.textContent).not.toContain('CallTool');
+    expect(streamed.textContent).toContain('office_view');
+    expect(streamed.textContent).not.toContain('plugin__');
+    expect(streamed.querySelector('[title="plugin__kiki-office__office_view"]')).not.toBeNull();
+    expect(streamed.textContent).toContain('deck.pptx');
+    // Once parsed, the bridged object's inner arguments feed the summary.
+    const parsed = await renderToolCard(toolBlock({
+      toolCallId: 't-bridge-done', name: 'CallTool', status: 'done',
+      args: { name: 'mcp__fs__read_file', arguments: { path: 'README.md' } }, argsText: '',
+    }));
+    expect(parsed.textContent).toContain('read_file');
+    expect(parsed.textContent).not.toContain('mcp__fs__');
+    expect(parsed.textContent).toContain('README.md');
+    expect(parsed.textContent).not.toContain('CallTool');
+  });
+
   it('keeps a failed Bash command summary instead of replacing it with the error', async () => {
     const container = await renderToolCard({
       kind: 'tool',
@@ -2550,14 +2577,23 @@ describe('external executor badge', () => {
     const badge = badges[0]!;
     expect(badge.parentElement?.getAttribute('data-block-id')).toBe('user-t1');
     expect(badge.textContent).toContain('Grok · ACP');
-    expect(badge.textContent).toContain('degraded');
-    // Stable loss codes render verbatim; explanations ride the tooltip.
-    expect(badge.textContent).toContain('acp_no_step_boundaries');
-    expect(badge.textContent).toContain('tool_output_summary_only');
-    const titles = [...badge.querySelectorAll('[title]')].map(
-      (el) => el.getAttribute('title') ?? '',
+    // A quiet "Partial record" note: loss codes stay machine data, the
+    // tooltip reads each loss in words.
+    const degraded = badge.querySelector('[data-turn-degraded]');
+    expect(degraded?.textContent).toContain('Partial record');
+    expect(degraded?.getAttribute('data-loss-codes')).toBe('acp_no_step_boundaries tool_output_summary_only');
+    expect(badge.textContent).not.toContain('acp_no_step_boundaries');
+    expect(degraded?.getAttribute('title')).toContain('step boundaries');
+  });
+
+  it('names how the profile instructions reached the engine', async () => {
+    const container = await renderWithExecutions(
+      [userBlock({ id: 'user-t1', text: 'run it', turnId: 't1' })],
+      { t1: { ...execution, executorId: 'claude-acp', profileDelivery: 'first_prompt_preamble', fidelity: 'full', losses: [] } },
     );
-    expect(titles.some((text) => text.includes('step boundaries'))).toBe(true);
+    const badge = container.querySelector('[data-turn-execution]');
+    expect(badge?.textContent).toContain('Claude Code · ACP');
+    expect(badge?.querySelector('[data-turn-delivery]')?.textContent).toContain('instructions sent with the first message');
   });
 
   it('leaves turns without execution metadata unmarked', async () => {
@@ -2575,7 +2611,34 @@ describe('external executor badge', () => {
     );
     const badge = container.querySelector('[data-turn-execution]');
     expect(badge?.textContent).toContain('Grok · ACP');
-    expect(badge?.textContent).not.toContain('degraded');
+    expect(badge?.querySelector('[data-turn-degraded]')).toBeNull();
+  });
+
+  it('renders engine notes in the turn: delivery states, compaction divider, turn diff', async () => {
+    const note = (id: string, executor: NonNullable<Extract<Block, { kind: 'notice' }>['executor']>): Block =>
+      ({ kind: 'notice', id, text: 'executor', tone: 'neutral', turnId: 't1', executor });
+    const container = await renderWithExecutions(
+      [
+        userBlock({ id: 'user-t1', text: 'run it', turnId: 't1' }),
+        note('n-steer', { kind: 'hint', method: 'native_steer', status: 'delivered' }),
+        note('n-queued', { kind: 'hint', method: 'next_turn_preamble', status: 'queued' }),
+        note('n-dropped', { kind: 'hint', method: 'undelivered', status: 'undelivered' }),
+        note('n-compact', { kind: 'compaction' }),
+        note('n-diff', { kind: 'diff', diff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n one\n+two' }),
+      ],
+      {},
+    );
+    expect(container.querySelector('[data-executor-note="hint-delivered"]')?.textContent).toContain('reached the engine during the turn');
+    // Queued is waiting, never delivered.
+    const queued = container.querySelector('[data-executor-note="hint-queued"]')?.textContent ?? '';
+    expect(queued).toContain('waiting');
+    expect(queued).not.toContain('reached');
+    expect(container.querySelector('[data-executor-note="hint-undelivered"]')?.textContent).toContain('not delivered');
+    expect(container.querySelector('[data-executor-note="compaction"]')?.hasAttribute('data-timeline-divider')).toBe(true);
+    const diff = container.querySelector('[data-executor-note="diff"]');
+    expect(diff?.textContent).toContain('Changes this turn');
+    expect(diff?.textContent).toContain('a.ts');
+    expect(diff?.textContent).toContain('+1');
   });
 });
 

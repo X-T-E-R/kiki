@@ -177,6 +177,31 @@ export interface HttpRestFacade {
   } | undefined>;
   usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
 
+  readonly ssh: {
+    list(workspaceId?: string): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
+    discover(): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
+    upsert(id: string, host: import('@kiki/protocol').SshHostInput, workspaceId?: string): Promise<{ readonly host: import('@kiki/protocol').SshHost }>;
+    remove(id: string, workspaceId?: string): Promise<{ readonly removed: true }>;
+    setConfigSync(enabled: boolean): Promise<{ readonly enabled: boolean }>;
+    connectionApproval(): Promise<{ readonly enabled: boolean }>;
+    setConnectionApproval(enabled: boolean): Promise<{ readonly enabled: boolean }>;
+    writeBack(id: string, workspaceId?: string): Promise<{ readonly written: true }>;
+    status(id: string, workspaceId?: string): Promise<import('@kiki/protocol').SshHostStatus>;
+    disconnect(id: string, workspaceId?: string): Promise<{ readonly disconnected: true }>;
+    sessionHosts(sessionId: string): Promise<import('@kiki/protocol').SshSessionHostsResponse>;
+    addSessionHost(sessionId: string, hostId: string): Promise<{ readonly host: import('@kiki/protocol').SshHost }>;
+    removeSessionHost(sessionId: string, hostId: string): Promise<{ readonly removed: true }>;
+    submitApproval(sessionId: string, approvalId: string, body: import('@kiki/protocol').SshApprovalSubmit): Promise<{ readonly resolved: true }>;
+  };
+
+  readonly worktrees: {
+    list(query?: { readonly workspace_id?: string; readonly state?: import('@kiki/protocol').WorktreeRecord['state'] }): Promise<{ readonly worktrees: readonly import('@kiki/protocol').WorktreeRecord[] }>;
+    get(id: string): Promise<import('@kiki/protocol').WorktreeRecord>;
+    inspect(id: string): Promise<import('@kiki/protocol').WorktreeInspection>;
+    remove(id: string, body?: import('@kiki/protocol').WorktreeRemoveRequest): Promise<{ readonly outcome: import('@kiki/protocol').WorktreeRemovalOutcome }>;
+    gc(dryRun: boolean): Promise<{ readonly candidates: readonly { readonly id: string; readonly outcome: import('@kiki/protocol').WorktreeRemovalOutcome }[] }>;
+  };
+
   readonly sessions: {
     list(query?: HttpRestListSessionsQuery): Promise<PageResponse<Session>>;
     create(body: SessionCreate): Promise<Session>;
@@ -245,6 +270,9 @@ export interface HttpRestFacade {
   readonly providers: {
     /** Test unsaved connection fields without writing configuration or discovery state. */
     probe(draft: ProbeProviderRequest, options?: HttpRestRequestOptions): Promise<ProbeProviderResponse>;
+    /** One real inference request against a saved provider; the result is persisted without secrets. */
+    test(providerId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ProviderConnectionTestResult>;
+    health(): Promise<import('@kiki/protocol').ListProviderHealthResponse>;
   };
 
   readonly nbSearch: {
@@ -254,8 +282,13 @@ export interface HttpRestFacade {
     writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
   };
 
+  readonly executors: {
+    list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+  };
+
   readonly agents: {
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
+    previewExecutorPrompt(name: string, body?: import('@kiki/protocol').ExecutorPromptPreviewRequest): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse>;
     create(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     update(name: string, body: UpdateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     /** Shipped (built-in) profile templates: management status and restore-original. */

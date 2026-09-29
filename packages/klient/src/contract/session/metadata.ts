@@ -36,6 +36,10 @@ export const agentMetaSchema = z.object({
   toolCallCount: z.number().int().nonnegative().optional(),
 });
 
+const sessionWorktreeSchema = z.object({
+  worktreeId: z.string(), branch: z.string(), sourceRoot: z.string(), baseRef: z.string(),
+});
+
 export const sessionMetaSchema = z.object({
   id: z.string(),
   version: z.number().optional(),
@@ -47,6 +51,7 @@ export const sessionMetaSchema = z.object({
   archived: z.boolean(),
   archivedAt: z.number().optional(),
   cwd: z.string().optional(),
+  worktree: sessionWorktreeSchema.optional(),
   forkedFrom: z.string().optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
@@ -63,6 +68,7 @@ export const sessionMetaPatchSchema = z.object({
   archived: z.boolean().optional(),
   archivedAt: z.number().optional(),
   cwd: z.string().optional(),
+  worktree: sessionWorktreeSchema.optional(),
   forkedFrom: z.string().optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
@@ -81,6 +87,7 @@ export const sessionMetaKeySchema = z.enum([
   'archived',
   'archivedAt',
   'cwd',
+  'worktree',
   'forkedFrom',
   'agents',
   'custom',

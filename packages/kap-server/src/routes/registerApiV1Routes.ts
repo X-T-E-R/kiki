@@ -12,6 +12,7 @@ import type { TranscriptService } from '../services/transcript/transcriptService
 import type { LeaseRegistry } from '../services/leaseRegistry';
 import { registerAgentProfilesRoute } from './agentProfiles';
 import { registerAutoCompactRoutes } from './autoCompact';
+import { registerContextStrategyRoutes } from './contextStrategy';
 import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
@@ -35,6 +36,7 @@ import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
 import { registerRuntimeRoutes } from './runtime';
 import { registerSearchRoutes } from './search';
+import { registerSshRoutes } from './ssh';
 import { registerSessionMediaRoutes } from './sessionMedia';
 import { registerSessionExportRoute } from './sessionExport';
 import { registerSessionsRoutes } from './sessions';
@@ -43,6 +45,7 @@ import { registerShutdownRoutes } from './shutdown';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
 import { registerSkinsRoutes } from './skins';
+import { registerAppearanceRoutes } from './appearance';
 import { registerTasksRoutes } from './tasks';
 import { registerTerminalsRoutes } from './terminals';
 import { registerToolsRoutes } from './tools';
@@ -50,6 +53,7 @@ import { registerTranscriptRoutes } from './transcript';
 import { registerThreadsRoutes } from './threads';
 import { registerWorkspaceFsRoutes } from './workspaceFs';
 import { registerWorkspacesRoutes } from './workspaces';
+import { registerWorktreeRoutes } from './worktrees';
 import { registerApiV2RouteSet, type RegisterApiV2RoutesOptions } from './registerApiV2Routes';
 
 interface ApiV1AppHost {
@@ -179,6 +183,7 @@ export async function registerApiV1Routes(
         opts.leaseRegistry,
       );
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
+      registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(
         apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],
@@ -191,6 +196,7 @@ export async function registerApiV1Routes(
         core,
         { themesDir: opts.themesDir },
       );
+      registerAppearanceRoutes(apiV1 as unknown as Parameters<typeof registerAppearanceRoutes>[0], core, { themesDir: opts.themesDir });
       registerCapabilitiesRoutes(
         apiV1 as unknown as Parameters<typeof registerCapabilitiesRoutes>[0],
         core,
@@ -208,6 +214,7 @@ export async function registerApiV1Routes(
         },
       );
       registerSearchRoutes(apiV1 as unknown as Parameters<typeof registerSearchRoutes>[0], core);
+      registerSshRoutes(apiV1 as unknown as Parameters<typeof registerSshRoutes>[0], core);
       registerMemoryRoutes(apiV1 as unknown as Parameters<typeof registerMemoryRoutes>[0], core);
       registerCronRoutes(apiV1 as unknown as Parameters<typeof registerCronRoutes>[0], core);
       registerTasksRoutes(apiV1 as unknown as Parameters<typeof registerTasksRoutes>[0], core);
@@ -227,6 +234,7 @@ export async function registerApiV1Routes(
         apiV1 as unknown as Parameters<typeof registerWorkspacesRoutes>[0],
         core,
       );
+      registerWorktreeRoutes(apiV1 as unknown as Parameters<typeof registerWorktreeRoutes>[0], core);
       registerWorkspaceFsRoutes(
         apiV1 as unknown as Parameters<typeof registerWorkspaceFsRoutes>[0],
         core,

@@ -45,7 +45,7 @@ import {
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
 import { ActivityPage } from './components/ActivityPage';
-import { CapabilitiesShim } from './components/CapabilitiesShim';
+import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { ConversationShell } from './components/ConversationShell';
 import { MemoryPage } from './components/MemoryPage';
 import { QuickSwitcher } from './components/QuickSwitcher';
@@ -80,6 +80,7 @@ import {
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences } from './lib/layoutHooks';
+import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
@@ -151,6 +152,7 @@ export function App() {
   // chosen from the themes folder must paint on every route, not only after a
   // visit to Settings → Appearance.
   useUserSkins();
+  useAppearancePacks();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const layoutPrefs = useLayoutPreferences();
   // Sidebar filters persist in layoutPrefs. The fetch mirrors the two
@@ -613,7 +615,7 @@ export function App() {
           />
           <Route
             path="/capabilities"
-            element={<CapabilitiesShim />}
+            element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           {/* More specific than the `/s/:id/*` splat, so the tasks browser wins
               over SessionRouteView while the sidebar keeps the session active. */}

@@ -1079,6 +1079,7 @@ export class TranscriptProjector {
                   toolName: payload.tool_name,
                   action: payload.action,
                   display: payload.tool_input_display,
+                  ...(payload.ssh === undefined ? {} : { ssh: payload.ssh }),
                   createdAt: payload.created_at,
                   expiresAt: payload.expires_at,
                 },

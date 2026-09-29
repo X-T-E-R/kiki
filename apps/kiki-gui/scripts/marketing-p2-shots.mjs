@@ -250,22 +250,19 @@ async function prepare(page_, shotDef) {
 async function shotD01() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   const rail = await openRail();
-  await page.locator('[data-goal-card]').waitFor({ timeout: 20_000 });
-  // The dispatch tree's node buttons carry `data-agent-id`; the transcript's
-  // cards use `data-subagent-id`.
-  const node = rail.locator('[data-agent-id="agent-explorer"]').first();
-  await node.waitFor({ timeout: 20_000 });
-  await node.click();
+  // The goal sits in the composer dock (its title pill, or the expanded card).
+  await page.locator('[data-goal-title], [data-goal-card]').first().waitFor({ timeout: 20_000 });
+  // The inspector's team rows carry `data-agent-id`; the transcript's cards
+  // use `data-subagent-id`. Picking the Explorer's row turns the rail to its
+  // page; that page's Open action opens the panel tab.
+  const row = rail.locator('[data-agent-tree] [data-agent-id="agent-explorer"]').first();
+  await row.waitFor({ timeout: 20_000 });
+  await row.click();
+  const open = rail.locator('[data-rail-open-agent]');
+  await open.waitFor({ timeout: 10_000 });
+  await open.click();
   const panel = page.locator('[data-preview-tabpanel="panel:agent-explorer"]');
-  // The first press pins the rail to the Explorer, and the owner badge that
-  // appears shifts the tree under the pointer before the click lands; press
-  // the (re-rendered) node again when no tab opened.
-  try {
-    await panel.waitFor({ timeout: 1_500 });
-  } catch {
-    await rail.locator('[data-agent-id="agent-explorer"]').first().click();
-    await panel.waitFor({ timeout: 20_000 });
-  }
+  await panel.waitFor({ timeout: 20_000 });
   // Panel tab proving it is the real agent workspace: the effort chip in its
   // header and the subagent composer, both rendered by AgentWorkspace.
   await panel.locator('[data-agent-effort]').first().waitFor({ timeout: 20_000 });
@@ -371,8 +368,8 @@ async function shotD04() {
 /** D05 — the scheduled-task panel opened from the rail. */
 async function shotD05() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await openRail();
-  const launcher = page.locator('[data-session-cron-panel]');
+  // The sidebar's Scheduled tasks row opens /cron scoped to this workspace.
+  const launcher = page.locator('aside [data-nav-cron]');
   await launcher.waitFor({ timeout: 20_000 });
   await launcher.click();
   await page.locator('[data-cron-list]').waitFor({ timeout: 20_000 });
@@ -475,8 +472,8 @@ async function shotD08() {
 /** Task-board close-up — one in_progress card opened in TaskDetailModal. */
 async function shotBoardDetail() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await openRail();
-  const launcher = page.locator('[data-session-task-board]');
+  // The sidebar's Task board row opens /board scoped to this workspace.
+  const launcher = page.locator('aside [data-nav-board]');
   await launcher.waitFor({ timeout: 20_000 });
   await launcher.click();
   await page.locator('[data-board-column="in_progress"]').waitFor({ timeout: 20_000 });

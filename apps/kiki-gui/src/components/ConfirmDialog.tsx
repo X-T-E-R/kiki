@@ -106,7 +106,7 @@ export function ConfirmDialog({
         <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
           {cancelLabel ?? t('common.cancel')}
         </button>
-        <button type="button" className={tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} disabled={busy} onClick={onConfirm}>
+        <button type="button" data-confirm-action="confirm" className={tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} disabled={busy} onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>

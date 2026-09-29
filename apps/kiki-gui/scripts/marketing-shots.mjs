@@ -226,17 +226,17 @@ const R02_SID = 'sess_sample_prepare_release';
 async function shotR02() {
   await page.goto(deepLink(`/s/${R02_SID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.locator('[data-goal-card]').waitFor({ timeout: 30_000 });
-  // Expand the queue strip so both queued rows show.
+  // Open the queue strip (it rests as one summary line) so both rows show.
   const toggle = page.locator('[data-queue-strip] [aria-expanded]').first();
   if (await toggle.count() > 0) {
     if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
   }
-  await page.locator('[data-queue-strip] [data-timing-picker]').first().waitFor({ timeout: 15_000 });
   await page.waitForTimeout(400);
   // R02's whole point is the per-row timing/edit/send-now controls, which the
   // product reveals on row hover. Hover one queued row and KEEP the pointer
   // there (the shell settle moves it away; this shot must not).
   await page.locator('[data-queue-strip] li').first().hover();
+  await page.locator('[data-queue-strip] [data-timing-picker]').first().waitFor({ timeout: 15_000 });
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(600);
 }
@@ -274,7 +274,8 @@ async function shotR04() {
   await page.goto(deepLink(`/s/${R04_SID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   const rail = page.locator('[data-session-rail]');
   await rail.waitFor({ timeout: 30_000 });
-  const launcher = page.locator('[data-session-task-board]');
+  // The sidebar's Task board row opens /board scoped to this workspace.
+  const launcher = page.locator('aside [data-nav-board]');
   await launcher.waitFor({ timeout: 15_000 });
   await launcher.click();
   await page.getByRole('dialog').waitFor({ timeout: 15_000 });

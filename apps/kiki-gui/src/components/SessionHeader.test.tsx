@@ -151,6 +151,23 @@ describe('session title', () => {
     expect(props.onOpenRail).toHaveBeenCalledTimes(1);
   });
 
+  it('draws no worktree mark for an ordinary session', () => {
+    const { container } = title();
+    expect(container.querySelector('[data-worktree-mark]')).toBeNull();
+  });
+
+  it('marks a worktree session with its branch and names the source in the tooltip', () => {
+    const { container } = title({
+      cwd: 'C:/Users/me/.kiki/worktrees/1a2b3c4d/a1b2c3',
+      worktree: { worktree_id: 'wt_1', branch: 'kiki/refactor-a1b2c3', source_root: 'C:/fixture/workshop', base_ref: 'HEAD' },
+    });
+    const mark = container.querySelector('[data-worktree-mark]');
+    expect(mark?.textContent).toContain('kiki/refactor-a1b2c3');
+    expect(mark?.getAttribute('title')).toContain('C:/fixture/workshop');
+    expect(mark?.getAttribute('title')).toContain('HEAD');
+    expect(container.querySelector('[data-session-cwd]')?.textContent).toBe('…/fixture/workshop');
+  });
+
   it('enters edit mode when the title is clicked', () => {
     const { props, container } = title();
     click(container.querySelector('[data-session-title]'));

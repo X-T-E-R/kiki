@@ -157,6 +157,7 @@ export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
+  fast_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   thinking: z.unknown().optional(),
   plan: PlanConfigSchema.optional(),
@@ -203,6 +204,7 @@ export const patchConfigRequestSchema = z.object({
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
+  fast_model: z.string().nullable().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   thinking: z.unknown().optional(),
   plan: planConfigRequestSchema.optional(),
@@ -221,6 +223,7 @@ export const patchConfigRequestSchema = z.object({
   background: z.unknown().optional(),
   subagent: z.object({
     timeout_ms: SubagentConfigSchema.shape.timeoutMs,
+    default_model: SubagentConfigSchema.shape.defaultModel.nullable(),
     deny_models: SubagentConfigSchema.shape.denyModels,
     max_direct_children: SubagentConfigSchema.shape.maxDirectChildren,
     max_total_subagents: SubagentConfigSchema.shape.maxTotalSubagents,

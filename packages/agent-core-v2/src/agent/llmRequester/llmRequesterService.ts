@@ -66,7 +66,7 @@ import type {
   ProviderConfig,
   ProvidersSection,
 } from '#/kosong/provider/provider';
-import { getProviderDefinition, isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
+import { getProviderDefinition, usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
   resolveRequestIdentityLayers,
@@ -430,7 +430,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
             signal,
           ),
           request.model.protocol,
-          request.model.providerType === 'kimi' || isOAuthCatalogVendor(request.model.providerType),
+          usesKimiToolSchema(request.model.providerType),
         ),
       };
       this.warnAboutAnthropicThinkingEffort(request);

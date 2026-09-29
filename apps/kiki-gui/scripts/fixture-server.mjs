@@ -46,6 +46,7 @@
  *   { action: 'list' }                  list scenario names + active one
  *   { action: 'skip_seq', session_id, agent_id?, count? }  jump transcript seq
  *   { action: 'emit_transcript', session_id, agent_id, ops }  inject ops
+ *   { action: 'emit_event', session_id, frame }  apply + emit a session frame
  *   { action: 'rewrite', session_id, ids? }  transcript items.remove / reset
  *
  * Transcript protocol: `/meta.capabilities.transcript=true`. Scenario
@@ -73,6 +74,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
 import { FixtureKlient } from './fixture-klient.mjs';
+import { handleAppearance } from './fixture-appearance.mjs';
+import { handleAutoCompact } from './fixture-auto-compact.mjs';
+import { handleContextStrategy, resetContextStrategy } from './fixture-context-strategy.mjs';
+import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
+import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
+import { handleSsh } from './fixture-ssh.mjs';
 
 import {
   TranscriptProjector,
@@ -496,7 +503,9 @@ class FixtureServer {
     this.shippedAgentProfiles = []; // shipped (built-in) template status rows
     this.mcpManaged = []; // mutable /mcp/servers management catalog
     this.plugins = []; // mutable /plugins catalog
+    this.autoCompactOverrides = new Map(); // `${sessionId}:${agentId}` → { [modelId]: tokens }
     this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
+    this.providerHealth = null; // persisted /providers/{id}:test results (null = scenario seed)
     this.wsInbound = [];
     this.wsOutbound = [];
     this.http = createServer((req, res) => void this.handleHttp(req, res));
@@ -530,12 +539,16 @@ class FixtureServer {
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
+    loadWorktrees(this, data);
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
       { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
     this.shippedAgentProfiles = structuredClone(data.shippedAgentProfiles ?? []);
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
     this.plugins = structuredClone(data.plugins ?? []);
+    this.autoCompactOverrides = new Map();
+    resetContextStrategy(this);
+    this.autoCompactAgents = structuredClone(data.autoCompact?.agents ?? {});
     this.usageV2 = data.usageV2 ?? null;
     // Memory (`/api/memory/*`): `memory` seeds the settings section and the
     // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
@@ -562,6 +575,8 @@ class FixtureServer {
     this.lastFileUpload = null;
     this.lastFsWrite = null;
     this.oauthOverride = null;
+    this.providerHealth = null;
+    this.executorLogin = null;
     this.wsInbound = [];
     this.wsOutbound = [];
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
@@ -758,6 +773,16 @@ class FixtureServer {
   // the server's config channels and profile source priorities. Every profile
   // source disables by name through disabled_named_profiles (the separate
   // builtin channel was removed with the legacy agent compatibility).
+  /** `GET /executors` items with login status from the last check this scenario ran. */
+  executorItems() {
+    const items = structuredClone(this.scenario?.data.executors ?? [
+      { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
+    ]);
+    return items.map((item) => item.connection !== undefined && this.executorLogin?.[item.id] !== undefined
+      ? { ...item, connection: { ...item.connection, login_status: this.executorLogin[item.id] } }
+      : item);
+  }
+
   agentProfilesWithDisabled(workspaceId) {
     const disabledNamed = new Set(this.config.disabled_named_profiles ?? []);
     return this.agentProfiles
@@ -1068,7 +1093,11 @@ class FixtureServer {
    * scheduler: queued → running, and the new turn's frames start flowing. */
   promoteNext(session) {
     session.activePrompt = null;
-    if (session.queuedPrompts.length === 0) {
+    // Edit hold (mirrors the engine): the prompt being edited and everything
+    // queued behind it wait; with the hold at the head, nothing promotes.
+    const heldAtHead = session.editHoldPromptId !== undefined &&
+      session.queuedPrompts[0]?.prompt_id === session.editHoldPromptId;
+    if (session.queuedPrompts.length === 0 || heldAtHead) {
       session.record.busy = false;
       return;
     }
@@ -1328,6 +1357,7 @@ class FixtureServer {
       return this.envelope(res, null, 40404, `fixture: no route ${url.pathname}`);
     }
     const path = url.pathname.slice('/api'.length);
+    if (handleAppearance(this, req, res, path)) return;
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
       : undefined;
@@ -1539,6 +1569,8 @@ class FixtureServer {
   }
 
   route(res, path, query, body, method) {
+    // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
+    if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
     const sessions = [...this.sessions.values()];
     // Action suffixes bind tighter than the tail: `/sessions/{id}:undo`,
     // mirroring kap-server's parseActionSuffix (session ids never contain
@@ -1563,6 +1595,8 @@ class FixtureServer {
           'tool-select': false,
           task_wait: true,
           search_worker: true,
+          // Scenario-specific flags (e.g. native_ssh) layer on top.
+          ...(this.scenario?.data.experimentalFlags ?? {}),
         },
       });
     }
@@ -1574,6 +1608,9 @@ class FixtureServer {
       // wholesale spread below.
       const subagentPatch = patch.subagent;
       delete patch.subagent;
+      // replace_domains is an instruction, not config; a replaced domain is
+      // already the whole value the spread below stores.
+      delete patch.replace_domains;
       this.config = { ...this.config, ...patch };
       if (body?.request_identity === null) delete this.config.request_identity;
       if (patch.plugins !== undefined) {
@@ -1828,6 +1865,59 @@ class FixtureServer {
       if (this.auth !== null) this.auth.default_model = modelId;
       return this.envelope(res, { default_model: modelId, model });
     }
+    // kap-server `GET /providers:health` / `POST /providers/{id}:test` /
+    // `GET /executors`. Seeded per scenario (`providerHealth`,
+    // `providerTests` keyed by provider id, `executors`); a test result is
+    // persisted into the health list like the real route.
+    if (path === '/providers:health' && method === 'GET') {
+      return this.envelope(res, { items: structuredClone(this.providerHealth ?? this.scenario?.data.providerHealth ?? []) });
+    }
+    const providerTestMatch = /^\/providers\/([^/]+):test$/.exec(path);
+    if (providerTestMatch !== null && method === 'POST') {
+      const providerId = decodeURIComponent(providerTestMatch[1]);
+      if (!this.providers.some((provider) => provider.id === providerId)) return this.envelope(res, null, 40413, 'provider.not_found');
+      const seeded = this.scenario?.data.providerTests?.[providerId];
+      const modelId = this.models.find((model) => model.provider_id === providerId)?.id;
+      const result = seeded !== undefined
+        ? { ...structuredClone(seeded), provider_id: providerId, checked_at: Date.now() }
+        : modelId === undefined
+          ? { provider_id: providerId, ok: false, checked_at: Date.now(), duration_ms: 2, error_code: 'model_not_configured', error: 'Add a model to this connection before testing it.' }
+          : { provider_id: providerId, model_id: modelId, ok: true, checked_at: Date.now(), duration_ms: 412 };
+      const delay = this.scenario?.data.providerTestDelayMs ?? 900;
+      this.providerHealth = [...(this.providerHealth ?? this.scenario?.data.providerHealth ?? []).filter((item) => item.provider_id !== providerId), result];
+      setTimeout(() => this.envelope(res, result), delay);
+      return;
+    }
+    if (path === '/executors' && method === 'GET') {
+      return this.envelope(res, { items: this.executorItems() });
+    }
+    // `GET /executors/{id}` and `POST /executors/{id}/check`: a check result
+    // comes from the scenario's `executorChecks[id]` (or is derived from the
+    // descriptor) and, like the real 60s preflight cache, feeds its login
+    // status back into later GETs.
+    const executorMatch = /^\/executors\/([^/]+)(\/check)?$/.exec(path);
+    if (executorMatch !== null) {
+      const executorId = decodeURIComponent(executorMatch[1]);
+      const item = this.executorItems().find((entry) => entry.id === executorId);
+      if (item === undefined) return this.envelope(res, null, 40404, 'Executor not found');
+      if (executorMatch[2] === undefined && method === 'GET') return this.envelope(res, item);
+      if (executorMatch[2] !== undefined && method === 'POST') {
+        const seeded = this.scenario?.data.executorChecks?.[executorId];
+        const result = seeded !== undefined ? { id: executorId, ...structuredClone(seeded) } : {
+          id: executorId,
+          status: item.status === 'ready' ? 'ready' : 'unavailable',
+          version: item.version,
+          command: item.connection?.command ?? executorId,
+          selected_source: item.connection?.source,
+          resolved_args: item.connection?.default_args ?? [],
+          login_status: 'unknown',
+          diagnostics: item.status === 'ready' ? [] : [{ severity: 'error', message: `${item.connection?.command ?? executorId} was not found on PATH.` }],
+        };
+        this.executorLogin = { ...(this.executorLogin ?? {}), [executorId]: result.login_status };
+        setTimeout(() => this.envelope(res, result), this.scenario?.data.executorCheckDelayMs ?? 700);
+        return;
+      }
+    }
     if (path === '/auth') {
       return this.envelope(res, this.auth ?? {
         ready: true,
@@ -1946,7 +2036,7 @@ class FixtureServer {
           skipped.push({ file: `${id}.json`, reason: 'not a kiki-skin file (missing kind)' });
           continue;
         }
-        const allowed = new Set(['$schema', 'kind', 'version', 'id', 'name', 'description', 'author', 'variants']);
+        const allowed = new Set(['$schema', 'kind', 'version', 'id', 'name', 'description', 'author', 'variants', '$plugin']);
         const extra = Object.keys(file).filter((key) => !allowed.has(key));
         if (extra.length > 0) {
           skipped.push({ file: `${id}.json`, reason: `unrecognized key: ${extra[0]}` });
@@ -1958,27 +2048,32 @@ class FixtureServer {
           ...(file.description !== undefined ? { description: file.description } : {}),
           ...(file.author !== undefined ? { author: file.author } : {}),
           variants: ['light', 'dark'].filter((variant) => file.variants?.[variant] !== undefined),
+          // `$plugin` marks a fixture skin as plugin-contributed (`/skins` `plugin`).
+          ...(file.$plugin !== undefined ? { plugin: file.$plugin } : {}),
         });
       }
+      items.push(...pluginSkins(this));
       return this.envelope(res, {
         items,
         directory: this.scenario?.data.skinsDirectory ?? '/home/fixture/.kiki/themes',
         skipped,
       });
     }
-    const skinMatch = /^\/skins\/([a-z0-9-]+)$/.exec(path);
+    const skinMatch = /^\/skins\/([a-z0-9_:-]+)$/.exec(decodeURIComponent(path));
     if (skinMatch !== null && method === 'GET') {
       const file = this.scenario?.data.skinFiles?.[skinMatch[1]];
       if (file === undefined || file.kind !== 'kiki-skin') {
         return this.envelope(res, null, 40409, 'skin not found');
       }
-      return this.envelope(res, { skin: file, warnings: [] });
+      const { $plugin, ...skin } = file;
+      return this.envelope(res, { skin, warnings: [], ...($plugin !== undefined ? { plugin: $plugin } : {}) });
     }
     if (path === '/mcp/runtime/servers' && method === 'GET') {
       return this.envelope(res, {
         servers: this.scenario?.data.mcpServers ?? [],
       });
     }
+    if (path.startsWith('/plugins') && handlePlugins(this, res, path, method, body)) return;
     if (path === '/plugins/marketplace') {
       const source = this.config.plugins?.marketplaceUrl;
       if (typeof source !== 'string' || source.trim() === '') {
@@ -1987,7 +2082,7 @@ class FixtureServer {
       return this.envelope(res, {
         configured: true,
         source,
-        entries: this.scenario?.data.pluginMarketplace ?? [],
+        entries: marketplaceWithState(this),
       });
     }
     if (path === '/plugins' && method === 'POST' && body !== undefined) {
@@ -2182,8 +2277,17 @@ class FixtureServer {
       const page = items.slice(0, pageSize);
       return this.envelope(res, { items: page, has_more: items.length > pageSize });
     }
+    if (handleWorktrees(this, res, path, query, body, method)) return;
     if (path === '/sessions' && body !== undefined) {
       const id = nextId('session');
+      // `isolation: {kind:'worktree'}` — the session runs in a new checkout of
+      // its source workspace (fixture-worktrees.mjs); workspace_id stays the source.
+      const isolated = body.isolation?.kind === 'worktree'
+        ? createWorktreeForSession(this, id, this.workspaces.find((ws) => ws.id === body.workspace_id)
+          ?? this.workspaces.find((ws) => ws.root === body.metadata?.cwd)
+          ?? { id: body.workspace_id ?? 'wd_fixture_000000000000', root: body.metadata?.cwd ?? 'C:/fixture' }, body.isolation)
+        : undefined;
+      this.lastSessionCreate = body;
       const record = {
         id,
         workspace_id: body.workspace_id ?? 'wd_fixture_000000000000',
@@ -2193,7 +2297,8 @@ class FixtureServer {
         busy: false,
         pending_interaction: 'none',
         archived: false,
-        metadata: body.metadata ?? { cwd: 'C:/fixture' },
+        metadata: isolated !== undefined ? { ...body.metadata, cwd: isolated.cwd } : body.metadata ?? { cwd: 'C:/fixture' },
+        ...(isolated !== undefined ? { worktree: isolated.worktree } : {}),
         agent_config: {
           model: body.agent_config?.model ?? '',
           ...(body.agent_config?.profile !== undefined
@@ -2360,12 +2465,24 @@ class FixtureServer {
         },
       });
     }
+    if (handleAutoCompact(this, res, session, tail, body, method)) return;
+    if (handleContextStrategy(this, res, session, tail, body, method)) return;
     if (tail === ':compact') {
       if (session.record.busy || session.activePrompt !== null || session.scriptRunning) {
         return this.envelope(res, null, 40901, 'session.busy');
       }
-      if (session.messages.length + session.older.length === 0) {
+      const seeded = session.transcript.snapshot('main').items.length > 0;
+      if (session.messages.length + session.older.length === 0 && !seeded) {
         return this.envelope(res, null, 40910, 'compaction.unable');
+      }
+      // A strategy-bearing request lands its compaction marker on the
+      // timeline the way the engine's context.apply_compaction does.
+      if (body?.strategy === 'relay' || body?.strategy === 'summarize') {
+        const batch = session.transcript.commit('main', [{
+          op: 'marker.upsert',
+          item: { kind: 'marker', markerId: `fixture-compaction-${Date.now()}`, marker: 'compaction', at: now(), payload: { strategy: body.strategy, shapeVersion: 1 } },
+        }]);
+        if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
       }
       return this.envelope(res, {});
     }
@@ -2792,6 +2909,23 @@ class FixtureServer {
         queued_prompt_ids: queuedPromptIds,
       });
     }
+    const holdMatch = /^\/prompts\/([^/]+):hold$/.exec(tail);
+    if (holdMatch !== null) {
+      // Mirrors kap-server's edit hold: `held` parks the prompt and the ones
+      // behind it; releasing resumes the queue when the session is idle.
+      const promptId = holdMatch[1];
+      const held = body?.held === true;
+      if (held) {
+        if (!session.queuedPrompts.some((entry) => entry.prompt_id === promptId)) {
+          return this.envelope(res, null, 40402, 'prompt.not_found');
+        }
+        session.editHoldPromptId = promptId;
+      } else if (session.editHoldPromptId === promptId) {
+        session.editHoldPromptId = undefined;
+        if (session.activePrompt === null && !session.scriptRunning) this.promoteNext(session);
+      }
+      return this.envelope(res, { prompt_id: promptId, held });
+    }
     const timingMatch = /^\/prompts\/([^/]+):timing$/.exec(tail);
     if (timingMatch !== null) {
       // Mirrors kap-server: re-time a QUEUED prompt. The reply is the updated
@@ -2942,7 +3076,11 @@ class FixtureServer {
       }
       case 'scenario':
         await this.loadScenario(body.name);
+        this.ssh = undefined; // fixture-ssh.mjs reseeds from the scenario
         return this.envelope(res, { active: body.name });
+      case 'ssh-submissions':
+        // Redacted shapes only (secret lengths, never values).
+        return this.envelope(res, { submissions: this.sshSubmissions ?? [] });
       case 'session': {
         const session = this.sessions.get(body.session_id);
         if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
@@ -3037,6 +3175,15 @@ class FixtureServer {
         const agentId = body.agent_id ?? 'main';
         const seq = session.transcript.skipSeq(agentId, Number(body.count ?? 1));
         return this.envelope(res, { agent_id: agentId, seq });
+      }
+      case 'emit_event': {
+        // Proof hook: apply a scenario-style session frame (e.g. goal.updated)
+        // to fixture state and fan it out, like a scripted step would.
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        this.applySideEffects(session, body.frame);
+        this.emit(body.session_id, body.frame);
+        return this.envelope(res, { emitted: body.frame?.type ?? null });
       }
       case 'emit_transcript': {
         const session = this.sessions.get(body.session_id);

@@ -20,15 +20,14 @@ import {
 
 export type { SubagentRoleModelConstraints } from './modelConstraints';
 
-/** `subagent` domain — the `[subagent]` config section and schema: owns the subagent timeout and
- *  resolves the model a spawn binds. A subagent model has exactly two legitimate sources — a pin on
- *  the agent profile (or the route/lease standing in for it) and an explicit `model_alias` at
- *  dispatch time — so a spawn with neither fails closed instead of silently following the main agent.
- *  Self-registered at module load via `registerConfigSection`. */
+/** `subagent` domain — the `[subagent]` config section and schema. An explicit dispatch pin
+ *  wins over route/lease/profile pins; `default_model` fills only an otherwise unbound spawn.
+ *  Caller model inheritance remains explicit via `model_alias: inherit`. */
 export const SUBAGENT_SECTION = 'subagent';
 
 export const SubagentConfigSchema = z.object({
   timeoutMs: z.number().int().min(0).optional(),
+  defaultModel: z.string().trim().min(1).optional(),
   denyModels: z.array(z.string()).optional(),
   maxDirectChildren: z.number().int().min(0).optional(),
   maxTotalSubagents: z.number().int().min(0).optional(),
@@ -111,8 +110,6 @@ export const subagentEnvBindings: EnvBindings<SubagentConfig> = envBindings(
 
 export const stripSubagentEnv = stripEnvBoundFields(subagentEnvBindings);
 
-const REMOVED_SUBAGENT_KEYS = ['default_model', 'default_effort'] as const;
-
 registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   defaultValue: {
     timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
@@ -124,7 +121,7 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,
   collectDiagnostics: (rawSection) =>
-    collectRemovedKeyDiagnostics(SUBAGENT_SECTION, rawSection, REMOVED_SUBAGENT_KEYS),
+    collectRemovedKeyDiagnostics(SUBAGENT_SECTION, rawSection, ['default_effort']),
 });
 
 export function resolveSubagentTimeoutMs(config: IConfigService): number {
@@ -231,7 +228,7 @@ export function resolveInheritedModelAlias(
 }
 
 export const SUBAGENT_MODEL_UNBOUND_HINT =
-  'Pin model_alias on the agent profile (or its route or the caller lease), or pass model_alias with the dispatch. Subagents do not inherit the caller\'s model unless model_alias is explicitly set to inherit.';
+  'Pin model_alias on the agent profile (or its route or the caller lease), pass model_alias with the dispatch, or configure [subagent].default_model. Subagents do not inherit the caller\'s model unless model_alias is explicitly set to inherit.';
 
 export function subagentModelUnboundMessage(target?: SubagentBindingTarget): string {
   const named =
@@ -243,11 +240,7 @@ export function subagentModelUnboundMessage(target?: SubagentBindingTarget): str
   return `No model is bound for ${named}. ${SUBAGENT_MODEL_UNBOUND_HINT}`;
 }
 
-/**
- * Resolve the model a spawn binds from the only two permitted sources: the
- * dispatch request and the effective agent profile. Throws when neither
- * supplies a model alias.
- */
+/** Resolve a dispatch pin before the profile pin, then the configured fallback. */
 export function resolveSubagentBinding(
   config: IConfigService,
   requested: SubagentBindingRequest = {},
@@ -259,7 +252,8 @@ export function resolveSubagentBinding(
 ): SubagentModelBinding {
   const toolModel = normalized(requested.modelAlias);
   const profileModel = normalized(profileRequest.modelAlias);
-  const selectedModel = toolModel ?? profileModel;
+  const configuredModel = normalized(config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.defaultModel);
+  const selectedModel = toolModel ?? profileModel ?? configuredModel;
   if (selectedModel === undefined) {
     throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, subagentModelUnboundMessage(target), {
       details: {

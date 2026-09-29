@@ -37,6 +37,7 @@ import {
   applyAnnotationOverrides,
   collectTimelineAnnotations,
   getAnnotationOverridesSnapshot,
+  parseSelectionCarryovers,
   subscribeAnnotationOverrides,
   writeAnnotationOverride,
   type AnnotationOverride,
@@ -93,6 +94,7 @@ import {
   TimelineDivider,
 } from './timeline/ActivityRow';
 import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopover';
+import { AnnotationChip, QuoteChip } from './ContextChips';
 import { FloorNavRail } from './FloorNavRail';
 import {
   TRANSCRIPT_END_THRESHOLD,
@@ -103,6 +105,7 @@ import {
   reconcileMountedRows,
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
+import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
@@ -266,6 +269,11 @@ const UserMessage = memo(function UserMessage({
       ? undefined
       : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
   const senderLabel = agentMessageLabel ?? peerThreadLabel;
+  // Selection carry-overs (quote / annotations) sent as a text prefix render
+  // as the composer tray's chips above the bubble; the bubble keeps the body.
+  const carry = useMemo(() => parseSelectionCarryovers(block.text), [block.text]);
+  const carried = carry.annotations.length > 0 || carry.quote !== null;
+  const bodyText = carried ? carry.body : block.text;
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       {/* Meta line: the sender shows only when it is not the user (agent or
@@ -302,7 +310,15 @@ const UserMessage = memo(function UserMessage({
           <RelativeTime at={block.createdAt} />
         </span>
       </span>
-      {block.media !== undefined ? <div className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
+      {carried && !editing ? (
+        <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {carry.quote !== null ? <QuoteChip quote={carry.quote} /> : null}
+          {carry.annotations.map((annotation, index) => (
+            <AnnotationChip key={index} quote={annotation.quote} comment={annotation.comment} />
+          ))}
+        </div>
+      ) : null}
+      {block.media !== undefined ? <div data-user-media className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={block.text}
@@ -312,7 +328,7 @@ const UserMessage = memo(function UserMessage({
           }}
           onCancel={() => { setEditing(false); }}
         />
-      ) : (
+      ) : bodyText.trim() === '' ? null : (
         <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink">
           <div
             ref={contentRef}
@@ -325,8 +341,8 @@ const UserMessage = memo(function UserMessage({
             }
           >
             {annotations === undefined || annotations.length === 0
-              ? projectUserText(block.text)
-              : projectTextWithAnnotationMarks(block.text, annotations, projectUserText)}
+              ? projectUserText(bodyText)
+              : projectTextWithAnnotationMarks(bodyText, annotations, projectUserText)}
           </div>
         </div>
       )}
@@ -1161,7 +1177,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
     <TimelineDivider
       tone={block.tone === 'danger' ? 'warn' : 'plain'}
       title={title}
-      attrs={{ 'data-notice-tone': block.tone }}
+      attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
     >
       {block.tone === 'danger' ? <span className="font-medium text-danger">{text}</span> : text}
     </TimelineDivider>
@@ -1376,7 +1392,9 @@ const BlockView = memo(function BlockView({
     case 'subagent-event':
       return <SubagentEventRow block={block} onOpenAgent={onOpenAgent} />;
     case 'notice':
-      return <Notice block={block} />;
+      return block.executor !== undefined
+        ? <ExecutorNoteRow note={block.executor} createdAt={block.createdAt} />
+        : <Notice block={block} />;
     case 'approval':
       // Terminal facts stay inline as one compact history line (readOnly or
       // not); only a PENDING approval keeps the full interactive card.
@@ -1533,7 +1551,8 @@ function timelineLane(node: DisplayNode): 'conversation' | 'activity' | 'divider
     case 'question':
       return node.outcome === undefined ? 'conversation' : 'activity';
     case 'notice':
-      return 'divider';
+      // An engine compaction is a boundary; other engine notes happened in the turn.
+      return node.executor === undefined || node.executor.kind === 'compaction' ? 'divider' : 'activity';
     case 'system':
       // A compaction summary is a boundary; the rest are things that happened.
       return node.variant === 'compaction_summary' ? 'divider' : 'activity';
@@ -1985,59 +2004,7 @@ function formatLatencySeconds(ms: number): string {
   return s < 10 ? String(Math.round(s * 10) / 10) : String(Math.round(s));
 }
 
-/**
- * External-executor badge opening a turn run by an off-kiki harness (design
- * §8: `executor.turn.metadata` → `TranscriptTurn.execution`). Shows
- * `Executor · Protocol`; degraded fidelity adds an amber marker listing the
- * stable loss codes, with per-code explanations in the tooltip.
- */
-export const TurnExecutionBadge = memo(function TurnExecutionBadge({
-  execution,
-}: {
-  execution: TurnExecutionInfo;
-}) {
-  const { t } = useI18n();
-  const executor =
-    execution.executorId.charAt(0).toUpperCase() + execution.executorId.slice(1);
-  const protocol = execution.protocol === 'acp-v1' ? 'ACP' : execution.protocol;
-  const degraded = execution.fidelity === 'degraded' || execution.losses.length > 0;
-  const lossTooltip = execution.losses
-    .map((code) => {
-      const key = `transcript.loss.${code}` as I18nKey;
-      const text = t(key);
-      return text === key ? code : `${code} — ${text}`;
-    })
-    .join('\n');
-  return (
-    <div data-turn-execution className="anim-enter flex flex-wrap items-center gap-1.5">
-      <span
-        title={
-          execution.resumeMode === undefined
-            ? undefined
-            : t('transcript.exec.resumeMode', { mode: execution.resumeMode })
-        }
-        className="inline-flex items-center gap-1 rounded-md bg-panel px-2 py-0.5 text-[12px] font-medium text-ink-soft"
-      >
-        <Icon name="external" size={12} className="text-ink-faint" />
-        {t('transcript.exec.badge', { executor, protocol })}
-      </span>
-      {degraded ? (
-        <span
-          title={lossTooltip === '' ? undefined : lossTooltip}
-          className="inline-flex min-w-0 items-center gap-1 rounded-md bg-amber-card px-2 py-0.5 text-[12px] font-medium text-amber-ink"
-        >
-          <Icon name="warning" size={12} />
-          {t('transcript.exec.degraded')}
-          {execution.losses.length > 0 ? (
-            <span className="truncate font-mono text-[11px] font-normal text-amber-ink/85">
-              {execution.losses.join(' ')}
-            </span>
-          ) : null}
-        </span>
-      ) : null}
-    </div>
-  );
-});
+export { TurnExecutionBadge };
 
 /**
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·

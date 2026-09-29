@@ -282,6 +282,10 @@ export const compactionCompletedEventSchema = z.object({
     keptUserMessageCount: z.number().optional(),
     keptHeadUserMessageCount: z.number().optional(),
     droppedCount: z.number().optional(),
+    strategy: z.enum(['summarize', 'relay']).optional(),
+    shapeVersion: z.number().int().positive().optional(),
+    reasonCodes: z.array(z.string()).optional(),
+    fallbackFrom: z.enum(['relay', 'summarize']).optional(),
   }),
 });
 
@@ -320,6 +324,8 @@ export const agentStatusUpdatedEventSchema = z.looseObject({
   phase: z.string().optional(),
   autoCompactTokens: z.number().optional(),
   autoCompactSource: z.enum(['session', 'profile', 'model', 'global', 'legacy']).optional(),
+  contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
+  contextStrategySource: z.enum(['session', 'profile', 'global', 'default', 'subagent', 'executor']).optional(),
   effectiveMaxContextTokens: z.number().optional(),
   reservedContextTokens: z.number().optional(),
 });

@@ -35,7 +35,7 @@ import type {
 } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
-  readonly method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
   readonly query?: Record<string, string | number | boolean | undefined>;
   readonly headers?: Readonly<Record<string, string>>;
@@ -83,6 +83,48 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     }),
 
     usage: (query) => transport.json('/usage', { query }),
+
+    ssh: {
+      list: (workspaceId) => transport.json('/ssh/hosts', { query: { workspace_id: workspaceId } }),
+      discover: () => transport.json('/ssh/hosts:discover'),
+      upsert: (id, host, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}`, {
+        method: 'PUT', body: host, query: { workspace_id: workspaceId },
+      }),
+      remove: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}`, {
+        method: 'DELETE', query: { workspace_id: workspaceId },
+      }),
+      setConfigSync: (enabled) => transport.json('/ssh/config-sync', { method: 'PUT', body: { enabled } }),
+      connectionApproval: () => transport.json('/ssh/connection-approval'),
+      setConnectionApproval: (enabled) => transport.json('/ssh/connection-approval', { method: 'PUT', body: { enabled } }),
+      writeBack: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}:write-back`, {
+        method: 'POST', body: {}, query: { workspace_id: workspaceId },
+      }),
+      status: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}:status`, {
+        query: { workspace_id: workspaceId },
+      }),
+      disconnect: (id, workspaceId) => transport.json(`/ssh/hosts/${encodeURIComponent(id)}:disconnect`, {
+        method: 'POST', body: {}, query: { workspace_id: workspaceId },
+      }),
+      sessionHosts: (sessionId) => transport.json(`/sessions/${encodeURIComponent(sessionId)}/ssh/hosts`),
+      addSessionHost: (sessionId, hostId) => transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/ssh/hosts/${encodeURIComponent(hostId)}`, { method: 'PUT', body: {} },
+      ),
+      removeSessionHost: (sessionId, hostId) => transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/ssh/hosts/${encodeURIComponent(hostId)}`, { method: 'DELETE' },
+      ),
+      submitApproval: (sessionId, approvalId, body) => transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/ssh/approvals/${encodeURIComponent(approvalId)}`,
+        { method: 'POST', body },
+      ),
+    },
+
+    worktrees: {
+      list: (query) => transport.json('/worktrees', { query }),
+      get: (id) => transport.json(`/worktrees/${encodeURIComponent(id)}`),
+      inspect: (id) => transport.json(`/worktrees/${encodeURIComponent(id)}:inspect`, { method: 'POST', body: {} }),
+      remove: (id, body = {}) => transport.json(`/worktrees/${encodeURIComponent(id)}:remove`, { method: 'POST', body }),
+      gc: (dryRun) => transport.json('/worktrees:gc', { method: 'POST', body: { dryRun } }),
+    },
 
     sessions: {
       list: (query: HttpRestListSessionsQuery = {}) => transport.json<PageResponse<Session>>('/sessions', {
@@ -253,6 +295,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
       }),
+      test: (providerId, options) => transport.json(`/providers/${encodeURIComponent(providerId)}:test`, {
+        method: 'POST', body: {}, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+      health: () => transport.json('/providers:health'),
     },
 
     nbSearch: {
@@ -269,10 +315,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
     },
 
+    executors: {
+      list: () => transport.json('/executors'),
+    },
+
     agents: {
       list: (query?: string | ListNamedAgentProfilesQuery) => transport.json<ListNamedAgentProfilesResponse>('/agents', {
         query: typeof query === 'string' ? { workspace_id: query } : query,
       }),
+      previewExecutorPrompt: (name, body = {}) => transport.json(
+        `/agents/${encodeURIComponent(name)}/executor-prompt:preview`, { method: 'POST', body },
+      ),
       create: (body: CreateNamedAgentProfileRequest) => transport.json<NamedAgentProfile>(
         '/agent-profiles', { method: 'POST', body },
       ),

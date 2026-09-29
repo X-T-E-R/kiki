@@ -390,6 +390,20 @@ export type CreateNamedAgentProfileRequest = ProtocolCreateNamedAgentProfileRequ
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
 export type ShippedAgentProfile = ProtocolShippedAgentProfile;
 export type ListShippedAgentProfilesResponse = ProtocolListShippedAgentProfilesResponse;
+/**
+ * `POST /executors/{id}/check` result. Mirrors `executorCheckResponseSchema`
+ * (the protocol exports the schema but no inferred type).
+ */
+export interface ExecutorCheckResult {
+  readonly id: string;
+  readonly status: 'ready' | 'warning' | 'unavailable';
+  readonly version?: string;
+  readonly command: string;
+  readonly selected_source?: string;
+  readonly resolved_args: readonly string[];
+  readonly login_status: 'logged_in' | 'logged_out' | 'unknown';
+  readonly diagnostics: readonly { readonly severity: 'info' | 'warning' | 'error'; readonly message: string }[];
+}
 
 /**
  * Goal-control inputs mirrored from the engine's goal service (the klient
@@ -538,6 +552,8 @@ export interface PluginSummary {
   readonly id: string;
   readonly displayName: string;
   readonly version?: string;
+  /** Manifest icon inlined as a `data:` URI (svg/png); inert in an `<img>`. */
+  readonly icon?: string;
   readonly enabled: boolean;
   readonly state: 'ok' | 'error';
   readonly skillCount: number;
@@ -548,6 +564,19 @@ export interface PluginSummary {
   readonly hasErrors: boolean;
   readonly source: 'local-path' | 'zip-url' | 'github';
   readonly originalSource?: string;
+  readonly github?: {
+    readonly owner: string;
+    readonly repo: string;
+    readonly ref: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
+    readonly installedSha?: string;
+  };
+  readonly zipSha256?: string;
+  /** The previous managed copy a rollback switches back to. */
+  readonly rollback?: {
+    readonly version?: string;
+    readonly source: 'local-path' | 'zip-url' | 'github';
+    readonly originalSource?: string;
+  };
 }
 
 export interface ListPluginsResponse {
@@ -560,7 +589,15 @@ export interface PluginMarketplaceEntry {
   readonly displayName: string;
   readonly description?: string;
   readonly homepage?: string;
+  /** `data:` URI (local official entries, inlined by the server) or http(s) URL. */
+  readonly icon?: string;
   readonly keywords?: readonly string[];
+  readonly relevance?: {
+    readonly cwd?: readonly string[];
+    readonly fileGlobs?: readonly string[];
+    readonly commands?: readonly string[];
+    readonly dependencies?: readonly string[];
+  };
   readonly version?: string;
   readonly source: string;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
@@ -602,6 +639,7 @@ export interface PluginInfo extends PluginSummary {
     readonly origin: 'kiki-compatibility' | 'plugin-declared';
     readonly items: { readonly schemaVersion: 1; readonly items: readonly {
       readonly id: string; readonly kind: string; readonly required: boolean;
+      readonly version?: string; readonly setting?: string; readonly executionHost?: string;
     }[] };
   };
   readonly mcpServers: readonly PluginMcpServerInfo[];
@@ -1490,6 +1528,47 @@ export class KikiClient {
     return this.run(this.klient.global.auth.methods());
   }
 
+  /** Last persisted connection-test result per provider (secret-free, revision-scoped). */
+  listProviderHealth(): Promise<import('@kiki/protocol').ListProviderHealthResponse> {
+    return this.run(this.rest.providers.health());
+  }
+
+  /** One real request against a saved connection; the server persists and returns the result. */
+  testProviderConnection(providerId: string): Promise<import('@kiki/protocol').ProviderConnectionTestResult> {
+    return this.run(this.rest.providers.test(providerId, { timeoutMs: 90_000 }));
+  }
+
+  /** Registered execution engines and whether each one's binary was found. */
+  listExecutors(): Promise<import('@kiki/protocol').ListExecutorsResponse> {
+    return this.run(this.rest.executors.list());
+  }
+
+  /**
+   * `GET /executors/{id}` — one engine's declared capabilities and connection.
+   * The klient REST facade only exposes `list`, so this goes through the
+   * shared envelope request below.
+   */
+  getExecutor(id: string): Promise<import('@kiki/protocol').ExecutorCatalogItem> {
+    return this.memoryRequest('GET', `/executors/${encodeURIComponent(id)}`);
+  }
+
+  /** `POST /executors/{id}/check` — re-probe the binary and the declared login command. */
+  checkExecutor(id: string): Promise<ExecutorCheckResult> {
+    return this.memoryRequest('POST', `/executors/${encodeURIComponent(id)}/check`);
+  }
+
+  /** `[subagent].default_model`; an empty value clears the key. */
+  async setSubagentDefaultModel(model: string): Promise<void> {
+    const trimmed = model.trim();
+    await this.patchConfig({ subagent: { default_model: trimmed === '' ? null : trimmed } });
+  }
+
+  /** Top-level `fast_model`; an empty value removes it. */
+  async setFastModel(model: string): Promise<void> {
+    const trimmed = model.trim();
+    await this.patchConfig({ fast_model: trimmed === '' ? null : trimmed });
+  }
+
   logoutOAuth(body: OAuthLogoutRequest = {}): Promise<OAuthLogoutResponse> {
     return this.run(this.klient.global.auth.logout(body.provider));
   }
@@ -1510,8 +1589,13 @@ export class KikiClient {
     return this.run(this.rest.plugins.marketplace());
   }
 
+  /**
+   * Plugin detail over REST: the klient contract's manifest schema strips the
+   * Kiki extension (tools, panels, themes, permissions), which the detail and
+   * consent views read.
+   */
   getPlugin(pluginId: string): Promise<PluginInfo> {
-    return this.run(this.klient.global.plugins.info(pluginId) as Promise<PluginInfo>);
+    return this.run(this.rest.plugins.info(pluginId) as Promise<PluginInfo>);
   }
 
   installPlugin(source: string): Promise<PluginSummary> {
@@ -1534,8 +1618,60 @@ export class KikiClient {
     return this.run(this.rest.plugins.setEnabled(pluginId, enabled));
   }
 
-  removePlugin(pluginId: string): Promise<{ readonly ok: true }> {
-    return this.run(this.rest.plugins.remove(pluginId));
+  removePlugin(pluginId: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.remove(pluginId, options));
+  }
+
+  /** Download + parse a candidate without running any of its code. */
+  previewPlugin(source: string, sha256?: string): Promise<import('@kiki/protocol').PluginInstallPlan> {
+    return this.run(this.rest.plugins.preview({ source, sha256 }));
+  }
+
+  /** Install exactly the previewed candidate (its fingerprint pins the bytes). */
+  installPreviewedPlugin(input: {
+    readonly source: string;
+    readonly sha256?: string;
+    readonly fingerprint: string;
+    readonly consent: boolean;
+  }): Promise<PluginSummary> {
+    return this.run(this.rest.plugins.install(input) as Promise<PluginSummary>);
+  }
+
+  rollbackPlugin(pluginId: string): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.rollback(pluginId));
+  }
+
+  installPluginPrerequisite(pluginId: string, prerequisiteId: string): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.installPrerequisite(pluginId, { id: prerequisiteId, consent: true }));
+  }
+
+  recommendPlugins(input: {
+    readonly cwd?: string;
+    readonly files?: readonly string[];
+    readonly commands?: readonly string[];
+    readonly dependencies?: readonly string[];
+  }): Promise<{ readonly entries: readonly PluginMarketplaceEntry[] }> {
+    return this.run(this.rest.plugins.recommend(input) as Promise<{ readonly entries: readonly PluginMarketplaceEntry[] }>);
+  }
+
+  dismissPluginRecommendation(pluginId: string): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.dismissRecommendation(pluginId));
+  }
+
+  listPluginPanels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }> {
+    return this.run(this.rest.plugins.panels());
+  }
+
+  getPluginPanelDocument(pluginId: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument> {
+    return this.run(this.rest.plugins.panelDocument(pluginId, panelId));
+  }
+
+  callPluginPanelBridge(
+    pluginId: string,
+    panelId: string,
+    input: import('@kiki/protocol').PluginPanelBridgeRequest,
+  ): Promise<import('@kiki/protocol').PluginPanelBridgeResponse> {
+    return this.run(this.rest.plugins.panelBridge(pluginId, panelId, input));
   }
 
   restartMcpServer(serverId: string): Promise<RestartMcpServerResult> {
@@ -1769,6 +1905,28 @@ export class KikiClient {
     input: import('@kiki/protocol').AutoCompactWrite,
   ): Promise<import('@kiki/protocol').AutoCompactWriteResult> {
     return this.run(this.rest.sessions.setAutoCompact(sessionId, agentId, input));
+  }
+
+  /**
+   * Effective context-renewal strategy for one agent of a session and the
+   * layer it came from. The klient REST facade has no domain for this route
+   * yet, so it goes through the plain enveloped request.
+   */
+  getContextStrategy(sessionId: string, agentId: string): Promise<import('@kiki/protocol').ContextStrategyStatus> {
+    return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/context-strategy`);
+  }
+
+  /**
+   * Sets (or with `strategy: null` clears) the main agent's session override;
+   * `save: 'global'` writes the choice to the global default instead and
+   * drops the override.
+   */
+  setContextStrategy(
+    sessionId: string,
+    agentId: string,
+    input: { readonly strategy: import('@kiki/protocol').ContextStrategyStatus['strategy'] | null; readonly save?: 'global' },
+  ): Promise<import('@kiki/protocol').ContextStrategyStatus> {
+    return this.memoryRequest('PATCH', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/context-strategy`, { body: input });
   }
 
   /** Removes the last `count` turns. 40911 when there is nothing to undo. */

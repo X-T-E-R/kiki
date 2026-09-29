@@ -596,6 +596,11 @@ export const agentDisposedEventSchema = z.object({
   time: z.number().optional(),
 });
 
+export const sessionWorktreeChangedEventSchema = z.object({
+  type: z.literal('session.worktree.changed'),
+  worktreeId: z.string(), state: z.string(), inspection: z.unknown().optional(),
+});
+
 export const sessionCreatedEventSchema = z.object({
   type: z.literal('event.session.created'),
   session: sessionSchema,
@@ -1104,6 +1109,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentCreatedEventSchema,
   agentDisposedEventSchema,
   sessionMetaUpdatedEventSchema,
+  sessionWorktreeChangedEventSchema,
   sessionCreatedEventSchema,
   sessionHistoryRewrittenEventSchema,
   workspaceCreatedEventSchema,
