@@ -6,11 +6,14 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentPermissionRulesService, type PermissionApprovalResultRecord, type PermissionRule } from '#/agent/permissionRules/permissionRules';
 import { AgentPermissionRulesService } from '#/agent/permissionRules/permissionRulesService';
 import { permissionRulesKey } from '#/agent/permissionRules/permissionRulesOps';
+import { evaluateUserConfiguredRule } from '#/agent/permissionPolicy/policies/user-configured-rule';
+import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IConfigService } from '#/app/config/config';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
@@ -43,11 +46,14 @@ let ix: TestInstantiationService;
 let log: IAppendLogStore;
 let dispatcher: IEventDispatcher;
 let svc: IAgentPermissionRulesService;
+let configuredRules: PermissionRule[];
 
 beforeEach(() => {
+  configuredRules = [];
   disposables = new DisposableStore();
   ix = disposables.add(new TestInstantiationService());
   ix.stub(IFileSystemStorageService, new InMemoryStorageService());
+  ix.stub(IConfigService, { get: () => ({ rules: configuredRules }) } as unknown as IConfigService);
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IAgentPermissionRulesService, new SyncDescriptor(AgentPermissionRulesService));
   log = ix.get(IAppendLogStore);
@@ -68,6 +74,25 @@ async function readRecords(): Promise<WireRecord[]> {
 }
 
 describe('AgentPermissionRulesService (wire-backed)', () => {
+  it('reads configured rules and reflects persistent configuration changes', () => {
+    configuredRules = [denyRule];
+    expect(svc.rules).toEqual([denyRule]);
+    configuredRules = [allowRule];
+    expect(svc.rules).toEqual([allowRule]);
+    svc.addRules([denyRule]);
+    expect(svc.rules).toEqual([allowRule, denyRule]);
+  });
+
+  it('feeds persisted tool rules into approval policy decisions', () => {
+    configuredRules = [{ decision: 'deny', scope: 'user', pattern: 'Bash', reason: 'saved from settings' }];
+    const context = { toolCall: { name: 'Bash' }, execution: {} } as ResolvedToolExecutionHookContext;
+    expect(evaluateUserConfiguredRule(context, 'deny', svc)).toEqual({
+      kind: 'deny', message: 'Tool "Bash" was denied by permission rule. Reason: saved from settings',
+    });
+    configuredRules = [{ decision: 'ask', scope: 'user', pattern: 'Bash' }];
+    expect(evaluateUserConfiguredRule(context, 'ask', svc)).toEqual({ kind: 'ask' });
+  });
+
   it('addRules appends rules and exposes the accumulated rules', () => {
     expect(svc.rules).toEqual([]);
 

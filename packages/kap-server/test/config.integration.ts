@@ -81,6 +81,40 @@ describe('server-v2 /api/config', () => {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
 
+  it('persists ordered permission rules and dangerous Bash without dropping reviewer config', async () => {
+    await boot();
+    const first = await patchConfig({ permission: {
+      rules: [
+        { decision: 'deny', pattern: 'Bash(rm -rf*)', reason: 'Keep files' },
+        { decision: 'ask', pattern: 'Bash', scope: 'user' },
+      ],
+      dangerous_bash: 'on',
+    } });
+    expect(first.permission).toMatchObject({
+      dangerousBash: 'on', rules: [
+        { decision: 'deny', pattern: 'Bash(rm -rf*)', scope: 'user', reason: 'Keep files' },
+        { decision: 'ask', pattern: 'Bash', scope: 'user' },
+      ],
+    });
+    const path = join(home as string, 'config.toml');
+    expect(await readFile(path, 'utf8')).toContain('dangerous_bash = "on"');
+    expect(await readFile(path, 'utf8')).toContain('[[permission.rules]]');
+    expect((await getConfig()).permission?.rules?.map((rule) => rule.pattern)).toEqual(['Bash(rm -rf*)', 'Bash']);
+    const updated = await patchConfig({ permission: { rules: [{ decision: 'allow', pattern: 'Read' }] } });
+    expect(updated.permission?.dangerousBash).toBe('on');
+    expect(updated.permission?.rules?.map((rule) => rule.pattern)).toEqual(['Read']);
+    await patchConfig({ permission: { rules: [] } });
+    expect((await getConfig()).permission?.rules).toEqual([]);
+    expect(await readFile(path, 'utf8')).not.toContain('[[permission.rules]]');
+    const before = await readFile(path, 'utf8');
+    const invalid = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ permission: { rules: [{ decision: 'allow', pattern: 'Bash(broken' }] } }),
+    });
+    expect((await invalid.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(path, 'utf8')).toBe(before);
+  });
+
   it('round trips prompt variable names, merges references, validates saves and removes replaced entries', async () => {
     await boot();
     const prompt = { overrides: { fields: { 'system.shared': 'Shared ${team_note}', 'tool.web-search.guidance': '${search_guidance}' } }, variables: { team_note: 'Team note', search_guidance: 'Use native GMA SSE.' } };

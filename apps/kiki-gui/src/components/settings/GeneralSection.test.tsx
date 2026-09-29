@@ -214,11 +214,19 @@ describe('PlanSettings plan gate defaults', () => {
   it('offers four permission defaults, saving review immediately', async () => {
     const container = await renderSection('permissions');
     const card = container.querySelector('#st-card-permission-defaults')!;
-    const choices = [...card.querySelectorAll<HTMLButtonElement>('[role="group"] button')];
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Default permission mode"] button')];
     expect(choices.map((choice) => choice.textContent)).toEqual(['Ask every time', 'Auto', 'Approve for me', 'Full access']);
     await click(choices[2]!);
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'review' });
     expect(card.textContent).toContain('reviewer checks sensitive actions');
+  });
+
+  it('writes the dangerous Bash guard from the default mode card', async () => {
+    const container = await renderSection('permissions');
+    const choice = container.querySelector<HTMLButtonElement>('#st-card-permission-defaults [role="group"][aria-label="Dangerous Bash commands"] button:nth-child(2)')!;
+    await click(choice);
+    expect(patchConfig).toHaveBeenCalledWith({ permission: { dangerous_bash: 'on' } });
+    expect(container.textContent).toContain('Full access');
   });
 
   it('saves the question blocking choice immediately on Sessions', async () => {

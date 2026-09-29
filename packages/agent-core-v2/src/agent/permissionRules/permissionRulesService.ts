@@ -3,7 +3,9 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IConfigService } from '#/app/config/config';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { PERMISSION_SECTION, type PermissionConfig } from './configSection';
 import {
   IAgentPermissionRulesService,
   type PermissionApprovalResultRecord,
@@ -21,12 +23,16 @@ export class AgentPermissionRulesService implements IAgentPermissionRulesService
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly agentState: IAgentStateService,
+    @IConfigService private readonly config: IConfigService,
   ) {
     this.agentState.contributeState(permissionRulesKey);
   }
 
   get rules(): readonly PermissionRule[] {
-    return [...this.agentState.get(permissionRulesKey).rules];
+    return [
+      ...(this.config.get<PermissionConfig | undefined>(PERMISSION_SECTION)?.rules ?? []),
+      ...this.agentState.get(permissionRulesKey).rules,
+    ];
   }
 
   get sessionApprovalRulePatterns(): readonly string[] {

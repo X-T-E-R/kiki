@@ -7,6 +7,7 @@ import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadC
 import { ImageConfigSchema } from '@kiki/agent-core-v2/agent/media/configSection';
 import { AgentTaskConfigSchema } from '@kiki/agent-core-v2/agent/task/configSection';
 import { PlanConfigSchema } from '@kiki/agent-core-v2/features/plan/configSection';
+import { DangerousBashGuardSchema, PermissionRuleSchema } from '@kiki/agent-core-v2/agent/permissionRules/configSection';
 import {
   TokenCountingConfigSchema,
   type TokenCountingConfig,
@@ -129,10 +130,14 @@ export const permissionReviewerResponseSchema = z.object({
 });
 
 export const permissionConfigResponseSchema = z.object({
+  rules: z.array(PermissionRuleSchema).optional(),
+  dangerousBash: DangerousBashGuardSchema.optional(),
   reviewer: permissionReviewerResponseSchema.optional(),
 }).passthrough();
 
 export const permissionConfigPatchSchema = z.object({
+  rules: z.array(PermissionRuleSchema).optional(),
+  dangerous_bash: DangerousBashGuardSchema.optional(),
   reviewer: z.object({
     backend: z.enum(['model', 'jev']).optional(),
     model: z.string().min(1).optional(),

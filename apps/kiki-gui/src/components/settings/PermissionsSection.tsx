@@ -10,6 +10,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, SavedTick, type Feedback } from '../controls';
 import { ToolPolicyCard } from './AutomationSection';
 import { mergeConfigEcho } from './configEcho';
+import { PermissionRulesSettings } from './PermissionRulesSettings';
 import { ReviewerSettings } from './ReviewerSettings';
 import { SectionCard } from './SectionCard';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -28,6 +29,7 @@ function PermissionDefaultCard() {
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const [mode, setMode] = useState<PermissionMode>('auto');
+  const [dangerousBash, setDangerousBash] = useState<'default' | 'on' | 'off'>('default');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [saved, ping] = useSavedTick();
@@ -35,6 +37,7 @@ function PermissionDefaultCard() {
   useEffect(() => {
     const next = configQuery.data?.default_permission_mode;
     if (!saving && isPermissionMode(next)) setMode(next);
+    if (!saving) setDangerousBash(configQuery.data?.permission?.dangerousBash ?? 'default');
   }, [configQuery.data, saving]);
 
   const apply = async (next: PermissionMode) => {
@@ -60,6 +63,27 @@ function PermissionDefaultCard() {
     }
   };
 
+  const applyDangerousBash = async (next: 'default' | 'on' | 'off') => {
+    const previous = dangerousBash;
+    setDangerousBash(next);
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig({ permission: { dangerous_bash: next } });
+      const baseline = queryClient.getQueryData<KikiConfigResponse>(['config']) ?? configQuery.data;
+      queryClient.setQueryData(['config'], {
+        ...mergeConfigEcho(baseline, echoed),
+        permission: echoed.permission ?? baseline?.permission,
+      });
+      ping();
+    } catch (error) {
+      setDangerousBash(previous);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <SectionCard id="st-card-permission-defaults" title={t('st.perm.defaultTitle')} effect="newSessions">
       <div className="space-y-2">
@@ -76,6 +100,13 @@ function PermissionDefaultCard() {
         <p data-permission-mode-hint className={`max-w-[62ch] text-[12px] leading-snug ${mode === 'yolo' ? 'text-amber-ink' : 'text-ink-soft'}`}>
           {t(`st.defaults.permission.${mode}Hint`)}
         </p>
+        <div className="space-y-1 border-t border-hairline pt-3">
+          <span className="block text-[13px] font-medium text-ink">{t('st.perm.dangerousBash')}</span>
+          <SettingsSegmented ariaLabel={t('st.perm.dangerousBash')} value={dangerousBash}
+            disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}
+            choices={(['default', 'on', 'off'] as const).map((value) => ({ value, label: t(`st.perm.dangerousBash.${value}`) }))} />
+          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('st.perm.dangerousBashHint')}</p>
+        </div>
         <FeedbackLine feedback={feedback} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       </div>
@@ -85,15 +116,14 @@ function PermissionDefaultCard() {
 
 /**
  * Permissions: every answer to "what may an agent do without asking me".
- * The default mode comes first because it decides whether the reviewer is
- * consulted at all; the tool policy decides which tools exist to be asked
- * about. The reviewer and tool policy edit several fields at once, so they
- * keep an explicit Save.
+ * The default mode comes first; configured rules control individual tools,
+ * the reviewer handles approvals, and tool policy controls available tools.
  */
 export function PermissionsSection() {
   return (
     <>
       <PermissionDefaultCard />
+      <PermissionRulesSettings />
       <ReviewerSettings />
       <ToolPolicyCard />
     </>

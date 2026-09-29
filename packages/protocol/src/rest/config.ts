@@ -60,6 +60,20 @@ export const planConfigRequestSchema = z
   })
   .strict();
 
+export const permissionRuleConfigSchema = z.object({
+  decision: z.enum(['allow', 'deny', 'ask']),
+  scope: z.enum(['turn-override', 'session-runtime', 'project', 'user']).default('user'),
+  pattern: z.string().min(1).refine((pattern) => {
+    const trimmed = pattern.trim();
+    if (trimmed.length === 0) return false;
+    const open = trimmed.indexOf('(');
+    return open === -1 || (open > 0 && trimmed.endsWith(')'));
+  }, { message: 'Invalid permission rule pattern' }),
+  reason: z.string().optional(),
+});
+
+export const dangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
+
 export const permissionReviewerResponseSchema = z.object({
   backend: z.enum(['model', 'jev']),
   model: z.string().optional(),
@@ -72,10 +86,14 @@ export const permissionReviewerResponseSchema = z.object({
 });
 
 export const permissionConfigResponseSchema = z.object({
+  rules: z.array(permissionRuleConfigSchema).optional(),
+  dangerousBash: dangerousBashGuardSchema.optional(),
   reviewer: permissionReviewerResponseSchema.optional(),
 }).passthrough();
 
 export const permissionConfigPatchSchema = z.object({
+  rules: z.array(permissionRuleConfigSchema).optional(),
+  dangerous_bash: dangerousBashGuardSchema.optional(),
   reviewer: z.object({
     backend: z.enum(['model', 'jev']).optional(),
     model: z.string().min(1).optional(),

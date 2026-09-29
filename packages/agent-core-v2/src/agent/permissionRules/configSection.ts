@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dangerousBashGuardSchema, permissionRuleConfigSchema } from '@kiki/protocol';
 
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { IConfigService } from '#/app/config/config';
@@ -11,28 +12,12 @@ import {
   transformPlainObject,
 } from '#/app/config/toml';
 
-import { parsePermissionPattern } from './matchesRule';
-
 export const PERMISSION_SECTION = 'permission';
 
-export const PermissionRuleDecisionSchema = z.enum(['allow', 'deny', 'ask']);
-export const PermissionRuleScopeSchema = z.enum([
-  'turn-override',
-  'session-runtime',
-  'project',
-  'user',
-]);
-
-export const PermissionRuleSchema = z.object({
-  decision: PermissionRuleDecisionSchema,
-  scope: PermissionRuleScopeSchema.default('user'),
-  pattern: z.string().min(1).refine(isValidPermissionPattern, {
-    message: 'Invalid permission rule pattern',
-  }),
-  reason: z.string().optional(),
-});
-
-export const DangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
+export const PermissionRuleDecisionSchema = permissionRuleConfigSchema.shape.decision;
+export const PermissionRuleScopeSchema = permissionRuleConfigSchema.shape.scope.removeDefault();
+export const PermissionRuleSchema = permissionRuleConfigSchema;
+export const DangerousBashGuardSchema = dangerousBashGuardSchema;
 
 export const ReviewerCategorySchema = z.enum([
   'policy_compliance',
@@ -77,15 +62,6 @@ export function isDangerousBashGuardEnabled(
   if (setting === 'on') return true;
   if (setting === 'off') return false;
   return mode !== 'yolo';
-}
-
-function isValidPermissionPattern(pattern: string): boolean {
-  try {
-    parsePermissionPattern(pattern);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export const permissionFromToml = (rawSnake: unknown): unknown => {
