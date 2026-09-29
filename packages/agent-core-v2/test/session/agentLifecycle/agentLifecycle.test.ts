@@ -112,6 +112,7 @@ import { _clearAgentToolContributionsForTests } from '#/agent/toolRegistry/toolC
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
+import '#/agent/media/mediaToolsRegistrar';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import {
@@ -330,7 +331,8 @@ describe('AgentLifecycleService', () => {
     } as unknown as IAgentToolRegistryService);
     ix.stub(IAgentMediaToolsRegistrar, {
       _serviceBrand: undefined,
-    } as IAgentMediaToolsRegistrar);
+      refresh: () => {},
+    } satisfies IAgentMediaToolsRegistrar);
     beforeExecuteListeners = 0;
     didExecuteHookIds = [];
     ix.stub(IAgentToolExecutorService, {
@@ -547,6 +549,79 @@ describe('AgentLifecycleService', () => {
   afterEach(() => {
     disposables.dispose();
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    { imageIn: true, expected: true },
+    { imageIn: false, expected: false },
+  ])('rebuilds the resumed child media tool for its bound model (image_in=$imageIn)', async ({ imageIn, expected }) => {
+    const modelAlias = 'provider/child-model';
+    ix.stub(IModelCatalog, {
+      _serviceBrand: undefined,
+      get: (alias: string) => {
+        if (alias !== modelAlias) throw new Error(`Unexpected model: ${alias}`);
+        return {
+          id: modelAlias,
+          name: 'Child model',
+          aliases: [],
+          protocol: 'anthropic',
+          headers: {},
+          capabilities: { ...UNKNOWN_CAPABILITY, image_in: imageIn, tool_use: true, max_context_tokens: 4096 },
+          maxContextSize: 4096,
+          alwaysThinking: false,
+          providerName: 'provider',
+          imagePolicy: { acceptedTypes: new Set(['image/png'] as const), convertUnsupported: 'off' },
+          authProvider: { getAuth: async () => undefined },
+        } satisfies ReturnType<IModelCatalog['get']>;
+      },
+      getRequester: () => { throw new Error('No requester needed'); },
+    } as unknown as IModelCatalog);
+    ix.stub(IRuntimeResolver, {
+      _serviceBrand: undefined,
+      inspect: (binding) => new FakeRuntime({ ...binding, generation: 'one' }, { capabilities: ['fs'] }),
+      acquire: (binding) => ({
+        runtime: new FakeRuntime({ ...binding, generation: 'one' }, { capabilities: ['fs'] }),
+        track: (resource) => resource,
+        dispose: () => {},
+      }),
+    });
+    const tools = new Map<string, Parameters<IAgentToolRegistryService['register']>[0]>();
+    ix.stub(IAgentToolRegistryService, {
+      _serviceBrand: undefined,
+      register: (tool: Parameters<IAgentToolRegistryService['register']>[0]) => {
+        tools.set(tool.name, tool);
+        return { dispose: () => {
+          if (tools.get(tool.name) === tool) tools.delete(tool.name);
+        } };
+      },
+      resolve: (name: string) => tools.get(name),
+      list: () => [],
+    } as unknown as IAgentToolRegistryService);
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias,
+        profileName: 'frontend',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    const svc = ix.get(IAgentLifecycleService);
+    const first = await svc.create({ agentId: 'child' });
+    first.accessor.get(IAgentProfileService).republishStatus();
+    await vi.waitFor(() => {
+      expect(first.accessor.get(IAgentToolRegistryService).resolve('ReadMediaFile') !== undefined).toBe(expected);
+    });
+    await svc.remove('child');
+
+    const resumed = await svc.create({ agentId: 'child' });
+    expect(resumed.accessor.get(IAgentProfileService).data().modelAlias).toBe(modelAlias);
+    expect(resumed.accessor.get(IAgentToolRegistryService).resolve('ReadMediaFile') !== undefined).toBe(expected);
   });
 
   it('counts and drains tasks across live agents without stopping them or conflating local task ids', async () => {
@@ -1105,7 +1180,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as ISessionMetadata);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider' }),
+      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY }),
     } as unknown as IModelCatalog);
     const svc = ix.get(IAgentLifecycleService);
 
@@ -1291,7 +1366,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as IAgentIdentity);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider' }),
+      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY }),
     } as unknown as IModelCatalog);
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,

@@ -66,7 +66,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     }
   }
 
-  private refresh(): void {
+  refresh(): void {
     const capabilities = this.profile.getModelCapabilities();
     const modelAlias = this.profile.getModel();
     const providerType = this.profile.getModelProviderType();
