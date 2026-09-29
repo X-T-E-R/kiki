@@ -11,6 +11,12 @@ import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProce
 
 import { IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
 import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
+import {
+  claudeConfigDir,
+  claudeSettingsPaths,
+  credentialFromClaudeCliStatus,
+  scanClaudeCredentials,
+} from './claudeCredentials';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
@@ -44,6 +50,8 @@ export interface AgentExecutorPreflightResult {
   readonly resolvedArgs: readonly string[];
   readonly diagnostics: readonly AgentExecutorPreflightDiagnostic[];
   readonly loginStatus: 'logged_in' | 'logged_out' | 'unknown';
+  readonly credentialSource?: import('./agentExecutor').AgentExecutorCredentialSource;
+  readonly credentialDetail?: string;
   readonly requirements: readonly AgentExecutorRequirement[];
 }
 
@@ -60,6 +68,12 @@ interface CommandProbe {
   readonly available: boolean;
   readonly code?: number;
   readonly output: string;
+}
+
+interface CredentialResolution {
+  readonly loginStatus: AgentExecutorPreflightResult['loginStatus'];
+  readonly source?: import('./agentExecutor').AgentExecutorCredentialSource;
+  readonly detail?: string;
 }
 
 export class AgentExecutorPreflightService implements IAgentExecutorPreflightService {
@@ -100,7 +114,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const version = firstLine(probe.output);
     const rules = await this.#diagnostics(descriptor, version, probe.available);
     diagnostics.push(...rules.diagnostics);
-    const loginStatus = probe.available && probe.code === 0 ? await this.#auth(descriptor) : 'unknown';
+    const loginStatus = probe.available && probe.code === 0 ? await this.#auth(descriptor) : { loginStatus: 'unknown' as const };
     const program = programRequirement(descriptor, probe.available ? probe.code === 0 ? 'ok' : 'failed' : 'missing',
       probe.available ? await locateCommand(command, this.fs, this.bootstrap) ?? command : undefined, version, this.bootstrap);
     return resultOf(id, command, rules.resolvedArgs, version, diagnostics, undefined, undefined, loginStatus,
@@ -136,7 +150,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       diagnostics,
       selected?.id,
       sources,
-      selected === undefined ? 'unknown' : await this.#auth(descriptor, selected.command),
+      selected === undefined ? { loginStatus: 'unknown' as const } : await this.#auth(descriptor, selected.command),
       [...rules.requirements, program],
     );
   }
@@ -191,10 +205,10 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     return { diagnostics, resolvedArgs, requirements };
   }
 
-  async #auth(descriptor: AgentExecutorDescriptor, command = descriptor.command): Promise<AgentExecutorPreflightResult['loginStatus']> {
+  async #auth(descriptor: AgentExecutorDescriptor, command = descriptor.command): Promise<CredentialResolution> {
     const auth = descriptor.auth;
     if (auth?.kind === 'codex-account') {
-      if (command === undefined) return 'unknown';
+      if (command === undefined) return { loginStatus: 'unknown' };
       const client = new CodexAppServerClient(this.processService, {
         id: descriptor.id, command, args: descriptor.args,
         env: descriptor.env === undefined ? undefined : { ...descriptor.env },
@@ -204,26 +218,57 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         const signal = AbortSignal.timeout(15_000);
         await client.connect(signal);
         const response: unknown = await client.request('account/read', { refreshToken: false }, signal);
-        if (typeof response !== 'object' || response === null || !('account' in response)) return 'unknown';
-        return response.account === null ? 'logged_out'
-          : typeof response.account === 'object' && response.account !== null ? 'logged_in' : 'unknown';
+        if (typeof response !== 'object' || response === null || !('account' in response)) return { loginStatus: 'unknown' };
+        return { loginStatus: response.account === null ? 'logged_out'
+          : typeof response.account === 'object' && response.account !== null ? 'logged_in' : 'unknown' };
       } catch {
-        return 'unknown';
+        return { loginStatus: 'unknown' };
       } finally {
         await client.shutdown().catch(() => undefined);
       }
     }
-    if (auth?.kind !== 'command-json') return 'unknown';
+    if (auth?.kind === 'claude-credentials') return this.#claudeCredentials(auth);
+    if (auth?.kind !== 'command-json') return { loginStatus: 'unknown' };
     const probe = await this.#probe(auth.command, auth.args);
-    if (!probe.available || probe.code === -1) return 'unknown';
+    if (!probe.available || probe.code === -1) return { loginStatus: 'unknown' };
     try {
       const data: unknown = JSON.parse(probe.output);
-      if (typeof data !== 'object' || data === null || Array.isArray(data)) return 'unknown';
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) return { loginStatus: 'unknown' };
       const loggedIn = (data as Record<string, unknown>)[auth.loggedInKey];
-      return loggedIn === true ? 'logged_in' : loggedIn === false ? 'logged_out' : 'unknown';
+      return { loginStatus: loggedIn === true ? 'logged_in' : loggedIn === false ? 'logged_out' : 'unknown' };
     } catch {
-      return 'unknown';
+      return { loginStatus: 'unknown' };
     }
+  }
+
+  async #claudeCredentials(
+    auth: { readonly command: string; readonly args: readonly string[] },
+  ): Promise<CredentialResolution> {
+    const configDir = claudeConfigDir(
+      { get: (name) => this.bootstrap.getEnv(name) },
+      this.bootstrap.osHomeDir,
+    );
+    const local = await scanClaudeCredentials({
+      env: { get: (name) => this.bootstrap.getEnv(name) },
+      readText: async (path) => {
+        try {
+          return await this.fs.readText(path);
+        } catch {
+          return undefined;
+        }
+      },
+      settingsPaths: claudeSettingsPaths(configDir),
+    });
+    if (local.source !== 'none') return { loginStatus: 'logged_in', source: local.source, detail: local.detail };
+    const probe = await this.#probe(auth.command, auth.args);
+    if (!probe.available || probe.code === -1) {
+      return { loginStatus: 'unknown', source: 'unknown' };
+    }
+    const remote = credentialFromClaudeCliStatus(probe.output);
+    if (remote.source === 'unknown') return { loginStatus: 'unknown', source: 'unknown' };
+    return remote.source === 'none'
+      ? { loginStatus: 'logged_out', source: 'none' }
+      : { loginStatus: 'logged_in', source: remote.source, detail: remote.detail };
   }
 
   async #probe(command: string, args: readonly string[]): Promise<CommandProbe> {
@@ -270,6 +315,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 }
 
+const UNKNOWN_CREDENTIALS: CredentialResolution = { loginStatus: 'unknown' };
+
 function resultOf(
   id: string,
   command: string,
@@ -278,7 +325,7 @@ function resultOf(
   diagnostics: readonly AgentExecutorPreflightDiagnostic[],
   selectedSource?: string,
   sources?: readonly import('./agentExecutor').AgentExecutorSourceProbe[],
-  loginStatus: AgentExecutorPreflightResult['loginStatus'] = 'unknown',
+  credentials: CredentialResolution = UNKNOWN_CREDENTIALS,
   requirements: readonly AgentExecutorRequirement[] = [],
 ): AgentExecutorPreflightResult {
   const status = diagnostics.some((diagnostic) => diagnostic.severity === 'error')
@@ -286,7 +333,9 @@ function resultOf(
     : diagnostics.some((diagnostic) => diagnostic.severity === 'warning')
       ? 'warning'
       : 'ready';
-  return { id, status, command, version, selectedSource, sources, resolvedArgs, diagnostics, loginStatus, requirements };
+  return { id, status, command, version, selectedSource, sources, resolvedArgs, diagnostics,
+    loginStatus: credentials.loginStatus, credentialSource: credentials.source,
+    credentialDetail: credentials.detail, requirements };
 }
 
 function programRequirement(

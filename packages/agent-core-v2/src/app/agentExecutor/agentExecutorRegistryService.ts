@@ -290,6 +290,7 @@ function descriptorFromConfig(
     installHint: config.installHint,
     programLabel: config.programLabel,
     loginCommand: config.loginCommand,
+    apiKeyEnv: config.apiKeyEnv,
     steerDelivery: config.steerDelivery,
     profileDelivery: config.profileDelivery,
     revision: descriptorRevisionFromConfig(config),

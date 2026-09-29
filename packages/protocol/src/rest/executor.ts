@@ -20,6 +20,12 @@ export const executorCapabilitiesSchema = z.object({
 });
 export type ExecutorCapabilitiesResponse = z.infer<typeof executorCapabilitiesSchema>;
 
+export const executorCredentialSourceSchema = z.enum([
+  'oauth_login', 'api_key_env', 'auth_token_env', 'settings_env', 'api_key_helper',
+  'api_key', 'external_backend', 'none', 'unknown',
+]);
+export type ExecutorCredentialSource = z.infer<typeof executorCredentialSourceSchema>;
+
 export const executorCatalogItemSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -34,7 +40,12 @@ export const executorCatalogItemSchema = z.object({
     source: z.string().optional(),
     install_hint: z.string().optional(),
     login_command: z.array(z.string()).optional(),
+    /** Environment variable the engine reads an API key from, when it accepts one instead of a sign-in. */
+    api_key_env: z.string().optional(),
     login_status: z.enum(['logged_in', 'logged_out', 'unknown']),
+    /** Which credential the engine already has: a CLI login, an API key, a token, a settings `env` entry, or `apiKeyHelper`. */
+    credential_source: executorCredentialSourceSchema.optional(),
+    credential_detail: z.string().optional(),
     default_args: z.array(z.string()),
   }).optional(),
   default_profile: z.boolean().optional(),
@@ -60,11 +71,14 @@ export const executorCheckResponseSchema = z.object({
   selected_source: z.string().optional(),
   resolved_args: z.array(z.string()),
   login_status: z.enum(['logged_in', 'logged_out', 'unknown']),
+  credential_source: executorCredentialSourceSchema.optional(),
+  credential_detail: z.string().optional(),
   diagnostics: z.array(z.object({ severity: z.enum(['info', 'warning', 'error']), message: z.string() })),
   /** Setup order: declared dependencies first, then the launched program. */
   requirements: z.array(executorRequirementSchema).optional(),
 });
 export type ExecutorCatalogItem = z.infer<typeof executorCatalogItemSchema>;
+export type ExecutorCheckResponse = z.infer<typeof executorCheckResponseSchema>;
 
 export const listExecutorsResponseSchema = z.object({
   items: z.array(executorCatalogItemSchema),

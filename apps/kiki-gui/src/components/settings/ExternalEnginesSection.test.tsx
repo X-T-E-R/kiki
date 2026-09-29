@@ -116,4 +116,38 @@ describe('external engines connection kind', () => {
     expect(engineHealth({ ...codex, connection: { ...codex.connection!, login_status: 'logged_out' } }, undefined)).toBe('warning');
     expect(engineHealth({ ...codex, status: 'unknown' }, undefined)).toBe('unknown');
   });
+
+  it('names the credential Claude Code reuses, and offers both routes when it has none', async () => {
+    const claude: ExecutorCatalogItem = {
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready', model_binding: 'mapped', thinking_binding: 'unavailable',
+      connection: { command: 'claude-agent-acp', login_command: ['claude', 'auth', 'login'], login_status: 'unknown', api_key_env: 'ANTHROPIC_API_KEY', default_args: [] },
+    };
+    const cli = { id: 'claude', label: 'Claude Code CLI', role: 'dependency' as const, status: 'ok' as const, version: '2.1.220', path: 'C:/bin/claude.exe' };
+    const adapter = { id: 'claude-acp', label: 'claude-agent-acp', role: 'program' as const, status: 'ok' as const, version: '0.84.0', path: 'C:/kiki/tools/index.js' };
+    const base = { id: 'claude-acp', command: 'claude-agent-acp', resolved_args: [], diagnostics: [], requirements: [cli, adapter] };
+    client.listExecutors.mockResolvedValue({ items: [claude] });
+    client.checkExecutor
+      .mockResolvedValueOnce({ ...base, status: 'ready', version: '0.84.0', login_status: 'logged_in',
+        credential_source: 'settings_env', credential_detail: 'C:/Users/me/.claude/settings.json#env.ANTHROPIC_API_KEY' })
+      .mockResolvedValueOnce({ ...base, status: 'warning', version: '0.84.0', login_status: 'logged_out', credential_source: 'none' });
+    await render();
+    const row = container.querySelector<HTMLElement>('[data-engine-row="claude-acp"]')!;
+
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    expect(row.querySelector('[data-engine-summary]')?.textContent).toContain('API key from Claude Code settings.json');
+    const signedIn = row.querySelector('[data-engine-step="signin"]')!;
+    expect(signedIn.getAttribute('data-step-state')).toBe('done');
+    expect(signedIn.textContent).toContain('API key from Claude Code settings.json');
+    expect(row.getAttribute('data-engine-health')).toBe('ready');
+
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    const noCredential = row.querySelector('[data-engine-step="signin"]')!;
+    expect(noCredential.getAttribute('data-step-state')).toBe('current');
+    expect(noCredential.querySelector('[data-engine-route="login"]')?.textContent).toContain('claude auth login');
+    expect(noCredential.querySelector('[data-engine-route="api-key"]')?.textContent).toContain('export ANTHROPIC_API_KEY=YOUR_API_KEY');
+    expect(noCredential.textContent).toContain('~/.claude/settings.json');
+    expect(row.getAttribute('data-engine-health')).toBe('warning');
+  });
 });

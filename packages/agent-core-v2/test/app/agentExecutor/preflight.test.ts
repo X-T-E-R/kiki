@@ -21,6 +21,7 @@ import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorR
 import {
   AgentExecutorPreflightService,
   IAgentExecutorPreflightService,
+  type AgentExecutorPreflightResult,
 } from '#/app/agentExecutor/preflight';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSystem';
@@ -61,7 +62,7 @@ class FakeProcessService implements IHostProcessService {
   }
 }
 
-function bootstrap(): IBootstrapService {
+function bootstrap(env: Readonly<Record<string, string>> = {}): IBootstrapService {
   return {
     _serviceBrand: undefined,
     platform: 'win32',
@@ -88,6 +89,7 @@ function bootstrap(): IBootstrapService {
       ALT_CODEX_PATH: 'C:/alt/codex.exe',
       PATH: 'C:/tools',
       PATHEXT: '.EXE;.CMD',
+      ...env,
     })[name],
     scope: () => '',
   };
@@ -95,14 +97,23 @@ function bootstrap(): IBootstrapService {
 
 const CLAUDE_MANAGED = 'C:/Users/test/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js';
 const CLAUDE_PROBE = `${normalize(process.execPath)} ${CLAUDE_MANAGED} --version`;
+const CLAUDE_USER_SETTINGS = 'C:/Users/test/.claude/settings.json';
 
-function fsWith(paths: readonly string[]): IHostFileSystem {
+function fsWith(
+  paths: readonly string[],
+  files: Readonly<Record<string, string>> = {},
+): IHostFileSystem {
   const present = new Set(paths);
   return {
     _serviceBrand: undefined,
     stat: async (path) => {
       if (!present.has(path)) throw new Error('missing');
       return { isFile: true, isDirectory: false, size: 1 } satisfies HostFileStat;
+    },
+    readText: async (path) => {
+      const text = files[path];
+      if (text === undefined) throw new Error('missing');
+      return text;
     },
   } as IHostFileSystem;
 }
@@ -459,5 +470,115 @@ describe('AgentExecutorPreflightService', () => {
       ['claude-acp', 'missing'],
     ]);
     expect(result?.requirements?.[0]?.installHint).toBe('npm install -g @anthropic-ai/claude-code');
+  });
+
+  describe('Claude Code credentials', () => {
+    beforeEach(() => {
+      processService.outputs.set(CLAUDE_PROBE, { output: '0.84.0' });
+      processService.outputs.set('claude --version', { output: '2.1.220 (Claude Code)' });
+    });
+
+    const check = async (): Promise<AgentExecutorPreflightResult | undefined> =>
+      (await services.get(IAgentExecutorPreflightService).run(['claude-acp']))[0];
+
+    const setClaudeSettings = (settings: unknown): void => {
+      services.set(
+        IHostFileSystem,
+        fsWith(
+          ['C:/tools/claude.EXE', CLAUDE_MANAGED, CLAUDE_USER_SETTINGS],
+          { [CLAUDE_USER_SETTINGS]: JSON.stringify(settings) },
+        ),
+      );
+      services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+      services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+    };
+
+    it('accepts an API key from the host environment without reading the CLI sign-in', async () => {
+      services.set(IBootstrapService, bootstrap({ ANTHROPIC_API_KEY: 'sk-ant-api03-fixture-value' }));
+      const result = await check();
+
+      expect(result).toMatchObject({
+        loginStatus: 'logged_in',
+        credentialSource: 'api_key_env',
+        credentialDetail: 'ANTHROPIC_API_KEY',
+      });
+      expect(processService.calls).not.toContain('claude auth status --json');
+    });
+
+    it('accepts an auth token from the host environment as its own source', async () => {
+      services.set(IBootstrapService, bootstrap({ ANTHROPIC_AUTH_TOKEN: 'fixture-token' }));
+      const result = await check();
+
+      expect(result).toMatchObject({
+        loginStatus: 'logged_in',
+        credentialSource: 'auth_token_env',
+        credentialDetail: 'ANTHROPIC_AUTH_TOKEN',
+      });
+      expect(processService.calls).not.toContain('claude auth status --json');
+    });
+
+    it('accepts a key from the env block of the user Claude Code settings file', async () => {
+      setClaudeSettings({ env: { ANTHROPIC_API_KEY: 'sk-ant-api03-fixture-value' } });
+      const result = await check();
+
+      expect(result).toMatchObject({ loginStatus: 'logged_in', credentialSource: 'settings_env' });
+      expect(result?.credentialDetail).toBe(`${CLAUDE_USER_SETTINGS}#env.ANTHROPIC_API_KEY`);
+      expect(processService.calls).not.toContain('claude auth status --json');
+    });
+
+    it('accepts a configured apiKeyHelper', async () => {
+      setClaudeSettings({ apiKeyHelper: 'node -e "process.stdout.write(process.env.KEY)"' });
+      const result = await check();
+
+      expect(result).toMatchObject({ loginStatus: 'logged_in', credentialSource: 'api_key_helper' });
+      expect(result?.credentialDetail).toBe(CLAUDE_USER_SETTINGS);
+      expect(processService.calls).not.toContain('claude auth status --json');
+    });
+
+    it('accepts a CLI sign-in the probe reports and names the credential', async () => {
+      processService.outputs.set('claude auth status --json', {
+        output: '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}',
+      });
+      const result = await check();
+
+      expect(result).toMatchObject({ loginStatus: 'logged_in', credentialSource: 'oauth_login' });
+    });
+
+    it('accepts a third-party backend the CLI reports', async () => {
+      processService.outputs.set('claude auth status --json', {
+        output: '{"loggedIn":false,"apiProvider":"bedrock"}',
+      });
+      const result = await check();
+
+      expect(result).toMatchObject({
+        loginStatus: 'logged_in',
+        credentialSource: 'external_backend',
+        credentialDetail: 'bedrock',
+      });
+    });
+
+    it('reports no credential at all as signed out, with no source', async () => {
+      processService.outputs.set('claude auth status --json', {
+        output: '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}',
+      });
+      const result = await check();
+
+      expect(result).toMatchObject({ loginStatus: 'logged_out', credentialSource: 'none' });
+      expect(result?.credentialDetail).toBeUndefined();
+    });
+
+    it('reports an unreadable credential as unknown when the CLI cannot answer either', async () => {
+      processService.outputs.set('claude auth status --json', { output: 'not json' });
+      const result = await check();
+
+      expect(result).toMatchObject({ loginStatus: 'unknown', credentialSource: 'unknown' });
+    });
+
+    it('leaves the launch environment untouched so Claude Code keeps its own config directory', async () => {
+      const resolved = await services.get(IAgentExecutorRegistry).resolveExecutable('claude-acp');
+
+      expect(resolved.descriptor.env).toBeUndefined();
+      expect(resolved.descriptor.selectedSource).toBe('kiki-managed');
+    });
   });
 });

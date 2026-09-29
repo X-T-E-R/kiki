@@ -85,6 +85,23 @@ export interface AgentExecutorPermission {
   readonly trustEngineSettings?: boolean;
 }
 
+/**
+ * Which credential an external engine's own configuration already carries.
+ * `api_key_env`, `auth_token_env`, `settings_env` and `api_key_helper` are
+ * observed directly; `oauth_login` and `api_key` are what the vendor CLI
+ * reports when the origin is outside what Kiki can see.
+ */
+export type AgentExecutorCredentialSource =
+  | 'oauth_login'
+  | 'api_key_env'
+  | 'auth_token_env'
+  | 'settings_env'
+  | 'api_key_helper'
+  | 'api_key'
+  | 'external_backend'
+  | 'none'
+  | 'unknown';
+
 export type AgentExecutorDiagnosticRule =
   | { readonly kind: 'message'; readonly severity: 'info' | 'warning'; readonly message: string }
   | { readonly kind: 'env'; readonly name: string; readonly present: string; readonly absent: string }
@@ -116,7 +133,9 @@ export interface AgentExecutorDescriptor {
   readonly diagnostics?: readonly AgentExecutorDiagnosticRule[];
   readonly auth?: { readonly kind: 'command-json'; readonly command: string;
     readonly args: readonly string[]; readonly loggedInKey: string }
-    | { readonly kind: 'codex-account' };
+    | { readonly kind: 'codex-account' }
+    | { readonly kind: 'claude-credentials'; readonly command: string;
+        readonly args: readonly string[] };
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly startupTimeoutMs?: number;
@@ -133,6 +152,8 @@ export interface AgentExecutorDescriptor {
   readonly defaultProfile?: boolean;
   readonly installHint?: string;
   readonly loginCommand?: readonly string[];
+  /** Environment variable the engine reads an API key from, when the engine accepts one as an alternative to signing in. */
+  readonly apiKeyEnv?: string;
   readonly steerDelivery?: 'native' | 'next_turn_preamble';
   /**
    * Declares that the harness accepts the frozen profile as a real system

@@ -87,4 +87,26 @@ describe('AcpProcessClient limits and observers', () => {
     expect(disposals).toHaveLength(2);
     expect(disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
   });
+
+  it('spawns the agent with the caller environment and no unset list', async () => {
+    const calls: Array<{ command: string; options: Record<string, unknown> | undefined }> = [];
+    const client = new AcpProcessClient(
+      {
+        spawn: async (command: string, _args?: readonly string[], options?: Record<string, unknown>) => {
+          calls.push({ command, options });
+          throw new Error('spawn refused');
+        },
+      } as unknown as HostProcessServiceLike,
+      { id: 'claude-acp', command: 'node', args: ['agent.js'] },
+      { logger: { error: () => {} } },
+    );
+
+    await expect(client.openSession({ cwd: 'C:/workspace' })).rejects.toThrow();
+
+    expect(calls[0]?.command).toBe('node');
+    expect(calls[0]?.options).toMatchObject({ shell: false, windowsHide: true });
+    expect(calls[0]?.options).not.toHaveProperty('envUnset');
+    expect(calls[0]?.options?.['env']).toBeUndefined();
+    expect(calls[0]?.options?.['cwd']).toBeUndefined();
+  });
 });

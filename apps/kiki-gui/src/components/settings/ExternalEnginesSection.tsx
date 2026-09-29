@@ -17,6 +17,7 @@ import { EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from './profileEditor/en
 export type EngineHealth = 'ready' | 'warning' | 'missing' | 'unknown';
 
 type LoginStatus = ExecutorCheckResult['login_status'];
+type CredentialSource = NonNullable<ExecutorCheckResult['credential_source']>;
 
 /**
  * Health from the freshest fact. An explicit check wins; otherwise the
@@ -38,6 +39,23 @@ const HEALTH_KEY: Record<EngineHealth, I18nKey> = {
   missing: 'st.engines.statusMissing',
   unknown: 'st.engines.statusUnknown',
 };
+
+const CREDENTIAL_KEY: Record<CredentialSource, I18nKey> = {
+  oauth_login: 'st.engines.credential.oauth_login',
+  api_key_env: 'st.engines.credential.api_key_env',
+  auth_token_env: 'st.engines.credential.auth_token_env',
+  settings_env: 'st.engines.credential.settings_env',
+  api_key_helper: 'st.engines.credential.api_key_helper',
+  api_key: 'st.engines.credential.api_key',
+  external_backend: 'st.engines.credential.external_backend',
+  none: 'st.engines.credential.none',
+  unknown: 'st.engines.credential.unknown',
+};
+
+/** A named credential is worth stating; `none` and `unknown` carry no news. */
+export function credentialLabel(source: CredentialSource | undefined): I18nKey | undefined {
+  return source === undefined || source === 'none' || source === 'unknown' ? undefined : CREDENTIAL_KEY[source];
+}
 
 const PROTOCOL_LABEL: Record<string, string> = { 'acp-v1': 'ACP v1', acp: 'ACP', 'codex-app-server': 'Codex app-server' };
 
@@ -134,12 +152,14 @@ function StepMarker({ state, index }: { state: StepState; index: number }) {
 
 /**
  * Setup as ordered steps from the check: each declared dependency, the
- * launched program, then sign-in. Every step shows what was found (version,
- * path); the first unmet step carries the one command that moves it forward.
- * Driven only by `requirements` + `login_status`, so any engine whose
- * descriptor declares dependencies gets the same guide.
+ * launched program, then the credential. Every step shows what was found
+ * (version, path); the first unmet step carries the one command that moves it
+ * forward. Driven only by `requirements` + `login_status`, so any engine whose
+ * descriptor declares dependencies gets the same guide. An engine that accepts
+ * an API key instead of a sign-in (`api_key_env`) offers both routes, because
+ * Kiki reuses whichever credential the machine already has.
  */
-function EngineSetup({ check, loginCommand }: { check: ExecutorCheckResult; loginCommand?: string }) {
+function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckResult; loginCommand?: string; apiKeyEnv?: string }) {
   const { t } = useI18n();
   const requirements = check.requirements ?? [];
   const stage = engineSetupStage(check);
@@ -148,6 +168,8 @@ function EngineSetup({ check, loginCommand }: { check: ExecutorCheckResult; logi
     blockedIndex === -1 || index < blockedIndex ? 'done' : index === blockedIndex ? 'current' : 'pending';
   const signInState: StepState = blockedIndex !== -1 ? 'pending'
     : check.login_status === 'logged_in' ? 'done' : check.login_status === 'logged_out' ? 'current' : 'unknown';
+  const credentialKey = credentialLabel(check.credential_source);
+  const needsCredential = signInState === 'current' || signInState === 'unknown';
   return (
     <div data-engine-setup={stage.kind} className="space-y-2">
       <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
@@ -185,12 +207,29 @@ function EngineSetup({ check, loginCommand }: { check: ExecutorCheckResult; logi
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-[12.5px] leading-5 text-ink">
               <span className="font-medium">{t('st.engines.login')}</span>
-              <span className="text-ink-faint"> · {signInState === 'pending' ? t('st.engines.stepWaiting') : t(`st.engines.login.${check.login_status}`)}</span>
+              <span className="text-ink-faint"> · {signInState === 'pending' ? t('st.engines.stepWaiting')
+                : credentialKey !== undefined ? t(credentialKey) : t(`st.engines.login.${check.login_status}`)}</span>
             </p>
-            {signInState === 'current' || signInState === 'unknown' ? (
-              <div className="space-y-1">
-                <p className="text-[12px] leading-4 text-ink-soft">{t(signInState === 'current' ? 'st.engines.loginOut' : 'st.engines.loginUnknownBody')}</p>
-                {loginCommand !== undefined ? <CopyCommand command={loginCommand} /> : null}
+            {needsCredential ? (
+              <div className="space-y-1.5">
+                <p className="text-[12px] leading-4 text-ink-soft">
+                  {t(signInState === 'current' ? 'st.engines.loginOrKey' : 'st.engines.loginUnknownBody')}
+                </p>
+                {loginCommand !== undefined ? (
+                  <div data-engine-route="login" className="flex flex-wrap items-center gap-2">
+                    <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
+                    <CopyCommand command={loginCommand} />
+                  </div>
+                ) : null}
+                {apiKeyEnv !== undefined ? (
+                  <div data-engine-route="api-key" className="flex flex-wrap items-center gap-2">
+                    <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
+                    <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
+                  </div>
+                ) : null}
+                {apiKeyEnv !== undefined ? (
+                  <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.apiKeySettings', { env: apiKeyEnv })}</p>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -212,6 +251,10 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const health = engineHealth(item, check);
   const healthText = t(HEALTH_KEY[health]);
   const login: LoginStatus = check?.login_status ?? connection?.login_status ?? 'unknown';
+  const credential = check?.credential_source ?? connection?.credential_source;
+  const credentialDetail = check?.credential_detail ?? connection?.credential_detail;
+  const credentialKey = credentialLabel(credential);
+  const apiKeyEnv = connection?.api_key_env;
   // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
   const version = check === undefined ? item.version : check.version;
   const programPath = check?.requirements?.find((requirement) => requirement.role === 'program')?.path;
@@ -244,7 +287,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
     t('st.engines.kind'),
     protocolLabel(item.protocol),
     version,
-    health === 'missing' ? undefined : t(`st.engines.login.${login}`),
+    health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
   ].filter((part): part is string => part !== undefined);
 
   return (
@@ -272,7 +315,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/engine:rotate-90" />
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
-        {setup ? <EngineSetup check={check!} loginCommand={loginCommand} /> : null}
+        {setup ? <EngineSetup check={check!} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
         {health === 'missing' && !setup ? (
           <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
             <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
@@ -312,12 +355,22 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           </Fact>
           {health === 'missing' || setup ? null : <Fact label={t('st.engines.login')} dataFact="login">
             <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
+            {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
+              {t(credentialKey)}
+              {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
+            </span> : null}
             {login === 'unknown' && check === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
-            {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOut')}</span> : null}
+            {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
             {loginCommand !== undefined && login !== 'logged_in' ? (
               <span className="mt-1 flex flex-wrap items-center gap-2">
                 <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
                 <CopyCommand command={loginCommand} />
+              </span>
+            ) : null}
+            {apiKeyEnv !== undefined && login !== 'logged_in' ? (
+              <span className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
+                <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
               </span>
             ) : null}
           </Fact>}

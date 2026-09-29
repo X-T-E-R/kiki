@@ -446,6 +446,9 @@ export interface ExecutorCheckResult {
   readonly selected_source?: string;
   readonly resolved_args: readonly string[];
   readonly login_status: 'logged_in' | 'logged_out' | 'unknown';
+  /** Which credential the engine already has. Absent from servers that predate it. */
+  readonly credential_source?: import('@kiki/protocol').ExecutorCredentialSource;
+  readonly credential_detail?: string;
   readonly diagnostics: readonly { readonly severity: 'info' | 'warning' | 'error'; readonly message: string }[];
   /** Setup order: declared dependencies, then the launched program. Absent from servers that predate it. */
   readonly requirements?: readonly import('@kiki/protocol').ExecutorRequirement[];

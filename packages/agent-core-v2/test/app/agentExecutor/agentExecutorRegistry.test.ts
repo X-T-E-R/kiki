@@ -401,6 +401,30 @@ describe('AgentExecutorRegistryService', () => {
     } });
   });
 
+  it('accepts the Claude credential descriptor and round-trips its TOML keys', () => {
+    const parsed = AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
+      claude: { protocol: 'acp-v1', command: 'claude-agent-acp',
+        auth: { kind: 'claude-credentials', command: 'claude', args: ['auth', 'status', '--json'] },
+        login_command: ['claude', 'auth', 'login'],
+        api_key_env: 'ANTHROPIC_API_KEY',
+      },
+    }));
+
+    expect(parsed['claude']).toMatchObject({
+      auth: { kind: 'claude-credentials', command: 'claude', args: ['auth', 'status', '--json'] },
+      loginCommand: ['claude', 'auth', 'login'],
+      apiKeyEnv: 'ANTHROPIC_API_KEY',
+    });
+    expect(agentExecutorsToToml(parsed)).toMatchObject({ claude: {
+      login_command: ['claude', 'auth', 'login'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    } });
+    expect(() => AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
+      claude: { protocol: 'acp-v1', command: 'claude-agent-acp',
+        auth: { kind: 'claude-credentials', command: 'claude' } },
+    }))).toThrow();
+  });
+
   it('gates the system prompt override per descriptor without invalidating resumable sessions', () => {
     const parsed = AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
       optedIn: {
