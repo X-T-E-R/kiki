@@ -1633,6 +1633,22 @@ fn reload_space_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow<Wry>) -> tauri::Result<()> {
+    window.with_webview(|webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+
+        let result = webview.controller().CoreWebView2()
+            .and_then(|core| core.Settings())
+            .and_then(|settings| settings.cast::<ICoreWebView2Settings3>())
+            .and_then(|settings| settings.SetAreBrowserAcceleratorKeysEnabled(false));
+        if let Err(error) = result {
+            eprintln!("Kiki could not disable WebView2 browser accelerator keys: {error}");
+        }
+    })
+}
+
 fn notification_action_opens(action: &str) -> bool {
     matches!(action, "default" | "open")
 }
@@ -3110,11 +3126,15 @@ pub fn run() {
                 .iter()
                 .find(|window| window.label == "main")
                 .ok_or_else(|| std::io::Error::other("main window config is missing"))?;
-            WebviewWindowBuilder::from_config(app.handle(), main_config)
+            let main_window = WebviewWindowBuilder::from_config(app.handle(), main_config)
                 .map_err(std::io::Error::other)?
                 .enable_clipboard_access()
                 .build()
                 .map_err(std::io::Error::other)?;
+            #[cfg(windows)]
+            disable_browser_accelerator_keys(&main_window).map_err(std::io::Error::other)?;
+            #[cfg(not(windows))]
+            let _ = main_window;
             // The tray is part of the desktop lifecycle contract, not a
             // best-effort decoration: close-to-tray would strand a hidden
             // window if the icon could not be created.
