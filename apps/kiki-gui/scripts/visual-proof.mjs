@@ -105,14 +105,13 @@ const STRINGS = {
     settings: 'Settings',
     tabProviders: 'Connections',
     capabilities: 'Capabilities',
-    configuredProviders: 'Configured providers',
     tools: 'Tools',
     skills: 'Skills',
     mcp: 'MCP',
     automation: 'Tools & automations',
     shimCapabilities: 'The capabilities panel was split into dedicated settings pages',
     shimPlugins: 'Plugins',
-    newSessionDefaults: 'New-session defaults',
+    composerCardTitle: 'Composer & session',
     appearanceTitle: 'Appearance',
     searchQuery: 'theme',
     themeDark: 'Dark',
@@ -134,14 +133,9 @@ const STRINGS = {
     onboardingTest: 'Test connection',
     onboardingTestedOk: 'Connection works',
     fetchModelsButton: 'Test connection & pull models',
-    providerBadgeKimiCode: 'Kimi',
-    providerBadgeNone: 'None',
-    providerBadgeNoneTitle: 'Provider request identity: None (no request identity)',
     requestIdentityLabel: 'Request identity',
-    providerIdLabel: 'Provider ID',
-    providerProtocolLabel: 'Protocol',
     saveProvider: 'Save provider',
-    dangerTitle: 'Danger zone',
+    oauthCancel: 'Cancel sign-in',
     disabledMainHint: 'Still available for main sessions',
     technicalDetails: 'Technical details',
     overriddenNote: 'Built-in agent overridden by',
@@ -254,12 +248,8 @@ const STRINGS = {
     terminalEmpty: 'No terminals yet',
     terminalKillConfirm: 'sure?',
     terminalExited: 'Process exited (code 0)',
-    capPlugin: 'Plugin skills',
     pluginsAdd: 'Add a plugin',
     pluginsMarketplaceTab: 'Marketplace',
-    pluginsUnconfigured: 'Save a catalog URL to show its plugins here.',
-    pluginsSaveCatalog: 'Save catalog URL',
-    pluginsCatalogNotes: 'Catalog Notes',
     pluginsUninstall: 'Uninstall',
     pluginsManifest: 'Manifest',
     pluginsMcpOn: 'On',
@@ -310,14 +300,13 @@ const STRINGS = {
     settings: '设置',
     tabProviders: '连接服务',
     capabilities: '能力',
-    configuredProviders: '已配置的提供商',
     tools: '工具',
     skills: '技能',
     mcp: 'MCP',
     automation: '工具与自动操作',
     shimCapabilities: '能力面板已拆分为独立的设置页面',
     shimPlugins: '插件',
-    newSessionDefaults: '新会话默认值',
+    composerCardTitle: '输入与会话',
     appearanceTitle: '外观',
     searchQuery: '主题',
     themeDark: '暗色',
@@ -339,14 +328,9 @@ const STRINGS = {
     onboardingTest: '测试连接',
     onboardingTestedOk: '连接成功',
     fetchModelsButton: '测试连接并拉取模型',
-    providerBadgeKimiCode: 'Kimi',
-    providerBadgeNone: '无',
-    providerBadgeNoneTitle: '提供商请求身份: 无（不发送请求身份）',
     requestIdentityLabel: '请求身份',
-    providerIdLabel: '提供商 ID',
-    providerProtocolLabel: '协议',
     saveProvider: '保存提供商',
-    dangerTitle: '危险操作',
+    oauthCancel: '取消登录',
     disabledMainHint: '仍可用于主会话',
     technicalDetails: '技术细节',
     overriddenNote: '内置智能体已被',
@@ -457,12 +441,8 @@ const STRINGS = {
     terminalEmpty: '还没有终端',
     terminalKillConfirm: '确认？',
     terminalExited: '进程已退出（代码 0）',
-    capPlugin: '插件技能',
     pluginsAdd: '添加插件',
     pluginsMarketplaceTab: '市场',
-    pluginsUnconfigured: '保存 URL 后目录将在此出现。',
-    pluginsSaveCatalog: '保存目录 URL',
-    pluginsCatalogNotes: 'Catalog Notes',
     pluginsUninstall: '卸载',
     pluginsManifest: '清单',
     pluginsMcpOn: '开',
@@ -1764,11 +1744,12 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-models');
 
+  // Connections tab (models batch): one list of rows, each a <details> keyed
+  // by provider id with its health in words; request identity and the rest of
+  // the rarely touched fields live under the row editor's Advanced disclosure.
   await page.locator('[data-ai-tab="providers"]').click();
-  await page.waitForSelector(`text=${S.configuredProviders}`, { timeout: 10_000 });
-  // The pending device-code flow is seeded by the scenario — proof for the
-  // OAuth card (code, countdown, polling indicator).
-  await page.waitForSelector('text=ABCD-EFGH', { timeout: 10_000 });
+  await page.waitForSelector('[data-connection-list] [data-connection-row="fixture"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-connection-row="alt"][data-connection-health="setup"]', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-providers');
 
@@ -1778,59 +1759,53 @@ async function scenarioSettings() {
   await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('#st-card-providers', { timeout: 10_000 });
-
-  // Collapsed provider summaries always carry the request-identity badge:
-  // the configured preset on `fixture`, the explicit none on managed `alt`.
-  const providerSummary = (id) => page.locator('#st-card-providers details summary', { hasText: id });
-  await providerSummary('fixture').getByText(S.providerBadgeKimiCode, { exact: false }).waitFor({ timeout: 5000 });
-  await providerSummary('alt').getByText(S.providerBadgeNone, { exact: false }).waitFor({ timeout: 5000 });
-  // The short badge keeps the full label on its tooltip for clarity.
-  await providerSummary('alt').locator(`[title="${S.providerBadgeNoneTitle}"]`).waitFor({ timeout: 5000 });
-
-  // Expand the OAuth-managed provider: id/protocol stay locked, the request
-  // identity dropdown stays editable, the Save surface renders, and the
-  // credential field + danger zone stay hidden.
-  const managedEditor = page.locator('#st-card-providers details', { hasText: 'alt' });
-  await managedEditor.locator('summary').click();
-  const managedIdInput = managedEditor.getByLabel(S.providerIdLabel);
-  const managedProtocol = managedEditor.getByLabel(S.providerProtocolLabel);
-  if (!(await managedIdInput.isDisabled()) || !(await managedProtocol.isDisabled())) {
-    throw new Error('managed provider id/protocol inputs must be disabled');
+  await page.waitForSelector('#st-card-providers [data-connection-row="fixture"]', { timeout: 10_000 });
+  if (!page.url().includes('/settings/ai') || !page.url().includes('tab=providers')) {
+    throw new Error(`legacy /settings/providers must canonicalize to the connections tab, got ${page.url()}`);
   }
-  // The identity select is the one carrying the kimi_code preset option; a
-  // label lookup cannot work here (the wrapping label's text includes every
-  // option, and the summary badge's aria-label shares the label prefix).
-  const managedIdentity = managedEditor.locator('select', {
+
+  // Expand a stored API connection: its id is fixed (named in the row, no id
+  // input), the key field and Save render, and the provider-level request
+  // identity echoes the seeded kimi_code preset inside Advanced.
+  const storedRow = page.locator('[data-connection-row="fixture"]');
+  await storedRow.locator('> summary').click();
+  await storedRow.locator('[data-connection-test-button]').waitFor({ timeout: 5000 });
+  if ((await storedRow.locator('#provider-field-id').count()) !== 0) {
+    throw new Error('a stored connection must not offer an editable provider id');
+  }
+  if ((await storedRow.locator('input[type="password"]').count()) !== 1) {
+    throw new Error('a stored API connection must render its API-key field');
+  }
+  await storedRow.getByRole('button', { name: S.saveProvider }).waitFor({ timeout: 5000 });
+  await storedRow.locator('[data-advanced^="provider-"] > button').click();
+  const storedIdentity = storedRow.locator('[data-advanced^="provider-"] select', {
     has: page.locator('option[value="kimi_code"]'),
   });
-  if (await managedIdentity.isDisabled()) {
-    throw new Error('managed provider request identity dropdown must stay editable');
+  if ((await storedIdentity.inputValue()) !== 'kimi_code') {
+    throw new Error(`stored provider request identity should echo kimi_code, got ${await storedIdentity.inputValue()}`);
   }
-  if ((await managedIdentity.inputValue()) !== 'none') {
-    throw new Error(`managed provider request identity should echo the none preset, got ${await managedIdentity.inputValue()}`);
-  }
-  await managedEditor.getByRole('button', { name: S.saveProvider }).waitFor({ timeout: 5000 });
-  if ((await managedEditor.locator('input[type="password"]').count()) !== 0) {
-    throw new Error('managed provider must not render the API-key field');
-  }
-  if ((await managedEditor.getByText(S.dangerTitle, { exact: true }).count()) !== 0) {
-    throw new Error('managed provider must not render the danger zone');
-  }
-  // Frame the shot from the editor's top so the summary badge, the locked
-  // id/protocol fields, the identity dropdown, and the Save button all fit.
-  await managedEditor.evaluate((element) => { element.scrollIntoView({ block: 'start' }); });
+  await storedRow.evaluate((element) => { element.scrollIntoView({ block: 'start' }); });
   await page.waitForTimeout(200);
-  await shot('settings-providers-managed');
-  // Fold it back so the wizard flow below sees the original layout.
-  await managedEditor.locator('summary').click();
+  await shot('settings-providers-editor');
+  await storedRow.locator('> summary').click();
 
-  // New-provider wizard: pick the Anthropic template, point it at the fixture
-  // server's mock upstream, and pull its model list through the browser fetch.
-  await page.locator('button:has(span:text-is("Anthropic"))').click();
-  await page.locator('input[placeholder="https://api.example.com/v1"]:visible')
-    .fill(`${FIXTURE_URL}/provider-mock/v1`);
-  await page.locator('input[type="password"]:visible').fill('fixture-key');
+  // Account lane: starting a sign-in opens the device-code card (code,
+  // countdown, cancel) under the method that started it.
+  await page.click('[data-add-connection]');
+  await page.click('[data-connection-choice="account"]');
+  await page.locator('[data-oauth-method="kimi-code"] button').click();
+  await page.waitForSelector('[data-oauth-method="kimi-code"] >> text=WXYZ-1234', { timeout: 10_000 });
+  await page.locator('#st-card-providers-add').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('settings-providers-oauth');
+  await page.locator('[data-oauth-method="kimi-code"]').getByRole('button', { name: S.oauthCancel }).click();
+
+  // New-connection form: the API-key lane's Anthropic protocol, pointed at
+  // the fixture server's mock upstream, pulls its model list in the browser.
+  await page.click('[data-connection-choice="api"]');
+  await page.click('[data-provider-protocol="anthropic"]');
+  await page.locator('#provider-field-base-url').fill(`${FIXTURE_URL}/provider-mock/v1`);
+  await page.locator('#st-card-providers-add input[type="password"]').fill('fixture-key');
   await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
   // Fetched models stay unsaved suggestions: they surface inside the model
   // picker's listbox, not as page text, until one is picked and saved.
@@ -1862,57 +1837,29 @@ async function scenarioSettings() {
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
   await shot('settings-dirty-guard');
   await page.click(`text=${S.dirtyDiscard}`);
-  // Skills leaf: server-side defaults card plus the workspace skill catalog
-  // (the old /capabilities browser, re-homed).
+  // Capability leaves hold server defaults only; browsing, installing and
+  // inspecting live on /capabilities (walked by the `capabilities` scenario),
+  // so each leaf proves its defaults card plus the link there.
   await page.waitForSelector('#st-card-caps', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-skill-catalog', { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
+  await page.waitForSelector('#st-card-skill-catalog [data-capability-link="skills"]', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-skills');
 
-  // MCP leaf: per-workspace config entries, live status rows, and the
-  // server-wide timeouts that moved out of runtime (redesign §8.3).
+  // MCP leaf: the capability link plus the server-wide timeouts that moved
+  // out of runtime (redesign §8.3).
   await page.locator('nav [data-settings-nav-leaf="mcp"]').click();
-  await page.waitForSelector('#st-card-mcp', { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-mcp', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-mcp-status', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-mcp [data-capability-link="mcp"]', { timeout: 10_000 });
   await page.waitForSelector('#st-card-mcp-timeouts', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-mcp');
 
-  // Plugins leaf (batch 5): installed list plus the add card. Default fixture
-  // has no marketplace URL, so the Marketplace tab is a how-to, not an error.
+  // Plugins leaf: the capability link, the catalog source, and the web-bridge
+  // runtime readiness card.
   await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
-  await page.waitForSelector('#st-card-plugins', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-plugins-add', { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-plugin', { timeout: 10_000 });
-  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
-  await page.waitForSelector('[data-plugin-details="fixture-plugin"]', { timeout: 10_000 });
-  await page.waitForSelector('text=fixture-plugin-mcp', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-plugins [data-capability-link="plugins"]', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-webbridge', { timeout: 10_000 });
   await page.waitForTimeout(300);
   await shot('settings-plugins');
-  await page.locator(`[data-plugin-add-tab-button="marketplace"]`).click();
-  await page.waitForSelector('[data-marketplace-empty]', { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.pluginsUnconfigured}`, { timeout: 10_000 });
-  await page.waitForTimeout(300);
-  await shot('settings-plugins-marketplace');
-  await page.locator('[data-plugin-add-tab="marketplace"] input').fill('https://example.test/marketplace.json');
-  await page.getByRole('button', { name: S.pluginsSaveCatalog }).click();
-  await page.waitForSelector('[data-marketplace-row="catalog-notes"]', { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.pluginsCatalogNotes}`, { timeout: 10_000 });
-  await page.waitForTimeout(300);
-  await shot('settings-plugins-marketplace-catalog');
-  await page.locator('[data-plugin-details-toggle="fixture-plugin"]').click();
-  await page.locator('[data-marketplace-row="catalog-update"]').scrollIntoViewIfNeeded();
-  await page.waitForSelector('[data-marketplace-action="fixture-plugin"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-marketplace-action="catalog-update"]', { timeout: 10_000 });
-  await page.waitForTimeout(200);
-  await shot('settings-plugins-marketplace-states');
-  await page.locator('[data-plugin-uninstall="fixture-plugin"]').click();
-  await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
-  await page.waitForTimeout(200);
-  await shot('settings-plugins-uninstall');
-  await page.locator('[role="alertdialog"]').getByRole('button', { name: S.cancel, exact: true }).click();
 
   // Permissions leaf (IA v2): default mode, reviewer, tool policy. Hooks have their own leaf.
   await page.locator('nav [data-settings-nav-leaf="permissions"]').click();
@@ -2690,7 +2637,12 @@ async function scenarioSidebarOrganize() {
   await closeFilterMenu();
   await page.waitForFunction(
     () => {
-      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      // The title row also carries the trailing [data-session-time]; compare
+      // the title alone.
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => {
+        const text = n.textContent ?? '';
+        return text.slice(0, text.length - (n.querySelector('[data-session-time]')?.textContent ?? '').length);
+      });
       return titles.includes('Fixture: ws-b beta') && !titles.includes('Fixture: ws-a alpha');
     },
     undefined,
@@ -2703,7 +2655,12 @@ async function scenarioSidebarOrganize() {
   await page.click('[data-sidebar-filter-clear="ws"]');
   await page.waitForFunction(
     () => {
-      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      // The title row also carries the trailing [data-session-time]; compare
+      // the title alone.
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => {
+        const text = n.textContent ?? '';
+        return text.slice(0, text.length - (n.querySelector('[data-session-time]')?.textContent ?? '').length);
+      });
       return titles.includes('Fixture: ws-a pinned') && titles.includes('Fixture: ws-a alpha');
     },
     undefined,
@@ -3329,9 +3286,17 @@ async function scenarioTurnPolish() {
   }
   await page.keyboard.press('Escape'); // abort mid-stream
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
+  // The latest turn's stop reads as ONE line: the cancelled turn tail
+  // ("Stopped by you · Resume"). The inline assistant "Stopped" mark is kept
+  // for older stopped turns only, so it must not repeat the tail here.
+  const stoppedTail = page.locator('[data-turn-tail-state="cancelled"]');
+  if ((await stoppedTail.count()) !== 1) {
+    throw new Error(`expected 1 cancelled turn tail, saw ${await stoppedTail.count()}`);
+  }
+  await stoppedTail.locator('[data-turn-tail-resume]').waitFor({ timeout: 5000 });
   const stoppedMark = page.locator('[data-block-id^="agent-frame-"], [data-block-id^="assistant-"]', { hasText: S.stopped });
-  if ((await stoppedMark.count()) !== 1) {
-    throw new Error(`expected 1 Stopped assistant marker, saw ${await stoppedMark.count()}`);
+  if ((await stoppedMark.count()) !== 0) {
+    throw new Error(`the cancelled tail already states the stop; saw ${await stoppedMark.count()} inline Stopped marks`);
   }
   await page.waitForTimeout(400);
   await shot('turn-stopped');
@@ -3988,12 +3953,24 @@ async function scenarioPreviewWorkbench() {
   await shot('preview-workbench-citation-revisit');
 }
 
+/**
+ * The sidebar search field is collapsed behind the header's search icon
+ * ([data-search-toggle]); open it (if closed) before typing into it.
+ */
+async function fillSidebarSearch(text) {
+  if ((await page.locator('[data-search-box]').count()) === 0) {
+    await page.click('[data-search-toggle]');
+    await page.waitForSelector('[data-search-box]', { timeout: 5000 });
+  }
+  await page.fill('[data-search-box]', text);
+}
+
 async function scenarioSearch() {
   // Open a session first so the main panel is not sitting on the previous
   // scenario's (stale) lastSessionId redirect.
   await selectSession('Fixture: search gamma');
   await page.waitForSelector('text=Fixture: search alpha', { timeout: 10_000 });
-  await page.fill('[data-search-box]', 'persimmon');
+  await fillSidebarSearch('persimmon');
   await page.waitForSelector('text=rotate the persimmon cache', { timeout: 5000 });
   await page.waitForTimeout(300);
   await shot('search-results');
@@ -4033,7 +4010,7 @@ async function scenarioSearch() {
   await shot('search-opened');
   // Empty state.
   // Local layer: a title match is instant (no network) and keyboard-driven.
-  await page.fill('[data-search-box]', 'gamma');
+  await fillSidebarSearch('gamma');
   await page.waitForSelector('[data-search-result^="s:"]', { timeout: 2000 });
   await shot('search-local');
   await page.keyboard.press('ArrowDown');
@@ -4045,7 +4022,7 @@ async function scenarioSearch() {
   // workspace_id on the /search body, and the chip stays visible.
   await pickFilterOption('[data-workspace-filter="wd_fixture_000000000000"]');
   await closeFilterMenu();
-  await page.fill('[data-search-box]', 'persimmon');
+  await fillSidebarSearch('persimmon');
   await page.waitForSelector('[data-search-messages] [data-search-result]', { timeout: 5000 });
   await page.waitForSelector('[data-sidebar-filter-chip="ws"]', { timeout: 2000 });
   await page.waitForSelector('[data-search-scope]', { timeout: 2000 });
@@ -4057,7 +4034,7 @@ async function scenarioSearch() {
   await page.click('[data-sidebar-filter-clear="ws"]');
 
   // Empty state; Esc clears the query.
-  await page.fill('[data-search-box]', 'zzzznothing');
+  await fillSidebarSearch('zzzznothing');
   await page.waitForSelector('text=Nothing matches', { timeout: 5000 });
   await shot('search-empty');
   await page.focus('[data-search-box]');
@@ -4743,14 +4720,17 @@ async function scenarioSessionActions() {
  */
 async function scenarioI18n() {
   const other = LOCALE === 'zh' ? 'en' : 'zh';
-  const otherDefaults = STRINGS[other].newSessionDefaults;
+  // General's "Composer & session" card title (st-card-composer) is the
+  // locale probe; new-session defaults moved to Models & providers › Defaults.
+  const otherTitle = STRINGS[other].composerCardTitle;
+  const cardTitle = (text) => `#st-card-composer >> text=${text}`;
   await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  await page.waitForSelector(cardTitle(S.composerCardTitle), { timeout: 10_000 });
   await page.locator(`[data-locale-choice="${other}"]`).click();
   // Instant switch: the same page re-renders in the other locale, no reload.
-  await page.waitForSelector(`text=${otherDefaults}`, { timeout: 5000 });
+  await page.waitForSelector(cardTitle(otherTitle), { timeout: 5000 });
   const htmlLang = await page.evaluate(() => document.documentElement.lang);
   if ((other === 'zh' ? 'zh-CN' : 'en') !== htmlLang) {
     throw new Error(`<html lang> did not follow the locale: ${htmlLang}`);
@@ -4759,10 +4739,10 @@ async function scenarioI18n() {
   await shot(`i18n-switched-${other}`);
   // Persisted per device: a reload keeps the choice.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${otherDefaults}`, { timeout: 10_000 });
+  await page.waitForSelector(cardTitle(otherTitle), { timeout: 10_000 });
   // Back to the run locale.
   await page.locator(`[data-locale-choice="${LOCALE}"]`).click();
-  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 5000 });
+  await page.waitForSelector(cardTitle(S.composerCardTitle), { timeout: 5000 });
   await shot(`i18n-restored-${LOCALE}`);
 }
 

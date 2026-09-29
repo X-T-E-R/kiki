@@ -2,10 +2,12 @@
  * context-ring — one idle session for the composer's context-usage ring + the
  * custom right-click menu:
  *
- *   - a ring-mount snapshot: ~57% context (amber) with a lifetime usage total;
+ *   - a ring-mount snapshot: 180k of 262k (amber) with a lifetime usage total.
+ *     The ring colours against the auto-compaction point, here the legacy
+ *     min(0.85·U, U − 50k) = 212,144: amber from 80% of it (169,715), red at it;
  *   - a prompt script that pauses mid-stream then streams the assistant answer
- *     while an `agent.status.updated` frame flips the context tokens to ~80%
- *     (red) — proving the ring recolors live while the turn runs;
+ *     while an `agent.status.updated` frame flips the context tokens to 220k,
+ *     past the point (red) — proving the ring recolors live while the turn runs;
  *   - compaction is available at these ratios and fires the session's /compact
  *     action from the detail card's button.
  */
@@ -26,7 +28,7 @@ export default {
         cache_read_tokens: 97_000,
         cache_creation_tokens: 24_000,
         total_cost_usd: 0.8421,
-        context_tokens: 150_000,
+        context_tokens: 180_000,
         context_limit: 262_144,
         turn_count: 9,
       },
