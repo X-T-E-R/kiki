@@ -42,6 +42,10 @@ type BenchResult = {
   records?: number;
   latencyMs?: number;
   startRssBytes?: number;
+  beforeImportRssBytes?: number;
+  afterImportRssBytes?: number;
+  afterReadRssBytes?: number;
+  osHighWaterRssBytes?: number;
   peakRssBytes?: number;
   rssDeltaBytes?: number;
   complete?: boolean;
@@ -323,8 +327,20 @@ async function runContinuationWorker(caseName: string, wirePath: string): Promis
   }
 }
 
+async function runNavigationImportWorker(): Promise<BenchResult> {
+  const beforeImportRssBytes = sampleRss();
+  await import('../../src/services/history/historyLocatorStore');
+  const afterImportRssBytes = sampleRss();
+  const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
+  return { case: 'navigation-import', api: 'HistoryLocatorStore.import', status: 'ok',
+    beforeImportRssBytes, afterImportRssBytes, osHighWaterRssBytes,
+    peakRssBytes: Math.max(afterImportRssBytes, osHighWaterRssBytes) };
+}
+
 async function runNavigationWorker(caseName: string, wirePath: string): Promise<BenchResult> {
+  const beforeImportRssBytes = sampleRss();
   const { HistoryLocatorStore } = await import('../../src/services/history/historyLocatorStore');
+  const afterImportRssBytes = sampleRss();
   const documents = new Map<string, unknown>();
   const queryStore = {
     get: async (collection: string, key: string) => documents.get(`${collection}:${key}`),
@@ -367,13 +383,23 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       if (scan.nextByteOffset <= (cursor?.offset ?? 0)) throw new Error('navigation made no progress');
       cursor = { offset: scan.nextByteOffset, incarnation: scan.incarnation };
     }
+    const afterReadRssBytes = sampleRss();
+    const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
     return { case: caseName, api: 'HistoryLocatorStore.scan/read', status: 'ok', bytesRead,
-      records, latencyMs: performance.now() - started, startRssBytes, peakRssBytes,
-      rssDeltaBytes: peakRssBytes - startRssBytes, complete: true, matches, segments };
+      records, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
+      peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
+      rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
+      complete: true, matches, segments };
   } catch (error) {
+    const afterReadRssBytes = sampleRss();
+    const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
     return { case: caseName, api: 'HistoryLocatorStore.scan/read', status: 'error', bytesRead,
-      records, latencyMs: performance.now() - started, startRssBytes, peakRssBytes,
-      rssDeltaBytes: peakRssBytes - startRssBytes, matches, segments, error: String(error) };
+      records, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
+      peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
+      rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
+      matches, segments, error: String(error) };
   } finally { clearInterval(sampler); }
 }
 
@@ -482,6 +508,10 @@ async function runWorker(args: readonly string[]): Promise<void> {
     workerResult(await runStreamWorker(mode, wirePath, undefined));
     return;
   }
+  if (mode === 'navigation-import') {
+    workerResult(await runNavigationImportWorker());
+    return;
+  }
   if (mode === 'navigation') {
     workerResult(await runNavigationWorker(mode, wirePath));
     return;
@@ -559,6 +589,7 @@ async function runParent(args: readonly string[]): Promise<void> {
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand(mode, fixture))}\n`);
     }
     if (args.includes('--navigation')) {
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-import', fixture))}\n`);
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation', fixture))}\n`);
     }
     if (args.includes('--current-api')) {

@@ -21,6 +21,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./wireRecords": {
+      "types": "./src/wireRecords.ts",
+      "default": "./src/wireRecords.ts"
     }
   },
   "scripts": {

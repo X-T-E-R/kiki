@@ -7,7 +7,7 @@ import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import { TranscriptWireAdapter, type TranscriptOperation } from '@kiki/transcript';
-import { streamWireRecords, type WireRecordSpan } from '@kiki/transcript-live';
+import { streamWireRecords, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
 
 import { encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
