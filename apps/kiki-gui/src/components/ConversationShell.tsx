@@ -43,6 +43,8 @@ import {
 } from 'react';
 import { Outlet, useMatch } from 'react-router-dom';
 
+import { ToastAnchor } from './Toasts';
+
 export type ConversationPhase = 'hero' | 'settling' | 'active';
 
 /**
@@ -237,9 +239,14 @@ export function ConversationShell() {
                 <div ref={dockRef} className="conversation-dock-slot" />
                 {seat?.composer ?? null}
                 <div ref={heroFooterRef} className="conversation-herofooter-slot" />
+                {/* Docked: toasts rise from just above the card, inside this
+                    column, so they cover neither the rail nor the tray. */}
+                {phase === 'hero' ? null : <ToastAnchor className="toast-anchor" />}
               </div>
             </div>
             <div ref={footerRef} className="conversation-footer-slot" />
+            {/* Hero: the card floats mid-column, so the column's own corner. */}
+            {phase === 'hero' ? <ToastAnchor className="toast-anchor" /> : null}
           </div>
           <div ref={previewRef} className="conversation-preview-slot" />
           <div ref={railRef} className="conversation-rail-slot" />

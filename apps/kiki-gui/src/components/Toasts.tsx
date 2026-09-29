@@ -1,10 +1,12 @@
 /**
- * Toasts — the fixed bottom-right stack fed by `lib/toasts.ts`. Success/info
+ * Toasts — the bottom-right stack fed by `lib/toasts.ts`: inside the content
+ * column when a <ToastAnchor/> is mounted, else fixed to the viewport. Success/info
  * entries self-dismiss after TOAST_AUTO_DISMISS_MS; errors stay until the ×
  * (or an optional retry) settles them. Mounted once at the app root.
  */
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
 import { Icon, type IconName } from './icons';
@@ -68,7 +70,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   return (
     <div
       role="status"
-      className={`anim-enter flex w-88 flex-col rounded-xl border bg-panel p-2.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
+      className={`anim-enter flex w-88 max-w-full flex-col rounded-xl border bg-panel p-2.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
         <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
@@ -136,16 +138,58 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   );
 }
 
+// Anchor registry: a surface that owns a content column (ConversationShell)
+// mounts a <ToastAnchor/> so the stack lands inside that column instead of on
+// the viewport corner, where it would cover the rail and the composer's tray.
+// The newest mounted anchor wins; with none, the stack stays viewport-fixed.
+let anchors: readonly HTMLElement[] = [];
+const anchorListeners = new Set<() => void>();
+
+function subscribeAnchors(listener: () => void): () => void {
+  anchorListeners.add(listener);
+  return () => { anchorListeners.delete(listener); };
+}
+
+function getAnchor(): HTMLElement | null {
+  return anchors.at(-1) ?? null;
+}
+
+function setAnchors(next: readonly HTMLElement[]): void {
+  anchors = next;
+  for (const listener of anchorListeners) listener();
+}
+
+/**
+ * Where the toast stack sits inside a content column. The owner positions
+ * this box (see `.toast-anchor` in index.css); the stack grows upward from it.
+ */
+export function ToastAnchor({ className }: { className?: string }) {
+  const [node, setNode] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (node === null) return;
+    setAnchors([...anchors, node]);
+    return () => { setAnchors(anchors.filter((anchor) => anchor !== node)); };
+  }, [node]);
+  return <div ref={setNode} data-toast-anchor="" className={className} />;
+}
+
 export function Toasts() {
   const toasts = useSyncExternalStore(subscribeToasts, getToasts);
+  const anchor = useSyncExternalStore(subscribeAnchors, getAnchor, getAnchor);
   if (toasts.length === 0) return null;
-  return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-[60] flex flex-col items-end gap-2">
+  const stack = (
+    <div
+      data-toast-stack={anchor === null ? 'viewport' : 'anchored'}
+      className={`pointer-events-none flex flex-col items-end gap-2 ${
+        anchor === null ? 'fixed right-4 bottom-4 z-[60]' : 'absolute right-0 bottom-0 max-w-full'
+      }`}
+    >
       {toasts.map((toast) => (
-        <div key={toast.id} className="pointer-events-auto">
+        <div key={toast.id} className="pointer-events-auto max-w-full">
           <ToastCard toast={toast} />
         </div>
       ))}
     </div>
   );
+  return anchor === null ? stack : createPortal(stack, anchor);
 }

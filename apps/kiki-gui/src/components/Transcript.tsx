@@ -1290,8 +1290,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
           </button>
         ) : label}
       </TimelineDivider>
+      {/* The reasons are body text under the rule, not a centred aside: the
+          list starts on the column's left edge with the same hanging indent
+          as a list in an answer (.kiki-md ul), faint bullets like there too. */}
       {open && reasons.length > 0 ? (
-        <ul data-notice-reason-list className="mx-auto mt-0.5 mb-1 flex max-w-[28rem] list-disc flex-col gap-0.5 pl-5 text-[12px] leading-snug text-ink-soft">
+        <ul data-notice-reason-list className="mt-0.5 mb-1 flex list-disc flex-col gap-0.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
           {reasons.map((reason, index) => <li key={`${block.id}:${index}`}>{reason}</li>)}
         </ul>
       ) : null}
@@ -2177,6 +2180,7 @@ function JumpToBottom({
   return (
     <button
       type="button"
+      data-jump-to-latest
       onClick={() => { virtualizer.scrollToEnd(); }}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3.5 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-150 hover:text-ink"
     >

@@ -104,6 +104,11 @@
   --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
   --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  /* Mono text is copied and typed back: JetBrains Mono's contextual
+   * alternates fuse `--`, `->`, `!=` into one glyph (`--short` read as
+   * `—short`), so mono shows every character as typed. Tailwind feeds this to
+   * the `font-mono` utility and to preflight's code/kbd/samp/pre. */
+  --font-mono--font-feature-settings: 'liga' 0, 'calt' 0;
 }
 
 /* Tailwind's `dark:` variant follows kiki's own attribute rather than the OS
@@ -929,6 +934,12 @@ body[data-pane-resizing='true'] {
 }
 
 /* Active: the outlet (transcript with its own stick-to-bottom scroller) fills
+/* CodeMirror sets the mono family on plain divs, outside preflight's
+ * code/pre and the `font-mono` utility: same no-ligature rule as the token. */
+.cm-editor {
+  font-feature-settings: var(--font-mono--font-feature-settings);
+}
+
  * the middle; the seat docks below it. */
 .conversation-body {
   display: flex;
@@ -952,6 +963,35 @@ body[data-pane-resizing='true'] {
     0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent),
     0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
     0 12px 32px -16px rgb(var(--kiki-shadow-ink) / 0.24);
+/* Toast anchor (Toasts.tsx): a zero-height line inset to the column's
+ * gutters, so the stack rises from the conversation column's lower-right
+ * corner and never reaches the rail beside it. Docked (active/settling), it
+ * rides in the seat 8px above the composer card: the seat's 36px fade band is
+ * its top padding, hence the -28px, and the tray lives inside the card, so an
+ * open tray pushes the stack up with it instead of being covered. In the hero
+ * the column's own bottom edge is the corner. Kept visible while a settling
+ * seat is hidden, so a toast raised during a load still shows. */
+.toast-anchor {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  z-index: 8;
+  height: 0;
+  pointer-events: none;
+  visibility: visible;
+}
+.conversation-seat > .toast-anchor {
+  bottom: calc(100% - 28px);
+}
+/* The transcript's jump-to-latest pill sits in that same band (16px above
+ * the transcript's bottom, which is 36px into the seat); while it shows, the
+ * stack rises 8px clear of its 32px height so a narrow column never stacks
+ * the two. */
+.conversation-middle:has([data-jump-to-latest]) > .conversation-seat > .toast-anchor {
+  bottom: calc(100% + 20px);
+}
+
 }
 .composer-card:has(textarea:focus-visible) {
   box-shadow:
