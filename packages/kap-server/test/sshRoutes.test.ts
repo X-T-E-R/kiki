@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,8 +11,11 @@ import { SessionStateService } from '@kiki/agent-core-v2/session/state/sessionSt
 import { ErrorCode } from '@kiki/protocol';
 
 import { registerSshRoutes } from '../src/routes/ssh';
+import { startServer } from '../src/start';
+import { authedFetch } from './helpers/auth';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
-type Route = (req: { id: string; params: { id: string }; body: unknown; query: { workspace_id?: string } }, reply: { send: (value: unknown) => void }) => Promise<void> | void;
+type Route = (req: { id: string; params: { id: string; tail?: string }; body: unknown; query: { workspace_id?: string } }, reply: { send: (value: unknown) => void }) => Promise<void> | void;
 
 let home: string;
 beforeEach(async () => {
@@ -54,24 +57,24 @@ describe('SSH management REST routes', () => {
       let response: unknown;
       const handler = routes.get(`${method} ${path}`);
       if (handler === undefined) throw new Error(`Missing ${method} ${path}`);
-      await handler({ id: 'req', params: { id }, body, query: { workspace_id } }, { send: (value) => { response = value; } });
+      await handler({ id: 'req', params: { id, tail: id }, body, query: { workspace_id } }, { send: (value) => { response = value; } });
       return response as { code: number; data: unknown };
     };
     const updated = await request('PUT', '/ssh/hosts/:id', { name: 'Updated', roots: ['/home/tester'] }, 'dev', 'workspace-1');
     expect(updated.data).toMatchObject({ host: { name: 'Updated' } });
     expect(hosts.upsert).toHaveBeenCalledWith({ id: 'dev', name: 'Updated', roots: ['/home/tester'] }, 'workspace-1');
     expect((await request('GET', '/ssh/hosts')).data).toMatchObject({ hosts: [{ id: 'dev' }] });
-    expect((await request('GET', '/ssh/hosts/:id:status')).data).toMatchObject({ state: 'idle', generation: 0 });
-    expect((await request('GET', '/ssh/hosts/:id:status', undefined, 'absent')).code).toBe(ErrorCode.SSH_HOST_NOT_FOUND);
-    expect((await request('GET', '/ssh/hosts:discover')).data).toMatchObject({ hosts: [{ id: 'dev' }] });
+    expect((await request('GET', '/ssh/hosts/:tail', undefined, 'dev:status')).data).toMatchObject({ state: 'idle', generation: 0 });
+    expect((await request('GET', '/ssh/hosts/:tail', undefined, 'absent:status')).code).toBe(ErrorCode.SSH_HOST_NOT_FOUND);
+    expect((await request('GET', '/ssh/hosts::discover')).data).toMatchObject({ hosts: [{ id: 'dev' }] });
     expect((await request('PUT', '/ssh/config-sync', { enabled: false })).data).toEqual({ enabled: false });
     expect(hosts.setSyncSshConfig).toHaveBeenCalledWith(false);
     expect((await request('GET', '/ssh/connection-approval')).data).toEqual({ enabled: false });
     expect((await request('PUT', '/ssh/connection-approval', { enabled: true })).data).toEqual({ enabled: true });
     expect(hosts.setConnectionApproval).toHaveBeenCalledWith(true);
-    expect((await request('POST', '/ssh/hosts/:id:write-back')).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect((await request('POST', '/ssh/hosts/:tail', undefined, 'dev:write-back')).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(hosts.writeBack).not.toHaveBeenCalled();
-    expect((await request('POST', '/ssh/hosts/:id:disconnect')).data).toEqual({ disconnected: true });
+    expect((await request('POST', '/ssh/hosts/:tail', undefined, 'dev:disconnect')).data).toEqual({ disconnected: true });
     expect(hosts.disconnect).toHaveBeenCalledWith('dev', undefined);
     expect((await request('DELETE', '/ssh/hosts/:id')).data).toEqual({ removed: true });
     expect(hosts.remove).toHaveBeenCalledWith('dev', undefined);
@@ -175,5 +178,37 @@ describe('SSH management REST routes', () => {
     expect(hosts.removeSessionTransients.mock.calls.map(([sessionId]) => sessionId)).toEqual([
       'session-1', 'session-2', 'session-3',
     ]);
+  });
+
+  it('matches all SSH host actions through a real Fastify server', async () => {
+    await mkdir(join(home, 'ssh'));
+    await writeFile(join(home, 'ssh', 'hosts.toml'), 'sync_ssh_config = false\n[hosts.dev]\nname = "Dev"\nroots = ["/tmp"]\n');
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
+      homeDir: home, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}`;
+    const request = async (path: string, method = 'GET', body?: unknown) => {
+      const response = await authedFetch(server, base, path, { method,
+        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ code: number; msg: string; data: Record<string, unknown> }>;
+    };
+    try {
+      const listed = await request('/api/ssh/hosts');
+      expect(listed.data['hosts']).toEqual([expect.objectContaining({ id: 'dev', source: 'kiki' })]);
+      const status = await request('/api/ssh/hosts/dev:status');
+      expect(status.code, status.msg).toBe(0);
+      expect(status.data).toMatchObject({ hostId: 'dev', state: 'idle' });
+      expect((await request('/api/ssh/hosts:discover')).code).toBe(0);
+      expect((await authedFetch(server, base, '/api/ssh/hosts:other')).status).toBe(404);
+      const disconnected = await request('/api/ssh/hosts/dev:disconnect', 'POST');
+      expect(disconnected).toMatchObject({ code: 0, data: { disconnected: true } });
+      const writeBack = await request('/api/ssh/hosts/dev:write-back', 'POST');
+      expect(writeBack.code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(writeBack.msg).toContain('explicit hostname and user');
+      expect((await request('/api/ssh/hosts/dev:other', 'POST')).code).toBe(ErrorCode.VALIDATION_FAILED);
+    } finally {
+      await server.close();
+    }
   });
 });

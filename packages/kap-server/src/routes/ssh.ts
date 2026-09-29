@@ -13,6 +13,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent } from '../transport/mainAgent';
+import { parseActionSuffix } from './action-suffix';
 
 type SshHandler = (
   req: { id: string; params: unknown; query: unknown; body: unknown },
@@ -51,7 +52,7 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
   app.get(list.path, list.options, list.handler as SshHandler);
 
   const discover = defineRoute({
-    method: 'GET', path: '/ssh/hosts:discover',
+    method: 'GET', path: '/ssh/hosts::discover',
     success: { data: sshHostsResponseSchema }, tags: ['ssh'],
   }, async (req, reply) => {
     reply.send(okEnvelope({ hosts: await hosts().discover() }, req.id));
@@ -116,14 +117,43 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
   });
   app.put(approvalUpdate.path, approvalUpdate.options, approvalUpdate.handler as SshHandler);
 
-  const writeBack = defineRoute({
-    method: 'POST', path: '/ssh/hosts/{id}:write-back', params, querystring,
-    success: { data: z.object({ written: z.literal(true) }) }, tags: ['ssh'],
+  const actionParams = z.object({ tail: z.string().min(1) });
+  const status = defineRoute({
+    method: 'GET', path: '/ssh/hosts/{tail}', params: actionParams, querystring,
+    success: { data: sshHostStatusSchema }, tags: ['ssh'],
     errors: { [ErrorCode.SSH_HOST_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
   }, async (req, reply) => {
-    const record = (await hosts().list(req.query.workspace_id)).find((entry) => entry.id === req.params.id);
+    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['status'], resourceLabel: 'ssh host' });
+    if (action.kind !== 'action' || !hostId.safeParse(action.id).success) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Unsupported SSH host action', req.id));
+      return;
+    }
+    if (!(await hosts().list(req.query.workspace_id)).some((entry) => entry.id === action.id)) {
+      reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
+      return;
+    }
+    reply.send(okEnvelope(hosts().status(action.id, req.query.workspace_id), req.id));
+  });
+  app.get(status.path, status.options, status.handler as SshHandler);
+
+  const action = defineRoute({
+    method: 'POST', path: '/ssh/hosts/{tail}', params: actionParams, querystring,
+    success: { data: z.union([z.object({ written: z.literal(true) }), z.object({ disconnected: z.literal(true) })]) }, tags: ['ssh'],
+    errors: { [ErrorCode.SSH_HOST_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+  }, async (req, reply) => {
+    const parsed = parseActionSuffix({ tail: req.params.tail, allowedActions: ['write-back', 'disconnect'], resourceLabel: 'ssh host' });
+    if (parsed.kind !== 'action' || !hostId.safeParse(parsed.id).success) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Unsupported SSH host action', req.id));
+      return;
+    }
+    const record = (await hosts().list(req.query.workspace_id)).find((entry) => entry.id === parsed.id);
     if (record === undefined) {
       reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
+      return;
+    }
+    if (parsed.action === 'disconnect') {
+      await hosts().disconnect(parsed.id, req.query.workspace_id);
+      reply.send(okEnvelope({ disconnected: true }, req.id));
       return;
     }
     if (record.source !== 'kiki' || record.hostname === undefined || record.user === undefined) {
@@ -131,7 +161,7 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
       return;
     }
     try {
-      await hosts().writeBack(req.params.id, req.query.workspace_id);
+      await hosts().writeBack(parsed.id, req.query.workspace_id);
       reply.send(okEnvelope({ written: true }, req.id));
     } catch (error) {
       if (error instanceof Error && /already exists/.test(error.message)) {
@@ -139,34 +169,7 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
       } else throw error;
     }
   });
-  app.post(writeBack.path, writeBack.options, writeBack.handler as SshHandler);
-
-  const status = defineRoute({
-    method: 'GET', path: '/ssh/hosts/{id}:status', params, querystring,
-    success: { data: sshHostStatusSchema }, tags: ['ssh'],
-    errors: { [ErrorCode.SSH_HOST_NOT_FOUND]: {} },
-  }, async (req, reply) => {
-    if (!(await hosts().list(req.query.workspace_id)).some((entry) => entry.id === req.params.id)) {
-      reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
-      return;
-    }
-    reply.send(okEnvelope(hosts().status(req.params.id, req.query.workspace_id), req.id));
-  });
-  app.get(status.path, status.options, status.handler as SshHandler);
-
-  const disconnect = defineRoute({
-    method: 'POST', path: '/ssh/hosts/{id}:disconnect', params, querystring,
-    success: { data: z.object({ disconnected: z.literal(true) }) }, tags: ['ssh'],
-    errors: { [ErrorCode.SSH_HOST_NOT_FOUND]: {} },
-  }, async (req, reply) => {
-    if (!(await hosts().list(req.query.workspace_id)).some((entry) => entry.id === req.params.id)) {
-      reply.send(errEnvelope(ErrorCode.SSH_HOST_NOT_FOUND, 'Unknown SSH host', req.id));
-      return;
-    }
-    await hosts().disconnect(req.params.id, req.query.workspace_id);
-    reply.send(okEnvelope({ disconnected: true }, req.id));
-  });
-  app.post(disconnect.path, disconnect.options, disconnect.handler as SshHandler);
+  app.post(action.path, action.options, action.handler as SshHandler);
 
   const sessionParams = z.object({ session_id: z.string().min(1) });
   const sessionHostParams = sessionParams.extend({

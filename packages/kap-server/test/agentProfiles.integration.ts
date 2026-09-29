@@ -153,6 +153,11 @@ describe('GET /api/agents', () => {
       body: JSON.stringify({ workspace: reviewer.workspace_id, executor: 'native' }),
     });
     expect((await rejected.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const wrongSuffix = await authedFetch(server, base, '/api/agents/reviewer/executor-prompt:anything', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: reviewer.workspace_id }),
+    });
+    expect((await wrongSuffix.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
   });
 
   it('reuses draft catalog projections until workspace close without retaining a workspace lease', async () => {

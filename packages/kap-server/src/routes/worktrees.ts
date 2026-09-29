@@ -53,7 +53,7 @@ export function registerWorktreeRoutes(app: WorktreeRouteHost, core: Scope): voi
   });
   app.post(action.path, action.options, action.handler as Parameters<WorktreeRouteHost['post']>[2]);
 
-  const gc = defineRoute({ method: 'POST', path: '/worktrees:gc', body: z.object({ dryRun: z.boolean() }),
+  const gc = defineRoute({ method: 'POST', path: '/worktrees::gc', body: z.object({ dryRun: z.boolean() }),
     success: { data: z.object({ candidates: z.array(z.object({ id: z.string(), outcome: worktreeRemovalOutcomeSchema })) }) },
     errors: { [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Clean up archived worktrees', tags: ['worktrees'],
   }, async (req, reply) => {

@@ -249,7 +249,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   const executorPromptPreviewRoute = defineRoute({
     method: 'POST',
     path: '/agents/{name}/executor-prompt:preview',
-    params: namedAgentProfileNameParamsSchema,
+    params: namedAgentProfileNameParamsSchema.extend({ preview: z.literal(':preview') }),
     body: executorPromptPreviewRequestSchema,
     success: { data: executorPromptPreviewResponseSchema },
     errors: {
