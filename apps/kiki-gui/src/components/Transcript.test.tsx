@@ -463,6 +463,7 @@ describe('splitPrefixSegments streaming differential', () => {
     await renderSettled(probe.root, <TurnTailLine tail={{
       turnId: 't1', state: 'cancelled', cancellation: 'recovery',
       endedAt: new Date().toISOString(), durationMs: 1000,
+      ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
     }} onResume={() => undefined} />);
     const tail = probe.container.querySelector('[data-turn-tail]');
     expect(tail?.textContent).toContain('Interrupted when Kiki restarted');
@@ -475,6 +476,7 @@ describe('splitPrefixSegments streaming differential', () => {
     await renderSettled(probe.root, <TurnTailLine tail={{
       turnId: 't1', state: 'cancelled', cancellation: 'user',
       endedAt: new Date().toISOString(), durationMs: 1000,
+      ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
     }} onResume={() => undefined} />);
     expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('Stopped by you');
   });
