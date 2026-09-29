@@ -1260,6 +1260,13 @@ input[data-add-search]:focus-visible {
 .conversation-shell[data-phase='hero'] .conversation-seat {
   /* Foot inside the centered box floats the stack a bit above true center. */
   padding-bottom: 32px;
+  /* The glow is wider than the seat on narrow columns. The middle's
+   * `overflow-x: hidden` only hides that overflow; it still counts toward
+   * scrollWidth, so focusing a status-line panel scrolled the whole stack
+   * sideways. `clip` stops the glow at the seat's edge and adds no scroll
+   * container, so the vertical bleed and the popovers above the card stay
+   * visible. */
+  overflow-x: clip;
 }
 
 /* Warm glow centered on the hero input card: the card's resting center sits

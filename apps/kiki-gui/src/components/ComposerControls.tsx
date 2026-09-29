@@ -79,9 +79,21 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
   const cardRef = useContext(ComposerCardContext);
   useLayoutEffect(() => {
     const root = rootRef.current;
-    const card = cardRef?.current;
-    if (root === null || card === null || card === undefined) return;
+    if (root === null || cardRef === undefined) return;
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => { measure(); });
+    let observed: HTMLElement | null = null;
     const measure = () => {
+      // The card is read on every pass, not captured once: a root inside the
+      // card (ComposerPanelOrigin in the status line) runs this effect before
+      // the card's own ref is attached, so the first pass can find no card
+      // and a later one (resize, the opening pointer or key) must still work.
+      const card = cardRef.current;
+      if (card === null) return;
+      if (observed !== card) {
+        if (observed !== null) observer?.unobserve(observed);
+        observer?.observe(card);
+        observed = card;
+      }
       // Offsets are relative to the panel's containing block: the root, or
       // the positioned root of a wrapped SearchableSelect (ComposerPanelOrigin).
       const origin = root.querySelector<HTMLElement>(':scope > [data-searchable-select]') ?? root;
@@ -93,12 +105,14 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       root.style.setProperty('--cp-max-w', `${cardRect.width}px`);
     };
     measure();
+    // The ref lands in the same commit, after this effect; one frame later it
+    // is there, so the resting values exist before any panel opens.
+    const frame = requestAnimationFrame(measure);
     root.addEventListener('pointerdown', measure, true);
     root.addEventListener('keydown', measure, true);
     window.addEventListener('resize', measure);
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
-    observer?.observe(card);
     return () => {
+      cancelAnimationFrame(frame);
       root.removeEventListener('pointerdown', measure, true);
       root.removeEventListener('keydown', measure, true);
       window.removeEventListener('resize', measure);
