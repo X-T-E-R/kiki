@@ -2933,7 +2933,10 @@ async function scenarioBurst() {
   const fetchesBefore = await page.evaluate(() => window.__promptFetches.length);
   await page.fill('textarea', 'B: second during burst.');
   const pressedAt = await page.evaluate(() => performance.now());
-  await page.press('textarea', 'Control+Enter');
+  // Ctrl+Enter is the product's busy-state "send now" shortcut: it steers
+  // the prompt into A instead of leaving it in the queue. Use the ordinary
+  // busy-state send button so this walk exercises queue → promotion.
+  await page.getByRole('button', { name: S.queuePromptAria }).click();
   await page.waitForFunction((before) => window.__promptFetches.length > before, fetchesBefore, { timeout: 5000 });
   const latency = await page.evaluate(
     (start) => window.__promptFetches[window.__promptFetches.length - 1] - start,
@@ -2946,8 +2949,9 @@ async function scenarioBurst() {
   // The second prompt parked behind the parked turn (A holds a release gate
   // after the storm, so B deterministically lands in the server queue). A
   // queued prompt shows in the strip only — never in the transcript.
+  const queueToggle = page.locator('[data-composer-header] [data-header-toggle="queue"]');
   try {
-    await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 30_000 });
+    await queueToggle.waitFor({ state: 'attached', timeout: 30_000 });
   } catch (error) {
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
@@ -2956,9 +2960,11 @@ async function scenarioBurst() {
     throw error;
   }
   await shot('burst-queued');
-  // Let A finish; B promotes out of the queue and runs.
+  // Let A finish; B must leave the queue through promotion before its script
+  // emits the reply. This distinguishes a real queue drain from a missing B.
   await control({ action: 'release', session_id: 'session_fixture_burst' });
   await waitForText('Burst survived — the composer stayed responsive.', 90_000);
+  await queueToggle.waitFor({ state: 'detached', timeout: 30_000 });
   await waitForText('Second prompt landed after the burst — exactly once.', 30_000);
   await page.waitForTimeout(600);
   const report = await page.evaluate(() => ({
