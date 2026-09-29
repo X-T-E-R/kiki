@@ -9,6 +9,8 @@ import '@kiki/node-sdk/native-fs-watch-error-guard';
 import { initializeNbSearchWorkerEntry } from './native/nb-search-worker';
 import { runSqliteIndexerCommand } from '@kiki/kap-server/sqlite-indexer-runtime';
 import { isSea } from 'node:sea';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import {
   flushDiagnosticLogs,
@@ -126,6 +128,13 @@ function bootstrap(): void {
     const queryWorker = getKapSqliteQueryWorkerFile();
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
     process.env['KIKI_SQLITE_INDEXER_SEA'] = '1';
+  } else {
+    const indexer = fileURLToPath(new URL('./sqlite-indexer.mjs', import.meta.url));
+    const queryWorker = fileURLToPath(new URL('./sqlite-query-worker.mjs', import.meta.url));
+    if (existsSync(indexer) && existsSync(queryWorker)) {
+      process.env['KIKI_SQLITE_INDEXER_PATH'] = indexer;
+      process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
+    }
   }
   const pricingInstall = installKapModelPricing();
   startupTrace(
