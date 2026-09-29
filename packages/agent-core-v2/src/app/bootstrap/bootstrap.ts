@@ -22,6 +22,7 @@ import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocument
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { readSpaceHome, type SpaceHome } from './spaceHome';
 
 export interface HostArgs {
   readonly agentFiles?: readonly string[];
@@ -151,7 +152,7 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
     space,
     homeDiagnostic: diagnostic,
     userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
-    modelAccountHomeDir: input.modelAccountHomeDir ?? credentialsHomeDir,
+    modelAccountHomeDir: input.modelAccountHomeDir ?? homeDir,
     osHomeDir,
     platform: input.platform ?? process.platform,
     arch: input.arch ?? process.arch,

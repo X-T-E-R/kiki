@@ -225,7 +225,7 @@ describe('space home bootstrap', () => {
     try {
       await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\ncolor = "#C2410C"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ninstructions = "stack"\n`);
       const options = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
-      expect(options).toMatchObject({ baseHomeDir: base, spaceId: 'h-abc123', credentialsHomeDir: base, modelAccountHomeDir: base, space: { inherit: { instructions: 'stack', config: true, credentials: 'shared', plugins: false } } });
+      expect(options).toMatchObject({ baseHomeDir: base, spaceId: 'h-abc123', credentialsHomeDir: base, modelAccountHomeDir: resolve(home), space: { inherit: { instructions: 'stack', config: true, credentials: 'shared', plugins: false } } });
       await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ncredentials = "isolated"\n`);
       expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).credentialsHomeDir).toBe(resolve(home));
       await writeFile(join(base, 'home.toml'), 'schema = 1\nid = "h-base"\nname = "Base"\n');
