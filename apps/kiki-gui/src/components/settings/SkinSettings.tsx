@@ -41,14 +41,16 @@ export function useSkinPrefs() {
  * whichever skin is selected and would make Paper's swatch mirror that one.
  */
 export const PAPER_SWATCH: Record<ResolvedTheme, { canvas: string; paper: string; panel: string; ink: string; accent: string }> = {
-  light: { canvas: '#f0eadf', paper: '#f6f1e7', panel: '#fbf8f2', ink: '#1f1b16', accent: '#c2410c' },
+  light: { canvas: '#ede5d6', paper: '#f8f4ec', panel: '#fffdf8', ink: '#1c1917', accent: '#c2410c' },
   dark: { canvas: '#110e0a', paper: '#17140f', panel: '#1d1914', ink: '#efe8dc', accent: '#f08a4b' },
 };
 
 /** A swatch row rendered from the skin's own tokens, so it cannot lie. */
 function SkinSwatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
   const variant = skin.variants[theme] ?? skin.variants[declaredVariants(skin)[0] ?? 'light'];
-  const colors = skin.id === DEFAULT_SKIN_ID ? PAPER_SWATCH[theme] : variant?.colors ?? {};
+  // The default skin, and a variant that sets no colors (it shows the base
+  // palette), both paint Paper's own cells.
+  const colors = skin.id === DEFAULT_SKIN_ID || (variant !== undefined && variant.colors === undefined) ? PAPER_SWATCH[theme] : variant?.colors ?? {};
   const cells = [colors.canvas, colors.paper, colors.panel, colors.accent].map((value) => value ?? 'transparent');
   return (
     <span aria-hidden className="flex h-5 shrink-0 overflow-hidden rounded-[4px] ring-1 ring-hairline">

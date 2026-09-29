@@ -39,6 +39,21 @@ export const SKIN_COLOR_TOKENS = [
    */
   'accentInk',
   'onAccent',
+  /**
+   * Focal roles, all optional: a skin that leaves them out gets them derived
+   * from its own palette (headings from inkSoft, "here" from the accent,
+   * "needs you" from accentInk), so older skin files need no change.
+   *   sectionInk     group and section headings
+   *   selected       wash behind the current row (session, nav, settings)
+   *   selectedInk    the mark and icon on that row
+   *   attention      text and dots for what needs the user
+   *   attentionSoft  wash behind a needs-you block
+   */
+  'sectionInk',
+  'selected',
+  'selectedInk',
+  'attention',
+  'attentionSoft',
   'amberInk',
   'amberCard',
   'amberRule',

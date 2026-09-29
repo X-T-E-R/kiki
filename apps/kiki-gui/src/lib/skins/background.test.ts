@@ -27,8 +27,8 @@ import {
 } from './index';
 
 // The shipped paper palette (index.css), light and dark.
-const LIGHT = { surface: '#f6f1e7', ground: '#f0eadf', texts: ['#1f1b16', '#5b5247', '#6b6053'] };
-const DARK = { surface: '#17140f', ground: '#110e0a', texts: ['#efe8dc', '#b3a795', '#8f8373'] };
+const LIGHT = { surface: '#f8f4ec', ground: '#ede5d6', texts: ['#1c1917', '#544a3f', '#665a4c'] };
+const DARK = { surface: '#17140f', ground: '#110e0a', texts: ['#efe8dc', '#b8ac99', '#958978'] };
 
 /** Contrast of the faintest text over the surface composited on a gray pixel. */
 function worstContrast(colors: typeof LIGHT, alpha: number, look = DEFAULT_BACKGROUND_LOOK): number {

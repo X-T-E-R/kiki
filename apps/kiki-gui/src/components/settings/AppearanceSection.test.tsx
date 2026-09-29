@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { translate } from '@kiki/session-core/i18n';
 import { readSettings, writeSettings } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
@@ -134,7 +135,7 @@ describe('AppearanceSection', () => {
 
   it('shows built-in skin descriptions in the UI language', () => {
     const paper = button('[data-skin-choice="paper"]').querySelector('[data-skin-description]');
-    expect(paper?.textContent).toBe('Warm paper and ink with a rust accent. Kiki’s own voice.');
+    expect(paper?.textContent).toBe(translate('en', 'st.skin.desc.paper'));
   });
 
   it('restores every customization, keeps the theme choice, and can undo it', async () => {

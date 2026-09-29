@@ -5,7 +5,7 @@
  * writes the real prefs; the app behind is the preview.
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   APPEARANCE_LIMITS,
@@ -26,7 +26,6 @@ import {
   editKeyForTheme,
   isPersistent,
   pruneMedia,
-  resolveBackdropMedia,
   storeBackgroundFile,
   subscribeBackdropStatus,
   subscribeBackgroundPrefs,
@@ -36,6 +35,7 @@ import {
 } from '../../lib/skins';
 import { AppearanceApiError, importBackgroundUrl } from '../../lib/skins/packsApi';
 import { useServerEndpoint } from '../../lib/skins/useAppearancePacks';
+import { useMediaThumbnail } from '../../lib/skins/useMediaThumbnail';
 import type { ResolvedTheme } from '../../lib/theme';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
@@ -67,12 +67,18 @@ function mediaIds(prefs: BackgroundPrefs): Set<string> {
   return ids;
 }
 
-/** Write a slot for the theme being edited, then drop media nothing points at. */
+/**
+ * Write a slot for the theme being edited. Stored media nothing points at is
+ * dropped only when the media itself changed: a dial edit keeps every file, so
+ * a slider drag never walks the media store.
+ */
 function writeSlot(prefs: BackgroundPrefs, theme: ResolvedTheme, slot: BackgroundSlot | null): void {
   const key = editKeyForTheme(prefs, theme);
   const next: BackgroundPrefs = { ...prefs, [key]: slot };
+  const before = mediaIds(prefs);
+  const after = mediaIds(next);
   writeBackgroundPrefs(next);
-  void pruneMedia(mediaIds(next));
+  if (before.size !== after.size || [...before].some((id) => !after.has(id))) void pruneMedia(after);
 }
 
 function Slider({ id, value, min, max, step, onChange, format }: {
@@ -149,21 +155,7 @@ function AlignmentGrid({ value, onChange, labelledBy }: { value: BackgroundAlign
 /** The picked media as a small still, so the row says what is set. */
 function MediaThumb({ slot }: { slot: BackgroundSlot }) {
   const ref = slot.poster ?? slot.media[0]!;
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    let objectUrl: string | null = null;
-    void resolveBackdropMedia(ref).then((blob) => {
-      if (!active || blob === null) return;
-      objectUrl = URL.createObjectURL(blob);
-      setUrl(objectUrl);
-    });
-    return () => {
-      active = false;
-      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
-      setUrl(null);
-    };
-  }, [ref]);
+  const url = useMediaThumbnail(ref);
   return (
     <span className="relative flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-canvas ring-1 ring-hairline" aria-hidden data-bg-thumb>
       {url === null ? null : ref.kind === 'video'

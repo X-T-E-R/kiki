@@ -90,12 +90,12 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
       });
   };
   return (
-    <section data-inspector-needs-you="" aria-label={t('inspector.needsYou')} className="-mx-2 rounded-xl bg-accent-soft/45 px-2 pt-1.5 pb-1">
+    <section data-inspector-needs-you="" aria-label={t('inspector.needsYou')} className="-mx-2 rounded-xl bg-attention-soft/60 px-2 pt-1.5 pb-1">
       <h3 className="flex h-6 items-center gap-1.5 px-0.5">
-        <span className={`${INSPECTOR_HEAD} text-accent-ink`}>{t('inspector.needsYou')}</span>
-        <span className="text-[12px] text-accent-ink/80 tabular-nums">{items.length}</span>
+        <span className={INSPECTOR_HEAD.replace('text-ink-soft', 'text-attention')}>{t('inspector.needsYou')}</span>
+        <span className="text-[12px] text-attention tabular-nums">{items.length}</span>
       </h3>
-      <ul className="divide-y divide-accent/10">
+      <ul className="divide-y divide-attention/10">
         {shown.map((item) => {
           const id = itemId(item);
           const origin = item.originUnknown === true ? undefined : item.originAgentId;
@@ -110,7 +110,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
             <li key={id} data-needs-you-item={id} data-needs-you-origin={origin ?? MAIN_AGENT_ID} className="py-1.5">
               <div className="flex min-w-0 items-start">
                 <span className={RAIL_MARK}>
-                  <span aria-hidden className="h-[7px] w-[7px] rounded-full bg-accent" />
+                  <span aria-hidden className="h-[7px] w-[7px] rounded-full bg-attention" />
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="flex min-w-0 items-baseline gap-1.5 leading-5">
@@ -164,7 +164,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
                     type="button"
                     data-inspector-review={id}
                     onClick={() => { onReview(item.kind, id); }}
-                    className={`${ACTION} ${inline ? 'ml-auto font-normal text-ink-faint hover:bg-ink/[0.05] hover:text-ink' : 'text-accent-ink hover:bg-accent-soft'}`}
+                    className={`${ACTION} ${inline ? 'ml-auto font-normal text-ink-faint hover:bg-ink/[0.05] hover:text-ink' : 'text-attention hover:bg-attention-soft'}`}
                   >
                     {item.kind === 'question' ? t('inspector.answer') : t('inspector.review')}
                   </button>
@@ -179,7 +179,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
           type="button"
           data-needs-you-more
           onClick={() => { setShowAll(true); }}
-          className="mt-0.5 mb-0.5 ml-3.5 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          className="mt-0.5 mb-0.5 ml-3.5 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
         >
           {tp('inspector.needsYouMore', hidden)}
         </button>

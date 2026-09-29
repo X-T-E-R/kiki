@@ -1773,7 +1773,9 @@ export const en = {
   'st.skin.hint': 'A skin changes the palette, type and shape. Light and dark stay a separate choice above.',
   'st.skin.builtin': 'Built in',
   'st.skin.user': 'From your themes folder',
-  'st.skin.desc.paper': 'Warm paper and ink with a rust accent. Kiki’s own voice.',
+  'st.skin.desc.paper': 'A near-white warm sheet on a toasted ground: brown headings, a sage mark on the current row, rust for what needs you. Kiki’s own voice.',
+  'st.skin.desc.sand': 'Paper one shade deeper: sheet and ground are both warm tan. For screens where a near-white sheet glares.',
+  'st.skin.desc.linen': 'Neutral off-white with an ink-blue accent: blue headings and a blue mark on the current row.',
   'st.skin.desc.slate':
     'Cool neutral greys with an ink-blue accent. Quieter than Paper: the chrome recedes and code is the only warm thing on screen.',
   'st.skin.desc.contrast':

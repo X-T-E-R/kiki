@@ -17,33 +17,54 @@
    * sits on) < paper (the raised conversation sheet) < panel (inspector,
    * preview and floating cards). Panes are told apart by this ladder and the
    * gaps between sheets, not by rules. */
-  --color-canvas: #f0eadf;
-  --color-paper: #f6f1e7;
-  --color-panel: #fbf8f2;
-  --color-hairline: #e9e1d2;
-  --color-hairline-strong: #d8ccb6;
-  --color-ink: #1f1b16;
-  --color-ink-soft: #5b5247;
+  /* Parchment: a toasted canvas under a near-white warm sheet, so the page
+   * you read is the brightest thing on screen and the chrome around it sits
+   * back. (Before 9.23 canvas and paper were one color; 9.28 made both a
+   * uniform tan — this keeps the 9.23 sheet and the 9.28 ground.) */
+  --color-canvas: #ede5d6;
+  --color-paper: #f8f4ec;
+  --color-panel: #fffdf8;
+  --color-hairline: #e5dccb;
+  --color-hairline-strong: #d3c5ac;
+  --color-ink: #1c1917;
+  --color-ink-soft: #544a3f;
   /* Faint text holds AA (≥4.5:1) on every step of the ladder, canvas included,
-   * and under the neutral hover wash (ink/0.04). */
-  --color-ink-faint: #6b6053;
+   * and under the neutral hover wash (ink/0.04) and the selected wash. */
+  --color-ink-faint: #665a4c;
   --color-accent: #c2410c;
   --color-accent-deep: #9a3412;
   /* The accent when it is the text itself (a "needs you" word, a link): the
    * brand accent is for dots, rings and filled buttons and sits at 4.3:1 on
    * canvas, so words take this deeper step (≥6:1 on every surface). */
   --color-accent-ink: #9a3412;
-  --color-accent-soft: #f6e6d6;
+  --color-accent-soft: #f7e4d3;
   --color-amber-ink: #92400e;
   --color-amber-card: #f8eedd;
   --color-amber-rule: #d9a441;
   --color-success: #37703f;
   --color-danger: #b42318;
 
+  /* Focal roles. The ladder alone reads as one flat beige; these give the eye
+   * three fixed places to land, each with one job:
+   *   section-ink   group and section headings (sidebar groups, settings
+   *                 nav groups, card titles): a warm brown one step off ink,
+   *                 so structure is readable without weight or size.
+   *   selected      where you are: the current session / nav / settings row.
+   *                 A cool sage wash with a teal mark, the one cool hue on a
+   *                 warm page, so "here" never competes with "needs you".
+   *   attention     what needs you: approvals, questions. The rust accent,
+   *                 saturated, on its own soft wash.
+   * All text roles hold ≥4.5:1 on canvas, paper, panel and their own wash. */
+  --color-section-ink: #6e4424;
+  --color-selected: #dde9e4;
+  --color-selected-ink: #0f5a52;
+  --color-attention: #b5360a;
+  --color-attention-soft: #fbe6d6;
+
   /* Non-utility surfaces that used to be literal hex: the user bubble, the
    * scrollbar thumbs, and the shadow/scrim ink. Tokenized so the dark dual
    * below can move them with everything else. */
-  --color-bubble-user: #efe7d8;
+  --color-bubble-user: #efe6d5;
   --color-scrollbar: #dcd1bd;
   --color-scrollbar-hover: #c8baa1;
   --color-term-scrollbar: #4a4238;
@@ -67,15 +88,15 @@
 
   /* Streamdown's components are built on shadcn custom properties; map them
    * onto the kiki palette so its internals (code blocks, tables) stay warm. */
-  --color-background: #fbf8f2;
-  --color-foreground: #1f1b16;
-  --color-muted: #f6f1e7;
-  --color-muted-foreground: #5b5247;
-  --color-border: #e9e1d2;
-  --color-input: #e9e1d2;
+  --color-background: #fffdf8;
+  --color-foreground: #1c1917;
+  --color-muted: #f8f4ec;
+  --color-muted-foreground: #544a3f;
+  --color-border: #e5dccb;
+  --color-input: #e5dccb;
   --color-primary: #c2410c;
-  --color-primary-foreground: #fbf8f2;
-  --color-sidebar: #f6f1e7;
+  --color-primary-foreground: #fffdf8;
+  --color-sidebar: #f8f4ec;
 
   /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
    * stacks keep the Latin identity and land Chinese on deliberate Song-style
@@ -109,8 +130,8 @@
   --color-hairline: #2c261e;
   --color-hairline-strong: #40382c;
   --color-ink: #efe8dc;
-  --color-ink-soft: #b3a795;
-  --color-ink-faint: #8f8373;
+  --color-ink-soft: #b8ac99;
+  --color-ink-faint: #958978;
   --color-accent: #f08a4b;
   --color-accent-deep: #f6a574;
   --color-accent-ink: #f08a4b;
@@ -120,6 +141,12 @@
   --color-amber-rule: #7a5a20;
   --color-success: #7fb88a;
   --color-danger: #f2877c;
+
+  --color-section-ink: #d9ab83;
+  --color-selected: #132623;
+  --color-selected-ink: #7fd3c4;
+  --color-attention: #ff9a5c;
+  --color-attention-soft: #3a2415;
 
   --color-bubble-user: #241f18;
   --color-scrollbar: #453d31;
@@ -135,7 +162,7 @@
   --color-background: #1d1914;
   --color-foreground: #efe8dc;
   --color-muted: #17140f;
-  --color-muted-foreground: #b3a795;
+  --color-muted-foreground: #b8ac99;
   --color-border: #2c261e;
   --color-input: #2c261e;
   --color-primary: #f08a4b;

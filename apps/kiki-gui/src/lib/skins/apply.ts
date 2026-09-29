@@ -38,6 +38,11 @@ export const COLOR_TOKEN_VARIABLES: Readonly<Record<SkinColorToken, readonly str
   accentSoft: ['--color-accent-soft'],
   accentInk: ['--color-accent-ink'],
   onAccent: ['--color-on-accent', '--color-primary-foreground'],
+  sectionInk: ['--color-section-ink'],
+  selected: ['--color-selected'],
+  selectedInk: ['--color-selected-ink'],
+  attention: ['--color-attention'],
+  attentionSoft: ['--color-attention-soft'],
   amberInk: ['--color-amber-ink'],
   amberCard: ['--color-amber-card'],
   amberRule: ['--color-amber-rule'],
@@ -93,6 +98,20 @@ export function declaredVariants(skin: SkinFile): readonly ResolvedTheme[] {
 /** Accent-as-text for a skin or tweak that moved the accent; see below. */
 export const ACCENT_INK_MIX = 'color-mix(in oklab, var(--color-accent) 72%, var(--color-ink))';
 
+/**
+ * What a skin that leaves the focal roles out gets. Each reads a token the
+ * skin already set, so contrast follows the skin's own checked values:
+ * headings are inkSoft, "needs you" is accentInk (both AA by the built-in
+ * test), and the selected wash is a light tint of the accent over panel.
+ */
+export const FOCAL_FALLBACKS: Readonly<Partial<Record<SkinColorToken, string>>> = {
+  sectionInk: 'var(--color-ink-soft)',
+  selected: 'color-mix(in oklab, var(--color-accent) 12%, var(--color-panel))',
+  selectedInk: 'var(--color-accent-ink)',
+  attention: 'var(--color-accent-ink)',
+  attentionSoft: 'var(--color-accent-soft)',
+};
+
 /** Local per-token overrides from the settings editor, applied over the skin. */
 export interface SkinTweaks {
   readonly accent?: string;
@@ -139,6 +158,16 @@ export function variantToCssVariables(
   // gain the contrast the bare accent lacks on canvas.
   if (variant?.colors?.accent !== undefined && variant.colors.accentInk === undefined) {
     out['--color-accent-ink'] = ACCENT_INK_MIX;
+  }
+
+  // Focal roles a colored skin did not state are derived from its own
+  // palette, so a blue skin never shows the base palette's teal and rust.
+  if (variant?.colors !== undefined && Object.keys(variant.colors).length > 0) {
+    for (const [token, value] of Object.entries(FOCAL_FALLBACKS)) {
+      if (variant.colors[token as SkinColorToken] === undefined) {
+        for (const variable of COLOR_TOKEN_VARIABLES[token as SkinColorToken]) out[variable] = value;
+      }
+    }
   }
 
   const shape = variant?.shape;

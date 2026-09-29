@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { translate } from '@kiki/session-core/i18n';
@@ -88,13 +92,24 @@ describe('built-in skins', () => {
 
   it('keeps text at WCAG AA on every surface of every variant', () => {
     for (const skin of BUILTIN_SKINS) {
-      if (skin.id === DEFAULT_SKIN_ID) continue; // base palette lives in index.css
+      if (skin.id === DEFAULT_SKIN_ID) continue; // base palette: checked from index.css below
       for (const theme of declaredVariants(skin)) {
-        const colors = skin.variants[theme]!.colors!;
+        const colors = skin.variants[theme]!.colors;
+        if (colors === undefined) continue; // an empty variant is the base palette
         for (const surface of ['canvas', 'paper', 'panel'] as const) {
           for (const text of ['ink', 'inkSoft', 'inkFaint', 'accent', 'success', 'danger', 'amberInk'] as const) {
             const ratio = contrast(colors[text]!, colors[surface]!);
             expect(ratio, `${skin.id}/${theme}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+          }
+          // Focal roles, where the skin states them (else derived, see apply.ts).
+          for (const text of ['sectionInk', 'attention', 'selectedInk'] as const) {
+            if (colors[text] === undefined) continue;
+            expect(contrast(colors[text], colors[surface]!), `${skin.id}/${theme}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+          }
+        }
+        if (colors.selected !== undefined) {
+          for (const text of ['ink', 'inkSoft', 'inkFaint', 'selectedInk'] as const) {
+            expect(contrast(colors[text]!, colors.selected), `${skin.id}/${theme}: ${text} on selected`).toBeGreaterThanOrEqual(4.5);
           }
         }
         // Labels on filled surfaces: the case plain `text-white` got wrong.
@@ -106,6 +121,27 @@ describe('built-in skins', () => {
           .toBeGreaterThanOrEqual(4.5);
       }
     }
+  });
+
+  it('keeps the default Paper palette (index.css) at AA, faint text and focal roles included', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../index.css'), 'utf8');
+    const block = (start: string) => {
+      const from = css.indexOf(start);
+      return css.slice(from, css.indexOf('\n}', from));
+    };
+    const read = (text: string) => Object.fromEntries([...text.matchAll(/--color-([a-z-]+):\s*(#[0-9a-f]{6});/gi)].map((m) => [m[1]!, m[2]!]));
+    const light = read(block('@theme {'));
+    const dark = { ...light, ...read(block("[data-theme='dark'] {")) };
+    for (const [theme, p] of [['light', light], ['dark', dark]] as const) {
+      for (const surface of ['canvas', 'paper', 'panel', 'selected']) {
+        for (const text of ['ink', 'ink-soft', 'ink-faint', 'accent-ink', 'section-ink', 'attention', 'selected-ink', 'success', 'danger', 'amber-ink']) {
+          expect(contrast(p[text]!, p[surface]!), `paper/${theme}: ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+      expect(contrast(p['attention']!, p['attention-soft']!), `paper/${theme}: attention on its wash`).toBeGreaterThanOrEqual(4.5);
+    }
+    // The sheet reads as the brightest step: paper sits clearly above canvas.
+    expect(luminance(light['paper']!)).toBeGreaterThan(luminance(light['canvas']!) * 1.1);
   });
 });
 

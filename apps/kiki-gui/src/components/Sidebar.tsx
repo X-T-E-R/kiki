@@ -146,7 +146,8 @@ function Highlighted({ text, ranges }: { text: string; ranges: readonly MatchRan
  * has its own shape: waiting is the accent dot with its ring, working a still
  * solid ink dot (rows never breathe — the header count carries the pulse), a
  * finished-unseen row a hollow ring that settles once when it lands, a failed
- * unseen run a danger square that also says so on the second line. A
+ * unseen run a neutral square that also says so in plain text on the second
+ * line. A
  * caught-up row leaves the slot empty.
  */
 function rowLife(session: Session, state: SessionRowState): LifeState {
@@ -199,8 +200,10 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
         life={life}
         still
         title={title}
-        // A stop you asked for is amber, not danger (same rule as /activity).
-        tone={life === 'failed' && session.last_turn_reason === 'cancelled' ? 'bg-amber-rule' : undefined}
+        // A run that did not complete is a fact, not an alarm: a neutral
+        // square (the shape still says "failed"), same as the inspector. Only
+        // what needs the user carries a color of its own.
+        tone={life === 'failed' ? 'bg-ink-faint' : life === 'waiting' ? 'bg-attention' : undefined}
       />
     </span>
   );
@@ -253,10 +256,10 @@ function PrimaryNav({
                 aria-current={current ? 'page' : undefined}
                 onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
                 className={`flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] transition-colors duration-150 ${
-                  current ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                  current ? 'bg-selected font-medium text-ink' : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
                 }`}
               >
-                <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
+                <span className={current ? 'text-selected-ink' : 'text-ink-faint'}><Icon /></span>
                 <span className="min-w-0 flex-1 truncate">{t(`nav.${item.key}`)}</span>
                 {badge !== undefined && badge.count > 0 ? (
                   <span
@@ -766,7 +769,7 @@ export function Sidebar({
             single-line; the shortcuts beside it are what yield when the
             sidebar is dragged narrow. "Needs you" is counted once, on the
             bell above — here only the aggregate running mark remains. */}
-        <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-ink-soft">{t('sidebar.results.sessions')}</h2>
+        <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
         <span className="min-w-0 flex-1" />
         {counts.running > 0 ? (
           <button
@@ -961,7 +964,7 @@ export function Sidebar({
           // column, and only workspace buckets show it (they fold and
           // truncate). A folded workspace still says when something inside
           // needs you or is running: one still mark after the count.
-          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-ink-soft';
+          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink';
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
           const headerBody = (
             <>
@@ -1039,17 +1042,26 @@ export function Sidebar({
       </div>
       )}
 
-      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
+      {/* Footer: one full-width row. The whole row opens Settings; the
+        * connection dot sits at its end as its own small target (it opens
+        * the connection page), so both stay reachable by keyboard. The row
+        * never overlaps the list above it: it is a flex sibling, not an
+        * overlay, and the list keeps bottom padding for its last row. */}
+      <div className="relative flex h-12 shrink-0 items-center px-2" data-sidebar-footer>
         <button
           type="button"
           data-nav-settings
+          aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => navigate('/settings')}
-          className="flex h-8 min-w-0 shrink items-center gap-2 rounded-lg px-2 text-left text-[13px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+          className={`flex h-9 w-full min-w-0 items-center gap-2.5 rounded-lg pr-10 pl-2 text-left text-[13px] transition-colors ${
+            location.pathname.startsWith('/settings')
+              ? 'bg-selected font-medium text-ink'
+              : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink'
+          }`}
         >
-          <span className="text-ink-faint"><Icon name="settings" size={16} className={ICON} /></span>
-          <span className="truncate">{t('sidebar.settings')}</span>
+          <span className={location.pathname.startsWith('/settings') ? 'text-selected-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
+          <span className="min-w-0 flex-1 truncate">{t('sidebar.settings')}</span>
         </button>
-        <span className="flex-1" />
         {/* "Waiting on you" lives in the header's activity entry now; a second
             footer copy of the same count was three readings of one fact. */}
         <button
@@ -1061,7 +1073,7 @@ export function Sidebar({
             version: meta.server_version,
             status: t(`sidebar.ws.${wsStatus}`),
           })}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-ink/[0.05]"
+          className="absolute top-1/2 right-3 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06]"
         >
           <span
             className={`h-2 w-2 rounded-full ${
@@ -1297,7 +1309,7 @@ function SessionRow({
         title={nestedName}
         className={`flex w-full gap-2 rounded-lg py-1.5 pr-2 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
           nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
-        } ${active ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'}`}
+        } ${active ? 'bg-selected shadow-[inset_2px_0_0_var(--color-selected-ink)]' : 'hover:bg-ink/[0.04]'}`}
       >
         <span className="flex h-[19px] w-[7px] shrink-0 items-center">
           <StatusMark session={session} state={rowState} />
@@ -1340,11 +1352,11 @@ function SessionRow({
           {fact !== undefined || archived || session.worktree !== undefined ? (
             <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
-                <span data-session-needs-you className="min-w-0 truncate font-medium text-accent-ink">{fact.text}</span>
+                <span data-session-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
               ) : fact.kind === 'failed' ? (
                 <span
                   data-session-failed
-                  className={`min-w-0 truncate ${session.last_turn_reason === 'cancelled' ? 'text-amber-ink' : 'text-danger'}`}
+                  className="min-w-0 truncate text-ink-soft"
                 >
                   {fact.text}
                 </span>

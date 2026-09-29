@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { join } from 'node:path';
@@ -384,8 +385,10 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
           if (!appearancePackFiles(pack).includes(name) || mime === undefined) {
             throw new PackError(ErrorCode.FS_PATH_NOT_FOUND, 'file not found');
           }
-          const data = await readFile(join(dir, name));
-          const etag = `"${packId}-${name}-${data.byteLength}"`;
+          const path = join(dir, name);
+          const info = await stat(path);
+          const size = info.size;
+          const etag = `"${packId}-${name}-${size}-${Math.floor(info.mtimeMs)}"`;
           r.type(mime)
             .header('accept-ranges', 'bytes')
             .header('etag', etag)
@@ -396,12 +399,18 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
             r.code(304).send(null);
             return;
           }
-          const range = parseRangeHeader(pickHeader(req.headers, 'range'), data.byteLength);
+          const range = parseRangeHeader(pickHeader(req.headers, 'range'), size);
           if (range !== null) {
-            r.header('content-range', `bytes ${range.start}-${range.end}/${data.byteLength}`).code(206).send(data.subarray(range.start, range.end + 1));
-            return;
+            const slice = createReadStream(path, { start: range.start, end: range.end });
+            slice.on('error', () => { slice.destroy(); });
+            return r.header('content-range', `bytes ${range.start}-${range.end}/${size}`)
+              .header('content-length', range.length)
+              .code(206)
+              .send(slice) as unknown as void;
           }
-          r.code(200).send(data);
+          const stream = createReadStream(path);
+          stream.on('error', () => { stream.destroy(); });
+          return r.header('content-length', size).code(200).send(stream) as unknown as void;
         } catch (error) {
           r.code(404);
           sendError(r, req as unknown as AppearanceRequest, error);

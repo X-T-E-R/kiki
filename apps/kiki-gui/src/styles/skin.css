@@ -339,13 +339,17 @@
   border-radius: 0 0 var(--kiki-block-radius) var(--kiki-block-radius);
 }
 /* Footer: the whole row (Settings + connection dot) is the block, so it has
- * the column's full width rather than the button's. */
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> [data-nav-settings]) {
+ * the column's full width, and the Settings button inside fills it. Same
+ * 48px row as without a background, so the list above ends at the same line. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-footer] {
   height: 40px;
   margin: 0 var(--kiki-block-inset) var(--kiki-block-inset);
-  padding: 0 4px;
+  padding: 0 2px;
   border-radius: var(--kiki-block-radius);
   background: var(--kiki-text-canvas);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-footer] [data-connection-status] {
+  right: 6px;
 }
 /* Sticky group headers sit inside their block: no fill or blur of their own
  * (a blur over the translucent sidebar repaints its canvas a second time and

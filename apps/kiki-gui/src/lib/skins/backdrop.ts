@@ -22,6 +22,7 @@
  */
 
 import { objectPositionOf, readableSurfaceAlpha, sampleLuminance, type BackgroundMediaRef, type BackgroundSlot, type MediaSample } from './background';
+import { THUMBNAIL_EDGE, backdropEdge, displayBlob } from './displayMedia';
 import { getMedia } from './mediaStore';
 
 export interface BackdropStatus {
@@ -105,7 +106,14 @@ interface Layer {
 }
 
 let layer: Layer | null = null;
-let current: { key: string; element: HTMLImageElement | HTMLVideoElement | null; urls: string[] } = { key: '', element: null, urls: [] };
+/** What the layer shows. `element` is the img, video or tile div. */
+let current: { key: string; element: HTMLImageElement | HTMLVideoElement | HTMLDivElement | null; urls: string[] } = { key: '', element: null, urls: [] };
+/**
+ * The mount still loading its bytes. Settings changes re-apply the slot many
+ * times a second while a large file is still loading; they join this load
+ * rather than each starting (and decoding) their own copy.
+ */
+let inflight: { key: string } | null = null;
 let carouselTimer: ReturnType<typeof setInterval> | undefined;
 let slideIndex = 0;
 let activeSlot: BackgroundSlot | null = null;
@@ -173,14 +181,40 @@ function syncPlayback(): void {
 function revoke(): void {
   for (const url of current.urls) URL.revokeObjectURL(url);
   current = { key: '', element: null, urls: [] };
+  inflight = null;
 }
 
-async function urlFor(ref: BackgroundMediaRef, resolve: MediaResolver): Promise<string | null> {
-  const blob = await resolve(ref);
+/**
+ * An object URL for a ref. Pictures are shown from a screen-sized copy (see
+ * displayMedia.ts): an 8K original would be decoded on the main thread at
+ * full size. Tiles keep the original, since a tile's size is its pixel size.
+ */
+async function urlFor(ref: BackgroundMediaRef, resolve: MediaResolver, owned: string[], original = false): Promise<string | null> {
+  const blob = ref.kind === 'image' && !original
+    ? await displayBlob(ref.id, backdropEdge(), () => resolve(ref))
+    : await resolve(ref);
   if (blob === null) return null;
   const url = URL.createObjectURL(blob);
-  current.urls.push(url);
+  owned.push(url);
   return url;
+}
+
+/**
+ * Measure a picture from a thumbnail-sized copy, decoded and resized off the
+ * main thread. Drawing the displayed element instead would force a
+ * synchronous full-resolution decode for a large original (a tile).
+ */
+async function sampleImage(ref: BackgroundMediaRef): Promise<void> {
+  if (samples.has(ref.id) || typeof createImageBitmap !== 'function') return;
+  const blob = await displayBlob(ref.id, THUMBNAIL_EDGE, () => resolver(ref));
+  if (blob === null) return;
+  try {
+    const bitmap = await createImageBitmap(blob, { resizeWidth: 48, resizeHeight: 32, resizeQuality: 'low' });
+    measure(bitmap, ref.id);
+    bitmap.close();
+  } catch {
+    // Keep the worst-case assumption.
+  }
 }
 
 /** Where media bytes come from: the local store, or a pack's server files. */
@@ -191,8 +225,12 @@ let resolver: MediaResolver = (ref) => getMedia(ref.id);
 export function setBackdropMediaResolver(next: MediaResolver): void {
   resolver = next;
   // The resolver arrives with the connection; a pack slot restored from
-  // storage on boot had nothing to fetch its media with until now.
-  if (activeSlot !== null && current.element === null) void mountMedia(activeSlot, slideIndex, generation);
+  // storage on boot had nothing to fetch its media with until now. A load
+  // still running on the old resolver is abandoned for one on the new.
+  if (activeSlot !== null && current.element === null) {
+    inflight = null;
+    void mountMedia(activeSlot, slideIndex, generation);
+  }
 }
 
 /** Fetch a ref's bytes the same way the backdrop does (thumbnails, previews). */
@@ -222,16 +260,32 @@ async function mountMedia(slot: BackgroundSlot, index: number, run: number): Pro
   const ref = slot.media[index % slot.media.length]!;
   const key = `${slot.packId ?? ''}|${ref.id}|${slot.look.fit}`;
   if (current.key === key && current.element !== null) {
-    styleMedia(current.element, slot, slot.look.fit === 'tile' && ref.kind === 'image' ? current.urls[0] ?? null : null);
+    styleMedia(current.element, slot, current.element instanceof HTMLDivElement ? current.urls[0] ?? null : null);
     syncPlayback();
     return;
   }
-  const previous = current;
-  current = { key, element: null, urls: [] };
-  const url = await urlFor(ref, resolver);
-  if (run !== generation) { for (const u of current.urls) URL.revokeObjectURL(u); return; }
+  // Same media already loading: that load styles itself from the latest slot
+  // when it lands, so a burst of dial changes costs one load, not one each.
+  if (inflight?.key === key) return;
+  const ticket = { key };
+  inflight = ticket;
+  const owned: string[] = [];
+  const superseded = () => run !== generation || inflight !== ticket;
+  const url = await urlFor(ref, resolver, owned, slot.look.fit === 'tile');
+  let poster: string | null = null;
+  if (url !== null && ref.kind === 'video' && slot.poster !== undefined && !superseded()) {
+    poster = await urlFor(slot.poster, resolver, owned);
+  }
+  // A newer apply (another pick, another slide, cleared) took over while the
+  // bytes loaded: drop only what this run made.
+  if (superseded()) {
+    for (const u of owned) URL.revokeObjectURL(u);
+    return;
+  }
+  inflight = null;
+  const latest = activeSlot ?? slot;
   if (url === null) {
-    for (const u of previous.urls) URL.revokeObjectURL(u);
+    revoke();
     host.replaceChildren();
     setStatus({ missing: true });
     return;
@@ -248,35 +302,31 @@ async function mountMedia(slot: BackgroundSlot, index: number, run: number): Pro
     video.disablePictureInPicture = true;
     video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
-    if (slot.poster !== undefined) {
-      const poster = await urlFor(slot.poster, resolver);
-      if (poster !== null) video.poster = poster;
-    }
+    if (poster !== null) video.poster = poster;
     video.addEventListener('loadeddata', () => {
       measure(video, ref.id);
       setStatus({ heavyVideo: video.videoWidth * video.videoHeight > 2560 * 1440 });
-      applySurfaceVars(slot);
+      if (activeSlot !== null) applySurfaceVars(activeSlot);
     }, { once: true });
     video.src = url;
     element = video;
-  } else if (slot.look.fit === 'tile') {
-    element = document.createElement('div');
-    const probe = new Image();
-    probe.addEventListener('load', () => { measure(probe, ref.id); applySurfaceVars(slot); }, { once: true });
-    probe.src = url;
   } else {
-    const image = document.createElement('img');
-    image.decoding = 'async';
-    image.alt = '';
-    image.addEventListener('load', () => { measure(image, ref.id); applySurfaceVars(slot); }, { once: true });
-    image.src = url;
-    element = image;
+    if (slot.look.fit === 'tile') {
+      element = document.createElement('div');
+    } else {
+      const image = document.createElement('img');
+      image.decoding = 'async';
+      image.alt = '';
+      image.src = url;
+      element = image;
+    }
+    void sampleImage(ref).then(() => { if (activeSlot !== null && current.key === key) applySurfaceVars(activeSlot); });
   }
   element.dataset['kikiBackdropItem'] = ref.kind;
-  styleMedia(element, slot, element instanceof HTMLDivElement ? url : null);
+  styleMedia(element, latest, element instanceof HTMLDivElement ? url : null);
   host.replaceChildren(element);
-  for (const u of previous.urls) URL.revokeObjectURL(u);
-  current.element = element instanceof HTMLDivElement ? null : element;
+  for (const u of current.urls) URL.revokeObjectURL(u);
+  current = { key, element, urls: owned };
   setStatus({ missing: false, heavyVideo: false });
   syncPlayback();
 }

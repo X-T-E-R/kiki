@@ -127,7 +127,7 @@ export function SettingsNavTree({
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
         className={`flex h-8 items-center rounded-md px-2 text-left text-[13px] transition-colors ${
           active === id
-            ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+            ? 'bg-selected font-medium text-ink shadow-[inset_2px_0_0_var(--color-selected-ink)]'
             : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
         }`}
       >
@@ -152,7 +152,7 @@ export function SettingsNavTree({
     <div className="mt-4 flex flex-col gap-4" data-settings-nav-tree>
       {groups.map((node) => (
         <div key={node.id} data-settings-nav-group={node.id}>
-          <p className="flex h-7 items-center px-2 text-[12px] font-medium text-ink-soft">
+          <p className="flex h-7 items-center px-2 text-[12px] font-medium text-section-ink">
             {t(node.labelKey)}
           </p>
           <div className="flex flex-col gap-0.5">

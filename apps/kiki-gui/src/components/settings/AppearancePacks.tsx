@@ -6,7 +6,7 @@
  */
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -14,7 +14,6 @@ import {
   packBackgroundPrefs,
   packMediaId,
   packSkinOf,
-  resolveBackdropMedia,
   setPackSkins,
   skinPrefsSnapshot,
   writeBackgroundPrefs,
@@ -27,6 +26,7 @@ import {
   installAppearancePack,
 } from '../../lib/skins/packsApi';
 import { useAppearancePacks, useServerEndpoint, type AppearancePackEntry } from '../../lib/skins/useAppearancePacks';
+import { useMediaThumbnail } from '../../lib/skins/useMediaThumbnail';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -34,22 +34,8 @@ import { formatBytes, useBackgroundPrefs } from './BackgroundSettings';
 import { useSkinPrefs } from './SkinSettings';
 
 function PackPreview({ entry }: { entry: AppearancePackEntry }) {
-  const [url, setUrl] = useState<string | null>(null);
   const file = entry.pack.preview ?? entry.pack.variants.light?.background?.poster ?? entry.pack.variants.dark?.background?.poster;
-  useEffect(() => {
-    if (file === undefined) return;
-    let active = true;
-    let objectUrl: string | null = null;
-    void resolveBackdropMedia({ id: packMediaId(entry.pack.id, file), kind: 'image', mime: 'image/*', name: file, bytes: 0 }).then((blob) => {
-      if (!active || blob === null) return;
-      objectUrl = URL.createObjectURL(blob);
-      setUrl(objectUrl);
-    });
-    return () => {
-      active = false;
-      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
-    };
-  }, [entry.pack.id, file]);
+  const url = useMediaThumbnail(file === undefined ? undefined : { id: packMediaId(entry.pack.id, file), kind: 'image', mime: 'image/*', name: file, bytes: 0 });
   const accent = entry.pack.variants.light?.colors?.accent ?? entry.pack.variants.dark?.colors?.accent;
   return (
     <span aria-hidden className="relative block aspect-[16/10] w-full overflow-hidden rounded-[8px] bg-canvas ring-1 ring-hairline" data-pack-preview>

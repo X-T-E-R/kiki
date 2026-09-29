@@ -144,6 +144,31 @@ describe('server-v2 appearance pack routes', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('streams a large pack video and serves a Range slice without reading the whole file', async () => {
+    expect((await install(packZip())).code).toBe(0);
+    const big = Buffer.alloc(24 * 1024 * 1024, 7);
+    MP4.copy(big, 0);
+    big.writeUInt32BE(0xdeadbeef, big.length - 4);
+    await writeFile(join(themesDir, 'fixture-dusk', 'night.mp4'), big);
+
+    const heapBefore = process.memoryUsage().arrayBuffers;
+    const tail = await inject({ method: 'GET', url: '/api/appearance/packs/fixture-dusk/files/night.mp4', headers: { range: 'bytes=-4' } });
+    expect(tail.statusCode).toBe(206);
+    expect(tail.headers['content-range']).toBe(`bytes ${big.length - 4}-${big.length - 1}/${big.length}`);
+    expect(String(tail.headers['content-length'])).toBe('4');
+    expect(tail.rawPayload.readUInt32BE(0)).toBe(0xdeadbeef);
+    expect(process.memoryUsage().arrayBuffers - heapBefore).toBeLessThan(big.length / 2);
+
+    const whole = await inject({ method: 'GET', url: '/api/appearance/packs/fixture-dusk/files/night.mp4' });
+    expect(whole.statusCode).toBe(200);
+    expect(String(whole.headers['content-length'])).toBe(String(big.length));
+    expect(whole.rawPayload.equals(big)).toBe(true);
+
+    const etag = whole.headers['etag']!;
+    const cached = await inject({ method: 'GET', url: '/api/appearance/packs/fixture-dusk/files/night.mp4', headers: { 'if-none-match': etag } });
+    expect(cached.statusCode).toBe(304);
+  });
+
   it('installs the shipped example pack from docs/examples unchanged', async () => {
     const dir = join(__dirname, '..', '..', '..', 'docs', 'examples', 'appearance-packs', 'dusk-harbor');
     const names = (await readdir(dir)).sort();
