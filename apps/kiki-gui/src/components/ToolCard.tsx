@@ -21,6 +21,7 @@ import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { FilePathLink, MediaPartList } from './mediaPreview';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
+import { useFindReveal } from './timeline/findReveal';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -369,6 +370,7 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  useFindReveal(sourceBlock.id, expanded, setExpanded);
   // A bridged call reads as the tool it calls, from the first streamed name
   // on; until that name has streamed the row says "Calling a tool".
   const bridged = sourceBlock.name === CALL_TOOL_BRIDGE;

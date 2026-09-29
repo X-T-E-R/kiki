@@ -69,6 +69,9 @@ export function shortcutsGroups(shortcut: SendShortcut, desktop: boolean): reado
         { keys: ['Esc'], labelKey: 'shortcuts.escAbort' },
         { keys: ['/'], labelKey: 'shortcuts.slashMenu' },
         { keys: ['@'], labelKey: 'shortcuts.fileMention' },
+        { keys: ['Ctrl', 'F'], labelKey: 'shortcuts.find' },
+        { keys: ['F3'], labelKey: 'shortcuts.findNext' },
+        { keys: ['Shift', 'F3'], labelKey: 'shortcuts.findPrevious' },
       ],
     },
     {

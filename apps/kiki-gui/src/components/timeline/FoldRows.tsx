@@ -13,6 +13,7 @@ import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaPreview';
 import { ActivityRow } from './ActivityRow';
+import { useFindReveal } from './findReveal';
 
 /** How many thumbnails a settled strip shows before "+N". */
 export const MEDIA_STRIP_MAX = 6;
@@ -185,6 +186,7 @@ export function SubagentEndedRow({
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  useFindReveal(ending.id, open, setOpen);
   const receipt = endingReceipt(ending, summary);
   const headline = firstSentence(receipt);
   const how = t(`transcript.agentEnd.${ending.outcome}` as const);

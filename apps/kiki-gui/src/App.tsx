@@ -83,6 +83,7 @@ import { useLayoutPreferences } from './lib/layoutHooks';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
+import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
@@ -437,6 +438,40 @@ export function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [navigate, desktop]);
 
+  // ⌘F / Ctrl+F: find in the conversation on screen (the composer included —
+  // a selection there seeds the query); F3 / Shift+F3 step through it. On
+  // settings it lands in the page's own search (the Ctrl+, path). Other
+  // routes (/new included) and open dialogs keep the key untouched.
+  // Capture phase, so an input that stops propagation cannot let the
+  // browser's own find bar through underneath ours.
+  const findRoute: FindRoute = activeSessionId !== undefined ? 'session' : isSettingsRoute ? 'settings' : 'other';
+  useEffect(() => {
+    if (findRoute === 'other') return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      handleFindShortcut(event, findRoute, {
+        overlayOpen: () => anyOverlayOpen(),
+        focusSettingsSearch: () => {
+          navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state: { focusSearch: true } });
+        },
+      });
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => { window.removeEventListener('keydown', onKeyDown, true); };
+  }, [findRoute, navigate, location.pathname, location.search, location.hash]);
+
+  // The find bar's "search all sessions" hands its query to the switcher.
+  const [switcherQuery, setSwitcherQuery] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const query = (event as CustomEvent<{ query?: string }>).detail?.query;
+      setShortcutsOpen(false);
+      setSwitcherQuery(query);
+      setQuickSwitcherOpen(true);
+    };
+    window.addEventListener(QUICK_SWITCHER_EVENT, onRequest);
+    return () => { window.removeEventListener(QUICK_SWITCHER_EVENT, onRequest); };
+  }, []);
+
   // A bare `?` (outside editable targets and other overlays) also opens the
   // shortcuts panel — the discoverability path for keyboard-first users.
   useEffect(() => {
@@ -652,7 +687,12 @@ export function App() {
       ) : null}
 
       {quickSwitcherOpen ? (
-        <QuickSwitcher sessions={sessions} workspaces={workspaceOptions} onClose={() => { setQuickSwitcherOpen(false); }} />
+        <QuickSwitcher
+          sessions={sessions}
+          workspaces={workspaceOptions}
+          initialQuery={switcherQuery}
+          onClose={() => { setQuickSwitcherOpen(false); setSwitcherQuery(undefined); }}
+        />
       ) : null}
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
         {onboardingOpen ? (

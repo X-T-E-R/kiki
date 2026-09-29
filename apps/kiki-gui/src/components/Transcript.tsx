@@ -123,6 +123,20 @@ import {
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
+import { FindBar } from './timeline/FindBar';
+import { buildFindItems } from './timeline/findItems';
+import { createFindRevealStore, FindRevealContext, useFindReveal } from './timeline/findReveal';
+import {
+  attrSelector,
+  findRanges,
+  paintFindHighlights,
+  rangeIsClipped,
+  registerFindHost,
+  scrollRangeIntoView,
+  turnOrdinal,
+  type FindHost,
+  type FindMatch,
+} from '../lib/timelineFind';
 import {
   EarlierPromptOutcomesRow,
   PromptOutcomeActionsContext,
@@ -274,6 +288,9 @@ const UserMessage = memo(function UserMessage({
   const { contentRef, contentId, isOverflowing, expanded, toggle } =
     useCollapsibleOverflow<HTMLDivElement>(block.text);
   const clipped = !expanded;
+  // A find match below the clamp opens the long message (the landing asks
+  // with `clamp:<id>` once it sees the painted range cut off).
+  useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined;
@@ -512,6 +529,7 @@ function latestLineOf(text: string): string {
 const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: ThinkingBlock }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  useFindReveal(block.id, open, setOpen);
   // deepseek-harness's ReasoningRow summary rule: while tokens are streaming
   // the collapsed line tracks the LATEST line; once settled it pins the first.
   const summary = block.streaming ? latestLineOf(block.text) : firstLineOf(block.text);
@@ -551,6 +569,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
 }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
+  useFindReveal(block.id, open, setOpen);
   return (
     <ActivityRow
       glyph={<Icon name="system" />}
@@ -612,6 +631,7 @@ function systemHeadline(text: string): string | undefined {
 const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
+  useFindReveal(block.id, open, setOpen);
   const failed = block.variant === 'task' && isFailedTaskNotificationText(block.text);
   return (
     <ActivityRow
@@ -636,6 +656,7 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
 const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
+  useFindReveal(block.id, open, setOpen);
   const title =
     block.source === 'plugin'
       ? t('transcript.skill.plugin', { name: block.name })
@@ -669,6 +690,7 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
   // eating the timeline). The header keeps the status and the command, while
   // the latest output line remains a separate muted preview.
   const [open, setOpen] = useState(false);
+  useFindReveal(block.id, open, setOpen);
   const preview = latestLineOf(block.output);
   // A shell run is an activity line like any other; only its OUTPUT keeps the
   // dark island. The old always-dark collapsed header made every command look
@@ -1320,6 +1342,7 @@ const ToolGroupRow = memo(
   const running = groupHasRunning(group);
   const hasError = groupHasError(group);
   const [expanded, setExpanded] = useState(false);
+  useFindReveal(group.id, expanded, setExpanded);
   // Auto-expand on error (once per error arrival), never auto-collapse.
   useEffect(() => {
     if (hasError) setExpanded(true);
@@ -3072,7 +3095,9 @@ export function Transcript({
   const liveRef = useRef({ loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, visible });
   liveRef.current = { loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, visible };
   const nextFrame = () => new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
-  const locate = useCallback(async (target: TimelineTarget): Promise<LocateOutcome> => {
+  // `quiet` (find steps): land on the row without the flash or the
+  // whole-block centering — the find landing scrolls to the match itself.
+  const locate = useCallback(async (target: TimelineTarget, options?: { quiet?: boolean }): Promise<LocateOutcome> => {
     for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
       if (wait > 120) return { status: 'no-timeline' };
       await nextFrame();
@@ -3154,6 +3179,7 @@ export function Transcript({
             ) ?? row);
     }
     if (element === null) return { status: 'not-found' };
+    if (options?.quiet === true) return { status: 'found' };
     element.scrollIntoView?.({ block: 'center' });
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     if (target.kind === 'annotation') element.focus({ preventScroll: true });
@@ -3172,12 +3198,188 @@ export function Transcript({
         if (!liveRef.current.visible || scroll === null || !scroll.isConnected) return false;
         return scroll.closest('[hidden], [style*="display: none"]') === null;
       },
-      locate,
+      locate: (target) => locate(target),
     });
   }, [sessionIdForLocate, agentId, locate]);
   const handleLocateDispatch = useCallback((subagentId: string) => {
     void locate({ kind: 'subagent', agentId: subagentId });
   }, [locate]);
+
+  // ---- find in this conversation (Ctrl/⌘+F; lib/timelineFind.ts) ----
+  const [findRequest, setFindRequest] = useState<{ prefill?: string; nonce: number } | null>(null);
+  const findReturnFocusRef = useRef<HTMLElement | null>(null);
+  const findStepRef = useRef<((direction: 1 | -1) => void) | null>(null);
+  const [findReveal] = useState(createFindRevealStore);
+  const [findOwner] = useState(() => Symbol('transcript-find'));
+  const findOpen = findRequest !== null;
+  const findItems = useMemo(() => (findOpen ? buildFindItems(groupedNodes) : []), [findOpen, groupedNodes]);
+  const loadedTurns = useMemo(() => {
+    const turns = new Set<number>();
+    for (const item of findItems) {
+      const ordinal = turnOrdinal(item.turnId);
+      if (ordinal !== undefined) turns.add(ordinal);
+    }
+    return turns;
+  }, [findItems]);
+  const findHostRef = useRef<FindHost | null>(null);
+  useEffect(() => {
+    const host: FindHost = {
+      isVisible: () => {
+        const scroll = scrollRef.current;
+        if (!liveRef.current.visible || scroll === null || !scroll.isConnected) return false;
+        return scroll.closest('[hidden], [style*="display: none"]') === null;
+      },
+      root: () => scrollRef.current?.parentElement ?? null,
+      open: ({ prefill, returnFocus }) => {
+        // Re-pressing Ctrl+F inside the bar keeps the original return target.
+        if (returnFocus !== null && returnFocus.closest('[data-find-bar]') === null) findReturnFocusRef.current = returnFocus;
+        setFindRequest((previous) => ({ prefill, nonce: (previous?.nonce ?? 0) + 1 }));
+      },
+      step: (direction, returnFocus) => {
+        if (findStepRef.current !== null) findStepRef.current(direction);
+        else host.open({ returnFocus });
+      },
+      lastUsedAt: 0,
+    };
+    findHostRef.current = host;
+    const unregister = registerFindHost(host);
+    const box = scrollRef.current?.parentElement;
+    const touch = () => { host.lastUsedAt = Date.now(); };
+    box?.addEventListener('pointerdown', touch, true);
+    box?.addEventListener('focusin', touch);
+    return () => {
+      unregister();
+      box?.removeEventListener('pointerdown', touch, true);
+      box?.removeEventListener('focusin', touch);
+    };
+  }, [loaded, loadError]);
+  const clearFindPaint = useCallback(() => { paintFindHighlights(findOwner, [], undefined); }, [findOwner]);
+  const closeFind = useCallback(() => {
+    setFindRequest(null);
+    findStepRef.current = null;
+    clearFindPaint();
+    const target = findReturnFocusRef.current;
+    findReturnFocusRef.current = null;
+    // Back to where Ctrl+F was pressed (the composer included); a target that
+    // left the page falls back to the timeline itself.
+    if (target !== null && target.isConnected) target.focus({ preventScroll: true });
+    else scrollRef.current?.focus({ preventScroll: true });
+  }, [clearFindPaint]);
+  useEffect(() => clearFindPaint, [clearFindPaint]);
+
+  // The current match, re-resolved against the DOM on every paint: rows
+  // remount as the virtualizer scrolls, so a stored Range would go stale.
+  const findCurrentRef = useRef<{ match: FindMatch; pattern: RegExp } | null>(null);
+  const findLandTokenRef = useRef(0);
+  const findScope = useCallback((match: FindMatch): HTMLElement | null => {
+    const scroll = scrollRef.current;
+    if (scroll === null) return null;
+    const selector = match.item.toolCallId !== undefined
+      ? attrSelector('data-tool-id', match.item.toolCallId)
+      : attrSelector('data-block-id', match.item.blockId);
+    return scroll.querySelector<HTMLElement>(selector);
+  }, []);
+  const paintFind = useCallback((): Range | undefined => {
+    const scroll = scrollRef.current;
+    const current = findCurrentRef.current;
+    if (scroll === null || current === null) {
+      clearFindPaint();
+      return undefined;
+    }
+    const scope = findScope(current.match);
+    const all = scope === null ? [] : findRanges(scope, current.pattern);
+    // An opened row repeats its first line in the summary above the body;
+    // the current match is the one in the body the model text came from.
+    // Rendering can also drop or add text around the model's (labels,
+    // markup), so the occurrence is clamped to what the row really shows.
+    const inBody = all.filter((candidate) => candidate.startContainer.parentElement?.closest('[data-activity-toggle]') === null);
+    const own = inBody.length > 0 ? inBody : all;
+    const range = own.length === 0 ? undefined : own[Math.min(current.match.occurrence, own.length - 1)];
+    const others = findRanges(scroll, current.pattern).filter((candidate) =>
+      range === undefined ||
+      candidate.compareBoundaryPoints(Range.START_TO_START, range) !== 0 ||
+      candidate.compareBoundaryPoints(Range.END_TO_END, range) !== 0);
+    paintFindHighlights(findOwner, others, range);
+    return range;
+  }, [clearFindPaint, findOwner, findScope]);
+  const landFind = useCallback(async (match: FindMatch, pattern: RegExp): Promise<boolean> => {
+    const token = findLandTokenRef.current + 1;
+    findLandTokenRef.current = token;
+    findCurrentRef.current = { match, pattern };
+    findReveal.set(match.item.reveal);
+    const outcome = await locate({ kind: 'block', blockId: match.item.blockId }, { quiet: true });
+    if (findLandTokenRef.current !== token) return false;
+    if (outcome.status !== 'found') {
+      paintFind();
+      return false;
+    }
+    // The row's own disclosure opens on the next commit; wait for its text.
+    let range: Range | undefined;
+    for (let frame = 0; frame < 12; frame += 1) {
+      range = paintFind();
+      if (range !== undefined) break;
+      await nextFrame();
+      if (findLandTokenRef.current !== token) return false;
+    }
+    if (range !== undefined && rangeIsClipped(range)) {
+      findReveal.set([...match.item.reveal, `clamp:${match.item.blockId}`]);
+      await nextFrame();
+      await nextFrame();
+      if (findLandTokenRef.current !== token) return false;
+      range = paintFind();
+    }
+    const scroll = scrollRef.current;
+    if (range === undefined || scroll === null) return false;
+    scrollRangeIntoView(range, scroll);
+    viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
+    paintFind();
+    return true;
+  }, [findReveal, locate, paintFind, virtualizer]);
+  const handleFindClear = useCallback(() => {
+    findLandTokenRef.current += 1;
+    findCurrentRef.current = null;
+    clearFindPaint();
+  }, [clearFindPaint]);
+  // Start from the first match at or below the top of what the reader sees.
+  const findStartIndex = useCallback((matches: readonly FindMatch[]) => {
+    const top = virtualizer.getVirtualItemForOffset(virtualizer.scrollOffset ?? 0)?.index ?? 0;
+    const { blocks: rows } = locateIndexRef.current;
+    const at = matches.findIndex((match) => (rows.get(match.item.blockId)?.index ?? -1) >= top);
+    return at === -1 ? 0 : at;
+  }, [virtualizer]);
+  const findLocateTurn = useCallback(async (ordinal: number) => {
+    const outcome = await locate({ kind: 'turn', turnId: normalizeTurnId(ordinal) });
+    return outcome.status === 'found';
+  }, [locate]);
+  const findLoadOlder = useCallback(() => loadOlderRef.current(), []);
+  // Rows mount and unmount as the reader scrolls: repaint what is on screen.
+  useEffect(() => {
+    if (!findOpen) return undefined;
+    const content = scrollRef.current;
+    if (content === null) return undefined;
+    let frame: number | null = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (findCurrentRef.current !== null) paintFind();
+      });
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(content, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [findOpen, paintFind]);
+  // Esc with focus back in the timeline (after clicking a result) closes too.
+  const handleFindKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!findOpen || event.key !== 'Escape' || event.defaultPrevented) return;
+    if (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]') !== null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeFind();
+  }, [findOpen, closeFind]);
 
   // ---- reading hold: an auto-fold never pulls rows from under the reader ----
   // Scrolled up (off the end) in the live turn, the rows on screen keep their
@@ -3254,12 +3456,14 @@ export function Transcript({
 
   return (
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
-    <div className="relative min-h-0 flex-1">
+    <FindRevealContext.Provider value={findReveal}>
+    <div className="relative min-h-0 flex-1" onKeyDown={handleFindKeyDown}>
       <div
         ref={scrollRef}
         data-transcript-scroll
         role="log"
-        className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+        tabIndex={-1}
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none] outline-none"
         onClick={handleAnnotationClick}
         onKeyDown={handleAnnotationKeyDown}
         onScroll={handleAnnotationScroll}
@@ -3355,7 +3559,25 @@ export function Transcript({
         virtualizer={virtualizer}
       />
       <JumpToBottom virtualizer={virtualizer} />
+      {findRequest !== null ? (
+        <FindBar
+          items={findItems}
+          sessionId={sessionIdForLocate}
+          agentId={agentId}
+          hasMoreHistory={state.hasMoreHistory}
+          loadedTurns={loadedTurns}
+          request={findRequest}
+          onLand={landFind}
+          onClear={handleFindClear}
+          startIndex={findStartIndex}
+          onLoadOlder={findLoadOlder}
+          onLocateTurn={findLocateTurn}
+          onClose={closeFind}
+          stepRef={findStepRef}
+        />
+      ) : null}
     </div>
+    </FindRevealContext.Provider>
     </PromptOutcomeActionsContext.Provider>
   );
 }

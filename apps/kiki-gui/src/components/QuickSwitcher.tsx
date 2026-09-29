@@ -30,15 +30,18 @@ import { Icon } from './icons';
 export function QuickSwitcher({
   sessions,
   workspaces = [],
+  initialQuery,
   onClose,
 }: {
   sessions: readonly Session[];
   workspaces?: readonly Workspace[];
+  /** Seeds the search (the conversation find bar hands its query over). */
+  initialQuery?: string;
   onClose: () => void;
 }) {
   const { t, time } = useI18n();
   const navigate = useGuardedNavigate();
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialQuery ?? '');
   const [activeIndex, setActiveIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 

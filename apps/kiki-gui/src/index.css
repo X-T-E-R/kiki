@@ -295,6 +295,23 @@ body {
   animation: kiki-enter 200ms ease-out both;
 }
 
+/* Find in this conversation (lib/timelineFind.ts): painted with the CSS
+ * Custom Highlight API, so the DOM (markdown, code) is never rewritten. Every
+ * match gets the attention wash; the current one takes the attention ink as
+ * its ground with paper text on it. Text colour stays readable on both
+ * (attention-soft keeps ink ≥ 4.5:1; paper on attention is ≥ 5:1 in light,
+ * and the dark paper on the lifted dark attention is higher). No browser
+ * yellow. */
+::highlight(kiki-find) {
+  background-color: var(--color-attention-soft);
+  color: var(--color-ink);
+}
+
+::highlight(kiki-find-current) {
+  background-color: var(--color-attention);
+  color: var(--color-paper);
+}
+
 /* Search-result landing: a short accent pulse on the target settings card. */
 /* Settings groups are flat rows, so the search-hit flash washes the group
    instead of ringing a card that no longer has a border. */
