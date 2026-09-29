@@ -1550,6 +1550,23 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it('exposes current agent notes, revision and covered step alongside todos', () => {
+    const notesMeta = {
+      rev: 3, hash: '1234', writtenTurn: 5, writtenStep: 't5.2',
+      coveredMessageId: 'msg-5', windowEpoch: 2,
+    };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      todos: [{ todoId: 'todo', items: [{ title: 'Ship', status: 'in_progress' }], notes: { goal: 'Ship feature', next: 'Run tests' }, notesMeta }],
+    }));
+    expect(projected).toMatchObject({
+      todos: [{ title: 'Ship', status: 'in_progress' }],
+      todoNotes: { goal: 'Ship feature', next: 'Run tests' }, todoNotesMeta: notesMeta,
+    });
+    const cleared = projectAgentTranscriptView(projected, 'main', emptySnapshot());
+    expect(cleared.todoNotes).toBeUndefined();
+    expect(cleared.todoNotesMeta).toBeUndefined();
+  });
+
   it('names the renewal strategy on compaction markers, including fallbacks', () => {
     const marker = (markerId: string, payload?: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: 'compaction', payload, at: FIXED_AT });
     const projected = projectAgentTranscriptView(

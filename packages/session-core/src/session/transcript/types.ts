@@ -15,6 +15,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@kiki/protocol';
+import type { TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
 import type { MediaRef } from '../../composer/media';
@@ -409,6 +410,8 @@ export interface SessionViewState {
   /** turnId → external-executor provenance for turns that ran off-kiki. */
   readonly turnExecutions: Readonly<Record<string, TurnExecutionInfo>>;
   readonly todos: readonly TodoItem[];
+  readonly todoNotes: TranscriptTodoNotes | undefined;
+  readonly todoNotesMeta: TranscriptTodoNotesMeta | undefined;
   readonly tasks: readonly Task[];
   /**
    * Compact REST snapshot roster (`snapshot.subagents`). Display fallback for
@@ -476,6 +479,8 @@ export function createViewState(sessionId: string): SessionViewState {
     usage: undefined,
     turnExecutions: {},
     todos: [],
+    todoNotes: undefined,
+    todoNotesMeta: undefined,
     tasks: [],
     snapshotSubagents: [],
     resyncing: false,

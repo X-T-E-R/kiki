@@ -2570,6 +2570,7 @@ export function projectAgentTranscriptView(
     ? snapshot.interactions
     : [...snapshot.interactions.values()];
   const todos = Array.isArray(snapshot.todos) ? snapshot.todos : [...snapshot.todos.values()];
+  const agentTodo = todos.find((todo) => todo.todoId === 'todo');
   const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
   let pendingInteraction: SessionPendingInteraction = 'none';
   for (const interaction of interactions) {
@@ -2608,7 +2609,9 @@ export function projectAgentTranscriptView(
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
     abortableTurnId: runningTurn?.ordinal,
     pendingInteraction,
-    todos: todos.at(-1)?.items ?? [],
+    todos: agentTodo?.items ?? todos.at(-1)?.items ?? [],
+    todoNotes: agentTodo?.notes,
+    todoNotesMeta: agentTodo?.notesMeta,
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
     hasMoreHistory: snapshot.hasMoreOlder === true,

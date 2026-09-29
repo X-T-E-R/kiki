@@ -1,13 +1,13 @@
 import type { TranscriptFact } from './reducer';
 import { projectTranscriptUserOrigin } from '../contract/origin';
-import { transcriptTaskSchema } from '../contract/schema';
+import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import type { MessageDelivery, ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
 import type { GoalMeta, GoalStatus } from '../model/meta';
 import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/prompt';
 import type { TranscriptTask } from '../model/task';
-import type { TodoItem } from '../model/todo';
+import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
 
@@ -96,6 +96,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly executions: readonly [string, TranscriptTurnExecution][];
   readonly cancelRequests?: readonly [string, TurnCancellation][];
   readonly goal?: GoalMeta;
+  readonly todo?: TranscriptTodo;
   readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   readonly recordOrdinal: number;
   readonly legacyTurnOrdinal: number;
@@ -144,6 +145,7 @@ export class TranscriptWireAdapter {
   readonly #turnRecordOrdinals = new Map<string, number>();
   readonly #stepRecordOrdinals = new Map<string, number>();
   #goal: GoalMeta | undefined;
+  #todo: TranscriptTodo | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
   #legacyTurnOrdinal = 0;
@@ -188,6 +190,7 @@ export class TranscriptWireAdapter {
       executions: [...this.#executions],
       cancelRequests: [...this.#cancelRequests],
       goal: this.#goal,
+      todo: this.#todo,
       plan: this.#plan,
       recordOrdinal: this.#recordOrdinal,
       legacyTurnOrdinal: this.#legacyTurnOrdinal,
@@ -242,6 +245,7 @@ export class TranscriptWireAdapter {
     replaceMap(this.#executions, checkpoint.executions);
     replaceMap(this.#cancelRequests, checkpoint.cancelRequests ?? []);
     this.#goal = checkpoint.goal;
+    this.#todo = checkpoint.todo;
     this.#plan = checkpoint.plan;
     this.#recordOrdinal = checkpoint.recordOrdinal;
     this.#legacyTurnOrdinal = checkpoint.legacyTurnOrdinal;
@@ -529,16 +533,26 @@ export class TranscriptWireAdapter {
       return marker === undefined ? [] : [this.marker(record, ordinal, marker)];
     }
     if (record.type === 'tools.update_store' && record['key'] === 'todo') {
-      return [
-        {
-          op: 'todo.upsert',
-          todo: {
-            todoId: 'todo',
-            items: todoItemsOf(record['value']),
-            updatedAt: isoOf(record.time),
-          },
-        },
-      ];
+      this.#todo = {
+        todoId: 'todo',
+        items: todoItemsOf(record['value']),
+        notes: this.#todo?.notes,
+        notesMeta: this.#todo?.notesMeta,
+        updatedAt: isoOf(record.time),
+      };
+      return [{ op: 'todo.upsert', todo: this.#todo }];
+    }
+    if (record.type === 'tools.update_store' && record['key'] === 'todo_notes') {
+      const value = todoNotesUpdateSchema.safeParse(record['value']);
+      if (!value.success) return [];
+      this.#todo = {
+        todoId: 'todo',
+        items: this.#todo?.items ?? [],
+        notes: value.data.notes,
+        notesMeta: value.data.notesMeta,
+        updatedAt: isoOf(record.time),
+      };
+      return [{ op: 'todo.upsert', todo: this.#todo }];
     }
     if (record.type === 'goal.create') {
       const status = stringOf(record['status']);

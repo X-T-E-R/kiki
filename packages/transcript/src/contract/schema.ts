@@ -453,9 +453,35 @@ export const todoItemSchema = z.object({
   status: z.enum(['pending', 'in_progress', 'done']),
 });
 
+export const todoNotesSchema = z.object({
+  goal: z.string().optional(),
+  decided: z.string().optional(),
+  rejected: z.string().optional(),
+  evidence: z.string().optional(),
+  files: z.string().optional(),
+  next: z.string().optional(),
+  open: z.string().optional(),
+});
+
+export const todoNotesMetaSchema = z.object({
+  rev: z.number().int().nonnegative(),
+  hash: z.string(),
+  writtenTurn: z.number().int().nonnegative(),
+  writtenStep: z.string(),
+  coveredMessageId: z.string(),
+  windowEpoch: z.number().int().nonnegative(),
+});
+
+export const todoNotesUpdateSchema = z.object({
+  notes: todoNotesSchema.optional(),
+  notesMeta: todoNotesMetaSchema,
+});
+
 export const todoSchema = z.object({
   todoId: z.string(),
   items: z.array(todoItemSchema),
+  notes: todoNotesSchema.optional(),
+  notesMeta: todoNotesMetaSchema.optional(),
   updatedAt: z.string().optional(),
 });
 
