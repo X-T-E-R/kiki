@@ -63,17 +63,38 @@ describe('history tools', () => {
     expect(isToolActive({ disabledToolGroups: ['history'] }, 'HistorySearch')).toBe(false);
   });
 
-  it('searches across sessions in the current workspace without widening the query', async () => {
+  it('defaults to this session, this agent and auto; expands scope only explicitly', async () => {
     const source = archive();
-    const { data } = await run(new HistorySearchTool(source, session, workspaces, caller), { query: '原话' });
-    expect(source.search).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-a', sessionId: undefined }));
-    expect(data.hits).toEqual([{ session_id: 'older', agent_id: 'main', role: 'user', turn: 3, snippet: '原话' }]);
-    await run(new HistorySearchTool(source, session, workspaces, caller), {
-      query: '原话', scope: 'this_session', mode: 'literal',
-    });
-    expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
-      workspaceId: 'ws-a', sessionId: 'current', mode: 'literal',
+    const tool = new HistorySearchTool(source, session, workspaces, caller, sessions);
+    const validate = new Ajv({ strict: false }).compile(tool.parameters);
+    expect(validate({ query: '原话' })).toBe(true);
+    expect(validate({ cursor: 'opaque' })).toBe(true);
+    expect(validate({})).toBe(false);
+    const { data } = await run(tool, { query: '原话' });
+    expect(source.search).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', mode: 'auto', pageSize: 5,
     }));
+    expect(data.hits).toEqual([{ session_id: 'older', agent_id: 'main', role: 'user', turn: 3, snippet: '原话' }]);
+    await run(tool, { query: '原话', scope: 'workspace', mode: 'literal' });
+    expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceId: 'ws-a', sessionId: undefined, mode: 'literal',
+    }));
+  });
+
+  it('continues a bound Search cursor alone and rejects conflicting filters', async () => {
+    const source = archive();
+    source.search = vi.fn(async () => ({ items: [], hasMore: true, pageToken: 'backend-page',
+      source: 'index' as const, indexState: { state: 'ready' } }));
+    const tool = new HistorySearchTool(source, session, workspaces, caller, sessions);
+    const first = await run(tool, { query: 'needle', scope: 'workspace', mode: 'literal', limit: 2 });
+    const next = await run(tool, { cursor: first.data.next_cursor });
+    expect(next.result.isError).not.toBe(true);
+    expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: 'needle', sessionId: undefined, mode: 'literal', pageSize: 2, pageToken: 'backend-page',
+    }));
+    const wrong = await run(tool, { cursor: first.data.next_cursor, mode: 'terms' });
+    expect(wrong.result.isError).toBe(true);
+    expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
   });
 
   it('surfaces an unavailable index alongside bounded fallback metadata', async () => {
@@ -89,7 +110,7 @@ describe('history tools', () => {
       },
       source: 'fallback' as const,
     }));
-    const { data } = await run(new HistorySearchTool(source, session, workspaces, caller), { query: '原话' });
+    const { data } = await run(new HistorySearchTool(source, session, workspaces, caller, sessions), { query: '原话' });
     expect(source.search).toHaveBeenCalledWith(expect.objectContaining({
       fallbackSessionId: 'current', fallbackAgentId: 'main',
     }));
@@ -154,8 +175,8 @@ describe('history tools', () => {
     expect('accesses' in external && external.accesses).toEqual([{
       kind: 'file', operation: 'read', path: '/external/project', implicitExternal: true,
     }]);
-    const search = await new HistorySearchTool(source, session, workspaces, caller)
-      .resolveExecution({ query: 'needle', workspace_id: 'ws-b' });
+    const search = await new HistorySearchTool(source, session, workspaces, caller, sessions)
+      .resolveExecution({ query: 'needle', workspace_id: 'ws-b', scope: 'workspace' });
     expect('accesses' in search && search.accesses).toEqual([{
       kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,
     }]);

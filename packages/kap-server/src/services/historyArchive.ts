@@ -28,8 +28,11 @@ const SEARCH_INDEX_UNAVAILABLE = 'search index unavailable';
 
 interface FallbackInput {
   readonly query: string;
-  readonly mode?: 'terms' | 'literal';
+  readonly mode?: 'auto' | 'all' | 'any' | 'terms' | 'literal';
   readonly role?: 'user' | 'assistant' | 'tool';
+  readonly after?: number;
+  readonly before?: number;
+  readonly sort?: 'relevance' | 'newest' | 'oldest';
   readonly pageSize: number;
   readonly sessionId?: string;
   readonly agentId?: string;
@@ -61,10 +64,13 @@ function fallbackHits(
   input: FallbackInput,
 ): HistoryHit[] {
   if (snapshot === undefined) return [];
-  const plan = planHistoryQuery(input.query, input.mode ?? 'terms');
+  const plan = planHistoryQuery(input.query, input.mode ?? 'auto');
   const hits: HistoryHit[] = [];
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
+    const time = item.startedAt === undefined ? undefined : Date.parse(item.startedAt);
+    if (input.after !== undefined && (time === undefined || time < input.after)) continue;
+    if (input.before !== undefined && (time === undefined || time >= input.before)) continue;
     const prompt = item.prompt?.trim();
     const promptMatch = prompt !== undefined && (input.role === undefined || input.role === 'user')
       ? matchHistoryText(prompt, plan) : undefined;
@@ -74,6 +80,7 @@ function fallbackHits(
         agentId: input.agentId!,
         role: 'user',
         turn: item.ordinal,
+        time, matched: promptMatch.matched,
         snippet: makeSnippet(prompt, promptMatch.matched[0] ?? input.query),
       });
     }
@@ -92,10 +99,19 @@ function fallbackHits(
           role,
           turn: item.ordinal,
           stepId: step.stepId,
+          time: step.startedAt === undefined ? time : Date.parse(step.startedAt), matched: match.matched,
           snippet: makeSnippet(text, match.matched[0] ?? input.query),
         });
       }
     }
+  }
+  if (input.sort === 'newest' || input.sort === 'oldest') {
+    const direction = input.sort === 'newest' ? -1 : 1;
+    hits.sort((left, right) => direction * ((left.time ?? 0) - (right.time ?? 0)) ||
+      (left.turn ?? 0) - (right.turn ?? 0));
+  } else {
+    hits.sort((left, right) => (right.matched?.length ?? 0) - (left.matched?.length ?? 0) ||
+      (right.time ?? 0) - (left.time ?? 0));
   }
   return hits;
 }
@@ -130,6 +146,11 @@ async function fallbackSearch(
     hasMore: false,
     incomplete: scanError ? 'wire_scan_error' : scan?.complete === false ? 'wire_scan_limit' :
       resultLimited ? 'result_limit' : undefined,
+    coverage: { complete: !truncated, domain: 'full_text',
+      gaps: scanError ? ['wire_scan_error'] : scan?.complete === false ? ['wire_scan_limit'] :
+        resultLimited ? ['result_limit_without_cursor'] : undefined,
+      scanned: { bytes: scan?.bytesRead ?? 0, records: scan?.recordsRead ?? 0 } },
+    continuation: undefined,
     indexState: {
       state: 'unavailable',
       stale: true,
@@ -158,39 +179,48 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       workspaceId,
       sessionId,
       agentId,
+      includeSubagents,
       role,
+      after,
+      before,
+      sort,
+      source,
       pageSize,
       pageToken,
       fallbackSessionId,
       fallbackAgentId,
     }) => {
+      planHistoryQuery(query, mode ?? 'auto');
       let unavailablePage: HistorySearchPage | undefined;
-      try {
-        const page = await getCore().accessor.get(IGlobalSearchService).search({
-          query, mode, workspaceId, indexOnly: true,
-          container: sessionId === undefined && agentId === undefined
-            ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
-        });
-        if (page.indexState.state !== 'unavailable' || page.items.length > 0) return page;
-        unavailablePage = page;
-      } catch (error) {
-        if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&
-            !(error instanceof SearchWorkerError)) throw error;
+      if (source !== 'transcript' && (mode === 'terms' || mode === 'literal')) {
+        try {
+          const page = await getCore().accessor.get(IGlobalSearchService).search({
+            query, mode, workspaceId, indexOnly: sessionId === undefined,
+            container: sessionId === undefined && agentId === undefined
+              ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
+            startTime: after, endTime: before === undefined ? undefined : before - 1,
+            sort: sort === 'oldest' ? 'time_asc' : sort === 'newest' ? 'time_desc' : 'score',
+          });
+          if (page.indexState.state !== 'unavailable' || page.items.length > 0) return page;
+          unavailablePage = page;
+        } catch (error) {
+          if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&
+              !(error instanceof SearchWorkerError)) throw error;
+        }
       }
-      if (sessionId === undefined || agentId === undefined || sessionId !== fallbackSessionId || agentId !== fallbackAgentId) {
+      if (sessionId === undefined || agentId === undefined || includeSubagents === true ||
+          (source !== 'transcript' && mode !== 'auto' && mode !== 'all' && mode !== 'any' &&
+           (sessionId !== fallbackSessionId || agentId !== fallbackAgentId))) {
         return { ...unavailablePage, items: [], hasMore: false, source: 'index',
           indexState: unavailablePage?.indexState ?? { state: 'unavailable', degraded: SEARCH_INDEX_UNAVAILABLE },
           incomplete: 'index_unavailable',
-          warning: "The index cannot search this requested range. Retry with scope='this_session' and an agent_id to scan the current session.",
+          coverage: { complete: false, domain: source === 'transcript' ? 'full_text' : 'indexed_text',
+            gaps: [includeSubagents ? 'multi_agent_scan_unavailable' : 'index_unavailable'] },
+          warning: "The requested range needs a searchable index or a specific session and agent for a transcript scan.",
         };
       }
       return fallbackSearch(getTranscript(), {
-        query,
-        mode,
-        role,
-        pageSize,
-        sessionId,
-        agentId,
+        query, mode, role, after, before, sort, pageSize, sessionId, agentId,
       });
     },
     async readTurn(sessionId, agentId, ordinal, stepId) {

@@ -59,16 +59,16 @@ describe('history archive', () => {
 
   it('delegates workspace-constrained search to the existing global index', async () => {
     const { archive, search } = fixture(false);
-    await archive.search({ query: 'needle', workspaceId: 'ws-a', sessionId: 'old', pageSize: 8 });
+    await archive.search({ query: 'needle', mode: 'terms', workspaceId: 'ws-a', sessionId: 'old', pageSize: 8 });
     expect(search).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'ws-a', indexOnly: true, container: { sessionId: 'old', agentId: undefined }, pageSize: 8,
+      workspaceId: 'ws-a', indexOnly: false, container: { sessionId: 'old', agentId: undefined }, pageSize: 8,
     }));
     await expect(archive.readTurn('old', '../outside', 0)).rejects.toThrow('Invalid agent id');
   });
 
   it('keeps partial building results on the index instead of using the fallback heuristic', async () => {
     const { archive, readColdSnapshotBounded } = fixture(false, false, true);
-    const page = await archive.search({ query: 'needle', pageSize: 8 }) as HistorySearchPage;
+    const page = await archive.search({ query: 'needle', mode: 'terms', pageSize: 8 }) as HistorySearchPage;
     expect(page.source).toBe('index');
     expect(page.indexState.state).toBe('building');
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
@@ -76,12 +76,12 @@ describe('history archive', () => {
 
   it('reports unavailable workspace coverage without silently narrowing to the current session', async () => {
     const { archive, readColdSnapshotBounded } = fixture(false, true);
-    const page = await archive.search({ query: '原话', workspaceId: 'ws-a', pageSize: 8,
+    const page = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a', pageSize: 8,
       fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
     expect(page).toMatchObject({ items: [], hasMore: false, source: 'index', incomplete: 'index_unavailable' });
-    expect(page.warning).toContain("scope='this_session'");
+    expect(page.coverage).toMatchObject({ complete: false, gaps: ['index_unavailable'] });
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
-    const other = await archive.search({ query: '原话', workspaceId: 'ws-a', sessionId: 'other', agentId: 'main',
+    const other = await archive.search({ query: '原话', mode: 'terms', workspaceId: 'ws-a', sessionId: 'other', agentId: 'main',
       pageSize: 8, fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
     expect(other.items).toEqual([]);
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
@@ -90,7 +90,7 @@ describe('history archive', () => {
   it('searches the explicitly requested session and agent with bounded fallback', async () => {
     const { archive, readColdSnapshotBounded, search } = fixture(false, true);
     const page = await archive.search({
-      query: '原话', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
+      query: '原话', mode: 'terms', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
       fallbackSessionId: 'current', fallbackAgentId: 'main',
     }) as HistorySearchPage;
     expect(search).toHaveBeenCalledOnce();
@@ -108,5 +108,18 @@ describe('history archive', () => {
     });
     expect(JSON.parse((await archive.readTurn('current', 'main', 4))!).user).toBe('用户压缩前的原话');
     expect(search).toHaveBeenCalledOnce();
+  });
+
+  it('applies auto/all/any phrase matching to the bounded transcript domain', async () => {
+    const { archive, search, readColdSnapshotBounded } = fixture(false, false);
+    const base = { query: '用户压缩前的原话 不存在', workspaceId: 'ws-a',
+      sessionId: 'current', agentId: 'main', pageSize: 5 };
+    const auto = await archive.search({ ...base, mode: 'auto' }) as HistorySearchPage;
+    expect(auto.items).toEqual([expect.objectContaining({ role: 'user', turn: 4, matched: ['用户压缩前的原话'] })]);
+    expect(auto.coverage).toMatchObject({ complete: true, domain: 'full_text', scanned: { bytes: 1234, records: 17 } });
+    expect(((await archive.search({ ...base, mode: 'all' })) as HistorySearchPage).items).toEqual([]);
+    expect(((await archive.search({ ...base, mode: 'any' })) as HistorySearchPage).items).toHaveLength(1);
+    expect(search).not.toHaveBeenCalled();
+    expect(readColdSnapshotBounded).toHaveBeenCalledTimes(3);
   });
 });
