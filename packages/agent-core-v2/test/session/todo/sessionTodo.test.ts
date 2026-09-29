@@ -206,6 +206,20 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 }
 
 describe('SessionTodoService', () => {
+  it('saves summarized directives as an undoable notes update and covers the new summary watermark', async () => {
+    const main = makeFakeAgent('main');
+    const service = makeTodoService(makeLifecycleStub([main.handle]).service);
+    await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'summarize' }], toolCalls: [] } }));
+    service.setCompactionDirectives('Directly pin Grok if the profile is unavailable.', 424);
+    expect(service.getNotes().notes?.directives).toBe('Directly pin Grok if the profile is unavailable.');
+    expect(service.getNotes().meta?.coveredMessageId).toBe('compaction_summary');
+    expect(main.journal.some((record) => record.type === 'tools.update_store' &&
+      (record as { key?: string; value?: { writer?: string } }).key === 'todo_notes' &&
+      (record as { value?: { writer?: string } }).value?.writer === 'compaction')).toBe(true);
+    await main.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(service.getNotes().notes?.directives).toBeUndefined();
+  });
+
   it('injects only the receiving agent list and removes providers on disposal', () => {
     const reminders = new Map<string, () => string | undefined>();
     const main = makeFakeAgent('main');

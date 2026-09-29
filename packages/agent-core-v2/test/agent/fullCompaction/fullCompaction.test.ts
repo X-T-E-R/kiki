@@ -319,7 +319,7 @@ describe('FullCompaction', () => {
         compacted_count: 6,
         retry_count: 0,
         thinking_effort: 'off',
-        input_tokens: 1181,
+        input_tokens: 1268, // The standing-directives instruction adds 87 estimated input tokens.
         output_tokens: 8,
         input_cache_read: 0,
         input_cache_creation: 0,
@@ -857,7 +857,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Recovered compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
     ]);
     expect(
       ctx.allEvents.filter((event) => event.event === 'compaction.completed'),
@@ -909,7 +909,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Recovered compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
     ]);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
@@ -1663,27 +1663,12 @@ describe('FullCompaction', () => {
         assistant: text "recent assistant two"
         user: text <compaction-instruction>
     `);
-    expect(ctx.compactHistory()).toMatchInlineSnapshot(`
-      [
-        {
-          "role": "user",
-          "text": "old user one",
-        },
-        {
-          "role": "user",
-          "text": "recent user two",
-        },
-        {
-          "role": "user",
-          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
-      Compacted prefix.",
-        },
-        {
-          "role": "user",
-          "text": "new user while compacting",
-        },
-      ]
-    `);
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: 'old user one' },
+      { role: 'user', text: 'recent user two' },
+      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Compacted prefix\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
+      { role: 'user', text: 'new user while compacting' },
+    ]);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -1939,7 +1924,7 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "old user one\\n\\nold user two"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary."
+          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nTreat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions."
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2438,7 +2423,7 @@ describe('FullCompaction', () => {
       expect(ctx.compactHistory()).toEqual([
         {
           role: 'user',
-          text: `${COMPACTION_SUMMARY_PREFIX}\nSummary for ${String(softContextSize)}.`,
+          text: expect.stringMatching(new RegExp(`^The conversation so far has been compacted[^]*Summary for ${String(softContextSize)}\\.\\n\\n## Standing directives\\n[^]*## User input since notes\\n`)),
         },
         ...Array.from({ length: 6 - compactedCount }, (_, i) => ({
           role: 'assistant' as const,
@@ -2485,7 +2470,7 @@ describe('FullCompaction', () => {
       Array.from({ length: 6 }, (_, i) => `manual ${String(i)}`),
     );
     expect(ctx.compactHistory()).toEqual([
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nManual summary.` },
+      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Manual summary\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
     ]);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -2534,7 +2519,7 @@ describe('FullCompaction', () => {
     expect(result.compactedCount).toBe(2);
     expect(result.droppedCount).toBeUndefined();
     expect(ctx.compactHistory()).toEqual([
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nOverflow-reduced summary.` },
+      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Overflow-reduced summary\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
       ...Array.from({ length: 4 }, (_, i) => ({
         role: 'assistant' as const,
         text: `overflow ${String(i + 2)}`,
@@ -2707,7 +2692,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Overflow compacted summary.',
+            summary: expect.stringMatching(/^Overflow compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
             compactedCount: 2,
           }),
         }),
@@ -2734,7 +2719,15 @@ describe('FullCompaction', () => {
         [
           "user: old user one",
           "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
-      Overflow compacted summary.",
+      Overflow compacted summary.
+
+      ## Standing directives
+      (none recorded in notes)
+
+      ## User input since notes
+      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
+
+      Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.",
           "user: Retry after provider overflow",
         ],
       ]
@@ -2824,7 +2817,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Measured-strategy compacted summary.',
+            summary: expect.stringMatching(/^Measured-strategy compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
           }),
         }),
       }),
@@ -2897,7 +2890,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Observed preemptive summary.',
+            summary: expect.stringMatching(/^Observed preemptive summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
           }),
         }),
       }),
@@ -3042,7 +3035,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Plain 413 compacted summary.',
+            summary: expect.stringMatching(/^Plain 413 compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
           }),
         }),
       }),
@@ -3237,7 +3230,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Unknown window compacted summary.',
+            summary: expect.stringMatching(/^Unknown window compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
             compactedCount: 2,
           }),
         }),
@@ -3452,7 +3445,7 @@ describe('FullCompaction', () => {
         event: 'compaction.completed',
         args: expect.objectContaining({
           result: expect.objectContaining({
-            summary: 'Placeholder compacted summary.',
+            summary: expect.stringMatching(/^Placeholder compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
             compactedCount: 2,
             droppedCount: 1,
           }),
@@ -3496,11 +3489,37 @@ describe('FullCompaction', () => {
         [
           "user: old user one",
           "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
-      Placeholder compacted summary.",
+      Placeholder compacted summary.
+
+      ## Standing directives
+      (none recorded in notes)
+
+      ## User input since notes
+      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
+
+      Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.",
           "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         ],
       ]
     `);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('hands summarized directives to the notes service after the window switch', async () => {
+    const recorded: string[] = [];
+    const ctx = testAgent(sessionServices((reg) => {
+      reg.definePartialInstance(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}),
+        setCompactionDirectives: (text) => { recorded.push(text); } });
+    }));
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'directly pin grok', 'acknowledged', 80);
+    ctx.mockNextResponse({ type: 'text', text: 'Continue task.\n\n## Standing directives\nDirectly pin Grok if the profile is unavailable.' });
+    await ctx.rpc.beginCompaction({});
+    await ctx.get(IAgentFullCompactionService).compacting!.promise;
+    expect(ctx.compactHistory().at(-1)?.text).toContain('Directly pin Grok if the profile is unavailable.');
+    expect(recorded).toEqual(['Directly pin Grok if the profile is unavailable.']);
+    expect(ctx.compactHistory().at(-1)?.text).toContain('## User input since notes');
+    await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('appends the todo list to the compaction summary', async () => {

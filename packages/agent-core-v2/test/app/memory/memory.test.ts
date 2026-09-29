@@ -88,6 +88,16 @@ describe('memory persistence and snapshot', () => {
     expect(prefixHash(await second.snapshot.get())).toBe(hash);
   });
 
+  it('lists active memories written in this session live without changing the frozen system prefix', async () => {
+    const { store, snapshot } = start();
+    const frozen = await snapshot.get();
+    const created = await store.put({ action: 'create', scope: workspace, title: 'Pin Grok', body: 'Pin Grok when unavailable.', type: 'feedback', reason: 'User instruction', source: { writer: 'agent', session: 'session_one', turn: 424 } });
+    expect((await snapshot.liveSessionEntries()).map((entry) => entry.id)).toContain(created.entry.id);
+    expect(await snapshot.get()).toBe(frozen);
+    settings = MemoryConfigSchema.parse({ enabled: false });
+    expect(await snapshot.liveSessionEntries()).toEqual([]);
+  });
+
   it('exposes silent tool write receipts through the existing tool result and honors explicit review', async () => {
     const { store, writeTool, searchTool, readTool } = start();
     const args = { action: 'create' as const, scope: 'workspace' as const, type: 'feedback' as const, title: 'Language', body: 'Reply in Chinese.', reason: 'User corrected a response' };
