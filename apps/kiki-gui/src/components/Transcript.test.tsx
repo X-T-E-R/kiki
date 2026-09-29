@@ -3705,4 +3705,21 @@ describe('settled history folds and the unified locate entry', () => {
     await settleVirtualizer();
     expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
   });
+
+  it('spends the one-time landing only after an agent tab has its own rows', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    const many = Array.from({ length: 8 }, (_, index) => turnBlocks(index + 1, `message ${index + 1}`)).flat();
+    const render = (state: SessionViewState) => renderSettled(root, (
+      <Transcript state={state} agentId="agent-late" visible onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()} onAnswerQuestion={() => noopActions()} onDismissQuestion={() => noopActions()} />
+    ));
+    await render(transcriptState([], { sessionId: 'session_late', loaded: false }));
+    await settleVirtualizer();
+    await render(transcriptState(many, { sessionId: 'session_late', loaded: true }));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight + 200);
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+  });
 });
