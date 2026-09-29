@@ -1723,6 +1723,7 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-request-identity': 'defaults',
   'st-card-thinking': 'defaults',
   'st-card-auto-compact': 'defaults',
+  'st-card-loop-limits': 'defaults',
   'st-card-exp-ai': 'defaults',
 };
 
@@ -2010,8 +2011,9 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'models', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
-  { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint', 'st.thinking.keep'], synonyms: ['thinking keep', '保留思考'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-auto-compact', titleKey: 'st.compact.globalTitle', keywordKeys: ['st.compact.globalLabel', 'st.compact.reserveLabel'], synonyms: ['auto compact', 'autocompact', 'compaction', '自动压缩', '压缩点', 'context window', '上下文窗口'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.maxAttempts', 'st.loopLimits.subagentStrategy'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'loop control', '步数上限', '尝试次数'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },

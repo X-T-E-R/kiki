@@ -24,7 +24,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import {
   AdvancedDisclosure,
@@ -42,6 +42,9 @@ import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { SettingField } from './fields';
+import { useInstantSave } from './useInstantSave';
+import { LoopLimitsCard } from './LoopLimitsCard';
 import { useSavedTick } from './useSavedTick';
 import { DisclosureChevron, Icon } from '../icons';
 
@@ -586,8 +589,51 @@ export function ThinkingCard() {
         </div>
         <Hint>{t('st.thinking.hint')}</Hint>
         <FeedbackLine feedback={feedback} />
+        <ThinkingKeepField stored={typeof thinking?.['keep'] === 'string' ? thinking['keep'] : undefined} />
       </div>
     </SectionCard>
+  );
+}
+
+const THINKING_KEEP_OFF = new Set(['0', 'false', 'no', 'off', 'none', 'null']);
+
+/**
+ * `[thinking].keep`: pass earlier turns' reasoning back to the model. The
+ * engine reads any off-word as "off" and treats every other string as a
+ * keep mode; a custom stored value is listed as its own choice.
+ */
+function ThinkingKeepField({ stored }: { stored: string | undefined }) {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const save = useInstantSave();
+  const current = stored === undefined ? 'all' : THINKING_KEEP_OFF.has(stored.trim().toLowerCase()) ? 'none' : stored;
+  const choices = [
+    { value: 'all', label: t('st.thinking.keepAll') },
+    { value: 'none', label: t('st.thinking.keepNone') },
+    ...(current !== 'all' && current !== 'none' ? [{ value: current, label: current }] : []),
+  ];
+  return (
+    <>
+      <SettingField label={t('st.thinking.keep')} help={t('st.thinking.keepHelp')}>
+        <SaveStatus saving={save.saving} saved={save.saved} />
+        <SettingsSelect
+          id="thinking-keep"
+          ariaLabel={t('st.thinking.keep')}
+          value={current}
+          dataAttr="data-thinking-keep"
+          disabled={save.saving}
+          choices={choices}
+          onChange={(keep) => {
+            void save.run(async () => {
+              const echoed = await client.patchConfig({ thinking: { keep } });
+              queryClient.setQueryData(['config'], echoed);
+            });
+          }}
+        />
+      </SettingField>
+      <FeedbackLine feedback={save.error} />
+    </>
   );
 }
 
@@ -884,6 +930,7 @@ export function DefaultsTab() {
       <GlobalDefaultsCard />
       <ThinkingCard />
       <GlobalCompactionCard />
+      <LoopLimitsCard />
       <GlobalRequestIdentityCard />
     </div>
   );
