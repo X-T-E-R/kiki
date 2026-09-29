@@ -1,0 +1,258 @@
+/* ---- token preview (dev only) ----
+ * Candidate palettes for the visual-token redesign, side by side with the
+ * shipped one. Loaded only by `src/dev/tokenPreview.ts`, which main.tsx
+ * imports behind `import.meta.env.DEV`; a production build contains none of
+ * this. Nothing matches until `<html data-kiki-tokens>` is set by
+ * `?tokens=p923|a|b|c` (`?tokens=off` clears it).
+ *
+ * Each block overrides base variables only (the ones index.css and skin.css
+ * already declare); no new token names. `[data-kiki-tokens]` + `[data-theme]`
+ * outranks index.css's `[data-theme='dark']`, and an applied skin (inline
+ * properties) still wins over all of it.
+ *
+ *   p923  the pre-9.23 palette, for the comparison the user asked for
+ *   a     纸与朱 Paper & vermilion: 9.23 paper, canvas one half-step back,
+ *         one warm accent that also marks "you are here"
+ *   b     石与橙 Stone & signal: a cool neutral ground so the orange signal
+ *         and the teal "here" separate by hue, not only by weight
+ *   c     砂与陶 Sand & clay: keeps today's tan frame, desaturated, with a
+ *         crisper sheet, clay accent and colored section heads
+ */
+
+/* ---- p923: pre-9.23 reference ---- */
+:root[data-kiki-tokens='p923'] {
+  --color-canvas: #f7f3ec;
+  --color-paper: #f7f3ec;
+  --color-panel: #fffdf8;
+  --color-hairline: #e7dfd0;
+  --color-hairline-strong: #d9cfba;
+  --color-ink: #1c1917;
+  --color-ink-soft: #6b6257;
+  --color-ink-faint: #6b6257;
+  --color-accent: #e8590c;
+  --color-accent-deep: #d9480f;
+  --color-accent-ink: #b8430b;
+  --color-accent-soft: #fdeee2;
+  --color-section-ink: #6b6257;
+  --color-selected: #fdeee2;
+  --color-selected-ink: #d9480f;
+  --color-attention: #e8590c;
+  --color-attention-soft: #fdeee2;
+  --color-success: #2f9e44;
+  --color-danger: #c92a2a;
+  --color-amber-ink: #b45309;
+  --color-bubble-user: #f3ede1;
+  --color-scrollbar: #d9cfba;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(28 25 23 / 0.06);
+}
+:root[data-kiki-tokens='p923'][data-theme='dark'] {
+  --color-canvas: #16130f;
+  --color-paper: #16130f;
+  --color-panel: #1e1a15;
+  --color-hairline: #302a22;
+  --color-hairline-strong: #453d31;
+  --color-ink: #f2ece2;
+  --color-ink-soft: #a89c8c;
+  --color-ink-faint: #8b7f6f;
+  --color-accent: #ff8340;
+  --color-accent-deep: #ff9a63;
+  --color-accent-ink: #ff8340;
+  --color-accent-soft: #3a2415;
+  --color-section-ink: #a89c8c;
+  --color-selected: #3a2415;
+  --color-selected-ink: #ff8340;
+  --color-attention: #ff8340;
+  --color-attention-soft: #3a2415;
+  --color-bubble-user: #231e18;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(242 236 226 / 0.06);
+}
+
+/* ---- a: 纸与墨青 Paper & ink-blue ----
+ * The 9.23 paper as the sheet, the canvas one half-step darker so panes still
+ * separate. Two hues with one job each: ink-blue says "you are here" (the
+ * selected row, section heads), vermilion says "needs you". Nothing else is
+ * colored. */
+:root[data-kiki-tokens='a'] {
+  --color-canvas: #f3f0e9;
+  --color-paper: #fbfaf6;
+  --color-panel: #fffdfa;
+  --color-hairline: #e4ddd0;
+  --color-hairline-strong: #cdc3b1;
+  --color-ink: #1b1a17;
+  --color-ink-soft: #4b453e;
+  --color-ink-faint: #665e54;
+  --color-accent: #c8401a;
+  --color-accent-deep: #9c3012;
+  --color-accent-ink: #9c3012;
+  --color-accent-soft: #f8e3d8;
+  --color-section-ink: #2c4a60;
+  --color-selected: #dfe8f0;
+  --color-selected-ink: #1d4d6d;
+  --color-attention: #b33a12;
+  --color-attention-soft: #fae3d7;
+  --color-success: #2f6b45;
+  --color-danger: #b0261e;
+  --color-amber-ink: #87480b;
+  --color-bubble-user: #eee8dc;
+  --color-scrollbar: #d8d0c1;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(27 26 23 / 0.06), 0 1px 2px rgb(27 26 23 / 0.04),
+    0 8px 24px -14px rgb(27 26 23 / 0.14);
+}
+:root[data-kiki-tokens='a'][data-theme='dark'] {
+  --color-canvas: #13120f;
+  --color-paper: #1a1915;
+  --color-panel: #211f1b;
+  --color-hairline: #2e2b25;
+  --color-hairline-strong: #433f36;
+  --color-ink: #ece8e0;
+  --color-ink-soft: #bab3a7;
+  --color-ink-faint: #9d968a;
+  --color-accent: #f07a4c;
+  --color-accent-deep: #f59a74;
+  --color-accent-ink: #f5946b;
+  --color-accent-soft: #3a2218;
+  --color-on-accent: #2a1206;
+  --color-section-ink: #a3c3d9;
+  --color-selected: #1c2b36;
+  --color-selected-ink: #8fc6ea;
+  --color-attention: #ff8f5e;
+  --color-attention-soft: #3b2216;
+  --color-success: #86c79a;
+  --color-danger: #f08a80;
+  --color-amber-ink: #e3a64a;
+  --color-bubble-user: #25231e;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(236 232 224 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+}
+
+/* ---- b: 石与橙 Stone & signal ----
+ * A near-neutral stone ground (a trace of warmth, no yellow), so color is
+ * spent only where it means something: teal for "here", orange for "needs
+ * you". Display and prose go sans; the tool reads like Linear / Codex. */
+:root[data-kiki-tokens='b'] {
+  --color-canvas: #eceae6;
+  --color-paper: #f9f8f6;
+  --color-panel: #ffffff;
+  --color-hairline: #e2dfda;
+  --color-hairline-strong: #cac6bf;
+  --color-ink: #1a1918;
+  --color-ink-soft: #4a4744;
+  --color-ink-faint: #64605b;
+  --color-accent: #c7430f;
+  --color-accent-deep: #a3360a;
+  --color-accent-ink: #a3360a;
+  --color-accent-soft: #fbe5d9;
+  --color-section-ink: #145a55;
+  --color-selected: #dcebe8;
+  --color-selected-ink: #0c5b54;
+  --color-attention: #b83c0c;
+  --color-attention-soft: #fbe4d6;
+  --color-success: #2b6d47;
+  --color-danger: #b3261e;
+  --color-amber-ink: #8a4a06;
+  --color-bubble-user: #ecebe7;
+  --color-scrollbar: #d4d0ca;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(26 25 24 / 0.07), 0 1px 2px rgb(26 25 24 / 0.05),
+    0 10px 28px -16px rgb(26 25 24 / 0.18);
+  --font-display: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+}
+:root[data-kiki-tokens='b'] :is(.kiki-prose, .thinking-row) {
+  --kiki-prose-font: var(--font-sans);
+}
+:root[data-kiki-tokens='b'] .font-display {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+:root[data-kiki-tokens='b'][data-theme='dark'] {
+  --color-canvas: #121212;
+  --color-paper: #19191a;
+  --color-panel: #202021;
+  --color-hairline: #2c2c2d;
+  --color-hairline-strong: #414143;
+  --color-ink: #ebeae8;
+  --color-ink-soft: #b5b3af;
+  --color-ink-faint: #9a9793;
+  --color-accent: #f5844c;
+  --color-accent-deep: #f8a077;
+  --color-accent-ink: #f69466;
+  --color-accent-soft: #3a2419;
+  --color-on-accent: #2a1206;
+  --color-section-ink: #7fcfc4;
+  --color-selected: #16302d;
+  --color-selected-ink: #7fd9cc;
+  --color-attention: #ff9261;
+  --color-attention-soft: #3a2317;
+  --color-success: #82c99c;
+  --color-danger: #f28b82;
+  --color-amber-ink: #e6a94c;
+  --color-bubble-user: #252526;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(235 234 232 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.55);
+}
+
+/* ---- c: 砂与陶 Sand & clay ----
+ * Keeps today's tan frame (the one the user called "slightly better") but
+ * moves it from yellow toward grey-sand, and widens the step to a clean
+ * sheet so the page is clearly the brightest thing. Moss for "here", clay
+ * for "needs you", section heads in the clay-brown family. */
+:root[data-kiki-tokens='c'] {
+  --color-canvas: #e4dfd6;
+  --color-paper: #fbf9f5;
+  --color-panel: #fffefb;
+  --color-hairline: #e0dacf;
+  --color-hairline-strong: #cbbfab;
+  --color-ink: #1d1a16;
+  --color-ink-soft: #4d463d;
+  --color-ink-faint: #655c50;
+  --color-accent: #bf4a1f;
+  --color-accent-deep: #933615;
+  --color-accent-ink: #933615;
+  --color-accent-soft: #f5e1d5;
+  --color-section-ink: #7a4a2a;
+  --color-selected: #e3e6d6;
+  --color-selected-ink: #45592a;
+  --color-attention: #ad3f14;
+  --color-attention-soft: #f8e2d4;
+  --color-success: #3b6b3a;
+  --color-danger: #ad2a1f;
+  --color-amber-ink: #86470c;
+  --color-bubble-user: #efe9de;
+  --color-scrollbar: #d6ccbb;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(29 26 22 / 0.06), 0 1px 2px rgb(29 26 22 / 0.05),
+    0 8px 22px -14px rgb(29 26 22 / 0.16);
+}
+:root[data-kiki-tokens='c'][data-theme='dark'] {
+  --color-canvas: #12100d;
+  --color-paper: #1a1713;
+  --color-panel: #211d18;
+  --color-hairline: #2f2a22;
+  --color-hairline-strong: #463e33;
+  --color-ink: #eee8de;
+  --color-ink-soft: #bcb1a1;
+  --color-ink-faint: #a0968a;
+  --color-accent: #ea8157;
+  --color-accent-deep: #f19d7b;
+  --color-accent-ink: #ef9270;
+  --color-accent-soft: #37231a;
+  --color-on-accent: #2a1206;
+  --color-section-ink: #d6a986;
+  --color-selected: #232a1a;
+  --color-selected-ink: #b4cc8c;
+  --color-attention: #fb9161;
+  --color-attention-soft: #392218;
+  --color-success: #95c68f;
+  --color-danger: #f08a80;
+  --color-amber-ink: #e3a64a;
+  --color-bubble-user: #26221c;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(238 232 222 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+}
+
+/* Streamdown's shadcn mirrors follow whichever palette is active. */
+:root[data-kiki-tokens] {
+  --color-background: var(--color-panel);
+  --color-foreground: var(--color-ink);
+  --color-muted: var(--color-paper);
+  --color-muted-foreground: var(--color-ink-soft);
+  --color-border: var(--color-hairline);
+  --color-input: var(--color-hairline);
+  --color-primary: var(--color-accent);
+  --color-sidebar: var(--color-paper);
+}

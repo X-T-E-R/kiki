@@ -23,6 +23,13 @@ import './styles/new-session.css';
  * is known. CLI and browser hosts resolve to the main space immediately.
  */
 async function start(): Promise<void> {
+  // Dev-only palette comparison (`?tokens=a|b|c|p923`). Read before the
+  // connection module loads, since it scrubs the deep-link query; a
+  // production build drops this branch and the stylesheet with it.
+  if (import.meta.env.DEV) {
+    const { startTokenPreview } = await import('./dev/tokenPreview');
+    startTokenPreview();
+  }
   await initializeSpaceStorage(hostAdapter);
   const [
     { App },
