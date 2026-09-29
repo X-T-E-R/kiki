@@ -46,6 +46,13 @@ export interface SqliteHostSnapshot {
 const INDEXER_BACKOFF = [1000, 10_000, 60_000, 600_000];
 const MEMORY_BACKOFF = [60_000, 600_000, 3_600_000];
 
+export function seaIndexerArgs(database: string, execArgv: readonly string[]): string[] {
+  return [
+    ...(execArgv.includes('--max-old-space-size=8192') ? ['--node-options=--max-old-space-size=384'] : []),
+    INDEXER_COMMAND, database,
+  ];
+}
+
 export class SqliteSearchHost {
   private child?: ChildProcess;
   private reader?: Worker;
@@ -221,7 +228,7 @@ export class SqliteSearchHost {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
     const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
     const entry = this.options.indexerEntry ?? fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
-    const args = sea ? [INDEXER_COMMAND, this.options.database] :
+    const args = sea ? seaIndexerArgs(this.options.database, process.execArgv) :
       ['--max-old-space-size=256', '--experimental-transform-types', '--import', 'tsx', '--import',
         new URL('./register-dev-hooks.mjs', import.meta.url).href, entry, this.options.database];
     const child = spawn(process.execPath, args, {

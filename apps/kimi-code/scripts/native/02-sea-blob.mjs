@@ -62,6 +62,7 @@ async function writeSeaConfig(target, profile) {
     useCodeCache: false,
     useSnapshot: false,
     execArgv: seaExecArgv(profile),
+    execArgvExtension: profile === 'local' ? 'cli' : 'env',
   };
   await writeFile(nativeSeaConfigPath(), `${JSON.stringify(config, null, 2)}\n`);
 
