@@ -4,12 +4,11 @@ import type { BoardClient } from '@kiki/klient/contract/board/types';
 import { taskBoardStorageFromConfig, type TaskBoardStorage } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
-import { Hint, SavedTick } from '../controls';
+import { Hint } from '../controls';
 import { SearchableSelect } from '../SearchableSelect';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { FORM_LABEL, FORM_SELECT_TRIGGER } from './SettingsPrimitives';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
-import { useDirtyReporter } from '../dirtyGuard';
 
 export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const { client } = useConnection();
@@ -20,7 +19,6 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const [workspaceId, setWorkspaceId] = useState('');
   const [storage, setStorage] = useState<TaskBoardStorage>({ mode: 'auto' });
   const [dirty, setDirty] = useState(false);
-  useDirtyReporter('board-storage', dirty);
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saved, ping] = useSavedTick();
@@ -84,38 +82,39 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
     </label> : null}
     <div data-board-storage-workspace>
       <span id="board-storage-workspace-label" className={FORM_LABEL}>{t('st.boardStorage.workspace')}</span>
-      <div className="mt-1">
-        {/* Workspace lists can run long, so this picker keeps its filter. */}
-        <SearchableSelect
-          id="board-storage-workspace"
-          ariaLabel={t('st.boardStorage.workspace')}
-          value={workspaceId}
-          onChange={setWorkspaceId}
-          triggerLabel={workspaceId === '' ? <span className="text-ink-faint">{t('st.boardStorage.selectWorkspace')}</span> : undefined}
-          options={(workspaces.data?.items ?? []).map((workspace) => ({
-            value: workspace.id,
-            label: workspace.name ?? workspace.root,
-            hint: workspace.name === undefined ? undefined : workspace.root,
-          }))}
-          buttonClassName={FORM_SELECT_TRIGGER}
-        />
+      {/* Preview belongs to the workspace it resolves against, so it sits beside the picker, apart from the save row. */}
+      <div className="mt-1 flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          {/* Workspace lists can run long, so this picker keeps its filter. */}
+          <SearchableSelect
+            id="board-storage-workspace"
+            ariaLabel={t('st.boardStorage.workspace')}
+            value={workspaceId}
+            onChange={setWorkspaceId}
+            triggerLabel={workspaceId === '' ? <span className="text-ink-faint">{t('st.boardStorage.selectWorkspace')}</span> : undefined}
+            options={(workspaces.data?.items ?? []).map((workspace) => ({
+              value: workspace.id,
+              label: workspace.name ?? workspace.root,
+              hint: workspace.name === undefined ? undefined : workspace.root,
+            }))}
+            buttonClassName={FORM_SELECT_TRIGGER}
+          />
+        </div>
+        <button type="button" className={`${SECONDARY_BUTTON} h-9 shrink-0`} disabled={!board || !workspaceId || preview.isFetching || (storage.mode === 'fixed' && !storage.path?.trim())} onClick={() => { void preview.refetch(); }}>{t('st.boardStorage.preview')}</button>
       </div>
     </div>
     {!board ? <p role="status" className="text-xs text-ink-soft">{t('st.agentBoard.hint')}</p> : null}
     {workspaceId === '' ? <p role="status" className="text-xs text-ink-soft">{t('st.boardStorage.awaitWorkspace')}</p> : null}
-    <div className="flex flex-wrap items-center gap-2">
-      <button type="button" className={SECONDARY_BUTTON} disabled={!board || !workspaceId || preview.isFetching || (storage.mode === 'fixed' && !storage.path?.trim())} onClick={() => { void preview.refetch(); }}>{t('st.boardStorage.preview')}</button>
-      <button type="button" className={PRIMARY_BUTTON} disabled={saving || config.isPending || config.isError || !dirty || (storage.mode === 'fixed' && !storage.path?.trim())} onClick={() => { void save(); }}>{t('st.boardStorage.save')}</button>
-      <button type="button" className={SECONDARY_BUTTON} disabled={saving || !dirty} onClick={() => { if (config.data !== undefined) setStorage(taskBoardStorageFromConfig(config.data)); setDirty(false); setError(undefined); }}>{t('st.advanced.discard')}</button>
-      {dirty ? <span role="status" className="text-xs text-ink-soft">{t('st.tools.unsaved')}</span> : null}
-      <SavedTick show={saved} />
-    </div>
+    {value ? <dl className="break-all text-xs space-y-1" data-board-storage-preview><dt>{t('st.boardStorage.source')}</dt><dd>{t(`st.boardStorage.kind.${value.kind}`)} · {t(`st.boardStorage.${value.mode}`)} · {value.existing ? t('st.boardStorage.existing') : t('st.boardStorage.newStore')}</dd><dt>{t('st.boardStorage.resolved')}</dt><dd className="font-mono">{value.tasksDirectory}</dd></dl> : null}
     <Hint>{t('st.boardStorage.noMove')}</Hint>
     <details data-board-storage-details className="text-xs text-ink-soft">
       <summary className="cursor-pointer">{t('st.boardStorage.details')}</summary>
       <p className="mt-1">{t('st.boardStorage.policyDetails')}</p>
     </details>
-    {value ? <dl className="break-all text-xs space-y-1" data-board-storage-preview><dt>{t('st.boardStorage.source')}</dt><dd>{t(`st.boardStorage.kind.${value.kind}`)} · {t(`st.boardStorage.${value.mode}`)} · {value.existing ? t('st.boardStorage.existing') : t('st.boardStorage.newStore')}</dd><dt>{t('st.boardStorage.resolved')}</dt><dd className="font-mono">{value.tasksDirectory}</dd></dl> : null}
+    <SettingsDraftFooter id="board-storage" dirty={dirty} saving={saving} saved={saved} saveLabel={t('st.boardStorage.save')}
+      saveDisabled={config.isPending || config.isError || (storage.mode === 'fixed' && !storage.path?.trim())}
+      onSave={() => { void save(); }}
+      onDiscard={() => { if (config.data !== undefined) setStorage(taskBoardStorageFromConfig(config.data)); setDirty(false); setError(undefined); }} />
     {error || config.error || preview.error || (result && !result.ok) ? <p role="alert" className="text-xs text-danger">{error ?? config.error?.message ?? preview.error?.message ?? (result && !result.ok ? `${result.error.code}: ${result.error.message}` : '')}</p> : null}
   </div>;
 }
