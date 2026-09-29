@@ -45,6 +45,15 @@ import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimiti
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
 import { LoopLimitsCard } from './LoopLimitsCard';
+import {
+  ModelEngineFieldError,
+  ModelEngineFields,
+  modelEngineDraft,
+  modelEngineDraftsEqual,
+  modelEnginePatch,
+  type EngineField,
+  type ModelEngineDraft,
+} from './ModelEngineFields';
 import { useSavedTick } from './useSavedTick';
 import { DisclosureChevron, Icon } from '../icons';
 
@@ -1106,6 +1115,10 @@ function ModelCatalogRowEditor({
   // count on the model entity, edited here and nowhere in the provider form.
   const [autoCompact, setAutoCompact] = useState<number | undefined>(undefined);
   const [autoCompactBaseline, setAutoCompactBaseline] = useState<number | undefined>(undefined);
+  // Engine-only fields (aliases, sizes, JSON tables) ride beside it the same way.
+  const [engine, setEngine] = useState<ModelEngineDraft | null>(null);
+  const [engineBaseline, setEngineBaseline] = useState<ModelEngineDraft | null>(null);
+  const [engineIssue, setEngineIssue] = useState<{ field: EngineField; text: string } | null>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -1124,14 +1137,22 @@ function ModelCatalogRowEditor({
     setAutoCompactBaseline(entity.auto_compact);
   }, [entity, compactDirty]);
 
-  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline)) || compactDirty;
+  const engineDirty = engine !== null && engineBaseline !== null && !modelEngineDraftsEqual(engine, engineBaseline);
+  useEffect(() => {
+    if (entity === undefined || engineDirty) return;
+    const next = modelEngineDraft(entity);
+    setEngine(next);
+    setEngineBaseline(next);
+  }, [entity, engineDirty]);
+
+  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline)) || compactDirty || engineDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
   // the editor is hidden, so the parent needs this flag either way.
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
 
   if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
-  if (entity === undefined || draft === null || baseline === null) {
+  if (entity === undefined || draft === null || baseline === null || engine === null || engineBaseline === null) {
     return <Hint>{t('st.models.loading')}</Hint>;
   }
 
@@ -1157,17 +1178,28 @@ function ModelCatalogRowEditor({
         setFeedback({ tone: 'error', text: issueText(locale, identityIssue) });
         return;
       }
+      let enginePatch;
+      try {
+        enginePatch = modelEnginePatch(engine, engineBaseline);
+      } catch (error) {
+        if (!(error instanceof ModelEngineFieldError)) throw error;
+        setEngineIssue({ field: error.field, text: t(error.key === 'count' ? 'st.modelEngine.issueCount' : error.key === 'json' ? 'st.modelEngine.issueJson' : 'st.modelEngine.issueObject') });
+        return;
+      }
+      setEngineIssue(null);
       const fieldPatch = modelPatchBody(draft, baseline);
-      if (fieldPatch === null && !compactDirty) return;
+      if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0) return;
       const patch = {
         ...(fieldPatch ?? {}),
         ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
+        ...enginePatch,
       };
       await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
       await entityQuery.refetch();
       setBaseline(draft);
       setAutoCompactBaseline(autoCompact);
+      setEngineBaseline(engine);
       setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: entity.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -1214,7 +1246,7 @@ function ModelCatalogRowEditor({
       <ModelContextFields
         modelId={entity.id}
         windowTokens={draft.maxContextSize}
-        inputTokens={entity.max_input_size}
+        inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
         onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
         autoCompact={autoCompact}
         onAutoCompactChange={setAutoCompact}
@@ -1257,6 +1289,8 @@ function ModelCatalogRowEditor({
           inheritLabel={t('st.requestIdentity.inheritProvider')}
           hint={t('st.models.requestIdentityHint')}
         />
+        <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue}
+          onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
       </AdvancedDisclosure>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>

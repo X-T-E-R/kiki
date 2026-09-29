@@ -324,6 +324,40 @@ describe('ModelCatalogCard row editor', () => {
     });
   });
 
+  it('saves engine fields as a sparse patch, clears emptied ones with null and blocks bad JSON', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, aliases: ['old-k2'], context_budget: 90_000, request_params: { store: false } });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const fields = container.querySelector('[data-model-engine-fields="kimi-code/kimi-k2"]')!;
+    const field = <T extends HTMLElement>(name: string) => fields.querySelector<T>(`[data-model-engine="${name}"]`)!;
+    expect(fields.textContent).toContain('old-k2');
+    expect(field<HTMLInputElement>('contextBudget').value).toBe('90000');
+    await act(async () => { setInputValue(field<HTMLInputElement>('maxInputSize'), '120000'); });
+    await act(async () => { setInputValue(field<HTMLInputElement>('contextBudget'), ''); });
+    await act(async () => { setInputValue(field<HTMLInputElement>('offEffort'), 'none'); });
+    await pickValue(fields.querySelector('[data-model-engine-adaptive]')!, 'data-model-engine-adaptive', 'inherit');
+    await act(async () => { setTextareaValue(field<HTMLTextAreaElement>('cognition'), '{ "overlay": '); });
+    const save = () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await act(async () => { save().click(); });
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(fields.querySelector('[role="alert"]')?.textContent).toContain('not valid JSON');
+    await act(async () => { setTextareaValue(field<HTMLTextAreaElement>('cognition'), '{ "overlay": "cog.md", "anchor_steps": 2 }'); });
+    await act(async () => { setTextareaValue(field<HTMLTextAreaElement>('requestParams'), ''); });
+    await act(async () => { save().click(); });
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      max_input_size: 120_000,
+      context_budget: null,
+      off_effort: 'none',
+      adaptive_thinking: null,
+      request_params: null,
+      cognition: { overlay: 'cog.md', anchor_steps: 2 },
+      base_revision: 'rev-7',
+    });
+  });
+
   it('offers model editing even when the provider type cannot use the provider form', async () => {
     listProviders.mockResolvedValue({ items: [{ ...PROVIDER, type: 'future-protocol' }] });
     const container = await renderCard();
