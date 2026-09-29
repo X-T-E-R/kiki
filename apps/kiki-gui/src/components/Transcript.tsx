@@ -50,11 +50,13 @@ import {
 } from '@kiki/session-core/settings';
 import {
   agentChildren,
+  foldHistory,
   groupBlocks,
   groupHasError,
   groupHasRunning,
   groupSummary,
   latestFinalAssistantBlockId,
+  latestTurnId,
   MAIN_AGENT_ID,
   stabilizeAgentForest,
   type AgentForest,
@@ -62,6 +64,7 @@ import {
   type AssistantBlock,
   type Block,
   type DisplayNode,
+  type HistoryFold,
   type NoticeBlock,
   type SessionViewState,
   type ShellBlock,
@@ -1284,6 +1287,68 @@ const ToolGroupRow = memo(
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
 
+/**
+ * Folded history (codeg's settled-turn fold, Apache-2.0): a finished turn's
+ * stretch of process rows between two messages reads as one quiet line that
+ * still counts what happened ("Worked · 8 steps · 2 thoughts · 1 failed").
+ * Opening it lays the original rows back on a hairline spine in their own
+ * order; a failure in the run lights the line, it does not force it open.
+ */
+function HistoryFoldRow({
+  fold,
+  expanded,
+  onToggle,
+  renderMember,
+}: {
+  fold: HistoryFold;
+  expanded: boolean;
+  onToggle: (id: string) => void;
+  renderMember: (member: DisplayNode) => ReactNode;
+}) {
+  const { t, tp, time } = useI18n();
+  const parts = [
+    fold.steps > 0 ? tp('transcript.fold.steps', fold.steps) : null,
+    fold.thoughts > 0 ? tp('transcript.fold.thoughts', fold.thoughts) : null,
+    fold.notes > 0 ? tp('transcript.fold.notes', fold.notes) : null,
+  ].filter((part): part is string => part !== null);
+  const summary = parts.join(' · ');
+  return (
+    <ActivityRow
+      attrs={{ 'data-history-fold': fold.members.length, 'data-history-fold-open': expanded || undefined }}
+      glyph={<DisclosureChevron open={expanded} className="text-ink-faint" />}
+      chevronInGlyph
+      tone={fold.failed > 0 ? 'danger' : 'plain'}
+      label={t('transcript.fold.worked')}
+      detail={
+        <>
+          <span className="text-ink-faint">{summary}</span>
+          {fold.failed > 0 ? (
+            <span className="text-danger"> · {t('transcript.fold.failed', { count: fold.failed })}</span>
+          ) : null}
+        </>
+      }
+      meta={
+        fold.durationMs !== undefined && fold.durationMs >= DURATION_WORTH_SHOWING_MS
+          ? time.formatDuration(fold.durationMs)
+          : undefined
+      }
+      expanded={expanded}
+      onToggle={() => { onToggle(fold.id); }}
+      ariaLabel={t('transcript.fold.aria', { summary })}
+    >
+      {expanded ? (
+        <div data-history-fold-members className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
+          {fold.members.map((member) => (
+            <div key={member.id} data-block-id={member.id} data-fold-member>
+              {renderMember(member)}
+            </div>
+          ))}
+        </div>
+      ) : undefined}
+    </ActivityRow>
+  );
+}
+
 const BlockView = memo(function BlockView({
   block,
   onResolveApproval,
@@ -1666,6 +1731,13 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
       a.members.every((member, index) => member === b.members[index])
     );
   }
+  if (a.kind === 'history-fold' && b.kind === 'history-fold') {
+    return (
+      a.id === b.id &&
+      a.members.length === b.members.length &&
+      a.members.every((member, index) => displayNodesEqual(member, b.members[index]!))
+    );
+  }
   return false;
 }
 
@@ -1720,6 +1792,9 @@ type TranscriptRowProps = {
   /** Manual subagent card form overrides, keyed by subagentId (empty = auto). */
   subagentFormOverrides: ReadonlyMap<string, SubagentCardForm>;
   onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
+  /** History folds the reader (or a locate request) opened, by fold id. */
+  openFolds: ReadonlySet<string>;
+  onToggleFold: (foldId: string) => void;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -1734,6 +1809,7 @@ type TranscriptRowProps = {
 
 function nodeUsesAgentNames(node: DisplayNode): boolean {
   return (
+    node.kind === 'history-fold' ||
     node.kind === 'approval' ||
     node.kind === 'question' ||
     node.kind === 'tool' ||
@@ -1772,6 +1848,8 @@ const TranscriptRow = memo(
     stoppedTailTurnId,
     subagentFormOverrides,
     onToggleSubagentForm,
+    openFolds,
+    onToggleFold,
     onResolveApproval,
     onAnswerQuestion,
     onDismissQuestion,
@@ -1783,7 +1861,14 @@ const TranscriptRow = memo(
     // nodes, so the attribute simply doesn't render there.
     const rowTurnId = displayNodeTurnId(node);
     const renderNode = (member: DisplayNode): ReactNode =>
-      member.kind === 'tool-group' ? (
+      member.kind === 'history-fold' ? (
+        <HistoryFoldRow
+          fold={member}
+          expanded={openFolds.has(member.id)}
+          onToggle={onToggleFold}
+          renderMember={renderNode}
+        />
+      ) : member.kind === 'tool-group' ? (
         <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
       ) : member.kind === 'tool' ? (
         <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
@@ -1841,6 +1926,8 @@ const TranscriptRow = memo(
     prev.stoppedTailTurnId === next.stoppedTailTurnId &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
+    (prev.node.kind !== 'history-fold' || prev.openFolds.has(prev.node.id) === next.openFolds.has(next.node.id)) &&
+    prev.onToggleFold === next.onToggleFold &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -2243,6 +2330,15 @@ export function Transcript({
     () => (foldSteps ? groupBlocks(timelineBlocks) : timelineBlocks),
     [foldSteps, timelineBlocks],
   );
+  const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
+  const handleToggleFold = useCallback((foldId: string) => {
+    setOpenFolds((previous) => {
+      const next = new Set(previous);
+      if (next.has(foldId)) next.delete(foldId);
+      else next.add(foldId);
+      return next;
+    });
+  }, []);
   // The forest prop is rebuilt per publish upstream; stabilize it by content
   // so row memos survive unrelated deltas (Finding: forest identity).
   const stableForest = useStableForest(forest);
@@ -2283,7 +2379,13 @@ export function Transcript({
   // lifecycle entries (spawned / completed / failed / cancelled) and the
   // dispatching tool call — all three said the same thing three times.
   // Deliveries (sent / resumed) carry their own message and stay.
-  const groupedNodes = useMemo(() => mergeSubagentRows(tailNodes), [tailNodes]);
+  const mergedNodes = useMemo(() => mergeSubagentRows(tailNodes), [tailNodes]);
+  // Settled history folds: every finished turn's process stretches collapse
+  // into one line each. The latest turn stays open while it runs AND after
+  // it settles, so the answer the reader just watched arrive keeps its work
+  // in view; it folds once the next turn starts.
+  const liveTurnId = latestTurnId(mergedNodes);
+  const groupedNodes = useMemo(() => foldHistory(mergedNodes, liveTurnId), [mergedNodes, liveTurnId]);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -2709,6 +2811,8 @@ export function Transcript({
                       stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
                       subagentFormOverrides={cardForms}
                       onToggleSubagentForm={handleToggleSubagentForm}
+                      openFolds={openFolds}
+                      onToggleFold={handleToggleFold}
                       onResolveApproval={onResolveApproval}
                       onAnswerQuestion={onAnswerQuestion}
                       onDismissQuestion={onDismissQuestion}

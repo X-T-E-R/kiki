@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  foldHistory,
   groupBlocks,
   groupHasError,
   groupHasRunning,
   groupSummary,
   isMemoryToolName,
   isReadStep,
+  latestTurnId,
   stepObject,
+  type HistoryFold,
   type ToolGroup,
 } from './grouping';
 import type { AssistantBlock, ShellBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
@@ -181,5 +184,44 @@ describe('groupSummary', () => {
       { verb: 'search', targets: ['TODO'], more: 0 },
       { verb: 'read', targets: ['a.ts', 'b.ts', 'c.ts'], more: 1 },
     ]);
+  });
+});
+
+describe('foldHistory', () => {
+  const inTurn = <T extends { turnId?: string }>(block: T, turnId: string): T => ({ ...block, turnId });
+
+  it('folds settled process runs of finished turns and leaves the live turn open', () => {
+    const past = [
+      inTurn(text('user'), 't1'),
+      inTurn(thinking(), 't1'),
+      inTurn(read('/w/a.ts'), 't1'),
+      inTurn(tool('Edit', 'error'), 't1'),
+      inTurn(text('assistant'), 't1'),
+    ];
+    const live = [inTurn(text('user'), 't2'), inTurn(thinking(), 't2'), inTurn(read('/w/b.ts'), 't2')];
+    const nodes = foldHistory([...past, ...live], latestTurnId([...past, ...live]));
+    expect(nodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'assistant', 'user', 'thinking', 'tool']);
+    const fold = nodes[1] as HistoryFold;
+    expect(fold).toMatchObject({ id: `fold-${past[1]!.id}`, turnId: 't1', steps: 2, thoughts: 1, failed: 1 });
+    expect(fold.members).toEqual(past.slice(1, 4));
+  });
+
+  it('breaks at messages and subagent rows, never spans turns, and skips single rows', () => {
+    const blocks = [
+      inTurn(thinking(), 't1'),
+      inTurn(text('assistant'), 't1'),
+      inTurn(read(), 't1'),
+      inTurn(read(), 't2'),
+      inTurn(shell(), 't2'),
+    ];
+    const nodes = foldHistory(blocks, 't3');
+    expect(nodes.map((node) => node.kind)).toEqual(['thinking', 'assistant', 'tool', 'history-fold']);
+  });
+
+  it('keeps running work and turn-less rows in place', () => {
+    const running = inTurn(tool('Read', 'running'), 't1');
+    const loose = read();
+    const nodes = foldHistory([inTurn(read(), 't1'), running, loose, loose], 't9');
+    expect(nodes.every((node) => node.kind !== 'history-fold')).toBe(true);
   });
 });

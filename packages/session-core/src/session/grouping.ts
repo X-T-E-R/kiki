@@ -42,7 +42,166 @@ export interface ToolGroup {
   readonly durationMs: number | undefined;
 }
 
-export type DisplayNode = Block | ToolGroup;
+export type DisplayNode = Block | ToolGroup | HistoryFold;
+
+/**
+ * A settled stretch of work between two messages of a FINISHED turn, folded
+ * into one expandable line ("Worked · 12 steps · 3 thoughts"). Members keep
+ * their order and identity; the fold is a render-time projection only.
+ */
+export interface HistoryFold {
+  readonly kind: 'history-fold';
+  /** Stable id from the first member (survives turns appending below). */
+  readonly id: string;
+  readonly turnId: string | undefined;
+  /** Members in occurrence order; read runs stay folded inside. */
+  readonly members: readonly (Block | ToolGroup)[];
+  /** Tool calls + shell runs (a read run counts each read). */
+  readonly steps: number;
+  readonly thoughts: number;
+  /** Reminders, system injections, skills and quiet notices. */
+  readonly notes: number;
+  readonly failed: number;
+  /** Sum of real per-tool frame durations; undefined when none is known. */
+  readonly durationMs: number | undefined;
+}
+
+/** A stretch this short reads faster in place than behind a fold. */
+export const HISTORY_FOLD_MIN = 2;
+
+function foldTurnId(node: Block | ToolGroup): string | undefined {
+  if (node.kind === 'tool-group') return node.tools[0]?.turnId;
+  if (node.kind === 'subagent') return node.parentTurnId;
+  if (node.kind === 'approval') return node.request.turn_id === undefined ? undefined : `t${node.request.turn_id}`;
+  if (node.kind === 'question') return node.request.turn_id === undefined ? undefined : `t${node.request.turn_id}`;
+  return node.turnId;
+}
+
+function normTurn(turnId: string | undefined): string | undefined {
+  if (turnId === undefined) return undefined;
+  return turnId.startsWith('t') ? turnId : `t${turnId}`;
+}
+
+/**
+ * What may disappear into a fold: the agent's settled process, never its
+ * voice, the user, a boundary, or anything that still wants attention.
+ * Subagent cards and lifecycle rows stay out — they are navigation targets.
+ */
+function foldable(node: Block | ToolGroup): boolean {
+  switch (node.kind) {
+    case 'tool-group':
+      return !groupHasRunning(node);
+    case 'tool':
+      return node.status !== 'running' && !isMemoryToolName(node.name);
+    case 'shell':
+      return node.done;
+    case 'thinking':
+      return !node.streaming;
+    case 'system-reminder':
+    case 'skill':
+      return true;
+    case 'system':
+      return node.variant !== 'compaction_summary';
+    case 'notice':
+      return node.tone === 'neutral' && node.executor !== undefined && node.executor.kind !== 'compaction';
+    case 'approval':
+      return node.resolution !== undefined;
+    case 'question':
+      return node.outcome !== undefined;
+    default:
+      return false;
+  }
+}
+
+function nodeFailed(node: Block | ToolGroup): boolean {
+  if (node.kind === 'tool-group') return groupHasError(node);
+  if (node.kind === 'tool') return node.status === 'error' || node.isError === true;
+  if (node.kind === 'shell') return node.isError === true;
+  return false;
+}
+
+function buildFold(run: readonly (Block | ToolGroup)[], turnId: string | undefined): HistoryFold {
+  let steps = 0;
+  let thoughts = 0;
+  let notes = 0;
+  let failed = 0;
+  let duration: number | undefined;
+  const addDuration = (tool: ToolBlock) => {
+    if (tool.durationSource === 'frame' && tool.durationMs !== undefined) duration = (duration ?? 0) + tool.durationMs;
+  };
+  for (const node of run) {
+    if (node.kind === 'tool-group') {
+      failed += node.tools.filter((tool) => tool.status === 'error' || tool.isError === true).length;
+    } else if (nodeFailed(node)) {
+      failed += 1;
+    }
+    if (node.kind === 'tool-group') {
+      steps += node.count;
+      node.tools.forEach(addDuration);
+    } else if (node.kind === 'tool') {
+      steps += 1;
+      addDuration(node);
+    } else if (node.kind === 'shell') {
+      steps += 1;
+    } else if (node.kind === 'thinking') {
+      thoughts += 1;
+    } else {
+      notes += 1;
+    }
+  }
+  return { kind: 'history-fold', id: `fold-${run[0]!.id}`, turnId, members: run, steps, thoughts, notes, failed, durationMs: duration };
+}
+
+/** The latest turn on the page: the one a fold must leave open. */
+export function latestTurnId(nodes: readonly DisplayNode[]): string | undefined {
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index]!;
+    const turn = node.kind === 'history-fold' ? node.turnId : foldTurnId(node);
+    if (turn !== undefined) return normTurn(turn);
+  }
+  return undefined;
+}
+
+/**
+ * Fold settled history: inside every finished turn, each run of ≥2
+ * consecutive process rows (tools, read runs, shell, thinking, reminders,
+ * settled decisions, engine notes) becomes one `HistoryFold`. The turn in
+ * progress (`liveTurnId`) and turn-less rows are never folded, and a run
+ * breaks at anything the user reads: messages, subagent cards, dividers.
+ */
+export function foldHistory(
+  nodes: readonly DisplayNode[],
+  liveTurnId: string | undefined,
+): DisplayNode[] {
+  const live = normTurn(liveTurnId);
+  const out: DisplayNode[] = [];
+  let run: (Block | ToolGroup)[] = [];
+  let runTurn: string | undefined;
+  const flush = () => {
+    if (run.length >= HISTORY_FOLD_MIN) out.push(buildFold(run, runTurn));
+    else out.push(...run);
+    run = [];
+    runTurn = undefined;
+  };
+  for (const node of nodes) {
+    if (node.kind === 'history-fold') {
+      flush();
+      out.push(node);
+      continue;
+    }
+    const turn = normTurn(foldTurnId(node));
+    const eligible = turn !== undefined && turn !== live && foldable(node);
+    if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
+    if (eligible) {
+      run.push(node);
+      runTurn = turn;
+    } else {
+      out.push(node);
+    }
+  }
+  flush();
+  return out;
+}
 
 /** Minimum run length that folds. Two reads are cheaper to show than to hide. */
 export const READ_RUN_MIN = 3;
