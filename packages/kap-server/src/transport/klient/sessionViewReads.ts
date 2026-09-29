@@ -2,8 +2,11 @@ import { MAIN_AGENT_ID } from '@kiki/agent-core-v2';
 import {
   filterOpsForGrade,
   paginateTurns,
+  type TranscriptAttachment,
   type TranscriptOpsCatchupResponse,
+  type TranscriptPrompt,
   type TranscriptResponse,
+  type TranscriptTask,
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
@@ -80,6 +83,69 @@ export async function readSessionViewTranscriptPage(
     todos: snapshot.todos, prompts: snapshot.prompts, meta: snapshot.meta, agents: roster,
     pending_interactions: [], cursor: undefined, coverage: coverageForItems(page.items, page.hasMore, snapshot.toolCallCountKnown === true),
   } as unknown as TranscriptResponse;
+}
+
+export async function readSessionViewTranscriptDetail(
+  transcriptService: TranscriptService,
+  sessionId: string,
+  input: {
+    readonly agentId: string;
+    readonly kind: 'task' | 'attachment' | 'prompt';
+    readonly id: string;
+    readonly signal?: AbortSignal;
+  },
+): Promise<
+  | {
+      readonly session_id: string;
+      readonly agent_id: string;
+      readonly kind: 'task';
+      readonly task: TranscriptTask;
+    }
+  | {
+      readonly session_id: string;
+      readonly agent_id: string;
+      readonly kind: 'attachment';
+      readonly attachment: TranscriptAttachment;
+    }
+  | {
+      readonly session_id: string;
+      readonly agent_id: string;
+      readonly kind: 'prompt';
+      readonly prompt: TranscriptPrompt;
+    }
+  | undefined
+> {
+  const store = transcriptService.forSessionLive(sessionId);
+  let task: TranscriptTask | undefined;
+  let attachment: TranscriptAttachment | undefined;
+  let prompt: TranscriptPrompt | undefined;
+  if (store !== undefined) {
+    await transcriptService.whenReady(sessionId);
+    await transcriptService.ensureAgentHistory(sessionId, input.agentId);
+    const transcript = store.ensureAgent(input.agentId);
+    if (input.kind === 'task') task = transcript.getTask(input.id);
+    else if (input.kind === 'attachment') attachment = transcript.getAttachment(input.id);
+    else prompt = transcript.getPrompt(input.id);
+  } else {
+    const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+    if (snapshot === undefined) return undefined;
+    if (input.kind === 'task') task = snapshot.tasks.find((entry) => entry.taskId === input.id);
+    else if (input.kind === 'attachment') attachment = snapshot.attachments.find((entry) => entry.attachmentId === input.id);
+    else prompt = snapshot.prompts.find((entry) => entry.promptId === input.id);
+  }
+  if (input.kind === 'task') {
+    return task === undefined
+      ? undefined
+      : { session_id: sessionId, agent_id: input.agentId, kind: 'task', task };
+  }
+  if (input.kind === 'attachment') {
+    return attachment === undefined
+      ? undefined
+      : { session_id: sessionId, agent_id: input.agentId, kind: 'attachment', attachment };
+  }
+  return prompt === undefined
+    ? undefined
+    : { session_id: sessionId, agent_id: input.agentId, kind: 'prompt', prompt };
 }
 
 export async function readSessionViewTranscriptCatchUp(

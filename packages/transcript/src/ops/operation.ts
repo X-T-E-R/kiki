@@ -1,6 +1,8 @@
 import type {
   AgentId,
+  AttachmentId,
   FrameId,
+  PromptId,
   StepId,
   TaskId,
   TurnId,
@@ -169,17 +171,39 @@ export interface TranscriptOpBatch {
 }
 
 /** Full materialized state of one AgentTranscript, as used by `reset`. */
+export type TranscriptDetailRef =
+  | { readonly kind: 'task'; readonly taskId: TaskId }
+  | { readonly kind: 'attachment'; readonly attachmentId: AttachmentId }
+  | { readonly kind: 'prompt'; readonly promptId: PromptId };
+
+export interface TranscriptGlobalEntityCoverage {
+  readonly returned: number;
+  readonly total: number;
+  readonly hasMore: boolean;
+}
+
+export interface TranscriptGlobalCoverage {
+  readonly version: 1;
+  readonly tasks: TranscriptGlobalEntityCoverage;
+  readonly attachments: TranscriptGlobalEntityCoverage;
+  readonly prompts: TranscriptGlobalEntityCoverage;
+}
+
 export interface AgentTranscriptSnapshot {
   readonly items: readonly TranscriptItem[];
   readonly tasks: readonly TranscriptTask[];
   /** Global interaction entities (approvals / questions); never paginated. */
   readonly interactions: readonly TranscriptInteraction[];
-  /** Global attachment entities (media metadata); never paginated. */
+  /** Global attachment entities (media metadata); reset delivery may window them. */
   readonly attachments: readonly TranscriptAttachment[];
   /** Global todo documents (latest state); never paginated. */
   readonly todos: readonly TranscriptTodo[];
-  /** Global prompt queue entities; never paginated. */
+  /** Global prompt queue entities; reset delivery may window them. */
   readonly prompts: readonly TranscriptPrompt[];
+  readonly taskRefs?: readonly TranscriptDetailRef[];
+  readonly attachmentRefs?: readonly TranscriptDetailRef[];
+  readonly promptRefs?: readonly TranscriptDetailRef[];
+  readonly globalCoverage?: TranscriptGlobalCoverage;
   /** Global tool-frame count when known. */
   readonly toolCallCount?: number;
   /** Explicit false prevents deriving a zero count from an empty but unavailable history. */

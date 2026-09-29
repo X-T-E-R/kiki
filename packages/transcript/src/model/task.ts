@@ -22,6 +22,11 @@ export interface TranscriptTaskReceipt {
   readonly sourceTurnId?: number;
 }
 
+export interface TranscriptTaskDetailRef {
+  readonly kind: 'task';
+  readonly taskId: TaskId;
+}
+
 export interface TranscriptTask {
   readonly taskId: TaskId;
   readonly kind: TaskKind;
@@ -52,4 +57,5 @@ export interface TranscriptTask {
   readonly stateReason?: string;
   /** Token usage of the finished run (`subagent.completed`). */
   readonly usage?: StepUsage;
+  readonly detailRef?: TranscriptTaskDetailRef;
 }

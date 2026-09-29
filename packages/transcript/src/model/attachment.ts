@@ -12,6 +12,11 @@ export type AttachmentSource =
   | { readonly kind: 'file'; readonly fileId: string }
   | { readonly kind: 'session_media'; readonly fileId: string };
 
+export interface TranscriptAttachmentDetailRef {
+  readonly kind: 'attachment';
+  readonly attachmentId: AttachmentId;
+}
+
 export interface TranscriptAttachment {
   readonly attachmentId: AttachmentId;
   /** e.g. 'image/png'. */
@@ -23,4 +28,5 @@ export interface TranscriptAttachment {
   readonly owner?: TranscriptAnchor;
   /** Inline position marker inside the carrier's text, e.g. '[Image #1]'. */
   readonly placeholder?: string;
+  readonly detailRef?: TranscriptAttachmentDetailRef;
 }

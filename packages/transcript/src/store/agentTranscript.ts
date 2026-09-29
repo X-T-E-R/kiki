@@ -19,6 +19,8 @@ import type {
   AppendTarget,
   AppliedOps,
   TranscriptChangeEvent,
+  TranscriptDetailRef,
+  TranscriptGlobalCoverage,
   TranscriptOperation,
 } from '../ops/operation';
 
@@ -37,6 +39,20 @@ export interface TranscriptToolCallLookup {
 export interface TranscriptResidentLimits {
   readonly tailTurns: number;
   readonly maxBytes: number;
+}
+
+export interface TranscriptGlobalWindow {
+  readonly taskLimit?: number;
+  readonly attachmentLimit?: number;
+  readonly promptLimit?: number;
+  readonly taskOutputTailChars?: number;
+  readonly attachmentSourceBytes?: number;
+  readonly promptContentBytes?: number;
+}
+
+export interface TranscriptSnapshotOptions {
+  readonly tailTurns?: number;
+  readonly globalWindow?: TranscriptGlobalWindow;
 }
 
 export interface TranscriptResidentReport {
@@ -206,11 +222,11 @@ export class AgentTranscript {
   }
 
   /** Materialize current state (optionally windowed to the newest turns). */
-  snapshot(window?: { tailTurns: number }): AgentTranscriptSnapshot {
+  snapshot(options: TranscriptSnapshotOptions = {}): AgentTranscriptSnapshot {
     let items = this.#state.items;
     let hasMoreOlder = this.#state.hasMoreOlder;
-    if (window !== undefined) {
-      const tailTurns = Math.max(0, window.tailTurns);
+    if (options.tailTurns !== undefined) {
+      const tailTurns = Math.max(0, options.tailTurns);
       let seen = 0;
       let start = items.length;
       let trimmed = false;
@@ -229,13 +245,35 @@ export class AgentTranscript {
         hasMoreOlder = true;
       }
     }
+    const globals: WindowedGlobals = options.globalWindow === undefined
+      ? {
+          tasks: stableMapValues(this.#state.tasks),
+          attachments: stableMapValues(this.#state.attachments),
+          prompts: stableMapValues(this.#state.prompts),
+          taskRefs: [],
+          attachmentRefs: [],
+          promptRefs: [],
+          coverage: {
+            version: 1,
+            tasks: coverageFor(this.#state.tasks.size, this.#state.tasks.size),
+            attachments: coverageFor(this.#state.attachments.size, this.#state.attachments.size),
+            prompts: coverageFor(this.#state.prompts.size, this.#state.prompts.size),
+          },
+        }
+      : windowGlobals(this.#state, items, options.globalWindow);
     return {
       items,
-      tasks: stableMapValues(this.#state.tasks),
+      tasks: globals.tasks,
       interactions: stableMapValues(this.#state.interactions),
-      attachments: stableMapValues(this.#state.attachments),
+      attachments: globals.attachments,
       todos: stableMapValues(this.#state.todos),
-      prompts: stableMapValues(this.#state.prompts),
+      prompts: globals.prompts,
+      ...(options.globalWindow === undefined ? {} : {
+        taskRefs: globals.taskRefs,
+        attachmentRefs: globals.attachmentRefs,
+        promptRefs: globals.promptRefs,
+        globalCoverage: globals.coverage,
+      }),
       toolCallCount: this.#state.toolCallCount,
       toolCallCountKnown: this.#state.toolCallCount !== undefined,
       meta: this.#state.meta,
@@ -297,6 +335,145 @@ export class AgentTranscript {
         }
       }
     }
+  }
+}
+
+interface WindowedGlobals {
+  readonly tasks: readonly TranscriptTask[];
+  readonly attachments: readonly TranscriptAttachment[];
+  readonly prompts: readonly TranscriptPrompt[];
+  readonly taskRefs: readonly TranscriptDetailRef[];
+  readonly attachmentRefs: readonly TranscriptDetailRef[];
+  readonly promptRefs: readonly TranscriptDetailRef[];
+  readonly coverage: TranscriptGlobalCoverage;
+}
+
+function windowGlobals(
+  state: AgentState,
+  items: readonly TranscriptItem[],
+  limits: TranscriptGlobalWindow,
+): WindowedGlobals {
+  const taskIds = new Set<TaskId>();
+  const attachmentIds = new Set<AttachmentId>();
+  const promptIds = new Set<PromptId>();
+  for (const item of items) {
+    if (item.kind === 'taskref') taskIds.add(item.taskId);
+    if (item.kind !== 'turn') continue;
+    if (item.promptId !== undefined) promptIds.add(item.promptId);
+    for (const attachmentId of item.attachmentIds ?? []) attachmentIds.add(attachmentId);
+    for (const step of item.steps) {
+      for (const frame of step.frames) {
+        if (frame.kind === 'text') {
+          for (const attachmentId of frame.attachmentIds ?? []) attachmentIds.add(attachmentId);
+        }
+        if (frame.kind === 'tool' && frame.taskId !== undefined) taskIds.add(frame.taskId);
+      }
+    }
+  }
+  const taskSelection = selectWindow(
+    state.tasks,
+    taskIds,
+    (task) => task.state === 'running',
+    limits.taskLimit,
+  );
+  const attachmentSelection = selectWindow(state.attachments, attachmentIds, () => false, limits.attachmentLimit);
+  const promptSelection = selectWindow(
+    state.prompts,
+    promptIds,
+    (prompt) => prompt.status === 'running' || prompt.status === 'queued' || prompt.status === 'blocked',
+    limits.promptLimit,
+  );
+  const tasks = [...state.tasks.entries()]
+    .filter(([taskId]) => taskSelection.has(taskId))
+    .map(([, task]) => limitTask(task, limits.taskOutputTailChars ?? 1_024));
+  const attachments = [...state.attachments.entries()]
+    .filter(([attachmentId]) => attachmentSelection.has(attachmentId))
+    .map(([, attachment]) => limitAttachment(attachment, limits.attachmentSourceBytes ?? 2_048));
+  const prompts = [...state.prompts.entries()]
+    .filter(([promptId]) => promptSelection.has(promptId))
+    .map(([, prompt]) => limitPrompt(prompt, limits.promptContentBytes ?? 4_096));
+  const taskRefs = [...state.tasks.keys()]
+    .filter((taskId) => !taskSelection.has(taskId))
+    .map((taskId) => ({ kind: 'task' as const, taskId }));
+  const attachmentRefs = [...state.attachments.keys()]
+    .filter((attachmentId) => !attachmentSelection.has(attachmentId))
+    .map((attachmentId) => ({ kind: 'attachment' as const, attachmentId }));
+  const promptRefs = [...state.prompts.keys()]
+    .filter((promptId) => !promptSelection.has(promptId))
+    .map((promptId) => ({ kind: 'prompt' as const, promptId }));
+  return {
+    tasks,
+    attachments,
+    prompts,
+    taskRefs,
+    attachmentRefs,
+    promptRefs,
+    coverage: {
+      version: 1,
+      tasks: coverageFor(taskSelection.size, state.tasks.size),
+      attachments: coverageFor(attachmentSelection.size, state.attachments.size),
+      prompts: coverageFor(promptSelection.size, state.prompts.size),
+    },
+  };
+}
+
+function selectWindow<K, V>(
+  values: ReadonlyMap<K, V>,
+  required: ReadonlySet<K>,
+  keep: (value: V) => boolean,
+  requestedLimit: number | undefined,
+): Set<K> {
+  const limit = requestedLimit === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(requestedLimit));
+  const selected = new Set<K>();
+  for (const [key, value] of values) {
+    if (required.has(key) || keep(value)) selected.add(key);
+  }
+  if (selected.size >= limit) return selected;
+  const entries = [...values.keys()];
+  for (let index = entries.length - 1; index >= 0 && selected.size < limit; index -= 1) {
+    const key = entries[index];
+    if (key !== undefined) selected.add(key);
+  }
+  return selected;
+}
+
+function coverageFor(returned: number, total: number): { returned: number; total: number; hasMore: boolean } {
+  return { returned, total, hasMore: returned < total };
+}
+
+function limitTask(task: TranscriptTask, maxChars: number): TranscriptTask {
+  if (task.outputTail.length <= maxChars) return task;
+  return {
+    ...task,
+    outputTail: task.outputTail.slice(-maxChars),
+    detailRef: { kind: 'task', taskId: task.taskId },
+  };
+}
+
+function limitAttachment(attachment: TranscriptAttachment, maxBytes: number): TranscriptAttachment {
+  const source = attachment.source;
+  if (source === undefined || source.kind !== 'url' || source.url.length <= maxBytes) return attachment;
+  return {
+    ...attachment,
+    source: undefined,
+    detailRef: { kind: 'attachment', attachmentId: attachment.attachmentId },
+  };
+}
+
+function limitPrompt(prompt: TranscriptPrompt, maxBytes: number): TranscriptPrompt {
+  if (prompt.content === undefined || jsonSize(prompt.content) <= maxBytes) return prompt;
+  return {
+    ...prompt,
+    content: undefined,
+    detailRef: { kind: 'prompt', promptId: prompt.promptId },
+  };
+}
+
+function jsonSize(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return Number.POSITIVE_INFINITY;
   }
 }
 

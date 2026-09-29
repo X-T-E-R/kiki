@@ -10,6 +10,11 @@ export type TranscriptPromptStatus =
 
 export type TranscriptPromptAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
 
+export interface TranscriptPromptDetailRef {
+  readonly kind: 'prompt';
+  readonly promptId: PromptId;
+}
+
 export interface TranscriptPrompt {
   readonly promptId: PromptId;
   readonly status: TranscriptPromptStatus;
@@ -29,4 +34,5 @@ export interface TranscriptPrompt {
   readonly appendTiming?: TranscriptPromptAppendTiming;
   /** Scheduling revision; absent on older projections. */
   readonly revision?: number;
+  readonly detailRef?: TranscriptPromptDetailRef;
 }

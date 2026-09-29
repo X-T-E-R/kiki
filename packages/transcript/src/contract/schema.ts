@@ -485,6 +485,40 @@ export const todoSchema = z.object({
   updatedAt: z.string().optional(),
 });
 
+export const transcriptTaskDetailRefSchema = z.object({
+  kind: z.literal('task'),
+  taskId: taskIdSchema,
+});
+
+export const transcriptAttachmentDetailRefSchema = z.object({
+  kind: z.literal('attachment'),
+  attachmentId: z.string().min(1),
+});
+
+export const transcriptPromptDetailRefSchema = z.object({
+  kind: z.literal('prompt'),
+  promptId: z.string().min(1),
+});
+
+export const transcriptDetailRefSchema = z.discriminatedUnion('kind', [
+  transcriptTaskDetailRefSchema,
+  transcriptAttachmentDetailRefSchema,
+  transcriptPromptDetailRefSchema,
+]);
+
+export const transcriptGlobalEntityCoverageSchema = z.object({
+  returned: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  hasMore: z.boolean(),
+});
+
+export const transcriptGlobalCoverageSchema = z.object({
+  version: z.literal(1),
+  tasks: transcriptGlobalEntityCoverageSchema,
+  attachments: transcriptGlobalEntityCoverageSchema,
+  prompts: transcriptGlobalEntityCoverageSchema,
+});
+
 export const transcriptPromptSchema = z.object({
   promptId: z.string(),
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
@@ -497,15 +531,28 @@ export const transcriptPromptSchema = z.object({
   steeredAt: z.string().optional(),
   appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
   revision: z.number().int().nonnegative().optional(),
+  detailRef: transcriptPromptDetailRefSchema.optional(),
+});
+
+export const transcriptTaskWithDetailSchema = transcriptTaskSchema.extend({
+  detailRef: transcriptTaskDetailRefSchema.optional(),
+});
+
+export const transcriptAttachmentWithDetailSchema = attachmentSchema.extend({
+  detailRef: transcriptAttachmentDetailRefSchema.optional(),
 });
 
 export const agentTranscriptSnapshotSchema = z.object({
   items: z.array(transcriptItemSchema),
-  tasks: z.array(transcriptTaskSchema),
+  tasks: z.array(transcriptTaskWithDetailSchema),
   interactions: z.array(interactionSchema).default([]),
-  attachments: z.array(attachmentSchema).default([]),
+  attachments: z.array(transcriptAttachmentWithDetailSchema).default([]),
   todos: z.array(todoSchema).default([]),
   prompts: z.array(transcriptPromptSchema).default([]),
+  taskRefs: z.array(transcriptDetailRefSchema).optional(),
+  attachmentRefs: z.array(transcriptDetailRefSchema).optional(),
+  promptRefs: z.array(transcriptDetailRefSchema).optional(),
+  globalCoverage: transcriptGlobalCoverageSchema.optional(),
   toolCallCount: z.number().int().nonnegative().optional(),
   toolCallCountKnown: z.boolean().optional(),
   meta: transcriptMetaSchema,
@@ -793,6 +840,43 @@ export const transcriptPlanResponseSchema = z.object({
   agent_id: agentIdSchema,
   plans: z.array(transcriptPlanEntrySchema),
 });
+
+export const transcriptDetailQuerySchema = z
+  .object({
+    agent_id: agentIdSchema,
+    kind: z.enum(['task', 'attachment', 'prompt']),
+    id: z.string().min(1),
+  })
+  .superRefine((value, ctx) => {
+    if (!isPlainAgentId(value.agent_id)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'agent_id must be a plain agent id (no path separators)',
+        path: ['agent_id'],
+      });
+    }
+  });
+
+export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('task'),
+    task: transcriptTaskSchema,
+  }),
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('attachment'),
+    attachment: attachmentSchema,
+  }),
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('prompt'),
+    prompt: transcriptPromptSchema,
+  }),
+]);
 
 export const transcriptResetPayloadSchema = z.object({
   session_id: z.string().min(1),

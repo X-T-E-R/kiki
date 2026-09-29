@@ -480,6 +480,78 @@ describe('AgentTranscript', () => {
     expect([...fresh.getPrompts().keys()]).toEqual(['p1']);
   });
 
+  it('windows global payloads while preserving detail references for truncated entities', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      {
+        op: 'turn.upsert',
+        turn: {
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+          promptId: 'p1', attachmentIds: ['a1'],
+        },
+      },
+      {
+        op: 'taskref.upsert',
+        item: { kind: 'taskref', refId: 'ref-1', taskId: 'task-1' },
+      },
+      {
+        op: 'task.upsert',
+        task: {
+          taskId: 'task-1', kind: 'subagent', state: 'completed', detached: false,
+          outputTail: 'x'.repeat(32),
+        },
+      },
+      {
+        op: 'task.upsert',
+        task: {
+          taskId: 'task-2', kind: 'subagent', state: 'completed', detached: false,
+          outputTail: 'older',
+        },
+      },
+      {
+        op: 'attachment.upsert',
+        attachment: {
+          attachmentId: 'a1', mediaType: 'image/png',
+          source: { kind: 'url', url: `data:image/png;base64,${'A'.repeat(32)}` },
+        },
+      },
+      {
+        op: 'prompt.upsert',
+        prompt: { promptId: 'p1', status: 'completed', createdAt: '2026-01-01T00:00:00.000Z', content: 'x'.repeat(32) },
+      },
+    ]);
+
+    const snapshot = tx.snapshot({
+      tailTurns: 1,
+      globalWindow: {
+        taskLimit: 1,
+        attachmentLimit: 1,
+        promptLimit: 1,
+        taskOutputTailChars: 8,
+        attachmentSourceBytes: 8,
+        promptContentBytes: 8,
+      },
+    });
+
+    expect(snapshot.tasks).toHaveLength(1);
+    expect(snapshot.tasks[0]).toMatchObject({
+      taskId: 'task-1', outputTail: 'x'.repeat(8), detailRef: { kind: 'task', taskId: 'task-1' },
+    });
+    expect(snapshot.taskRefs).toEqual([{ kind: 'task', taskId: 'task-2' }]);
+    expect(snapshot.attachments[0]).toMatchObject({
+      attachmentId: 'a1', detailRef: { kind: 'attachment', attachmentId: 'a1' },
+    });
+    expect(snapshot.attachments[0]?.source).toBeUndefined();
+    expect(snapshot.prompts[0]).toMatchObject({ detailRef: { kind: 'prompt', promptId: 'p1' } });
+    expect(snapshot.prompts[0]?.content).toBeUndefined();
+    expect(snapshot.globalCoverage).toEqual({
+      version: 1,
+      tasks: { returned: 1, total: 2, hasMore: true },
+      attachments: { returned: 1, total: 1, hasMore: false },
+      prompts: { returned: 1, total: 1, hasMore: false },
+    });
+  });
+
   it('step upserts carry usage/timing and the terminal header clears retry', () => {
     const tx = new AgentTranscript('main');
     tx.apply([

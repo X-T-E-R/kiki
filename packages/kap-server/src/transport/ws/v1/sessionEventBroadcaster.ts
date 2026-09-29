@@ -176,6 +176,12 @@ interface SessionState {
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 20;
+const TRANSCRIPT_RESET_TASK_LIMIT = 64;
+const TRANSCRIPT_RESET_ATTACHMENT_LIMIT = 64;
+const TRANSCRIPT_RESET_PROMPT_LIMIT = 64;
+const TRANSCRIPT_RESET_TASK_OUTPUT_TAIL_CHARS = 1_024;
+const TRANSCRIPT_RESET_ATTACHMENT_SOURCE_BYTES = 2_048;
+const TRANSCRIPT_RESET_PROMPT_CONTENT_BYTES = 4_096;
 let nextInteractionConsumerId = 0;
 
 async function disposeSessionState(state: SessionState): Promise<void> {
@@ -728,7 +734,17 @@ export class SessionEventBroadcaster {
   ): boolean {
     const redacted = redactSnapshotForGrade(
       grade,
-      transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS }),
+      transcript.snapshot({
+        tailTurns: TRANSCRIPT_RESET_TAIL_TURNS,
+        globalWindow: {
+          taskLimit: TRANSCRIPT_RESET_TASK_LIMIT,
+          attachmentLimit: TRANSCRIPT_RESET_ATTACHMENT_LIMIT,
+          promptLimit: TRANSCRIPT_RESET_PROMPT_LIMIT,
+          taskOutputTailChars: TRANSCRIPT_RESET_TASK_OUTPUT_TAIL_CHARS,
+          attachmentSourceBytes: TRANSCRIPT_RESET_ATTACHMENT_SOURCE_BYTES,
+          promptContentBytes: TRANSCRIPT_RESET_PROMPT_CONTENT_BYTES,
+        },
+      }),
     );
     const liveVerified = this.opts.transcriptService?.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId) === true;
     const snapshot = liveVerified ? redacted

@@ -3,6 +3,8 @@ import {
   isPlainAgentId,
   TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
   TRANSCRIPT_COVERAGE_VERSION,
+  transcriptDetailQuerySchema,
+  transcriptDetailResponseSchema,
   transcriptOpsCatchupResponseSchema,
   transcriptOpsQuerySchema,
   transcriptPlanResponseSchema,
@@ -22,7 +24,11 @@ import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
-import { readSessionViewTranscriptCatchUp, readSessionViewTranscriptPage } from '../transport/klient/sessionViewReads';
+import {
+  readSessionViewTranscriptCatchUp,
+  readSessionViewTranscriptDetail,
+  readSessionViewTranscriptPage,
+} from '../transport/klient/sessionViewReads';
 
 interface TranscriptRouteHost {
   get(
@@ -156,6 +162,41 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     },
   );
   app.get(route.path, route.options, route.handler as Parameters<TranscriptRouteHost['get']>[2]);
+
+  const detailRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/sessions/{session_id}/transcript/detail',
+      params: sessionIdParamSchema,
+      querystring: transcriptDetailQuerySchema,
+      success: { data: transcriptDetailResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+      },
+      description:
+        'Read one windowed transcript global entity by reference. The detail endpoint returns the canonical task, attachment, or prompt body that a transcript.reset summary omitted or truncated.',
+      tags: ['transcript'],
+    },
+    async (req, reply) => {
+      const { session_id } = req.params;
+      const query = req.query;
+      const data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
+        readSessionViewTranscriptDetail(transcriptService, session_id, {
+          agentId: query.agent_id,
+          kind: query.kind,
+          id: query.id,
+          signal,
+        }),
+      );
+      if (data === undefined) {
+        sendSessionNotFound(reply, req.id, session_id);
+        return;
+      }
+      reply.send(okEnvelope(data, req.id));
+    },
+  );
+  app.get(detailRoute.path, detailRoute.options, detailRoute.handler as Parameters<TranscriptRouteHost['get']>[2]);
 
   const opsRoute = defineRoute(
     {
