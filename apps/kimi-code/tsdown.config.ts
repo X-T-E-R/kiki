@@ -31,7 +31,7 @@ export default defineConfig({
     [BUILT_IN_CATALOG_DEFINE]: builtInCatalogDefine(),
   },
   deps: {
-    alwaysBundle: [/^@kiki\//],
+    alwaysBundle: [/^@kiki\//, /^@nb-im\/core$/],
     onlyBundle: false,
   },
   outputOptions: {

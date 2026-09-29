@@ -319,6 +319,20 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
     },
 
+    notifications: {
+      getSettings: () => transport.json('/notifications/settings'),
+      updateSettings: (settings) => transport.json('/notifications/settings', { method: 'PUT', body: settings }),
+      listProviders: () => transport.json('/notifications/providers'),
+      upsertInstance: (id, instance, slots) => transport.json(`/notifications/instances/${encodeURIComponent(id)}`, { method: 'PUT', body: { instance, slots } }),
+      deleteInstance: (id) => transport.json(`/notifications/instances/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      upsertChannel: (id, channel) => transport.json(`/notifications/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: channel }),
+      deleteChannel: (id) => transport.json(`/notifications/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      setCredential: (slotId, value) => transport.json(`/notifications/credentials/${encodeURIComponent(slotId)}`, { method: 'PUT', body: { value } }),
+      checkCredential: (instanceId) => transport.json(`/notifications/instances/${encodeURIComponent(instanceId)}:check`, { method: 'POST', body: {} }),
+      sendTest: (channelId) => transport.json(`/notifications/channels/${encodeURIComponent(channelId)}:test`, { method: 'POST', body: {} }),
+      listDeliveries: (channelId) => transport.json('/notifications/deliveries', { query: channelId === undefined ? undefined : { channel_id: channelId } }),
+    },
+
     secrets: {
       reveal: (ref) => transport.json('/secrets:reveal', { method: 'POST', body: { ref } }),
     },

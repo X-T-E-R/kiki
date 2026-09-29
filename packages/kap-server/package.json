@@ -61,6 +61,7 @@
     "@kiki/minidb": "workspace:*",
     "@kiki/protocol": "workspace:^",
     "@kiki/transcript": "workspace:^",
+    "@nb-im/core": "file:../../vendor/nb-im-core-0.1.0.tgz",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.1.0",
     "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",

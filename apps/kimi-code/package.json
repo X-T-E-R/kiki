@@ -99,7 +99,7 @@
     "zod": "^4.3.6"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.15.0"
   },
   "dependencies": {
     "@kiki/session-core": "workspace:^",

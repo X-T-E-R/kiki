@@ -612,6 +612,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.3.6)
+      '@nb-im/core':
+        specifier: file:../../vendor/nb-im-core-0.1.0.tgz
+        version: file:vendor/nb-im-core-0.1.0.tgz
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -2330,6 +2333,11 @@ packages:
     peerDependenciesMeta:
       playwright:
         optional: true
+
+  '@nb-im/core@file:vendor/nb-im-core-0.1.0.tgz':
+    resolution: {integrity: sha512-GjINPrKisZLQroyETOPQJ0n3Ia/bVlE+ZvbO2qiWpM7jYyq01bA06cgVlVv6e+G+M6sDjcSVrrojA0TWlM6QcA==, tarball: file:vendor/nb-im-core-0.1.0.tgz}
+    version: 0.1.0
+    engines: {node: '>=24.15.0'}
 
   '@node-rs/crc32-android-arm-eabi@1.10.6':
     resolution: {integrity: sha512-vZAMuJXm3TpWPOkkhxdrofWDv+Q+I2oO7ucLRbXyAPmXFNDhHtBxbO1rk9Qzz+M3eep8ieS4/+jCL1Q0zacNMQ==}
@@ -10070,6 +10078,8 @@ snapshots:
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color
+
+  '@nb-im/core@file:vendor/nb-im-core-0.1.0.tgz': {}
 
   '@node-rs/crc32-android-arm-eabi@1.10.6':
     optional: true

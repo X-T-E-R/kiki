@@ -263,6 +263,10 @@ export class SessionEventBroadcaster {
     this.globalTargets.delete(target);
   }
 
+  isSessionViewed(sessionId: string): boolean {
+    return (this.sessions.get(sessionId)?.targets.size ?? 0) > 0;
+  }
+
   /**
    * Subscribe a connection to a session's stream (activates the session).
    *

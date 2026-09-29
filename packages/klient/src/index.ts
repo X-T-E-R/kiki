@@ -15,6 +15,16 @@ export type {
 } from './core/channel.js';
 export type { TerminalFacade, TerminalSignal, TerminalAttachResult, TerminalConnectionStatus } from './core/facade/terminal.js';
 export type {
+  NotificationHealth,
+  NotificationErrorKind,
+  NotificationCredentialCheck,
+  NotificationGlobalSettings,
+  NotificationInstance,
+  NotificationChannel,
+  NotificationCredentialSlot,
+  NotificationSettings,
+  NotificationProviderDescriptor,
+  NotificationDelivery,
   HttpRestBinaryFile,
   HttpRestConfigPatch,
   HttpRestCronTask,

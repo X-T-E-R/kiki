@@ -31,6 +31,8 @@ import { registerMemoryRoutes } from './memory';
 import { registerModelCatalogRoutes } from './modelCatalog';
 import { registerNbSearchRoutes } from './nbSearch';
 import { registerSecretsRoutes } from './secrets';
+import { registerNotificationRoutes } from './notifications';
+import type { NotificationService } from '../services/notifications/notificationService';
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
 import { registerPromptsRoutes } from './prompts';
@@ -84,6 +86,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly enableShutdown?: boolean;
   readonly enableTerminals?: boolean;
   readonly guiStore: IGuiStoreService;
+  readonly notifications: NotificationService;
   /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
   readonly themesDir: string;
   readonly onShutdown: () => void;
@@ -172,7 +175,8 @@ export async function registerApiV1Routes(
       registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
       registerNbSearchRoutes(apiV1 as unknown as Parameters<typeof registerNbSearchRoutes>[0], core);
-      registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core);
+      registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);
+      registerNotificationRoutes(apiV1 as unknown as Parameters<typeof registerNotificationRoutes>[0], opts.notifications);
       registerModelCatalogRoutes(
         apiV1 as unknown as Parameters<typeof registerModelCatalogRoutes>[0],
         core,

@@ -38,6 +38,79 @@ import type {
 } from '@kiki/protocol';
 import type { UsageResponse } from '@kiki/protocol';
 
+export interface NotificationGlobalSettings {
+  enabled: boolean;
+  suppress_viewing_session: boolean;
+  min_work_ms: number;
+  work_stable_ms: number;
+  question_delay_ms: number;
+  quiet_hours?: { start: string; end: string; time_zone: string };
+}
+
+export type NotificationHealth = 'ok' | 'connection_failed' | 'unauthorized' | 'unknown';
+export type NotificationErrorKind = 'auth' | 'forbidden' | 'not_found' | 'rate_limited' | 'transient' | 'too_long' | 'bad_format' | 'dependency_missing' | 'configuration' | 'protocol' | 'unknown';
+
+export interface NotificationInstance {
+  provider_id: string;
+  enabled: boolean;
+  revision: string;
+  options: Record<string, unknown>;
+  label?: string;
+  health?: NotificationHealth;
+}
+
+export interface NotificationChannel {
+  provider_instance_id: string;
+  enabled: boolean;
+  revision: string;
+  target: Record<string, unknown>;
+  directions: ['send'];
+  scenes: { work_complete: boolean; question_pending: boolean };
+  label?: string;
+  health?: NotificationHealth;
+}
+
+export interface NotificationCredentialSlot {
+  provider_id: string;
+  provider_instance_id: string;
+  purpose: string;
+  env: string;
+  configured: boolean;
+}
+
+export interface NotificationSettings {
+  global: NotificationGlobalSettings;
+  provider_instances: Record<string, NotificationInstance>;
+  channels: Record<string, NotificationChannel>;
+  credential_slots: Record<string, NotificationCredentialSlot>;
+}
+
+export interface NotificationProviderDescriptor {
+  id: string;
+  can_send: boolean;
+  can_receive: boolean;
+  status: 'available' | 'unverified' | 'dependency_missing';
+  status_reason?: string;
+  instance_fields: readonly { key: string; label: string; kind: 'text' | 'select' | 'secret' | 'number' | 'json'; required: boolean; options?: readonly string[]; purpose?: string }[];
+  target_fields: readonly { key: string; label: string; kind: 'text' | 'number'; required: boolean }[];
+}
+
+export interface NotificationDelivery {
+  delivery_id: string;
+  channel_id: string;
+  status: 'queued' | 'sending' | 'accepted_by_provider' | 'suppressed' | 'failed' | 'expired' | 'unknown' | 'cancelled';
+  attempt: number;
+  created_at: string;
+  expires_at: string;
+  result: { status: 'accepted' | 'suppressed' | 'failed' | 'unknown'; message_ids: string[]; retryable: boolean; error_kind?: NotificationErrorKind; diagnostic_code?: string } | null;
+}
+
+export interface NotificationCredentialCheck {
+  result: 'ok' | 'failed' | 'requires_test_send';
+  health: NotificationHealth;
+  error_kind?: NotificationErrorKind;
+}
+
 /** HTTP deadlines and cancellation remain active until the response body is consumed. */
 export interface HttpRestRequestOptions {
   readonly signal?: AbortSignal;
@@ -292,6 +365,20 @@ export interface HttpRestFacade {
     test(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').NbSearchTestStatus>;
     readCredential(instanceId: string, reveal: boolean): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
     writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
+  };
+
+  readonly notifications: {
+    getSettings(): Promise<NotificationSettings>;
+    updateSettings(settings: NotificationGlobalSettings): Promise<NotificationSettings>;
+    listProviders(): Promise<readonly NotificationProviderDescriptor[]>;
+    upsertInstance(id: string, instance: NotificationInstance, slots: Record<string, Omit<NotificationCredentialSlot, 'configured'>>): Promise<NotificationSettings>;
+    deleteInstance(id: string): Promise<NotificationSettings>;
+    upsertChannel(id: string, channel: NotificationChannel): Promise<NotificationSettings>;
+    deleteChannel(id: string): Promise<NotificationSettings>;
+    setCredential(slotId: string, value: string | null): Promise<{ configured: boolean }>;
+    checkCredential(instanceId: string): Promise<NotificationCredentialCheck>;
+    sendTest(channelId: string): Promise<NotificationDelivery>;
+    listDeliveries(channelId?: string): Promise<readonly NotificationDelivery[]>;
   };
 
   readonly secrets: {

@@ -7,6 +7,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
+import type { NotificationService } from '../services/notifications/notificationService';
 
 interface SecretsRouteHost {
   post(
@@ -28,7 +29,7 @@ class SecretNotFound extends Error {}
  * kind. Bulk reads, events and logs keep returning redacted projections.
  * OAuth tokens are sign-in state and are not addressable here.
  */
-export function registerSecretsRoutes(app: SecretsRouteHost, core: Scope): void {
+export function registerSecretsRoutes(app: SecretsRouteHost, core: Scope, notifications: NotificationService): void {
   const revealRoute = defineRoute({
     method: 'POST',
     path: '/secrets:reveal',
@@ -39,7 +40,7 @@ export function registerSecretsRoutes(app: SecretsRouteHost, core: Scope): void 
     tags: ['secrets'],
   }, async (req, reply) => {
     try {
-      const revealed = await revealSecret(core, req.body.ref);
+      const revealed = await revealSecret(core, req.body.ref, notifications);
       requestLog(req)?.info({ kind: req.body.ref.kind, source: revealed.source }, 'secret revealed');
       reply.send(okEnvelope(revealed, req.id));
     } catch (error) {
@@ -50,7 +51,7 @@ export function registerSecretsRoutes(app: SecretsRouteHost, core: Scope): void 
   app.post(revealRoute.path, revealRoute.options, revealRoute.handler as Parameters<SecretsRouteHost['post']>[2]);
 }
 
-async function revealSecret(core: Scope, ref: SecretRef): Promise<RevealedSecret> {
+async function revealSecret(core: Scope, ref: SecretRef, notifications: NotificationService): Promise<RevealedSecret> {
   switch (ref.kind) {
     case 'provider_api_key': return revealProviderKey(core, ref.provider_id);
     case 'reviewer_api_key': return revealReviewerKey(core);
@@ -59,6 +60,7 @@ async function revealSecret(core: Scope, ref: SecretRef): Promise<RevealedSecret
       const source = view.source === 'managed' ? 'kiki' : view.source;
       return withValue({ source, env_name: view.env_name }, view.value);
     }
+    case 'notification_credential': return withValue({ source: 'kiki' }, notifications.revealCredential(ref.slot_id));
     case 'mcp_env':
     case 'mcp_header':
     case 'mcp_bearer_env': return revealMcp(core, ref);

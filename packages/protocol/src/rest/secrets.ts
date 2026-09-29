@@ -23,6 +23,7 @@ export const secretRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mcp_header'), ...mcpScope, key: z.string().min(1).max(256) }).strict(),
   z.object({ kind: z.literal('mcp_bearer_env'), ...mcpScope }).strict(),
   z.object({ kind: z.literal('nb_search_credential'), instance_id: z.string().min(1).max(256) }).strict(),
+  z.object({ kind: z.literal('notification_credential'), slot_id: z.string().regex(/^[a-zA-Z0-9_.:-]{1,120}$/u) }).strict(),
 ]);
 export type SecretRef = z.infer<typeof secretRefSchema>;
 

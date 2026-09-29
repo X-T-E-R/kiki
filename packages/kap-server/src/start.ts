@@ -40,6 +40,7 @@ import { HistoryLocatorStore } from './services/history/historyLocatorStore';
 import { IQueryStore } from '@kiki/agent-core-v2';
 import './services/historyTools';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
+import { NotificationService } from './services/notifications/notificationService';
 import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
@@ -428,6 +429,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger.warn({ event_type: 'lease_expiry_cleanup_failed' }, 'lease resource expiry cleanup failed');
   });
   let idleTimer: NodeJS.Timeout | undefined;
+  let notifications: NotificationService | undefined;
   let authMonitor: NodeJS.Timeout | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -457,6 +459,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
     await appClosing;
     try {
+    try { await notifications?.close(); }
+    catch (error) {
+      closeErrors.push(error);
+      logger.warn({ event_type: 'notifications_close_failed' }, 'notification service close failed');
+    }
       await core.accessor.get(IThreadCommunicationService).shutdown();
     } catch (error) {
       closeErrors.push(error);
@@ -577,6 +584,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   await configService.ready;
   const externalDelegationEnabled = core.accessor
+  notifications = new NotificationService(core, homeDir,
+    (sessionId) => broadcaster.isSessionViewed(sessionId),
+    () => logger.warn({ event_type: 'notification_operation_failed' }, 'notification operation failed'));
+  await notifications.start();
     .get(IFlagService)
     .enabled(EXTERNAL_DELEGATION_FLAG_ID);
   let externalDelegationState: ExternalDelegationState = externalDelegationEnabled
@@ -662,6 +673,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableTerminals,
     guiStore,
     themesDir: join(homeDir, 'themes'),
+    notifications,
     pluginBridgeServerToken: () => authTokenService.getToken(),
     pluginMarketplaceUrl: () =>
       resolvePluginMarketplaceSource({
