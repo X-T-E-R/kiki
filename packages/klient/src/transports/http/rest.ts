@@ -240,6 +240,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       readBuiltinContent: (name: string) => transport.json<import('@kiki/protocol').BuiltinSkillContentResponse>(
         `/skills/${encodeURIComponent(name)}:content`,
       ),
+      previewHostInstall: (host: 'claude' | 'codex' | 'grok' | 'agents') => transport.json<{
+        host: string; directory: string; path: string; overwrites: boolean; revision: string;
+      }>('/skills/kiki-as-subagent:preview-install', { method: 'POST', body: { host } }),
+      installHost: (host: 'claude' | 'codex' | 'grok' | 'agents', revision: string) => transport.json<{
+        host: string; directory: string; path: string; overwrites: boolean; revision: string;
+      }>('/skills/kiki-as-subagent:install', { method: 'POST', body: { host, revision, confirmed: true } }),
     },
 
     skins: {

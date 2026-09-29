@@ -12,7 +12,7 @@ import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-appearance', 'tool-workflows'];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-appearance', 'kiki-as-subagent', 'tool-workflows'];
 const KIKI_OPS_TRIGGERS = [
   'first-run',
   'provider',

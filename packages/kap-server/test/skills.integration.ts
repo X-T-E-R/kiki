@@ -127,6 +127,19 @@ describe('server-v2 /api skills', () => {
     );
   }
 
+  it('previews the global host skill and requires an explicit confirmed install body', async () => {
+    const preview = await postJson<{ host: string; directory: string; path: string; overwrites: boolean; revision: string }>(
+      '/api/skills/kiki-as-subagent:preview-install', { host: 'agents' },
+    );
+    expect(preview.body.code).toBe(0);
+    expect(preview.body.data.path.replaceAll('\\', '/')).toMatch(/\/\.agents\/skills\/kiki-as-subagent\/SKILL\.md$/);
+    expect(preview.body.data.revision).toMatch(/^[a-f0-9]{64}$/);
+    const notConfirmed = await postJson('/api/skills/kiki-as-subagent:install', {
+      host: 'agents', revision: preview.body.data.revision, confirmed: false,
+    });
+    expect(notConfirmed.body.code).toBe(40001);
+  });
+
   it('discovers user and workspace Markdown commands and activates the latest prompt once', async () => {
     const root = await makeWorkspaceDir();
     await mkdir(join(home!, 'commands'), { recursive: true });

@@ -2,6 +2,7 @@ import type { IFlagService } from '#/app/flag/flag';
 import type { SkillDefinition } from '#/app/skillCatalog/types';
 
 import { KIKI_APPEARANCE_SKILL } from './kiki-appearance';
+import { KIKI_AS_SUBAGENT_SKILL } from './kiki-as-subagent';
 import { KIKI_OPS_SKILL } from './kiki-ops';
 import { KIKI_PROFILE_SKILL } from './kiki-profile';
 import { TOOL_WORKFLOWS_SKILL } from './tool-workflows';
@@ -11,6 +12,7 @@ export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
   KIKI_OPS_SKILL,
   KIKI_PROFILE_SKILL,
   KIKI_APPEARANCE_SKILL,
+  KIKI_AS_SUBAGENT_SKILL,
   TOOL_WORKFLOWS_SKILL,
 ];
 

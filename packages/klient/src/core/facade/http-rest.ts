@@ -325,6 +325,8 @@ export interface HttpRestFacade {
 
   readonly skills: {
     readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
+    previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents'): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
+    installHost(host: 'claude' | 'codex' | 'grok' | 'agents', revision: string): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
   };
 
   /** GUI skin files in the server's Kiki themes directory. Read-only by design. */
