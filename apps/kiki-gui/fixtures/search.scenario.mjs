@@ -11,6 +11,7 @@ const SID_B = 'session_fixture_search_b';
 const SID_C = 'session_fixture_search_c';
 
 export default {
+  experimentalFlags: { desktop_search: false },
   sessions: [
     sessionRecord(SID_A, { title: 'Fixture: search alpha' }),
     sessionRecord(SID_B, { title: 'Fixture: search beta' }),

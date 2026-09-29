@@ -119,7 +119,11 @@ export function QuickSwitcher({
     if (item === undefined) return;
     onClose();
     if (item.kind === 'action' || item.kind === 'setting') navigate(item.route);
-    else navigate(`/s/${item.sessionId}`);
+    else if (item.kind === 'hit') {
+      const route = item.agentId && item.agentId !== 'main'
+        ? `/s/${item.sessionId}/agent/${item.agentId}` : `/s/${item.sessionId}`;
+      navigate(item.turn === undefined ? route : `${route}?turn=${item.turn}`);
+    } else navigate(`/s/${item.sessionId}`);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {

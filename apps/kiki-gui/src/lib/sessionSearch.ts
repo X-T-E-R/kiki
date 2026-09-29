@@ -160,6 +160,8 @@ export function useSessionSearch(input: {
     getNextPageParam: searchNextPageParam,
     enabled: contentActive,
     staleTime: 15_000,
+    refetchInterval: (current) => current.state.data?.pages.some((page) => page.index_state.state === 'building')
+      ? 2_000 : false,
   });
 
   const hits = useMemo(

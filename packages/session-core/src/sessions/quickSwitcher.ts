@@ -25,6 +25,8 @@ export interface SwitcherHitItem {
   snippet: string;
   role: SearchMessageHit['role'];
   time: number;
+  turn?: number;
+  agentId?: string;
 }
 
 /** A static page destination (e.g. the usage dashboard), listed like a row. */
@@ -131,6 +133,8 @@ export function buildSwitcherItems(input: {
     snippet: hit.snippet,
     role: hit.role,
     time: hit.time,
+    turn: hit.turn,
+    agentId: hit.agent_id,
   }));
   // Settings sit last: a query that names a session should not be outranked
   // by a settings card that happens to share a word.

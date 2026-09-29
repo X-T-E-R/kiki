@@ -107,6 +107,30 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'search-s4',
+    fixture: 'search',
+    tags: ['smoke', 'sidebar', 'search'],
+    async run(page, link) {
+      await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
+      await page.locator('[data-search-toggle]').click();
+      await page.locator('[data-search-box]').fill('persimmon');
+      const hit = page.locator('[data-search-messages] button').first();
+      await hit.waitFor({ timeout: 20_000 });
+      if (!(await hit.textContent())?.includes('persimmon')) throw new Error('content hit not rendered');
+      const shots = [await shot(page, 'search-hit')];
+      await hit.click();
+      await page.waitForURL(/\/s\/session_fixture_search_a\?turn=1/, { timeout: 20_000 });
+      await page.waitForSelector('[data-block-id]', { timeout: 20_000 });
+      shots.push(await shot(page, 'search-located-turn'));
+      await page.goto(link('/settings/search?tab=advanced'), { waitUntil: 'domcontentloaded' });
+      const desktopSearch = page.locator('[data-experimental-row="desktop_search"]');
+      await desktopSearch.waitFor({ timeout: 20_000 });
+      await desktopSearch.scrollIntoViewIfNeeded();
+      shots.push(await shot(page, 'search-desktop-setting'));
+      return shots;
+    },
+  },
+  {
     name: 'settings',
     tags: ['smoke', 'settings'],
     async run(page, link) {

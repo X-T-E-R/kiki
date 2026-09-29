@@ -563,7 +563,9 @@ export function Sidebar({
         key: `h:${index}`,
         open: () => {
           setSearchInput('');
-          navigate(hit.turn === undefined ? `/s/${hit.session_id}` : `/s/${hit.session_id}?turn=${hit.turn}`);
+          const route = hit.agent_id && hit.agent_id !== 'main'
+            ? `/s/${hit.session_id}/agent/${hit.agent_id}` : `/s/${hit.session_id}`;
+          navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
         },
       });
     });
