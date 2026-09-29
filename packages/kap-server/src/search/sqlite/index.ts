@@ -73,6 +73,8 @@ export interface SqliteSyncStatus {
   readonly peakWalBytes: number;
   readonly wireBytesRead: number;
   readonly wireFilesRead: number;
+  readonly indexedSessions?: number;
+  readonly documents?: number;
 }
 
 interface FileRow {
@@ -177,8 +179,11 @@ export class SqliteSearchIndex {
   get syncStatus(): SqliteSyncStatus {
     const walBytes = this.walBytes;
     this.peakWal = Math.max(this.peakWal, walBytes);
+    const indexedSessions = (this.db.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n;
+    const documents = (this.db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n;
     return { state: this.walStuck ? 'wal_stuck' : 'ready', walBytes,
-      peakWalBytes: this.peakWal, wireBytesRead: this.readBytes, wireFilesRead: this.readFiles.size };
+      peakWalBytes: this.peakWal, wireBytesRead: this.readBytes, wireFilesRead: this.readFiles.size,
+      indexedSessions, documents };
   }
 
   resetReadCounters(): void { this.readBytes = 0; this.readFiles.clear(); }
@@ -509,12 +514,18 @@ export class SqliteSearchIndex {
     let incomplete: GlobalSearchIncomplete | undefined;
     const terms = q.termsQuery ?? [...new Set(tokenize(q.query))];
     const literal = q.literalQuery ?? normalizeLiteral(q.query);
-    let matchedIds: { rowid: number }[];
+    let matchedIds: { rowid: number; rank?: number }[];
+    const ranked = q.mode === 'terms' && q.sort === 'score' &&
+      q.container === undefined && q.workspaceId === undefined && q.role === undefined &&
+      q.startTime === undefined && q.endTime === undefined;
     if (q.mode === 'terms') {
       if (!terms.length) matchedIds = [];
       else {
         const expression = terms.map(quoteTerm).join(q.op === 'OR' ? ' OR ' : ' AND ');
-        if (q.sort === 'time_desc' && page.kind === 'first' && q.container === undefined &&
+        if (ranked) {
+          matchedIds = db.prepare('SELECT rowid, rank FROM docs_terms WHERE docs_terms MATCH ? ORDER BY rank LIMIT ?')
+            .all(expression, Math.min(budgets.maxTextHits, 64) + 1) as { rowid: number; rank: number }[];
+        } else if (q.sort === 'time_desc' && page.kind === 'first' && q.container === undefined &&
           q.workspaceId === undefined && q.role === undefined && q.startTime === undefined &&
           q.endTime === undefined) {
           matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms
@@ -542,17 +553,18 @@ export class SqliteSearchIndex {
         : db.prepare('SELECT id AS rowid FROM docs LIMIT ?')
           .all(budgets.literalCandidateCap + 1) as { rowid: number }[];
     }
-    const cap = q.mode === 'terms' ? budgets.maxTextHits : budgets.literalCandidateCap;
+    const cap = ranked ? Math.min(budgets.maxTextHits, 64) :
+      q.mode === 'terms' ? budgets.maxTextHits : budgets.literalCandidateCap;
     if (matchedIds.length > cap) { matchedIds.length = cap; incomplete = 'candidate_cap'; }
     const rows: { key: string; value: MessageDoc | TitleDoc; score: number }[] = [];
-    const N = q.mode === 'terms' ? (db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n : 0;
+    const N = q.mode === 'terms' && !ranked ? (db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n : 0;
     const dfs = new Map<string, number>();
-    if (q.mode === 'terms') for (const term of terms) {
+    if (q.mode === 'terms' && !ranked) for (const term of terms) {
       dfs.set(term, (db.prepare('SELECT count(*) AS n FROM docs_terms WHERE docs_terms MATCH ?')
         .get(quoteTerm(term)) as { n: number }).n);
     }
     const candidate = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?');
-    for (const { rowid } of matchedIds) {
+    for (const { rowid, rank } of matchedIds) {
       if (Date.now() > deadlineAt - 25) { incomplete ??= 'deadline'; break; }
       const hit = candidate.get(rowid) as { id: number; file_id: number | null; session_id: string; line_offset: number; ord: number;
           role: MessageDoc['role'] | 'title'; time: number; turn: number | null; step_id: string | null;
@@ -565,8 +577,8 @@ export class SqliteSearchIndex {
         : { kind: 'message', sessionId: hit.session_id, workspaceId: hit.workspace_id,
           sessionTitle: hit.title, sessionIdentity: hit.identity, agentId: hit.agent_id!, role: hit.role,
           text: hit.text, time: hit.time, turn: hit.turn ?? undefined, stepId: hit.step_id ?? undefined };
-      const tokens = q.mode === 'terms' ? tokenize(hit.text) : [];
-      let score = 0;
+      const tokens = q.mode === 'terms' && !ranked ? tokenize(hit.text) : [];
+      let score = rank === undefined ? 0 : -rank;
       if (tokens.length) for (const term of terms) {
         const frequency = tokens.filter((token) => token === term).length;
         if (frequency) score += (frequency / tokens.length) * Math.log(1 + N / (dfs.get(term) || 1));

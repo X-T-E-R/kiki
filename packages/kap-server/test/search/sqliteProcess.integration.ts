@@ -157,6 +157,27 @@ it('indexes in a child while a read-only worker serves search from the parent', 
   expect(host.snapshot().watchdogTimeouts).toBe(0);
 });
 
+it('elects one writer across hosts sharing the same database and leaves the other read-only', async () => {
+  const { host, database, home } = await fixture();
+  await waitFor(() => host.snapshot().state === 'ready');
+  const other = new SqliteSearchHost({ database });
+  hosts.push(other);
+  await other.open();
+  await waitFor(() => other.snapshot().state === 'readonly');
+  expect(other.snapshot().indexerPid).not.toBe(host.snapshot().indexerPid);
+  const dir = join(home, 's1');
+  await mkdir(join(dir, 'agents', 'main'), { recursive: true });
+  await writeFile(join(dir, 'agents', 'main', 'wire.jsonl'), JSON.stringify({ type: 'context.append_message', time,
+    message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'needle writer' }] },
+  }) + '\n');
+  const session = { id: 's1', dir, workspaceId: 'example', updatedAt: time };
+  host.sync([session]);
+  other.sync([session]);
+  await waitFor(() => host.snapshot().pendingSessions === 0);
+  expect((await other.search(query)).rows.map((row) => row.value.text)).toEqual(['needle writer']);
+  expect(other.snapshot().pendingSessions).toBe(0);
+});
+
 it('keeps old rows searchable through memory-budget backoff without restarting the parent', async () => {
   const { host, home, database } = await fixture();
   const dir = join(home, 's1');

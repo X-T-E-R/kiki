@@ -11,11 +11,11 @@ export type IndexerRequest =
   | { type: 'close' };
 
 export type IndexerEvent =
-  | { type: 'ready'; pid: number }
+  | { type: 'ready'; pid: number; writer?: boolean }
   | { type: 'heartbeat' }
   | { type: 'release_reader' }
   | { type: 'status'; rss: number; heapUsed: number; external: number; heapLimit: number;
-      status: SqliteSyncStatus; pending: number; inflight?: string }
+      status: SqliteSyncStatus; pending: number; dbBytes: number; lastBatchMs: number; inflight?: string }
   | { type: 'synced'; sessionId: string }
   | { type: 'error'; message: string };
 

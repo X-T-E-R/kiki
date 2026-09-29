@@ -20,16 +20,23 @@ export interface SqliteHostOptions {
   readonly backoffMs?: readonly number[];
   readonly memoryBackoffMs?: readonly number[];
   readonly queryTimeoutMs?: number;
+  readonly indexSubagentToolOutput?: boolean;
 }
 
 export interface SqliteHostSnapshot {
-  readonly state: 'building' | 'ready' | 'unavailable';
+  readonly state: 'building' | 'ready' | 'readonly' | 'unavailable';
   readonly reason?: GlobalSearchUnavailableReason;
   readonly stale: boolean;
+  readonly indexedSessions: number;
+  readonly totalSessions: number;
+  readonly documents: number;
   readonly retryAfterMs?: number;
   readonly indexerTerminal: boolean;
   readonly indexerPid?: number;
   readonly indexerRss?: number;
+  readonly dbBytes?: number;
+  readonly filesPending?: number;
+  readonly lastBatchMs?: number;
   readonly indexerStatus?: SqliteSyncStatus;
   readonly inflight?: string;
   readonly pendingSessions: number;
@@ -57,8 +64,12 @@ export class SqliteSearchHost {
   private terminal = false;
   private stopped = false;
   private ready = false;
+  private readonlyWriter = false;
   private reason?: GlobalSearchUnavailableReason;
   private rss?: number;
+  private dbBytes?: number;
+  private filesPending?: number;
+  private lastBatchMs?: number;
   private status?: SqliteSyncStatus;
   private inflight?: string;
   private timeouts = 0;
@@ -67,10 +78,15 @@ export class SqliteSearchHost {
   constructor(private readonly options: SqliteHostOptions) {}
 
   snapshot(): SqliteHostSnapshot {
-    return { state: this.reason ? 'unavailable' : this.ready ? 'ready' : 'building',
+    const indexedSessions = this.status?.indexedSessions ?? 0;
+    const totalSessions = Math.max(indexedSessions, this.known.size);
+    return { state: this.reason ? 'unavailable' : this.readonlyWriter ? 'readonly' :
+      this.ready && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
       reason: this.reason, stale: !!this.reason || this.pending.size > 0,
+      indexedSessions, totalSessions, documents: this.status?.documents ?? 0,
       retryAfterMs: this.retryAt > Date.now() ? this.retryAt - Date.now() : undefined,
       indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerStatus: this.status,
+      dbBytes: this.dbBytes, filesPending: this.filesPending, lastBatchMs: this.lastBatchMs,
       inflight: this.inflight, pendingSessions: this.pending.size, watchdogTimeouts: this.timeouts };
   }
 
@@ -95,9 +111,10 @@ export class SqliteSearchHost {
     if (this.stopped) return;
     for (const session of sessions) {
       if (this.sent.has(session.id)) this.resend.add(session.id);
-      this.pending.set(session.id, session);
+      if (!this.readonlyWriter) this.pending.set(session.id, session);
       this.known.set(session.id, session);
     }
+    this.startIndexer();
     this.flushPending();
   }
 
@@ -146,13 +163,15 @@ export class SqliteSearchHost {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
     const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
     const entry = this.options.indexerEntry ?? fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
-    const args = sea ? [INDEXER_COMMAND, this.options.database] : ['--experimental-transform-types', '--import', 'tsx', '--import',
-      new URL('./register-dev-hooks.mjs', import.meta.url).href, entry, this.options.database];
+    const args = sea ? ['--max-old-space-size=256', INDEXER_COMMAND, this.options.database] :
+      ['--max-old-space-size=256', '--experimental-transform-types', '--import', 'tsx', '--import',
+        new URL('./register-dev-hooks.mjs', import.meta.url).href, entry, this.options.database];
     const child = spawn(process.execPath, args, {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
-      env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${sea ? 512 : 256}`,
+      env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=256',
         KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? 768),
-        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? 384) },
+        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? 384),
+        KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT: this.options.indexSubagentToolOutput ? '1' : '0' },
     });
     this.child = child;
     child.stderr?.on('data', (data: Buffer) => process.stderr.write(data));
@@ -162,6 +181,8 @@ export class SqliteSearchHost {
       if (this.child !== child) return;
       if (message.type === 'ready') {
         this.ready = true;
+        this.readonlyWriter = message.writer === false;
+        if (this.readonlyWriter) this.pending.clear();
         if (this.failures === 0) this.reason = undefined;
         this.retryAt = 0;
         this.flushPending();
@@ -178,6 +199,9 @@ export class SqliteSearchHost {
       } else if (message.type === 'status') {
         this.rss = message.rss;
         this.status = message.status;
+        this.dbBytes = message.dbBytes;
+        this.filesPending = message.pending;
+        this.lastBatchMs = message.lastBatchMs;
         this.inflight = message.inflight;
         if (message.status.state === 'wal_stuck') this.reason = 'wal_stuck';
         else if (this.reason === 'wal_stuck' ||
@@ -196,7 +220,7 @@ export class SqliteSearchHost {
         else this.pending.delete(message.sessionId);
         if (!this.pending.size) { this.failures = 0; this.memoryFailures = 0; }
       } else if (message.type === 'error') {
-        if (message.message === 'disk_low') this.reason = 'disk_low';
+        if (message.message === 'disk_low' || message.message === 'sqlite_unavailable') this.reason = message.message;
         else process.stderr.write(`search indexer: ${message.message}\n`);
       }
     });
@@ -214,6 +238,10 @@ export class SqliteSearchHost {
       }
       this.inflight = undefined;
       this.ready = false;
+      if (this.reason === 'sqlite_unavailable' || this.reason === 'disk_low') {
+        this.terminal = true;
+        return;
+      }
       this.failures++;
       if (code === MEMORY_BUDGET_EXIT) this.memoryFailures++;
       else this.memoryFailures = 0;
@@ -246,7 +274,7 @@ export class SqliteSearchHost {
   }
 
   private flushPending(): void {
-    if (!this.ready || !this.child) return;
+    if (!this.ready || this.readonlyWriter || !this.child) return;
     const sessions = [...this.pending.values()].filter((session) => !this.sent.has(session.id));
     for (let i = 0; i < sessions.length; i += 1000) {
       const batch = sessions.slice(i, i + 1000);

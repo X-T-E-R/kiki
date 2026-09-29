@@ -77,8 +77,9 @@ export async function handleMainCommand(
 
 export function main(): void {
   process.title = PROCESS_NAME;
-  if (process.argv[1] === '__search-indexer' || process.argv[2] === '__search-indexer') {
-    const path = process.argv[1] === '__search-indexer' ? process.argv[2] : process.argv[3];
+  const indexerArg = process.argv.findIndex((arg, index) => index > 0 && arg === '__search-indexer');
+  if (indexerArg > 0) {
+    const path = process.argv[indexerArg + 1];
     void runSqliteIndexerCommand(path ?? '').then(
       () => process.exit(0),
       (error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exit(1); },

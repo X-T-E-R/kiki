@@ -1,4 +1,7 @@
-import { rename, statfs } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { mkdir, mkdtemp, rename, rm, statfs } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { getHeapStatistics } from 'node:v8';
 import { SqliteSearchIndex, type SqliteSessionInput } from './index';
 import { MEMORY_BUDGET_EXIT, type IndexerEvent, type IndexerRequest } from './processProtocol';
@@ -11,6 +14,26 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   const hardMb = Number(process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? 768);
   const softMb = Number(process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? 384);
   if (!(hardMb > 0 && softMb > 0)) throw new Error('invalid indexer memory budget');
+  await mkdir(dirname(path), { recursive: true });
+  const lease = new DatabaseSync(`${path}.writer.sqlite`);
+  lease.exec('PRAGMA busy_timeout=100');
+  let writer = true;
+  try { lease.exec('BEGIN IMMEDIATE'); }
+  catch (error) {
+    if (!/SQLITE_BUSY|database is locked/i.test(String(error))) { lease.close(); throw error; }
+    writer = false;
+  }
+  if (!writer) {
+    lease.close();
+    report({ type: 'ready', pid: process.pid, writer: false });
+    const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
+    await new Promise<void>((resolve) => {
+      process.on('disconnect', resolve);
+      process.on('message', (message: IndexerRequest) => { if (message.type === 'close') resolve(); });
+    });
+    clearInterval(heartbeat);
+    return;
+  }
   let index: SqliteSearchIndex | undefined;
   let pending = new Map<string, SqliteSessionInput>();
   let syncing = false;
@@ -19,13 +42,23 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   let nearSoft = false;
   let stopped = false;
   let opened = false;
+  let lastBatchMs = 0;
+  let lastLogAt = 0;
   let releaseReader: (() => void) | undefined;
   const status = (): void => {
     const memory = process.memoryUsage();
-    if (index) report({ type: 'status', rss: memory.rss, heapUsed: memory.heapUsed,
-      external: memory.external, heapLimit: getHeapStatistics().heap_size_limit,
-      status: index.syncStatus, pending: pending.size,
-      inflight: (index.db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined)?.v });
+    if (index) {
+      const snapshot = index.syncStatus;
+      report({ type: 'status', rss: memory.rss, heapUsed: memory.heapUsed,
+        external: memory.external, heapLimit: getHeapStatistics().heap_size_limit,
+        status: snapshot, pending: pending.size, lastBatchMs,
+        dbBytes: statSync(path).size,
+        inflight: (index.db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined)?.v });
+      if (Date.now() - lastLogAt >= 60_000) {
+        lastLogAt = Date.now();
+        process.stderr.write(`search indexer status rss=${memory.rss} heap=${memory.heapUsed} wal=${snapshot.walBytes} docs=${snapshot.documents} pending=${pending.size}\n`);
+      }
+    }
     if (memory.rss > hardMb * MiB) {
       if (index) index.clearInflightOnBudgetExit();
       process.stderr.write(`search indexer memory_budget rss=${memory.rss} limit=${hardMb * MiB}\n`);
@@ -51,9 +84,10 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         }
         const started = Date.now();
         await index.syncSession(session);
+        lastBatchMs = Date.now() - started;
         report({ type: 'synced', sessionId: id });
         status();
-        const elapsed = Date.now() - started;
+        const elapsed = lastBatchMs;
         if (pending.size && elapsed > 0) await new Promise((resolve) => setTimeout(resolve, elapsed));
       }
     } catch (error) { report({ type: 'error', message: error instanceof Error ? error.message : String(error) }); }
@@ -82,12 +116,35 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       catch (failure) { if ((failure as NodeJS.ErrnoException).code !== 'ENOENT') throw failure; }
     }
     report({ type: 'error', message: 'corrupt_rebuilding' });
-    index = await SqliteSearchIndex.open(path, openOptions);
-    if (opened) report({ type: 'ready', pid: process.pid });
+    index = await SqliteSearchIndex.open(path, { ...openOptions,
+      indexSubagentToolOutput: process.env['KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT'] === '1' });
+    if (opened) report({ type: 'ready', pid: process.pid, writer: true });
   };
-  try { index = await SqliteSearchIndex.open(path, openOptions); }
+  const free = await statfs(dirname(path)).then((value) => value.bavail * value.bsize);
+  if (free < 2 * 1024 * MiB) {
+    report({ type: 'error', message: 'disk_low' });
+    lease.exec('ROLLBACK');
+    lease.close();
+    throw new Error('disk_low');
+  }
+  const probeDir = await mkdtemp(join(dirname(path), '.search-selfcheck-'));
+  try {
+    const probe = new DatabaseSync(join(probeDir, 'probe.sqlite'));
+    try {
+      probe.exec("CREATE VIRTUAL TABLE probe USING fts5(text, tokenize='trigram')");
+      probe.prepare('INSERT INTO probe(text) VALUES(?)').run('search selfcheck');
+      if (!probe.prepare("SELECT rowid FROM probe WHERE probe MATCH 'selfcheck'").get())
+        throw new Error('sqlite_unavailable: FTS5 selfcheck failed');
+    } finally { probe.close(); }
+  } catch (error) {
+    report({ type: 'error', message: 'sqlite_unavailable' });
+    throw error;
+  } finally { await rm(probeDir, { recursive: true, force: true }); }
+  try { index = await SqliteSearchIndex.open(path, { ...openOptions,
+    indexSubagentToolOutput: process.env['KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT'] === '1' }); }
   catch (error) { await recover(error); }
-  report({ type: 'ready', pid: process.pid });
+  index!.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
+  report({ type: 'ready', pid: process.pid, writer: true });
   opened = true;
   status();
   setImmediate(() => {
@@ -135,4 +192,6 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     });
   });
   index?.close();
+  lease.exec('ROLLBACK');
+  lease.close();
 }
