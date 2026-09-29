@@ -29,6 +29,7 @@ import { DANGER_BUTTON, DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } 
 import { CapabilityGlyph, CapabilityIcon } from './CapabilityIcon';
 import type { InstallRequest } from './InstallFlow';
 import { PermissionList } from './PermissionList';
+import { PluginSettingsForm } from './PluginSettingsForm';
 import { Disclosure, FactList, Tag } from './primitives';
 import {
   subjectIcon,
@@ -173,6 +174,7 @@ export function PluginDetail({
               />
             )}
           </section>
+          {installed !== undefined ? <PluginSettingsForm pluginId={subject.id} /> : null}
         </div>
 
         <aside className="min-w-0 space-y-6">

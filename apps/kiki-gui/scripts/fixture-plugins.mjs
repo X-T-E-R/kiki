@@ -166,5 +166,25 @@ export function handlePlugins(server, res, path, method, body) {
       return true;
     }
   }
+  // Plugin-owned settings: GET returns the declared form and plain values;
+  // secret values are only listed as configured, exactly like kap-server.
+  const settingsMatch = /^\/plugins\/([^/]+)\/settings$/.exec(path);
+  if (settingsMatch !== null) {
+    const pluginId = decodeURIComponent(settingsMatch[1]);
+    server.pluginSettings ??= structuredClone(server.scenario?.data.pluginSettings ?? {});
+    const view = server.pluginSettings[pluginId] ?? { values: {}, secretsConfigured: [] };
+    if (method === 'POST') {
+      const properties = view.schema?.schema?.properties ?? {};
+      const values = { ...view.values };
+      const secrets = new Set(view.secretsConfigured);
+      for (const [key, value] of Object.entries(body?.values ?? {})) {
+        if (properties[key]?.secret === true) { value === null ? secrets.delete(key) : secrets.add(key); continue; }
+        if (value === null) delete values[key]; else values[key] = value;
+      }
+      server.pluginSettings[pluginId] = { ...view, values, secretsConfigured: [...secrets] };
+    }
+    server.envelope(res, server.pluginSettings[pluginId] ?? view);
+    return true;
+  }
   return false;
 }

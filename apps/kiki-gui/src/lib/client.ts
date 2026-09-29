@@ -1666,6 +1666,19 @@ export class KikiClient {
     return this.run(this.rest.plugins.info(pluginId) as Promise<PluginInfo>);
   }
 
+  /** The plugin's declared settings form, stored values, and which secrets are set (never their values). */
+  getPluginSettings(pluginId: string): Promise<import('@kiki/protocol').PluginSettingsResponse> {
+    return this.run(this.rest.plugins.settings(pluginId));
+  }
+
+  /** Per-key write: a value sets it, null removes it; keys not sent are kept. */
+  setPluginSettings(
+    pluginId: string,
+    values: Readonly<Record<string, string | number | boolean | null>>,
+  ): Promise<import('@kiki/protocol').PluginSettingsResponse> {
+    return this.run(this.rest.plugins.setSettings(pluginId, { values: { ...values } }));
+  }
+
   installPlugin(source: string): Promise<PluginSummary> {
     return this.run(this.rest.plugins.install(source) as Promise<PluginSummary>);
   }

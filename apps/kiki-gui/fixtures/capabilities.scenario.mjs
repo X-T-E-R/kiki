@@ -162,6 +162,24 @@ export default {
     catalog('community-theme-pack', 'third-party', 'Community Theme Pack', 'Twelve community skins for Kiki.', []),
   ],
   pluginRecommendations: ['kiki-office', 'pdf-tools'],
+  pluginSettings: {
+    research: {
+      schema: {
+        schemaVersion: 1,
+        schema: {
+          type: 'object',
+          properties: {
+            region: { type: 'string', title: 'Search region', description: 'Two-letter region code sent with every search.', default: 'us' },
+            maxResults: { type: 'number', title: 'Results per search', default: 8 },
+            safeSearch: { type: 'boolean', title: 'Safe search', description: 'Filter explicit results.' },
+            apiKey: { type: 'string', title: 'API key', secret: true },
+          },
+        },
+      },
+      values: { region: 'de', safeSearch: true },
+      secretsConfigured: ['apiKey'],
+    },
+  },
   pluginCandidates: {
     'C:/kiki/plugins/official/kiki-office': {
       plan: {
