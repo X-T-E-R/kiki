@@ -16,6 +16,7 @@ export interface HistorySourceAnchor {
   readonly start: number;
   readonly end: number;
   readonly digest: string;
+  readonly selector?: string;
   readonly focus?: number;
 }
 
@@ -59,6 +60,8 @@ export function decodeHistoryRef(value: string): HistorySourceAnchor {
       !Number.isSafeInteger(a.end) || (a.end ?? 0) <= (a.start ?? -1) ||
       (a.end ?? 0) - (a.start ?? 0) > MAX_RECORD_BYTES ||
       typeof a.digest !== 'string' || !SHA256.test(a.digest) ||
+      (a.selector !== undefined && (typeof a.selector !== 'string' || a.selector.length > 128 ||
+        !/^(?:input|event\.(?:part\.text|args|result\.output)|message\.content(?:\.\d+)?|message\.toolCalls\.\d+\.arguments)$/u.test(a.selector))) ||
       (a.focus !== undefined && (!Number.isSafeInteger(a.focus) || a.focus < 0))) throw new Error('invalid_ref');
   return a as HistorySourceAnchor;
 }

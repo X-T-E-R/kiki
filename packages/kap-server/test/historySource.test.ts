@@ -39,6 +39,9 @@ describe('history source refs', () => {
     const bad = { v: 1, workspace: 'ws', session: 's1', agent: '../outside',
       kind: 'frame', turn: 0, incarnation: 'i', start: 0, end: 1, digest: '0'.repeat(64) };
     expect(() => decodeHistoryRef(`h1_${Buffer.from(JSON.stringify(bad)).toString('base64url')}`)).toThrow('invalid_ref');
+    const forgedSelector = { ...bad, agent: 'main', selector: '../../wire.jsonl' };
+    expect(() => decodeHistoryRef(`h1_${Buffer.from(JSON.stringify(forgedSelector)).toString('base64url')}`))
+      .toThrow('invalid_ref');
     expect(() => decodeHistoryRef('h1_' + 'a'.repeat(2048))).toThrow('invalid_ref');
   });
 });

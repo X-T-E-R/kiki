@@ -6,10 +6,10 @@ import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
 } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
-import { TranscriptWireAdapter, type TranscriptOperation } from '@kiki/transcript';
+import { NavigationWireAdapter, openingText, type NavigationEffect } from '@kiki/transcript/navigationWireAdapter';
 import { streamWireRecords, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
 
-import { encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
+import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
@@ -42,6 +42,7 @@ export interface HistoryNavRow {
   readonly toolCount?: number;
   readonly contentHash?: string;
   readonly length?: number;
+  readonly selector?: string;
   readonly anchor: HistorySourceAnchor;
   readonly active: boolean;
 }
@@ -88,16 +89,14 @@ export interface HistoryNavBlocksPage {
 }
 
 interface Scanner {
-  readonly adapter: TranscriptWireAdapter;
-  readonly stepIds: Map<string, string>;
-  readonly turns: Map<string, number>;
+  readonly adapter: NavigationWireAdapter;
   readonly incarnation: string;
   offset: number;
   ordinal: number;
 }
 
 interface PendingRecord {
-  readonly operations: readonly TranscriptOperation[];
+  readonly operations: readonly NavigationEffect[];
   readonly span: WireRecordSpan;
   readonly digest: string;
   readonly recordTime?: number;
@@ -119,16 +118,32 @@ function outputText(value: unknown): string {
     typeof (entry as { text?: unknown }).text === 'string').map((entry) => entry.text).join('');
 }
 
-function originalText(record: Record<string, unknown>, part: HistoryNavRow['part']): string | undefined {
+function detachedExcerpt(text: string): string {
+  return JSON.parse(JSON.stringify(text.slice(0, 120))) as string;
+}
+
+function originalText(record: Record<string, unknown>, part: HistoryNavRow['part'], selector?: string): string | undefined {
+  const message = record['message'];
+  const legacy = message !== null && typeof message === 'object' ? message as Record<string, unknown> : undefined;
+  if (selector === 'message.content' && part === 'prompt') return openingText(legacy?.['content'], legacy?.['origin']);
+  if (selector === 'message.content' && part === 'output') return outputText(legacy?.['content']);
+  if (selector?.startsWith('message.content.') && part === 'text') {
+    const index = Number(selector.slice('message.content.'.length));
+    const value = Array.isArray(legacy?.['content']) ? legacy['content'][index] as Record<string, unknown> | undefined : undefined;
+    return value?.['type'] === 'text' ? value['text'] as string : undefined;
+  }
+  if (selector?.startsWith('message.toolCalls.') && part === 'input') {
+    const index = Number(selector.slice('message.toolCalls.'.length, -'.arguments'.length));
+    const call = Array.isArray(legacy?.['toolCalls']) ? legacy['toolCalls'][index] as Record<string, unknown> | undefined : undefined;
+    const arg = call?.['arguments'];
+    if (typeof arg !== 'string') return undefined;
+    try { return JSON.stringify(JSON.parse(arg)); } catch { return JSON.stringify(arg); }
+  }
   const event = record['event'];
   const data = event !== null && typeof event === 'object' ? event as Record<string, unknown> : undefined;
   if (part === 'prompt') {
     const input = record['input'];
-    if (record['type'] === 'turn.prompt' && Array.isArray(input)) {
-      return input.filter((p): p is { type: 'text'; text: string } => p !== null && typeof p === 'object' &&
-        (p as { type?: unknown }).type === 'text' && typeof (p as { text?: unknown }).text === 'string')
-        .map((p) => p.text).join('');
-    }
+    if (record['type'] === 'turn.prompt' && Array.isArray(input)) return openingText(input, record['origin']);
     return undefined;
   }
   if (part === 'text') {
@@ -153,6 +168,12 @@ export class HistoryLocatorStore {
   private readonly flights = new Map<string, Promise<HistoryNavScan>>();
 
   constructor(private readonly store: IQueryStore, private readonly transcript: TranscriptService) {}
+
+  get retainedBodyChars(): number {
+    let chars = 0;
+    for (const scanner of this.scanners.values()) chars += scanner.adapter.retainedBodyChars;
+    return chars;
+  }
 
   async scan(session: string, agent: string, signal?: AbortSignal,
     search?: HistoryNavSearch): Promise<HistoryNavScan | undefined> {
@@ -180,7 +201,7 @@ export class HistoryLocatorStore {
         scanner.incarnation !== input.search.cursor.incarnation)) throw new Error('stale_scan_cursor');
     if (scanner === undefined || scanner.incarnation !== input.incarnation ||
         input.search !== undefined && input.search.cursor === undefined) {
-      scanner = { adapter: new TranscriptWireAdapter(input.agent), stepIds: new Map(), turns: new Map(),
+      scanner = { adapter: new NavigationWireAdapter(input.agent),
         incarnation: input.incarnation, offset: 0, ordinal: 0 };
       this.scanners.delete(input.key);
       if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
@@ -197,8 +218,7 @@ export class HistoryLocatorStore {
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: (record, span, raw) => {
-        const operations = scanner.adapter.add(record);
-        const projected = operations.flatMap((fact) => fact.operations);
+        const projected = scanner.adapter.add(record);
         pending.push({ operations: projected, span,
           digest: hashHistoryRecord(raw!), recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
         if (plan !== undefined) {
@@ -211,7 +231,7 @@ export class HistoryLocatorStore {
             }
             if (op.op !== 'frame.upsert') return false;
             const frame = op.frame;
-            if (frame.kind === 'text' && frame.role === 'assistant' &&
+            if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined &&
                 (input.search?.role === undefined || input.search.role === 'assistant')) {
               return matchHistoryText(frame.text, plan) !== undefined;
             }
@@ -263,32 +283,32 @@ export class HistoryLocatorStore {
       for (const operation of record.operations) {
         if (operation.op === 'turn.upsert') {
           const turn = operation.turn;
-          scanner.turns.set(turn.turnId, turn.ordinal);
-          const row: HistoryNavRow = { ...anchorBase, workspace: input.workspace, session: input.session,
+          const row: HistoryNavRow = { workspace: input.workspace, session: input.session,
             agent: input.agent, kind: 'turn', turn: turn.ordinal, position: nextPosition(),
             ended: turn.state !== 'running',
             time: turn.startedAt === undefined ? record.recordTime : Date.parse(turn.startedAt),
-            excerpt: turn.prompt?.slice(0, 120), contentHash: turn.prompt === undefined ? undefined : digest(turn.prompt),
+            excerpt: turn.prompt === undefined ? undefined : detachedExcerpt(turn.prompt),
+            contentHash: turn.prompt === undefined ? undefined : digest(turn.prompt),
             length: turn.prompt?.length, part: turn.prompt === undefined ? undefined : 'prompt',
-            role: turn.prompt === undefined ? undefined : 'user',
+            role: turn.prompt === undefined ? undefined : 'user', selector: turn.selector,
             anchor: { ...anchorBase, kind: 'turn', turn: turn.ordinal }, active: true };
           const key = rowKey(row);
           const old = await load(key);
           touched.set(key, { ...row, position: old?.active ? old.position ?? row.position : row.position,
+            time: turn.startedAt === undefined && old?.active ? old.time : row.time,
             excerpt: row.excerpt ?? old?.excerpt,
             contentHash: row.contentHash ?? old?.contentHash, length: row.length ?? old?.length,
-            part: row.part ?? old?.part, answerExcerpt: old?.answerExcerpt,
+            part: row.part ?? old?.part, selector: row.part === undefined ? old?.selector : row.selector,
+            answerExcerpt: old?.answerExcerpt,
             stepCount: old?.active ? old.stepCount ?? 0 : 0,
             toolCount: old?.active ? old.toolCount ?? 0 : 0,
             anchor: old?.active && old.contentHash === row.contentHash ||
               row.part === undefined && old?.active ? old.anchor : row.anchor });
           if (turn.prompt !== undefined) addHit(old?.active && old.contentHash === row.contentHash ? old : row, turn.prompt);
         } else if (operation.op === 'step.upsert') {
-          const turn = scanner.turns.get(operation.turnId);
-          if (turn === undefined) continue;
+          const turn = Number(operation.turnId.slice(1));
           const step = `t${turn}.${operation.step.ordinal}`;
-          scanner.stepIds.set(operation.step.stepId, step);
-          const row: HistoryNavRow = { ...anchorBase, workspace: input.workspace, session: input.session,
+          const row: HistoryNavRow = { workspace: input.workspace, session: input.session,
             agent: input.agent, kind: 'step', turn, step, position: nextPosition(),
             ended: operation.step.state !== 'running',
             time: operation.step.startedAt === undefined ? record.recordTime : Date.parse(operation.step.startedAt),
@@ -302,26 +322,29 @@ export class HistoryLocatorStore {
             if (parent !== undefined) touched.set(turnId, { ...parent, stepCount: (parent.stepCount ?? 0) + 1 });
           }
         } else if (operation.op === 'frame.upsert') {
-          const turn = scanner.turns.get(operation.turnId);
-          const step = scanner.stepIds.get(operation.stepId);
-          if (turn === undefined || step === undefined) continue;
+          const turn = Number(operation.turnId.slice(1));
+          const step = `t${turn}.${operation.stepOrdinal}`;
           const frame = operation.frame;
           if (frame.kind !== 'text' && frame.kind !== 'tool') continue;
-          const parts: Array<{ part: 'text' | 'input' | 'output'; text: string; role: HistoryNavRow['role'] }> = [];
-          if (frame.kind === 'text' && frame.role === 'assistant') {
-            parts.push({ part: 'text', text: frame.text, role: 'assistant' });
+          const parts: Array<{ part: 'text' | 'input' | 'output'; text: string;
+            role: HistoryNavRow['role']; selector?: string }> = [];
+          if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined) {
+            parts.push({ part: 'text', text: frame.text, role: 'assistant', selector: frame.selector });
           } else if (frame.kind === 'tool') {
-            if (frame.input !== undefined) parts.push({ part: 'input', text: JSON.stringify(frame.input), role: 'tool' });
-            if (frame.output !== undefined) parts.push({ part: 'output', text: outputText(frame.output), role: 'tool' });
+            if (frame.input !== undefined) parts.push({ part: 'input', text: JSON.stringify(frame.input),
+              role: 'tool', selector: frame.selector });
+            if (frame.output !== undefined) parts.push({ part: 'output', text: outputText(frame.output),
+              role: 'tool', selector: frame.selector });
           }
           for (const part of parts) {
             const id = `${frame.frameId}:${part.part}`;
             if (id.length > 256) continue;
-            const row: HistoryNavRow = { ...anchorBase, workspace: input.workspace, session: input.session,
+            const row: HistoryNavRow = { workspace: input.workspace, session: input.session,
               agent: input.agent, kind: 'frame', turn, step, frame: id, part: part.part, role: part.role,
               position: nextPosition(), toolName: frame.kind === 'tool' ? frame.name : undefined,
-              time: record.recordTime, excerpt: part.text.slice(0, 120), length: part.text.length,
-              contentHash: digest(part.text), anchor: { ...anchorBase, kind: 'frame', turn, step, frame: id },
+              time: record.recordTime, excerpt: detachedExcerpt(part.text), length: part.text.length,
+              contentHash: digest(part.text), selector: part.selector,
+              anchor: { ...anchorBase, kind: 'frame', turn, step, frame: id },
               active: true };
             const rowId = rowKey(row);
             const old = await load(rowId);
@@ -338,18 +361,43 @@ export class HistoryLocatorStore {
               const firstAnswer = frame.kind === 'text' && parent.answerExcerpt === undefined;
               if (countTool || firstAnswer) touched.set(parentKey, { ...parent,
                 toolCount: (parent.toolCount ?? 0) + (countTool ? 1 : 0),
-                answerExcerpt: firstAnswer ? part.text.slice(0, 120) : parent.answerExcerpt });
+                answerExcerpt: firstAnswer ? detachedExcerpt(part.text) : parent.answerExcerpt });
             }
             if (part.part !== 'input') addHit(row, part.text);
           }
-        } else if (operation.op === 'items.remove') {
-          for (const id of operation.ids) {
-            const turn = scanner.turns.get(id);
-            if (turn === undefined) continue;
-            const key = rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
-              kind: 'turn', turn });
-            const old = await load(key);
-            if (old !== undefined) touched.set(key, { ...old, active: false });
+        } else if (operation.op === 'visibility.reset') {
+          const removed = new Set(operation.turns);
+          if (operation.retain !== undefined) removed.add(operation.retain.turn);
+          for (const turn of removed) {
+            let position = -1;
+            for (;;) {
+              const page = await this.store.pageByColumn<HistoryNavRow>(HISTORY_NAV_COLLECTION, {
+                column: 'position', dir: 'asc',
+                filter: { workspace: input.workspace, session: input.session, agent: input.agent, turn },
+                bounds: { gt: position }, limit: 128,
+              });
+              if (page.items.length === 0) break;
+              for (const row of page.items) {
+                if (row.position === undefined) continue;
+                const retain = operation.retain?.turn === turn;
+                if (retain && (row.kind === 'turn' || row.position < operation.retain.beforeOrdinal * 1024)) continue;
+                touched.set(rowKey(row), { ...row, active: false });
+              }
+              position = page.items.at(-1)?.position ?? position;
+              if (page.items.length < 128) break;
+            }
+            for (const [key, row] of touched) {
+              if (row.turn !== turn) continue;
+              if (operation.retain?.turn === turn && (row.kind === 'turn' ||
+                  (row.position ?? -1) < operation.retain.beforeOrdinal * 1024)) continue;
+              touched.set(key, { ...row, active: false });
+            }
+            if (operation.retain?.turn !== turn) {
+              const parentKey = rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
+                kind: 'turn', turn });
+              const old = await load(parentKey);
+              if (old !== undefined) touched.set(parentKey, { ...old, active: false });
+            }
           }
         }
       }
@@ -367,7 +415,12 @@ export class HistoryLocatorStore {
     for (const hit of hits) {
       const parent = touched.get(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
         kind: 'turn', turn: hit.turn! }));
-      if (parent?.active === false) continue;
+      if (parent?.active === false || hit.ref === undefined) continue;
+      const anchor = decodeHistoryRef(hit.ref);
+      const row = await load(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
+        kind: anchor.kind, turn: anchor.turn, step: anchor.step, frame: anchor.frame,
+        part: anchor.frame?.split(':').at(-1) as HistoryNavRow['part'] }));
+      if (row?.active !== true || row.anchor.digest !== anchor.digest) continue;
       activeHits.push(hit);
     }
     const throughWatermark = input.search?.asOf !== undefined && read.nextByteOffset >= input.search.asOf;
@@ -523,7 +576,6 @@ export class HistoryLocatorStore {
 
   async read(ref: string): Promise<{ status: 'ok'; row: HistoryNavRow; text?: string } |
     { status: 'stale_ref' | 'source_missing' }> {
-    const { decodeHistoryRef } = await import('./historySource');
     const anchor = decodeHistoryRef(ref);
     const location = await this.transcript.historyWireLocation(anchor.session, anchor.agent);
     if (location === undefined) return { status: 'source_missing' };
@@ -534,7 +586,8 @@ export class HistoryLocatorStore {
       anchor.kind, anchor.turn, anchor.step, anchor.frame, anchor.frame?.split(':').at(-1) as HistoryNavRow['part']);
     const turn = await this.row(anchor.workspace, anchor.session, anchor.agent, 'turn', anchor.turn);
     if (row === undefined || !row.active || turn?.active === false ||
-        row.anchor.start !== anchor.start || row.anchor.digest !== anchor.digest) return { status: 'stale_ref' };
+        row.anchor.start !== anchor.start || row.anchor.digest !== anchor.digest ||
+        row.selector !== anchor.selector) return { status: 'stale_ref' };
     if (row.part === undefined) return { status: 'ok', row };
     const handle = await open(location.wirePath, 'r');
     try {
@@ -542,13 +595,13 @@ export class HistoryLocatorStore {
       const read = await handle.read(bytes, 0, bytes.length, anchor.start);
       if (read.bytesRead !== bytes.length) return { status: 'stale_ref' };
       const record = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
-      const text = originalText(record, row.part);
+      const text = originalText(record, row.part, row.selector);
       if (text === undefined || digest(text) !== row.contentHash) return { status: 'stale_ref' };
       return { status: 'ok', row, text };
     } finally { await handle.close(); }
   }
 
   ref(row: HistoryNavRow, focus?: number): string {
-    return encodeHistoryRef({ ...row.anchor, focus });
+    return encodeHistoryRef({ ...row.anchor, selector: row.selector, focus });
   }
 }

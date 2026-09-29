@@ -56,6 +56,7 @@ type BenchResult = {
   needleFound?: boolean;
   outputChars?: number;
   segments?: number;
+  retainedBodyChars?: number;
   error?: string;
 };
 
@@ -390,7 +391,7 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
       peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
       rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
-      complete: true, matches, segments };
+      complete: true, matches, segments, retainedBodyChars: nav.retainedBodyChars };
   } catch (error) {
     const afterReadRssBytes = sampleRss();
     const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
@@ -399,7 +400,7 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
       peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
       rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
-      matches, segments, error: String(error) };
+      matches, segments, retainedBodyChars: nav.retainedBodyChars, error: String(error) };
   } finally { clearInterval(sampler); }
 }
 

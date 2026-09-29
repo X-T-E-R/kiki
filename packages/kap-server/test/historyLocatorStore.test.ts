@@ -10,6 +10,7 @@ import type { IAgentScopeContext } from '@kiki/agent-core-v2/agent/scopeContext/
 import type { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import type { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
 
+import { TranscriptWireAdapter } from '@kiki/transcript';
 import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -235,6 +236,159 @@ describe('history navigation source rows', () => {
       }, time: 1011 }));
       await nav.scan('s', 'main');
       expect(await run({ cursor: beforeRevision.next_cursor })).toMatchObject({ error: { code: 'stale_ref' } });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('reads separate tool input/result spans after a slice and matches canonical tool identity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-tool-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    try {
+      const longInput = 'I'.repeat(16_000);
+      const longOutput = `late-result ${'O'.repeat(16_000)}`;
+      const call = { type: 'context.append_loop_event', time: 3,
+        event: { type: 'tool.call', turnId: 4, stepUuid: 's4', toolCallId: 'tool-4', name: 'Read', args: { path: longInput } } };
+      const result = { type: 'context.append_loop_event', time: 6,
+        event: { type: 'tool.result', toolCallId: 'tool-4', result: { output: longOutput } } };
+      const records = [
+        { type: 'turn.prompt', turnId: 4, promptId: 'p4', input: [{ type: 'text', text: 'prompt' }],
+          origin: { kind: 'user' }, time: 1 },
+        { type: 'context.append_loop_event', time: 2, event: { type: 'step.begin', turnId: 4, step: 1, uuid: 's4' } },
+        call,
+        { type: 'context.append_loop_event', time: 4, event: { type: 'step.end', turnId: 4, step: 1, uuid: 's4' } },
+        { type: 'turn.ended', turnId: 4, reason: 'completed', time: 5 },
+        result,
+      ];
+      await writeFile(wirePath, records.slice(0, 5).map(line).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      expect((await nav.scan('s', 'main'))?.recordsRead).toBe(5);
+      await appendFile(wirePath, line(result));
+      expect((await nav.scan('s', 'main'))?.recordsRead).toBe(1);
+      const input = await nav.row('ws', 's', 'main', 'frame', 4, 't4.1', 's4.tool-4:input', 'input');
+      const output = await nav.row('ws', 's', 'main', 'frame', 4, 't4.1', 's4.tool-4:output', 'output');
+      expect(input?.selector).toBe('event.args');
+      expect(output?.selector).toBe('event.result.output');
+      expect(input?.anchor.start).toBeLessThan(output!.anchor.start);
+      expect(await nav.read(nav.ref(input!))).toMatchObject({ status: 'ok', text: JSON.stringify({ path: longInput }) });
+      expect(await nav.read(nav.ref(output!))).toMatchObject({ status: 'ok', text: longOutput });
+      const canonical = new TranscriptWireAdapter('main');
+      const projected = records.flatMap((record) => canonical.add(record).flatMap((fact) => fact.operations));
+      const tool = projected.findLast((operation) => operation.op === 'frame.upsert');
+      expect(tool).toMatchObject({ turnId: 't4', stepId: 's4', frame: {
+        frameId: 's4.tool-4', name: 'Read', input: { path: longInput }, output: longOutput } });
+      await appendFile(wirePath, line({ type: 'context.clear', time: 7 }));
+      await nav.scan('s', 'main');
+      expect((await nav.read(nav.ref(input!))).status).toBe('stale_ref');
+      expect((await nav.read(nav.ref(output!))).status).toBe('stale_ref');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('materializes a managed prompt from its own delivery and preserves earlier frames across delivery undo', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-undo-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    try {
+      const records = [
+        { type: 'turn.prompt', turnId: 0, promptId: 'p0', managed: true, origin: { kind: 'user' },
+          input: [], time: 1 },
+        { type: 'context.append_message', time: 2, message: { role: 'user', id: 'p0', origin: { kind: 'user',
+          skillActivations: [{ activationId: 'skill-1', skillName: 'Show' }] },
+          content: [{ type: 'text', text: 'skill marker' }, { type: 'text', text: 'delivered prompt' }] },
+          delivery: { turnId: 0, messageId: 'p0' } },
+        { type: 'context.append_loop_event', time: 3, event: { type: 'step.begin', turnId: 0, step: 1, uuid: 's0' } },
+        { type: 'context.append_loop_event', time: 4, event: { type: 'content.part', turnId: 0, stepUuid: 's0',
+          uuid: 'before', part: { type: 'text', text: 'before delivery' } } },
+        { type: 'context.append_message', time: 5, message: { role: 'user', id: 'd1', origin: { kind: 'user' },
+          content: [{ type: 'text', text: 'steer' }] }, delivery: { turnId: 0, stepId: 's0', step: 1 } },
+        { type: 'context.append_loop_event', time: 6, event: { type: 'content.part', turnId: 0, stepUuid: 's0',
+          uuid: 'after', part: { type: 'text', text: 'after delivery' } } },
+      ];
+      await writeFile(wirePath, records.map(line).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      await nav.scan('s', 'main');
+      const turn = await nav.row('ws', 's', 'main', 'turn', 0);
+      const before = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'before:text', 'text');
+      const after = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'after:text', 'text');
+      expect(turn?.selector).toBe('message.content');
+      expect(await nav.read(nav.ref(turn!))).toMatchObject({ status: 'ok', text: 'delivered prompt' });
+      expect((await nav.read(nav.ref(after!))).status).toBe('ok');
+      const canonical = new TranscriptWireAdapter('main');
+      for (const record of records) canonical.add(record);
+      const undo = { type: 'context.undo', count: 1, time: 7 };
+      const effects = canonical.add(undo).flatMap((fact) => fact.operations);
+      expect(effects).toEqual(expect.arrayContaining([expect.objectContaining({ op: 'turn.upsert', turn: expect.objectContaining({
+        prompt: 'delivered prompt' }) })]));
+      await appendFile(wirePath, line(undo));
+      await nav.scan('s', 'main');
+      expect((await nav.read(nav.ref(turn!))).status).toBe('ok');
+      expect((await nav.read(nav.ref(before!))).status).toBe('ok');
+      expect((await nav.read(nav.ref(after!))).status).toBe('stale_ref');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('projects legacy assistant parts and tool messages while skipping hidden legacy origins', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-legacy-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    try {
+      const records = [
+        { type: 'context.append_message', time: 1, message: { role: 'user', id: 'u0',
+          origin: { kind: 'user' }, content: [{ type: 'text', text: 'legacy prompt' }] } },
+        { type: 'context.append_message', time: 2, message: { role: 'assistant', id: 'a0',
+          content: [{ type: 'text', text: 'legacy answer' }, { type: 'think', think: 'private' }],
+          toolCalls: [{ id: 'c0', name: 'Read', arguments: '{"path":"legacy.txt"}' }] } },
+        { type: 'context.append_message', time: 3, message: { role: 'tool', toolCallId: 'c0',
+          content: [{ type: 'text', text: 'legacy result' }] } },
+        { type: 'context.append_message', time: 4, message: { role: 'user', id: 'hidden',
+          origin: { kind: 'retry' }, content: [{ type: 'text', text: 'not a turn' }] } },
+        { type: 'context.append_message', time: 5, message: { role: 'user', id: 'u2',
+          origin: { kind: 'user' }, content: [{ type: 'text', text: 'next prompt' }] } },
+      ];
+      await writeFile(wirePath, records.map(line).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      await nav.scan('s', 'main');
+      const canonical = new TranscriptWireAdapter('main');
+      const operations = records.flatMap((record) => canonical.add(record).flatMap((fact) => fact.operations));
+      expect(operations.filter((op) => op.op === 'turn.upsert').map((op) => op.turn.turnId))
+        .toEqual(['t0', 't0', 't2']);
+      const prompt = await nav.row('ws', 's', 'main', 'turn', 0);
+      const answer = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'legacy:v1:r1:part0:text', 'text');
+      const input = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'legacy:v1:r1:step.c0:input', 'input');
+      const output = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'legacy:v1:r1:step.c0:output', 'output');
+      expect(await nav.read(nav.ref(prompt!))).toMatchObject({ status: 'ok', text: 'legacy prompt' });
+      expect(await nav.read(nav.ref(answer!))).toMatchObject({ status: 'ok', text: 'legacy answer' });
+      expect(await nav.read(nav.ref(input!))).toMatchObject({ status: 'ok', text: '{"path":"legacy.txt"}' });
+      expect(await nav.read(nav.ref(output!))).toMatchObject({ status: 'ok', text: 'legacy result' });
+      expect(await nav.row('ws', 's', 'main', 'turn', 1)).toBeUndefined();
+      expect(await nav.read(nav.ref((await nav.row('ws', 's', 'main', 'turn', 2))!)))
+        .toMatchObject({ status: 'ok', text: 'next prompt' });
+      expect(nav.retainedBodyChars).toBe(0);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('does not turn a paired steer echo into a delivery or a new legacy turn', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-steer-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    try {
+      const records = [
+        { type: 'context.append_message', time: 1, message: { role: 'user', id: 'u0',
+          origin: { kind: 'user' }, content: [{ type: 'text', text: 'initial' }] } },
+        { type: 'turn.steer', time: 2, turnId: 0, promptId: 'steer-1', origin: { kind: 'user' },
+          input: [{ type: 'text', text: 'steered body' }] },
+        { type: 'context.append_message', time: 3, message: { role: 'user', id: 'steer-1',
+          origin: { kind: 'user' }, content: [{ type: 'text', text: 'steered body' }] } },
+        { type: 'context.append_message', time: 4, message: { role: 'user', id: 'u1',
+          origin: { kind: 'user' }, content: [{ type: 'text', text: 'next' }] } },
+      ];
+      await writeFile(wirePath, records.map(line).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      await nav.scan('s', 'main');
+      const canonical = new TranscriptWireAdapter('main');
+      const ops = records.flatMap((record) => canonical.add(record).flatMap((fact) => fact.operations));
+      expect(ops.filter((op) => op.op === 'turn.upsert').map((op) => op.turn.turnId)).toEqual(['t0', 't1']);
+      expect(await nav.row('ws', 's', 'main', 'turn', 2)).toBeUndefined();
+      expect((await nav.row('ws', 's', 'main', 'turn', 1))?.excerpt).toBe('next');
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
@@ -2090,49 +2091,6 @@ function factId(record: TranscriptWireRecord, ordinal: number): string {
     : `wire:v2:${record.type}:t${record.time}:h${hashText(JSON.stringify(record))}`;
 }
 
-interface BundledSkillActivation {
-  readonly activationId: string;
-  readonly skillName: string;
-  readonly skillArgs?: string;
-  readonly skillType?: string;
-  readonly skillPath?: string;
-  readonly skillSource?: string;
-}
-
-function bundledSkillActivations(value: unknown): readonly BundledSkillActivation[] {
-  const origin = objectOf(value);
-  if (stringOf(origin?.['kind']) !== 'user') return [];
-  const activations = arrayOf(origin?.['skillActivations']);
-  return activations.flatMap((value) => {
-    const activation = objectOf(value);
-    const activationId = stringOf(activation?.['activationId']);
-    const skillName = stringOf(activation?.['skillName']);
-    if (activationId === undefined || skillName === undefined) return [];
-    return [
-      {
-        activationId,
-        skillName,
-        skillArgs: stringOf(activation?.['skillArgs']),
-        skillType: stringOf(activation?.['skillType']),
-        skillPath: stringOf(activation?.['skillPath']),
-        skillSource: stringOf(activation?.['skillSource']),
-      },
-    ];
-  });
-}
-
-function isUndoAnchorOrigin(value: unknown): boolean {
-  const origin = objectOf(value);
-  const kind = stringOf(origin?.['kind']);
-  if (kind === undefined || kind === 'user' || kind === 'peer_thread' || kind === 'agent_message') {
-    return true;
-  }
-  return (
-    (kind === 'skill_activation' || kind === 'plugin_command') &&
-    stringOf(origin?.['trigger']) === 'user-slash'
-  );
-}
-
 function hashText(value: string): string {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -2197,22 +2155,6 @@ function taskNotificationIdOfMessage(
 
 function legacyOriginKind(origin: unknown): string {
   return stringOf(objectOf(origin)?.['kind']) ?? 'user';
-}
-
-function isVisibleLegacyTurnOrigin(
-  agentId: string,
-  origin: Readonly<Record<string, unknown>> | undefined,
-): boolean {
-  const kind = stringOf(origin?.['kind']);
-  if (kind === 'system_trigger') {
-    const name = stringOf(origin?.['name']);
-    if (name === 'goal_continuation') return true;
-    return name === 'subagent' && agentId !== 'main';
-  }
-  if (kind === 'skill_activation' || kind === 'plugin_command') {
-    return stringOf(origin?.['trigger']) === 'user-slash';
-  }
-  return kind !== 'injection' && kind !== 'retry' && kind !== 'compaction_summary';
 }
 
 function mapOrigin(value: unknown): TurnOrigin {
