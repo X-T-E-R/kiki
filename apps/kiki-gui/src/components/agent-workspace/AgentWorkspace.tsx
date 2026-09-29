@@ -31,6 +31,7 @@ import {
   type SessionController,
   type SessionViewState,
   type SubagentBlock,
+  type TranscriptDetailKind,
 } from '@kiki/session-core/session';
 import { resolveCatalogModel } from '@kiki/session-core/settings';
 
@@ -53,6 +54,7 @@ import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
+import { TranscriptDetailProvider } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 
 /** Inspector toggle mark, drawn from the shared icon family at header size. */
@@ -138,10 +140,11 @@ export interface AgentWorkspaceProps {
 /** All targets share these actual chrome slots and timeline geometry. The main
  * input seat stays owned by ConversationShell, not by this portal. */
 function WorkspaceSurface({
-  target, slots, header, timeline, dock, rail, railIsOverlay, railOpen, onCloseRail,
+  target, controller, slots, header, timeline, dock, rail, railIsOverlay, railOpen, onCloseRail,
   timelineRef, timelineOverlay,
 }: {
   target: AgentWorkspaceTarget;
+  controller: SessionController | null;
   slots: ConversationShellSlots;
   header: ReactNode;
   timeline: ComponentProps<typeof Transcript>;
@@ -154,8 +157,13 @@ function WorkspaceSurface({
   timelineOverlay?: ReactNode;
 }) {
   const { t } = useI18n();
+  const loadDetail = useCallback(
+    (agentId: string, kind: TranscriptDetailKind, id: string) =>
+      controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false),
+    [controller],
+  );
   return (
-    <>
+    <TranscriptDetailProvider load={loadDetail} loads={timeline.state.detailLoads}>
       {slots.header !== null ? createPortal(header, slots.header) : null}
       <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
         {/* One list instance per agent. Child row ids are turn-scoped
@@ -172,7 +180,7 @@ function WorkspaceSurface({
           className="app-overlay-backdrop lg:hidden" onClick={onCloseRail}
           onKeyDown={(event) => { if (event.key === 'Escape') onCloseRail(); }} />
       ) : null}
-    </>
+    </TranscriptDetailProvider>
   );
 }
 
@@ -314,6 +322,7 @@ export function AgentWorkspace(props: AgentWorkspaceProps) {
     return (
       <WorkspaceSurface
         target={props.target}
+        controller={props.controller}
         slots={props.slots ?? ambientSlots ?? EMPTY_SLOTS}
         header={main.header}
         timeline={main.timeline}
@@ -693,6 +702,7 @@ function ChildAgentWorkspace({
   const chrome = (
     <WorkspaceSurface
       target={target}
+      controller={controller}
       slots={slots}
       header={<AgentWorkspaceHeader
         target={target} name={displayName} model={displayModel} effort={displayEffort}

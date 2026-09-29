@@ -129,6 +129,11 @@ export class HttpChannel implements KlientChannel {
     transcriptCatchUp: (sessionId, input) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
       agent_id: input.agentId, epoch: input.since.epoch, since_seq: input.since.seq, grade: input.grade ?? 'delta',
     }),
+    transcriptDetail: (sessionId, input, options) => this.viewRequest(
+      `/api/sessions/${encodeURIComponent(sessionId)}/transcript/detail`,
+      { agent_id: input.agentId, kind: input.kind, id: input.id },
+      { signal: options?.signal, timeoutMs: options?.timeoutMs },
+    ),
     subscribe: (sessionId, input, handler) => {
       if (this.closed) throw new Error('http closed');
       return this.socket.sessionViews.subscribe(sessionId, input, handler);

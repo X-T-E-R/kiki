@@ -45,6 +45,7 @@ import { previewThumbnail } from './imageThumbnail';
 import { MediaLightbox } from './MediaLightbox';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
+import { useTranscriptDetail } from './transcriptDetail';
 import {
   MediaPreviewContext,
   useMediaPreview,
@@ -751,9 +752,68 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
+/**
+ * An attachment whose source the transcript window left out (too large, or an
+ * inline data URL). It costs nothing until the reader opens it; the loaded
+ * entity then re-projects as an ordinary thumbnail in the same place.
+ */
+function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
+  const { t } = useI18n();
+  const detail = useTranscriptDetail({ agentId: item.detail.agentId, kind: 'attachment', id: item.detail.attachmentId });
+  const name = item.name ?? t('media.attachment');
+  if (detail.request === undefined) return <FileChip item={item} />;
+  const status = detail.status?.status;
+  const label = status === 'loading'
+    ? t('media.detail.loading', { name })
+    : status === 'error'
+      ? t('media.detail.failed', { name })
+      : t('media.detail.open', { name });
+  const meta = item.size !== undefined ? formatBytes(item.size) : item.mime;
+  if (size === 'strip') {
+    return (
+      <button
+        type="button"
+        data-media-deferred={status ?? 'idle'}
+        onClick={detail.request}
+        disabled={status === 'loading'}
+        aria-label={label}
+        title={label}
+        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+      >
+        <Icon name="file" size={12} />
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-media-deferred={status ?? 'idle'}
+      onClick={detail.request}
+      disabled={status === 'loading'}
+      aria-busy={status === 'loading'}
+      aria-label={label}
+      title={label}
+      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2.5 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default motion-reduce:transition-none`}
+    >
+      <span className="flex w-full min-w-0 items-center gap-1.5 text-ink-faint">
+        <Icon name="file" size={14} />
+        {meta !== undefined && meta !== '' ? <span className="truncate font-mono text-[11px]">{meta}</span> : null}
+      </span>
+      <span className="w-full min-w-0">
+        <span className="block truncate font-mono text-[12px] text-ink" title={name}>{name}</span>
+        <span className={`mt-0.5 flex items-center gap-1.5 text-[12px] font-medium ${status === 'error' ? 'text-danger' : 'text-accent-ink'}`}>
+          {status === 'loading' ? <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" /> : null}
+          {status === 'loading' ? t('preview.loading') : status === 'error' ? t('transcript.detail.retry') : t('media.detail.action')}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef; agentId?: string; size?: MediaThumbSize }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
+  if (item.detail !== undefined) return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
   if (item.blobHash !== undefined) {
     const savedItem = {
       ...item,

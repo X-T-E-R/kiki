@@ -15,7 +15,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@kiki/protocol';
-import type { TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
+import type { TranscriptGlobalCoverage, TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
 
 import type { I18nKey, I18nParams } from '../../i18n/locale';
 import type { MediaRef } from '../../composer/media';
@@ -179,6 +179,11 @@ export interface ShellBlock {
   readonly commandId: string;
   readonly command: string | undefined;
   readonly output: string;
+  /**
+   * Set when `output` is only the tail of a longer task output; the full
+   * body is read on demand through the transcript detail route.
+   */
+  readonly outputDetail?: { readonly agentId: string; readonly taskId: string };
   readonly done: boolean;
   readonly isError: boolean | undefined;
   readonly startedAt?: number;
@@ -400,6 +405,19 @@ export interface TurnRetryInfo {
   readonly statusCode?: number;
 }
 
+/** Kind of a windowed global entity whose full body is read on demand. */
+export type TranscriptDetailKind = 'task' | 'attachment' | 'prompt';
+
+/** Load state of one on-demand detail read (absent = not requested). */
+export type TranscriptDetailStatus =
+  | { readonly status: 'loading' }
+  | { readonly status: 'error'; readonly message: string };
+
+/** `${kind}:${id}` — the key of {@link SessionViewState.detailLoads}. */
+export function transcriptDetailKey(kind: TranscriptDetailKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
 export interface SessionViewState {
   readonly version: number;
   readonly transcriptResetVersion: number;
@@ -451,6 +469,13 @@ export interface SessionViewState {
    * open. Never used to invent cards that are not on the current page.
    */
   readonly snapshotSubagents: readonly SnapshotSubagent[];
+  /**
+   * How much of each global collection the last windowed reset carried.
+   * Undefined for servers that send the full collections.
+   */
+  readonly globalCoverage: TranscriptGlobalCoverage | undefined;
+  /** On-demand detail reads in flight or failed, keyed by {@link transcriptDetailKey}. */
+  readonly detailLoads: Readonly<Record<string, TranscriptDetailStatus>>;
   readonly resyncing: boolean;
   readonly resyncFailed: boolean;
   readonly resyncAttempt: number;
@@ -515,6 +540,8 @@ export function createViewState(sessionId: string): SessionViewState {
     todoNotesMeta: undefined,
     tasks: [],
     snapshotSubagents: [],
+    globalCoverage: undefined,
+    detailLoads: {},
     resyncing: false,
     resyncFailed: false,
     resyncAttempt: 0,

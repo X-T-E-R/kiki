@@ -330,6 +330,10 @@ function mediaFromAttachmentIds(
     // `image/*` is the adapter's placeholder, not a real type.
     const mime = attachment.mediaType.endsWith('/*') ? undefined : attachment.mediaType;
     const extra = { name: attachment.name, mime, size: attachment.size };
+    if (source === undefined && attachment.detailRef !== undefined && agentId !== undefined) {
+      media.push({ kind, ...extra, detail: { agentId, attachmentId: attachment.attachmentId } });
+      continue;
+    }
     if (source?.kind === 'url' && kind !== 'file') {
       // Earlier user messages come back from history as `blobref:` / `kimi-file:`
       // urls; resolve them to session media instead of a dead <img src>.
@@ -2162,6 +2166,7 @@ export function agentTranscriptToBlocks(
           commandId: task.taskId,
           command: undefined,
           output: task.outputTail,
+          outputDetail: task.detailRef === undefined ? undefined : { agentId: response.agent_id, taskId: task.taskId },
           done: task.state !== 'running',
           isError:
             task.state === 'failed' ||
@@ -2341,16 +2346,17 @@ export function agentTranscriptToBlocks(
                   : shellObjectOutput(frame.output, frame.state === 'error') ??
                     describeError(frame.error) ??
                     '';
-              const output =
-                shellTask?.outputTail === '' || shellTask?.outputTail === undefined
-                  ? frameOutput
-                  : shellTask.outputTail;
+              const fromTask = shellTask?.outputTail !== '' && shellTask?.outputTail !== undefined;
+              const output = fromTask ? shellTask.outputTail : frameOutput;
               blocks.push({
                 kind: 'shell',
                 id: `shell-${frame.toolCallId}`,
                 commandId: frame.toolCallId,
                 command,
                 output,
+                outputDetail: fromTask && shellTask.detailRef !== undefined
+                  ? { agentId: response.agent_id, taskId: shellTask.taskId }
+                  : undefined,
                 done: shellTask === undefined ? frame.state !== 'running' : shellTask.state !== 'running',
                 isError:
                   shellTask === undefined

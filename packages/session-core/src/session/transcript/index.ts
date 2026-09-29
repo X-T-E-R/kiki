@@ -1,5 +1,8 @@
 export {
   createViewState,
+  transcriptDetailKey,
+  type TranscriptDetailKind,
+  type TranscriptDetailStatus,
   type ApprovalBlock,
   type ApprovalResolution,
   type ApprovalReviewer,

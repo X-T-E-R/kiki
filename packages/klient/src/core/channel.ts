@@ -12,6 +12,7 @@ import type {
   SessionViewSignal,
   SessionViewSubscribeInput,
   SessionViewTranscriptCatchUpInput,
+  SessionViewTranscriptDetailInput,
   SessionViewTranscriptPageInput,
 } from '../contract/session/view.js';
 
@@ -32,6 +33,8 @@ export interface SessionViewChannel {
   snapshot(sessionId: string, options?: CallOptions): Promise<unknown>;
   transcriptPage(sessionId: string, input: SessionViewTranscriptPageInput): Promise<unknown>;
   transcriptCatchUp(sessionId: string, input: SessionViewTranscriptCatchUpInput): Promise<unknown>;
+  /** Optional: transports without the detail route leave it out. */
+  transcriptDetail?(sessionId: string, input: SessionViewTranscriptDetailInput, options?: CallOptions): Promise<unknown>;
   subscribe(
     sessionId: string,
     input: SessionViewSubscribeInput,

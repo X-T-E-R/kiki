@@ -250,6 +250,27 @@ const TasksSection = memo(function TasksSection({
   );
 });
 
+/**
+ * The windowed reset carried only the newest finished tasks (running ones are
+ * always included, so the list above is complete). Say how many earlier ones
+ * the session holds; the tasks page behind "View all" lists every one.
+ */
+function TasksNotLoadedHint({
+  coverage,
+}: {
+  coverage: { readonly returned: number; readonly total: number; readonly hasMore: boolean } | undefined;
+}) {
+  const { tp } = useI18n();
+  if (coverage === undefined || !coverage.hasMore) return null;
+  const missing = Math.max(0, coverage.total - coverage.returned);
+  if (missing === 0) return null;
+  return (
+    <p data-rail-tasks-not-loaded={missing} className="pt-1.5 text-[12px] text-ink-faint">
+      {tp('rail.tasksNotLoaded', missing)}
+    </p>
+  );
+}
+
 /** Mounts its children only once the slot scrolls into the rail's view. */
 function useLazyPanelSlot() {
   const slotRef = useRef<HTMLDivElement>(null);
@@ -602,6 +623,7 @@ export function DefaultRail({
             onCancel={onCancelTask}
             onOpenTask={setDetailTask}
           />
+          <TasksNotLoadedHint coverage={state.globalCoverage?.tasks} />
         </RailSection>
         </div>
       ) : null}

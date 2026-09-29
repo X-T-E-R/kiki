@@ -153,6 +153,7 @@ import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentTool
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
+import { useTranscriptDetail } from './transcriptDetail';
 
 /**
  * Split streaming assistant text into a settled prefix (safe to parse as
@@ -684,7 +685,7 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
   );
 });
 
-const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
+export const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   // Collapsed by default — running and finished alike (the full log was
   // eating the timeline). The header keeps the status and the command, while
@@ -743,7 +744,8 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
               {block.command}
             </div>
           ) : null}
-          <pre className={`max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink${block.command === undefined ? '' : ' border-t border-shell-hairline'}`}>
+          <ShellOutputDetail block={block} />
+          <pre className={`max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink${block.command === undefined && block.outputDetail === undefined ? '' : ' border-t border-shell-hairline'}`}>
             {block.output === '' ? '…' : block.output}
           </pre>
         </div>
@@ -751,6 +753,46 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
     </ActivityRow>
   );
 });
+
+/**
+ * The window carried only the tail of this task's output: say so where the
+ * missing lines would be (above the tail), and read the rest on request.
+ */
+function ShellOutputDetail({ block }: { block: ShellBlock }) {
+  const { t } = useI18n();
+  const detail = useTranscriptDetail(
+    block.outputDetail === undefined
+      ? undefined
+      : { agentId: block.outputDetail.agentId, kind: 'task', id: block.outputDetail.taskId },
+  );
+  if (block.outputDetail === undefined || detail.request === undefined) return null;
+  const status = detail.status?.status;
+  return (
+    <div
+      data-shell-output-detail={status ?? 'idle'}
+      className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-[12px] leading-5${block.command === undefined ? '' : ' border-t border-shell-hairline'}`}
+    >
+      <span role={status === 'error' ? 'alert' : undefined} className={status === 'error' ? 'text-shell-danger' : 'text-shell-ink'}>
+        {status === 'error' ? t('transcript.detail.failed') : t('transcript.detail.tailOnly')}
+      </span>
+      <button
+        type="button"
+        data-shell-output-detail-action
+        onClick={detail.request}
+        disabled={status === 'loading'}
+        aria-busy={status === 'loading'}
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-shell-hairline px-2 font-medium text-shell-ink-strong transition-colors hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
+      >
+        {status === 'loading' ? (
+          <>
+            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-shell-ink" />
+            {t('transcript.detail.loading')}
+          </>
+        ) : status === 'error' ? t('transcript.detail.retry') : t('transcript.detail.showAll')}
+      </button>
+    </div>
+  );
+}
 
 /**
  * Parse an ISO timeline timestamp that may be absent (undefined / the

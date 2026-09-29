@@ -4,6 +4,8 @@ export type {
   SessionViewSubscribeInput,
   SessionViewSubscription,
   SessionViewTranscriptCatchUpInput,
+  SessionViewTranscriptDetail,
+  SessionViewTranscriptDetailInput,
   SessionViewTranscriptFacade,
   SessionViewTranscriptPageInput,
 } from './core/facade/session-view.js';

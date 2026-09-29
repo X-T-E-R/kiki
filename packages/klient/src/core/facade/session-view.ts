@@ -13,11 +13,15 @@ import {
   sessionViewSubscribeInputSchema,
   sessionViewTranscriptCatchUpInputSchema,
   sessionViewTranscriptCatchUpOutputSchema,
+  sessionViewTranscriptDetailInputSchema,
+  sessionViewTranscriptDetailOutputSchema,
   sessionViewTranscriptPageInputSchema,
   sessionViewTranscriptPageOutputSchema,
   type SessionViewSignal,
   type SessionViewSubscribeInput,
   type SessionViewTranscriptCatchUpInput,
+  type SessionViewTranscriptDetail,
+  type SessionViewTranscriptDetailInput,
   type SessionViewTranscriptPageInput,
 } from '../../contract/session/view.js';
 import type { CallOptions, SessionViewChannel } from '../channel.js';
@@ -35,6 +39,12 @@ export interface SessionViewSubscription {
 export interface SessionViewTranscriptFacade {
   page(input: SessionViewTranscriptPageInput): Promise<TranscriptResponse>;
   catchUp(input: SessionViewTranscriptCatchUpInput): Promise<TranscriptOpsCatchupResponse>;
+  /**
+   * Read the canonical body of one task, attachment, or prompt that a
+   * windowed reset summarized (`detailRef`). Absent on transports that do
+   * not serve the detail route.
+   */
+  detail?(input: SessionViewTranscriptDetailInput, options?: CallOptions): Promise<SessionViewTranscriptDetail>;
 }
 
 export interface SessionViewFacade {
@@ -95,6 +105,17 @@ export function createSessionViewFacade(
           ? parse('output', 'session.view.transcript.catchUp', sessionViewTranscriptCatchUpOutputSchema, output)
           : (output as TranscriptOpsCatchupResponse);
       },
+      ...(channel?.transcriptDetail === undefined ? {} : {
+        async detail(input: SessionViewTranscriptDetailInput, options?: CallOptions) {
+          const wireInput = validate
+            ? parse('input', 'session.view.transcript.detail', sessionViewTranscriptDetailInputSchema, input)
+            : input;
+          const output = await requireChannel().transcriptDetail!(sessionId, wireInput, options);
+          return validate
+            ? parse('output', 'session.view.transcript.detail', sessionViewTranscriptDetailOutputSchema, output)
+            : (output as SessionViewTranscriptDetail);
+        },
+      }),
     },
     subscribe(input, onSignal) {
       const wireInput = validate
@@ -124,5 +145,7 @@ export type {
   SessionViewSignal,
   SessionViewSubscribeInput,
   SessionViewTranscriptCatchUpInput,
+  SessionViewTranscriptDetail,
+  SessionViewTranscriptDetailInput,
   SessionViewTranscriptPageInput,
 };

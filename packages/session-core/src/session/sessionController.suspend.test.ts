@@ -35,13 +35,14 @@ interface Attachment {
   closed: boolean;
 }
 
-function harness(read = vi.fn(async () => snapshot())) {
+function harness(read = vi.fn(async () => snapshot()), detail?: SessionViewFacade['transcript']['detail']) {
   const attachments: Attachment[] = [];
   const view: SessionViewFacade = {
     snapshot: read,
     transcript: {
       page: vi.fn(),
       catchUp: vi.fn(),
+      detail,
     } as unknown as SessionViewFacade['transcript'],
     subscribe: (input, onSignal) => {
       const attachment: Attachment = { input, signal: onSignal, closed: false };

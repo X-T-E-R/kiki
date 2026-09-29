@@ -6,6 +6,7 @@ import {
 import {
   isPlainAgentId,
   transcriptCursorSchema,
+  transcriptDetailResponseSchema,
   transcriptEventSchema,
   transcriptGradeSpecSchema,
   transcriptOpsCatchupResponseSchema,
@@ -38,6 +39,17 @@ export const sessionViewTranscriptCatchUpInputSchema = z
     agentId: z.string().min(1),
     since: transcriptCursorSchema,
     grade: z.enum(['turn', 'block', 'delta']).optional(),
+  })
+  .refine((value) => isPlainAgentId(value.agentId), {
+    message: 'agentId must be a plain agent id',
+    path: ['agentId'],
+  });
+
+export const sessionViewTranscriptDetailInputSchema = z
+  .object({
+    agentId: z.string().min(1),
+    kind: z.enum(['task', 'attachment', 'prompt']),
+    id: z.string().min(1),
   })
   .refine((value) => isPlainAgentId(value.agentId), {
     message: 'agentId must be a plain agent id',
@@ -114,6 +126,7 @@ export const sessionViewSignalSchema = z.discriminatedUnion('type', [
 export const sessionViewSnapshotOutputSchema = sessionSnapshotResponseSchema;
 export const sessionViewTranscriptPageOutputSchema = transcriptResponseSchema;
 export const sessionViewTranscriptCatchUpOutputSchema = transcriptOpsCatchupResponseSchema;
+export const sessionViewTranscriptDetailOutputSchema = transcriptDetailResponseSchema;
 
 export interface SessionViewSubscribeInput {
   readonly sessionCursor: SessionCursor;
@@ -164,3 +177,6 @@ export type SessionViewSignal =
 
 export type SessionViewTranscriptPageInput = z.infer<typeof sessionViewTranscriptPageInputSchema>;
 export type SessionViewTranscriptCatchUpInput = z.infer<typeof sessionViewTranscriptCatchUpInputSchema>;
+export type SessionViewTranscriptDetailInput = z.infer<typeof sessionViewTranscriptDetailInputSchema>;
+/** One canonical global entity read by reference (task, attachment, or prompt). */
+export type SessionViewTranscriptDetail = z.infer<typeof sessionViewTranscriptDetailOutputSchema>;

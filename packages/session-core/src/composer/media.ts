@@ -30,6 +30,11 @@ export interface MediaRef {
   readonly size?: number;
   /** Canonical session-media or staged-upload id, resolved through the session. */
   readonly fileId?: string;
+  /**
+   * The transcript window omitted this attachment's source (too large or an
+   * inline data URL); read it by reference when the user opens it.
+   */
+  readonly detail?: { readonly agentId: string; readonly attachmentId: string };
 }
 
 type ContentPart = Message['content'][number];

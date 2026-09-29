@@ -28,6 +28,7 @@ import {
   type TranscriptGradeSpec,
   type TranscriptOperation,
 } from '@kiki/transcript';
+import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
 
 import {
   API_CODES,
@@ -56,7 +57,9 @@ import {
   setResyncFailed,
   setResyncing,
   setSessionRecord,
+  transcriptDetailKey,
   type SessionViewState,
+  type TranscriptDetailKind,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
@@ -216,6 +219,8 @@ export class SessionController {
   private focusedAgentId: string | undefined;
   private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
   private readonly catchupByAgent = new Map<string, Promise<void>>();
+  private readonly globalCoverage = new Map<string, AgentTranscriptSnapshot['globalCoverage']>();
+  private readonly detailReads = new Map<string, Promise<boolean>>();
   private readonly catchupReplay = new Map<
     string,
     { readonly ops: readonly TranscriptOperation[]; readonly cursor: TranscriptCursor }
@@ -1068,6 +1073,7 @@ export class SessionController {
     this.appliedTranscriptGrades.set(agentId, grade);
     this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
+    this.globalCoverage.set(agentId, snapshot.globalCoverage);
     this.publishProjectedAgent(agentId, store, {
       loadingOlder: false,
       olderError: undefined,
@@ -1078,6 +1084,86 @@ export class SessionController {
           (agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId))?.historyCoverageKind === 'unknown'
           ? 'unknown' : 'tail',
     });
+    // Queued / running prompts are actionable (edit, reorder, steer); a
+    // windowed reset that dropped their content must not hide them.
+    for (const prompt of snapshot.prompts) {
+      if (prompt.detailRef === undefined || prompt.content !== undefined) continue;
+      if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') continue;
+      void this.loadTranscriptDetail(agentId, 'prompt', prompt.promptId);
+    }
+  }
+
+  /**
+   * Read the canonical body of one windowed entity (a truncated task output,
+   * an attachment whose source was omitted, a long prompt) and fold it into
+   * the agent's store. Loading and failure states publish through
+   * `detailLoads`; a retry is just another call.
+   */
+  async loadTranscriptDetail(agentId: string, kind: TranscriptDetailKind, id: string): Promise<boolean> {
+    const read = this.view.transcript.detail;
+    const key = transcriptDetailKey(kind, id);
+    if (this.closed || read === undefined) return false;
+    const inFlight = this.detailReads.get(`${agentId}/${key}`);
+    if (inFlight !== undefined) return inFlight;
+    const run = (async (): Promise<boolean> => {
+      this.setDetailLoad(agentId, key, { status: 'loading' });
+      try {
+        const detail = await read({ agentId, kind, id });
+        if (this.closed) return false;
+        const applied = this.applyTranscriptDetail(agentId, detail);
+        this.setDetailLoad(agentId, key, undefined);
+        return applied;
+      } catch (error) {
+        if (this.closed) return false;
+        this.setDetailLoad(agentId, key, {
+          status: 'error',
+          message: errorMessage(error, 'Could not load the full content'),
+        });
+        return false;
+      }
+    })().finally(() => {
+      this.detailReads.delete(`${agentId}/${key}`);
+    });
+    this.detailReads.set(`${agentId}/${key}`, run);
+    return run;
+  }
+
+  /** Fold a detail read into the store while the entity is still the truncated one. */
+  private applyTranscriptDetail(agentId: string, detail: SessionViewTranscriptDetail): boolean {
+    const store = this.agentTranscripts.get(agentId);
+    if (store === undefined || detail.agent_id !== agentId) return false;
+    let op: TranscriptOperation | undefined;
+    if (detail.kind === 'task') {
+      const current = store.getTask(detail.task.taskId);
+      if (current?.detailRef !== undefined) op = { op: 'task.upsert', task: detail.task as typeof current };
+    } else if (detail.kind === 'attachment') {
+      const current = store.getAttachment(detail.attachment.attachmentId);
+      if (current?.detailRef !== undefined) op = { op: 'attachment.upsert', attachment: detail.attachment as typeof current };
+    } else {
+      const current = store.getPrompt(detail.prompt.promptId);
+      if (current?.detailRef !== undefined) op = { op: 'prompt.upsert', prompt: detail.prompt as typeof current };
+    }
+    // A live upsert that already replaced the summary wins over the read.
+    if (op === undefined) return false;
+    store.apply([op]);
+    this.forestDirtyAgents.add(agentId);
+    this.pendingTranscriptAgents.add(agentId);
+    this.flushFrames();
+    return true;
+  }
+
+  private setDetailLoad(
+    agentId: string,
+    key: string,
+    status: SessionViewState['detailLoads'][string] | undefined,
+  ): void {
+    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+    const previous = current.detailLoads[key];
+    if (previous === status) return;
+    const detailLoads = { ...current.detailLoads };
+    if (status === undefined) delete detailLoads[key];
+    else detailLoads[key] = status;
+    this.publishAgentView(agentId, { ...current, version: current.version + 1, detailLoads });
   }
 
   private applyTranscriptOps(
@@ -1335,12 +1421,14 @@ export class SessionController {
             olderError: options.olderError ?? next.olderError,
             historyCoverageKind: options.historyCoverageKind ?? next.historyCoverageKind,
           };
+    const globalCoverage = this.globalCoverage.get(agentId);
+    const withCoverage = projected.globalCoverage === globalCoverage ? projected : { ...projected, globalCoverage };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;
     const cursor = this.transcriptCursors.get(agentId);
     if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
-    this.publishAgentView(agentId, projected);
+    this.publishAgentView(agentId, withCoverage);
     if (forestChanged && agentId !== MAIN_AGENT_ID) {
       this.setState({ ...this.state, version: this.state.version + 1 });
     }

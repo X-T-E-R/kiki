@@ -380,6 +380,8 @@ export interface AgentTranscriptTask {
   readonly description?: string;
   readonly agentId?: string;
   readonly outputTail: string;
+  /** Present when `outputTail` is truncated; the full task is read by reference. */
+  readonly detailRef?: { readonly kind: 'task'; readonly taskId: string };
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly resultSummary?: string;
@@ -398,6 +400,8 @@ export interface AgentTranscriptAttachment {
     | { readonly kind: 'file'; readonly fileId: string }
     | { readonly kind: 'session_media'; readonly fileId: string };
   readonly placeholder?: string;
+  /** Present when `source` was omitted from the window; read it by reference. */
+  readonly detailRef?: { readonly kind: 'attachment'; readonly attachmentId: string };
 }
 
 export interface AgentTranscriptTodo {
