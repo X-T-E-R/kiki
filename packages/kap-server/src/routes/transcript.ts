@@ -3,6 +3,8 @@ import {
   isPlainAgentId,
   TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
   TRANSCRIPT_COVERAGE_VERSION,
+  transcriptDetailListQuerySchema,
+  transcriptDetailListResponseSchema,
   transcriptDetailQuerySchema,
   transcriptDetailResponseSchema,
   transcriptOpsCatchupResponseSchema,
@@ -26,8 +28,10 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import {
   readSessionViewTranscriptCatchUp,
+  readSessionViewTranscriptDetails,
   readSessionViewTranscriptDetail,
   readSessionViewTranscriptPage,
+  TranscriptDetailCursorError,
 } from '../transport/klient/sessionViewReads';
 
 interface TranscriptRouteHost {
@@ -162,6 +166,49 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     },
   );
   app.get(route.path, route.options, route.handler as Parameters<TranscriptRouteHost['get']>[2]);
+
+  const detailListRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/sessions/{session_id}/transcript/details',
+      params: sessionIdParamSchema,
+      querystring: transcriptDetailListQuerySchema,
+      success: { data: transcriptDetailListResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+      },
+      description:
+        'Paginated canonical transcript global entities. kind selects task, attachment, or prompt; cursor is an opaque keyset cursor returned as next_cursor; limit is 1..100 and defaults to 20.',
+      tags: ['transcript'],
+    },
+    async (req, reply) => {
+      const { session_id } = req.params;
+      const query = req.query;
+      let data;
+      try {
+        data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
+          readSessionViewTranscriptDetails(transcriptService, session_id, {
+            agentId: query.agent_id,
+            kind: query.kind,
+            cursor: query.cursor,
+            limit: query.limit,
+            signal,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof TranscriptDetailCursorError)) throw error;
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+        return;
+      }
+      if (data === undefined) {
+        sendSessionNotFound(reply, req.id, session_id);
+        return;
+      }
+      reply.send(okEnvelope(data, req.id));
+    },
+  );
+  app.get(detailListRoute.path, detailListRoute.options, detailListRoute.handler as Parameters<TranscriptRouteHost['get']>[2]);
 
   const detailRoute = defineRoute(
     {
