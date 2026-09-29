@@ -161,6 +161,7 @@ describe('AgentToolApprovalService', () => {
       decide: () => {},
       decideSsh: () => {},
       takeSshCredential: () => undefined,
+      clearSshCredential: () => {},
       listPending: () => [],
     });
     return requestSpy;
@@ -310,6 +311,7 @@ describe('AgentToolApprovalService', () => {
         decide: () => { throw new Error('decision failed'); },
         decideSsh: () => {},
         takeSshCredential: () => undefined,
+        clearSshCredential: () => {},
         listPending: () => [],
       });
       const events = subscribeApprovalEvents();

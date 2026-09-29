@@ -79,6 +79,10 @@ export class SessionApprovalService implements ISessionApprovalService {
     return value;
   }
 
+  clearSshCredential(id: string): void {
+    this.sshCredentials.delete(id);
+  }
+
   listPending(): readonly ApprovalRequest[] {
     return this.interaction
       .listPending('approval')

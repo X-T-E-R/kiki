@@ -12,6 +12,7 @@ import { ISshHostService, SshHostService } from '#/app/ssh/sshService';
 import { appendSshHost, discoverSshAliases, parseTransientSshTarget, resolveSshConfig, workspaceSshKey } from '#/app/ssh/sshConfig';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { SshCredentialStore, type SecretEntryFactory } from '#/persistence/backends/node-fs/sshCredentialStore';
 import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore';
 import { ISshHostDocumentStore } from '#/persistence/interface/sshHostDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -116,7 +117,7 @@ describe('SSH host store', () => {
           registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
           registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
           registry.definePartialInstance(IFlagService, { enabled: () => true });
-          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined });
+          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined, forget: async () => undefined });
           registry.define(ISshHostService, SshHostService);
         },
       });
@@ -152,7 +153,7 @@ describe('SSH host store', () => {
           registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
           registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
           registry.definePartialInstance(IFlagService, { enabled: () => true });
-          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined });
+          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined, forget: async () => undefined });
           registry.define(ISshHostService, SshHostService);
         },
       });
@@ -177,7 +178,7 @@ describe('SSH host store', () => {
           registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
           registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
           registry.definePartialInstance(IFlagService, { enabled: () => false });
-          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined });
+          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined, forget: async () => undefined });
           registry.define(ISshHostService, SshHostService);
         },
       });
@@ -185,6 +186,51 @@ describe('SSH host store', () => {
       await service.upsert({ id: 'dev', name: 'Dev', hostname: '127.0.0.1', user: 'tester' });
       expect((await service.list()).map((host) => host.id)).toEqual(['bastion', 'dev']);
       await expect(service.connect('dev')).rejects.toThrow('Native SSH is disabled');
+    } finally {
+      disposables.dispose();
+    }
+  });
+
+  it('forgets saved credentials when auth changes, on removal, and before re-adding the same ID', async () => {
+    const { home } = await fixture();
+    const values = new Map<string, string>();
+    const factory: SecretEntryFactory = async (account) => ({
+      async setPassword(value) { values.set(account, value); },
+      async getPassword() { return values.get(account); },
+      async deleteCredential() { return values.delete(account); },
+    });
+    const store = new SshCredentialStore(home, factory);
+    const disposables = new DisposableStore();
+    try {
+      const ix = createServices(disposables, { additionalServices: (registry) => {
+        registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+        registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+        registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
+        registry.definePartialInstance(IFlagService, { enabled: () => false });
+        registry.definePartialInstance(ISshCredentialStore, store);
+        registry.define(ISshHostService, SshHostService);
+      } });
+      const service = ix.get(ISshHostService);
+      const account = JSON.stringify(['workspace', 'dev']);
+      const host = { id: 'dev', name: 'Dev', hostname: 'example.test', user: 'tester' };
+      await service.upsert(host, 'workspace');
+      await store.save(account, 'password', 'old password');
+      const key = await store.savePrivateKey(account, 'test private key');
+      await store.save(account, 'identityFile', key);
+      await store.save(account, 'passphrase', 'old passphrase');
+      await service.upsert({ ...host, identityFile: '/tmp/new-key' }, 'workspace');
+      expect(await store.read(account, 'password')).toBeUndefined();
+      expect(await store.read(account, 'passphrase')).toBeUndefined();
+      await expect((await import('node:fs/promises')).stat(key)).rejects.toMatchObject({ code: 'ENOENT' });
+      const nextKey = await store.savePrivateKey(account, 'replacement key');
+      await store.save(account, 'identityFile', nextKey);
+      await store.save(account, 'password', 'new password');
+      await service.remove('dev', 'workspace');
+      for (const kind of ['password', 'passphrase', 'identityFile'] as const) expect(await store.read(account, kind)).toBeUndefined();
+      await expect((await import('node:fs/promises')).stat(nextKey)).rejects.toMatchObject({ code: 'ENOENT' });
+      await service.upsert(host, 'workspace');
+      expect(await store.read(account, 'password')).toBeUndefined();
+      expect(values.size).toBe(0);
     } finally {
       disposables.dispose();
     }

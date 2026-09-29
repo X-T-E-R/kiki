@@ -14,7 +14,7 @@ import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore'
 import { ISshHostDocumentStore } from '#/persistence/interface/sshHostDocumentStore';
 
 import { NATIVE_SSH_FLAG_ID } from './flag';
-import { SshHostStore, type SshHostInput, type SshHostRecord } from './sshHosts';
+import { SshHostStore, normalizeHost, type SshHostInput, type SshHostRecord } from './sshHosts';
 import { parseTransientSshTarget, resolveSshConfig, type ResolvedSshConfig } from './sshConfig';
 import type { SshCredentialSubmission } from '#/session/approval/approval';
 
@@ -143,7 +143,21 @@ export class SshHostService extends Disposable implements ISshHostService {
     return this.hosts.setConnectionApproval(enabled);
   }
 
+  private async forgetCredentials(id: string, workspaceId: string | undefined,
+    kinds: readonly ('password' | 'passphrase' | 'identityFile')[]): Promise<void> {
+    await Promise.all(kinds.map((kind) => this.credentials.forget(this.key(id, workspaceId), kind)));
+  }
+
   async upsert(host: SshHostInput, workspaceId?: string): Promise<void> {
+    normalizeHost(host);
+    const previous = (await this.hosts.list(workspaceId)).find((entry) => entry.id === host.id);
+    const all = ['password', 'passphrase', 'identityFile'] as const;
+    if (previous?.source !== 'kiki' || previous.user !== host.user || previous.hostname !== host.hostname ||
+        host.identityFile !== undefined && previous.identityFile !== host.identityFile) {
+      await this.forgetCredentials(host.id, workspaceId, all);
+    } else if (previous.identityFile !== host.identityFile) {
+      await this.forgetCredentials(host.id, workspaceId, ['passphrase', 'identityFile']);
+    }
     await this.hosts.upsert(host, workspaceId);
     this.activeTargets.delete(this.key(host.id, workspaceId));
     await this.connections.disconnect(this.key(host.id, workspaceId));
@@ -151,6 +165,7 @@ export class SshHostService extends Disposable implements ISshHostService {
   }
 
   async remove(id: string, workspaceId?: string): Promise<void> {
+    await this.forgetCredentials(id, workspaceId, ['password', 'passphrase', 'identityFile']);
     await this.hosts.remove(id, workspaceId);
     this.activeTargets.delete(this.key(id, workspaceId));
     await this.connections.disconnect(this.key(id, workspaceId));

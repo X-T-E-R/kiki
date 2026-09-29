@@ -209,6 +209,13 @@ describe('SessionApprovalService', () => {
     expect(JSON.stringify(interaction.listPending())).not.toContain(secret);
     expect(svc.takeSshCredential('ssh-login')).toEqual({ password: secret, save: 'session' });
     expect(svc.takeSshCredential('ssh-login')).toBeUndefined();
+    const aborted = svc.request({ ...makeRequest('ssh-aborted'), ssh: {
+      kind: 'login', hostname: 'example.test', user: 'tester', port: 22,
+    } });
+    svc.decideSsh('ssh-aborted', { decision: 'approved' }, { password: secret });
+    await aborted;
+    svc.clearSshCredential('ssh-aborted');
+    expect(svc.takeSshCredential('ssh-aborted')).toBeUndefined();
   });
 
   it('listPending surfaces the minted interaction id so hosts can decide', async () => {

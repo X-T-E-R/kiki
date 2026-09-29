@@ -136,24 +136,28 @@ export class SshConnectionGateService extends Disposable {
     const disconnected = alreadyJoined && ['idle', 'failed', 'disconnected'].includes(this.hosts.status(host, workspaceId).state);
     if ((!alreadyJoined || disconnected) && this.mode.mode !== 'yolo' && await this.hosts.connectionApprovalEnabled()) {
       const id = `approval_${randomUUID()}`;
-      const result = await this.approvals.request({
-        id,
-        ssh: { kind: 'login', hostname: target.hostname, user: target.user, port: target.port,
-          proxyJump: target.proxyJump, proxyCommand: target.proxyCommand },
-        sessionId: this.session.sessionId,
-        agentId: this.scope.agentId,
-        turnId: context.turnId,
-        toolCallId: context.toolCall.id,
-        toolName: context.toolCall.name,
-        action: `Connect SSH host ${snapshot.record.name} (${host})`,
-        display: { kind: 'generic', summary: `Connect SSH host ${snapshot.record.name} (${host})`, detail: {
-          host, hostname: target.hostname, user: target.user, port: target.port,
-          proxyJump: target.proxyJump, proxyCommand: target.proxyCommand,
-        } },
-      });
-      context.signal.throwIfAborted();
-      if (result.decision !== 'approved') return `Connection to SSH host "${host}" was not approved.`;
-      credential = this.approvals.takeSshCredential(id);
+      try {
+        const result = await this.approvals.request({
+          id,
+          ssh: { kind: 'login', hostname: target.hostname, user: target.user, port: target.port,
+            proxyJump: target.proxyJump, proxyCommand: target.proxyCommand },
+          sessionId: this.session.sessionId,
+          agentId: this.scope.agentId,
+          turnId: context.turnId,
+          toolCallId: context.toolCall.id,
+          toolName: context.toolCall.name,
+          action: `Connect SSH host ${snapshot.record.name} (${host})`,
+          display: { kind: 'generic', summary: `Connect SSH host ${snapshot.record.name} (${host})`, detail: {
+            host, hostname: target.hostname, user: target.user, port: target.port,
+            proxyJump: target.proxyJump, proxyCommand: target.proxyCommand,
+          } },
+        });
+        context.signal.throwIfAborted();
+        if (result.decision !== 'approved') return `Connection to SSH host "${host}" was not approved.`;
+        credential = this.approvals.takeSshCredential(id);
+      } finally {
+        this.approvals.clearSshCredential(id);
+      }
     }
     context.signal.throwIfAborted();
     let current;
@@ -171,18 +175,22 @@ export class SshConnectionGateService extends Disposable {
       context.signal.throwIfAborted();
       if (this.scope.agentId !== 'main') return { approved: false, credential: undefined };
       const id = `approval_${randomUUID()}`;
-      const response = await this.approvals.request({
-        id, sessionId: this.session.sessionId, agentId: this.scope.agentId,
-        turnId: context.turnId, toolCallId: context.toolCall.id, toolName: context.toolCall.name,
-        action: kind === 'host_key' ? `Trust SSH host key ${host}` : `SSH authentication for ${host}`,
-        ssh: { kind, hostname: target.hostname, user: target.user, port: target.port,
-          proxyJump: target.proxyJump, proxyCommand: target.proxyCommand, ...detail },
-        display: { kind: 'generic', summary: kind === 'host_key' ? `Trust SSH host key ${host}` : `SSH authentication for ${host}`,
-          detail: { host, hostname: target.hostname, algorithm: detail.algorithm,
-            fingerprint: detail.fingerprint, prompts: detail.prompts } },
-      });
-      context.signal.throwIfAborted();
-      return { approved: response.decision === 'approved', credential: this.approvals.takeSshCredential(id) };
+      try {
+        const response = await this.approvals.request({
+          id, sessionId: this.session.sessionId, agentId: this.scope.agentId,
+          turnId: context.turnId, toolCallId: context.toolCall.id, toolName: context.toolCall.name,
+          action: kind === 'host_key' ? `Trust SSH host key ${host}` : `SSH authentication for ${host}`,
+          ssh: { kind, hostname: target.hostname, user: target.user, port: target.port,
+            proxyJump: target.proxyJump, proxyCommand: target.proxyCommand, ...detail },
+          display: { kind: 'generic', summary: kind === 'host_key' ? `Trust SSH host key ${host}` : `SSH authentication for ${host}`,
+            detail: { host, hostname: target.hostname, algorithm: detail.algorithm,
+              fingerprint: detail.fingerprint, prompts: detail.prompts } },
+        });
+        context.signal.throwIfAborted();
+        return { approved: response.decision === 'approved', credential: this.approvals.takeSshCredential(id) };
+      } finally {
+        this.approvals.clearSshCredential(id);
+      }
     };
     const trustUnknown = async (key: { hostname: string; port: number; algorithm: string; fingerprint: string }) => {
       if (key.hostname !== target.hostname || key.port !== target.port) return false;
@@ -192,6 +200,7 @@ export class SshConnectionGateService extends Disposable {
       const answer = await requestSsh('login', { prompts });
       return answer.approved ? answer.credential?.answers ?? [] : [];
     };
+    context.signal.throwIfAborted();
     this.state.set(sessionSshHostsKey, { ...this.state.get(sessionSshHostsKey), [host]: snapshot.fingerprint });
     this.runtime.approveSshTarget?.(host, snapshot.fingerprint, trustUnknown, credential, keyboardInteractive);
     return undefined;

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
 import { promisify } from 'node:util';
@@ -129,6 +129,23 @@ export class SshCredentialStore {
       await unlink(this.fallbackPath(account));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (kind === 'identityFile') {
+      const directory = join(this.homeDir, 'credentials', 'ssh', 'keys');
+      const info = await lstat(directory).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (info !== undefined) {
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('SSH key directory is not a regular directory');
+        const prefix = `${this.account(hostId, 'passphrase')}-`;
+        for (const name of await readdir(directory)) {
+          if (!name.startsWith(prefix) || !/^[0-9a-f-]{36}$/.test(name.slice(prefix.length))) continue;
+          await unlink(join(directory, name)).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+        }
+      }
     }
     if (keyringError !== undefined) throw new Error('Could not remove SSH credential from system keyring', { cause: keyringError });
     this.ephemeral.delete(account);

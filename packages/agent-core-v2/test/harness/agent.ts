@@ -2122,6 +2122,7 @@ export class AgentTestContext {
         this.resolvePendingRpc('requestApproval', id, response);
       },
       takeSshCredential: () => undefined,
+      clearSshCredential: () => {},
       listPending: () => [],
     };
   }

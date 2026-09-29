@@ -59,7 +59,33 @@ describe('SSH credentials', () => {
     expect(await store.read('dev', 'password')).toBe('temporary');
   });
 
-  it.runIf(process.platform === 'win32')('round-trips a disposable secret through native Windows Credential Manager', async () => {
+  it('forgets keyring, fallback, memory, and every managed pasted key for a host', async () => {
+    const home = await temporaryHome();
+    const values = new Map<string, string>();
+    let keyringAvailable = true;
+    const factory: SecretEntryFactory = async (account) => ({
+      async setPassword(value) { if (!keyringAvailable) throw new Error('unavailable'); values.set(account, value); },
+      async getPassword() { return values.get(account); },
+      async deleteCredential() { return values.delete(account); },
+    });
+    const store = new SshCredentialStore(home, factory);
+    const account = '["workspace","dev"]';
+    await store.save(account, 'password', 'keyring-secret');
+    keyringAvailable = false;
+    await store.save(account, 'passphrase', 'fallback-secret');
+    await store.save(account, 'password', 'one-time-secret', false);
+    const first = await store.savePrivateKey(account, 'pasted-one');
+    const second = await store.savePrivateKey(account, 'pasted-two');
+    await store.save(account, 'identityFile', second);
+    for (const kind of ['password', 'passphrase', 'identityFile'] as const) await store.forget(account, kind);
+    for (const kind of ['password', 'passphrase', 'identityFile'] as const) expect(await store.read(account, kind)).toBeUndefined();
+    expect(values.size).toBe(0);
+    await expect(stat(first)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(second)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await store.read('["workspace","other"]', 'identityFile')).toBeUndefined();
+  });
+
+  it.runIf(process.platform === 'win32' && process.env['KIKI_TEST_NATIVE_KEYRING'] === '1')('round-trips a disposable secret through native Windows Credential Manager', async () => {
     const store = new SshCredentialStore(await temporaryHome());
     const hostId = `smoke-${randomUUID()}`;
     try {

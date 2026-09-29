@@ -8,6 +8,7 @@ export function stubApprovalService(respond: () => ApprovalResponse): ISessionAp
     decide: () => {},
     decideSsh: () => {},
     takeSshCredential: () => undefined,
+    clearSshCredential: () => {},
     listPending: () => [],
   };
 }

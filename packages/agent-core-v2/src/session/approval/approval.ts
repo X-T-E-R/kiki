@@ -58,6 +58,7 @@ export interface ISessionApprovalService {
   decide(id: string, response: ApprovalResponse): void;
   decideSsh(id: string, response: ApprovalResponse, credential?: SshCredentialSubmission): void;
   takeSshCredential(id: string): SshCredentialSubmission | undefined;
+  clearSshCredential(id: string): void;
   listPending(): readonly ApprovalRequest[];
 }
 

@@ -14,6 +14,8 @@ import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ISessionApprovalService } from '#/session/approval/approval';
 import type { ISshHostService } from '#/app/ssh/sshService';
 import { SessionStateService } from '#/session/state/sessionStateService';
+import { matchPermissionRule } from '#/agent/permissionRules/matchesRule';
+import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -35,10 +37,11 @@ async function fixture(options: { mode?: 'auto' | 'yolo'; agentId?: string; deci
     inspect: () => ({ identity: { runtimeId: 'local', workspaceId: 'workspace' } }),
   } as unknown as IAgentRuntimeService;
   const approvals = { request: vi.fn(async () => ({ decision: options.decision ?? 'approved' })),
-    takeSshCredential: vi.fn(() => undefined) } as unknown as ISessionApprovalService;
+    takeSshCredential: vi.fn(() => undefined), clearSshCredential: vi.fn() } as unknown as ISessionApprovalService;
   const hosts = {
     list: vi.fn(async () => ([
       { id: 'dev', name: 'Development', source: 'kiki' },
+      { id: 'synced', name: 'Synced', source: 'ssh-config' },
       { id: 'hidden', name: 'Hidden', source: 'kiki', agentAccess: 'hidden' },
     ])),
     resolveTarget: vi.fn(async () => ({
@@ -60,11 +63,11 @@ async function fixture(options: { mode?: 'auto' | 'yolo'; agentId?: string; deci
     { mode: options.mode ?? 'auto' } as IAgentPermissionModeService,
     { agentId: options.agentId ?? 'main' } as IAgentScopeContext,
     { sessionId: 'session' } as ISessionContext, state, approvals, hosts, injector);
-  const call = (host: string) => {
+  const call = (host: string, signal = new AbortController().signal) => {
     if (gate === undefined) throw new Error('gate not installed');
     return gate({
       tool: { name: 'Read' }, toolCall: { id: 'tool-call', name: 'Read' },
-      args: { host, path: '/home/tester/file' }, signal: new AbortController().signal,
+      args: { host, path: '/home/tester/file' }, signal,
       turnId: 1, toolCalls: [],
     } as unknown as BeforeResolveToolContext);
   };
@@ -76,12 +79,41 @@ async function fixture(options: { mode?: 'auto' | 'yolo'; agentId?: string; deci
 }
 
 describe('SSH connection gate before tool resolution', () => {
+  it('keeps a bare Bash allow in a remote workspace separate from host:local', () => {
+    const remote = { identity: { runtimeId: 'ssh:dev' } } as unknown as import('#/runtime/runtime').Runtime;
+    const implicit = toolApprovalRule('Bash', 'ls', remote);
+    const explicit = toolApprovalRule('Bash', 'ls', remote, 'local');
+    expect(implicit).toBe('Bash@dev(ls)');
+    expect(explicit).toBe('Bash@local(ls)');
+    const rule = { decision: 'allow' as const, scope: 'user' as const, pattern: 'Bash' };
+    expect(matchPermissionRule({ rule, toolName: 'Bash', execution: { approvalRule: explicit } })).toBeUndefined();
+    expect(matchPermissionRule({ rule: { ...rule, pattern: 'Bash@local' }, toolName: 'Bash',
+      execution: { approvalRule: explicit } })).toBeDefined();
+    expect(matchPermissionRule({ rule: { ...rule, pattern: 'Bash@dev' }, toolName: 'Bash',
+      execution: { approvalRule: implicit } })).toBeDefined();
+  });
+
   it('rejects an unapproved host before adding it to the session', async () => {
     const f = await fixture({ decision: 'rejected' });
     expect(await f.call('dev')).toContain('not approved');
     expect(f.state.get(sessionSshHostsKey)).toEqual({});
     expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
     expect(f.approvals.request).toHaveBeenCalledTimes(1);
+    f.service.dispose(); f.state.dispose();
+  });
+
+  it('clears approved credentials when the connection attempt aborts before consumption', async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    vi.mocked(f.approvals.request).mockImplementationOnce(async () => {
+      controller.abort();
+      return { decision: 'approved' };
+    });
+    await expect(f.call('dev', controller.signal)).rejects.toThrow();
+    const id = vi.mocked(f.approvals.request).mock.calls[0]![0].id!;
+    expect(f.approvals.takeSshCredential).not.toHaveBeenCalled();
+    expect(f.approvals.clearSshCredential).toHaveBeenCalledWith(id);
+    expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
     f.service.dispose(); f.state.dispose();
   });
 
@@ -99,6 +131,20 @@ describe('SSH connection gate before tool resolution', () => {
     expect(await f.call('dev')).toBeUndefined();
     expect(f.approvals.request).toHaveBeenCalledTimes(2);
     f.service.dispose(); f.state.dispose();
+  });
+
+  it('lists a synced alias without joining it until approval or yolo selection', async () => {
+    const f = await fixture({ decision: 'rejected' });
+    expect(await f.announce()).toBeUndefined();
+    expect(await f.call('synced')).toContain('not approved');
+    expect(f.state.get(sessionSshHostsKey)).toEqual({});
+    expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
+    f.service.dispose(); f.state.dispose();
+    const yolo = await fixture({ mode: 'yolo' });
+    expect(await yolo.call('synced')).toBeUndefined();
+    expect(yolo.state.get(sessionSshHostsKey)['synced']).toBeDefined();
+    expect(yolo.approvals.request).not.toHaveBeenCalled();
+    yolo.service.dispose(); yolo.state.dispose();
   });
 
   it('prompts again after a session-only credential disconnects', async () => {

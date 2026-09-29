@@ -37,7 +37,8 @@ export function acquireToolRuntime(service: IAgentRuntimeService, host: string |
 
 export function toolApprovalRule(name: string, subject: string, runtime: Runtime, host?: string): string {
   const id = host === 'local' ? 'local' : host === undefined ? runtime.identity.runtimeId : `ssh:${host}`;
-  return literalRulePattern(id.startsWith('ssh:') ? `${name}@${id.slice(4)}` : name, subject);
+  return literalRulePattern(id === 'local' && host === 'local' ? `${name}@local`
+    : id.startsWith('ssh:') ? `${name}@${id.slice(4)}` : name, subject);
 }
 
 export function tagSshResult(result: ExecutableToolResult, runtime: Runtime | string): ExecutableToolResult {

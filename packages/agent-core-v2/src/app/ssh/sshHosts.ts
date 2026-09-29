@@ -42,7 +42,7 @@ function parseDocument(text: string | undefined): HostDocument {
   return value;
 }
 
-function normalizeHost(host: SshHostInput): SshHostRecord {
+export function normalizeHost(host: SshHostInput): SshHostRecord {
   validateSshAlias(host.id);
   if (!host.name.trim()) throw new Error('SSH host name is required');
   if (host.hostname !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,253}$/.test(host.hostname)) {
