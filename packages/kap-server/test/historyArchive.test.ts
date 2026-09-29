@@ -74,10 +74,23 @@ describe('history archive', () => {
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
   });
 
-  it('reports an unavailable index and searches only the bounded current-session wire', async () => {
+  it('reports unavailable workspace coverage without silently narrowing to the current session', async () => {
+    const { archive, readColdSnapshotBounded } = fixture(false, true);
+    const page = await archive.search({ query: '原话', workspaceId: 'ws-a', pageSize: 8,
+      fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
+    expect(page).toMatchObject({ items: [], hasMore: false, source: 'index', incomplete: 'index_unavailable' });
+    expect(page.warning).toContain('requested range');
+    expect(readColdSnapshotBounded).not.toHaveBeenCalled();
+    const other = await archive.search({ query: '原话', workspaceId: 'ws-a', sessionId: 'other', agentId: 'main',
+      pageSize: 8, fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
+    expect(other.items).toEqual([]);
+    expect(readColdSnapshotBounded).not.toHaveBeenCalled();
+  });
+
+  it('searches the explicitly requested session and agent with bounded fallback', async () => {
     const { archive, readColdSnapshotBounded, search } = fixture(false, true);
     const page = await archive.search({
-      query: '原话', workspaceId: 'ws-a', pageSize: 8,
+      query: '原话', workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
       fallbackSessionId: 'current', fallbackAgentId: 'main',
     }) as HistorySearchPage;
     expect(search).toHaveBeenCalledOnce();

@@ -164,6 +164,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       fallbackSessionId,
       fallbackAgentId,
     }) => {
+      let unavailablePage: HistorySearchPage | undefined;
       try {
         const page = await getCore().accessor.get(IGlobalSearchService).search({
           query, mode, workspaceId, indexOnly: true,
@@ -171,17 +172,25 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
             ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
         });
         if (page.indexState.state !== 'unavailable' || page.items.length > 0) return page;
+        unavailablePage = page;
       } catch (error) {
         if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&
             !(error instanceof SearchWorkerError)) throw error;
+      }
+      if (sessionId === undefined || agentId === undefined || sessionId !== fallbackSessionId || agentId !== fallbackAgentId) {
+        return { ...unavailablePage, items: [], hasMore: false, source: 'index',
+          indexState: unavailablePage?.indexState ?? { state: 'unavailable', degraded: SEARCH_INDEX_UNAVAILABLE },
+          incomplete: 'index_unavailable',
+          warning: 'The index cannot search this requested range. Select one session and agent for a bounded transcript scan.',
+        };
       }
       return fallbackSearch(getTranscript(), {
         query,
         mode,
         role,
         pageSize,
-        sessionId: fallbackSessionId,
-        agentId: fallbackAgentId,
+        sessionId,
+        agentId,
       });
     },
     async readTurn(sessionId, agentId, ordinal, stepId) {
