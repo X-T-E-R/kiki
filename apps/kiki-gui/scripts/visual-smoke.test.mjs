@@ -12,10 +12,14 @@ const names = [...source.matchAll(/^    name: '([^']+)',$/gm)].map((match) => ma
 // Keep the smoke registry honest without importing the runner (which would
 // build the app and launch Chromium as a module side effect).
 test('every smoke registry entry has a fixture scenario', () => {
-  assert.equal(names.length, 11);
+  assert.equal(names.length, 12);
   assert.equal(new Set(names).size, names.length);
   for (const name of names) {
-    const fixture = name === 'hero-shell-zh' ? 'hero-shell' : name;
+    const fixture = name === 'hero-shell-zh'
+      ? 'hero-shell'
+      : name === 'search-s4'
+        ? 'search'
+        : name;
     assert.ok(
       existsSync(join(ROOT, 'fixtures', `${fixture}.scenario.mjs`)),
       `missing fixture for smoke scenario ${name}: ${fixture}`,
