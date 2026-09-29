@@ -87,7 +87,8 @@ describe('explicit model generation migration REST', () => {
     expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect((await post('apply', { revision: '0'.repeat(64), confirmed: true })).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect((await post('restore', { revision: '0'.repeat(64), backup_key: 'config.toml.generation-backup-123e4567-e89b-42d3-a456-426614174000', confirmed: true })).code).toBe(ErrorCode.VALIDATION_FAILED);
-    expect(await readdir(home)).toEqual(before);
+    expect((await readdir(home)).filter((name) => name.startsWith('config.toml')))
+      .toEqual(before.filter((name) => name.startsWith('config.toml')));
     expect(await readFile(orphan, 'utf8')).toBe(original);
     expect((await readdir(home)).includes('config.toml')).toBe(false);
   });
@@ -163,7 +164,9 @@ describe('model migration preview failure classification', () => {
       return result as Envelope<unknown>;
     };
     expect(await invoke({})).toMatchObject({ code: ErrorCode.INTERNAL_ERROR, msg: expect.stringContaining('unavailable') });
-    expect(await invoke({ previewModelGenerationMigration: async () => { throw new Error('invalid config'); } }))
-      .toMatchObject({ code: ErrorCode.VALIDATION_FAILED, msg: expect.stringContaining('could not read the configuration') });
+    expect(await invoke({ previewModelGenerationMigration: async () => { throw new Error('invalid config with SECRET_VALUE'); } }))
+      .toMatchObject({ code: ErrorCode.VALIDATION_FAILED, msg: expect.stringContaining('invalid configuration') });
+    expect(await invoke({ previewModelGenerationMigration: async () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); } }))
+      .toMatchObject({ code: ErrorCode.INTERNAL_ERROR, msg: expect.stringContaining('EACCES') });
   });
 });

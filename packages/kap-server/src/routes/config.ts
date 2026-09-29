@@ -223,7 +223,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
   const previewRoute = defineRoute({
     method: 'GET', path: migrationPath,
     success: { data: modelGenerationMigrationPreviewSchema },
-    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.INTERNAL_ERROR]: {} },
     description: 'Read-only, secret-free preview of legacy model parameter copies and available backup identifiers',
     tags: ['config'],
   }, async (req, reply) => {
@@ -241,8 +241,12 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         backups: preview.backups,
       }, req.id));
     } catch (error) {
-      requestLog(req)?.warn({ operation: 'model_generation_preview', error: String(error) }, 'config migration preview failed');
-      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Model generation migration preview could not read the configuration; inspect its format and permissions.', req.id));
+      const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+      const ioFailure = code !== undefined && /^(?:E[A-Z]+|ENOTFOUND)$/u.test(code);
+      requestLog(req)?.warn({ operation: 'model_generation_preview', errorCode: code }, 'config migration preview failed');
+      reply.send(errEnvelope(ioFailure ? ErrorCode.INTERNAL_ERROR : ErrorCode.VALIDATION_FAILED,
+        ioFailure ? `Model generation migration preview could not read the configuration (${code}); check file access.`
+          : 'Model generation migration preview found invalid configuration; inspect its format.', req.id));
     }
   });
   app.get(previewRoute.path, previewRoute.options, previewRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
