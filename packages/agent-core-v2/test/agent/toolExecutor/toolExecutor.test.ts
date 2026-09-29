@@ -384,6 +384,56 @@ describe('AgentToolExecutorService', () => {
     });
   });
 
+  it('passes schema-coerced args to the tool and execution records', async () => {
+    const tool = new TestTool('coerce', {
+      parameters: {
+        type: 'object',
+        properties: {
+          count: { type: 'integer' },
+          enabled: { type: 'boolean' },
+          tags: { type: 'array', items: { type: 'string' } },
+          nested: {
+            type: 'object',
+            properties: { count: { type: 'integer' } },
+            required: ['count'],
+          },
+          values: { type: 'array', items: { type: 'integer' } },
+        },
+        required: ['count', 'enabled', 'tags', 'nested', 'values'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([
+      toolCall('call_coerce', 'coerce', {
+        count: '3',
+        enabled: 'true',
+        tags: '["a"]',
+        nested: { count: '4' },
+        values: ['5'],
+      }),
+    ]);
+
+    expect(results).toEqual([expect.objectContaining({ stopTurn: false })]);
+    expect(tool.calls[0]?.args).toEqual({
+      count: 3,
+      enabled: true,
+      tags: ['a'],
+      nested: { count: 4 },
+      values: [5],
+    });
+    expect(protocolEvents.find((event) => event.type === 'tool.call.started')).toMatchObject({
+      args: {
+        count: 3,
+        enabled: true,
+        tags: ['a'],
+        nested: { count: 4 },
+        values: [5],
+      },
+    });
+  });
+
   it('recompiles the cached args validator when a tool advertises a different schema object', async () => {
     const inner = new TestTool('dynamic');
     let currentSchema: Record<string, unknown> = {

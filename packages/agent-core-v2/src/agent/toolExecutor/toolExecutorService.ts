@@ -8,8 +8,8 @@ import type { ToolInputDisplay } from '@kiki/protocol';
 
 import {
   compileToolArgsValidator,
-  validateToolArgs,
-  type JsonType,
+  validateToolArgsWithCoercion,
+  type ToolArgsValidation,
   type ToolArgsValidator,
 } from '#/tool/args-validator';
 import {
@@ -815,20 +815,20 @@ function preflightToolCall(
       ),
     };
   }
-  const validationError = validateExecutableToolArgs(tool, parsedArgs.data);
-  if (validationError !== null) {
+  const validation = validateExecutableToolArgs(tool, parsedArgs.data);
+  if (validation.error !== null) {
     return {
       kind: 'rejected',
       toolCall,
       toolName,
       args: parsedArgs.data,
-      output: `Invalid args for tool "${toolName}": ${validationError}`,
+      output: `Invalid args for tool "${toolName}": ${validation.error}`,
     };
   }
-  return { kind: 'runnable', toolCall, toolName, tool, args: parsedArgs.data };
+  return { kind: 'runnable', toolCall, toolName, tool, args: validation.args };
 }
 
-function validateExecutableToolArgs(tool: ExecutableTool, args: unknown): string | null {
+function validateExecutableToolArgs(tool: ExecutableTool, args: unknown): ToolArgsValidation {
   const schema = tool.parameters;
   let cached = validators.get(tool);
   if (cached === undefined || cached.schema !== schema) {
@@ -836,10 +836,10 @@ function validateExecutableToolArgs(tool: ExecutableTool, args: unknown): string
       cached = { schema, validator: compileToolArgsValidator(schema) };
       validators.set(tool, cached);
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return { args, error: error instanceof Error ? error.message : String(error) };
     }
   }
-  return validateToolArgs(cached.validator, args as JsonType);
+  return validateToolArgsWithCoercion(cached.validator, schema, args);
 }
 
 function toolCallDisplayFieldsFromExecution(
