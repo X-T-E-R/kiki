@@ -85,6 +85,7 @@ describe('external delegation route projection', () => {
       dispatch: vi.fn(),
       continue: vi.fn(),
       send: vi.fn(),
+      recordAgentNotify: vi.fn(),
       interactions: vi.fn(),
       respond: vi.fn(),
       status: vi.fn(),

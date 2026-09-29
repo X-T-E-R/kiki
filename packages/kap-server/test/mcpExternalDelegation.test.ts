@@ -111,6 +111,20 @@ describe('Kiki external delegation MCP projector', () => {
     });
   });
 
+  it('projects agent_notify with its lifecycle cursor through kiki_events', async () => {
+    const { client } = await connect(fakeKlient([], {
+      events: {
+        items: [{ seq: 3, dispatchId: dispatch.dispatchId, type: 'agent_notify', at: 5, message: 'early finding', messageId: 'mailbox-1' }],
+        nextCursor: undefined,
+      },
+    }));
+    const response = await client.callTool({ name: 'kiki_events', arguments: { dispatch_id: dispatch.dispatchId, cursor: 2 } });
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toEqual({
+      items: [{ seq: 3, dispatchId: dispatch.dispatchId, type: 'agent_notify', at: 5, message: 'early finding', messageId: 'mailbox-1' }],
+    });
+  });
+
   it('uses each procedure codec for snake_case input and compatibility output', async () => {
     const calls: Array<{ name: string; input: unknown }> = [];
     const { client } = await connect(fakeKlient(calls));
@@ -306,11 +320,14 @@ async function connect(klient: SeatKlient): Promise<{ client: Client }> {
   return { client };
 }
 
-function fakeKlient(calls: Array<{ name: string; input: unknown }> = []): SeatKlient {
+function fakeKlient(
+  calls: Array<{ name: string; input: unknown }> = [],
+  overrides: Partial<{ [Name in DelegationProcedureName]: DelegationProcedureOutput<Name> }> = {},
+): SeatKlient {
   return {
     async call(name: DelegationProcedureName, input: unknown) {
       calls.push({ name, input });
-      const output = outputs[name];
+      const output = overrides[name] ?? outputs[name];
       if (output === undefined) throw new Error(`Missing fixture for ${name}`);
       return output;
     },
