@@ -118,7 +118,8 @@ export const taskNotificationDeliveryKey = defineState(
     }
   })
   .on(TaskWaitDelivered, (s, e) => {
-    for (const key of e.keys) {
+    for (const deliveredKey of e.keys) {
+      const key = taskIdFromNotificationKey(deliveredKey);
       if (!s.includes(key)) {
         s.push(key);
       }
@@ -324,7 +325,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this._register(
       this.dispatcher.hooks.onDidRestore.register('task', async (_ctx, next) => {
         for (const key of this.states.get(taskNotificationDeliveryKey)) {
-          this.deliveredNotificationKeys.add(key);
+          this.deliveredNotificationKeys.add(taskIdFromNotificationKey(key));
         }
         await this.restoreAfterReplay();
         await next();
@@ -671,7 +672,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
     this.notificationUndoGeneration += 1;
     this.buildingNotificationKeys.clear();
-    const restoredKeys = new Set(this.states.get(taskNotificationDeliveryKey));
+    const restoredKeys = new Set(this.states.get(taskNotificationDeliveryKey).map(taskIdFromNotificationKey));
     for (const [key, request] of this.pendingNotificationRequests) {
       if (request.aborted || restoredKeys.has(key)) {
         request.abort();
@@ -832,6 +833,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[], toolCallId?: string, signal?: AbortSignal): void {
+    tasks = tasks.filter(({ taskId, status }) => {
+      const actual = this.getTask(taskId)?.status;
+      return actual === undefined || !isAgentTaskTerminal(actual) || actual === status;
+    });
     if (tasks.length === 0) return;
     if (toolCallId !== undefined) {
       if (signal?.aborted) return;
@@ -1952,7 +1957,11 @@ function taskNotificationId(taskId: string, status: string): string {
 }
 
 function notificationKey(origin: TaskNotificationOrigin): string {
-  return `${origin.taskId}\0${origin.status}\0${origin.notificationId}`;
+  return origin.taskId;
+}
+
+function taskIdFromNotificationKey(key: string): string {
+  return key.split('\0', 1)[0] ?? key;
 }
 
 function taskOriginFromMessage(message: unknown): TaskNotificationOrigin | undefined {

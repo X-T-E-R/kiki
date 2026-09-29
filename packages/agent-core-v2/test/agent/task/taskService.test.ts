@@ -21,6 +21,7 @@ import {
 import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
+import { TaskNotified, TaskWaitDelivered } from '#/agent/task/taskOps';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -58,7 +59,7 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 
 import { stubLog } from '../../_base/log/stubs';
 import { stubContextMemory, type StubContextMemory } from '../contextMemory/stubs';
-import { stubLoopWithHooks, type StubLoop } from '../loop/stubs';
+import { runWillBeginStepHooks, stubLoopWithHooks, type StubLoop } from '../loop/stubs';
 import { stubFlag } from '../../app/flag/stubs';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import type { TaskServiceTestManager } from './stubs';
@@ -750,13 +751,62 @@ describe('AgentTaskService', () => {
     expect(loop.hasPendingRequests()).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('injects and records only one terminal notification when the same task changes from failed to lost', async () => {
+    const notified: string[] = [];
+    disposables.add(eventBus.subscribe(TaskNotified, (event) => notified.push(event.sourceId)));
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => { await sink.settle({ status: 'failed' }); },
+    });
+    await svc.wait(taskId);
+    const loop = stubLoop();
+    await waitForCondition(() => loop.hasPendingRequests());
+    const context = ix.get(IAgentContextMemoryService) as StubContextMemory;
+    loop.drainNextBatch(context);
+    await runWillBeginStepHooks(loop);
+    await waitForCondition(() => (svc as AgentTaskService)['ghosts'].has(taskId));
+
+    const ghosts = (svc as AgentTaskService)['ghosts'];
+    ghosts.set(taskId, { ...ghosts.get(taskId)!, status: 'lost' });
+    await runWillBeginStepHooks(loop, true);
+    expect(context.messages.filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId))
+      .toHaveLength(1);
+    expect(notified).toEqual([taskId]);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('injects one terminal notification for each of two different tasks', async () => {
+    const svc = ix.get(IAgentTaskService);
+    const taskA = svc.registerTask(outputtingTask('a'));
+    const taskB = svc.registerTask(outputtingTask('b'));
+    await svc.wait(taskA);
+    await svc.wait(taskB);
+    const loop = stubLoop();
+    await waitForCondition(() => loop.queue.pendingKinds().length === 2);
+    const context = ix.get(IAgentContextMemoryService) as StubContextMemory;
+    loop.drainNextBatch(context);
+    expect(context.messages.filter((message) => message.origin?.kind === 'task')
+      .map((message) => (message.origin as TaskOrigin).taskId).sort())
+      .toEqual([taskA, taskB].sort());
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('recognizes status-qualified task wait keys recorded by older sessions', async () => {
+    ix.get(IAgentTaskService);
+    const taskId = 'test-legacy';
+    await ix.get(IEventDispatcher).dispatch(new TaskWaitDelivered({
+      keys: [`${taskId}\0failed\0task:${taskId}:failed`],
+    }));
+    await ix.get(IEventDispatcher).flush();
+    expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(taskId);
+  });
+
   it('does not mark a TaskWait delivery until its tool result is appended and flushed', async () => {
     const svc = ix.get(IAgentTaskService);
     const taskId = svc.registerTask(outputtingTask('report'));
     await svc.wait(taskId);
     const loop = stubLoop();
     await waitForCondition(() => loop.hasPendingRequests());
-    const deliveryKey = `${taskId}\0completed\0task:${taskId}:completed`;
+    const deliveryKey = taskId;
     svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }], 'tool-call-1');
     expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).not.toContain(deliveryKey);
     expect(loop.hasPendingRequests()).toBe(true);
@@ -781,7 +831,7 @@ describe('AgentTaskService', () => {
     expect(loop.hasPendingRequests()).toBe(false);
     expect(loop.launches).toEqual([]);
 
-    const deliveryKey = `${taskId}\0completed\0task:${taskId}:completed`;
+    const deliveryKey = taskId;
     const states = ix.get(IAgentStateService);
     await waitForCondition(() => states.get(taskNotificationDeliveryKey).length > 0);
     expect(states.get(taskNotificationDeliveryKey)).toContain(deliveryKey);
@@ -804,9 +854,8 @@ describe('AgentTaskService', () => {
   it('suppresses only the notification whose status was reported via wait', async () => {
     const svc = ix.get(IAgentTaskService);
     const taskId = svc.registerTask(outputtingTask('done\n'));
-    svc.markTasksDeliveredViaWait([{ taskId, status: 'failed' }]);
-
     await svc.wait(taskId, 1000);
+    svc.markTasksDeliveredViaWait([{ taskId, status: 'failed' }]);
     const loop = stubLoop();
     await waitForCondition(() => loop.hasPendingRequests());
 
@@ -1359,7 +1408,7 @@ describe('AgentTaskService', () => {
     two.get(IAgentTaskService);
     await two.get(IEventDispatcher).restore();
 
-    const keyA = `${taskA}\0completed\0task:${taskA}:completed`;
+    const keyA = taskA;
     expect(two.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(keyA);
     const redelivered = context2.messages.filter((message) => message.origin?.kind === 'task');
     expect(redelivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
