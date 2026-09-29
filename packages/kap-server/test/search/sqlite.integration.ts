@@ -145,7 +145,7 @@ describe('SQLite derived search index', () => {
     const budgets = { literalCandidateCap: 1, maxTextHits: 1,
       postingsVisitBudget: 100, queryDeadlineMs: 10_000, queryTextBudgetChars: 100_000 };
     for (const mode of ['terms', 'literal'] as const) {
-      for (const sort of ['time_asc', 'time_desc'] as const) {
+      for (const sort of ['score', 'time_asc', 'time_desc'] as const) {
         const result = await index.search({ ...q('target needle', mode, sort),
           container: { sessionId: 's1', agentId: 'main' }, workspaceId: 'w', role: 'user',
           startTime: T, endTime: T }, undefined, budgets);
