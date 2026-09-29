@@ -1,7 +1,7 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
-import { renderTodoNotes, type TodoNotes } from '#/session/todo/todoNotes';
+import { NOTE_SECTIONS, type TodoNotes } from '#/session/todo/todoNotes';
 
 export interface ExternalPromptHint {
   readonly id?: string;
@@ -37,6 +37,22 @@ export function externalPromptHints(history: readonly ContextMessage[], delivere
   return hints;
 }
 
+const STATE_TRUNCATED = '\n[State snapshot truncated]';
+
+function truncateUtf8(text: string, limit: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= limit) return text;
+  const max = limit - Buffer.byteLength(STATE_TRUNCATED, 'utf8');
+  let bytes = 0;
+  let prefix = '';
+  for (const char of text) {
+    const size = Buffer.byteLength(char, 'utf8');
+    if (bytes + size > max) break;
+    prefix += char;
+    bytes += size;
+  }
+  return prefix + STATE_TRUNCATED;
+}
+
 export function externalStateHints(input: {
   readonly todos: readonly TodoItem[];
   readonly notes?: TodoNotes;
@@ -44,16 +60,9 @@ export function externalStateHints(input: {
 }): ExternalPromptHint[] {
   const hints: ExternalPromptHint[] = [];
   let remaining = 8 * 1024;
-  const add = (origin: string, text: string): void => {
+  const add = (origin: string, text: string, limit = remaining): void => {
     if (text.length === 0) return;
-    if (remaining < 128) {
-      hints.push({ origin, text: '' });
-      return;
-    }
-    const bytes = Buffer.from(text, 'utf8');
-    const suffix = '\n[State snapshot truncated]';
-    const rendered = bytes.length <= remaining ? text
-      : `${bytes.subarray(0, remaining - Buffer.byteLength(suffix)).toString('utf8')}${suffix}`;
+    const rendered = truncateUtf8(text, Math.min(remaining, limit));
     hints.push({ origin, text: rendered });
     remaining -= Buffer.byteLength(rendered, 'utf8');
   };
@@ -62,13 +71,18 @@ export function externalStateHints(input: {
     add('goal_state', [
       `Goal (${goal.status}): ${goal.objective}`,
       goal.completionCriterion === undefined ? '' : `Completion criterion: ${goal.completionCriterion}`,
-    ].filter(Boolean).join('\n'));
+    ].filter(Boolean).join('\n'), 1_536);
   }
-  const notes = renderTodoNotes(input.notes);
-  if (input.todos.length > 0 || notes.length > 0) {
+  const priority = ['goal', 'next', 'open'] as const;
+  const noteLines = [
+    ...priority.flatMap((key) => input.notes?.[key] ? [truncateUtf8(`${key}: ${input.notes[key]}`, 1_800)] : []),
+    ...NOTE_SECTIONS.filter((key) => !priority.includes(key as typeof priority[number]))
+      .flatMap((key) => input.notes?.[key] ? [`${key}: ${input.notes[key]}`] : []),
+  ];
+  if (input.todos.length > 0 || noteLines.length > 0) {
     add('todo_state', [
+      noteLines.length > 0 ? `Working notes:\n${noteLines.join('\n')}` : '',
       input.todos.length > 0 ? renderTodoList(input.todos) : '',
-      notes.length > 0 ? `Working notes:\n${notes}` : '',
     ].filter(Boolean).join('\n\n'));
   }
   return hints;

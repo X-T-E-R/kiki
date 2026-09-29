@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { renderExternalPrompt, renderExternalPromptBlocks } from '#/agent/profile/externalPrompt';
+import { externalStateHints } from '#/agent/execution/externalPromptHints';
 
 const profile = (executorPrompt?: AgentProfile['executorPrompt']): AgentProfile => ({
   name: 'assistant', executor: 'codex-app-server', executorPrompt,
@@ -54,5 +55,40 @@ describe('external prompt blocks', () => {
       { id: 'memory_snapshot', text: '## memory_snapshot\n\nSaved memory' },
     ]);
     expect(blocks.map((block) => block.text).join('\n\n')).toBe(result);
+  });
+});
+
+describe('external state hints', () => {
+  it('keeps goal, next and open before lower-priority notes and todos within 8 KB', () => {
+    const hints = externalStateHints({
+      goal: null,
+      notes: {
+        goal: `Target ${'目'.repeat(1_500)}`,
+        decided: 'secondary-decision',
+        evidence: '证'.repeat(1_500),
+        next: `Next ${'步'.repeat(1_500)}`,
+        open: `Open ${'问'.repeat(1_500)}`,
+      },
+      todos: Array.from({ length: 10 }, (_, index) => ({ title: `todo-${index}-${'测'.repeat(150)}`, status: 'pending' as const })),
+    });
+    const text = hints[0]?.text ?? '';
+    expect(text).toContain('goal: Target');
+    expect(text).toContain('next: Next');
+    expect(text).toContain('open: Open');
+    expect(text.indexOf('open: Open')).toBeLessThan(text.indexOf('secondary-decision'));
+    expect(text).toContain('[State snapshot truncated]');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+    expect(text).not.toContain('�');
+  });
+
+  it('marks an oversized high-priority section without hiding next or open', () => {
+    const [hint] = externalStateHints({
+      goal: null, todos: [],
+      notes: { goal: '中'.repeat(1_500), next: 'Follow up', open: 'Pending answer' },
+    });
+    expect(hint?.text).toContain('goal: ');
+    expect(hint?.text).toContain('[State snapshot truncated]');
+    expect(hint?.text).toContain('next: Follow up');
+    expect(hint?.text).toContain('open: Pending answer');
   });
 });
