@@ -9,6 +9,8 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { OsFsErrors, HostFsError } from '#/os/interface/hostFsErrors';
 
 export interface McpJsonPaths {
+  /** Base (main) home layer, present only for a space that inherits `mcp.json`. */
+  readonly base?: string;
   readonly user: string;
   readonly projectRoot: string;
   readonly project: string;
@@ -18,6 +20,7 @@ export interface ResolveMcpJsonPathsInput {
   readonly fs: IHostFileSystem;
   readonly cwd: string;
   readonly homeDir?: string;
+  readonly baseHomeDir?: string;
 }
 
 export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Promise<McpJsonPaths> {
@@ -25,6 +28,7 @@ export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Prom
   const projectRoot = (await findGitWorkTree(input.fs, start))?.root ?? start;
 
   return {
+    base: input.baseHomeDir === undefined ? undefined : join(resolveKikiHome(input.baseHomeDir), 'mcp.json'),
     user: join(resolveKikiHome(input.homeDir), 'mcp.json'),
     projectRoot: join(projectRoot, '.mcp.json'),
     project: join(input.cwd, '.kiki', 'mcp.json'),
@@ -35,6 +39,7 @@ export interface LoadMcpServersInput {
   readonly fs: IHostFileSystem;
   readonly cwd: string;
   readonly homeDir?: string;
+  readonly baseHomeDir?: string;
   readonly includeProject?: boolean;
 }
 
@@ -51,6 +56,15 @@ export async function loadMcpServers(
   return (await loadMcpServersDetailed(input)).servers;
 }
 
+/** Reads one `mcp.json` layer by absolute path (a management view that needs the base home layer on
+ *  its own, without resolving a project). A missing or empty file reads as an empty map. */
+export async function loadMcpJsonLayer(
+  fs: IHostFileSystem,
+  filePath: string,
+): Promise<Record<string, McpServerConfig>> {
+  return readMcpJson(fs, filePath);
+}
+
 /**
  * {@link loadMcpServers} plus the defining-file origin of every effective
  * entry, for management surfaces that show where a server came from.
@@ -59,23 +73,23 @@ export async function loadMcpServersDetailed(
   input: LoadMcpServersInput,
 ): Promise<LoadMcpServersDetailedResult> {
   const paths = await resolveMcpJsonPaths(input);
-  if (input.includeProject === false) {
-    const user = await readMcpJson(input.fs, paths.user);
-    return { servers: user, origins: mapValuesToPath(user, paths.user) };
-  }
+  const baseLayers: readonly [path: string, servers: Record<string, McpServerConfig>][] =
+    paths.base === undefined ? [] : [[paths.base, await readMcpJson(input.fs, paths.base)]];
   const layers: readonly [path: string, servers: Record<string, McpServerConfig>][] =
-    await Promise.all([
-      readMcpJson(input.fs, paths.user),
-      readMcpJson(input.fs, paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
-      readMcpJson(input.fs, paths.project),
-    ]).then(([user, projectRoot, project]) => [
-      [paths.user, user],
-      [paths.projectRoot, projectRoot],
-      [paths.project, project],
-    ]);
+    input.includeProject === false
+      ? [[paths.user, await readMcpJson(input.fs, paths.user)]]
+      : await Promise.all([
+          readMcpJson(input.fs, paths.user),
+          readMcpJson(input.fs, paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
+          readMcpJson(input.fs, paths.project),
+        ]).then(([user, projectRoot, project]) => [
+          [paths.user, user],
+          [paths.projectRoot, projectRoot],
+          [paths.project, project],
+        ]);
   const servers: Record<string, McpServerConfig> = Object.create(null);
   const origins: Record<string, string> = Object.create(null);
-  for (const [path, layer] of layers) {
+  for (const [path, layer] of [...baseLayers, ...layers]) {
     for (const [name, config] of Object.entries(layer)) {
       servers[name] = config;
       origins[name] = path;
@@ -168,17 +182,6 @@ function normalizeStdioCwd(config: McpServerConfig, cwdBase: string): McpServerC
   if (config.transport !== 'stdio') return config;
   const cwd = config.cwd === undefined ? cwdBase : resolvePath(cwdBase, config.cwd);
   return { ...config, cwd };
-}
-
-function mapValuesToPath(
-  servers: Record<string, McpServerConfig>,
-  path: string,
-): Record<string, string> {
-  const origins: Record<string, string> = Object.create(null);
-  for (const name of Object.keys(servers)) {
-    origins[name] = path;
-  }
-  return origins;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

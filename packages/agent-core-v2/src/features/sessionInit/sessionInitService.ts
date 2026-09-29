@@ -1,5 +1,6 @@
 import { isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -97,6 +98,7 @@ export class SessionInitService implements ISessionInitService {
         { fs: this.fs, homeDir: this.env.homeDir },
         this.sessionContext.cwd,
         this.bootstrap.homeDir,
+        { inheritance: resolveSpaceInheritance(this.bootstrap) },
       );
       main.accessor
         .get(IAgentAgentsMdReminderService)

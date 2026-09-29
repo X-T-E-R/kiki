@@ -16,6 +16,10 @@ const USER_GENERIC_DIRS = ['.agents/agents'] as const;
 const PROJECT_BRAND_DIRS = ['.kiki/agents'] as const;
 const PROJECT_GENERIC_DIRS = ['.agents/agents'] as const;
 
+export interface UserAgentRootOptions {
+  readonly genericRoots?: boolean;
+}
+
 /** `workspaceAgentProfileLoader` domain — agent-root resolution primitives: the user, project, and
  *  configured discovery roots resolved through the `hostFs` boundary (pure path probes, no scoped
  *  state). */
@@ -24,13 +28,28 @@ export async function userAgentRoots(
   homeDir: string,
   osHomeDir: string,
   warn?: AgentRootWarn,
+  options: UserAgentRootOptions = {},
 ): Promise<readonly AgentFileRoot[]> {
   const roots: AgentFileRoot[] = [];
   await pushFirstExisting(fs, roots, USER_BRAND_DIRS, homeDir, 'user', warn);
   if (roots[0] !== undefined) {
     roots[0] = { ...roots[0], lowPrioritySubdirectories: ['builtin'] };
   }
-  await pushFirstExisting(fs, roots, USER_GENERIC_DIRS, osHomeDir, 'user', warn);
+  if (options.genericRoots !== false) {
+    await pushFirstExisting(fs, roots, USER_GENERIC_DIRS, osHomeDir, 'user', warn);
+  }
+  return roots;
+}
+
+/** Lower-priority layer of a space home: the base (main) home's `agents/` directory, appended after
+ *  the space's own roots by source priority so a same-name space profile wins. */
+export async function inheritedAgentRoots(
+  fs: IHostFileSystem,
+  baseHomeDir: string,
+  warn?: AgentRootWarn,
+): Promise<readonly AgentFileRoot[]> {
+  const roots: AgentFileRoot[] = [];
+  await pushFirstExisting(fs, roots, USER_BRAND_DIRS, baseHomeDir, 'inherited', warn);
   return roots;
 }
 
@@ -54,11 +73,21 @@ export interface AgentRootWatchPlan {
 export function userAgentRootWatchPlans(
   homeDir: string,
   osHomeDir: string,
+  options: UserAgentRootOptions = {},
 ): readonly AgentRootWatchPlan[] {
   return groupWatchCandidates([
     { root: homeDir, candidate: join(homeDir, USER_BRAND_DIRS[0]) },
     { root: homeDir, candidate: join(homeDir, 'SYSTEM.md') },
-    { root: osHomeDir, candidate: join(osHomeDir, USER_GENERIC_DIRS[0]) },
+    ...(options.genericRoots === false
+      ? []
+      : [{ root: osHomeDir, candidate: join(osHomeDir, USER_GENERIC_DIRS[0]) }]),
+  ]);
+}
+
+export function inheritedAgentRootWatchPlans(baseHomeDir: string): readonly AgentRootWatchPlan[] {
+  return groupWatchCandidates([
+    { root: baseHomeDir, candidate: join(baseHomeDir, USER_BRAND_DIRS[0]) },
+    { root: baseHomeDir, candidate: join(baseHomeDir, 'SYSTEM.md') },
   ]);
 }
 

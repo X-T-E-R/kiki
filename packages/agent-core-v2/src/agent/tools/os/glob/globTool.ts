@@ -1,6 +1,6 @@
 import { normalize, resolve } from 'pathe';
 
-import { ensureRgPath, rgUnavailableMessage, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
+import { ensureRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
 import {
   DEFAULT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
@@ -18,6 +18,8 @@ import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshRes
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import {
   DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS,
   ToolAccesses,
@@ -73,7 +75,17 @@ export class GlobTool implements IGlobTool {
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
+    @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {}
+
+  private rgShareOptions(): Pick<EnsureRgPathOptions, 'shareDir' | 'fallbackShareDirs'> {
+    if (this.bootstrap === undefined) return {};
+    const baseHomeDir = resolveSpaceInheritance(this.bootstrap).baseHomeDir;
+    return {
+      shareDir: this.bootstrap.homeDir,
+      fallbackShareDirs: baseHomeDir === undefined ? [] : [baseHomeDir],
+    };
+  }
 
   get description(): string {
     return inspectAgentRuntime(this.runtime).environment.pathClass === 'win32'
@@ -204,6 +216,7 @@ export class GlobTool implements IGlobTool {
         const resolution = await ensureRgPath(createRgProbe(processService), {
           signal,
           allowCachedFallback: true,
+          ...this.rgShareOptions(),
         });
         rgPath = resolution.path;
         if (resolution.source !== 'system-path') {

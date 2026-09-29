@@ -3,8 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
-import { join } from 'node:path';
-
+import { basename, dirname, join } from 'node:path';
 import {
   APPEARANCE_LIMITS,
   APPEARANCE_PACK_ID_PATTERN,
@@ -25,6 +24,7 @@ import {
   type AppearancePackSummary,
 } from '@kiki/protocol';
 import type { Scope } from '@kiki/agent-core-v2';
+import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
 import { z } from 'zod';
 
 import { buildStoredZip } from '../lib/storedZip';
@@ -71,6 +71,9 @@ interface AppearanceRouteHost {
 /** Where appearance packs live: `<homeDir>/themes`, the directory skin files share. */
 export interface AppearanceRouteOptions {
   readonly themesDir: string;
+  /** Read-only lower-priority theme directories (the base home's `themes/`) consulted when this
+   *  directory has no pack with the requested id. Derived from `<homeDir>/home.toml` when omitted. */
+  readonly inheritedThemesDirs?: readonly string[];
   /** Test seam for the URL importer; production resolves through DNS. */
   readonly resolveHost?: (host: string) => Promise<readonly string[]>;
   /** Test seam for the URL importer; production uses global fetch. */
@@ -265,26 +268,54 @@ export async function fetchRemoteMedia(
   }
   throw new PackError(ErrorCode.VALIDATION_FAILED, 'too many redirects');
 }
-async function listPacks(themesDir: string): Promise<z.infer<typeof listAppearancePacksResponseSchema>> {
+async function listPacks(
+  themesDir: string,
+  inheritedDirs: readonly string[] = [],
+): Promise<z.infer<typeof listAppearancePacksResponseSchema>> {
   const items: AppearancePackSummary[] = [];
   const skipped: { file: string; reason: string }[] = [];
-  const entries = await readdir(themesDir, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries.filter((item) => item.isDirectory()).map((item) => item.name).sort()) {
-    if (!APPEARANCE_PACK_ID_PATTERN.test(entry)) continue;
-    const dir = join(themesDir, entry);
-    if ((await stat(join(dir, APPEARANCE_PACK_MANIFEST)).catch(() => undefined)) === undefined) continue;
-    try {
-      const { pack, bytes } = await readPackDir(dir);
-      if (pack.id !== entry) {
-        skipped.push({ file: `${entry}/`, reason: `manifest id "${pack.id}" does not match the folder name` });
-        continue;
+  const seen = new Set<string>();
+  for (const dir of [themesDir, ...inheritedDirs]) {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries.filter((item) => item.isDirectory()).map((item) => item.name).sort()) {
+      if (!APPEARANCE_PACK_ID_PATTERN.test(entry) || seen.has(entry)) continue;
+      seen.add(entry);
+      const packDir = join(dir, entry);
+      if ((await stat(join(packDir, APPEARANCE_PACK_MANIFEST)).catch(() => undefined)) === undefined) continue;
+      try {
+        const { pack, bytes } = await readPackDir(packDir);
+        if (pack.id !== entry) {
+          skipped.push({ file: `${entry}/`, reason: `manifest id "${pack.id}" does not match the folder name` });
+          continue;
+        }
+        items.push(summaryOf(pack, bytes));
+      } catch (error) {
+        skipped.push({ file: `${entry}/`, reason: error instanceof Error ? error.message : 'unreadable' });
       }
-      items.push(summaryOf(pack, bytes));
-    } catch (error) {
-      skipped.push({ file: `${entry}/`, reason: error instanceof Error ? error.message : 'unreadable' });
     }
   }
   return { items, directory: themesDir, skipped };
+}
+
+async function packDirFor(
+  themesDir: string,
+  inheritedDirs: readonly string[],
+  packId: string,
+): Promise<string> {
+  for (const dir of [themesDir, ...inheritedDirs]) {
+    const candidate = join(dir, packId);
+    if ((await stat(join(candidate, APPEARANCE_PACK_MANIFEST)).catch(() => undefined)) !== undefined) {
+      return candidate;
+    }
+  }
+  return join(themesDir, packId);
+}
+
+function inheritedThemeDirs(themesDir: string): readonly string[] {
+  if (basename(themesDir) !== 'themes') return [];
+  const { space } = readSpaceHome(dirname(themesDir));
+  if (space?.baseHomeDir === undefined || space.inherit.appearance === false) return [];
+  return [join(space.baseHomeDir, 'themes')];
 }
 
 async function installPack(themesDir: string, buffer: Buffer, replace: boolean): Promise<{ pack: AppearancePackSummary; replaced: boolean }> {
@@ -325,6 +356,7 @@ function sendError(reply: AppearanceReply, req: AppearanceRequest, error: unknow
  */
 export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope, opts: AppearanceRouteOptions): void {
   const { themesDir } = opts;
+  const inheritedDirs = opts.inheritedThemesDirs ?? inheritedThemeDirs(themesDir);
   app.register(async (scoped) => {
     scoped.addContentTypeParser(ZIP_TYPES, { parseAs: 'buffer', bodyLimit: APPEARANCE_LIMITS.packBytes }, (_req, body, done) => {
       done(null, body);
@@ -339,7 +371,7 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
         tags: ['skins'],
       },
       async (req, reply) => {
-        reply.send(okEnvelope(await listPacks(themesDir), req.id));
+        reply.send(okEnvelope(await listPacks(themesDir, inheritedDirs), req.id));
       },
     );
     scoped.get(list.path, list.options, list.handler as unknown as AppearanceHandler);
@@ -357,7 +389,7 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
       async (req, reply) => {
         const { pack_id: packId } = req.params;
         try {
-          const { pack, bytes } = await readPackDir(join(themesDir, packId));
+          const { pack, bytes } = await readPackDir(await packDirFor(themesDir, inheritedDirs, packId));
           reply.send(okEnvelope({ pack, bytes }, req.id));
         } catch (error) {
           sendError(reply as unknown as AppearanceReply, req as unknown as AppearanceRequest, error);
@@ -379,7 +411,7 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
         const r = reply as unknown as AppearanceReply;
         const { pack_id: packId, file: name } = req.params;
         try {
-          const dir = join(themesDir, packId);
+          const dir = await packDirFor(themesDir, inheritedDirs, packId);
           const { pack } = await readPackDir(dir);
           const mime = backgroundMediaTypeOf(name)?.mime;
           if (!appearancePackFiles(pack).includes(name) || mime === undefined) {
@@ -481,7 +513,7 @@ export function registerAppearanceRoutes(app: AppearanceRouteHost, _core: Scope,
         const r = reply as unknown as AppearanceReply;
         const { pack_id: packId } = req.params;
         try {
-          const dir = join(themesDir, packId);
+          const dir = await packDirFor(themesDir, inheritedDirs, packId);
           const { pack } = await readPackDir(dir);
           const names = [APPEARANCE_PACK_MANIFEST, ...appearancePackFiles(pack)];
           const entries = await Promise.all(names.map(async (name) => ({ name, data: await readFile(join(dir, name)) })));

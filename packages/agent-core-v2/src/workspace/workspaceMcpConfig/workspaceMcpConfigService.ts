@@ -6,6 +6,7 @@ import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
 import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
 import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
@@ -33,6 +34,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   private fileServers = new Map<string, McpServerConfig>();
   private pluginServers = new Map<string, McpServerConfig>();
   private current: Readonly<Record<string, McpServerConfig>> = {};
+  private readonly inheritedHomeDir: string | undefined;
   private readonly watchDebounce = this._register(new TimeoutTimer());
   private readonly changeEmitter = this._register(new AsyncEmitter<McpServersChangeEvent>());
   readonly onDidChange = this.changeEmitter.event;
@@ -49,6 +51,8 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     @IMcpConfigStore mcpConfigStore: IMcpConfigStore,
   ) {
     super();
+    const inheritance = resolveSpaceInheritance(bootstrap);
+    this.inheritedHomeDir = inheritance.mcp ? inheritance.baseHomeDir : undefined;
     this.ready = this.initialize().catch((error: unknown) => {
       this.log.error('mcp config initial load failed', { error });
     });
@@ -106,6 +110,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
         fs: this.fs,
         cwd: this.workspace.cwd,
         homeDir: this.bootstrap.homeDir,
+        baseHomeDir: this.inheritedHomeDir,
         includeProject: this.trust.isTrusted(),
       }),
       this.plugins.enabledMcpServers(),
@@ -124,8 +129,9 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
       fs: this.fs,
       cwd: this.workspace.cwd,
       homeDir: this.bootstrap.homeDir,
+      baseHomeDir: this.inheritedHomeDir,
     });
-    this.watchPaths([paths.user]);
+    this.watchPaths(paths.base === undefined ? [paths.user] : [paths.user, paths.base]);
     const projectRoot = dirname(paths.projectRoot);
     const handle = this.fsWatch.watch(projectRoot, {
       ignored: subtreeWatchFilter(projectRoot, [paths.projectRoot, paths.project]),
@@ -165,6 +171,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
         fs: this.fs,
         cwd: this.workspace.cwd,
         homeDir: this.bootstrap.homeDir,
+        baseHomeDir: this.inheritedHomeDir,
         includeProject: this.trust.isTrusted(),
       });
       this.fileServers = new Map(Object.entries(fresh));

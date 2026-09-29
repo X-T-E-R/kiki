@@ -13,6 +13,8 @@ const PROJECT_COMMAND_DIRS = ['.kiki/commands'] as const;
 
 export interface SkillRootsOptions {
   readonly mergeAllAvailableSkills?: boolean;
+  readonly genericRoots?: boolean;
+  readonly inheritedHomeDir?: string;
 }
 
 export async function userRoots(
@@ -23,8 +25,16 @@ export async function userRoots(
   const roots: SkillRoot[] = [];
   const mergeAllAvailableSkills = options.mergeAllAvailableSkills ?? true;
   await pushBrandGroup(roots, USER_BRAND_DIRS, homeDir, 'user', mergeAllAvailableSkills);
-  await pushFirstExisting(roots, USER_GENERIC_DIRS, osHomeDir, 'user');
+  if (options.inheritedHomeDir !== undefined && options.inheritedHomeDir !== homeDir) {
+    await pushBrandGroup(roots, USER_BRAND_DIRS, options.inheritedHomeDir, 'user', mergeAllAvailableSkills);
+  }
+  if (options.genericRoots !== false) {
+    await pushFirstExisting(roots, USER_GENERIC_DIRS, osHomeDir, 'user');
+  }
   await pushExistingRoot(roots, path.join(homeDir, 'commands'), 'user');
+  if (options.inheritedHomeDir !== undefined && options.inheritedHomeDir !== homeDir) {
+    await pushExistingRoot(roots, path.join(options.inheritedHomeDir, 'commands'), 'user');
+  }
   return roots;
 }
 

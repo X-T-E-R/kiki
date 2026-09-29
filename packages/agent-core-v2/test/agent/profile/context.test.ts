@@ -9,6 +9,7 @@ import { symlinkDir, windowsSymlinksUnavailable } from '../../_base/utils/symlin
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
+  agentsMdWatchRoots,
   extractAgentsMdPathsFromSystemPrompt,
   loadAgentsMd,
   loadAgentsMdDetailed,
@@ -326,5 +327,112 @@ describe('loadAgentsMdDetailed discovered paths', () => {
     const result = await prepareSystemPromptContext({ fs, homeDir }, workDir);
 
     expect(result.agentsMdPaths).toEqual([normalize(join(workDir, 'AGENTS.md'))]);
+  });
+});
+
+describe('loadAgentsMd space inheritance', () => {
+  it('falls back to the base home file when this home has none', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+    await mkdir(baseBrandHome, { recursive: true });
+    await mkdir(brandHome, { recursive: true });
+    await writeFile(join(baseBrandHome, 'AGENTS.md'), 'base instructions', 'utf-8');
+
+    const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: true },
+    });
+
+    expect(result.content).toContain('base instructions');
+    expect(result.paths).toEqual([normalize(join(baseBrandHome, 'AGENTS.md'))]);
+  });
+
+  it('replaces the base home file when this home has one', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+    await mkdir(baseBrandHome, { recursive: true });
+    await mkdir(brandHome, { recursive: true });
+    await writeFile(join(baseBrandHome, 'AGENTS.md'), 'base instructions', 'utf-8');
+    await writeFile(join(brandHome, 'AGENTS.md'), 'space instructions', 'utf-8');
+
+    const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: true },
+    });
+
+    expect(result.content).toContain('space instructions');
+    expect(result.content).not.toContain('base instructions');
+  });
+
+  it('stacks base, home, then workspace files in instructions="stack"', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+    await mkdir(baseBrandHome, { recursive: true });
+    await mkdir(brandHome, { recursive: true });
+    await writeFile(join(baseBrandHome, 'AGENTS.md'), 'base instructions', 'utf-8');
+    await writeFile(join(brandHome, 'AGENTS.md'), 'space instructions', 'utf-8');
+    await writeFile(join(workDir, 'AGENTS.md'), 'workspace instructions', 'utf-8');
+
+    const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: 'stack' },
+    });
+
+    expect(result.content.indexOf('base instructions')).toBeLessThan(
+      result.content.indexOf('space instructions'),
+    );
+    expect(result.content.indexOf('space instructions')).toBeLessThan(
+      result.content.indexOf('workspace instructions'),
+    );
+  });
+
+  it('keeps the workspace .kiki override suppressing both user layers', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+    await mkdir(baseBrandHome, { recursive: true });
+    await mkdir(brandHome, { recursive: true });
+    await mkdir(join(workDir, '.kiki'), { recursive: true });
+    await writeFile(join(baseBrandHome, 'AGENTS.md'), 'base instructions', 'utf-8');
+    await writeFile(join(brandHome, 'AGENTS.md'), 'space instructions', 'utf-8');
+    await writeFile(join(workDir, '.kiki', 'AGENTS.md'), 'workspace override', 'utf-8');
+
+    const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: 'stack' },
+    });
+
+    expect(result.content).toContain('workspace override');
+    expect(result.content).not.toContain('base instructions');
+    expect(result.content).not.toContain('space instructions');
+  });
+
+  it('ignores the base home file when instructions is false', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+    await mkdir(baseBrandHome, { recursive: true });
+    await mkdir(brandHome, { recursive: true });
+    await writeFile(join(baseBrandHome, 'AGENTS.md'), 'base instructions', 'utf-8');
+
+    const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: false },
+    });
+
+    expect(result.content).not.toContain('base instructions');
+    expect(result.paths).toEqual([]);
+  });
+
+  it('watches the base home file when instructions inheritance is on', async () => {
+    const baseBrandHome = join(homeDir, 'main-home');
+    const brandHome = join(homeDir, 'space-home');
+
+    const roots = await agentsMdWatchRoots({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: true },
+    });
+    const paths = roots.flatMap((entry) => entry.candidates);
+
+    expect(paths).toContain(join(baseBrandHome, 'AGENTS.md'));
+
+    const disabled = await agentsMdWatchRoots({ fs, homeDir }, workDir, brandHome, {
+      inheritance: { baseHomeDir: baseBrandHome, instructions: false },
+    });
+    expect(disabled.flatMap((entry) => entry.candidates)).not.toContain(
+      join(baseBrandHome, 'AGENTS.md'),
+    );
   });
 });

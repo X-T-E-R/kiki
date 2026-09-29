@@ -21,6 +21,7 @@ export interface AgentProfileContribution {
 export const AGENT_PROFILE_SOURCE_PRIORITY = {
   builtin: 0,
   plugin: 5,
+  inherited: 8,
   user: 10,
   extra: 20,
   workspace: 30,

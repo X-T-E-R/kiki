@@ -1,10 +1,12 @@
+import { join } from 'pathe';
+
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { resolvePath } from '#/_base/utils/paths';
-
 import { ErrorCodes, Error2 } from '#/errors';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { loadMcpServersDetailed } from '#/app/mcpConfig/configLoader';
+import { IBootstrapService, resolveKikiHome } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
+import { loadMcpJsonLayer, loadMcpServersDetailed } from '#/app/mcpConfig/configLoader';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -20,13 +22,18 @@ import {
 export class McpRegistryService implements IMcpRegistryService {
   declare readonly _serviceBrand: undefined;
 
+  private readonly inheritedHomeDir: string | undefined;
+
   constructor(
     @IMcpConfigStore private readonly store: IMcpConfigStore,
     @IPluginService private readonly plugins: IPluginService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
-  ) {}
+  ) {
+    const inheritance = resolveSpaceInheritance(bootstrap);
+    this.inheritedHomeDir = inheritance.mcp ? inheritance.baseHomeDir : undefined;
+  }
 
   /** Lists entries for a query. `cwd` stays absolute but case-preserving: the canonical form is a
    *  lookup key, and folding it here would leak a lowercased drive path into entry origins, while
@@ -35,36 +42,19 @@ export class McpRegistryService implements IMcpRegistryService {
     const out: McpRegistryEntry[] = [];
 
     if (query.cwd === undefined) {
-      const userEntries = await this.store.list();
-      for (const server of userEntries) {
-        const { name, ...config } = server;
-        out.push({
-          name,
-          config,
-          source: 'global',
-          origin: this.store.path,
-          mutable: true,
-        });
-      }
+      await this.pushUserEntries(out);
+      await this.pushInheritedEntries(out);
     } else {
       const cwd = resolvePath(process.cwd(), query.cwd);
       if (!(await readWorkspaceTrust(this.docs, cwd))) {
-        const userEntries = await this.store.list();
-        for (const server of userEntries) {
-          const { name, ...config } = server;
-          out.push({
-            name,
-            config,
-            source: 'global',
-            origin: this.store.path,
-            mutable: true,
-          });
-        }
+        await this.pushUserEntries(out);
+        await this.pushInheritedEntries(out);
       } else {
         const detailed = await loadMcpServersDetailed({
           fs: this.fs,
           cwd,
           homeDir: this.bootstrap.homeDir,
+          baseHomeDir: this.inheritedHomeDir,
         });
         for (const [name, config] of Object.entries(detailed.servers)) {
           const origin = detailed.origins[name] ?? this.store.path;
@@ -91,6 +81,39 @@ export class McpRegistryService implements IMcpRegistryService {
     }
 
     return out;
+  }
+
+  private async pushUserEntries(out: McpRegistryEntry[]): Promise<void> {
+    for (const server of await this.store.list()) {
+      const { name, ...config } = server;
+      out.push({
+        name,
+        config,
+        source: 'global',
+        origin: this.store.path,
+        mutable: true,
+      });
+    }
+  }
+
+  /** Appends the base home's `mcp.json` entries the space does not override, so the management read
+   *  view matches what the runtime layer resolves. */
+  private async pushInheritedEntries(out: McpRegistryEntry[]): Promise<void> {
+    if (this.inheritedHomeDir === undefined) return;
+    const basePath = join(resolveKikiHome(this.inheritedHomeDir), 'mcp.json');
+    const servers = await loadMcpJsonLayer(this.fs, basePath);
+    const present = new Set(out.map((entry) => entry.name));
+    for (const [name, config] of Object.entries(servers)) {
+      if (present.has(name)) continue;
+      present.add(name);
+      out.push({
+        name,
+        config,
+        source: 'global',
+        origin: basePath,
+        mutable: false,
+      });
+    }
   }
 
   async get(name: string, query: McpRegistryQuery = {}): Promise<McpRegistryEntry> {

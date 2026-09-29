@@ -133,6 +133,9 @@ export interface PluginRecord {
   readonly root: string;
   readonly source: PluginSource;
   readonly enabled: boolean;
+  /** Installed in the base (main) home and only visible here through `inherit.plugins`; its files stay
+   *  in the base home and this home cannot change, roll back, or remove it. */
+  readonly inherited?: boolean;
   readonly state: PluginState;
   readonly installedAt: string;
   readonly updatedAt?: string;

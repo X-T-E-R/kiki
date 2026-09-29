@@ -47,6 +47,9 @@ export interface RgProbe {
 
 export interface EnsureRgPathOptions {
   readonly shareDir?: string | undefined;
+  /** Lower-priority home directories whose `bin/` cache is used when this home has no copy, so a
+   *  space does not download its own ripgrep. */
+  readonly fallbackShareDirs?: readonly string[] | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly allowCachedFallback?: boolean;
 }
@@ -90,7 +93,7 @@ async function resolveRgPath(
   shareDir: string,
   options: EnsureRgPathOptions,
 ): Promise<RgResolution> {
-  const existing = await findExistingRg(probe, shareDir, options.allowCachedFallback === true);
+  const existing = await findExistingRg(probe, shareDir, options.allowCachedFallback === true, options.fallbackShareDirs);
   if (existing) return existing;
   throwIfAborted(options.signal);
   if (options.allowCachedFallback === true) {
@@ -103,6 +106,7 @@ export async function findExistingRg(
   _probe: RgProbe,
   shareDir: string = getShareDir(),
   allowCachedFallback = true,
+  fallbackShareDirs: readonly string[] = [],
 ): Promise<RgResolution | undefined> {
   const system = await findRgOnPath();
   if (system !== undefined) return { path: system, source: 'system-path' };
@@ -112,9 +116,12 @@ export async function findExistingRg(
     if (vendorPath !== undefined && (await isExecutableFile(vendorPath))) {
       return { path: vendorPath, source: 'vendor' };
     }
-    const cachePath = join(shareDir, 'bin', rgBinaryName());
-    if (await isExecutableFile(cachePath)) {
-      return { path: cachePath, source: 'share-bin-cached' };
+    const cacheDirs = [shareDir, ...fallbackShareDirs.filter((dir) => dir !== '' && dir !== shareDir)];
+    for (const dir of cacheDirs) {
+      const cachePath = join(dir, 'bin', rgBinaryName());
+      if (await isExecutableFile(cachePath)) {
+        return { path: cachePath, source: 'share-bin-cached' };
+      }
     }
   }
 

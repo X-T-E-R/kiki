@@ -46,6 +46,8 @@ import {
   guessMime,
 } from '#/_base/utils/fileMeta';
 import { ErrorCodes, Error2, isError2, unwrapErrorCause } from '#/errors';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostFileSystem, type HostDirEntry, type HostFileStat } from '#/os/interface/hostFileSystem';
 import type { RuntimePath } from '#/runtime/runtime';
@@ -102,6 +104,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     @IRuntimeResolver private readonly resolver: IRuntimeResolver,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IWorkspaceGitService private readonly git: IWorkspaceGitService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     private readonly runtimeId = 'local',
   ) {
     this.workspaceId = workspace.workspaceId;
@@ -950,8 +953,14 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const probe: RgProbe = {
       exec: (args) => runCommand(lease.runtime.process!, args, { cwd: this.workDir }),
     };
+    const inherited = resolveSpaceInheritance(this.bootstrap).baseHomeDir;
     try {
-      this.rgResolution = await ensureRgPath(probe);
+      this.rgResolution = await ensureRgPath(
+        probe,
+        inherited === undefined
+          ? {}
+          : { allowCachedFallback: true, fallbackShareDirs: [inherited] },
+      );
     } catch {
       this.rgResolution = null;
     } finally {

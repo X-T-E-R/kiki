@@ -215,3 +215,70 @@ describe('remote background import policy', () => {
     await expect(fetchRemoteMedia('https://example.com/a.png', async () => ['93.184.216.34'], html)).rejects.toThrow(/supported/);
   });
 });
+
+describe('appearance pack space inheritance', () => {
+  it('reads base-home packs and keeps installs and deletes in the space', async () => {
+    const baseHome = await mkdtemp(join(tmpdir(), 'kiki-appearance-base-'));
+    const spaceHome = await mkdtemp(join(tmpdir(), 'kiki-appearance-space-'));
+    const baseThemes = join(baseHome, 'themes');
+    const spaceThemes = join(spaceHome, 'themes');
+    await mkdir(join(baseThemes, 'fixture-dusk'), { recursive: true });
+    await mkdir(spaceThemes, { recursive: true });
+    await writeFile(join(baseThemes, 'fixture-dusk', 'kiki-pack.json'), JSON.stringify(MANIFEST));
+    await writeFile(join(baseThemes, 'fixture-dusk', 'preview.png'), PNG);
+    await writeFile(join(baseThemes, 'fixture-dusk', 'day.webp'), WEBP);
+    await writeFile(join(baseThemes, 'fixture-dusk', 'night.mp4'), MP4);
+    await writeFile(
+      join(spaceHome, 'home.toml'),
+      [
+        'schema = 1',
+        'id = "h-appearance"',
+        'name = "Appearance Space"',
+        `base = "${baseHome.replaceAll('\\', '/')}"`,
+        '',
+      ].join('\n'),
+    );
+
+    const space = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: spaceHome, logLevel: 'silent' });
+    try {
+      const app = space.app as unknown as { inject: (value: unknown) => Promise<InjectResponse> };
+      const call = (req: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }): Promise<InjectResponse> =>
+        app.inject({ ...req, headers: { ...req.headers, authorization: `Bearer ${space.authTokenService.getToken()}` } });
+
+      const listed = (await call({ method: 'GET', url: '/api/appearance/packs' })).json() as { data: ListAppearancePacksResponse };
+      expect(listed.data.items.map((item) => item.id)).toEqual(['fixture-dusk']);
+      expect(listed.data.directory).toBe(spaceThemes);
+
+      const manifest = (await call({ method: 'GET', url: '/api/appearance/packs/fixture-dusk' })).json() as { code: number };
+      expect(manifest.code).toBe(0);
+
+      const file = await call({ method: 'GET', url: '/api/appearance/packs/fixture-dusk/files/day.webp' });
+      expect(file.statusCode).toBe(200);
+      expect(file.rawPayload.equals(WEBP)).toBe(true);
+
+      const installed = (await call({
+        method: 'POST',
+        url: '/api/appearance/packs?replace=true',
+        payload: packZip({ ...MANIFEST, name: 'Space Dusk' }),
+        headers: { 'content-type': 'application/zip' },
+      })).json() as { code: number; data: InstallAppearancePackResponse };
+      expect(installed.code).toBe(0);
+
+      const afterInstall = (await call({ method: 'GET', url: '/api/appearance/packs' })).json() as { data: ListAppearancePacksResponse };
+      expect(afterInstall.data.items).toHaveLength(1);
+      expect(afterInstall.data.items[0]?.name).toBe('Space Dusk');
+      expect(await readdir(baseThemes)).toEqual(['fixture-dusk']);
+
+      const removed = (await call({ method: 'DELETE', url: '/api/appearance/packs/fixture-dusk' })).json() as { code: number };
+      expect(removed.code).toBe(0);
+      const afterwards = (await call({ method: 'GET', url: '/api/appearance/packs' })).json() as { data: ListAppearancePacksResponse };
+      expect(afterwards.data.items.map((item) => item.id)).toEqual(['fixture-dusk']);
+      expect(afterwards.data.items[0]?.name).toBe('Fixture Dusk');
+      expect(await readdir(spaceThemes)).toEqual([]);
+    } finally {
+      await space.close();
+      await rm(baseHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(spaceHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});

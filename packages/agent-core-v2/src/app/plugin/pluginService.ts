@@ -5,6 +5,7 @@ import { Service } from '#/_base/di/service';
 import { AsyncEmitter, Emitter, type Event } from '#/_base/event';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
 import { LifecycleScope } from '#/app/scopes';
@@ -81,8 +82,10 @@ export class PluginService extends Service implements IPluginService {
     this.envBaseUrl = bootstrap.getEnv(KIKI_CODE_BASE_URL_ENV);
     this.envOAuthHost =
       bootstrap.getEnv(KIKI_CODE_OAUTH_HOST_ENV) ?? bootstrap.getEnv(KIKI_OAUTH_HOST_ENV);
+    const inheritance = resolveSpaceInheritance(bootstrap);
     this.manager = new PluginManager({
       kimiHomeDir: this.homeDir,
+      inheritedHomeDir: inheritance.plugins ? inheritance.baseHomeDir : undefined,
       discoverSkills: (roots) => discovery.discover(roots),
     });
   }

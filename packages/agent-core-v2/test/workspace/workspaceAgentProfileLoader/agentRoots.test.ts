@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   configuredAgentRoots,
+  inheritedAgentRootWatchPlans,
+  inheritedAgentRoots,
   projectAgentRoots,
   userAgentRoots,
 } from '#/workspace/workspaceAgentProfileLoader/internal/agentRoots';
@@ -124,6 +126,50 @@ describe('agentRoots', () => {
       expect(roots.some((r) => r.path.endsWith('.agents/agents') && r.source === 'user')).toBe(
         true,
       );
+    });
+
+    it('hides the generic .agents/agents root when genericRoots is false', async () => {
+      const homeDir = join(root, 'brand-home');
+      const osHomeDir = join(root, 'os-home');
+      await mkdir(join(homeDir, 'agents'), { recursive: true });
+      await mkdir(join(osHomeDir, '.agents/agents'), { recursive: true });
+
+      const roots = await userAgentRoots(hostFs, homeDir, osHomeDir, undefined, {
+        genericRoots: false,
+      });
+
+      expect(roots.some((r) => r.path.endsWith('.agents/agents'))).toBe(false);
+      expect(roots.some((r) => r.path.endsWith('/agents'))).toBe(true);
+    });
+  });
+
+  describe('inheritedRoots', () => {
+    it('resolves the base home agents directory as the inherited source', async () => {
+      const baseHome = join(root, 'main-home');
+      await mkdir(join(baseHome, 'agents'), { recursive: true });
+
+      const roots = await inheritedAgentRoots(hostFs, baseHome);
+
+      expect(roots).toEqual([expect.objectContaining({ source: 'inherited' })]);
+      expect(roots[0]?.path.endsWith('/agents')).toBe(true);
+    });
+
+    it('returns no roots when the base home has no agents directory', async () => {
+      const baseHome = join(root, 'empty-main-home');
+      await mkdir(baseHome, { recursive: true });
+
+      expect(await inheritedAgentRoots(hostFs, baseHome)).toEqual([]);
+    });
+
+    it('watches the base agents directory and SYSTEM.md under the base home', () => {
+      const baseHome = join(root, 'main-home');
+
+      expect(inheritedAgentRootWatchPlans(baseHome)).toEqual([
+        {
+          root: baseHome,
+          candidates: [join(baseHome, 'agents'), join(baseHome, 'SYSTEM.md')],
+        },
+      ]);
     });
   });
 

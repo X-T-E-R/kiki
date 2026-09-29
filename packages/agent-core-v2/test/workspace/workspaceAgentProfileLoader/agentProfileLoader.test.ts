@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
-import { join } from 'pathe';
+import { dirname, join } from 'pathe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AsyncEmitter, Emitter, Event } from '#/_base/event';
@@ -53,6 +53,8 @@ import { WorkspaceAgentProfileLoaderService } from '#/workspace/workspaceAgentPr
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
+import { IInheritedAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/inheritedAgentProfileLoader';
+import { InheritedAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/inheritedAgentProfileLoaderService';
 import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
@@ -67,7 +69,8 @@ import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoade
 import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
 import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 
-import { stubBootstrap } from '../../app/bootstrap/stubs';
+import { stubBootstrap, type StubSpaceOptions } from '../../app/bootstrap/stubs';
+import type { SpaceHome } from '#/app/bootstrap/spaceHome';
 
 function configStub(): IConfigService & {
   setExtraAgentDirs(dirs: readonly string[]): void;
@@ -315,6 +318,7 @@ interface StackOptions {
   readonly workspaceTrusted?: boolean;
   readonly userAgentProfileHomeDir?: string;
   readonly atomicTextWriter?: (path: string, text: string) => Promise<void>;
+  readonly space?: StubSpaceOptions;
 }
 
 function makeStack(fixture: Fixture, opts?: StackOptions) {
@@ -323,7 +327,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   const config = configStub();
   if (opts?.extraAgentDirs !== undefined) config.setExtraAgentDirs(opts.extraAgentDirs);
   const bootstrap: IBootstrapService = {
-    ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }),
+    ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }, opts?.space),
     osHomeDir: fixture.osHomeDir,
     userAgentProfileHomeDir: opts?.userAgentProfileHomeDir ?? fixture.homeDir,
   };
@@ -363,6 +367,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       ],
       [IBuiltinAgentProfileLoader, new SyncDescriptor(BuiltinAgentProfileLoaderService)],
       [IUserAgentProfileLoader, new SyncDescriptor(UserAgentProfileLoaderService)],
+      [IInheritedAgentProfileLoader, new SyncDescriptor(InheritedAgentProfileLoaderService)],
       [IPluginAgentProfileLoader, new SyncDescriptor(PluginAgentProfileLoaderService)],
       [IWorkspaceAgentProfileLoader, new SyncDescriptor(WorkspaceAgentProfileLoaderService)],
       [IExtraAgentProfileLoader, new SyncDescriptor(ExtraAgentProfileLoaderService)],
@@ -375,6 +380,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   const registry = get(IAgentProfileRegistry);
   const builtinLoader = get(IBuiltinAgentProfileLoader);
   const userLoader = get(IUserAgentProfileLoader);
+  const inheritedLoader = get(IInheritedAgentProfileLoader);
   const pluginLoader = get(IPluginAgentProfileLoader);
   const workspaceLoader = get(IWorkspaceAgentProfileLoader);
   const extraLoader = get(IExtraAgentProfileLoader);
@@ -401,6 +407,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     writer,
     builtinLoader,
     userLoader,
+    inheritedLoader,
     pluginLoader,
     workspaceLoader,
     extraLoader,
@@ -411,6 +418,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     async ready(): Promise<void> {
       await Promise.all([
         userLoader.ready,
+        inheritedLoader.ready,
         pluginLoader.ready,
         workspaceLoader.ready,
         extraLoader.ready,
@@ -1898,7 +1906,8 @@ describe('agent profile loaders + session catalog', () => {
           'user',
           'workspace',
         ]);
-        for (const sourceId of ['explicit', 'extra', 'plugin', 'user', 'workspace'] as const) {
+        for (const sourceId of ['explicit', 'extra', 'inherited', 'plugin', 'user', 'workspace'] as const) {
+          'inherited',
           expect(bySourceId.get(sourceId)?.workspaceKey).toBe('wd_test');
           expect(bySourceId.get(sourceId)?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY[sourceId]);
         }
@@ -2299,6 +2308,194 @@ describe('agent profile loaders + session catalog', () => {
         await stack.ready();
         expect(stack.catalog.get('detached')?.description).toBe('detached private');
       });
+    });
+  });
+});
+
+describe('agent profile space inheritance', () => {
+  function spaceHome(baseHomeDir: string, overrides: Partial<SpaceHome['inherit']> = {}): SpaceHome {
+    return {
+      id: 'h-b2test',
+      name: 'B2 Space',
+      baseHomeDir,
+      inherit: {
+        config: true,
+        credentials: 'shared',
+        agents: true,
+        instructions: true,
+        skills: true,
+        mcp: true,
+        appearance: true,
+        plugins: false,
+        genericRoots: true,
+        ...overrides,
+      },
+    };
+  }
+
+  function baseHomeOf(fixture: Fixture): string {
+    return join(dirname(fixture.homeDir), 'main-home');
+  }
+
+  it('registers base-home profiles as the inherited source and lets a space profile win same names', async () => {
+    await withFixture(async (fixture) => {
+      const baseHome = baseHomeOf(fixture);
+      await writeAgent(join(baseHome, 'agents'), 'base-only.md', agentMd('base-only', 'base only'));
+      await writeAgent(join(baseHome, 'agents'), 'shared.md', agentMd('shared', 'base shared'));
+      await writeAgent(join(fixture.homeDir, 'agents'), 'shared.md', agentMd('shared', 'space shared'));
+
+      await withStack(
+        fixture,
+        { space: { baseHomeDir: baseHome, space: spaceHome(baseHome) } },
+        async (stack) => {
+          await stack.ready();
+
+          expect(stack.catalog.get('shared')?.description).toBe('space shared');
+          expect(stack.catalog.inspect('shared')?.sourceId).toBe('user');
+
+          const inherited = stack.catalog.inspect('base-only');
+          expect(inherited?.sourceId).toBe('inherited');
+          expect(inherited?.profile.description).toBe('base only');
+          const sourcePath = inherited?.profile.sourcePath;
+          expect(sourcePath?.replaceAll('\\', '/').endsWith('/main-home/agents/base-only.md')).toBe(true);
+
+          const inheritedEntry = stack.registry.entries().find((entry) => entry.sourceId === 'inherited');
+          expect(inheritedEntry?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY.inherited);
+        },
+      );
+    });
+  });
+
+  it('lets an inherited profile win over a same-name plugin profile', async () => {
+    await withFixture(async (fixture) => {
+      const baseHome = baseHomeOf(fixture);
+      const pluginAgentsDir = join(fixture.extraDir, 'plugin-agents');
+      await writeAgent(pluginAgentsDir, 'collision.md', agentMd('collision', 'from plugin'));
+      await writeAgent(join(baseHome, 'agents'), 'collision.md', agentMd('collision', 'from base'));
+
+      await withStack(
+        fixture,
+        {
+          pluginAgentRoots: [{ path: pluginAgentsDir, source: 'plugin' }],
+          space: { baseHomeDir: baseHome, space: spaceHome(baseHome) },
+        },
+        async (stack) => {
+          await stack.ready();
+
+          expect(stack.catalog.get('collision')?.description).toBe('from base');
+          expect(stack.catalog.inspect('collision')?.sourceId).toBe('inherited');
+          expect(stack.catalog.inspect('collision')?.suppressed).toContainEqual(
+            expect.objectContaining({ sourceId: 'plugin' }),
+          );
+        },
+      );
+    });
+  });
+
+  it('falls back to the base home SYSTEM.md for the default profile', async () => {
+    await withFixture(async (fixture) => {
+      const baseHome = baseHomeOf(fixture);
+      await mkdir(baseHome, { recursive: true });
+      await writeFile(
+        join(baseHome, 'SYSTEM.md'),
+        '---\nname: agent\ndescription: Base system\n---\nBASE SYSTEM PROMPT',
+      );
+
+      await withStack(
+        fixture,
+        { space: { baseHomeDir: baseHome, space: spaceHome(baseHome) } },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.getDefault().description).toBe('Base system');
+          expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('inherited');
+          expect(stack.catalog.getDefault().systemPrompt({})).toContain('BASE SYSTEM PROMPT');
+        },
+      );
+    });
+  });
+
+  it('lets the space SYSTEM.md replace the base home one', async () => {
+    await withFixture(async (fixture) => {
+      const baseHome = baseHomeOf(fixture);
+      await mkdir(baseHome, { recursive: true });
+      await writeFile(
+        join(baseHome, 'SYSTEM.md'),
+        '---\nname: agent\ndescription: Base system\n---\nBASE SYSTEM PROMPT',
+      );
+      await writeFile(
+        join(fixture.homeDir, 'SYSTEM.md'),
+        '---\nname: agent\ndescription: Space system\n---\nSPACE SYSTEM PROMPT',
+      );
+
+      await withStack(
+        fixture,
+        { space: { baseHomeDir: baseHome, space: spaceHome(baseHome) } },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.getDefault().description).toBe('Space system');
+          expect(stack.catalog.getDefault().systemPrompt({})).toContain('SPACE SYSTEM PROMPT');
+          expect(stack.catalog.getDefault().systemPrompt({})).not.toContain('BASE SYSTEM PROMPT');
+        },
+      );
+    });
+  });
+
+  it('ignores the base home when inherit.agents is false', async () => {
+    await withFixture(async (fixture) => {
+      const baseHome = baseHomeOf(fixture);
+      await writeAgent(join(baseHome, 'agents'), 'base-only.md', agentMd('base-only', 'base only'));
+      await writeFile(
+        join(baseHome, 'SYSTEM.md'),
+        '---\nname: agent\ndescription: Base system\n---\nBASE SYSTEM PROMPT',
+      );
+
+      await withStack(
+        fixture,
+        {
+          space: {
+            baseHomeDir: baseHome,
+            space: spaceHome(baseHome, { agents: false }),
+          },
+        },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.get('base-only')).toBeUndefined();
+          expect(stack.registry.entries().some((entry) => entry.sourceId === 'inherited')).toBe(true);
+          expect(
+            stack.registry
+              .entries()
+              .find((entry) => entry.sourceId === 'inherited')?.contribution.profiles,
+          ).toEqual([]);
+          expect(() => stack.catalog.getDefault()).toThrow(/not available/);
+        },
+      );
+    });
+  });
+
+  it('hides the OS-home generic root when inherit.generic_roots is false', async () => {
+    await withFixture(async (fixture) => {
+      await writeAgent(join(fixture.osHomeDir, '.agents/agents'), 'generic.md', agentMd('generic', 'generic root'));
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('generic')?.description).toBe('generic root');
+      });
+
+      const baseHome = baseHomeOf(fixture);
+      await mkdir(baseHome, { recursive: true });
+      await withStack(
+        fixture,
+        {
+          space: {
+            baseHomeDir: baseHome,
+            space: spaceHome(baseHome, { genericRoots: false }),
+          },
+        },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.get('generic')).toBeUndefined();
+        },
+      );
     });
   });
 });

@@ -4,6 +4,7 @@ import { TimeoutTimer } from '#/_base/utils/timer';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
@@ -33,7 +34,9 @@ const WATCH_DEBOUNCE_MS = 200;
  *  (synthesized against the builtin default) after the scanned profiles so it wins same-name
  *  collisions within this contribution; watches user agent-root candidates and `SYSTEM.md` through
  *  `hostFsWatch`, reloading debounced on changes. The roots are global OS directories, but the
- *  per-workspace contribution keeps every record in the same workspace-tagged lane. */
+ *  per-workspace contribution keeps every record in the same workspace-tagged lane. A space home can
+ *  hide the OS-home generic root (`~/.agents/agents`) through `inherit.generic_roots = false`; the
+ *  base home's `agents/` and `SYSTEM.md` belong to the `inherited` source instead. */
 export class UserAgentProfileLoaderService
   extends AgentProfileLoaderBase
   implements IUserAgentProfileLoader
@@ -48,6 +51,7 @@ export class UserAgentProfileLoaderService
   private duplicateWarnings = new Set<string>();
   private readonly watchDebounce = this._register(new TimeoutTimer());
   private readonly watchReady: Promise<void>;
+  private readonly genericRootsEnabled: boolean;
 
   constructor(
     @IBootstrapService private readonly bootstrap: IBootstrapService,
@@ -63,6 +67,7 @@ export class UserAgentProfileLoaderService
   ) {
     super(log, registry);
     this.defaultProfile = builtin.getDefault();
+    this.genericRootsEnabled = resolveSpaceInheritance(this.bootstrap).genericRoots;
     this.watchReady = this.watchUserAgentRoots();
     this._register(
       this.shippedManager.onDidChange(() => {
@@ -98,6 +103,7 @@ export class UserAgentProfileLoaderService
       (message, error) => {
         this.log.warn(message, error);
       },
+      { genericRoots: this.genericRootsEnabled },
     );
     const systemFailures: NonNullable<AgentProfileContribution['skipped']>[number][] = [];
     const loadedSystemMd = await loadSystemMdProfile(
@@ -141,6 +147,7 @@ export class UserAgentProfileLoaderService
     for (const { root, candidates } of userAgentRootWatchPlans(
       this.bootstrap.userAgentProfileHomeDir,
       this.bootstrap.osHomeDir,
+      { genericRoots: this.genericRootsEnabled },
     )) {
       const handle = this.fsWatch.watch(root, {
         ignored: subtreeWatchFilter(root, candidates),

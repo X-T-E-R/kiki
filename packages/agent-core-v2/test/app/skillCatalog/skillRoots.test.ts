@@ -91,6 +91,46 @@ describe('skillRoots', () => {
         true,
       );
     });
+
+    it('hides the generic .agents/skills root when genericRoots is false', async () => {
+      const homeDir = join(root, 'brand-home');
+      const osHomeDir = join(root, 'os-home');
+      await mkdir(join(homeDir, 'skills/notes'), { recursive: true });
+      await mkdir(join(osHomeDir, '.agents/skills/notes'), { recursive: true });
+
+      const roots = await userRoots(homeDir, osHomeDir, { genericRoots: false });
+
+      expect(roots.some((r) => r.path.endsWith('.agents/skills'))).toBe(false);
+      expect(roots.some((r) => r.path.endsWith('/skills'))).toBe(true);
+    });
+
+    it('orders the base home skills and commands after this home and before the generic root', async () => {
+      const homeDir = join(root, 'brand-home');
+      const baseHomeDir = join(root, 'main-home');
+      const osHomeDir = join(root, 'os-home');
+      await mkdir(join(homeDir, 'skills/notes'), { recursive: true });
+      await mkdir(join(baseHomeDir, 'skills/notes'), { recursive: true });
+      await mkdir(join(baseHomeDir, 'commands'), { recursive: true });
+      await mkdir(join(osHomeDir, '.agents/skills/notes'), { recursive: true });
+
+      const roots = await userRoots(homeDir, osHomeDir, { inheritedHomeDir: baseHomeDir });
+      const index = (suffix: string): number =>
+        roots.findIndex((entry) => entry.path.replaceAll('\\', '/').endsWith(suffix));
+
+      expect(index('/brand-home/skills')).toBeLessThan(index('/main-home/skills'));
+      expect(index('/main-home/skills')).toBeLessThan(index('/os-home/.agents/skills'));
+      expect(index('/brand-home/commands')).toBeLessThan(index('/main-home/commands'));
+      expect(roots.find((entry) => entry.path.replaceAll('\\', '/').endsWith('/main-home/commands'))?.scanMode)
+        .toBe('commands');
+    });
+
+    it('adds no base roots when inheritedHomeDir equals the home directory', async () => {
+      await mkdir(join(root, 'skills/notes'), { recursive: true });
+
+      const roots = await userRoots(root, root, { inheritedHomeDir: root });
+
+      expect(roots).toHaveLength(1);
+    });
   });
 
   it('adds user and project command roots independently of skill merge settings', async () => {

@@ -28,6 +28,7 @@ export interface PreparedSystemPromptContext extends SystemPromptContext {
 export interface PrepareSystemPromptContextOptions {
   readonly additionalDirs?: readonly string[];
   readonly preloadedAgentsMd?: LoadedAgentsMd;
+  readonly inheritance?: AgentsMdInheritance;
 }
 
 export async function prepareSystemPromptContext(
@@ -41,7 +42,7 @@ export async function prepareSystemPromptContext(
     listDirectory(deps, workDir, { collapseHiddenDirs: true }),
     options?.preloadedAgentsMd !== undefined
       ? Promise.resolve(options.preloadedAgentsMd)
-      : loadAgentsMdForRoots(deps, brandHome, [workDir]),
+      : loadAgentsMdForRoots(deps, brandHome, [workDir], { inheritance: options?.inheritance }),
     loadAdditionalDirsInfo(deps, additionalDirs),
   ]);
   return {
@@ -57,8 +58,9 @@ export async function loadAgentsMd(
   deps: ProfileContextDeps,
   workDir: string,
   brandHome?: string,
+  options: LoadAgentsMdOptions = {},
 ): Promise<string> {
-  const result = await loadAgentsMdForRoots(deps, brandHome, [workDir]);
+  const result = await loadAgentsMdForRoots(deps, brandHome, [workDir], options);
   return result.content;
 }
 
@@ -66,8 +68,9 @@ export async function loadAgentsMdDetailed(
   deps: ProfileContextDeps,
   workDir: string,
   brandHome?: string,
+  options: LoadAgentsMdOptions = {},
 ): Promise<LoadedAgentsMd> {
-  return loadAgentsMdForRoots(deps, brandHome, [workDir]);
+  return loadAgentsMdForRoots(deps, brandHome, [workDir], options);
 }
 
 export interface LoadedAgentsMd {
@@ -123,10 +126,20 @@ function agentsMdNameRank(name: string): number {
 }
 
 
+export interface AgentsMdInheritance {
+  readonly baseHomeDir?: string;
+  readonly instructions: boolean | 'stack';
+}
+
+export interface LoadAgentsMdOptions {
+  readonly inheritance?: AgentsMdInheritance;
+}
+
 export async function loadAgentsMdForRoots(
   deps: ProfileContextDeps,
   brandHome: string | undefined,
   workDirs: readonly string[],
+  options: LoadAgentsMdOptions = {},
 ): Promise<LoadedAgentsMd> {
   const discovered: AgentFile[] = [];
   const seen = new Set<string>();
@@ -146,6 +159,14 @@ export async function loadAgentsMdForRoots(
   };
 
   const brandDir = brandHome ?? join(deps.homeDir, '.kiki');
+  const inheritance = options.inheritance;
+  const baseDir =
+    inheritance?.instructions !== false &&
+    inheritance?.baseHomeDir !== undefined &&
+    normalize(inheritance.baseHomeDir) !== normalize(brandDir)
+      ? inheritance.baseHomeDir
+      : undefined;
+  const stack = inheritance?.instructions === 'stack';
   const workspaceFiles: { dotKiki: string | undefined; plain: string | undefined }[] = [];
   const workspaceRoots = new Set<string>();
   for (const workDir of workDirs) {
@@ -168,7 +189,15 @@ export async function loadAgentsMdForRoots(
   ).some(Boolean);
   if (!hasWorkspaceOverride) {
     const userFile = await findAgentsMdPath(deps, brandDir);
+    if (stack && baseDir !== undefined) {
+      const baseFile = await findAgentsMdPath(deps, baseDir);
+      if (baseFile !== undefined) await collect(baseFile);
+    }
     if (userFile !== undefined) await collect(userFile);
+    if (!stack && userFile === undefined && baseDir !== undefined) {
+      const baseFile = await findAgentsMdPath(deps, baseDir);
+      if (baseFile !== undefined) await collect(baseFile);
+    }
   }
 
   for (const { dotKiki, plain } of workspaceFiles) {
@@ -199,12 +228,23 @@ export async function agentsMdWatchRoots(
   deps: ProfileContextDeps,
   workDir: string,
   brandHome?: string,
+  options: LoadAgentsMdOptions = {},
 ): Promise<readonly AgentsMdWatchRoot[]> {
   const brandDir = brandHome ?? join(deps.homeDir, '.kiki');
+  const inheritance = options.inheritance;
+  const baseDir =
+    inheritance?.instructions !== false &&
+    inheritance?.baseHomeDir !== undefined &&
+    normalize(inheritance.baseHomeDir) !== normalize(brandDir)
+      ? inheritance.baseHomeDir
+      : undefined;
   const rootWorkDir = normalize(workDir);
   const projectRoot = (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
   return [
     { root: brandDir, candidates: [join(brandDir, 'AGENTS.md')] },
+    ...(baseDir === undefined
+      ? []
+      : [{ root: baseDir, candidates: [join(baseDir, 'AGENTS.md')] }]),
     {
       root: projectRoot,
       candidates: [join(projectRoot, 'AGENTS.md'), dotKikiAgentsMdPath(projectRoot)],

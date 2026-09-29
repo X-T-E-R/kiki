@@ -26,7 +26,7 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void; reject(
   return { promise, resolve, reject };
 }
 
-type ProfileReadiness = Partial<Record<'user' | 'plugin' | 'explicit' | 'extra' | 'workspace', Promise<void>>>;
+type ProfileReadiness = Partial<Record<'user' | 'plugin' | 'explicit' | 'extra' | 'workspace' | 'inherited', Promise<void>>>;
 
 function setup(
   readiness = new Map<string, Promise<void>>(),
@@ -92,6 +92,7 @@ function setup(
       pluginAgentProfiles: profileBehavior('plugin'),
       explicitAgentProfiles: profileBehavior('explicit'),
       extraAgentProfiles: profileBehavior('extra'),
+      inheritedAgentProfiles: profileBehavior('inherited'),
       disposables: [behavior],
       ready: false,
       failed: false,
@@ -157,6 +158,25 @@ describe('Program', () => {
     await Promise.resolve();
     expect(program.status).toBe('preparing');
     user.resolve();
+    await program.ready;
+
+    expect(program.status).toBe('ready');
+    program.dispose();
+    await registry.dispose();
+  });
+
+  it('waits for the inherited profile loader before reporting the program ready', async () => {
+    const inherited = deferred();
+    const { registry, program } = setup(
+      new Map(),
+      [],
+      new Map([['one', { inherited: inherited.promise }]]),
+    );
+    registry.register(runtime('one'));
+
+    await Promise.resolve();
+    expect(program.status).toBe('preparing');
+    inherited.resolve();
     await program.ready;
 
     expect(program.status).toBe('ready');

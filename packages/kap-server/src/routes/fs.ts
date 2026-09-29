@@ -31,6 +31,7 @@ import {
   fsSuggestResponseSchema,
 } from '@kiki/agent-core-v2/workspace/workspaceFs/fs';
 import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import type { IWorktreeService } from '@kiki/agent-core-v2/app/git/worktreeModel';
 import type { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
@@ -206,6 +207,7 @@ function createRuntimeFs(
         resolver,
         core.accessor.get(ITelemetryService),
         git,
+        core.accessor.get(IBootstrapService),
         runtimeId,
       ),
       hostFs: lease.runtime.fs!,

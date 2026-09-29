@@ -35,6 +35,8 @@ import {
   ExplicitAgentProfileLoaderService,
   loadExplicitAgentProfileContribution,
 } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
+import type { IInheritedAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/inheritedAgentProfileLoader';
+import { InheritedAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/inheritedAgentProfileLoaderService';
 import type { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import type { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
@@ -111,6 +113,7 @@ interface ProgramGeneration {
   readonly pluginAgentProfiles: IPluginAgentProfileLoader;
   readonly explicitAgentProfiles: IExplicitAgentProfileLoader;
   readonly extraAgentProfiles: IExtraAgentProfileLoader;
+  readonly inheritedAgentProfiles: IInheritedAgentProfileLoader;
   readonly disposables: readonly { dispose(): void | Promise<void> }[];
   ready: boolean;
   failed: boolean;
@@ -327,13 +330,14 @@ export class Program {
       const localConfig = new FileProjectLocalConfigService(this.dependencies.bootstrap, runtime.fs!);
       const dirs = own(new WorkspaceDirsService(this.context, localConfig, runtime.watch!, this.dependencies.log, state, trust));
       const git = new WorkspaceGitService(this.context, this.dependencies.git);
-      const fs = new WorkspaceFsService(this.context, dirs, runtime.fs!, this.resolver, this.dependencies.telemetry, git);
+      const fs = new WorkspaceFsService(this.context, dirs, runtime.fs!, this.resolver, this.dependencies.telemetry, git, this.dependencies.bootstrap);
       const watch = own(new WorkspaceFsWatchService(this.context, dirs, runtime.watch!, runtime.fs!));
       const instructions = own(new WorkspaceInstructionsService(this.context, runtime.fs!, runtime.environment, this.dependencies.bootstrap, runtime.watch!, this.dependencies.log, state));
       const mcpConfig = own(new WorkspaceMcpConfigService(this.context, this.dependencies.bootstrap, this.dependencies.plugins, this.dependencies.log, this.dependencies.config, runtime.watch!, runtime.fs!, trust, this.dependencies.configStore));
       const mcp = own(new WorkspaceMcpService(this.context, this.resolver, mcpConfig, this.dependencies.oauth, this.dependencies.log, this.dependencies.telemetry, this.dependencies.identity, this.dependencies.sessionManager));
       const userAgentProfiles = own(new UserAgentProfileLoaderService(this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, this.dependencies.builtinAgentProfiles, this.context, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.shippedAgentProfiles, this.dependencies.agentProfiles));
       const pluginAgentProfiles = own(new PluginAgentProfileLoaderService(this.dependencies.plugins, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
+      const inheritedAgentProfiles = own(new InheritedAgentProfileLoaderService(this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
       const explicitAgentProfiles = own(new ExplicitAgentProfileLoaderService(this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
       const extraAgentProfiles = own(new ExtraAgentProfileLoaderService(this.dependencies.config, this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, this.dependencies.agentProfiles));
       const agentProfiles = own(new WorkspaceAgentProfileLoaderService(this.context, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentExecutors, trust, this.dependencies.agentProfiles));
@@ -365,6 +369,7 @@ export class Program {
         pluginAgentProfiles,
         explicitAgentProfiles,
         extraAgentProfiles,
+        inheritedAgentProfiles,
         disposables,
         ready: false,
         failed: false,
@@ -392,6 +397,7 @@ export class Program {
         readiness(generation.pluginAgentProfiles),
         readiness(generation.explicitAgentProfiles),
         readiness(generation.extraAgentProfiles),
+        readiness(generation.inheritedAgentProfiles),
         readiness(generation.agentProfiles),
       ]),
     ]).then(([required]) => {

@@ -54,19 +54,14 @@ describe('McpRegistryService', () => {
   let trustedKey: string | undefined;
   let registry: IMcpRegistryService;
 
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'kimi-mcp-registry-home-'));
-    vi.stubEnv('KIKI_HOME', home);
-    disposables = new DisposableStore();
-    tempDirs = [home];
-    pluginEntries = [];
-    pluginError = undefined;
-    trusted = true;
-    trustedKey = undefined;
+  function buildRegistry(spaceBaseHomeDir?: string): IMcpRegistryService {
     const ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
-        reg.definePartialInstance(IBootstrapService, { homeDir: home });
+        reg.definePartialInstance(IBootstrapService, {
+          homeDir: home,
+          baseHomeDir: spaceBaseHomeDir,
+        });
         reg.define(IMcpConfigStore, McpConfigStore);
         reg.definePartialInstance(IPluginService, {
           mcpServerEntries: async () => {
@@ -91,7 +86,19 @@ describe('McpRegistryService', () => {
       },
     });
     store = ix.get(IMcpConfigStore);
-    registry = ix.get(IMcpRegistryService);
+    return ix.get(IMcpRegistryService);
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'kimi-mcp-registry-home-'));
+    vi.stubEnv('KIKI_HOME', home);
+    disposables = new DisposableStore();
+    tempDirs = [home];
+    pluginEntries = [];
+    pluginError = undefined;
+    trusted = true;
+    trustedKey = undefined;
+    registry = buildRegistry();
   });
 
   afterEach(async () => {
@@ -429,5 +436,120 @@ describe('mcpServerConfigsEqual', () => {
         { transport: 'http', url: 'https://example.com/mcp' },
       ),
     ).toBe(false);
+  });
+});
+
+describe('McpRegistryService space inheritance', () => {
+  let home: string;
+  let baseHome: string;
+  let disposables: DisposableStore;
+  let tempDirs: string[];
+  let store: IMcpConfigStore;
+  let registry: IMcpRegistryService;
+
+  function build(spaceBaseHomeDir?: string): { store: IMcpConfigStore; registry: IMcpRegistryService } {
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+        reg.definePartialInstance(IBootstrapService, { homeDir: home, baseHomeDir: spaceBaseHomeDir });
+        reg.define(IMcpConfigStore, McpConfigStore);
+        reg.definePartialInstance(IPluginService, { mcpServerEntries: async () => [] });
+        reg.defineInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IAtomicDocumentStore, { get: async () => undefined });
+        reg.define(IMcpRegistryService, McpRegistryService);
+      },
+    });
+    return { store: ix.get(IMcpConfigStore), registry: ix.get(IMcpRegistryService) };
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'kimi-mcp-registry-space-'));
+    baseHome = mkdtempSync(join(tmpdir(), 'kimi-mcp-registry-base-'));
+    vi.stubEnv('KIKI_HOME', home);
+    disposables = new DisposableStore();
+    tempDirs = [home, baseHome];
+  });
+
+  afterEach(async () => {
+    disposables.dispose();
+    vi.unstubAllEnvs();
+    await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it('shows base-home entries as read-only when no cwd is given', async () => {
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: {
+        shared: { command: 'base-version' },
+        baseOnly: { transport: 'http', url: 'https://base.example.com/mcp' },
+      },
+    });
+    ({ store, registry } = build(baseHome));
+    await store.add({ name: 'shared', transport: 'stdio', command: 'space-version' });
+
+    const entries = await registry.list();
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+
+    expect([...byName.keys()].toSorted()).toEqual(['baseOnly', 'shared']);
+    expect(byName.get('shared')).toMatchObject({
+      config: { transport: 'stdio', command: 'space-version' },
+      origin: join(home, 'mcp.json'),
+      mutable: true,
+    });
+    expect(byName.get('baseOnly')).toEqual({
+      name: 'baseOnly',
+      config: { transport: 'http', url: 'https://base.example.com/mcp' },
+      source: 'global',
+      origin: join(baseHome, 'mcp.json'),
+      mutable: false,
+      plugin: undefined,
+    });
+  });
+
+  it('shows base-home entries for an untrusted workspace cwd', async () => {
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { baseOnly: { command: 'base-only' } },
+    });
+    ({ store, registry } = build(baseHome));
+    await store.add({ name: 'spaceOnly', transport: 'stdio', command: 'space-only' });
+    const project = mkdtempSync(join(tmpdir(), 'kimi-mcp-registry-untrusted-'));
+    tempDirs.push(project);
+
+    const entries = await registry.list({ cwd: project });
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+
+    expect([...byName.keys()].toSorted()).toEqual(['baseOnly', 'spaceOnly']);
+    expect(byName.get('baseOnly')).toMatchObject({
+      origin: join(baseHome, 'mcp.json'),
+      mutable: false,
+    });
+    expect(byName.get('spaceOnly')).toMatchObject({ origin: join(home, 'mcp.json'), mutable: true });
+  });
+
+  it('resolves an inherited entry by name and as the runtime target', async () => {
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { baseOnly: { command: 'base-only' } },
+    });
+    ({ registry } = build(baseHome));
+
+    await expect(registry.get('baseOnly')).resolves.toMatchObject({
+      origin: join(baseHome, 'mcp.json'),
+      mutable: false,
+    });
+    await expect(registry.resolveRuntimeTarget('baseOnly')).resolves.toMatchObject({
+      name: 'baseOnly',
+      mutable: false,
+    });
+  });
+
+  it('omits base entries when the home is not a space', async () => {
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { baseOnly: { command: 'base-only' } },
+    });
+    ({ store, registry } = build(undefined));
+    await store.add({ name: 'spaceOnly', transport: 'stdio', command: 'space-only' });
+
+    const entries = await registry.list();
+
+    expect(entries.map((entry) => entry.name)).toEqual(['spaceOnly']);
   });
 });

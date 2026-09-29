@@ -6,7 +6,11 @@ import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ErrorCodes, Error2 } from '#/errors';
-import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
+import {
+  loadMcpServers,
+  loadMcpServersDetailed,
+  resolveMcpJsonPaths,
+} from '#/app/mcpConfig/configLoader';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const fs = new HostFileSystem();
@@ -392,5 +396,87 @@ describe('loadMcpServers', () => {
       if (saved === undefined) delete process.env['KIKI_HOME'];
       else process.env['KIKI_HOME'] = saved;
     }
+  });
+});
+
+describe('loadMcpServers space inheritance', () => {
+  it('exposes the base home layer under the space home layer', async () => {
+    const baseHome = makeTempDir();
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: 'shared-base' },
+        baseOnly: { transport: 'stdio', command: 'base-only' },
+      },
+    });
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        shared: { transport: 'stdio', command: 'shared-space' },
+        spaceOnly: { transport: 'stdio', command: 'space-only' },
+      },
+    });
+
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, baseHomeDir: baseHome });
+
+    expect(Object.keys(servers).toSorted()).toEqual(['baseOnly', 'shared', 'spaceOnly']);
+    expect(servers['shared']).toEqual({ transport: 'stdio', command: 'shared-space' });
+    expect(servers['baseOnly']).toEqual({ transport: 'stdio', command: 'base-only' });
+  });
+
+  it('keeps the base layer below project layers', async () => {
+    const baseHome = makeTempDir();
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { shared: { transport: 'stdio', command: 'shared-base' } },
+    });
+    await writeJson(join(cwd, '.kiki', 'mcp.json'), {
+      mcpServers: { shared: { transport: 'stdio', command: 'shared-project' } },
+    });
+
+    const servers = await loadMcpServers({ fs, cwd, homeDir: home, baseHomeDir: baseHome });
+
+    expect(servers['shared']).toEqual({ transport: 'stdio', command: 'shared-project' });
+  });
+
+  it('includes the base layer when includeProject is false', async () => {
+    const baseHome = makeTempDir();
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { baseOnly: { transport: 'stdio', command: 'base-only' } },
+    });
+    await writeJson(join(cwd, '.kiki', 'mcp.json'), {
+      mcpServers: { projectOnly: { transport: 'http', url: 'https://mcp.example.com' } },
+    });
+
+    const servers = await loadMcpServers({
+      fs,
+      cwd,
+      homeDir: home,
+      baseHomeDir: baseHome,
+      includeProject: false,
+    });
+
+    expect(Object.keys(servers)).toEqual(['baseOnly']);
+  });
+
+  it('resolves the base mcp.json path and records it as the entry origin', async () => {
+    const baseHome = makeTempDir();
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+    await writeJson(join(baseHome, 'mcp.json'), {
+      mcpServers: { baseOnly: { transport: 'stdio', command: 'base-only' } },
+    });
+
+    const paths = await resolveMcpJsonPaths({ fs, cwd, homeDir: home, baseHomeDir: baseHome });
+    expect(paths.base).toBe(join(resolve(baseHome), 'mcp.json'));
+
+    const detailed = await loadMcpServersDetailed({ fs, cwd, homeDir: home, baseHomeDir: baseHome });
+    expect(detailed.origins['baseOnly']).toBe(join(resolve(baseHome), 'mcp.json'));
   });
 });

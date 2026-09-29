@@ -526,3 +526,77 @@ describe('ensureRgPath Windows download branch', () => {
     ).rejects.toThrow(/HTTP 502 Bad Gateway/);
   });
 });
+
+describe('findExistingRg inherited share dirs', () => {
+  let fakeShare: string;
+  let baseShare: string;
+  let savedPath: string | undefined;
+
+  beforeEach(() => {
+    fakeShare = join(tmpdir(), `kimi-rg-space-${String(Date.now())}-${String(Math.random()).slice(2)}`);
+    baseShare = join(tmpdir(), `kimi-rg-base-${String(Date.now())}-${String(Math.random()).slice(2)}`);
+    mkdirSync(join(fakeShare, 'bin'), { recursive: true });
+    mkdirSync(join(baseShare, 'bin'), { recursive: true });
+    savedPath = process.env['PATH'];
+    process.env['PATH'] = '';
+  });
+
+  afterEach(() => {
+    rmSync(fakeShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(baseShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    if (savedPath === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = savedPath;
+  });
+
+  function rgName(): string {
+    return process.platform === 'win32' ? 'rg.exe' : 'rg';
+  }
+
+  it('falls back to the base home bin when this home has no cached copy', async () => {
+    const baseRg = join(baseShare, 'bin', rgName());
+    writeFileSync(baseRg, 'fake rg');
+
+    const result = await findExistingRg(noRgProbe(), fakeShare, true, [baseShare]);
+
+    expect(result).toEqual({ path: baseRg, source: 'share-bin-cached' });
+  });
+
+  it('prefers this home bin over the base home bin', async () => {
+    const ownRg = join(fakeShare, 'bin', rgName());
+    writeFileSync(ownRg, 'fake rg');
+    writeFileSync(join(baseShare, 'bin', rgName()), 'fake rg');
+
+    const result = await findExistingRg(noRgProbe(), fakeShare, true, [baseShare]);
+
+    expect(result).toEqual({ path: ownRg, source: 'share-bin-cached' });
+  });
+
+  it('ignores the base home bin when cached fallback is disabled', async () => {
+    writeFileSync(join(baseShare, 'bin', rgName()), 'fake rg');
+
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = '';
+    try {
+      const result = await findExistingRg(noRgProbe(), fakeShare, false, [baseShare]);
+      expect(result).toBeUndefined();
+    } finally {
+      if (savedPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = savedPath;
+    }
+  });
+
+  it('downloads into this home rather than the base home', async () => {
+    const baseRg = join(baseShare, 'bin', rgName());
+    writeFileSync(baseRg, 'fake rg');
+    const probe = probeWith((args) => (args[0] === baseRg ? 0 : -1));
+
+    const resolved = await ensureRgPath(probe, {
+      shareDir: fakeShare,
+      fallbackShareDirs: [baseShare],
+      allowCachedFallback: true,
+    });
+
+    expect(resolved).toEqual({ path: baseRg, source: 'share-bin-cached' });
+    expect(existsSync(join(fakeShare, 'bin', rgName()))).toBe(false);
+  });
+});

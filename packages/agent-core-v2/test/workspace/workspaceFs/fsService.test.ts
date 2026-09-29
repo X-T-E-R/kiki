@@ -10,6 +10,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { IGitService } from '#/app/git/git';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ErrorCodes, Error2 } from '#/errors';
 import { type HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
@@ -22,6 +23,8 @@ import { ITelemetryService, type TelemetryProperties } from '#/app/telemetry/tel
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { IWorkspaceGitService } from '#/workspace/workspaceGit/workspaceGit';
+
+import { stubBootstrap } from '../../app/bootstrap/stubs';
 
 const WORK_DIR = '/repo';
 
@@ -387,6 +390,7 @@ function makeSession(
     stubPair(IHostProcessService, runner ?? fakeRunner(handler)),
     stubPair(ITelemetryService, telemetryStub(events)),
     stubPair(IWorkspaceGitService, workspaceGitStub(git)),
+    stubPair(IBootstrapService, stubBootstrap()),
   ]);
   return workspace.accessor.get(IWorkspaceFsService);
 }

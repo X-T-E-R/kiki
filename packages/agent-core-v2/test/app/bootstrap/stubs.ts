@@ -5,6 +5,7 @@ import {
   type HostArgsInput,
   type PersistenceScopeName,
 } from '#/app/bootstrap/bootstrap';
+import type { SpaceHome } from '#/app/bootstrap/spaceHome';
 
 export const stubClientIdentity = {
   productName: 'test-product',
@@ -12,10 +13,16 @@ export const stubClientIdentity = {
   platform: 'test_platform',
 } as const;
 
+export interface StubSpaceOptions {
+  readonly baseHomeDir?: string;
+  readonly space?: SpaceHome;
+}
+
 export function stubBootstrap(
   homeDir = '/tmp/kimi-home',
   env: NodeJS.ProcessEnv = {},
   args: HostArgsInput = {},
+  space: StubSpaceOptions = {},
 ): IBootstrapService {
   const scopes: Record<PersistenceScopeName, string> = {
     config: '',
@@ -50,6 +57,8 @@ export function stubBootstrap(
     logsDir: `${homeDir}/logs`,
     getEnv: (name) => env[name],
     scope: (name) => scopes[name],
+    baseHomeDir: space.baseHomeDir,
+    space: space.space,
   };
 }
 

@@ -17,7 +17,7 @@ import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
 import { resolveInstallSource } from './source';
-import { readInstalled, writeInstalled, type InstalledRecord } from './store';
+import { readInstalled, writeInstalled, type InstalledFile, type InstalledRecord } from './store';
 import type { PluginAgentRoot } from './types';
 import {
   normalizePluginId,
@@ -40,6 +40,7 @@ import {
 export interface PluginManagerOptions {
   readonly kimiHomeDir: string;
   readonly discoverSkills?: (roots: readonly SkillRoot[]) => Promise<SkillDiscoveryResult>;
+  readonly inheritedHomeDir?: string;
 }
 
 interface ManagedPluginCopy {
@@ -50,10 +51,12 @@ interface ManagedPluginCopy {
 export class PluginManager {
   private readonly kimiHomeDir: string;
   private readonly discoverSkills: (roots: readonly SkillRoot[]) => Promise<SkillDiscoveryResult>;
+  private readonly inheritedHomeDir: string | undefined;
   private records = new Map<string, PluginRecord>();
 
   constructor(options: PluginManagerOptions) {
     this.kimiHomeDir = options.kimiHomeDir;
+    this.inheritedHomeDir = options.inheritedHomeDir;
     this.discoverSkills = options.discoverSkills ?? discoverFileSkills;
   }
 
@@ -63,7 +66,26 @@ export class PluginManager {
     for (const entry of file.plugins) {
       next.set(entry.id, await this.materialize(entry));
     }
+    await this.mergeInheritedRecords(next);
     this.records = next;
+  }
+
+  private async mergeInheritedRecords(records: Map<string, PluginRecord>): Promise<void> {
+    if (this.inheritedHomeDir === undefined) return;
+    let inherited: InstalledFile | undefined;
+    try {
+      inherited = await readInstalled(this.inheritedHomeDir);
+    } catch {
+      inherited = undefined;
+    }
+    for (const entry of inherited?.plugins ?? []) {
+      if (records.has(entry.id)) continue;
+      try {
+        records.set(entry.id, { ...(await this.materialize(entry)), inherited: true });
+      } catch {
+        continue;
+      }
+    }
   }
 
   list(): readonly PluginRecord[] {
@@ -186,6 +208,7 @@ export class PluginManager {
     const key = normalizePluginId(id);
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
+    assertMutable(current);
     if (current.enabled === enabled) return;
     const next = new Map(this.records);
     next.set(key, { ...current, enabled, updatedAt: new Date().toISOString() });
@@ -197,6 +220,7 @@ export class PluginManager {
     const key = normalizePluginId(id);
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
+    assertMutable(current);
     if (current.manifest?.mcpServers?.[server] === undefined) {
       throw new Error2(
         ErrorCodes.MCP_SERVER_NOT_FOUND,
@@ -224,10 +248,11 @@ export class PluginManager {
 
   async remove(id: string, deleteData = false): Promise<void> {
     const key = normalizePluginId(id);
+    const current = this.records.get(key);
+    if (current === undefined) throw pluginNotFound(id);
+    assertMutable(current);
     const next = new Map(this.records);
-    if (!next.delete(key)) {
-      throw pluginNotFound(id);
-    }
+    next.delete(key);
     await this.persist(next);
     this.records = next;
     if (deleteData) await rm(path.join(this.kimiHomeDir, 'plugins', 'data', key), { recursive: true, force: true });
@@ -237,6 +262,7 @@ export class PluginManager {
     const key = normalizePluginId(id);
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
+    assertMutable(current);
     if (current.rollback === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, `No previous version of ${id} is available`);
     const rollbackRoot = path.join(this.kimiHomeDir, 'plugins', 'rollback', key);
     const parsed = await parseManifest(rollbackRoot);
@@ -294,6 +320,7 @@ export class PluginManager {
         errors.push({ id: entry.id, message: (error as Error).message });
       }
     }
+    await this.mergeInheritedRecords(next);
     const added: string[] = [];
     for (const id of next.keys()) if (!prevIds.has(id)) added.push(id);
     const removed: string[] = [];
@@ -446,19 +473,21 @@ export class PluginManager {
   }
 
   private async persist(records: ReadonlyMap<string, PluginRecord>): Promise<void> {
-    const installed: InstalledRecord[] = [...records.values()].map((record) => ({
-      id: record.id,
-      root: record.root,
-      source: record.source,
-      enabled: record.enabled,
-      installedAt: record.installedAt,
-      updatedAt: record.updatedAt,
-      originalSource: record.originalSource,
-      capabilities: record.capabilities,
-      github: record.github,
-      zipSha256: record.zipSha256,
-      rollback: record.rollback,
-    }));
+    const installed: InstalledRecord[] = [...records.values()]
+      .filter((record) => record.inherited !== true)
+      .map((record) => ({
+        id: record.id,
+        root: record.root,
+        source: record.source,
+        enabled: record.enabled,
+        installedAt: record.installedAt,
+        updatedAt: record.updatedAt,
+        originalSource: record.originalSource,
+        capabilities: record.capabilities,
+        github: record.github,
+        zipSha256: record.zipSha256,
+        rollback: record.rollback,
+      }));
     await writeInstalled(this.kimiHomeDir, { version: 1, plugins: installed });
   }
 
@@ -609,6 +638,15 @@ function pluginNotFound(id: string): Error2 {
   return new Error2(PluginErrors.codes.PLUGIN_NOT_FOUND, `Plugin "${id}" is not installed`, {
     details: { id },
   });
+}
+
+function assertMutable(record: PluginRecord): void {
+  if (record.inherited !== true) return;
+  throw new Error2(
+    PluginErrors.codes.PLUGIN_READ_ONLY,
+    `Plugin "${record.id}" is inherited from the main home; install it in this space to change it`,
+    { details: { id: record.id } },
+  );
 }
 
 async function normalizeInstallRoot(rootPath: string): Promise<string> {

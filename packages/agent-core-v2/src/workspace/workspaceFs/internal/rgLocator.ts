@@ -15,6 +15,9 @@ export interface RgProbe {
 }
 
 export interface EnsureRgPathOptions {
+  readonly shareDir?: string;
+  /** Lower-priority home directories whose `bin/` cache is probed after this home's own. */
+  readonly fallbackShareDirs?: readonly string[];
   readonly signal?: AbortSignal;
   readonly allowCachedFallback?: boolean;
 }
@@ -52,10 +55,17 @@ export async function ensureRgPath(
 
   if (options.allowCachedFallback === true) {
     throwIfAborted(options.signal);
-    const cached = getShareBinRgPath();
-    const cachedRun = await probe.exec([cached, '--version']).catch(() => ({ exitCode: -1 }));
-    if (cachedRun.exitCode === 0) {
-      return { path: cached, source: 'share-bin-cached' };
+    const shareDir = options.shareDir ?? getShareDir();
+    const cacheDirs = [
+      shareDir,
+      ...(options.fallbackShareDirs ?? []).filter((dir) => dir !== '' && dir !== shareDir),
+    ];
+    for (const dir of cacheDirs) {
+      const cached = join(dir, 'bin', rgBinaryName());
+      const cachedRun = await probe.exec([cached, '--version']).catch(() => ({ exitCode: -1 }));
+      if (cachedRun.exitCode === 0) {
+        return { path: cached, source: 'share-bin-cached' };
+      }
     }
   }
 

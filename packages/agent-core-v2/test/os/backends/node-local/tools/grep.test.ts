@@ -50,6 +50,8 @@ import { ensureRgPath } from '#/os/backends/node-local/tools/rgLocator';
 import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-workspace-context';
 import { recordingTelemetry, type TelemetryRecord } from '../../../../app/telemetry/stubs';
 import { registerStateServices } from '../../../../state/stubs';
+import { stubBootstrap } from '../../../../app/bootstrap/stubs';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
 vi.mock('#/os/backends/node-local/tools/rgLocator', () => ({
   ensureRgPath: vi.fn(async () => ({ path: '/mock/rg', source: 'system-path' })),
@@ -375,6 +377,7 @@ describe('GrepTool', () => {
           reg.definePartialInstance(IConfigService, {
             onDidSectionChange: Event.None as Event<ConfigSectionChangedEvent>,
           });
+          reg.defineInstance(IBootstrapService, stubBootstrap());
         },
       });
 

@@ -17,7 +17,7 @@ import type { ToolGroupId } from './toolGroups';
 
 export type { SkippedAgentFile } from './agentProfileContribution';
 
-export type AgentFileSource = 'plugin' | 'project' | 'user' | 'extra' | 'explicit';
+export type AgentFileSource = 'plugin' | 'project' | 'user' | 'extra' | 'explicit' | 'inherited';
 
 export interface AgentFileRoot {
   readonly path: string;

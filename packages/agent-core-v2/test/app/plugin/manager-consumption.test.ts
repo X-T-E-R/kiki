@@ -956,3 +956,77 @@ describe('PluginManager consumption plane', () => {
     expect(JSON.stringify(server)).not.toContain('ELECTRON_RUN_AS_NODE');
   });
 });
+
+describe('PluginManager inherited installs', () => {
+  it('exposes base-home installs as read-only records whose files stay in the base home', async () => {
+    const baseHome = await makeKimiHome();
+    const home = await makeKimiHome();
+    const source = await makePlugin('inherited-one', { skills: true });
+    const baseManager = new PluginManager({ kimiHomeDir: baseHome });
+    await baseManager.load();
+    await baseManager.install(source);
+    await baseManager.setEnabled('inherited-one', true);
+
+    const manager = new PluginManager({ kimiHomeDir: home, inheritedHomeDir: baseHome });
+    await manager.load();
+
+    const record = manager.get('inherited-one');
+    expect(record?.inherited).toBe(true);
+    expect(record?.enabled).toBe(true);
+    expect(record?.root.startsWith(await realpath(baseHome))).toBe(true);
+    expect(manager.list().map((entry) => entry.id)).toEqual(['inherited-one']);
+
+    await expect(manager.setEnabled('inherited-one', false)).rejects.toMatchObject({ code: 'plugin.read_only' });
+    await expect(manager.setMcpServerEnabled('inherited-one', 'missing', true)).rejects.toMatchObject({
+      code: 'plugin.read_only',
+    });
+    await expect(manager.remove('inherited-one')).rejects.toMatchObject({ code: 'plugin.read_only' });
+    await expect(manager.rollback('inherited-one')).rejects.toMatchObject({ code: 'plugin.read_only' });
+  });
+
+  it('never writes an inherited record into this home installed.json', async () => {
+    const baseHome = await makeKimiHome();
+    const home = await makeKimiHome();
+    const inheritedSource = await makePlugin('inherited-one', { skills: true });
+    const baseManager = new PluginManager({ kimiHomeDir: baseHome });
+    await baseManager.load();
+    await baseManager.install(inheritedSource);
+
+    const manager = new PluginManager({ kimiHomeDir: home, inheritedHomeDir: baseHome });
+    await manager.load();
+    const localSource = await makePlugin('local-one', { skills: true });
+    await manager.install(localSource);
+
+    const installed = JSON.parse(await readFile(path.join(home, 'plugins', 'installed.json'), 'utf8')) as {
+      plugins: { id: string }[];
+    };
+    expect(installed.plugins.map((entry) => entry.id)).toEqual(['local-one']);
+    expect(manager.get('inherited-one')?.inherited).toBe(true);
+    expect(manager.get('local-one')?.inherited).toBeUndefined();
+  });
+
+  it('lets a same-id space install shadow the inherited record', async () => {
+    const baseHome = await makeKimiHome();
+    const home = await makeKimiHome();
+    const baseSource = await makePlugin('shadowed', { skills: true, version: '1.0.0' });
+    const baseManager = new PluginManager({ kimiHomeDir: baseHome });
+    await baseManager.load();
+    await baseManager.install(baseSource);
+
+    const manager = new PluginManager({ kimiHomeDir: home, inheritedHomeDir: baseHome });
+    await manager.load();
+    expect(manager.get('shadowed')?.inherited).toBe(true);
+
+    const spaceSource = await makePlugin('shadowed', { skills: true, version: '2.0.0' });
+    const installed = await manager.install(spaceSource);
+
+    expect(installed.inherited).toBeUndefined();
+    expect(manager.get('shadowed')?.inherited).toBeUndefined();
+    expect(manager.get('shadowed')?.manifest?.version).toBe('2.0.0');
+    const baseFile = JSON.parse(await readFile(path.join(baseHome, 'plugins', 'installed.json'), 'utf8')) as {
+      plugins: { id: string; root: string }[];
+    };
+    expect(baseFile.plugins).toHaveLength(1);
+    expect(baseFile.plugins[0]?.root.startsWith(await realpath(baseHome))).toBe(true);
+  });
+});

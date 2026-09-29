@@ -5,6 +5,7 @@ import { defineState } from '#/state/state';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
 import { agentsMdWatchRoots, loadAgentsMdForRoots } from '#/agent/profile/context';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -70,6 +71,7 @@ export class WorkspaceInstructionsService
         { fs: this.fs, homeDir: this.env.homeDir },
         this.bootstrap.homeDir,
         [this.workspace.cwd],
+        { inheritance: resolveSpaceInheritance(this.bootstrap) },
       );
       const next: WorkspaceInstructionsSnapshot = {
         agentsMd: result.content,
@@ -113,6 +115,7 @@ export class WorkspaceInstructionsService
       { fs: this.fs, homeDir: this.env.homeDir },
       this.workspace.cwd,
       this.bootstrap.homeDir,
+      { inheritance: resolveSpaceInheritance(this.bootstrap) },
     );
     for (const { root, candidates } of plan) {
       try {
