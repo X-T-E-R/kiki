@@ -131,12 +131,7 @@
   --color-hairline-strong: #40382c;
   --color-ink: #efe8dc;
   --color-ink-soft: #b8ac99;
-  /* Faint text is the most-used label role, so it is sized for the tinted
-   * grounds it lands on, not just the ladder: ≥5.3:1 on the accent-soft and
-   * selected washes, hairline-filled chips and the hover wash, and still
-   * ≥4.4:1 at the /80 alpha some secondary labels take. It stays a clear step
-   * below ink-soft (6.6 vs 8.2:1 on paper) so the hierarchy survives. */
-  --color-ink-faint: #a59987;
+  --color-ink-faint: #958978;
   --color-accent: #f08a4b;
   --color-accent-deep: #f6a574;
   --color-accent-ink: #f08a4b;
@@ -687,16 +682,13 @@ body[data-pane-resizing='true'] {
 /* ---- conversation shell (/new + /s/:id layout route) ---- */
 /* One width axis for the whole conversation column: the transcript content
  * column, the composer card, and the dock cards (queue strip) all read
- * --kiki-chat-content-width (the historical 760px shared cap). Inside the
- * transcript the agent's rows share a narrower measure,
- * --kiki-agent-column (a reading width: ~40 CJK or ~85 Latin characters of
- * prose), and end on its one right edge; the user's bubbles keep the full
- * row and sit on the right on their own. Declared on the shell root because
- * the transcript and the composer seat are sibling subtrees; every consumer
- * carries a fallback so the width stays sane outside the shell. */
+ * --kiki-chat-content-width (the historical 760px shared cap), and no row
+ * inside the transcript sets a narrower measure of its own. Declared on
+ * the shell root because the transcript and the composer seat are sibling
+ * subtrees; every consumer carries a `760px` fallback so the width stays
+ * sane on any surface rendered outside the shell. */
 .conversation-shell {
   --kiki-chat-content-width: 760px;
-  --kiki-agent-column: 640px;
 
   display: flex;
   flex: 1;
@@ -1260,13 +1252,6 @@ input[data-add-search]:focus-visible {
 .conversation-shell[data-phase='hero'] .conversation-seat {
   /* Foot inside the centered box floats the stack a bit above true center. */
   padding-bottom: 32px;
-  /* The glow is wider than the seat on narrow columns. The middle's
-   * `overflow-x: hidden` only hides that overflow; it still counts toward
-   * scrollWidth, so focusing a status-line panel scrolled the whole stack
-   * sideways. `clip` stops the glow at the seat's edge and adds no scroll
-   * container, so the vertical bleed and the popovers above the card stay
-   * visible. */
-  overflow-x: clip;
 }
 
 /* Warm glow centered on the hero input card: the card's resting center sits
@@ -1338,9 +1323,9 @@ input[data-add-search]:focus-visible {
  * size, with Chinese falling through to the UI sans faces (a Song face at
  * this size reads thin and spotty on Windows) rather than the display
  * stack's Song fallbacks. Code, tables and chrome inside keep their own
- * families. Prose carries no measure of its own: the agent lane
- * (--kiki-agent-column) is the one measure, so answers, activity rows and
- * cards all end on the same right edge. */
+ * families. Prose takes the full transcript column like every other row:
+ * the column (--kiki-chat-content-width) is the one measure, so answers,
+ * bubbles, activity rows and cards all end on the same right edge. */
 .kiki-prose,
 .thinking-row {
   --kiki-prose-font: 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC', 'Hiragino Sans GB',
