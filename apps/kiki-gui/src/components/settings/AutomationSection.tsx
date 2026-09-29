@@ -17,16 +17,14 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON, SMALL_INPUT, DANGER_GHOST_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { ExperimentalSection } from './ExperimentalSection';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 
 /**
- * Tool policy (redesign §8.3): per-tool enabled/disabled/inherited, split out
- * of the runtime editor. The save goes through the narrow `toolPolicyPatch`
+ * Tool policy (Permissions leaf): per-tool enabled/disabled/inherited. The save goes through the narrow `toolPolicyPatch`
  * (`replace_domains: ['tools']`), so it can never roll back runtime or MCP
  * values edited on their own leaves.
  */
-function ToolPolicyCard() {
+export function ToolPolicyCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -242,12 +240,7 @@ function HooksCard() {
   );
 }
 
-export function AutomationSection() {
-  return (
-    <>
-      <ToolPolicyCard />
-      <ExperimentalSection featureIds={['tool-select', 'task_wait']} cardId="st-card-tool-experiments" titleKey="st.experimental.toolsTitle" />
-      <HooksCard />
-    </>
-  );
+/** Hooks leaf: lifecycle commands the server runs on its own. */
+export function HooksSection() {
+  return <HooksCard />;
 }

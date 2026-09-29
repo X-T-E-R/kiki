@@ -45,7 +45,6 @@ import { SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
 import { AdvancedDetails, SettingField } from './fields';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
-import { ExperimentalSection } from './ExperimentalSection';
 import { MemorySettingsCard } from './MemorySettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
@@ -740,11 +739,6 @@ export function AgentsSection() {
       <AgentRuntimeCard />
       <MemorySettingsCard />
       <PromptConfigCard />
-      <ExperimentalSection
-        featureIds={['agent-profile-routes']}
-        cardId="st-card-agent-profile-routes"
-        titleKey="st.experimental.agentRoutes"
-      />
     </div>
   );
 }

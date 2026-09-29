@@ -1,3 +1,6 @@
+import { stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
+
 import {
   computeUpdateStatus,
   ErrorCodes as DomainErrorCodes,
@@ -14,6 +17,7 @@ import {
   PluginErrors,
   isError2,
   nonemptyMarketplaceSource,
+  parseManifest,
   parsePluginMarketplace,
   readPluginMarketplace,
   withLatestVersions,
@@ -140,6 +144,7 @@ export function registerPluginsRoutes(
       marketplace = await withLatestVersions(marketplace, fetchImpl);
       const installed = await core.accessor.get(IPluginService).listPlugins();
       const byId = new Map(installed.map((p) => [p.id, p]));
+      const localIcons = await localOfficialIcons(marketplace, read.location);
       const entries: PluginMarketplaceEntryWire[] = [];
       for (const entry of marketplace.plugins) {
         const record = byId.get(entry.id);
@@ -156,7 +161,7 @@ export function registerPluginsRoutes(
           displayName: entry.displayName,
           description: entry.description,
           homepage: entry.homepage,
-          icon: entry.icon,
+          icon: entry.icon ?? localIcons.get(entry.id),
           keywords: entry.keywords === undefined ? undefined : [...entry.keywords],
           relevance: entry.relevance,
           version: entry.version,
@@ -565,4 +570,24 @@ function mapPluginError(error: unknown, requestId: string) {
     requestId,
     error instanceof Error ? error.stack : undefined,
   );
+}
+
+async function localOfficialIcons(
+  marketplace: PluginMarketplace,
+  location: MarketplaceLocation,
+): Promise<ReadonlyMap<string, string>> {
+  const icons = new Map<string, string>();
+  if (location.kind !== 'local') return icons;
+  await Promise.all(marketplace.plugins.map(async (entry) => {
+    if (entry.tier !== 'official' || entry.icon !== undefined) return;
+    if (!isAbsolute(entry.source) || !(await isDirectory(entry.source))) return;
+    const parsed = await parseManifest(entry.source).catch(() => undefined);
+    const icon = parsed?.manifest?.icon;
+    if (icon !== undefined) icons.set(entry.id, icon);
+  }));
+  return icons;
+}
+
+async function isDirectory(target: string): Promise<boolean> {
+  return (await stat(target).catch(() => undefined))?.isDirectory() === true;
 }

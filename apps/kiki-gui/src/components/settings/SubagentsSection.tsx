@@ -18,7 +18,6 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { SubagentGovernanceCard } from './AgentsSection';
-import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 import { SubagentToolDefaultsCard } from './SubagentToolDefaultsCard';
 
@@ -244,11 +243,6 @@ export function SubagentsSection() {
       <SubagentDefaultTargetCard />
       <SubagentOpenModeCard />
       <SubagentGovernanceCard />
-      <ExperimentalSection
-        featureIds={['subagent_release_idle']}
-        cardId="st-card-subagent-release-idle"
-        titleKey="st.experimental.subagentIdle"
-      />
     </div>
   );
 }

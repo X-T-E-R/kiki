@@ -14,6 +14,7 @@ import { Dialog } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { WorktreesCard } from './WorktreesCard';
 import { Icon } from '../icons';
 
 export function WorkspacesSection() {
@@ -57,6 +58,7 @@ export function WorkspacesSection() {
   };
 
   return (
+    <>
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
         <Hint>{t('st.workspaces.hint')}</Hint>
@@ -205,6 +207,8 @@ export function WorkspacesSection() {
         />
       ) : null}
     </SectionCard>
+    <WorktreesCard />
+    </>
   );
 }
 

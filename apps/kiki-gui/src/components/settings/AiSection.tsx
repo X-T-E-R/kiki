@@ -11,8 +11,13 @@ import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';
-import { GeneralSection } from './GeneralSection';
-import { ReviewerSettings } from './ReviewerSettings';
+
+/**
+ * Visual tab order: the daily-driver model list, where models come from,
+ * then which model each job uses. Tab ids and deep links are unchanged.
+ */
+const AI_TAB_ORDER: readonly AiSettingsTab[] = (['models', 'providers', 'defaults'] as const)
+  .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
 
 /**
  * The merged "Models & providers" entry (settings redesign batch 2, §3.3 /
@@ -41,7 +46,7 @@ export function AiSection() {
   return (
     <div className="space-y-4">
       <div role="tablist" aria-label={t('st.section.ai')} className="flex gap-1 border-b border-hairline">
-        {AI_SETTINGS_TABS.map((candidate) => {
+        {AI_TAB_ORDER.map((candidate) => {
           const active = candidate === tab;
           return (
             <button
@@ -51,7 +56,7 @@ export function AiSection() {
               aria-selected={active}
               data-ai-tab={candidate}
               onClick={() => { selectTab(candidate); }}
-              className={`-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors ${
+              className={`-mb-px min-h-8 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
                 active
                   ? 'border-ink font-medium text-ink'
                   : 'border-transparent text-ink-soft hover:text-ink'
@@ -62,7 +67,7 @@ export function AiSection() {
           );
         })}
       </div>
-      {tab === 'providers' ? <ConnectionsTab /> : tab === 'defaults' ? <><DefaultsTab /><GeneralSection area="models" /><ReviewerSettings /></> : <ModelsTab />}
+      {tab === 'providers' ? <ConnectionsTab /> : tab === 'defaults' ? <DefaultsTab /> : <ModelsTab />}
     </div>
   );
 }

@@ -63,25 +63,28 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('renders four non-clickable groups and keeps every leaf reachable', async () => {
+  it('draws one continuous list of intent groups, every leaf reachable', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
+    // No scope blocks above the groups, and no rule splitting them.
+    expect(container.querySelector('[data-settings-nav-storage]')).toBeNull();
+    const tree = container.querySelector('[data-settings-nav-tree]')!;
+    expect([...tree.children].every((child) => child.hasAttribute('data-settings-nav-group'))).toBe(true);
+    expect(tree.querySelector('.border-t')).toBeNull();
+    expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['app', 'models-agents', 'tools-integrations', 'system-data']);
-    expect([...groups[0]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
-      .toEqual(['general', 'appearance', 'connection']);
+      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'system']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['Your app', 'Models & agents', 'Tools & integrations', 'System & data']);
+      .toEqual(['App', 'Models & agents', 'How work runs', 'Capabilities', 'System']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
-    expect([...groups[1]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
-      .toEqual(['ai', 'agents', 'subagents', 'communication', 'tasks']);
-    expect([...groups[2]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
-      .toEqual(['skills', 'mcp', 'plugins', 'automation', 'search']);
-    expect([...groups[3]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
-      .toEqual(['workspaces', 'advanced', 'about']);
-    expect(container.querySelector('[data-settings-nav-ungrouped]')).toBeNull();
+    const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
+    expect(leaves(0)).toEqual(['general', 'appearance', 'connection']);
+    expect(leaves(1)).toEqual(['ai', 'agents', 'subagents']);
+    expect(leaves(2)).toEqual(['sessions', 'permissions', 'tasks']);
+    expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
+    expect(leaves(4)).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -108,7 +111,7 @@ describe('SettingsNav grouped tree', () => {
     const hits = [...container.querySelectorAll('[role="option"]')];
     expect(hits.length).toBeGreaterThan(0);
     // The group › section separator is the drawn chevron, not a typed glyph.
-    expect(hits[0]!.textContent).toBe('Theme & colorYour appAppearance');
+    expect(hits[0]!.textContent).toBe('Theme & colorAppAppearance');
     expect(hits[0]!.querySelector('[data-icon="chevron"]')).not.toBeNull();
   });
 
@@ -155,7 +158,7 @@ describe('UnknownSettingsSection', () => {
     expect(container.textContent).toContain('This setting does not exist');
     expect(container.textContent).toContain('retired-page');
     const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
-    await typeInto(input, 'mcp');
+    await typeInto(input, 'mcp server');
     const option = container.querySelector('[role="option"]')!;
     await click(option);
     expect(hits).toEqual(['mcp']);

@@ -633,6 +633,52 @@ describe('server-v2 /api plugins', () => {
     expect(body.data.source).toBe(join(catalogDir, 'marketplace.json'));
   });
 
+  it('inlines the manifest icon of local official catalog entries', async () => {
+    await server?.close();
+    const catalogDir = await mkdtemp(join(tmpdir(), 'kimi-local-icon-catalog-'));
+    createdDirs.push(catalogDir);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16"/></svg>';
+    for (const id of ['official-icon', 'curated-icon', 'official-remote-icon']) {
+      await mkdir(join(catalogDir, 'official', id), { recursive: true });
+      await writeFile(join(catalogDir, 'official', id, 'kimi.plugin.json'), JSON.stringify({ name: id, version: '0.1.0', icon: './icon.svg' }));
+      await writeFile(join(catalogDir, 'official', id, 'icon.svg'), svg);
+    }
+    await mkdir(join(catalogDir, 'official', 'official-no-icon'), { recursive: true });
+    await writeFile(join(catalogDir, 'official', 'official-no-icon', 'kimi.plugin.json'), JSON.stringify({ name: 'official-no-icon' }));
+    await writeFile(
+      join(catalogDir, 'marketplace.json'),
+      JSON.stringify({
+        plugins: [
+          { id: 'official-icon', tier: 'official', source: './official/official-icon' },
+          { id: 'curated-icon', tier: 'curated', source: './official/curated-icon' },
+          { id: 'official-remote-icon', tier: 'official', icon: 'https://example.test/icon.png', source: './official/official-remote-icon' },
+          { id: 'official-no-icon', tier: 'official', source: './official/official-no-icon' },
+          { id: 'official-missing', tier: 'official', source: './official/missing' },
+        ],
+      }),
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
+      pluginMarketplaceUrl: join(catalogDir, 'marketplace.json'),
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{
+      entries: { id: string; icon?: string }[];
+    }>('GET', '/api/plugins/marketplace');
+    expect(body.code).toBe(0);
+    const icons = Object.fromEntries(body.data.entries.map((entry) => [entry.id, entry.icon]));
+    expect(icons['official-icon']).toBe(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
+    expect(icons['curated-icon']).toBeUndefined();
+    expect(icons['official-remote-icon']).toBe('https://example.test/icon.png');
+    expect(icons['official-no-icon']).toBeUndefined();
+    expect(icons['official-missing']).toBeUndefined();
+  });
+
   it('reports an unconfigured marketplace without fetching a remote catalog', async () => {
     await server?.close();
     const realFetch = globalThis.fetch;

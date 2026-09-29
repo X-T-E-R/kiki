@@ -62,6 +62,9 @@ const client = {
       'agent-profile-routes': true,
       external_delegation_mcp: true,
       task_board: true,
+      image_format_conversion: false,
+      native_ssh: false,
+      session_idle_eviction: false,
     },
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
@@ -95,12 +98,12 @@ const client = {
   patchConfig: vi.fn(async () => ({})),
 };
 
-const connectionMock = vi.hoisted(() => ({ token: '', applyConnection: vi.fn() }));
+const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client,
     klient,
-    config: { url: 'http://127.0.0.1:8080', token: connectionMock.token },
+    config: { url: connectionMock.url, token: connectionMock.token },
     scopeId: 'direct:http://127.0.0.1:8080',
     sshLabel: null,
     meta: { server_version: 'test', backend: 'v2' },
@@ -133,6 +136,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   connectionMock.token = '';
+  connectionMock.url = 'http://127.0.0.1:8080';
   connectionMock.applyConnection.mockClear();
   klient.global.mcp.list.mockReset();
   klient.global.mcp.add.mockReset();
@@ -218,18 +222,11 @@ function scopeHeader(container: HTMLDivElement): HTMLElement {
 }
 
 describe('SettingsPage panel scopes', () => {
-  it('shows the MCP write target separately from its workspace view', async () => {
+  it('keeps MCP management on the Capabilities page and only timeouts in settings', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp [data-settings-panel-scope]')?.textContent).toContain('connected server');
-    expect(container.querySelector('#workspace-mcp-select')?.textContent).toContain('Alpha');
-    await click(container.querySelector('#workspace-mcp-select')!);
-    const option = [...container.querySelectorAll('[role="option"]')]
-      .find((element) => element.textContent?.includes('Beta'))!;
-    await click(option);
-    await flush();
-    expect(container.querySelector('#workspace-mcp-select')?.textContent).toContain('Beta');
-    expect(klient.global.mcp.list).toHaveBeenCalledWith({ cwd: '/tmp/alpha' });
-    expect(klient.global.mcp.list).toHaveBeenCalledWith({ cwd: '/tmp/beta' });
+    expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')?.getAttribute('href')).toBe('/capabilities?tab=mcp');
+    expect(container.querySelector('#st-card-mcp [data-mcp-manager]')).toBeNull();
+    expect(container.querySelector('#workspace-mcp-select')).toBeNull();
   });
 
   it('shows the connected server on a model panel', async () => {
@@ -237,23 +234,53 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('#st-card-models [data-settings-panel-scope]')?.textContent).toContain('connected server');
   });
 
+  it('says nothing about where changes go while connected to the local server', async () => {
+    const general = await renderSettings('/settings/general');
+    // Device cards on a device page carry no repeated tag.
+    expect(general.querySelector('#st-card-composer [data-settings-panel-scope]')?.className).toContain('sr-only');
+    for (const page of [general, await renderSettings('/settings/permissions')]) {
+      expect(page.querySelector('[data-settings-page-status]')).toBeNull();
+      expect(page.querySelector('[data-settings-remote-line]')).toBeNull();
+      expect(page.textContent).not.toMatch(/This device|All sessions|Applies to all your sessions|Only affects this app|127\.0\.0\.1/);
+    }
+  });
+
+  it('adds one quiet line naming a remote server on server pages only', async () => {
+    connectionMock.url = 'https://kiki.example.net';
+    const permissions = await renderSettings('/settings/permissions');
+    const line = permissions.querySelector('[data-settings-remote-line]')!;
+    expect(line.textContent).toBe('Saved on the remote server you’re connected to.');
+    expect(line.getAttribute('title')).toBe('Connected to kiki.example.net');
+    // The address stays in the tooltip; the nav never mentions the server.
+    expect(permissions.querySelector('nav')?.textContent ?? '').not.toContain('kiki.example.net');
+    // General only changes this app, so it has nothing to say about the server.
+    const general = await renderSettings('/settings/general');
+    expect(general.querySelector('[data-settings-remote-line]')).toBeNull();
+  });
+
+  it('drops a page intro that would only restate a card title', async () => {
+    const mcp = await renderSettings('/settings/mcp');
+    expect(mcp.querySelector('[data-settings-intro]')).toBeNull();
+    expect(mcp.textContent).not.toContain('Server-wide MCP timeouts.');
+    expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
+  });
+
   it('mounts the catalog-refresh card on the models tab of the merged ai entry', async () => {
     const container = await renderSettings('/settings/ai?tab=models');
     const card = container.querySelector('#st-card-catalog-refresh');
     expect(card).not.toBeNull();
-    expect(card!.textContent).toContain('Fetch provider models');
+    expect(card!.textContent).toContain('Add models from your connections');
     expect(card!.textContent).toContain('fetched only when you click Get models');
   });
 });
 
 describe('SettingsPage batch-3 leaves', () => {
-  it('mounts the skills leaf with defaults and the workspace skill catalog', async () => {
+  it('mounts the skills leaf with discovery defaults and a link to the catalog', async () => {
     const container = await renderSettings('/settings/skills');
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
-    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
-    expect(container.querySelector('#workspace-skills-select')).not.toBeNull();
     expect(container.querySelector('#st-card-caps [data-settings-panel-scope]')?.textContent).toContain('connected server');
-    expect(container.querySelector('#workspace-skills-select')?.textContent).toContain('Alpha');
+    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
+    expect(container.querySelector('[data-skills-view]')).toBeNull();
   });
 
   it('renders and saves the GUI request timeout in seconds', async () => {
@@ -294,60 +321,11 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(token.type).toBe('password');
   });
 
-  it('mounts the mcp leaf with config, status, and timeouts cards', async () => {
+  it('mounts the mcp leaf with a status line and timeouts', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp')).not.toBeNull();
-    expect(container.querySelector('#st-card-mcp-status')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp [data-capability-link="mcp"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp-status')).toBeNull();
     expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
-  });
-
-  it('tests a draft and renames it by adding the new name before removing the old name', async () => {
-    klient.global.mcp.list.mockResolvedValue([MCP_ENTRY]);
-    klient.global.mcp.add.mockResolvedValue([MCP_ENTRY]);
-    const container = await renderSettings('/settings/mcp');
-    const card = container.querySelector('#st-card-mcp')!;
-    const edit = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
-    await click(edit);
-    const fieldset = card.querySelector('fieldset')!;
-    await setInput(fieldset.querySelector('input')!, 'new-server');
-    await click(fieldset.querySelectorAll('button')[1]!);
-    await flush();
-
-    expect(klient.global.mcp.test).toHaveBeenCalledWith({
-      server: { name: 'new-server', transport: 'stdio', command: 'node', args: ['server.js'] },
-      cwd: '/tmp/alpha',
-    });
-
-    await click(fieldset.querySelectorAll('button')[0]!);
-    await flush();
-
-    expect(klient.global.mcp.add).toHaveBeenCalledWith({
-      server: { name: 'new-server', transport: 'stdio', command: 'node', args: ['server.js'] },
-      cwd: '/tmp/alpha',
-    });
-    expect(klient.global.mcp.remove).toHaveBeenCalledWith({ name: 'old-server', cwd: '/tmp/alpha' });
-    expect(klient.global.mcp.add.mock.invocationCallOrder[0]).toBeLessThan(
-      klient.global.mcp.remove.mock.invocationCallOrder[0]!,
-    );
-    expect(klient.global.mcp.update).not.toHaveBeenCalled();
-  });
-
-  it('updates an MCP server through klient.global.mcp.update', async () => {
-    klient.global.mcp.list.mockResolvedValue([MCP_ENTRY]);
-    const container = await renderSettings('/settings/mcp');
-    const card = container.querySelector('#st-card-mcp')!;
-    const edit = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
-    await click(edit);
-    const save = card.querySelector('fieldset')!.querySelectorAll('button')[0]!;
-    await click(save);
-    await flush();
-
-    expect(klient.global.mcp.update).toHaveBeenCalledWith({
-      server: { name: 'old-server', transport: 'stdio', command: 'node', args: ['server.js'] },
-      cwd: '/tmp/alpha',
-    });
-    expect(klient.global.mcp.add).not.toHaveBeenCalled();
-    expect(klient.global.mcp.remove).not.toHaveBeenCalled();
   });
 
   it('saves MCP timeouts only after an edit and keeps the dirty draft across config refetches', async () => {
@@ -382,13 +360,16 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('MCP timeouts saved and echoed by the server.');
   });
 
-  it('mounts the automation leaf with tool policy and hooks cards', async () => {
+  it('splits the retired automation leaf into permissions and hooks', async () => {
     const container = await renderSettings('/settings/automation');
+    expect(container.querySelector('#st-card-permission-defaults')).not.toBeNull();
+    expect(container.querySelector('#st-card-reviewer')).not.toBeNull();
     expect(container.querySelector('#st-card-tools')).not.toBeNull();
-    expect(container.querySelector('#st-card-tool-experiments')).not.toBeNull();
-    expect(container.querySelector('#st-card-hooks')).not.toBeNull();
-    expect(container.querySelector('[data-settings-intro]')?.textContent).toContain('Manage tool permissions and automatic actions triggered by events.');
-    expect(container.querySelector('#st-card-tools [data-settings-panel-scope]')?.textContent).toContain('connected server');
+    expect(container.querySelector('#st-card-tool-experiments')).toBeNull();
+    expect(container.querySelector('#st-card-hooks')).toBeNull();
+    const hooks = await renderSettings('/settings/hooks');
+    expect(hooks.querySelector('#st-card-hooks')).not.toBeNull();
+    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Commands the server runs automatically');
   });
 
   it('redirects the retired runtime leaf to the tasks page', async () => {
@@ -405,19 +386,20 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Concurrency, timeouts, and printing for background tasks.');
     expect(tasks.querySelector('#st-card-cron')).toBeNull();
 
-    const communication = await renderSettings('/settings/communication');
-    expect(communication.querySelector('#st-card-thread-communication')).not.toBeNull();
-    expect(communication.querySelector('#st-card-thread-communication')!.textContent).toContain('Enable thread communication');
-    expect(communication.querySelector('#st-card-notify-parent')).not.toBeNull();
-    expect(communication.querySelector('#st-card-token-counting')).not.toBeNull();
+    const sessions = await renderSettings('/settings/communication');
+    const messaging = sessions.querySelector('#st-card-agent-messaging')!;
+    expect(messaging).not.toBeNull();
+    expect(messaging.textContent).toContain('Messages between threads');
+    expect(messaging.textContent).toContain('Subagents can notify their parent');
+    expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
 
-    const advanced = await renderSettings('/settings/advanced');
-    expect(advanced.querySelector('#st-card-communication')).toBeNull();
-    expect(advanced.querySelector('#st-card-resource-limits')).not.toBeNull();
-    expect(advanced.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle TTL');
-    expect(advanced.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    expect(advanced.querySelector('#st-card-cron [data-settings-panel-scope]')?.textContent).toContain('read-only environment');
-    expect(advanced.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
+    const developer = await renderSettings('/settings/advanced');
+    expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
+    expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
+    expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle TTL');
+    expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
+    expect(developer.querySelector('#st-card-cron [data-settings-panel-scope]')?.textContent).toContain('read-only environment');
+    expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
     await flush();
@@ -448,33 +430,90 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Task policy saved and echoed by the server.');
   });
 
-  it('omits an empty scoped task feature widget when the server reports no flag', async () => {
-    client.meta.mockResolvedValueOnce({ experimental_flags: {} });
-    const container = await renderSettings('/settings/tasks');
-    expect(container.querySelector('#st-card-agent-board')).not.toBeNull();
-    expect(container.querySelector('#st-card-defaults')).not.toBeNull();
-    expect(container.querySelector('#st-card-task-board')).toBeNull();
-    expect(container.textContent).not.toContain('This server did not report any experimental flags.');
+  it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
+    const tasks = await renderSettings('/settings/tasks');
+    expect(tasks.querySelector('#st-card-agent-board')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-defaults')).toBeNull();
+    const sessions = await renderSettings('/settings/sessions');
+    expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(sessions.querySelector('#st-card-questions')).not.toBeNull();
+    expect(sessions.querySelector('#st-card-session-title')).not.toBeNull();
+    // Session titles are switched by their own card, so they get no second row.
+    expect(sessions.querySelector('[data-experimental-row="auto_session_title"]')).toBeNull();
+    const homes: [string, string[]][] = [
+      ['/settings/agents', ['agent-profile-routes']],
+      ['/settings/subagents', ['subagent_release_idle']],
+      ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
+      ['/settings/tasks', ['task_wait', 'task_board']],
+      ['/settings/search?tab=advanced', ['search_worker']],
+      ['/settings/developer', ['persistence_minidb_readmodel']],
+    ];
+    for (const [path, flags] of homes) {
+      const page = await renderSettings(path);
+      await flush();
+      const rows = [...page.querySelectorAll('[data-experimental-row]')].map((row) => row.getAttribute('data-experimental-row'));
+      expect(rows, path).toEqual(flags);
+      for (const row of page.querySelectorAll('[data-experimental-row]')) {
+        expect(row.querySelector('[data-experimental-tag]')?.textContent).toBe('Experimental');
+        expect(row.querySelector('[data-experimental-effect]')?.textContent).not.toBe('');
+      }
+    }
   });
 
-  it('redirects the retired experimental URL to the advanced page', async () => {
+  it('keeps Labs as a read-only index linking every flag to its page', async () => {
+    const labs = await renderSettings('/settings/labs');
+    await flush();
+    const card = labs.querySelector('#st-card-labs')!;
+    // No switches here: one control per flag, on its feature page.
+    expect(card.querySelector('[data-experimental-row]')).toBeNull();
+    expect(card.querySelector('[role="group"]')).toBeNull();
+    const link = (flag: string) => card.querySelector(`[data-labs-entry="${flag}"] a`)?.getAttribute('href');
+    expect(link('agent-profile-routes')).toBe('/settings/agents#st-card-exp-agents');
+    expect(link('external_delegation_mcp')).toBe('/settings/mcp#st-card-exp-mcp');
+    expect(link('subagent_release_idle')).toBe('/settings/subagents#st-card-exp-subagents');
+    expect(link('search_worker')).toBe('/settings/search#st-card-exp-search');
+    expect(link('auto_session_title')).toBe('/settings/sessions#st-card-session-title');
+    // Every flag the server reports is listed, including ones switched by a feature card.
+    expect(card.querySelectorAll('[data-labs-entry]').length).toBe(12);
+  });
+
+  it('saves an experimental row on change with a narrow experimental patch', async () => {
+    client.getConfig.mockResolvedValue({ experimental: { search_worker: false } });
+    client.patchConfig.mockClear();
+    const mcp = await renderSettings('/settings/mcp');
+    await flush();
+    const on = mcp.querySelector<HTMLButtonElement>('[data-experimental-row="tool-select"] [data-experimental-choice="on"]')!;
+    await click(on);
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      experimental: { search_worker: false, 'tool-select': true },
+      replace_domains: ['experimental'],
+    });
+    client.getConfig.mockResolvedValue({});
+  });
+
+  it('redirects the retired experimental URL to the labs index', async () => {
     const container = await renderSettings('/settings/experimental');
-    expect(container.querySelector('#st-card-advanced')).not.toBeNull();
-    expect(container.querySelector('#st-card-performance-storage')).not.toBeNull();
-    expect(container.querySelector('#st-card-experimental')).toBeNull();
-    expect(scopeHeader(container).textContent).toContain('advanced configuration and performance settings');
-    expect(container.textContent).not.toContain('Tool selection and TaskWait are in Tools & automations');
+    expect(container.querySelector('#st-card-labs')).not.toBeNull();
+    expect(container.querySelector('#st-card-advanced')).toBeNull();
+    expect(scopeHeader(container).textContent).toContain('still being tested');
   });
 
-  it('mounts the advanced page with engine domains and collapsed performance settings', async () => {
-    const container = await renderSettings('/settings/advanced');
+  it('sends an old single-flag card link to the flag’s new row', async () => {
+    const container = await renderSettings('/settings/agents#st-card-mcp-delegation');
+    await flush();
+    expect(container.querySelector('#st-card-exp-mcp [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
+  });
+
+  it('mounts the developer page with limits first and raw JSON after', async () => {
+    const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
-    expect(scopeHeader(container).textContent).toContain('advanced configuration and performance settings');
+    expect(scopeHeader(container).textContent).toContain('Most people never need this page.');
     expect(card.textContent).toContain('the server validates each domain');
     expect(card.textContent).not.toContain('kap-server');
-    const performance = container.querySelector('#st-card-performance-storage')!;
-    expect(performance.querySelector('details')?.open).toBe(false);
+    const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
   });
 
   it('saves advanced settings without the retired services domain', async () => {
@@ -525,10 +564,15 @@ describe('SettingsPage batch-3 leaves', () => {
   it('shows one unified agent list and editor separate from subagent governance', async () => {
     const container = await renderSettings('/settings/agents');
     await flush();
-    expect(container.querySelector('#st-card-main-agents [data-agent-list]')).not.toBeNull();
-    expect(container.querySelector('#st-card-main-agents [data-settings-list-detail]')).not.toBeNull();
+    expect(container.querySelector('#st-card-main-agents [data-team-view]')).not.toBeNull();
+    expect(container.querySelector('#st-card-main-agents [data-team-table]')).not.toBeNull();
+    // The editor is a sheet opened from a row, not a side-by-side detail pane.
+    expect(container.querySelector('[data-profile-editor]')).toBeNull();
     expect(container.querySelector('#st-card-subagent-profiles')).toBeNull();
     expect(container.querySelector('#st-card-subagents')).toBeNull();
+    // The profile-routes flag is one Experimental row at the end of the page.
+    expect(container.querySelector('#st-card-agent-profile-routes')).toBeNull();
+    expect(container.querySelector('#st-card-exp-agents [data-experimental-row="agent-profile-routes"]')).not.toBeNull();
     expect(client.listNamedAgentProfiles).toHaveBeenCalledWith('ws-alpha');
   });
 
@@ -557,7 +601,8 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins-add')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-capability-link-open="plugins"]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugins-view]')).toBeNull();
     expect(client.listPlugins).toHaveBeenCalled();
   });
 
@@ -566,7 +611,7 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(container.querySelector('[data-capabilities-shim-note]')).toBeNull();
     expect(container.textContent).not.toContain('split into dedicated settings pages');
-    expect(container.querySelector('#workspace-skills-select')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
   });
 
   it('saves tool policy with the narrow patch and invalidates only the tools query', async () => {
@@ -605,24 +650,22 @@ describe('SettingsPage batch-3 leaves', () => {
 describe('SettingsPage search ownership', () => {
   it('indexes every card the settings page renders', async () => {
     const general = await renderSettings('/settings/general');
-    const defaults = await renderSettings('/settings/ai?tab=defaults');
     const agents = await renderSettings('/settings/agents');
     const subagents = await renderSettings('/settings/subagents');
     const mcp = await renderSettings('/settings/mcp');
-    const automation = await renderSettings('/settings/automation');
+    const sessions = await renderSettings('/settings/sessions');
+    const permissions = await renderSettings('/settings/permissions');
     const tasks = await renderSettings('/settings/tasks');
-    const advanced = await renderSettings('/settings/advanced');
-    expect(general.querySelector('#st-card-session-title')).not.toBeNull();
-    expect(general.querySelector('#st-card-permission-defaults')).toBeNull();
-    expect(defaults.querySelector('#st-card-permission-defaults')).not.toBeNull();
-    expect(general.querySelector('#st-card-defaults')).toBeNull();
-    expect(tasks.querySelector('#st-card-defaults')).not.toBeNull();
-    expect(agents.querySelector('#st-card-agent-profile-routes')).not.toBeNull();
-    expect(subagents.querySelector('#st-card-subagent-release-idle')).not.toBeNull();
-    expect(mcp.querySelector('#st-card-mcp-delegation')).not.toBeNull();
-    expect(automation.querySelector('#st-card-tool-experiments')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-task-board')).not.toBeNull();
-    expect(advanced.querySelector('#st-card-performance-storage')).not.toBeNull();
+    const developer = await renderSettings('/settings/developer');
+    const labs = await renderSettings('/settings/labs');
+    const defaults = await renderSettings('/settings/ai?tab=defaults');
+    const searchAdvanced = await renderSettings('/settings/search?tab=advanced');
+    const ssh = await renderSettings('/settings/ssh');
+    expect(general.querySelector('#st-card-session-title')).toBeNull();
+    expect(defaults.querySelector('#st-card-permission-defaults')).toBeNull();
+    expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
+    expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(labs.querySelector('#st-card-labs')).not.toBeNull();
     const dir = resolve(process.cwd(), 'src/components');
     const rendered = new Set(
       readdirSync(dir, { recursive: true })
@@ -634,7 +677,7 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, automation, tasks, advanced]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);

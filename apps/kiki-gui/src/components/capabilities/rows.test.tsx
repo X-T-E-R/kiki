@@ -7,12 +7,15 @@ import type { SkillDescriptor } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SkillCard } from './rows';
+import { GROUP_PREVIEW, SkillsView } from './SkillsView';
 
 const client = vi.hoisted(() => ({
   readHostFile: vi.fn<(path: string) => Promise<string>>(),
   previewHostFile: vi.fn<(path: string) => Promise<{ text: string; truncated: boolean }>>(),
   readBuiltinSkill: vi.fn<(name: string) => Promise<string>>(),
+  listWorkspaceSkills: vi.fn<(id: string) => Promise<{ skills: SkillDescriptor[] }>>(),
 }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client }),
@@ -143,5 +146,59 @@ describe('SkillCard preview', () => {
     expect(container.querySelector('[data-preview-tab="skill:builtin:kiki-ops"]')).not.toBeNull();
     expect(client.readHostFile).not.toHaveBeenCalled();
     expect(client.readBuiltinSkill).toHaveBeenCalledWith('kiki-ops');
+  });
+});
+
+describe('SkillsView at scale', () => {
+  const many: SkillDescriptor[] = [
+    ...Array.from({ length: 30 }, (_, index) => ({ name: `project-${index}`, description: `Project skill ${index}`, path: `C:/p/${index}/SKILL.md`, source: 'project' as const })),
+    ...Array.from({ length: 12 }, (_, index) => ({ name: `kiki-${index}`, description: `Built-in ${index}`, path: `builtin:kiki-${index}`, source: 'builtin' as const })),
+    { name: 'incident-notes', description: 'Summarize incident reports', path: 'C:/u/incident/SKILL.md', source: 'user', prompt_command: true },
+  ];
+
+  async function renderView() {
+    localStorage.setItem('kiki.locale', 'en');
+    client.listWorkspaceSkills.mockResolvedValue({ skills: many });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider>
+            <MemoryRouter>
+              <MediaPreviewProvider>
+                <SkillsView workspaceId="ws" />
+              </MediaPreviewProvider>
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-skill-row]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+  }
+  const rows = (group: string) => container.querySelectorAll(`[data-skills-group="${group}"] [data-skill-row]`).length;
+
+  it('previews each group, folds built-ins, and expands on demand', async () => {
+    await renderView();
+    expect(rows('project')).toBe(GROUP_PREVIEW);
+    expect(container.querySelector('[data-skills-group="builtin"]')?.getAttribute('data-open')).toBe('false');
+    expect(rows('builtin')).toBe(0);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-show-all="project"]')!.click(); });
+    expect(rows('project')).toBe(30);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-fold="project"]')!.click(); });
+    expect(rows('project')).toBe(0);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-fold="builtin"]')!.click(); });
+    expect(rows('builtin')).toBe(GROUP_PREVIEW);
+  });
+
+  it('searches across folded groups and says how many match', async () => {
+    await renderView();
+    const input = container.querySelector<HTMLInputElement>('[data-skills-view] input[type="search"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'kiki-1');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(rows('builtin')).toBe(3);
+    expect(container.querySelector('[data-skills-result-count]')?.textContent).toBe('3 of 43 skills match');
   });
 });

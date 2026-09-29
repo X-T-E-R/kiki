@@ -13,15 +13,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { GeneralSection } from './GeneralSection';
+import { PermissionsSection } from './PermissionsSection';
 import { PlanSettings } from './PlanSettings';
+import { SessionsSection } from './SessionsSection';
 
 const getConfig = vi.fn();
 const patchConfig = vi.fn();
 const meta = vi.fn();
 const listModels = vi.fn();
+const listTools = vi.fn(async () => ({ tools: [] }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getConfig, patchConfig, meta, listModels } }),
+  useConnection: () => ({ client: { getConfig, patchConfig, meta, listModels, listTools } }),
 }));
 vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -83,7 +86,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderSection(section: 'general' | 'models' | 'plan' = 'plan'): Promise<HTMLDivElement> {
+async function renderSection(section: 'general' | 'permissions' | 'sessions' | 'plan' = 'plan'): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -94,7 +97,7 @@ async function renderSection(section: 'general' | 'models' | 'plan' = 'plan'): P
     root.render(
       <QueryClientProvider client={client}>
         <I18nProvider>
-          {section === 'plan' ? <PlanSettings /> : <GeneralSection area={section === 'models' ? 'models' : 'app'} />}
+          {section === 'plan' ? <PlanSettings /> : section === 'permissions' ? <PermissionsSection /> : section === 'sessions' ? <SessionsSection /> : <GeneralSection />}
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -194,101 +197,63 @@ describe('PlanSettings plan gate defaults', () => {
     expect(container.textContent).toContain('fixture offline');
   });
 
-  it('places permission defaults with models while keeping device preferences in Your app', async () => {
+  it('keeps General to device preferences and puts server defaults on their own pages', async () => {
     const app = await renderSection('general');
-    expect(app.querySelector('#st-card-permission-defaults')).toBeNull();
     expect(app.querySelector('#st-card-language')).not.toBeNull();
-    const models = await renderSection('models');
-    expect(models.querySelector('#st-card-permission-defaults')).not.toBeNull();
-    expect(models.querySelector('#st-card-language')).toBeNull();
-    expect(models.querySelector('#plan-gate-timeout')).toBeNull();
+    expect(app.querySelector('#st-card-append-timing')).not.toBeNull();
+    for (const moved of ['#st-card-permission-defaults', '#st-card-session-title', '#st-card-questions', '[data-question-behavior]']) {
+      expect(app.querySelector(moved), moved).toBeNull();
+    }
+    // Nothing on General talks to the server.
+    expect(getConfig).not.toHaveBeenCalled();
+    const permissions = await renderSection('permissions');
+    expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
+    expect(permissions.querySelector('#st-card-permission-defaults [data-settings-effect="newSessions"]')).not.toBeNull();
   });
 
   it('offers four permission defaults, saving review immediately', async () => {
-    const container = await renderSection('models');
+    const container = await renderSection('permissions');
     const card = container.querySelector('#st-card-permission-defaults')!;
-    const choices = [...card.querySelectorAll<HTMLButtonElement>('button')];
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('[role="group"] button')];
     expect(choices.map((choice) => choice.textContent)).toEqual(['Ask every time', 'Auto', 'Approve for me', 'Full access']);
     await click(choices[2]!);
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'review' });
     expect(card.textContent).toContain('reviewer checks sensitive actions');
   });
 
-  it('saves the server-side question blocking choice immediately in Composer & session', async () => {
-    const container = await renderSection('general');
-    const card = container.querySelector('#st-card-composer')!;
+  it('saves the question blocking choice immediately on Sessions', async () => {
+    const container = await renderSection('sessions');
+    const card = container.querySelector('#st-card-questions')!;
     expect(card.querySelector('[data-question-behavior]')?.textContent).toContain('Don’t block');
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
     expect(patchConfig).toHaveBeenCalledWith({ interaction: { ask_user_question: 'blocking' } });
   });
 
-  it('renders single flag card with unified save and model searchable select for auto_session_title', async () => {
-    const container = await renderSection('general');
-    const sessionCard = container.querySelector('#st-card-session-title')!;
-    expect(sessionCard).not.toBeNull();
-    // In single-flag card, the feature label is not duplicated
-    expect(sessionCard.querySelector('details[data-technical-details]')).not.toBeNull();
-    // It should have the searchable select for session title model
-    const modelSelect = sessionCard.querySelector('#session-title-model');
-    expect(modelSelect).not.toBeNull();
-    // There should only be one Save button in this card
-    const buttons = [...sessionCard.querySelectorAll('button')].filter(
-      (b) => b.textContent?.trim() === 'Save',
-    );
-    expect(buttons.length).toBe(1);
+  it('turns session titles on with one switch and shows the model picker only while on', async () => {
+    getConfig.mockResolvedValue({ ...CONFIG, experimental: { auto_session_title: false } });
+    meta.mockResolvedValue({ experimental_flags: { auto_session_title: false } });
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const card = container.querySelector('#st-card-session-title')!;
+    expect(card.querySelector('#session-title-model')).toBeNull();
+    expect([...card.querySelectorAll('button')].some((button) => button.textContent === 'Save')).toBe(false);
+    await click(card.querySelector('[role="switch"]')!.closest('label')!.querySelector('input')!);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(patchConfig).toHaveBeenCalledWith({
+      experimental: { auto_session_title: true },
+      replace_domains: ['experimental'],
+    });
   });
 
-  it('SETTINGS-1: does not overwrite a new model selection made while a save is pending', async () => {
-    let resolvePatch!: (value: unknown) => void;
-    const pendingPatch = new Promise((resolve) => {
-      resolvePatch = resolve;
-    });
-
-    patchConfig.mockImplementationOnce(async () => {
-      const res = await pendingPatch;
-      return res;
-    });
-
-    const container = await renderSection('general');
-    const sessionCard = container.querySelector('#st-card-session-title')!;
-
-    // Initial edit: select 'custom-model'
-    const hiddenInput = sessionCard.querySelector<HTMLInputElement>('[data-session-title-model-input]')!;
-    await setInputValue(hiddenInput, 'custom-model');
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    const saveButton = [...sessionCard.querySelectorAll('button')].find(
-      (b) => b.textContent?.trim() === 'Save',
-    )!;
-    expect(saveButton.disabled).toBe(false);
-
-    // Trigger save - this enters saving=true
-    await act(async () => {
-      saveButton.click();
-    });
-
-    // While saving is pending, the SearchableSelect button is disabled
-    const selectTrigger = sessionCard.querySelector<HTMLButtonElement>('#session-title-model')!;
-    expect(selectTrigger.disabled).toBe(true);
-
-    // Concurrently, if a new value arrives (e.g. from input or fast reselection)
-    await setInputValue(hiddenInput, 'newer-concurrent-model');
-    expect(hiddenInput.value).toBe('newer-concurrent-model');
-
-    // Now let the first save resolve with the server echoing 'custom-model'
-    await act(async () => {
-      resolvePatch({
-        ...CONFIG,
-        session_title: { model: 'custom-model' },
-      });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    // The newer draft must NOT be overwritten by the echoed 'custom-model'
-    expect(hiddenInput.value).toBe('newer-concurrent-model');
-    // And dirty remains true so the user can save the newer choice
-    expect(saveButton.disabled).toBe(false);
+  it('writes the title model the moment it is picked', async () => {
+    getConfig.mockResolvedValue({ ...CONFIG, experimental: { auto_session_title: true } });
+    const container = await renderSection('sessions');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const card = container.querySelector('#st-card-session-title')!;
+    await click(card.querySelector('#session-title-model')!);
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent?.includes('custom-model'))!;
+    await click(option);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(patchConfig).toHaveBeenCalledWith({ session_title: { model: 'custom-model' }, replace_domains: ['session_title'] });
   });
 });

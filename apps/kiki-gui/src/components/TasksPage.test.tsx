@@ -489,7 +489,7 @@ describe('RightRail terminate-all subagents', () => {
   it('hides the bulk stop button when no stopper is provided', async () => {
     const container = await renderRail(railStateWith([subTask]), forest);
     expect(container.querySelector('[data-terminate-all-subagents]')).toBeNull();
-    expect(container.querySelector('[data-subagents-view-all]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
   });
 
   it('confirms, then stops every running subagent through its owner scope', async () => {

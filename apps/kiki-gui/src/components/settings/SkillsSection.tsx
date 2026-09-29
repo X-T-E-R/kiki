@@ -1,6 +1,6 @@
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useLocation, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
@@ -11,43 +11,13 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import {
-  groupSkills,
-  normalizeCapQuery,
-  pickWorkspace,
-  SKILL_GROUP_ORDER,
-  type SkillGroupId,
-} from '../../lib/capabilities';
+import { pickWorkspace } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
-import { CapabilityGroup } from '../capabilities/CapabilityGroup';
-import { SkillCard } from '../capabilities/rows';
+import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { MediaPreviewProvider } from '../mediaPreview';
-import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter } from './SettingsPrimitives';
-import { SettingsWorkspaceScopeContext } from './workspaceScope';
-
-/** Groups collapsed on first paint: builtin is long and rarely the answer. */
-const COLLAPSED_BY_DEFAULT: ReadonlySet<string> = new Set(['builtin', 'other']);
-
-const SOURCE_LABEL_KEYS = {
-  plugin: 'cap.source.plugin',
-  project: 'cap.source.project',
-  user: 'cap.source.user',
-  extra: 'cap.source.extra',
-  builtin: 'cap.source.builtin',
-} as const;
-
-const GROUP_TITLE_KEYS = {
-  plugin: 'cap.group.plugin',
-  project: 'cap.group.project',
-  user: 'cap.group.user',
-  extra: 'cap.group.extra',
-  builtin: 'cap.group.builtin',
-  other: 'cap.group.other',
-} as const;
 
 /**
  * Skills defaults (redesign §10.3): the old capabilities skills card plus the
@@ -175,200 +145,23 @@ function SkillsDefaultsCard() {
 }
 
 /**
- * The /capabilities skill browser, re-homed as a settings card (redesign
- * §8.2): same grouping/filtering pipeline (lib/capabilities), same row
- * chrome, but the workspace is chosen by the section-level selector and the
- * page header echoes its scope.
+ * Skills leaf: the discovery defaults (where skills are loaded from). The
+ * catalog itself is browsed on the Capabilities page; the first card counts
+ * what the most recent workspace sees and links there.
  */
-function SkillCatalogCard({
-  workspaceId,
-  workspaceOptions,
-  onWorkspaceChange,
-}: {
-  workspaceId: string;
-  workspaceOptions: readonly SearchableSelectOption[];
-  onWorkspaceChange: (workspaceId: string) => void;
-}) {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const location = useLocation();
-  const [filter, setFilter] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-
-  const skillsQuery = useQuery({
-    queryKey: ['workspace-skills', workspaceId],
-    queryFn: () => client.listWorkspaceSkills(workspaceId),
-    enabled: workspaceId !== '',
-    staleTime: 60_000,
-  });
-
-  const query = normalizeCapQuery(filter);
-  const filtering = query !== '';
-  const groups = useMemo(
-    () => groupSkills(skillsQuery.data?.skills ?? [], filter),
-    [skillsQuery.data, filter],
-  );
-  // Without a filter every known group renders (empty ones with their own
-  // quiet empty state); with a filter only groups holding matches survive.
-  const visibleGroups = useMemo(() => {
-    if (filtering) return groups;
-    return SKILL_GROUP_ORDER.filter((id) => id !== 'other' || groups.some((g) => g.id === 'other'))
-      .map((id) => ({
-        id,
-        skills: groups.find((g) => g.id === id)?.skills ?? [],
-      }));
-  }, [filtering, groups]);
-
-  const nothingMatched = filtering && visibleGroups.every((group) => group.skills.length === 0);
-
-  const isOpen = (id: string) =>
-    filtering ? true : !(collapsed[id] ?? COLLAPSED_BY_DEFAULT.has(id));
-  const toggle = (id: string) => {
-    setCollapsed((current) => ({ ...current, [id]: !(current[id] ?? COLLAPSED_BY_DEFAULT.has(id)) }));
-  };
-
-  return (
-    <SectionCard id="st-card-skill-catalog" title={t('st.skills.catalogTitle')}>
-      <div className="space-y-3">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</span>
-            <SearchableSelect
-              id="workspace-skills-select"
-              options={workspaceOptions}
-              value={workspaceId}
-              onChange={onWorkspaceChange}
-              ariaLabel={t('st.mcp.workspace')}
-            />
-            {skillsQuery.data !== undefined ? (
-              <span className="text-[11px] text-ink-faint">{t('st.skills.summary', { count: skillsQuery.data.skills.length })}</span>
-            ) : null}
-          </div>
-          <Hint>{t('st.skills.workspaceHint')}</Hint>
-        </div>
-        <input
-          type="text"
-          value={filter}
-          onChange={(event) => { setFilter(event.target.value); }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setFilter('');
-          }}
-          placeholder={t('cap.filterPlaceholder')}
-          aria-label={t('cap.filterAria')}
-          className={INPUT}
-        />
-        {workspaceId === '' ? (
-          <Hint>{t('cap.noWorkspace')}</Hint>
-        ) : skillsQuery.isPending ? (
-          <Hint>{t('cap.loadingSkills')}</Hint>
-        ) : skillsQuery.isError ? (
-          <InlineError error={skillsQuery.error} />
-        ) : (
-          <>
-            {visibleGroups.map((group) => (
-              <CapabilityGroup
-                key={group.id}
-                id={group.id}
-                title={t(GROUP_TITLE_KEYS[group.id])}
-                count={group.skills.length}
-                open={isOpen(group.id)}
-                onToggle={() => { toggle(group.id); }}
-              >
-                {group.skills.length === 0 ? (
-                  group.id === 'plugin' ? (
-                    <p className="text-[11px] leading-relaxed text-ink-faint">
-                      {t('st.skills.emptyPlugin')}{' '}
-                      <Link
-                        to={{ pathname: '/settings/plugins', search: location.search }}
-                        className="font-medium text-accent-ink hover:underline"
-                      >
-                        {t('st.plugins.manageLink')}
-                      </Link>
-                    </p>
-                  ) : group.id === 'extra' ? (
-                    <Hint>{t('st.skills.emptyExtra')}</Hint>
-                  ) : (
-                    <Hint>{t('cap.emptyGroup')}</Hint>
-                  )
-                ) : (
-                  group.skills.map((skill) => (
-                    <SkillCard
-                      key={`${skill.source}:${skill.name}`}
-                      skill={skill}
-                      sourceLabel={
-                        group.id === 'other'
-                          ? skill.source
-                          : t(SOURCE_LABEL_KEYS[group.id as Exclude<SkillGroupId, 'other'>])
-                      }
-                    />
-                  ))
-                )}
-              </CapabilityGroup>
-            ))}
-            {nothingMatched ? (
-              <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[12.5px] text-ink-faint">
-                {t('cap.emptyFilter', { query: filter.trim() })}
-              </p>
-            ) : null}
-          </>
-        )}
-      </div>
-    </SectionCard>
-  );
-}
-
-/** Skills leaf: skill defaults plus the workspace skill catalog. */
 export function SkillsSection() {
   const { client } = useConnection();
+  const { t } = useI18n();
   const [searchParams] = useSearchParams();
-  const requestedWorkspace = searchParams.get('workspace') ?? undefined;
-  const [workspaceId, setWorkspaceId] = useState('');
-
-  const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
-    staleTime: 30_000,
-  });
-  const workspaces = workspacesQuery.data?.items ?? [];
-  const sortedWorkspaces = useMemo(() => sortWorkspacesByRecency(workspaces), [workspaces]);
-  const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
-    () =>
-      sortedWorkspaces.map((workspace) => ({
-        value: workspace.id,
-        label: workspace.name,
-        hint: workspace.root,
-        title: workspace.name,
-      })),
-    [sortedWorkspaces],
-  );
-  // An explicit `?workspace=` deep link wins; otherwise the first registered
-  // workspace — the same default the old /capabilities page used.
-  useEffect(() => {
-    if (workspaceId !== '') return;
-    const picked = pickWorkspace(sortedWorkspaces, requestedWorkspace);
-    if (picked !== undefined) setWorkspaceId(picked.id);
-  }, [workspaceId, sortedWorkspaces, requestedWorkspace]);
-
-  // The scope header names the workspace the catalog browses; switching the
-  // selector updates the page header in lockstep.
-  const reportWorkspaceScope = useContext(SettingsWorkspaceScopeContext);
-  const workspaceScopeName = sortedWorkspaces.find((workspace) => workspace.id === workspaceId)?.name ?? null;
-  useEffect(() => {
-    reportWorkspaceScope(workspaceScopeName);
-    return () => { reportWorkspaceScope(null); };
-  }, [reportWorkspaceScope, workspaceScopeName]);
-
+  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
+  const workspace = pickWorkspace(sorted, searchParams.get('workspace') ?? undefined);
   return (
-    <MediaPreviewProvider>
-      <div className="space-y-4">
-        {workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
-        <SkillCatalogCard
-          workspaceId={workspaceId}
-          workspaceOptions={workspaceOptions}
-          onWorkspaceChange={setWorkspaceId}
-        />
-        <SkillsDefaultsCard />
-      </div>
-    </MediaPreviewProvider>
+    <div className="space-y-6">
+      <SectionCard id="st-card-skill-catalog" title={t('st.skills.catalogTitle')}>
+        <CapabilityLink kind="skills" workspaceId={workspace?.id} />
+      </SectionCard>
+      <SkillsDefaultsCard />
+    </div>
   );
 }

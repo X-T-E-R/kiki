@@ -9,8 +9,8 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { useDirtyReporter } from '../dirtyGuard';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { DependentField, SettingField } from './fields';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
 
@@ -40,7 +40,6 @@ export function PlanSettings() {
 
   const timeoutBaseline = String((configQuery.data?.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000);
   const timeoutDirty = timeoutTouched && planGateTimeoutS !== timeoutBaseline;
-  useDirtyReporter('plan-gate-timeout', timeoutDirty);
   useEffect(() => { if (!timeoutTouched) syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig, timeoutTouched]);
 
   const saveEcho = (echoed: KikiConfigResponse): KikiConfigResponse => {
@@ -110,13 +109,14 @@ export function PlanSettings() {
     }
   };
 
+  const gated = planGate === 'gated';
   return (
-    <SectionCard id="st-card-defaults" title={t('st.plan.title')}>
-      <div data-plan-settings className="space-y-3">
-        <Hint>{t('st.plan.hint')}</Hint>
-        <fieldset disabled={saving || configQuery.isPending || configQuery.isError} className="space-y-3 disabled:opacity-60">
-          <div className="space-y-1">
+    <SectionCard id="st-card-defaults" title={t('st.plan.title')} effect="newSessions">
+      <div data-plan-settings className="space-y-1">
+        <fieldset disabled={saving || configQuery.isPending || configQuery.isError} className="min-w-0 space-y-1 disabled:opacity-60">
+          <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
+              layout="row"
               label={t('st.defaults.planMode')}
               checked={defaultPlanMode}
               disabled={saving}
@@ -124,36 +124,36 @@ export function PlanSettings() {
             />
             <Hint>{t('st.defaults.planModeHint')}</Hint>
           </div>
-          <div className="space-y-1">
+          <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
+              layout="row"
               label={t('st.defaults.planGate')}
-              checked={planGate === 'gated'}
+              checked={gated}
               disabled={saving}
               onChange={(checked) => void applyPlanGate(checked ? 'gated' : 'free')}
             />
             <Hint>{t('st.defaults.planGateHint')}</Hint>
           </div>
-          <div className="space-y-1">
-            <label htmlFor="plan-gate-timeout" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] font-medium text-ink-soft">
-              <span>{t('st.defaults.planGateTimeout')}</span>
+          {/* The timeout only means something while approval is required. */}
+          <DependentField when={gated || timeoutDirty}>
+            <SettingField label={t('st.defaults.planGateTimeout')} htmlFor="plan-gate-timeout" help={t('st.defaults.planGateTimeoutHint')}>
               <input
                 id="plan-gate-timeout"
                 type="number"
                 min={5}
                 step={1}
-                disabled={saving || planGate !== 'gated'}
-                className={`${SMALL_INPUT} py-1`}
+                disabled={saving || !gated}
+                className={`${SMALL_INPUT} w-24 tabular-nums`}
                 value={planGateTimeoutS}
                 onChange={(event) => { setPlanGateTimeoutS(event.target.value); setTimeoutTouched(true); }}
+                onKeyDown={(event) => { if (event.key === 'Enter') void commitPlanGateTimeout(); }}
               />
-            </label>
-            <Hint>{t('st.defaults.planGateTimeoutHint')}</Hint>
-          </div>
+            </SettingField>
+            <SettingsDraftFooter id="plan-gate-timeout" dirty={timeoutDirty} saving={saving}
+              onSave={() => void commitPlanGateTimeout()}
+              onDiscard={() => { setPlanGateTimeoutS(timeoutBaseline); setTimeoutTouched(false); setFeedback(null); }} />
+          </DependentField>
         </fieldset>
-        {(planGate === 'gated' || timeoutDirty) ? <div className="flex gap-2 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={!timeoutDirty || saving} onClick={() => void commitPlanGateTimeout()}>{t('common.save')}</button>
-          <button type="button" className={SECONDARY_BUTTON} disabled={!timeoutDirty || saving} onClick={() => { setPlanGateTimeoutS(timeoutBaseline); setTimeoutTouched(false); setFeedback(null); }}>{t('st.advanced.discard')}</button>
-        </div> : null}
         <SavedTick show={saved && !timeoutDirty && feedback?.tone !== 'error'} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />

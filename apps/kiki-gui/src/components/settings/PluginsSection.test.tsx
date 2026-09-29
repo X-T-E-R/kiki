@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import type { CapabilityStatus, PluginInfo, PluginMarketplaceEntry, PluginMarketplaceResponse } from '../../lib/client';
+import { PluginsView, type PluginsRoute } from '../capabilities/PluginsView';
 import { PluginsSection } from './PluginsSection';
 
 const PLUGIN = {
@@ -45,6 +47,18 @@ const patchConfig = vi.fn(async (body: unknown) => body);
 const setPluginEnabled = vi.fn(async () => ({ ok: true }));
 const removePlugin = vi.fn(async () => ({ ok: true }));
 const installPlugin = vi.fn(async () => PLUGIN);
+const PLAN = {
+  id: 'catalog-notes', version: '1.2.0', fingerprint: 'f'.repeat(64), changes: [] as string[], consentRequired: true,
+  permissions: { exec: ['officecli'], fs: 'outside' as const },
+  contributions: ['tool:office_view', 'tool:office_set', 'skill:0'], contextTokens: 900, unsupported: [] as string[],
+};
+const previewPlugin = vi.fn(async () => PLAN);
+const installPreviewedPlugin = vi.fn(async () => ({ ...PLUGIN, id: 'catalog-notes', displayName: 'Catalog Notes', enabled: false }));
+const rollbackPlugin = vi.fn(async () => ({ ok: true }));
+const installPluginPrerequisite = vi.fn(async () => ({ ok: true }));
+const recommendPlugins = vi.fn(async () => ({ entries: [] }));
+const listPluginPanels = vi.fn(async () => ({ panels: [] }));
+const listSkins = vi.fn(async () => ({ items: [], directory: '/tmp/themes', skipped: [] }));
 const WEBBRIDGE: CapabilityStatus = {
   id: 'kimi-webbridge', displayName: 'WebBridge', description: 'Browser bridge',
   supported: true, state: 'not_installed',
@@ -75,6 +89,13 @@ vi.mock('../../state/connection', () => ({
       setPluginEnabled,
       removePlugin,
       installPlugin,
+      previewPlugin,
+      installPreviewedPlugin,
+      rollbackPlugin,
+      installPluginPrerequisite,
+      recommendPlugins,
+      listPluginPanels,
+      listSkins,
       getCapability,
       installCapability,
     },
@@ -107,6 +128,8 @@ afterEach(() => {
   setPluginEnabled.mockClear();
   removePlugin.mockClear();
   installPlugin.mockClear();
+  previewPlugin.mockClear();
+  installPreviewedPlugin.mockClear();
   getCapability.mockReset();
   getCapability.mockResolvedValue(WEBBRIDGE);
   installCapability.mockReset();
@@ -144,7 +167,20 @@ function labeledButton(container: HTMLElement, label: string): HTMLButtonElement
   return button as HTMLButtonElement;
 }
 
+function ViewHarness({ initial }: { readonly initial: PluginsRoute }) {
+  const [route, setRoute] = useState<PluginsRoute>(initial);
+  return <PluginsView route={route} onRoute={setRoute} />;
+}
+
+async function renderView(initial: PluginsRoute = { view: 'installed' }): Promise<HTMLDivElement> {
+  return renderInto(<ViewHarness initial={initial} />);
+}
+
 async function renderLeaf(): Promise<HTMLDivElement> {
+  return renderInto(<PluginsSection />);
+}
+
+async function renderInto(node: React.ReactNode): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -154,7 +190,9 @@ async function renderLeaf(): Promise<HTMLDivElement> {
     root.render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <I18nProvider>
-          <PluginsSection />
+          <MemoryRouter>
+            {node}
+          </MemoryRouter>
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -163,266 +201,188 @@ async function renderLeaf(): Promise<HTMLDivElement> {
   return container;
 }
 
+function catalog(entries: readonly PluginMarketplaceEntry[]): PluginMarketplaceResponse {
+  return { configured: true, source: 'https://example.test/marketplace.json', entries };
+}
+
+const ENTRY: PluginMarketplaceEntry = {
+  id: 'catalog-notes',
+  tier: 'curated',
+  displayName: 'Catalog Notes',
+  description: 'A catalog entry.',
+  version: '1.2.0',
+  keywords: ['notes'],
+  source: 'https://example.test/catalog-notes.zip',
+};
+
 describe('PluginsSection', () => {
-  it('lists installed plugins and opens the unconfigured marketplace tab', async () => {
-    const container = await renderLeaf();
-    expect(container.querySelector('[data-plugin-row="notes"]')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins-add')).not.toBeNull();
-    const marketplaceTab = container.querySelector('[data-plugin-add-tab-button="marketplace"]');
-    expect(marketplaceTab).not.toBeNull();
-    await act(async () => {
-      (marketplaceTab as HTMLButtonElement).click();
-    });
-    await flush();
-    expect(listPluginMarketplace).toHaveBeenCalled();
-    expect(container.querySelector('[data-marketplace-empty]')).not.toBeNull();
-    expect(container.textContent).toContain('Save a catalog URL to show its plugins here.');
-  });
-
-  it('loads MCP server status from the plugin info route', async () => {
-    const container = await renderLeaf();
-    const toggle = container.querySelector('[data-plugin-details-toggle="notes"]');
-    expect(toggle).not.toBeNull();
-    await act(async () => {
-      (toggle as HTMLButtonElement).click();
-    });
-    await flush();
-    expect(getPlugin).toHaveBeenCalledWith('notes');
-    expect(container.querySelector('[data-plugin-mcp="notes-mcp"]')).not.toBeNull();
-  });
-
-  it('labels catalog prerequisites without implying authenticated plugin compatibility', async () => {
-    getPlugin.mockResolvedValueOnce({
-      ...PLUGIN, root: '/tmp/notes', installedAt: '2026-01-01T00:00:00.000Z',
-      manifest: { name: 'notes' }, mcpServers: [], diagnostics: [],
-      prerequisites: { origin: 'kiki-compatibility' as const,
-        items: { schemaVersion: 1 as const, items: [{ id: 'webbridge-daemon' as const,
-          kind: 'daemon' as const, required: true }] } },
-    });
-    const container = await renderLeaf();
-    await click(container.querySelector('[data-plugin-details-toggle="notes"]')!);
-    await flush();
-    const prerequisites = container.querySelector('[data-plugin-prerequisites="notes"]');
-    expect(prerequisites?.textContent).toContain('Kiki dependency catalog (compatibility unverified)');
-    expect(prerequisites?.textContent).not.toContain('kiki-compatibility');
-  });
-
-  it('offers Install for a catalog entry that is not installed', async () => {
-    listPluginMarketplace.mockResolvedValueOnce({
-      configured: true,
-      source: 'https://example.test/marketplace.json',
-      entries: [
-        {
-          id: 'fresh',
-          tier: 'curated',
-          displayName: 'Fresh Notes',
-          source: 'https://example.test/fresh.zip',
-        } satisfies PluginMarketplaceEntry,
-      ],
-    });
-    const container = await renderLeaf();
-    await act(async () => {
-      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    const action = container.querySelector('[data-marketplace-action="fresh"]') as HTMLButtonElement;
-    expect(action).not.toBeNull();
-    expect(action.dataset['marketplaceKind']).toBe('install');
-    expect(action.disabled).toBe(false);
-    expect(action.textContent).toBe('Install');
-    await act(async () => {
-      action.click();
-    });
-    await flush();
-    expect(installPlugin).toHaveBeenCalledWith('https://example.test/fresh.zip');
-  });
-
-  it('disables Installed for a catalog entry with no update', async () => {
-    listPluginMarketplace.mockResolvedValueOnce({
-      configured: true,
-      entries: [
-        {
-          id: 'notes',
-          tier: 'curated',
-          displayName: 'Notes',
-          source: 'https://example.test/notes.zip',
-          installed: { version: '1.0.0', enabled: true },
-        } satisfies PluginMarketplaceEntry,
-      ],
-    });
-    const container = await renderLeaf();
-    await act(async () => {
-      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
-    expect(action.dataset['marketplaceKind']).toBe('installed');
-    expect(action.disabled).toBe(true);
-    expect(action.textContent).toBe('Installed');
-    await act(async () => {
-      action.click();
-    });
-    await flush();
-    expect(installPlugin).not.toHaveBeenCalled();
-  });
-
-  it('offers Update for an installed catalog entry with a newer version', async () => {
-    listPluginMarketplace.mockResolvedValueOnce({
-      configured: true,
-      entries: [
-        {
-          id: 'notes',
-          tier: 'curated',
-          displayName: 'Notes',
-          version: '2.0.0',
-          source: 'https://example.test/notes-2.zip',
-          installed: { version: '1.0.0', enabled: true },
-          updateAvailable: true,
-        } satisfies PluginMarketplaceEntry,
-      ],
-    });
-    const container = await renderLeaf();
-    await act(async () => {
-      (container.querySelector('[data-plugin-add-tab-button="marketplace"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    const action = container.querySelector('[data-marketplace-action="notes"]') as HTMLButtonElement;
-    expect(action.dataset['marketplaceKind']).toBe('update');
-    expect(action.disabled).toBe(false);
-    expect(action.textContent).toBe('Update');
-    await act(async () => {
-      action.click();
-    });
-    await flush();
-    expect(installPlugin).toHaveBeenCalledWith('https://example.test/notes-2.zip');
-  });
-
-  it('lists contribution counts on uninstall confirm, and MCP names once info is loaded', async () => {
-    const container = await renderLeaf();
-    await act(async () => {
-      (container.querySelector('[data-plugin-uninstall="notes"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    const dialog = container.querySelector('[role="alertdialog"]');
-    expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain('1 skill');
-    expect(dialog?.textContent).toContain('1 MCP server');
-    expect(dialog?.textContent).not.toContain('notes-mcp');
-    await act(async () => {
-      [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click();
-    });
-    await flush();
-
-    await act(async () => {
-      (container.querySelector('[data-plugin-details-toggle="notes"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    expect(container.querySelector('[data-plugin-mcp="notes-mcp"]')).not.toBeNull();
-    await act(async () => {
-      (container.querySelector('[data-plugin-uninstall="notes"]') as HTMLButtonElement).click();
-    });
-    await flush();
-    const informed = container.querySelector('[role="alertdialog"]');
-    expect(informed?.textContent).toContain('1 skill');
-    expect(informed?.textContent).toContain('notes-mcp');
-  });
-
-  it('saves and clears the marketplace catalog URL', async () => {
-    const source = 'https://example.test/marketplace.json';
-    patchConfig.mockImplementation(async (body: unknown) => {
-      const patch = body as { plugins?: { marketplace_url?: string } };
-      return { plugins: { marketplaceUrl: patch.plugins?.marketplace_url } };
-    });
-    listPluginMarketplace
-      .mockResolvedValueOnce({ configured: false, entries: [] })
-      .mockResolvedValueOnce({
-        configured: true,
-        source,
-        entries: [
-          {
-            id: 'fresh',
-            tier: 'curated',
-            displayName: 'Fresh',
-            source: 'https://example.test/fresh.zip',
-          } satisfies PluginMarketplaceEntry,
-        ],
-      })
-      .mockResolvedValueOnce({ configured: false, entries: [] });
-    const container = await renderLeaf();
-    await click(container.querySelector('[data-plugin-add-tab-button="marketplace"]')!);
-    await flush();
-    const input = container.querySelector<HTMLInputElement>('input[placeholder="https://example.test/marketplace.json"]')!;
-    expect(input).not.toBeNull();
-    await setInputValue(input, source);
-    await click(labeledButton(container, 'Save catalog URL'));
-    await flush();
-    expect(patchConfig).toHaveBeenCalledWith({
-      plugins: { marketplace_url: source },
-      replace_domains: ['plugins'],
-    });
-    expect(container.querySelector('[data-marketplace-row="fresh"]')).not.toBeNull();
-    await setInputValue(input, '');
-    await click(labeledButton(container, 'Save catalog URL'));
-    await flush();
-    expect(patchConfig).toHaveBeenLastCalledWith({
-      plugins: { marketplace_url: undefined },
-      replace_domains: ['plugins'],
-    });
-    expect(container.querySelector('[data-marketplace-empty]')).not.toBeNull();
-  });
-
-  it('installs from a local path and reports success', async () => {
-    const container = await renderLeaf();
-    const input = container.querySelector<HTMLInputElement>('input[placeholder="C:/plugins/example"]')!;
-    await setInputValue(input, '/tmp/fresh-plugin');
-    await click(labeledButton(container, 'Install'));
-    await flush();
-    expect(installPlugin).toHaveBeenCalledWith('/tmp/fresh-plugin');
-    expect(container.textContent).toContain('Installed Notes.');
+  it('opens on the installed list with an enable switch per plugin', async () => {
+    const container = await renderView();
+    expect(listPlugins).toHaveBeenCalled();
+    expect(container.querySelector('[data-plugins-view="installed"]')).not.toBeNull();
+    const row = container.querySelector('[data-plugin-row="notes"]')!;
+    expect(row.textContent).toContain('Notes');
+    expect(row.textContent).toContain('v1.0.0');
+    // Not in the catalog and installed from a folder: labelled by origin, not a separate view.
+    expect(row.getAttribute('data-plugin-origin')).toBe('local');
+    expect(row.textContent).toContain('Local folder');
+    expect(row.textContent).toContain('/tmp/notes');
+    expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('toggles a plugin off through the enable switch', async () => {
-    const container = await renderLeaf();
-    const toggle = container.querySelector('[data-plugin-row="notes"] [role="switch"]') as HTMLElement;
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-    await click(toggle);
+    const container = await renderView();
+    await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
     await flush();
     expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
   });
 
-  it('confirms uninstall and removes the plugin', async () => {
-    const container = await renderLeaf();
-    await click(container.querySelector('[data-plugin-uninstall="notes"]')!);
+  it('opens the detail with contributions, needs and a folded Advanced block', async () => {
+    getPlugin.mockResolvedValueOnce({
+      ...PLUGIN, root: '/tmp/notes', installedAt: '2026-01-01T00:00:00.000Z', mcpServers: [], diagnostics: [],
+      manifest: {
+        name: 'notes',
+        'x-kiki': {
+          permissions: { exec: ['officecli'] },
+          tools: [{ schemaVersion: 1, name: 'office_view', description: 'Get an overview. More text.', accesses: [{ kind: 'file', operation: 'read', path: '$.file' }] }],
+          panels: [{ schemaVersion: 1, id: 'manuscript', label: 'Manuscript', slot: 'workspace', path: './panel.html' }],
+          themes: [{ schemaVersion: 1, id: 'dusk', label: 'Dusk', base: 'dark', path: './dusk.json' }],
+          prerequisites: { schemaVersion: 1, items: [{ id: 'officecli', kind: 'executable', required: true, version: '1.0.152' }] },
+        },
+      },
+    });
+    const container = await renderView();
+    await click(container.querySelector('[data-plugin-row="notes"] button')!);
     await flush();
-    const dialog = container.querySelector('[role="alertdialog"]')!;
-    expect(dialog.textContent).toContain('Uninstall Notes?');
-    await click(labeledButton(dialog as HTMLElement, 'Uninstall'));
-    await flush();
-    expect(removePlugin).toHaveBeenCalledWith('notes');
+    const detail = container.querySelector('[data-plugin-detail="notes"]')!;
+    expect(detail.querySelector('[data-plugin-contribution="tools"]')?.textContent).toContain('office_view');
+    expect(detail.querySelector('[data-plugin-contribution="panels"]')?.textContent).toContain('Manuscript');
+    expect(detail.querySelector('[data-plugin-contribution="themes"]')?.textContent).toContain('Dusk');
+    expect(detail.querySelector('[data-plugin-needs]')?.textContent).toContain('Run programs');
+    expect(detail.querySelector('[data-plugin-prerequisite="officecli"]')?.textContent).toContain('1.0.152');
+    const advanced = detail.querySelector('[data-plugin-advanced]')!;
+    expect(advanced.getAttribute('data-open')).toBe('false');
+    await click(advanced.querySelector('button[aria-expanded]')!);
+    expect(advanced.getAttribute('data-open')).toBe('true');
+    expect(advanced.textContent).toContain('/tmp/notes');
   });
 
-  it('surfaces API errors from enable, install, and catalog save', async () => {
-    setPluginEnabled.mockRejectedValueOnce(new Error('enable failed'));
-    installPlugin.mockRejectedValueOnce(new Error('install failed'));
-    patchConfig.mockRejectedValueOnce(new Error('save failed'));
+  it('removes a plugin only after the named confirmation, keeping data by default', async () => {
+    const container = await renderView();
+    await click(container.querySelector('[data-plugin-row="notes"] button')!);
+    await flush();
+    await click(container.querySelector('[data-plugin-advanced] button[aria-expanded]')!);
+    await click(container.querySelector('[data-plugin-remove="notes"]')!);
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Remove Notes?');
+    expect(removePlugin).not.toHaveBeenCalled();
+    await click(dialog.querySelector('[data-plugin-remove-confirm]')!);
+    await flush();
+    expect(removePlugin).toHaveBeenCalledWith('notes', { deleteData: false });
+  });
+
+  it('shows the marketplace one step back, and installs through preview and consent', async () => {
+    listPluginMarketplace.mockResolvedValue(catalog([ENTRY]));
+    const container = await renderView();
+    await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
+    await flush();
+    expect(container.querySelector('[data-plugins-view="market"]')).not.toBeNull();
+    await click(container.querySelector('[data-catalog-install="catalog-notes"]')!);
+    await flush();
+    expect(previewPlugin).toHaveBeenCalledWith(ENTRY.source, undefined);
+    expect(installPreviewedPlugin).not.toHaveBeenCalled();
+    const sheet = document.querySelector('[data-install-flow]')!;
+    expect(sheet.textContent).toContain('It will be able to');
+    expect(sheet.textContent).toContain('officecli');
+    const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
+    expect(confirm.textContent).toBe('Allow and install');
+    await click(confirm);
+    await flush();
+    expect(installPreviewedPlugin).toHaveBeenCalledWith({ source: ENTRY.source, sha256: undefined, fingerprint: PLAN.fingerprint, consent: true });
+    expect(setPluginEnabled).toHaveBeenCalledWith('catalog-notes', true);
+    expect(document.querySelector('[data-install-done]')).not.toBeNull();
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('installs a permission-free plugin with a plain Install and leaves state alone on failure', async () => {
+    listPluginMarketplace.mockResolvedValue(catalog([ENTRY]));
+    previewPlugin.mockResolvedValueOnce({ ...PLAN, consentRequired: false, permissions: undefined, contributions: ['theme:dusk'] } as never);
+    installPreviewedPlugin.mockRejectedValueOnce(new Error('The plugin changed since it was reviewed.'));
+    const container = await renderView();
+    await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
+    await flush();
+    await click(container.querySelector('[data-catalog-install="catalog-notes"]')!);
+    await flush();
+    expect(document.querySelector('[data-install-no-permissions]')).not.toBeNull();
+    const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
+    expect(confirm.textContent).toBe('Install');
+    await click(confirm);
+    await flush();
+    expect(document.querySelector('[data-install-error]')?.textContent).toContain('changed since it was reviewed');
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('shelves the catalog, marks updates, and never offers Install for an installed entry', async () => {
+    listPluginMarketplace.mockResolvedValue(catalog([
+      { ...ENTRY, id: 'official-one', tier: 'official', displayName: 'Official One' },
+      { ...ENTRY, id: 'notes', displayName: 'Notes', installed: { version: '1.0.0', enabled: true } },
+      { ...ENTRY, id: 'notes-next', displayName: 'Notes Next', installed: { version: '1.0.0', enabled: true }, updateAvailable: true },
+    ]));
+    const container = await renderView();
+    await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
+    await flush();
+    expect(container.querySelector('#plugins-shelf-featured [data-catalog-row="official-one"]')).not.toBeNull();
+    expect(container.querySelector('[data-catalog-row="notes"]')?.getAttribute('data-catalog-state')).toBe('installed');
+    expect(container.querySelector('[data-catalog-install="notes"]')).toBeNull();
+    expect(container.querySelector('[data-catalog-row="notes-next"]')?.getAttribute('data-catalog-state')).toBe('update');
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('explains an unconfigured catalog instead of showing an empty list', async () => {
+    const container = await renderView();
+    await click(container.querySelector('[data-plugins-tab] [data-segment="market"]')!);
+    await flush();
+    expect(container.textContent).toContain('No plugin catalog is set on this server.');
+  });
+
+  it('keeps only server defaults in settings and links management to the Capabilities page', async () => {
     const container = await renderLeaf();
-    await click(container.querySelector('[data-plugin-row="notes"] [role="switch"]')!);
-    await flush();
-    expect(container.textContent).toContain('enable failed');
+    expect(container.querySelector('[data-plugin-row]')).toBeNull();
+    expect(container.querySelector('[data-plugins-view]')).toBeNull();
+    expect(container.querySelector('[data-capability-link="plugins"]')?.textContent).toContain('1 plugin installed · 1 on');
+    expect(container.querySelector('[data-capability-link-open="plugins"]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('[data-catalog-source] input')).not.toBeNull();
+  });
 
-    const pathInput = container.querySelector<HTMLInputElement>('input[placeholder="C:/plugins/example"]')!;
-    await setInputValue(pathInput, '/tmp/broken');
-    await click(labeledButton(container, 'Install'));
+  it('manages an installed plugin from its row: update hint, menu, and a confirmed remove', async () => {
+    listPluginMarketplace.mockResolvedValue(catalog([{ ...ENTRY, id: 'notes', displayName: 'Notes', tier: 'official', version: '1.1.0', homepage: 'https://example.test/notes', installed: { version: '1.0.0', enabled: true }, updateAvailable: true }]));
+    const container = await renderView();
+    const row = container.querySelector('[data-plugin-row="notes"]')!;
+    expect(row.getAttribute('data-plugin-origin')).toBe('official');
+    expect(row.querySelector('[data-plugin-update="notes"]')?.textContent).toBe('Update to 1.1.0');
+    await click(row.querySelector('[data-plugin-more="notes"]')!);
+    const items = [...document.querySelectorAll('[data-plugin-card-menu] [data-menu-item]')].map((item) => item.getAttribute('data-menu-item'));
+    expect(items).toEqual(['update', 'details', 'toggle', 'homepage', 'copy', 'remove']);
+    await click(document.querySelector('[data-plugin-card-menu] [data-menu-item="remove"]')!);
+    expect(removePlugin).not.toHaveBeenCalled();
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Remove Notes?');
+    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Remove plugin')!);
     await flush();
-    expect(container.textContent).toContain('install failed');
+    expect(removePlugin).toHaveBeenCalledWith('notes', { deleteData: false });
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
 
-    await click(container.querySelector('[data-plugin-add-tab-button="marketplace"]')!);
-    await flush();
-    const sourceInput = container.querySelector<HTMLInputElement>('input[placeholder="https://example.test/marketplace.json"]')!;
-    await setInputValue(sourceInput, 'https://example.test/marketplace.json');
-    await click(labeledButton(container, 'Save catalog URL'));
-    await flush();
-    expect(container.textContent).toContain('save failed');
+  it('marks installed catalog entries in the market without a toggle', async () => {
+    listPluginMarketplace.mockResolvedValue(catalog([ENTRY, { ...ENTRY, id: 'notes', displayName: 'Notes', installed: { version: '1.0.0', enabled: true } }]));
+    const container = await renderView({ view: 'market' });
+    expect(container.querySelector('[data-installed-strip]')).toBeNull();
+    expect(container.querySelector('[data-catalog-row="notes"]')?.textContent).toContain('Installed');
+    await click(container.querySelector('[data-catalog-more="notes"]')!);
+    const items = [...document.querySelectorAll('[data-plugin-card-menu] [data-menu-item]')].map((item) => item.getAttribute('data-menu-item'));
+    expect(items).not.toContain('toggle');
+    listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
 
   it('never prepares runtime merely by browsing or viewing the consent plan', async () => {
@@ -501,11 +461,8 @@ describe('PluginsSection', () => {
     listPlugins
       .mockRejectedValueOnce(new Error('list failed'))
       .mockResolvedValueOnce({ plugins: [PLUGIN] });
-    const container = await renderLeaf();
+    const container = await renderView();
     expect(container.textContent).toContain('list failed');
     expect(container.querySelector('[data-plugin-row="notes"]')).toBeNull();
-    await click(container.querySelector('[data-plugins-retry]')!);
-    await flush();
-    expect(container.querySelector('[data-plugin-row="notes"]')).not.toBeNull();
   });
 });

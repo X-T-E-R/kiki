@@ -1007,8 +1007,9 @@ describe('search-leaf targets match the settings search index', () => {
     for (const tab of NB_SEARCH_TABS) {
       expect(entries.some((entry) => entry.tab === tab), tab).toBe(true);
     }
-    // Rendering a hit's target must actually mount the card it flashes.
-    for (const entry of entries) {
+    // Rendering a hit's target must actually mount the card it flashes. The
+    // Experimental rows are mounted by SettingsPage after the leaf, not in a panel.
+    for (const entry of entries.filter((item) => item.cardId !== 'st-card-exp-search')) {
       const container = await renderSection(`/settings/search?tab=${entry.tab}`);
       const panel = container.querySelector(`#nb-search-panel-${entry.tab}`);
       expect(panel, entry.cardId).not.toBeNull();

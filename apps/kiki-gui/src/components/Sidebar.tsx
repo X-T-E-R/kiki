@@ -85,6 +85,8 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { Wordmark } from './Wordmark';
+import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
+import { WorktreeMark } from './WorktreeMark';
 
 // Re-exported for callers and tests that paged the old in-component search.
 export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
@@ -240,7 +242,7 @@ function PrimaryNav({
       <ul className="space-y-px">
         {NAV_ITEMS.map((item) => {
           const current = location.pathname === item.route
-            || (item.key === 'capabilities' && location.pathname.startsWith('/settings/skills'));
+            || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
           const badge = badges?.[item.key];
           const Icon = item.icon;
           return (
@@ -326,6 +328,7 @@ export function Sidebar({
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
+  const [confirmArchiveWorktree, setConfirmArchiveWorktree] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [workspacePinBusy, setWorkspacePinBusy] = useState(false);
@@ -510,6 +513,11 @@ export function Sidebar({
   const archive = (session: Session) => {
     setMenu(null);
     setActionError(null);
+    // A worktree session asks once whether its checkout goes too.
+    if (session.worktree !== undefined) {
+      setConfirmArchiveWorktree(session);
+      return;
+    }
     void client
       .archiveSession(session.id)
       .then(() => { refreshSessions(); })
@@ -1160,6 +1168,18 @@ export function Sidebar({
           </div>
         </Dialog>
       ) : null}
+      {confirmArchiveWorktree?.worktree !== undefined ? (
+        <WorktreeArchiveDialog
+          session={{ ...confirmArchiveWorktree, worktree: confirmArchiveWorktree.worktree }}
+          onClose={() => { setConfirmArchiveWorktree(null); }}
+          onArchived={(result) => {
+            setConfirmArchiveWorktree(null);
+            refreshSessions();
+            if (result?.tone === 'error') setActionError(result.text);
+            else if (result !== null) setActionNotice(result.text);
+          }}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -1231,7 +1251,9 @@ function SessionRow({
   const relationNote = relation !== undefined && parentTitle !== undefined
     ? t(relation.kind === 'branch' ? 'sidebar.thread.branchedFrom' : 'sidebar.thread.from', { title: parentTitle })
     : undefined;
-  const location = showLocation && session.metadata.cwd !== '' ? shortCwd(session.metadata.cwd) : undefined;
+  // A worktree session lives in its source repository; the checkout path is Kiki's own.
+  const locationPath = session.worktree?.source_root ?? session.metadata.cwd;
+  const location = showLocation && locationPath !== '' ? shortCwd(locationPath) : undefined;
   // An unseen run that did not complete says so in words, so failure never
   // rests on the mark's colour alone.
   const failedUnseen = rowState === 'unread' && lifeOf(session) === 'failed';
@@ -1315,7 +1337,7 @@ function SessionRow({
               <RelativeTime at={session.updated_at} />
             </span>
           </span>
-          {fact !== undefined || archived ? (
+          {fact !== undefined || archived || session.worktree !== undefined ? (
             <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
                 <span data-session-needs-you className="min-w-0 truncate font-medium text-accent-ink">{fact.text}</span>
@@ -1332,8 +1354,9 @@ function SessionRow({
                 // Could not nest (the creator is filtered out or not loaded).
                 <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
               ) : (
-                <span data-session-location className="min-w-0 truncate" title={session.metadata.cwd}>{fact.text}</span>
+                <span data-session-location className="min-w-0 truncate" title={locationPath}>{fact.text}</span>
               )}
+              <WorktreeMark worktree={session.worktree} className={fact === undefined ? 'max-w-full' : 'max-w-[55%] shrink-0'} />
               {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
             </span>
           ) : null}

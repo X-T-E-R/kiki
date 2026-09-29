@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type SetStateAction } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { mcpConfigFromDraft, type McpEditorDraft } from '@kiki/session-core/settings';
 import type { GlobalMcpFacade, GlobalMcpServerConfig } from '@kiki/klient';
+import type { McpServer } from '@kiki/protocol';
 import type {
   McpManagedServer,
   McpManagedServerConfig,
@@ -17,6 +18,8 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
+import { CapabilityIcon } from '../capabilities/CapabilityIcon';
+import { Disclosure, StatusDot, Tag } from '../capabilities/primitives';
 
 /**
  * Read-only entries reach us redacted (`envKeys` / `headerKeys` instead of the
@@ -91,23 +94,39 @@ function maskedOAuthUrl(url: string): string {
 
 type StoredOAuthCredential = Awaited<ReturnType<GlobalMcpFacade['listStoredOAuthCredentials']>>[number];
 
+/** Live runtime state joined onto a configured entry by server name. */
+export interface McpRuntimeView {
+  readonly servers: readonly McpServer[];
+  readonly toolsByServer: ReadonlyMap<string, readonly string[]>;
+  readonly onRestart: (serverId: string) => Promise<void>;
+}
+
+/** Row-trailing Edit: quiet at rest so a list of servers is not a column of buttons. */
+const QUIET_EDIT = 'inline-flex min-h-8 items-center rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 pointer-coarse:min-h-11';
+
+function runtimeDotState(status: McpServer['status'] | undefined): 'ok' | 'busy' | 'error' | 'off' {
+  return status === 'connected' ? 'ok' : status === 'connecting' ? 'busy' : status === 'error' ? 'error' : 'off';
+}
+
 export function McpConfigManager({
   cwd,
   entries,
   loading,
   error,
   onEcho,
+  runtime,
 }: {
   cwd: string;
   entries: readonly McpManagedServer[];
   loading: boolean;
   error: unknown;
   onEcho: (servers: readonly McpManagedServer[]) => void;
+  /** Runtime status, tools and restart; absent → configuration only. */
+  runtime?: McpRuntimeView;
 }) {
   const { klient, scopeId } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
-  const location = useLocation();
   const testRevision = useRef(0);
   const resetRevision = useRef(0);
   const revealRevision = useRef(0);
@@ -123,6 +142,8 @@ export function McpConfigManager({
     else apply();
   };
   const [showHeaders, setShowHeaders] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -373,123 +394,7 @@ export function McpConfigManager({
     }
   };
 
-  return (
-    <div className="space-y-3 border-t border-hairline pt-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[13px] font-medium text-ink">{t('st.mcp.configTitle')}</p>
-          <Hint>{t('st.mcp.configHint')}</Hint>
-        </div>
-        <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} disabled={saving || resetting} onClick={() => { switchDraft(mcpDraft()); }}>{t('st.mcp.add')}</button>
-      </div>
-      <div className="space-y-2">
-        {entries.map((entry) => (
-          <div key={`${entry.source}:${entry.name}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
-            <div className="min-w-0">
-              <p className="truncate text-[13px] font-medium text-ink">
-                {entry.name}
-                {entry.mutable ? null : (
-                  <span
-                    className="ml-2 rounded-[4px] bg-hairline/60 px-1.5 py-px text-[11px] font-normal text-ink-faint"
-                    title={t('st.mcp.readOnlyHint')}
-                  >
-                    {t('st.mcp.readOnly')}
-                  </span>
-                )}
-              </p>
-              <p className="truncate font-mono text-[11px] text-ink-faint" title={entry.origin}>
-                {entry.plugin?.name ?? entry.origin} · {entry.config.transport}
-              </p>
-              {entry.plugin !== undefined ? (
-                <Link
-                  to={{ pathname: '/settings/plugins', search: location.search }}
-                  className="mt-0.5 inline-block text-[12px] font-medium text-accent-ink hover:underline"
-                >
-                  {t('st.plugins.manageLink')}
-                </Link>
-              ) : null}
-            </div>
-            {entry.mutable ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  disabled={saving || resetting}
-                  onClick={() => { switchDraft(mcpDraft(entry)); }}
-                >{t('st.mcp.edit')}</button>
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  disabled={saving || resetting}
-                  onClick={() => { setPendingDelete(entry); }}
-                >{t('st.mcp.delete')}</button>
-                {canResetOAuth(entry) ? (
-                  <button
-                    type="button"
-                    className={DANGER_GHOST_BUTTON}
-                    disabled={saving || resetting || loading || error !== null}
-                    onClick={() => { setPendingReset(entry); setOauthFeedback(null); }}
-                  >{t('st.mcp.oauthDisconnect')}</button>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        ))}
-        {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
-        {!loading && entries.length === 0 ? <Hint>{t('st.mcp.empty')}</Hint> : null}
-        {error !== null ? <InlineError error={error} /> : null}
-      </div>
-      <section aria-label={t('st.mcp.storedOAuthTitle')} className="space-y-2 border-t border-hairline pt-3">
-        <div>
-          <p className="text-[13px] font-medium text-ink">{t('st.mcp.storedOAuthTitle')}</p>
-          <Hint>{t('st.mcp.storedOAuthHint')}</Hint>
-        </div>
-        {savedCredentialsQuery.isPending ? <Hint>{t('st.mcp.storedOAuthLoading')}</Hint> : null}
-        {savedCredentialsQuery.isError ? (
-          <div className="space-y-2">
-            <p role="alert" className="text-[12px] text-danger">{t('st.mcp.storedOAuthError')}</p>
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { void savedCredentialsQuery.refetch(); }}>
-              {t('st.mcp.storedOAuthRetry')}
-            </button>
-          </div>
-        ) : null}
-        {savedCredentials?.length === 0 ? <Hint>{t('st.mcp.storedOAuthEmpty')}</Hint> : null}
-        {savedCredentials?.map((credential) => {
-          const revealed = revealedUrl?.scopeId === scopeId && revealedUrl.credentialId === credential.credentialId
-            ? revealedUrl : null;
-          return (
-            <div key={credential.credentialId} className="flex min-w-0 flex-col items-stretch gap-3 rounded-lg border border-hairline bg-paper px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-ink">{credential.serverName}</p>
-                <p className="break-all font-mono text-[11px] text-ink-faint">{credential.displayUrl}</p>
-                {revealed?.url !== null && revealed?.url !== undefined ? (
-                  <p className="break-all font-mono text-[11px] text-ink">{breakableOAuthUrl(revealed.url)}</p>
-                ) : null}
-                {revealed?.url === null ? <p role="status" className="text-[11px] text-ink-soft">{t('st.mcp.storedOAuthRevealing')}</p> : null}
-                {revealErrorId === credential.credentialId ? <p role="alert" className="text-[11px] text-danger">{t('st.mcp.storedOAuthRevealError')}</p> : null}
-                <Hint>{t('st.mcp.storedOAuthOriginUnknown')} · {t('st.mcp.storedOAuthIdentity', { id: credential.credentialId.slice(0, 8) })}</Hint>
-              </div>
-              <div className="flex flex-wrap gap-2 sm:justify-end">
-                <button
-                  type="button"
-                  className={`${SECONDARY_BUTTON} min-h-11`}
-                  aria-pressed={revealed !== null}
-                  disabled={saving || resetting}
-                  onClick={() => { void toggleStoredUrl(credential); }}
-                >{t(revealed !== null ? 'st.mcp.storedOAuthHide' : 'st.mcp.storedOAuthReveal')}</button>
-                <button
-                  type="button"
-                  className={`${DANGER_GHOST_BUTTON} min-h-11`}
-                  aria-label={t('st.mcp.storedOAuthClearLabel', { name: credential.serverName, url: `${credential.displayUrl} · ${credential.credentialId.slice(0, 8)}` })}
-                  disabled={saving || resetting || savedCredentialsQuery.isFetching}
-                  onClick={() => { setPendingStoredReset(credential); setOauthFeedback(null); }}
-                >{t('st.mcp.storedOAuthClear')}</button>
-              </div>
-            </div>
-          );
-        })}
-      </section>
-      {draft !== null ? (
+  const editor = draft === null ? null : (
         <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3" disabled={saving || resetting}>
           <p className="text-[12px] font-semibold text-ink">
             {draft.original === undefined
@@ -605,7 +510,221 @@ export function McpConfigManager({
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft(null); }}>{t('common.cancel')}</button>
           </div>
         </fieldset>
-      ) : null}
+  );
+
+  const runtimeFor = (entry: McpManagedServer) => {
+    if (runtime === undefined) return undefined;
+    const runtimeId = entry.source === 'plugin' && entry.plugin !== undefined ? undefined : entry.name;
+    return runtime.servers.find((server) => server.name === entry.name || server.id === runtimeId);
+  };
+
+  // Servers that need attention lead; everything else keeps config order.
+  const needsAttention = (entry: McpManagedServer) => {
+    const status = runtimeFor(entry)?.status;
+    return status === 'error' || status === 'disconnected';
+  };
+  const ordered = [...entries.filter(needsAttention), ...entries.filter((entry) => !needsAttention(entry))];
+  const liveCount = entries.filter((entry) => runtimeFor(entry)?.status === 'connected').length;
+  const failing = entries.filter(needsAttention).length;
+
+  return (
+    <div className="space-y-3" data-mcp-manager>
+      <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-1 border-b border-hairline pb-1.5">
+        <h2 className="text-[13px] font-medium text-ink">{t('st.mcp.configTitle')}</h2>
+        {entries.length > 0 && runtime !== undefined ? (
+          <p className="text-[12px] text-ink-faint tabular-nums" data-mcp-summary>
+            {tp('cap.mcp.summary', entries.length, { connected: liveCount })}
+            {failing > 0 ? <span className="text-danger"> · {tp('cap.mcp.failing', failing)}</span> : null}
+          </p>
+        ) : (
+          <span className="text-[12px] text-ink-faint tabular-nums">{entries.length > 0 ? entries.length : ''}</span>
+        )}
+        <button
+          type="button"
+          className={`${SECONDARY_BUTTON} ms-auto shrink-0`}
+          data-mcp-add
+          disabled={saving || resetting}
+          onClick={() => { switchDraft(mcpDraft()); }}
+        >
+          {t('st.mcp.add')}
+        </button>
+      </div>
+      <Hint>{t('st.mcp.configHint')}</Hint>
+      {draft !== null && draft.original === undefined ? editor : null}
+      <div className="space-y-0.5">
+        {ordered.map((entry) => {
+          const live = runtimeFor(entry);
+          const open = expanded === `${entry.source}:${entry.name}`;
+          const tools = live === undefined ? [] : runtime?.toolsByServer.get(live.id) ?? [];
+          const statusLabel = live === undefined ? t('st.mcp.status.notRunning') : t(`st.mcp.status.${live.status}`);
+          const editing = draft?.original?.name === entry.name && draft.original.source === entry.source;
+          return (
+            <div key={`${entry.source}:${entry.name}`} data-mcp-server={entry.name} data-mcp-status={live?.status ?? 'unknown'}>
+              <div className="group flex min-h-14 min-w-0 items-center gap-3 rounded-lg px-2 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]">
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={() => { setExpanded(open ? null : `${entry.source}:${entry.name}`); }}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  <CapabilityIcon kind="mcp" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-[13px] font-medium text-ink">{entry.name}</span>
+                      {live !== undefined ? <StatusDot state={runtimeDotState(live.status)} label={statusLabel} /> : null}
+                      {entry.mutable ? null : <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>}
+                    </span>
+                    <span className={`mt-0.5 block truncate text-[12px] leading-4 ${live?.status === 'error' ? 'text-danger' : 'text-ink-faint'}`}>
+                      {live?.status === 'error' && live.last_error !== undefined
+                        ? live.last_error
+                        : [
+                            entry.config.transport,
+                            live === undefined ? statusLabel : live.status === 'connected' ? tp('cap.mcp.tools', live.tool_count) : statusLabel,
+                            entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
+                          ].filter(Boolean).join(' · ')}
+                    </span>
+                  </span>
+                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {live !== undefined && runtime !== undefined && (live.status === 'error' || live.status === 'disconnected') ? (
+                    <button type="button" className={SECONDARY_BUTTON} data-mcp-reconnect={entry.name}
+                      onClick={() => { void runtime.onRestart(live.id); }}>{t('st.mcp.reconnect')}</button>
+                  ) : null}
+                  {entry.mutable ? (
+                    <button
+                      type="button"
+                      className={QUIET_EDIT}
+                      disabled={saving || resetting}
+                      aria-label={`${t('st.mcp.edit')} ${entry.name}`}
+                      onClick={() => { switchDraft(mcpDraft(entry)); }}
+                    >{t('st.mcp.edit')}</button>
+                  ) : null}
+                </div>
+              </div>
+              {editing ? <div className="pl-2 pr-2 pb-3">{editor}</div> : null}
+              <div className="expand-collapse grid" style={{ gridTemplateRows: open && !editing ? '1fr' : '0fr' }}>
+                <div className="overflow-hidden" inert={!open || editing}>
+                  <div className="space-y-4 pb-4 pl-14 pr-2 pt-1" data-mcp-server-detail={entry.name}>
+                    {live?.status === 'error' && live.last_error !== undefined ? (
+                      <div className="space-y-1" data-mcp-error={entry.name}>
+                        <pre className="max-h-40 overflow-auto rounded-md bg-shell px-3 py-2 font-mono text-[12px] leading-5 whitespace-pre-wrap text-shell-ink">{live.last_error}</pre>
+                        <p className="text-[12px] leading-4 text-ink-faint">{t('st.mcp.errorHint')}</p>
+                      </div>
+                    ) : null}
+                    <div>
+                      <p className="text-[12px] font-medium text-ink-soft">{t('st.mcp.toolsTitle')}</p>
+                      {tools.length > 0 ? (
+                        <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[12px] text-ink-soft">
+                          {tools.map((tool) => <li key={tool}>{tool}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-[12px] text-ink-faint">
+                          {live?.status === 'connected' ? tp('cap.mcp.tools', live.tool_count) : t('st.mcp.toolsWhenConnected')}
+                        </p>
+                      )}
+                    </div>
+                    <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-[12px] leading-4">
+                      <dt className="text-ink-faint">{t('st.mcp.transport')}</dt>
+                      <dd className="font-mono text-ink-soft">{entry.config.transport}</dd>
+                      <dt className="text-ink-faint">{entry.config.transport === 'stdio' ? t('st.mcp.command') : t('st.mcp.url')}</dt>
+                      <dd className="min-w-0 break-all font-mono text-ink-soft">
+                        {entry.config.transport === 'stdio' ? [entry.config.command, ...(entry.config.args ?? [])].join(' ') : entry.config.url}
+                      </dd>
+                      <dt className="text-ink-faint">{t('st.mcp.origin')}</dt>
+                      <dd className="min-w-0 break-all font-mono text-ink-soft" title={entry.origin}>{entry.plugin?.name ?? entry.origin}</dd>
+                    </dl>
+                    <div className="flex flex-wrap gap-2">
+                      {entry.plugin !== undefined ? (
+                        <Link to={{ pathname: '/capabilities', search: `?tab=plugins&plugin=${encodeURIComponent(entry.plugin.id)}` }}
+                          className="inline-flex min-h-8 items-center text-[13px] font-medium text-accent-ink hover:underline">
+                          {t('st.plugins.manageLink')}
+                        </Link>
+                      ) : null}
+                      {live !== undefined && runtime !== undefined && live.status === 'connected' ? (
+                        <button type="button" className={SECONDARY_BUTTON} onClick={() => { void runtime.onRestart(live.id); }}>{t('st.mcp.restart')}</button>
+                      ) : null}
+                      {entry.mutable ? (
+                        <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving || resetting} onClick={() => { setPendingDelete(entry); }}>{t('st.mcp.delete')}</button>
+                      ) : null}
+                      {canResetOAuth(entry) ? (
+                        <button
+                          type="button"
+                          className={DANGER_GHOST_BUTTON}
+                          disabled={saving || resetting || loading || error !== null}
+                          onClick={() => { setPendingReset(entry); setOauthFeedback(null); }}
+                        >{t('st.mcp.oauthDisconnect')}</button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
+        {!loading && entries.length === 0 && draft === null ? (
+          <div className="rounded-lg px-2 py-6" data-capability-empty>
+            <p className="text-[13px] text-ink-soft">{t('st.mcp.empty')}</p>
+            <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.mcp.emptyBody')}</p>
+          </div>
+        ) : null}
+        {error !== null ? <InlineError error={error} /> : null}
+      </div>
+      <section aria-label={t('st.mcp.storedOAuthTitle')} className="border-t border-hairline pt-3" data-mcp-credentials>
+        <Disclosure
+          label={savedCredentials !== undefined && savedCredentials.length > 0 ? `${t('st.mcp.storedOAuthTitle')} · ${savedCredentials.length}` : t('st.mcp.storedOAuthTitle')}
+          open={credentialsOpen}
+          onToggle={() => { setCredentialsOpen((value) => !value); }}
+        >
+        <div className="space-y-2">
+        <Hint>{t('st.mcp.storedOAuthHint')}</Hint>
+        {savedCredentialsQuery.isPending ? <Hint>{t('st.mcp.storedOAuthLoading')}</Hint> : null}
+        {savedCredentialsQuery.isError ? (
+          <div className="space-y-2">
+            <p role="alert" className="text-[12px] text-danger">{t('st.mcp.storedOAuthError')}</p>
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { void savedCredentialsQuery.refetch(); }}>
+              {t('st.mcp.storedOAuthRetry')}
+            </button>
+          </div>
+        ) : null}
+        {savedCredentials?.length === 0 ? <Hint>{t('st.mcp.storedOAuthEmpty')}</Hint> : null}
+        {savedCredentials?.map((credential) => {
+          const revealed = revealedUrl?.scopeId === scopeId && revealedUrl.credentialId === credential.credentialId
+            ? revealedUrl : null;
+          return (
+            <div key={credential.credentialId} className="flex min-w-0 flex-col items-stretch gap-3 rounded-lg border border-hairline bg-paper px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium text-ink">{credential.serverName}</p>
+                <p className="break-all font-mono text-[11px] text-ink-faint">{credential.displayUrl}</p>
+                {revealed?.url !== null && revealed?.url !== undefined ? (
+                  <p className="break-all font-mono text-[11px] text-ink">{breakableOAuthUrl(revealed.url)}</p>
+                ) : null}
+                {revealed?.url === null ? <p role="status" className="text-[11px] text-ink-soft">{t('st.mcp.storedOAuthRevealing')}</p> : null}
+                {revealErrorId === credential.credentialId ? <p role="alert" className="text-[11px] text-danger">{t('st.mcp.storedOAuthRevealError')}</p> : null}
+                <Hint>{t('st.mcp.storedOAuthOriginUnknown')} · {t('st.mcp.storedOAuthIdentity', { id: credential.credentialId.slice(0, 8) })}</Hint>
+              </div>
+              <div className="flex flex-wrap gap-2 sm:justify-end">
+                <button
+                  type="button"
+                  className={`${SECONDARY_BUTTON} min-h-11`}
+                  aria-pressed={revealed !== null}
+                  disabled={saving || resetting}
+                  onClick={() => { void toggleStoredUrl(credential); }}
+                >{t(revealed !== null ? 'st.mcp.storedOAuthHide' : 'st.mcp.storedOAuthReveal')}</button>
+                <button
+                  type="button"
+                  className={`${DANGER_GHOST_BUTTON} min-h-11`}
+                  aria-label={t('st.mcp.storedOAuthClearLabel', { name: credential.serverName, url: `${credential.displayUrl} · ${credential.credentialId.slice(0, 8)}` })}
+                  disabled={saving || resetting || savedCredentialsQuery.isFetching}
+                  onClick={() => { setPendingStoredReset(credential); setOauthFeedback(null); }}
+                >{t('st.mcp.storedOAuthClear')}</button>
+              </div>
+            </div>
+          );
+        })}
+        </div>
+        </Disclosure>
+      </section>
       <FeedbackLine feedback={feedback} />
       <FeedbackLine feedback={oauthFeedback} />
       <ConfirmDialog

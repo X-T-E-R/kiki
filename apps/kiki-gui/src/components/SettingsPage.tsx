@@ -2,28 +2,35 @@ import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
+  AI_SETTINGS_DEFAULT_TAB,
   SETTINGS_SECTION_META,
+  experimentalTabForSection,
   resolveSettingsRoute,
   settingsGroupForSection,
+  settingsSectionIsDeviceOnly,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
+import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
-import { AdvancedSection } from './settings/AdvancedSection';
 import { AppearanceSection } from './settings/AppearanceSection';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
-import { AutomationSection } from './settings/AutomationSection';
-import { CommunicationSection } from './settings/CommunicationSection';
+import { HooksSection } from './settings/AutomationSection';
 import { ConnectionSection } from './settings/ConnectionSection';
+import { DeveloperSection } from './settings/DeveloperSection';
+import { ExperimentalRows } from './settings/ExperimentalRows';
 import { GeneralSection } from './settings/GeneralSection';
+import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
 import { NbSearchSection } from './settings/NbSearchSection';
+import { PermissionsSection } from './settings/PermissionsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { SECTIONS, type SectionId } from './settings/sections';
-import { ScopeTag, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SessionsSection } from './settings/SessionsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
 import { SubagentsSection } from './settings/SubagentsSection';
@@ -32,22 +39,67 @@ import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
+import { SshSection } from './ssh/SshSection';
 
 export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
 
 /**
- * One line on what the leaf is for and its default write target. The leaf's
- * name lives in the page header (T2), so the content pane opens with prose,
- * and the T1 section titles below are its only headings.
+ * Address of the connected server, only when it is somewhere else. The
+ * built-in server on this machine (loopback, or the origin serving this
+ * page) returns null: its port means nothing to a person, so the settings
+ * never print it. An SSH scope or another host returns its label.
  */
-function SectionIntro({ section }: { section: SectionId }) {
+function useRemoteServerAddress(): string | null {
+  const { config, sshLabel } = useConnection();
+  if (sshLabel !== null) return sshLabel;
+  const url = config.url.trim();
+  if (url === '') return null;
+  try {
+    const parsed = new URL(url);
+    const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(parsed.hostname);
+    if (loopback || parsed.host === window.location.host) return null;
+    return parsed.host;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Page intro: what the leaf is for, when a card title does not already say
+ * it, then a quiet status line that only appears when there is something to
+ * say: a remote server (named in the hover title; the local one is never
+ * mentioned), the workspace a picker targets, or unsaved changes, so a draft
+ * deep in a long page is never invisible.
+ */
+function SectionIntro({ section, workspaceName, remoteAddress, dirty }: {
+  section: SectionId;
+  workspaceName: string | null;
+  remoteAddress: string | null;
+  dirty: boolean;
+}) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
-  const scope = meta.scopes[0];
-  return <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pb-6">
-    <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(meta.purposeKey)}</p>
-    {scope !== undefined ? <ScopeTag scope={scope} page /> : null}
+  // Device pages (General, Appearance, Connection) never write to the server.
+  const remote = remoteAddress !== null && !settingsSectionIsDeviceOnly(section);
+  const status = remote || workspaceName !== null || dirty;
+  if (meta.purposeKey === undefined && !status) return null;
+  return <div className="space-y-2 pb-6">
+    {meta.purposeKey !== undefined ? <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(meta.purposeKey)}</p> : null}
+    {status ? <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint" data-settings-page-status>
+      {remote ? (
+        <span data-settings-remote-line title={t('st.storage.remoteTitle', { address: remoteAddress })}>
+          {t('st.storage.pageServerRemote')}
+        </span>
+      ) : null}
+      {workspaceName !== null ? <span data-settings-storage-workspace>{remote ? '· ' : ''}{t('st.storage.workspace', { name: workspaceName })}</span> : null}
+      {dirty ? (
+        <span role="status" data-settings-unsaved className="inline-flex items-center gap-1.5 font-medium text-accent-ink">
+          <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
+          {t('st.storage.unsaved')}
+        </span>
+      ) : null}
+    </p> : null}
   </div>;
 }
 
@@ -101,6 +153,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const navigate = useGuardedNavigate();
   const rawNavigate = useNavigate();
   const dirty = useDirtyGuard()?.dirty === true;
+  const remoteAddress = useRemoteServerAddress();
   const [focusCard, setFocusCard] = useState<{ cardId: string; nonce: number } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -185,20 +238,31 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const pane = active === null ? null
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
-    : active === 'ai' ? <AiSection />
     : active === 'connection' ? <ConnectionSection />
+    : active === 'ai' ? <AiSection />
     : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
     : active === 'subagents' ? <SubagentsSection />
-    : active === 'communication' ? <CommunicationSection />
+    : active === 'sessions' ? <SessionsSection />
+    : active === 'permissions' ? <PermissionsSection />
+    : active === 'tasks' ? <TasksSection />
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
     : active === 'plugins' ? <PluginsSection />
-    : active === 'automation' ? <AutomationSection />
-    : active === 'tasks' ? <TasksSection />
     : active === 'search' ? <NbSearchSection />
+    : active === 'hooks' ? <HooksSection />
     : active === 'workspaces' ? <WorkspacesSection />
-    : active === 'advanced' ? <AdvancedSection />
+    : active === 'ssh' ? <SshSection />
+    : active === 'developer' ? <DeveloperSection />
+    : active === 'labs' ? <LabsSection />
     : <AboutSection />;
+
+  // A feature page ends with the experimental flags that change it; tabbed
+  // pages show them on one tab only, so a hit on the rows lands where they are.
+  const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
+  const currentTab = new URLSearchParams(search).get('tab')
+    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB : active === 'search' ? 'overview' : null);
+  const showExperimental = active !== null && active !== 'labs'
+    && (experimentalTab === undefined || currentTab === experimentalTab);
 
   const activeLabel = activeLabelKey === undefined ? undefined : t(activeLabelKey);
 
@@ -255,10 +319,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           ) : (
             <div data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
-                <SectionIntro section={active} />
-                {workspaceScopeName !== null ? <span className="sr-only">{t('st.scope.workspace')} {workspaceScopeName}</span> : null}
-                <SettingsPageScopeContext.Provider value={SETTINGS_SECTION_META[active]?.scopes[0] ?? null}>
-                  <div className="space-y-6">{pane}</div>
+                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} />
+                <SettingsPageScopeContext.Provider value={settingsSectionIsDeviceOnly(active) ? 'app' : 'server'}>
+                  <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
                 </SettingsPageScopeContext.Provider>
               </div>
             </div>

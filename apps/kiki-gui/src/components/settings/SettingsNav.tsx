@@ -6,6 +6,7 @@ import {
   buildSettingsSearchIndex,
   searchSettings,
   settingsSectionLabels,
+  type SettingsNavGroupSpec,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
@@ -97,9 +98,9 @@ export function SettingsSearch({
 }
 
 /**
- * The settings navigation tree: non-clickable group headers with clickable
- * leaf sections. Shared by the desktop rail and the mobile drawer so both breakpoints
- * present the same hierarchy.
+ * The settings navigation tree: one continuous list of non-clickable intent
+ * groups with clickable leaves. Shared by the desktop rail and the mobile
+ * drawer so both breakpoints present the same hierarchy.
  */
 export function SettingsNavTree({
   active,
@@ -143,46 +144,44 @@ export function SettingsNavTree({
     { tab: 'advanced', labelKey: 'st.nbSearch.tab.advanced' },
   ];
 
+  const groups = SETTINGS_NAV_TREE.filter(
+    (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.length > 0,
+  );
+
   return (
     <div className="mt-4 flex flex-col gap-4" data-settings-nav-tree>
-      {SETTINGS_NAV_TREE.map((node) => {
-        if (node.kind === 'leaf') {
-          return <div key={`leaf-${node.section}`} data-settings-nav-ungrouped={node.section}>{leafButton(node.section)}</div>;
-        }
-        if (node.sections.length === 0) return null;
-        return (
-          <div key={node.id} data-settings-nav-group={node.id}>
-            <p className="flex h-7 items-center px-2 text-[12px] font-medium text-ink-soft">
-              {t(node.labelKey)}
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {node.sections.map((id) => (
-                <div key={id} className="flex flex-col">
-                  {leafButton(id)}
-                  {id === 'search' && active === 'search' ? (
-                    <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
-                      {nbSearchSubtabs.map((sub) => (
-                        <button
-                          key={sub.tab}
-                          type="button"
-                          data-settings-nav-subtab={sub.tab}
-                          onClick={() => {
-                            onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
-                            onAfterNavigate?.();
-                          }}
-                          className="flex h-7 items-center rounded-md pl-5 pr-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
-                        >
-                          {t(sub.labelKey)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
+      {groups.map((node) => (
+        <div key={node.id} data-settings-nav-group={node.id}>
+          <p className="flex h-7 items-center px-2 text-[12px] font-medium text-ink-soft">
+            {t(node.labelKey)}
+          </p>
+          <div className="flex flex-col gap-0.5">
+            {node.sections.map((id) => (
+              <div key={id} className="flex flex-col">
+                {leafButton(id)}
+                {id === 'search' && active === 'search' ? (
+                  <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
+                    {nbSearchSubtabs.map((sub) => (
+                      <button
+                        key={sub.tab}
+                        type="button"
+                        data-settings-nav-subtab={sub.tab}
+                        onClick={() => {
+                          onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
+                          onAfterNavigate?.();
+                        }}
+                        className="flex h-7 items-center rounded-md pl-5 pr-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                      >
+                        {t(sub.labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }

@@ -140,6 +140,19 @@ describe('MCP managed header editor', () => {
     });
   });
 
+  it('renames by adding the new name before removing the old one', async () => {
+    mcp.add.mockResolvedValue([remote, readOnly]);
+    mcp.remove.mockResolvedValue([readOnly]);
+    const container = await render();
+    const fieldset = await openRemote(container);
+    await change(fieldset.querySelector<HTMLInputElement>('input')!, 'renamed');
+    await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(mcp.add).toHaveBeenCalledWith({ server: expect.objectContaining({ name: 'renamed' }), cwd: '/tmp/fixture' });
+    expect(mcp.remove).toHaveBeenCalledWith({ name: 'remote', cwd: '/tmp/fixture' });
+    expect(mcp.add.mock.invocationCallOrder[0]).toBeLessThan(mcp.remove.mock.invocationCallOrder[0]!);
+    expect(mcp.update).not.toHaveBeenCalled();
+  });
+
   it('shows the effective env source, disables overridden Authorization, and replaces the reference', async () => {
     const container = await render([envRemote]);
     const fieldset = await openRemote(container);

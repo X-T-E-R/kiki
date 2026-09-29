@@ -12,15 +12,16 @@ import {
   tokenCountingPatch,
   writeSettings,
   type DefaultAppendTiming,
+  type RuntimeConfigDraft,
   type TokenCountingStrategy,
 } from '@kiki/session-core/settings';
+import type { KikiConfigPatch } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
-import { SettingsSegmented } from './SettingsPrimitives';
+import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 const APPEND_TIMINGS: readonly DefaultAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
@@ -37,203 +38,122 @@ const APPEND_TIMING_HINT_KEY = {
   tasks_done: 'timing.hint.tasksDone',
 } as const;
 
-export function ThreadCommunicationCard() {
+/**
+ * Instant-apply binding for one value projected out of the server config:
+ * optimistic local state, a narrow patch, the echoed value as the truth, and
+ * a rollback plus inline error when the write fails.
+ */
+function useServerChoice<T>(project: (draft: RuntimeConfigDraft) => T, patch: (value: T) => KikiConfigPatch) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { locale } = useI18n();
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const [value, setValue] = useState<T | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<Feedback>(null);
+  const [saved, ping] = useSavedTick();
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !saving) {
-      setDraft(runtimeConfigDraftFromConfig(configQuery.data).threadCommunicationEnabled);
-    }
+    if (configQuery.data !== undefined && !saving) setValue(project(runtimeConfigDraftFromConfig(configQuery.data)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- project is a stable pure selector
   }, [configQuery.data, saving]);
 
-  if (draft === null) {
-    return (
-      <SectionCard id="st-card-thread-communication" title={t('st.communication.threadTitle')}>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </SectionCard>
-    );
-  }
-
-  const apply = async (checked: boolean) => {
-    setDraft(checked);
+  const apply = async (next: T) => {
+    const previous = value;
+    setValue(next);
     setSaving(true);
-    setFeedback(null);
+    setError(null);
     try {
-      const echoed = await client.patchConfig(threadCommunicationPatch(checked));
+      const echoed = await client.patchConfig(patch(next));
       queryClient.setQueryData(['config'], echoed);
-      setDraft(runtimeConfigDraftFromConfig(echoed).threadCommunicationEnabled);
-      setFeedback({ tone: 'success', text: t('st.communication.threadSaved') });
-    } catch (error) {
-      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).threadCommunicationEnabled);
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      setValue(project(runtimeConfigDraftFromConfig(echoed)));
+      ping();
+    } catch (cause) {
+      setValue(previous);
+      setError({ tone: 'error', text: errorText(locale, cause) });
     } finally {
       setSaving(false);
     }
   };
+  return { value, apply, saving, error, saved, configQuery };
+}
+
+/**
+ * Sessions → Agent messaging: the two channels agents use to talk outside
+ * their own reply. One card, two switches, each saved the moment it flips.
+ */
+export function AgentMessagingCard() {
+  const { t } = useI18n();
+  const thread = useServerChoice((draft) => draft.threadCommunicationEnabled, threadCommunicationPatch);
+  const notify = useServerChoice((draft) => draft.agentsNotifyParent, agentNotifyParentPatch);
+  const loading = thread.value === null || notify.value === null;
 
   return (
-    <SectionCard id="st-card-thread-communication" title={t('st.communication.threadTitle')}>
-      <div className="space-y-4">
-        <Hint>{t('st.communication.threadHint')}</Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-          <Toggle
-            label={t('st.communication.threadCommunication')}
-            checked={draft}
-            onChange={(checked) => { void apply(checked); }}
-          />
-        </fieldset>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
+    <SectionCard id="st-card-agent-messaging" title={t('st.sessions.messagingTitle')}>
+      {loading ? (
+        thread.configQuery.isError ? <InlineError error={thread.configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
+      ) : (
+        <div className="space-y-1">
+          <div data-settings-field data-agent-messaging="thread" className="space-y-0.5 py-1">
+            <Toggle layout="row" label={t('st.communication.threadCommunication')} checked={thread.value === true}
+              disabled={thread.saving} onChange={(checked) => { void thread.apply(checked); }} />
+            <Hint>{t('st.sessions.threadHint')}</Hint>
+            <FeedbackLine feedback={thread.error} />
+          </div>
+          <div data-settings-field data-agent-messaging="notify" className="space-y-0.5 py-1">
+            <Toggle layout="row" label={t('st.communication.notifyParent')} checked={notify.value === true}
+              disabled={notify.saving} onChange={(checked) => { void notify.apply(checked); }} />
+            <Hint>{t('st.sessions.notifyHint')}</Hint>
+            <FeedbackLine feedback={notify.error} />
+          </div>
+          <SavedTick show={thread.saved || notify.saved} />
+        </div>
+      )}
     </SectionCard>
   );
 }
 
-export function NotifyParentCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-
-  useEffect(() => {
-    if (configQuery.data !== undefined && !saving) {
-      setDraft(runtimeConfigDraftFromConfig(configQuery.data).agentsNotifyParent);
-    }
-  }, [configQuery.data, saving]);
-
-  if (draft === null) {
-    return (
-      <SectionCard id="st-card-notify-parent" title={t('st.communication.notifyParentTitle')}>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </SectionCard>
-    );
-  }
-
-  const apply = async (checked: boolean) => {
-    setDraft(checked);
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(agentNotifyParentPatch(checked));
-      queryClient.setQueryData(['config'], echoed);
-      setDraft(runtimeConfigDraftFromConfig(echoed).agentsNotifyParent);
-      setFeedback({ tone: 'success', text: t('st.communication.notifyParentSaved') });
-    } catch (error) {
-      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).agentsNotifyParent);
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <SectionCard id="st-card-notify-parent" title={t('st.communication.notifyParentTitle')}>
-      <div className="space-y-4">
-        <Hint>{t('st.communication.notifyParentHint')}</Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-          <Toggle
-            label={t('st.communication.notifyParent')}
-            checked={draft}
-            onChange={(checked) => { void apply(checked); }}
-          />
-        </fieldset>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
-    </SectionCard>
-  );
-}
-
+/** Developer → Token counting: a reporting detail, applied on change. */
 export function TokenCountingCard() {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<TokenCountingStrategy | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-
-  useEffect(() => {
-    if (configQuery.data !== undefined && !saving) {
-      setDraft(runtimeConfigDraftFromConfig(configQuery.data).tokenCountingStrategy);
-    }
-  }, [configQuery.data, saving]);
-
-  if (draft === null) {
-    return (
-      <SectionCard id="st-card-token-counting" title={t('st.communication.tokenCountingTitle')}>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
-      </SectionCard>
-    );
-  }
-
-  const apply = async (choice: TokenCountingStrategy) => {
-    setDraft(choice);
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(tokenCountingPatch(choice));
-      queryClient.setQueryData(['config'], echoed);
-      setDraft(runtimeConfigDraftFromConfig(echoed).tokenCountingStrategy);
-      setFeedback({ tone: 'success', text: t('st.communication.tokenCountingSaved') });
-    } catch (error) {
-      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).tokenCountingStrategy);
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  const { t } = useI18n();
+  const choice = useServerChoice((draft) => draft.tokenCountingStrategy, tokenCountingPatch);
   return (
     <SectionCard id="st-card-token-counting" title={t('st.communication.tokenCountingTitle')}>
-      <div className="space-y-4">
-        <Hint>{t('st.communication.tokenCountingHint')}</Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.communication.tokenCounting')}
-            <select
-              className={`${SMALL_INPUT} mt-1 block`}
-              value={draft}
-              onChange={(event) => { void apply(event.target.value as TokenCountingStrategy); }}
-            >
-              <option value="measured+estimated">measured+estimated</option>
-              <option value="measured">measured</option>
-              <option value="estimated">estimated</option>
-            </select>
-          </label>
-        </fieldset>
-
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
+      {choice.value === null ? (
+        choice.configQuery.isError ? <InlineError error={choice.configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
+      ) : (
+        <div className="space-y-1">
+          <SettingField label={t('st.communication.tokenCounting')} help={t('st.dev.tokenHint')}>
+            <SettingsSelect<TokenCountingStrategy>
+              id="token-counting-strategy"
+              ariaLabel={t('st.communication.tokenCounting')}
+              value={choice.value}
+              disabled={choice.saving}
+              onChange={(next) => { void choice.apply(next); }}
+              choices={(['measured+estimated', 'measured', 'estimated'] as const).map((value) => ({ value, label: value }))}
+              className="font-mono"
+            />
+            <SavedTick show={choice.saved} />
+          </SettingField>
+          <FeedbackLine feedback={choice.error} />
+        </div>
+      )}
     </SectionCard>
   );
 }
 
 /**
- * Local-only card: the default append timing for messages sent while the
- * agent is busy. Writes straight to the desktop settings store (no server
- * round-trip); the queue strip re-times individual messages on top of it.
+ * General → Composer: when a message sent while the agent is busy starts.
+ * A device default; the queue strip can still re-time each message.
  */
-export function DefaultAppendTimingCard() {
+export function AppendTimingField() {
   const { t } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
-  const [tick, ping] = useSavedTick();
   const current = settings.defaultAppendTiming;
-
   return (
-    <SectionCard id="st-card-append-timing" title={t('st.communication.appendTimingTitle')}>
+    <div id="st-card-append-timing" className="scroll-mt-4">
       <SettingField
-        label={t('st.communication.appendTiming')}
+        label={t('st.communication.appendTimingTitle')}
         labelId="default-append-timing-label"
         help={<>{t('st.communication.appendTimingHint')} {t(APPEND_TIMING_HINT_KEY[current])}</>}
       >
@@ -241,21 +161,10 @@ export function DefaultAppendTimingCard() {
           ariaLabelledBy="default-append-timing-label"
           dataAttr="data-append-timing"
           value={current}
-          onChange={(timing) => { writeSettings({ defaultAppendTiming: timing }); ping(); }}
+          onChange={(timing) => { writeSettings({ defaultAppendTiming: timing }); }}
           choices={APPEND_TIMINGS.map((timing) => ({ value: timing, label: t(APPEND_TIMING_LABEL_KEY[timing]) }))}
         />
-        <SavedTick show={tick} />
       </SettingField>
-    </SectionCard>
-  );
-}
-
-export function CommunicationSection() {
-  return (
-    <>
-      <ThreadCommunicationCard />
-      <NotifyParentCard />
-      <TokenCountingCard />
-    </>
+    </div>
   );
 }

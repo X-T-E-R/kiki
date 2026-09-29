@@ -33,7 +33,7 @@ export function SettingsDraftFooter({ id, dirty, saving = false, saveDisabled = 
     <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || saveDisabled} onClick={onSave}>
       {saving ? t('common.saving') : saveLabel ?? t('common.save')}
     </button>
-    <button type="button" className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={onDiscard}>
+    <button type="button" data-settings-discard={id} className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={onDiscard}>
       {t('st.advanced.discard')}
     </button>
     {dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}

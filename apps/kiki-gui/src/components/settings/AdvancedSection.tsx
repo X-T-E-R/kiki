@@ -9,16 +9,12 @@ import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { INPUT } from '../ui';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import type { KikiConfigResponse } from '../../lib/client';
-import { ResourceLimitsCard } from './EngineLimitSettings';
-import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
-import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
- * Raw JSON domains (redesign §8.3 / §10.3): permission, loop_control, and
- * background as one JSON document. Hooks left this editor
- * in batch 3 — they only enter through the Automation leaf's parseHooksJson —
- * so a pasted `hooks` key is rejected as an unsupported field.
+ * Developer → raw engine configuration: permission, loop_control, and
+ * background as one JSON document. Hooks only enter through the Hooks leaf's
+ * parseHooksJson, so a pasted `hooks` key is rejected as unsupported.
  */
 export function AdvancedSection() {
   const { client } = useConnection();
@@ -73,7 +69,6 @@ export function AdvancedSection() {
   };
 
   return (
-    <>
       <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
@@ -82,15 +77,5 @@ export function AdvancedSection() {
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
-      <CronRuntimeCard />
-      <ResourceLimitsCard />
-      <ExperimentalSection
-        featureIds={['search_worker', 'persistence_minidb_readmodel']}
-        includeUnknown
-        cardId="st-card-performance-storage"
-        titleKey="st.advanced.performanceTitle"
-        collapsible
-      />
-    </>
   );
 }

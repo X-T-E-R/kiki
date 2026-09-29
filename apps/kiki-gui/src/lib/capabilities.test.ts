@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 
 import type { McpServer, SkillDescriptor, Workspace } from '@kiki/protocol';
 
+import { bridgeBody } from '../components/capabilities/PluginPanelHost';
+import type { PluginMarketplaceEntry } from './client';
+import {
+  installedMatches,
+  pluginOrigin,
+  hasAnyPermission,
+  planContributionGroups,
+  pluginContributions,
+  pluginPermissions,
+  pluginPrerequisites,
+  shelveCatalog,
+  toolDisplayName,
+} from './pluginCatalog';
+
 import {
   filterMcpServers,
   groupSkills,
@@ -140,5 +154,91 @@ describe('pickWorkspace', () => {
 
   it('returns undefined with no workspaces registered', () => {
     expect(pickWorkspace([], undefined)).toBeUndefined();
+  });
+});
+
+describe('plugin catalog shaping', () => {
+  const entry = (id: string, tier: PluginMarketplaceEntry['tier'], keywords: string[] = [], extra: Partial<PluginMarketplaceEntry> = {}): PluginMarketplaceEntry => ({
+    id, tier, displayName: id, source: `https://example.test/${id}`, keywords, ...extra,
+  });
+
+  it('lifts official and workspace-relevant entries into Featured and places the rest by keyword', () => {
+    const shelves = shelveCatalog([
+      entry('office', 'official', ['office']),
+      entry('pdf', 'curated', ['pdf']),
+      entry('tdd', 'curated', ['tdd']),
+      entry('odd', 'curated', ['unknown']),
+      entry('lens', 'curated', ['sql']),
+      entry('theme', 'third-party', ['sql']),
+    ], '', new Set(['lens', 'theme']));
+    expect(shelves.map((shelf) => [shelf.id, shelf.entries.map((item) => item.id)])).toEqual([
+      ['featured', ['lens', 'office']], ['productivity', ['pdf']], ['coding', ['tdd']], ['data', ['theme']], ['more', ['odd']],
+    ]);
+    expect(shelveCatalog([entry('office', 'official', ['docx'])], 'DOCX').length).toBe(1);
+    expect(shelveCatalog([entry('office', 'official')], 'zzz')).toEqual([]);
+  });
+
+  it('labels an installed plugin by its origin and matches it by name or source', () => {
+    const catalogEntries = [entry('office', 'official'), entry('notes', 'curated')];
+    expect(pluginOrigin({ id: 'office', source: 'local-path' }, catalogEntries)).toBe('official');
+    expect(pluginOrigin({ id: 'notes', source: 'zip-url' }, catalogEntries)).toBe('catalog');
+    expect(pluginOrigin({ id: 'mine', source: 'local-path' }, catalogEntries)).toBe('local');
+    expect(pluginOrigin({ id: 'fork', source: 'github' }, catalogEntries)).toBe('git');
+    expect(pluginOrigin({ id: 'pack', source: 'zip-url' }, catalogEntries)).toBe('zip');
+    const fork = { id: 'fork', displayName: 'Fork', originalSource: 'https://github.com/example/fork' };
+    expect(installedMatches(fork, 'GITHUB')).toBe(true);
+    expect(installedMatches(fork, 'office')).toBe(false);
+  });
+
+  it('reads contributions, permissions and prerequisites from either manifest spelling', () => {
+    const manifest = {
+      'x-kiki': {
+        permissions: { exec: ['officecli'], fs: 'outside' },
+        tools: [{ name: 'office_view', description: 'View.', accesses: [{ kind: 'file', operation: 'read' }, { kind: 'all' }] }],
+        panels: [{ id: 'manuscript', label: 'Manuscript', slot: 'workspace' }],
+        themes: [{ id: 'dusk', label: 'Dusk', base: 'dark' }],
+        commands: [{ name: 'continue-draft', description: 'Continue.' }],
+        prerequisites: { items: [{ id: 'officecli', kind: 'executable', required: true, version: '1.0.152' }] },
+      },
+    };
+    const contributions = pluginContributions('kiki-office', manifest);
+    expect(contributions.tools).toEqual([{ name: 'office_view', runtimeName: 'plugin__kiki-office__office_view', description: 'View.', accesses: ['read'] }]);
+    expect(contributions.panels[0]?.label).toBe('Manuscript');
+    expect(contributions.themes[0]?.id).toBe('dusk');
+    expect(contributions.commands[0]?.name).toBe('continue-draft');
+    expect(pluginPermissions(manifest)).toMatchObject({ fs: 'outside', exec: ['officecli'] });
+    expect(hasAnyPermission(pluginPermissions({ kiki: {} }))).toBe(false);
+    expect(pluginPrerequisites(undefined, manifest)).toEqual([expect.objectContaining({ id: 'officecli', version: '1.0.152', required: true })]);
+    expect(pluginContributions('p', { kiki: { tools: [{ name: 't', description: '' }] } }).tools[0]?.runtimeName).toBe('plugin__p__t');
+  });
+
+  it('shows tool names without their plugin or MCP prefix', () => {
+    expect(toolDisplayName('plugin__kiki-office__office_view')).toBe('office_view');
+    expect(toolDisplayName('mcp__fixture-fs__read_file')).toBe('read_file');
+    expect(toolDisplayName('Read')).toBe('Read');
+  });
+
+  it('groups a preview plan by contribution kind in display order', () => {
+    expect(planContributionGroups(['skill:0', 'tool:a', 'tool:b', 'hook:0:Stop', 'settings'])).toEqual([
+      { kind: 'tool', names: ['a', 'b'] },
+      { kind: 'skill', names: [''] },
+      { kind: 'hook', names: [''] },
+      { kind: 'settings', names: [''] },
+    ]);
+  });
+});
+
+describe('plugin panel bridge', () => {
+  it('pins the host session and rejects oversize or malformed requests', () => {
+    const base = { channel: 'kiki.panel.v1' as const, kind: 'request' as const, id: 1 };
+    expect(bridgeBody({ ...base, method: 'session.summary', ...{ sessionId: 'forged' } } as never, 's1'))
+      .toEqual({ method: 'session.summary', session_id: 's1' });
+    expect(bridgeBody({ ...base, method: 'session.sendMessage', text: 'hello' }, 's1'))
+      .toEqual({ method: 'session.sendMessage', session_id: 's1', text: 'hello' });
+    expect(typeof bridgeBody({ ...base, method: 'session.sendMessage', text: 'x'.repeat(16_385) }, 's1')).toBe('string');
+    expect(typeof bridgeBody({ ...base, method: 'session.sendMessage', text: '  ' }, 's1')).toBe('string');
+    expect(typeof bridgeBody({ ...base, method: 'plugin.call', action: '../x' }, 's1')).toBe('string');
+    expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: { a: 1 } }, 's1'))
+      .toEqual({ method: 'plugin.call', session_id: 's1', action: 'save', args: { a: 1 } });
   });
 });

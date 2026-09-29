@@ -4,8 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
-import { AutomationSection } from './AutomationSection';
-import { ExperimentalSection } from './ExperimentalSection';
+import { HooksSection, ToolPolicyCard } from './AutomationSection';
+import { ExperimentalRows } from './ExperimentalRows';
 
 interface FixtureConfig {
   tools: { enabled: string[]; disabled: string[] };
@@ -40,8 +40,8 @@ async function click(text: string, scope: Element = container) {
   await act(async () => { button.click(); });
   await flush();
 }
-async function mount(both = false) {
-  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider><AutomationSection />{both ? <ExperimentalSection /> : null}</I18nProvider></QueryClientProvider>));
+async function mount(view: 'automation' | 'rows' = 'automation') {
+  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider>{view === 'rows' ? <ExperimentalRows section="mcp" /> : <><ToolPolicyCard /><HooksSection /></>}</I18nProvider></QueryClientProvider>));
   await flush();
   await flush();
 }
@@ -135,30 +135,23 @@ describe('safe automation drafts', () => {
     expect(config.tools.disabled).toEqual(['Write']);
   });
 
-  it('separates tool flags, preserves other flag writes and never claims config wins over environment', async () => {
-    await mount(true);
-    const toolFlags = container.querySelector('#st-card-tool-experiments')!;
-    const advanced = container.querySelector('#st-card-experimental')!;
-    const technical = [...toolFlags.querySelectorAll<HTMLDetailsElement>('[data-technical-details]')]
-      .find((details) => details.textContent?.includes('Flag ID: tool-select'))!;
-    expect(technical.open).toBe(false);
-    expect(technical.textContent).toContain('Flag ID: tool-select');
-    expect(toolFlags.textContent).not.toContain('search_worker');
-    expect(advanced.textContent).not.toContain('task_wait');
-    // Flag overrides are SearchableSelect pickers: open the trigger, pick the row.
-    const pick = async (trigger: Element, label: string) => {
-      await act(async () => { (trigger as HTMLButtonElement).click(); });
-      const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((row) => row.textContent?.includes(label))!;
-      await act(async () => { option.click(); });
+  it('saves each Experimental row on change, keeps other overrides and flags an environment override', async () => {
+    await mount('rows');
+    const rows = container.querySelector('#st-card-exp-mcp')!;
+    expect(rows.querySelector('[data-experimental-row="tool-select"]')).not.toBeNull();
+    expect(rows.querySelector('[data-experimental-row="search_worker"]')).toBeNull();
+    const choose = async (flag: string, value: string) => {
+      const button = rows.querySelector<HTMLButtonElement>(`[data-experimental-row="${flag}"] [data-experimental-choice="${value}"]`)!;
+      await act(async () => { button.click(); });
+      await flush();
     };
-    const flagPickers = (scope: Element) => scope.querySelectorAll('[id^="experimental-flag-"]');
-    await pick(flagPickers(toolFlags)[1]!, 'Enabled in config');
-    await pick(flagPickers(advanced)[0]!, 'Disabled in config');
-    await click('Save', advanced);
-    expect(flagPickers(toolFlags)[1]!.textContent).toContain('Enabled in config');
-    await click('Save', toolFlags);
+    config.experimental = { search_worker: false };
+    await choose('tool-select', 'on');
     expect(config.experimental).toEqual({ search_worker: false, 'tool-select': true });
-    expect(toolFlags.textContent).toContain('effective: off');
-    expect(toolFlags.textContent).toContain('Effective state is reported by the server.');
+    // The server still reports it off: an env var outranks the saved choice.
+    expect(rows.querySelector('[data-experimental-row="tool-select"] [data-flag-effective]')?.textContent).toBe('Currently off');
+    expect(rows.querySelector('[data-experimental-row="tool-select"] [data-experimental-env]')).not.toBeNull();
+    await choose('tool-select', 'default');
+    expect(config.experimental).toEqual({ search_worker: false });
   });
 });

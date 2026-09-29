@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EXPERIMENTAL_FLAG_HOMES,
+  experimentalSectionForFlag,
   agentIdentityPatch,
   appendExtraSkillDirs,
   AI_SETTINGS_TABS,
@@ -57,6 +59,7 @@ import {
   SETTINGS_SECTIONS,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
+  settingsSectionIsDeviceOnly,
   settingsGroupForSection,
   settingsSectionForCard,
   settingsServerSnapshot,
@@ -913,6 +916,21 @@ describe('remote /models probe', () => {
   });
 });
 
+describe('experimental flag homes', () => {
+  it('homes each flag on a real settings page, with the owners the IA asked for', () => {
+    const sections = new Set(SETTINGS_SECTIONS.map((section) => section.id));
+    for (const home of EXPERIMENTAL_FLAG_HOMES) {
+      expect(sections.has(home.section), home.id).toBe(true);
+      expect(home.section, home.id).not.toBe('labs');
+    }
+    expect(new Set(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id)).size).toBe(EXPERIMENTAL_FLAG_HOMES.length);
+    expect(experimentalSectionForFlag('agent-profile-routes')).toBe('agents');
+    expect(experimentalSectionForFlag('external_delegation_mcp')).toBe('mcp');
+    expect(experimentalSectionForFlag('subagent_release_idle')).toBe('subagents');
+    expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
+  });
+});
+
 describe('settings search index', () => {
   const t = (key: I18nKey): string => translate('en', key);
   const labels = { general: 'General', ai: 'Models & providers' };
@@ -922,10 +940,16 @@ describe('settings search index', () => {
     expect(index.length).toBeGreaterThan(10);
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'ai')).toBe(true);
-    expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-performance-storage')).toBe(true);
-    expect(searchSettings(index, 'Task board').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-task-board')).toBe(true);
-    expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-defaults')).toBe(true);
-    expect(searchSettings(index, 'conversation titles').some((hit) => hit.section === 'general' && hit.cardId === 'st-card-session-title')).toBe(true);
+    expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-labs')).toBe(true);
+    expect(searchSettings(index, 'Task board').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-agent-board')).toBe(true);
+    expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-defaults')).toBe(true);
+    expect(searchSettings(index, 'session titles').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-session-title')).toBe(true);
+    expect(searchSettings(index, 'permission mode').some((hit) => hit.section === 'permissions' && hit.cardId === 'st-card-permission-defaults')).toBe(true);
+    // A flag is found on its feature page's Experimental rows, not only in Labs.
+    expect(searchSettings(index, 'task_wait').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-exp-tasks')).toBe(true);
+    expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'subagents' && hit.cardId === 'st-card-exp-subagents')).toBe(true);
+    expect(searchSettings(index, 'search_worker').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
+    expect(searchSettings(index, 'AgentNotify')[0]?.cardId).toBe('st-card-agent-messaging');
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
@@ -983,64 +1007,67 @@ describe('settings search index', () => {
   });
 });
 
-describe('settings nav groups (redesign batch 1)', () => {
-  it('groups every leaf under the four top-level destinations', () => {
+describe('settings nav groups (IA v2)', () => {
+  it('lists five intent groups in one tree and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['app', 'models-agents', 'tools-integrations', 'system-data']);
+      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'system']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
-    expect(settingsGroupForSection('about')?.id).toBe('system-data');
+    expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
+    expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
+    expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places every section exactly once, high-frequency first', () => {
+  it('places every section exactly once under the group a person would look in', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
     expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
     expect(new Set(placed).size).toBe(placed.length);
-    expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
-    expect(SETTINGS_NAV_TREE).toHaveLength(4);
-    expect(settingsGroupForSection('ai')?.id).toBe('models-agents');
-    expect(settingsGroupForSection('tasks')?.id).toBe('models-agents');
-    expect(settingsGroupForSection('subagents')?.id).toBe('models-agents');
-    for (const leaf of ['skills', 'mcp', 'plugins', 'automation', 'search']) {
-      expect(settingsGroupForSection(leaf)?.id).toBe('tools-integrations');
+    const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
+    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'connection']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents']);
+    expect(sectionsOf('work')).toEqual(['sessions', 'permissions', 'tasks']);
+    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
+    expect(sectionsOf('system')).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
+    for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
+      expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
-    for (const leaf of ['advanced', 'workspaces', 'about']) {
-      expect(settingsGroupForSection(leaf)?.id).toBe('system-data');
-    }
-    // This device: language and behaviour, look, and which server it uses.
-    expect((SETTINGS_NAV_TREE[0] as { sections: readonly string[] }).sections)
-      .toEqual(['general', 'appearance', 'connection']);
-    expect(settingsGroupForSection('runtime')).toBeUndefined();
-    expect(settingsGroupForSection('experimental')).toBeUndefined();
-    expect(settingsGroupForSection('capabilities')).toBeUndefined();
-    expect(settingsGroupForSection('nope')).toBeUndefined();
   });
 
-  it('declares every scope a page actually writes after the content split', () => {
+  it('gives a page an intro only when it says more than a card title on that page', () => {
+    const t = (key: I18nKey): string => translate('en', key);
+    const words = (text: string) => text.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((word) => word.length > 2);
+    for (const section of SETTINGS_SECTIONS) {
+      const key = SETTINGS_SECTION_META[section.id]?.purposeKey;
+      if (key === undefined) continue;
+      const intro = new Set(words(t(key)));
+      for (const entry of SETTINGS_SEARCH_SPEC.filter((item) => item.section === section.id)) {
+        const title = words(t(entry.titleKey));
+        // An intro that is a card title plus at most one word restates that card
+        // ("Server-wide MCP timeouts." over the "MCP timeouts" card).
+        const extra = [...intro].filter((word) => !title.includes(word));
+        expect(title.length > 0 && extra.length <= 1, `${section.id} vs ${entry.cardId}`).toBe(false);
+      }
+    }
+    expect(SETTINGS_SECTION_META['mcp']?.purposeKey).toBeUndefined();
+  });
+
+  it('declares every scope a page actually writes', () => {
     for (const section of SETTINGS_SECTIONS) {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
       expect(meta!.scopes.length).toBeGreaterThan(0);
-      for (const scope of meta!.scopes) {
-        expect(['app', 'server', 'workspace']).toContain(scope);
-      }
+      // Only the App group's pages are device-only.
+      expect(settingsSectionIsDeviceOnly(section.id), section.id).toBe(settingsGroupForSection(section.id)?.id === 'device');
     }
-    // General mixes device prefs with server-side session defaults; Skills
-    // and MCP mix server config with per-workspace targets; Agents and
-    // Subagents mix server-wide governance with workspace-sourced profiles.
-    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
+    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
-    expect(SETTINGS_SECTION_META['plugins']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
-    expect(SETTINGS_SECTION_META['subagents']?.scopes).toEqual(['server', 'workspace']);
-    expect(SETTINGS_SECTION_META['ai']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['permissions']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['labs']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']).toBeUndefined();
-    expect(SETTINGS_SECTION_META['automation']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['search']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['tasks']?.scopes).toEqual(['server']);
-    expect(SETTINGS_SECTION_META['advanced']?.scopes).toEqual(['server']);
+    expect(SETTINGS_SECTION_META['advanced']).toBeUndefined();
   });
 });
 
@@ -1055,6 +1082,8 @@ describe('appearance leaf', () => {
     // Queued-message timing is a device preference; it moved to General.
     expect(resolveSettingsRoute('communication', '#st-card-append-timing'))
       .toMatchObject({ status: 'ok', section: 'general', cardId: 'st-card-append-timing' });
+    expect(resolveSettingsRoute(undefined, '#st-card-append-timing'))
+      .toMatchObject({ status: 'ok', section: 'general' });
   });
 
   it('finds appearance settings by everyday words in both locales', () => {
@@ -1091,7 +1120,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     const models = index.find((entry) => entry.cardId === 'st-card-models');
     expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
-    expect(about?.groupLabel).toBe('System & data');
+    expect(about?.groupLabel).toBe('System');
     expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
     expect(searchSettings(index, 'Models & agents').some((hit) => hit.section === 'ai')).toBe(true);
   });
@@ -1173,15 +1202,52 @@ describe('settings route resolver', () => {
 
   it('redirects the retired experimental page and keeps feature card owners precise', () => {
     expect(resolveSettingsRoute('experimental', ''))
-      .toEqual({ status: 'ok', section: 'advanced', cardId: undefined, tab: undefined });
+      .toEqual({ status: 'ok', section: 'labs', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('experimental', '#st-card-experimental'))
-      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-performance-storage', tab: undefined });
-    expect(resolveSettingsRoute('experimental', '#st-card-tool-experiments'))
-      .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tool-experiments', tab: undefined });
-    expect(resolveSettingsRoute('agents', '#st-card-task-board'))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-board', tab: undefined });
+      .toEqual({ status: 'ok', section: 'labs', cardId: 'st-card-labs', tab: undefined });
+    // A retired multi-flag card lands on the Labs index; a single-flag card on its row's page.
+    expect(resolveSettingsRoute('agents', '#st-card-tool-experiments'))
+      .toEqual({ status: 'ok', section: 'labs', cardId: 'st-card-labs', tab: undefined });
+    for (const [card, section] of [
+      ['st-card-agent-profile-routes', 'agents'],
+      ['st-card-mcp-delegation', 'mcp'],
+      ['st-card-subagent-release-idle', 'subagents'],
+      ['st-card-task-board', 'tasks'],
+      ['st-card-performance-storage', 'developer'],
+    ] as const) {
+      expect(resolveSettingsRoute('labs', `#${card}`), card)
+        .toEqual({ status: 'ok', section, cardId: `st-card-exp-${section}`, tab: undefined });
+    }
+    // New row anchors on tabbed pages switch to the tab that mounts them.
+    expect(resolveSettingsRoute('search', '#st-card-exp-search'))
+      .toEqual({ status: 'ok', section: 'search', cardId: 'st-card-exp-search', tab: 'advanced' });
+    expect(resolveSettingsRoute('ai', '#st-card-exp-ai'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-exp-ai', tab: 'defaults' });
     expect(resolveSettingsRoute('general', '#st-card-defaults'))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-defaults', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: undefined });
+  });
+
+  it('redirects the leaves retired by IA v2 to their new owners', () => {
+    expect(resolveSettingsRoute('advanced', '')).toEqual({ status: 'ok', section: 'developer', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('advanced', '#st-card-advanced'))
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-advanced', tab: undefined });
+    expect(resolveSettingsRoute('automation', '')).toEqual({ status: 'ok', section: 'permissions', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('automation', '#st-card-hooks'))
+      .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
+    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-token-counting', tab: undefined });
+    for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
+      expect(resolveSettingsRoute('communication', `#${card}`), card)
+        .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
+    }
+    // Permission defaults and the reviewer left the Models & providers tab.
+    expect(resolveSettingsRoute('ai', '#st-card-permission-defaults'))
+      .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-permission-defaults', tab: undefined });
+    expect(resolveSettingsRoute('ai', '#st-card-reviewer'))
+      .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-reviewer', tab: undefined });
+    expect(resolveSettingsRoute('general', '#st-card-session-title'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title', tab: undefined });
   });
 
   it('follows a card hash whose content moved to another section', () => {
@@ -1207,7 +1273,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('capabilities', '#st-card-mcp'))
       .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
     expect(resolveSettingsRoute('capabilities', '#st-card-tools'))
-      .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tools', tab: undefined });
+      .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-tools', tab: undefined });
     expect(resolveSettingsRoute('capabilities', '#st-card-caps'))
       .toEqual({ status: 'ok', section: 'skills', cardId: 'st-card-caps', tab: undefined });
     // The duplicate timeout card was removed; legacy links land on its editor.
@@ -1232,11 +1298,11 @@ describe('settings route resolver', () => {
     // the dissolved st-card-communication hash follows its hand-written alias
     // to the communication leaf's thread card.
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
-      .toEqual({ status: 'ok', section: 'communication', cardId: 'st-card-thread-communication', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
-      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-resource-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: undefined });
   });
