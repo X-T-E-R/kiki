@@ -11,7 +11,6 @@ import type { AgentForest, MediaRun, SubagentBlock, SubagentEnding, SubagentGrou
 import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaPreview';
-import { activityOutcomeLabels } from '../ToolCard';
 import { ActivityRow } from './ActivityRow';
 
 /** How many thumbnails a settled strip shows before "+N". */
@@ -109,7 +108,12 @@ export function SubagentGroupRow({
       glyph={<Icon name="agent" />}
       label={tp('transcript.agents.dispatched', total)}
       detail={<span className="text-ink-faint tabular-nums">{t('transcript.agents.progress', { done, total })}</span>}
-      status={done < total ? <OutcomeMark state="running" labels={activityOutcomeLabels(t)} /> : undefined}
+      status={done < total ? (
+        <OutcomeMark
+          state="running"
+          labels={{ running: t('transcript.runningAria'), failed: t('transcript.failedAria'), stopped: t('transcript.stoppedAria'), done: t('transcript.doneAria') }}
+        />
+      ) : undefined}
     >
       <div className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
         {group.members.map((member) => (
