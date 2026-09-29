@@ -103,6 +103,8 @@ describe('history navigation SQLite repository', () => {
       const previous = await HistoryNavigationDb.open(path);
       await previous.put(HISTORY_NAV_COLLECTION, 'old-row', { workspace: 'ws', session: 's',
         agent: 'main', kind: 'turn', turn: 1, active: true, position: 1 });
+      previous.scalarState('ws\0s\0main\0old-query-hash').turnStart.set('t1', 0);
+      previous.scalarState('ws\0other\0main').turnStart.set('t2', 0);
       previous.db.exec('DROP TABLE manifest; PRAGMA user_version=1');
       previous.close();
       const upgraded = await HistoryNavigationDb.open(path);
@@ -113,6 +115,7 @@ describe('history navigation SQLite repository', () => {
         upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
         upgraded.rollbackSlice();
         expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeDefined();
+        expect(upgraded.scalarState('ws\0s\0main\0old-query-hash').turnStart.has('t1')).toBe(true);
         upgraded.beginSlice();
         upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
         upgraded.commitSlice('ws\0s\0main', { v: 2, generation: 'rebuilt', incarnation: 'new',
@@ -120,6 +123,8 @@ describe('history navigation SQLite repository', () => {
           source: { identity: 'new', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' } },
           { ordinal: 0, legacyTurn: 0 });
         expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeUndefined();
+        expect(upgraded.scalarState('ws\0s\0main\0old-query-hash').turnStart.has('t1')).toBe(false);
+        expect(upgraded.scalarState('ws\0other\0main').turnStart.has('t2')).toBe(true);
       } finally { upgraded.close(); }
     } finally { await rm(home, { recursive: true, force: true }); }
   });

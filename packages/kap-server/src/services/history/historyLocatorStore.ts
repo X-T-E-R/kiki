@@ -56,6 +56,9 @@ export interface HistoryNavScan {
   readonly ordinal: number;
   readonly bytesRead: number;
   readonly recordsRead: number;
+  /** Extra source IO to advance the shared projection, separate from query coverage. */
+  readonly projectionBytesRead?: number;
+  readonly projectionRecordsRead?: number;
   readonly incarnation: string;
   readonly incompleteReason?: string;
   readonly hits?: readonly HistoryHit[];
@@ -109,6 +112,8 @@ interface PendingRecord {
 function digest(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
+
+const NON_ASCII_LOWERCASE = /[^\u0000-\u007F]|[A-Z]/u;
 
 function rowKey(row: Pick<HistoryNavRow, 'workspace' | 'session' | 'agent' | 'kind' | 'turn' | 'step' | 'frame' | 'part'>): string {
   return `${row.workspace}\0${row.session}\0${row.agent}\0${row.kind}\0${row.turn}\0${row.step ?? ''}\0${row.frame ?? ''}\0${row.kind === 'frame' ? row.part ?? '' : ''}`;
@@ -189,10 +194,10 @@ export class HistoryLocatorStore {
     const { wirePath, workspaceId: workspace } = location;
     const incarnation = await historySourceIncarnation(wirePath);
     if (incarnation === undefined) return undefined;
-    const key = `${workspace}\0${session}\0${agent}${search === undefined ? '' : `\0${digest(JSON.stringify({
-      query: search.query, mode: search.mode, role: search.role, after: search.after, before: search.before,
-    }))}`}`;
-    const existing = this.flights.get(key);
+    const key = `${workspace}\0${session}\0${agent}`;
+    // Search callers have independent cancellation signals; only unfiltered
+    // projection scans share a flight.
+    const existing = search === undefined ? this.flights.get(key) : undefined;
     if (existing !== undefined) return existing;
     if (this.queuedScans >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
     this.queuedScans += 1;
@@ -203,7 +208,9 @@ export class HistoryLocatorStore {
       try {
         await previous;
         signal?.throwIfAborted();
-        return await this.scanSlice({ workspace, session, agent, wirePath, incarnation, key, signal, search });
+        const input = { workspace, session, agent, wirePath, incarnation, key, signal };
+        return await (search !== undefined && 'ready' in this.store
+          ? this.scanSearchSlice(input, search) : this.scanSlice({ ...input, search }));
       } catch (error) {
         this.scanners.delete(key);
         if ('ready' in this.store) {
@@ -216,14 +223,125 @@ export class HistoryLocatorStore {
         release();
       }
     })();
-    this.flights.set(key, flight);
+    if (search === undefined) this.flights.set(key, flight);
     try { return await flight; }
     catch (error) { this.scanners.delete(key); throw error; }
     finally { if (this.flights.get(key) === flight) this.flights.delete(key); }
   }
 
+  /** Search reads a fixed byte page against the one durable session projection. Query state is ephemeral. */
+  private async scanSearchSlice(input: { workspace: string; session: string; agent: string; wirePath: string;
+    incarnation: string; key: string; signal?: AbortSignal }, search: HistoryNavSearch): Promise<HistoryNavScan> {
+    const db = await (this.store as LazyHistoryNavigationDb).ready();
+    const start = search.cursor?.offset ?? 0;
+    const fileSize = (await stat(input.wirePath)).size;
+    const asOf = search.asOf ?? fileSize;
+    if (search.cursor !== undefined && search.cursor.incarnation !== input.incarnation ||
+        !Number.isSafeInteger(asOf) || asOf < 0 || asOf > fileSize ||
+        !Number.isSafeInteger(start) || start < 0 || start > asOf) throw new Error('stale_scan_cursor');
+    const target = Math.min(asOf, start + HISTORY_NAV_SCAN_BYTES);
+    let saved = db.readManifest(input.key);
+    // Even a completed projection must be checked before using source-derived rows.
+    if (saved !== undefined) {
+      const manifest = saved;
+      if (manifest.incarnation !== input.incarnation ||
+          !await historyNavigationProof(input.wirePath, manifest.offset)
+            .then((proof) => matchesNavigationProof(manifest.source, proof), () => false)) {
+        if (search.cursor !== undefined) throw new Error('stale_scan_cursor');
+        saved = undefined;
+      }
+    }
+    if (saved !== undefined && saved.offset > asOf) throw new Error('stale_scan_cursor');
+    let projected: HistoryNavScan | undefined;
+    let projectionBytesRead = 0;
+    let projectionRecordsRead = 0;
+    while (saved === undefined || saved.offset < target) {
+      input.signal?.throwIfAborted();
+      const before = saved?.offset ?? 0;
+      projected = await this.scanSlice({ ...input, stopAt: target });
+      projectionBytesRead += projected.bytesRead;
+      projectionRecordsRead += projected.recordsRead;
+      saved = db.readManifest(input.key);
+      if (saved === undefined || saved.offset <= before || projected.complete && saved.offset < target) break;
+    }
+    const available = Math.min(target, saved?.offset ?? 0);
+    if (available <= start) return { complete: start === asOf, nextByteOffset: start,
+      ordinal: saved?.ordinal ?? 0, bytesRead: 0, recordsRead: 0,
+      projectionBytesRead, projectionRecordsRead, incarnation: input.incarnation,
+      incompleteReason: start === asOf ? undefined : projected?.incompleteReason ?? 'byte_budget', hits: [] };
+    const plan = planHistoryQuery(search.query, search.mode);
+    const asciiClauses = plan.mode !== 'terms' && plan.clauses.length > 0 &&
+      plan.clauses.every((clause) => !NON_ASCII_LOWERCASE.test(clause.text))
+      ? plan.clauses.map((clause) => clause.text) : undefined;
+    const hits: HistoryHit[] = [];
+    const emitted = new Set<string>();
+    let matchedRecords = 0;
+    const read = await streamWireRecordsAwaited(input.wirePath, {
+      startByteOffset: start, maxBytes: available - start, maxRecords: HISTORY_NAV_SCAN_RECORDS,
+      maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
+      signal: input.signal, includeRawRecord: true,
+      onRecord: async (record, span, raw) => {
+        // Most canonical records carry no searchable text. Check the single source
+        // field before a disk lookup; legacy messages can carry several parts and
+        // still use the source-row path below.
+        const event = record['event'];
+        const eventType = event !== null && typeof event === 'object'
+          ? (event as Record<string, unknown>)['type'] : undefined;
+        const canonicalPart = record['type'] === 'turn.prompt' ? 'prompt' :
+          eventType === 'content.part' ? 'text' : eventType === 'tool.result' ? 'output' : undefined;
+        if (canonicalPart !== undefined) {
+          const candidate = originalText(record, canonicalPart);
+          if (candidate === undefined) return;
+          // NFKC leaves lowercase ASCII unchanged. A missing ASCII clause can
+          // therefore be rejected before allocating a normalized 8 KiB+ body;
+          // Unicode or uppercase source text keeps the full matcher semantics.
+          if (asciiClauses !== undefined && !NON_ASCII_LOWERCASE.test(candidate) &&
+              !asciiClauses.some((clause) => candidate.includes(clause))) return;
+          if (matchHistoryText(candidate, plan) === undefined) return;
+        } else if (record['type'] === 'context.append_loop_event' || record['type'] === 'turn.ended') return;
+        const rows = db.rowsAtSource(input.workspace, input.session, input.agent, span.startByteOffset);
+        if (rows.length === 0) return;
+        const recordDigest = hashHistoryRecord(raw!);
+        let matched = false;
+        for (const row of rows) {
+          // Completed turn rows written by the previous indexer kept the prompt
+          // but dropped its role during the turn.ended metadata update.
+          const role = row.role ?? (row.kind === 'turn' && row.part === 'prompt' ? 'user' : undefined);
+          if (row.part === undefined || row.part === 'input' || role === undefined ||
+              row.anchor.end !== span.endByteOffset || row.anchor.digest !== recordDigest ||
+              search.role !== undefined && role !== search.role ||
+              search.after !== undefined && (row.time === undefined || row.time < search.after) ||
+              search.before !== undefined && (row.time === undefined || row.time >= search.before) ||
+              emitted.has(rowKey(row))) continue;
+          const parent = await db.get<HistoryNavRow>(HISTORY_NAV_COLLECTION, rowKey({ ...row,
+            kind: 'turn', step: undefined, frame: undefined }));
+          if (parent?.active !== true) continue;
+          const text = originalText(record, row.part, row.selector);
+          if (text === undefined || digest(text) !== row.contentHash) continue;
+          const match = matchHistoryText(text, plan);
+          if (match === undefined) continue;
+          matched = true;
+          emitted.add(rowKey(row));
+          hits.push({ sessionId: row.session, agentId: row.agent, turn: row.turn, stepId: row.step,
+            role, time: row.time, matched: match.matched,
+            ref: this.ref(row, match.start), snippet: makeSnippet(text, match.matched[0] ?? search.query) });
+        }
+        if (matched) matchedRecords += 1;
+        return matchedRecords < search.pageSize;
+      },
+    });
+    const throughWatermark = read.nextByteOffset >= asOf;
+    const complete = throughWatermark || read.complete && available >= asOf;
+    return { complete, nextByteOffset: read.nextByteOffset, ordinal: saved?.ordinal ?? 0,
+      bytesRead: read.bytesRead, recordsRead: read.recordCount,
+      projectionBytesRead, projectionRecordsRead, incarnation: input.incarnation,
+      incompleteReason: complete ? undefined : read.incompleteReason ?? projected?.incompleteReason,
+      hits };
+  }
+
   private async scanSlice(input: { workspace: string; session: string; agent: string; wirePath: string;
-    incarnation: string; key: string; signal?: AbortSignal; search?: HistoryNavSearch }): Promise<HistoryNavScan> {
+    incarnation: string; key: string; signal?: AbortSignal; search?: HistoryNavSearch;
+    stopAt?: number }): Promise<HistoryNavScan> {
     const stateDb = 'ready' in this.store
       ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
     let scanner = this.scanners.get(input.key);
@@ -235,7 +353,7 @@ export class HistoryLocatorStore {
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
     const rebuild = stateDb === undefined
       ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
-      : freshSearch || !sourceMatches;
+      : !sourceMatches;
     stateDb?.beginSlice();
     if (rebuild) {
       stateDb?.clearProjection(input.key, input.workspace, input.session, input.agent);
@@ -283,8 +401,8 @@ export class HistoryLocatorStore {
     let pendingBytes = 0;
     const read = await streamWireRecordsAwaited(input.wirePath, {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
-        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, input.search.asOf - scanner.offset)),
+      maxBytes: input.stopAt === undefined && input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
+        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, (input.stopAt ?? input.search!.asOf!) - scanner.offset)),
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
@@ -357,7 +475,8 @@ export class HistoryLocatorStore {
             time: turn.startedAt === undefined && old?.active ? old.time : row.time,
             excerpt: row.excerpt ?? old?.excerpt,
             contentHash: row.contentHash ?? old?.contentHash, length: row.length ?? old?.length,
-            part: row.part ?? old?.part, selector: row.part === undefined ? old?.selector : row.selector,
+            part: row.part ?? old?.part, role: row.role ?? old?.role,
+            selector: row.part === undefined ? old?.selector : row.selector,
             answerExcerpt: old?.answerExcerpt,
             stepCount: old?.active ? old.stepCount ?? 0 : 0,
             toolCount: old?.active ? old.toolCount ?? 0 : 0,

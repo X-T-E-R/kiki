@@ -12,7 +12,13 @@ export interface HistoryNavigationProof {
   readonly tail: string;
 }
 
-/** A bounded prefix witness. Exact source refs additionally verify their individual record digests. */
+/**
+ * A bounded prefix witness for Kiki's own append-only wire writer. Recovery checks
+ * file identity, size, modification times for an unchanged-size file, and the first
+ * and last 64 KiB of the committed prefix. An in-place rewrite of an unsampled
+ * middle span followed by an append is outside this source threat model; recovery
+ * does not rehash the entire prefix. Exact source reads still verify their record digests.
+ */
 export async function historyNavigationProof(path: string, through: number): Promise<HistoryNavigationProof> {
   const before = await stat(path, { bigint: true });
   if (!before.isFile() || !Number.isSafeInteger(through) || through < 0 || BigInt(through) > before.size) {

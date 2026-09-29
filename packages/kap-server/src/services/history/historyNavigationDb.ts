@@ -53,7 +53,7 @@ export class HistoryNavigationDb implements NavigationStore {
       if (tables.some((name) => !['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest'].includes(name))) {
         throw new Error(`unrecognized history navigation tables at ${actual}`);
       }
-      db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-16384; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000; PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432');
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000; PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432');
       db.exec(`
         CREATE TABLE IF NOT EXISTS rows (
           key TEXT PRIMARY KEY, workspace TEXT, session TEXT, agent TEXT, kind TEXT,
@@ -63,6 +63,9 @@ export class HistoryNavigationDb implements NavigationStore {
         CREATE INDEX IF NOT EXISTS nav_turn ON rows(workspace, session, agent, kind, active, turn);
         CREATE INDEX IF NOT EXISTS nav_position ON rows(workspace, session, agent, turn, active, position);
         CREATE INDEX IF NOT EXISTS nav_time ON rows(workspace, session, agent, kind, active, time);
+        CREATE INDEX IF NOT EXISTS nav_source ON rows(
+          workspace, session, agent, active, json_extract(value, '$.anchor.start')
+        );
         CREATE TABLE IF NOT EXISTS state (
           scope TEXT NOT NULL, bucket TEXT NOT NULL, key TEXT NOT NULL,
           value TEXT NOT NULL, PRIMARY KEY(scope, bucket, key)
@@ -147,6 +150,14 @@ export class HistoryNavigationDb implements NavigationStore {
   clearProjection(scope: string, workspace: string, session: string, agent: string): void {
     this.clearState(scope);
     this.db.prepare('DELETE FROM manifest WHERE scope=?').run(scope);
+    // Commit-4 search checkpoints included a query digest in the scope. Prune
+    // those scalar copies using indexed SQL ranges while rebuilding the one
+    // session projection; never materialize their keys in JavaScript.
+    const lower = `${scope}\0`;
+    const upper = `${scope}\u0001`;
+    for (const table of ['state', 'turn_sequence', 'anchor_sequence', 'manifest']) {
+      this.db.prepare(`DELETE FROM ${table} WHERE scope>=? AND scope<?`).run(lower, upper);
+    }
     this.db.prepare('DELETE FROM rows WHERE workspace=? AND session=? AND agent=?')
       .run(workspace, session, agent);
     this.db.prepare('DELETE FROM rows WHERE key=?').run(`${scope}\0checkpoint`);
@@ -200,6 +211,13 @@ export class HistoryNavigationDb implements NavigationStore {
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn=? AND kind<>'turn' AND position>=?`)
         .run(input.workspace, input.session, input.agent, input.retain.turn, input.retain.beforeOrdinal * 1024);
     }
+  }
+
+  rowsAtSource(workspace: string, session: string, agent: string, start: number): HistoryNavRow[] {
+    const rows = this.db.prepare(`SELECT value FROM rows WHERE workspace=? AND session=? AND agent=? AND active=1
+      AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
+      .all(workspace, session, agent, start) as Array<{ value: string }>;
+    return rows.map((row) => JSON.parse(row.value) as HistoryNavRow);
   }
 
   async get<T>(collection: string, key: string): Promise<T | undefined> {

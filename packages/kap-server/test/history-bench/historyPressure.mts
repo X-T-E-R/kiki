@@ -59,7 +59,13 @@ type BenchResult = {
   retainedBodyChars?: number;
   tailRecordsRead?: number;
   tailBytesRead?: number;
+  projectionBytesRead?: number;
+  projectionRecordsRead?: number;
   manifestBytes?: number;
+  toolCalls?: number;
+  lateResultStart?: number;
+  inputStart?: number;
+  sharedScopes?: number;
   error?: string;
 };
 
@@ -165,6 +171,48 @@ async function writeFixture(targetBytes: number): Promise<Fixture> {
   }));
   if (midTurn < 0 || tailTurn < 0) throw new Error('fixture markers were not placed');
   return { home, wirePath, bytes: actualBytes, records, turns: turn, midTurn, tailTurn };
+}
+
+const TOOL_COUNT = 5_000;
+const TOOL_NEEDLE = 'history-pressure-late-tool-result';
+
+async function writeToolFixture(): Promise<Fixture> {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-history-tools-'));
+  const wireDir = join(home, 'sessions', WORKSPACE_ID, SESSION_ID, 'agents', AGENT_ID);
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const handle = await open(wirePath, 'w');
+  const payload = 't'.repeat(16 << 10);
+  let pending = '';
+  let bytes = 0;
+  let records = 0;
+  const add = async (record: Record<string, unknown>): Promise<void> => {
+    const text = `${JSON.stringify(record)}\n`;
+    pending += text;
+    bytes += Buffer.byteLength(text);
+    records += 1;
+    if (Buffer.byteLength(pending) >= CHUNK_BYTES) {
+      await handle.write(pending);
+      pending = '';
+    }
+  };
+  try {
+    await add({ type: 'turn.prompt', turnId: 0, promptId: 'tools-prompt',
+      origin: { kind: 'user' }, input: [{ type: 'text', text: 'large tools prompt' }], time: 1 });
+    await add({ type: 'context.append_loop_event', time: 2,
+      event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'tools-step' } });
+    for (let n = 0; n < TOOL_COUNT; n += 1) await add({ type: 'context.append_loop_event', time: 3 + n,
+      event: { type: 'tool.call', turnId: 0, stepUuid: 'tools-step', toolCallId: `tool-${n}`,
+        name: 'Read', args: { index: n, payload } } });
+    await add({ type: 'context.append_loop_event', time: 5_004,
+      event: { type: 'step.end', turnId: 0, step: 1, uuid: 'tools-step' } });
+    await add({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 5_005 });
+    for (let n = 0; n < TOOL_COUNT; n += 1) await add({ type: 'context.append_loop_event', time: 5_006 + n,
+      event: { type: 'tool.result', toolCallId: `tool-${n}`,
+        result: { output: `${n === TOOL_COUNT - 1 ? `${TOOL_NEEDLE} ` : ''}${payload}` } } });
+    if (pending.length > 0) await handle.write(pending);
+  } finally { await handle.close(); }
+  return { home, wirePath, bytes, records, turns: 1, midTurn: 0, tailTurn: 0 };
 }
 
 function valueContainsNeedle(value: unknown, needle: string): boolean {
@@ -364,6 +412,8 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
   let peakRssBytes = startRssBytes;
   let bytesRead = 0;
   let records = 0;
+  let projectionBytesRead = 0;
+  let projectionRecordsRead = 0;
   let segments = 0;
   const started = performance.now();
   const sampler = setInterval(() => { peakRssBytes = Math.max(peakRssBytes, sampleRss()); }, 10);
@@ -377,6 +427,8 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       segments += 1;
       bytesRead += scan.bytesRead;
       records += scan.recordsRead;
+      projectionBytesRead += scan.projectionBytesRead ?? 0;
+      projectionRecordsRead += scan.projectionRecordsRead ?? 0;
       for (const hit of scan.hits ?? []) {
         const source = await nav.read(hit.ref!);
         if (source.status !== 'ok') throw new Error(`navigation ref failed: ${source.status}`);
@@ -394,7 +446,7 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
     const afterReadRssBytes = sampleRss();
     const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
     return { case: caseName, api: 'HistoryLocatorStore.scan/read', status: 'ok', bytesRead,
-      records, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      records, projectionBytesRead, projectionRecordsRead, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
       startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
       peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
       rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
@@ -403,7 +455,7 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
     const afterReadRssBytes = sampleRss();
     const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
     return { case: caseName, api: 'HistoryLocatorStore.scan/read', status: 'error', bytesRead,
-      records, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      records, projectionBytesRead, projectionRecordsRead, latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
       startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
       peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
       rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
@@ -474,6 +526,190 @@ async function runNavigationResumeWorker(wirePath: string, deepTurn: number): Pr
   } catch (error) {
     return { case: 'navigation-resume', api: 'HistoryLocatorStore.restore/scan/read', status: 'error',
       records, segments, error: String(error), peakRssBytes: Math.max(peakRssBytes, process.resourceUsage().maxRSS * 1024) };
+  } finally { clearInterval(sampler); await db.close(); }
+}
+
+async function runNavigationToolsWorker(wirePath: string): Promise<BenchResult> {
+  const beforeImportRssBytes = sampleRss();
+  const { HistoryLocatorStore } = await import('../../src/services/history/historyLocatorStore');
+  const { HistoryNavigationDb } = await import('../../src/services/history/historyNavigationDb');
+  const afterImportRssBytes = sampleRss();
+  const dbPath = join(dirname(wirePath), 'history-navigation-tools.sqlite');
+  const transcript = { historyWireLocation: async () => ({ wirePath, workspaceId: WORKSPACE_ID }) };
+  let db = HistoryNavigationDb.lazy(dbPath);
+  let nav = new HistoryLocatorStore(db, transcript as never);
+  const startRssBytes = sampleRss();
+  let peakRssBytes = startRssBytes;
+  let records = 0;
+  let segments = 0;
+  const started = performance.now();
+  const sampler = setInterval(() => { peakRssBytes = Math.max(peakRssBytes, sampleRss()); }, 10);
+  try {
+    for (;;) {
+      const scan = await nav.scan(SESSION_ID, AGENT_ID);
+      if (scan === undefined || scan.recordsRead === 0) throw new Error('tools projection made no progress');
+      records += scan.recordsRead;
+      segments += 1;
+      if (scan.complete) break;
+    }
+    const args = { index: TOOL_COUNT - 1, payload: 't'.repeat(16 << 10) };
+    const frame = `tools-step.tool-${TOOL_COUNT - 1}`;
+    const input = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'frame', 0, 't0.1', `${frame}:input`, 'input');
+    const output = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'frame', 0, 't0.1', `${frame}:output`, 'output');
+    if (input === undefined || output === undefined) throw new Error('late tool source rows missing');
+    const inputText = await nav.read(nav.ref(input));
+    const outputText = await nav.read(nav.ref(output));
+    if (input.anchor.start >= output.anchor.start || output.anchor.start < 8 * MIB ||
+        inputText.status !== 'ok' || inputText.text !== JSON.stringify(args) ||
+        outputText.status !== 'ok' || outputText.text !== `${TOOL_NEEDLE} ${args.payload}`) {
+      throw new Error('late tool input/output source spans failed');
+    }
+    let cursor: { offset: number; incarnation: string } | undefined;
+    let found = false;
+    const asOf = (await stat(wirePath)).size;
+    for (;;) {
+      const page = await nav.scan(SESSION_ID, AGENT_ID, undefined,
+        { query: TOOL_NEEDLE, mode: 'literal', pageSize: 1, asOf, cursor });
+      if (page === undefined) throw new Error('late tool source unavailable');
+      for (const hit of page.hits ?? []) {
+        const read = await nav.read(hit.ref!);
+        if (read.status === 'ok' && read.text === `${TOOL_NEEDLE} ${args.payload}`) found = true;
+      }
+      if (page.complete) break;
+      if (page.nextByteOffset <= (cursor?.offset ?? 0)) throw new Error('late tool query made no progress');
+      cursor = { offset: page.nextByteOffset, incarnation: page.incarnation };
+    }
+    if (!found) throw new Error('late tool output search failed');
+    const scope = `${WORKSPACE_ID}\0${SESSION_ID}\0${AGENT_ID}`;
+    const disk = await db.ready();
+    const manifest = disk.db.prepare('SELECT length(value) AS bytes FROM manifest WHERE scope=?')
+      .get(scope) as { bytes: number } | undefined;
+    const scoped = disk.db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
+    if (manifest === undefined || manifest.bytes > (16 << 10) ||
+        scoped.length !== 1 || scoped[0]?.scope !== scope) throw new Error('tool projection scope/manifest failed');
+    await db.close();
+    db = HistoryNavigationDb.lazy(dbPath);
+    nav = new HistoryLocatorStore(db, transcript as never);
+    if ((await nav.read(nav.ref(input))).status !== 'ok' || (await nav.read(nav.ref(output))).status !== 'ok') {
+      throw new Error('tool source failed after reopen');
+    }
+    await appendFile(wirePath, `${JSON.stringify({ type: 'context.append_loop_event', time: 15_000,
+      event: { type: 'tool.result', toolCallId: `tool-${TOOL_COUNT - 1}`,
+        result: { output: 'late tool revision' } } })}\n`);
+    const tail = await nav.scan(SESSION_ID, AGENT_ID);
+    const revised = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'frame', 0, 't0.1', `${frame}:output`, 'output');
+    const revisedText = revised === undefined ? undefined : await nav.read(nav.ref(revised));
+    if (tail?.recordsRead !== 1 || (await nav.read(nav.ref(output))).status !== 'stale_ref' ||
+        revisedText?.status !== 'ok' || revisedText.text !== 'late tool revision') {
+      throw new Error('late tool revision after restart failed');
+    }
+    const afterReadRssBytes = sampleRss();
+    const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
+    const peak = Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes);
+    return { case: 'navigation-tools', api: 'HistoryLocatorStore.scan/search/read', status: 'ok',
+      records, segments, toolCalls: TOOL_COUNT, complete: true,
+      inputStart: input.anchor.start, lateResultStart: output.anchor.start,
+      tailRecordsRead: tail.recordsRead, tailBytesRead: tail.bytesRead,
+      manifestBytes: manifest.bytes, sharedScopes: scoped.length,
+      latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      startRssBytes, afterReadRssBytes, osHighWaterRssBytes, peakRssBytes: peak,
+      rssDeltaBytes: peak - startRssBytes, retainedBodyChars: nav.retainedBodyChars };
+  } catch (error) {
+    return { case: 'navigation-tools', api: 'HistoryLocatorStore.scan/search/read', status: 'error',
+      records, segments, toolCalls: TOOL_COUNT, error: String(error),
+      peakRssBytes: Math.max(peakRssBytes, process.resourceUsage().maxRSS * 1024) };
+  } finally { clearInterval(sampler); await db.close(); }
+}
+
+async function runNavigationConcurrentWorker(wirePath: string, midTurn: number, tailTurn: number): Promise<BenchResult> {
+  const beforeImportRssBytes = sampleRss();
+  const { HistoryLocatorStore } = await import('../../src/services/history/historyLocatorStore');
+  const { HistoryNavigationDb } = await import('../../src/services/history/historyNavigationDb');
+  const afterImportRssBytes = sampleRss();
+  const db = HistoryNavigationDb.lazy(join(dirname(wirePath), 'history-navigation-concurrent.sqlite'));
+  const transcript = { historyWireLocation: async () => ({ wirePath, workspaceId: WORKSPACE_ID }) };
+  const nav = new HistoryLocatorStore(db, transcript as never);
+  const startRssBytes = sampleRss();
+  let peakRssBytes = startRssBytes;
+  let bytesRead = 0;
+  let projectionBytesRead = 0;
+  let records = 0;
+  let segments = 0;
+  const matches = matchesForNeedles();
+  const started = performance.now();
+  const sampler = setInterval(() => { peakRssBytes = Math.max(peakRssBytes, sampleRss()); }, 10);
+  try {
+    const asOf = (await stat(wirePath)).size;
+    const scope = `${WORKSPACE_ID}\0${SESSION_ID}\0${AGENT_ID}`;
+    const request = (needle: string, cursor?: { offset: number; incarnation: string }, signal?: AbortSignal) =>
+      nav.scan(SESSION_ID, AGENT_ID, signal, { query: needle, mode: 'literal', pageSize: 1, asOf, cursor });
+    const collect = async (needle: string, initial: Awaited<ReturnType<typeof request>>): Promise<void> => {
+      let cursor: { offset: number; incarnation: string } | undefined;
+      let page = initial;
+      for (;;) {
+        if (page === undefined) throw new Error('concurrent navigation source missing');
+        segments += 1;
+        bytesRead += page.bytesRead;
+        projectionBytesRead += page.projectionBytesRead ?? 0;
+        records += page.recordsRead;
+        for (const hit of page.hits ?? []) {
+          const source = await nav.read(hit.ref!);
+          if (source.status !== 'ok' || !source.text?.includes(needle)) throw new Error('concurrent ref source failed');
+          matches[needle]!.turnIds.push(hit.turn!);
+          matches[needle]!.records.push(records);
+        }
+        if (page.complete) break;
+        if (page.nextByteOffset <= (cursor?.offset ?? 0)) throw new Error('concurrent query made no progress');
+        cursor = { offset: page.nextByteOffset, incarnation: page.incarnation };
+        page = await request(needle, cursor);
+      }
+    };
+    const [first, second] = await Promise.all([request(MID_NEEDLE), request(TAIL_NEEDLE)]);
+    const disk = await db.ready();
+    const beforeCancel = disk.readManifest(scope);
+    if (first === undefined || second === undefined || beforeCancel === undefined) {
+      throw new Error('initial concurrent navigation missing');
+    }
+    const controller = new AbortController();
+    const batch = disk.batch.bind(disk);
+    let injected = false;
+    disk.batch = async (ops) => {
+      await batch(ops);
+      if (!injected) { injected = true; controller.abort(new Error('injected concurrent cancellation')); }
+    };
+    try {
+      await request(MID_NEEDLE, { offset: first.nextByteOffset, incarnation: first.incarnation }, controller.signal);
+      throw new Error('concurrent cancellation unexpectedly completed');
+    } catch (error) {
+      if (!injected || !String(error).includes('injected concurrent cancellation')) throw error;
+    } finally { disk.batch = batch; }
+    if (disk.readManifest(scope)?.offset !== beforeCancel.offset) throw new Error('cancel changed checkpoint');
+    const switched = await request('no-marker-in-this-wire');
+    if (switched?.hits?.length !== 0 || disk.readManifest(scope)?.generation !== beforeCancel.generation) {
+      throw new Error('query switch copied the projection');
+    }
+    await Promise.all([collect(MID_NEEDLE, first), collect(TAIL_NEEDLE, second)]);
+    if (matches[MID_NEEDLE]?.turnIds.join() !== String(midTurn) ||
+        matches[TAIL_NEEDLE]?.turnIds.join() !== String(tailTurn)) {
+      throw new Error('concurrent query skipped or duplicated deep-tail markers');
+    }
+    const scoped = disk.db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
+    if (scoped.length !== 1 || scoped[0]?.scope !== scope || nav.retainedBodyChars !== 0) {
+      throw new Error('concurrent projection scope/body retention failed');
+    }
+    const afterReadRssBytes = sampleRss();
+    const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
+    const peak = Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes);
+    return { case: 'navigation-concurrent', api: 'HistoryLocatorStore.scan/search/read', status: 'ok',
+      complete: true, bytesRead, projectionBytesRead, records, segments, matches,
+      sharedScopes: scoped.length, retainedBodyChars: nav.retainedBodyChars,
+      latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      startRssBytes, afterReadRssBytes, osHighWaterRssBytes, peakRssBytes: peak,
+      rssDeltaBytes: peak - startRssBytes };
+  } catch (error) {
+    return { case: 'navigation-concurrent', api: 'HistoryLocatorStore.scan/search/read', status: 'error',
+      bytesRead, projectionBytesRead, records, segments, matches, error: String(error),
+      peakRssBytes: Math.max(peakRssBytes, process.resourceUsage().maxRSS * 1024) };
   } finally { clearInterval(sampler); await db.close(); }
 }
 
@@ -594,6 +830,15 @@ async function runWorker(args: readonly string[]): Promise<void> {
     workerResult(await runNavigationResumeWorker(wirePath, positiveInteger(args[3], 0)));
     return;
   }
+  if (mode === 'navigation-tools') {
+    workerResult(await runNavigationToolsWorker(wirePath));
+    return;
+  }
+  if (mode === 'navigation-concurrent') {
+    workerResult(await runNavigationConcurrentWorker(wirePath,
+      positiveInteger(args[5], 0), positiveInteger(args[3], 0)));
+    return;
+  }
   const selectedTurn = positiveInteger(args[3], 0);
   const needle = mode === 'current-history-mid' ? MID_NEEDLE : TAIL_NEEDLE;
   const homeDir = args[4];
@@ -605,7 +850,8 @@ function workerCommand(mode: string, fixture: Fixture): Promise<BenchResult> {
   return new Promise((resolve, reject) => {
     const script = import.meta.filename;
     const child = spawn(process.execPath, [...process.execArgv, '--import', RAW_LOADER, script, '--worker', mode, fixture.wirePath,
-      `${mode === 'current-history-mid' ? fixture.midTurn : fixture.tailTurn}`, fixture.home], {
+      `${mode === 'current-history-mid' ? fixture.midTurn : fixture.tailTurn}`, fixture.home,
+      `${fixture.midTurn}`], {
       cwd: process.cwd(),
       env: { ...process.env, NODE_NO_WARNINGS: '1', TSX_TSCONFIG_PATH: CORE_TSCONFIG },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -641,6 +887,8 @@ function printUsage(): void {
     '--navigation scans the SQLite navigation model through the deep-tail marker with bounded scan cursors.',
     '--navigation-map keeps the old in-memory row backend as a diagnostic comparison.',
     '--navigation-resume scans, reopens the SQLite index, appends a tail, and checks tail-only recovery.',
+    '--navigation-tools generates 5000 large calls/results, checks late source refs and tail-only restart.',
+    '--navigation-concurrent overlaps two queries, switches query, cancels a slice and resumes to both markers.',
     '--current-api runs the checked-out v1 HistoryRead archive backend for both marker turns.',
     'Synthetic input is always removed before the command exits.',
   ].join('\n'));
@@ -653,9 +901,22 @@ async function runParent(args: readonly string[]): Promise<void> {
   }
   const targetBytes = positiveInteger(process.env['HISTORY_BENCH_BYTES'], TARGET_BYTES);
   if (targetBytes < 8 * MIB) throw new Error(`HISTORY_BENCH_BYTES must be at least ${8 * MIB}`);
+  const verifyRss = (result: BenchResult): void => {
+    if (result.status !== 'ok' || result.peakRssBytes === undefined || result.peakRssBytes > 400_000_000) {
+      throw new Error(`${result.case} hard RSS gate failed: ${JSON.stringify(result)}`);
+    }
+  };
   let fixture: Fixture | undefined;
   try {
-    fixture = await writeFixture(targetBytes);
+    fixture = args.includes('--navigation-tools') ? await writeToolFixture() : await writeFixture(targetBytes);
+    if (args.includes('--navigation-tools')) {
+      process.stdout.write(`HISTORY_BENCH_FIXTURE ${JSON.stringify({ actualBytes: fixture.bytes,
+        records: fixture.records, turns: fixture.turns, wirePath: fixture.wirePath })}\n`);
+      const result = await workerCommand('navigation-tools', fixture);
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
+      verifyRss(result);
+      return;
+    }
     process.stdout.write(`HISTORY_BENCH_FIXTURE ${JSON.stringify({
       targetBytes,
       actualBytes: fixture.bytes,
@@ -669,14 +930,30 @@ async function runParent(args: readonly string[]): Promise<void> {
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand(mode, fixture))}\n`);
     }
     if (args.includes('--navigation')) {
-      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-import', fixture))}\n`);
-      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation', fixture))}\n`);
+      const imported = await workerCommand('navigation-import', fixture);
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(imported)}\n`);
+      verifyRss(imported);
+      const result = await workerCommand('navigation', fixture);
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
+      verifyRss(result);
+      if (result.records !== fixture.records ||
+          result.matches?.[MID_NEEDLE]?.turnIds.join() !== String(fixture.midTurn) ||
+          result.matches?.[TAIL_NEEDLE]?.turnIds.join() !== String(fixture.tailTurn)) {
+        throw new Error('navigation omitted or duplicated a source marker');
+      }
     }
     if (args.includes('--navigation-map')) {
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-map', fixture))}\n`);
     }
     if (args.includes('--navigation-resume')) {
-      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-resume', fixture))}\n`);
+      const result = await workerCommand('navigation-resume', fixture);
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
+      verifyRss(result);
+    }
+    if (args.includes('--navigation-concurrent')) {
+      const result = await workerCommand('navigation-concurrent', fixture);
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
+      verifyRss(result);
     }
     if (args.includes('--current-api')) {
       for (const mode of ['current-history-mid', 'current-history-tail']) {

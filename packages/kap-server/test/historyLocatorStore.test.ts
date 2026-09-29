@@ -233,10 +233,74 @@ describe('history navigation source rows', () => {
         nav.scan('s', 'main', undefined, { query: '原话', mode: 'auto', pageSize: 5 }),
         nav.scan('s', 'main', undefined, { query: 'needle', mode: 'auto', pageSize: 5 }),
       ]);
+      const sourceRows = (await db.ready()).rowsAtSource('ws', 's', 'main', 0);
+      expect(sourceRows).toEqual([expect.objectContaining({ part: 'prompt', role: 'user', active: true })]);
+      expect(await nav.read(nav.ref(sourceRows[0]!))).toMatchObject({ status: 'ok', text: '原话 one' });
+      expect(prompt).toMatchObject({ recordsRead: 6, complete: true });
       expect(prompt?.hits?.map((hit) => hit.turn)).toEqual([4]);
       expect(tool?.hits?.map((hit) => hit.turn)).toEqual([4]);
       expect((await nav.read(prompt!.hits![0]!.ref!)).status).toBe('ok');
       expect((await nav.read(tool!.hits![0]!.ref!)).status).toBe('ok');
+      const disk = await db.ready();
+      const scope = 'ws\0s\0main';
+      const generation = disk.readManifest(scope)?.generation;
+      const oldTurnKey = ['ws', 's', 'main', 'turn', '4', '', '', ''].join('\0');
+      await disk.put(HISTORY_NAV_COLLECTION, oldTurnKey, { ...sourceRows[0]!, role: undefined });
+      expect((await nav.scan('s', 'main', undefined, { query: '原话', mode: 'auto',
+        role: 'user', pageSize: 5 }))?.hits).toEqual([expect.objectContaining({ turn: 4, role: 'user' })]);
+      const variants = [
+        { query: '原话', mode: 'auto', role: 'user' },
+        { query: 'needle', mode: 'all', role: 'tool' },
+        { query: 'needle', mode: 'any', role: 'tool' },
+      ] as const;
+      for (let i = 0; i < 12; i += 1) {
+        const result = await nav.scan('s', 'main', undefined, { ...variants[i % variants.length]!, pageSize: 1 });
+        expect(result?.hits?.map((hit) => hit.turn)).toEqual([4]);
+      }
+      const cancelled = new AbortController();
+      cancelled.abort(new Error('one search caller cancelled'));
+      const independent = { query: 'needle', mode: 'literal' as const, pageSize: 5 };
+      const [rejected, allowed] = await Promise.allSettled([
+        nav.scan('s', 'main', cancelled.signal, independent), nav.scan('s', 'main', undefined, independent),
+      ]);
+      expect(rejected).toMatchObject({ status: 'rejected' });
+      expect(allowed).toMatchObject({ status: 'fulfilled', value: { hits: [{ turn: 4 }] } });
+      expect(disk.readManifest(scope)?.generation).toBe(generation);
+      expect(disk.db.prepare('SELECT scope FROM manifest').all()).toEqual([{ scope }]);
+      expect(disk.db.prepare('SELECT DISTINCT scope FROM state').all()).toEqual([{ scope }]);
+      const indexPlan = disk.db.prepare(`EXPLAIN QUERY PLAN SELECT value FROM rows
+        WHERE workspace=? AND session=? AND agent=? AND active=1
+        AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
+        .all('ws', 's', 'main', 0) as Array<{ detail: string }>;
+      expect(indexPlan.some((step) => step.detail.includes('nav_source'))).toBe(true);
+      await appendFile(wirePath, line({ type: 'context.undo', count: 1, time: 1010 }));
+      expect((await nav.scan('s', 'main', undefined, { query: 'needle', mode: 'any', pageSize: 5 }))?.hits).toEqual([]);
+      expect((await nav.read(tool!.hits![0]!.ref!)).status).toBe('stale_ref');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps uppercase ASCII and NFKC-equivalent Unicode searchable through the fast path', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-normalized-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, [
+        line({ type: 'turn.prompt', turnId: 0, promptId: 'p0', origin: { kind: 'user' },
+          input: [{ type: 'text', text: 'UPPERCASE prompt' }], time: 1 }),
+        line({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0,
+          step: 1, uuid: 's0' }, time: 2 }),
+        line({ type: 'context.append_loop_event', event: { type: 'content.part', turnId: 0,
+          stepUuid: 's0', uuid: 'f0', part: { type: 'text', text: 'ＦＯＯ result' } }, time: 3 }),
+      ].join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      for (const [query, role, text] of [
+        ['uppercase', 'user', 'UPPERCASE prompt'], ['foo', 'assistant', 'ＦＯＯ result'],
+      ] as const) {
+        const page = await nav.scan('s', 'main', undefined, { query, mode: 'literal', pageSize: 5 });
+        expect(page?.hits).toEqual([expect.objectContaining({ turn: 0, role })]);
+        expect(await nav.read(page!.hits![0]!.ref!)).toMatchObject({ status: 'ok', text });
+      }
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
@@ -259,16 +323,17 @@ describe('history navigation source rows', () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
-  it('continues a fixed-watermark scan past 8 MiB to a deep-tail source ref', async () => {
+  it('continues a fixed-watermark SQLite search past 8 MiB to a deep-tail source ref', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-nav-'));
     const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
     try {
       const filler = 'f'.repeat(1 << 20);
       await writeFile(wirePath, Array.from({ length: 9 }, (_unused, turnId) =>
         line({ type: 'turn.prompt', turnId, promptId: `p-${turnId}`, time: 1000 + turnId,
           input: [{ type: 'text', text: `${turnId === 3 || turnId === 8 ? 'needle ' : ''}${filler}` }] })).join(''));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
-      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      const nav = new HistoryLocatorStore(db, transcript);
       const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const request = { query: 'needle', mode: 'auto' as const, workspaceId: 'ws',
@@ -286,7 +351,14 @@ describe('history navigation source rows', () => {
       expect((await archive.readRef?.(second.items[0]!.ref!))).toMatchObject({
         status: 'ok', text: expect.stringContaining('needle'), turn: 8,
       });
-    } finally { await rm(dir, { recursive: true, force: true }); }
+      const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
+      expect(alternate.items.map((hit) => hit.turn)).toEqual([3]);
+      const manifestScopes = (await db.ready()).db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
+      expect(manifestScopes).toEqual([{ scope: 'ws\0s\0main' }]);
+      await appendFile(wirePath, line({ type: 'context.clear', time: 1011 }));
+      await nav.scan('s', 'main');
+      await expect(archive.search({ ...request, pageToken: first.pageToken })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('focuses a 20k tool-output tail and resumes a block with ref plus UTF-16 range', async () => {
