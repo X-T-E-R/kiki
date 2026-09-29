@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
+import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, SESSION_INDEX_RETRY_LIMIT, isEditableTarget, retryRootReadModelDelay, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
@@ -135,13 +135,12 @@ describe('session first-page polling', () => {
 });
 
 describe('root read-model query retry', () => {
-  it('keeps loading only while the session index is building', () => {
-    expect(
-      retryRootReadModelQuery(
-        4,
-        new ApiError({ code: 40939, msg: 'session index is building', data: null }),
-      ),
-    ).toBe(true);
+  it('retries a cold index only within a bounded loading window', () => {
+    const building = new ApiError({ code: 40939, msg: 'session index is building', data: null });
+    expect(retryRootReadModelQuery(0, building)).toBe(true);
+    expect(retryRootReadModelQuery(SESSION_INDEX_RETRY_LIMIT, building)).toBe(false);
+    expect(retryRootReadModelDelay(0)).toBe(250);
+    expect(retryRootReadModelDelay(4)).toBe(2_000);
     expect(
       retryRootReadModelQuery(
         0,

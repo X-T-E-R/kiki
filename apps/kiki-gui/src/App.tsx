@@ -90,9 +90,16 @@ import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
+export const SESSION_INDEX_RETRY_LIMIT = 4;
 
-export function retryRootReadModelQuery(_failureCount: number, error: Error): boolean {
-  return isSessionIndexBuildingError(error);
+/** Retry the cold-home read model only a bounded number of times. */
+export function retryRootReadModelQuery(failureCount: number, error: Error): boolean {
+  return failureCount < SESSION_INDEX_RETRY_LIMIT && isSessionIndexBuildingError(error);
+}
+
+/** Keep cold-index retries responsive without hammering a new home. */
+export function retryRootReadModelDelay(attempt: number): number {
+  return Math.min(250 * 2 ** attempt, 2_000);
 }
 
 interface StartupUpdateHost {
@@ -302,6 +309,7 @@ export function App() {
       lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
     retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
   });
   // Poll only the first page (where every change lands). Interval-refetching
   // an infinite query refetches ALL loaded pages on every tick; older pages
@@ -329,6 +337,7 @@ export function App() {
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
     retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
   });
   // Pinned workspaces lead the sidebar scope list, and — because the same
   // order seeds workspace grouping — their session buckets come first too.
