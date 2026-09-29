@@ -39,6 +39,18 @@ describe('mediaFromContentParts', () => {
     ]);
   });
 
+  it('decodes persisted image references instead of passing private URLs to img', () => {
+    const hash = 'a'.repeat(64);
+    const content: Message['content'] = [
+      { type: 'image', source: { kind: 'url', url: `blobref:image/png;${hash}` } },
+      { type: 'image', source: { kind: 'url', url: 'kimi-file://upload_1' } },
+    ];
+    expect(mediaFromContentParts(content)).toEqual([
+      { kind: 'image', name: undefined, size: undefined, mime: 'image/png', blobHash: hash },
+      { kind: 'image', fileId: 'upload_1' },
+    ]);
+  });
+
   it('keeps upload and session-owned sources as non-renderable refs', () => {
     const content: Message['content'] = [
       { type: 'image', source: { kind: 'file', file_id: 'upl_1' } },

@@ -145,6 +145,22 @@ describe('session media preview', () => {
     );
   });
 
+  it('loads a persisted user-image blobref with its original MIME', async () => {
+    const hash = 'a'.repeat(64);
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
+    const { root, container } = makeRoot();
+    await renderSettled(root, <MediaPreviewProvider sessionId="session_test">
+      <MediaPartList media={[{ kind: 'image', blobHash: hash, fileId: `blobref:main:${hash}`, mime: 'image/png' }]} />
+    </MediaPreviewProvider>);
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:kiki-session-media');
+    expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'image/png', size: 3 });
+    await act(async () => {
+      container.querySelector('img')?.closest('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe('blob:kiki-session-media');
+  });
+
   it('opens and downloads a fileId attachment instead of rendering a dead chip', async () => {
     mocks.readSessionMediaBytes.mockResolvedValue({
       bytes: new Uint8Array([4, 5]),

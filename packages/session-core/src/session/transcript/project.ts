@@ -29,7 +29,7 @@ import type {
   AgentTranscriptResponse,
   AgentTranscriptTask,
 } from '../../transport';
-import { mediaFromContentParts, type MediaRef } from '../../composer/media';
+import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID } from '../agentTree';
 import { describeError } from '../../util/errorText';
@@ -305,6 +305,7 @@ function isLiveStreamingFrame(
 function mediaFromAttachmentIds(
   ids: readonly string[] | undefined,
   attachmentsById: ReadonlyMap<string, AgentTranscriptAttachment> | undefined,
+  agentId?: string,
 ): readonly MediaRef[] | undefined {
   if (ids === undefined || ids.length === 0 || attachmentsById === undefined) return undefined;
   const media: MediaRef[] = [];
@@ -312,17 +313,30 @@ function mediaFromAttachmentIds(
     const attachment = attachmentsById.get(id);
     if (attachment === undefined) continue;
     const source = attachment.source;
+    const kind = attachment.mediaType.startsWith('video/')
+      ? 'video'
+      : attachment.mediaType.startsWith('image/')
+        ? 'image'
+        : 'file';
+    // `image/*` is the adapter's placeholder, not a real type.
+    const mime = attachment.mediaType.endsWith('/*') ? undefined : attachment.mediaType;
+    const extra = { name: attachment.name, mime, size: attachment.size };
+    if (source?.kind === 'url' && kind !== 'file') {
+      // Earlier user messages come back from history as `blobref:` / `kimi-file:`
+      // urls; resolve them to session media instead of a dead <img src>.
+      const ref = mediaRefFromUrl(kind, source.url, extra);
+      media.push(
+        ref.blobHash !== undefined && agentId !== undefined
+          ? { ...ref, fileId: `blobref:${agentId}:${ref.blobHash}` }
+          : ref,
+      );
+      continue;
+    }
     media.push({
-      kind: attachment.mediaType.startsWith('video/')
-        ? 'video'
-        : attachment.mediaType.startsWith('image/')
-          ? 'image'
-          : 'file',
+      kind,
       url: source?.kind === 'url' ? source.url : undefined,
       fileId: source?.kind === 'file' || source?.kind === 'session_media' ? source.fileId : undefined,
-      name: attachment.name,
-      mime: attachment.mediaType,
-      size: attachment.size,
+      ...extra,
     });
   }
   return media.length > 0 ? media : undefined;
@@ -1971,6 +1985,7 @@ export function agentTranscriptToBlocks(
             media: mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
               attachmentsById,
+              response.agent_id,
             ),
           }));
         }
@@ -2047,6 +2062,7 @@ export function agentTranscriptToBlocks(
         media: mediaFromAttachmentIds(
           (item as { attachmentIds?: readonly string[] }).attachmentIds,
           attachmentsById,
+          response.agent_id,
         ),
       });
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
@@ -2105,6 +2121,7 @@ export function agentTranscriptToBlocks(
                   media: mediaFromAttachmentIds(
                     (frame as { attachmentIds?: readonly string[] }).attachmentIds,
                     attachmentsById,
+                    response.agent_id,
                   ),
                 }),
               );
@@ -2125,6 +2142,7 @@ export function agentTranscriptToBlocks(
                 media: mediaFromAttachmentIds(
                   (frame as { attachmentIds?: readonly string[] }).attachmentIds,
                   attachmentsById,
+                  response.agent_id,
                 ),
               });
             }

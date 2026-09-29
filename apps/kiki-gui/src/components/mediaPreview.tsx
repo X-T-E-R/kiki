@@ -712,6 +712,8 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
   );
 }
 
+const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
+
 function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
@@ -720,11 +722,16 @@ function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
       ...item,
       path: undefined,
       name: item.name ?? (item.path === undefined ? undefined : basenameOf(item.path)),
-      fileId: agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`,
+      fileId: item.fileId ?? (agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`),
     };
-    return agentId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} />;
+    return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} />;
   }
   if (item.kind === 'image') {
+    // Only schemes a browser can load reach <img>; anything else (a stray
+    // `blobref:` / `kimi-file:` reference) degrades to the file chip.
+    if (item.url !== undefined && !LOADABLE_MEDIA_URL.test(item.url)) {
+      return item.fileId !== undefined ? <SessionMediaThumb item={item} /> : <FileChip item={item} />;
+    }
     if (item.url !== undefined) {
       const name = item.name ?? t('media.viewImage');
       const url = item.url;

@@ -1142,6 +1142,22 @@ describe('transcript projection cache', () => {
     expect(second[0]).not.toBe(first[0]);
   });
 
+  it('routes history attachments with blobrefs through agent-scoped session media', () => {
+    const hash = 'a'.repeat(64);
+    const items = [{
+      kind: 'turn' as const, turnId: 't-media-blob', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'see image', attachmentIds: ['att-blob'],
+      startedAt: FIXED_AT, steps: [],
+    }];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main', items,
+      attachments: [{ attachmentId: 'att-blob', mediaType: 'image/*', source: { kind: 'url', url: `blobref:image/png;${hash}` } }],
+    });
+    expect(blocks.find((block) => block.kind === 'user')).toMatchObject({
+      media: [{ kind: 'image', blobHash: hash, mime: 'image/png', fileId: `blobref:main:${hash}` }],
+    });
+  });
+
   it('reprojects a settled task-backed shell when the global task entity changes', () => {
     const item: AgentTranscriptSnapshot['items'][number] = {
       kind: 'turn',

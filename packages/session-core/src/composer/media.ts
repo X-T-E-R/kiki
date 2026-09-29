@@ -52,11 +52,41 @@ function refFromSource(
         mime: source.media_type,
       };
     case 'url':
-      return { kind, url: source.url, mime: mimeFromDataUrl(source.url) };
+      return mediaRefFromUrl(kind, source.url);
     case 'file':
     case 'session_media':
       return { kind, fileId: source.file_id };
   }
+}
+
+const USER_BLOBREF_RE = /^blobref:((?:image|video)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/;
+const DAEMON_FILE_RE = /^kimi-file:\/\/([^?]*)/;
+
+/**
+ * A media ref for a message part addressed by URL. Persisted history rewrites
+ * inline image bytes to agent-scoped `blobref:<mime>;<sha256>` references and
+ * uploads to `kimi-file://<fileId>`; neither scheme is browser-loadable, so
+ * they become a blob hash / session media id the preview resolves through the
+ * session media route. Anything else that a browser cannot load (an empty
+ * daemon id, an unknown scheme) keeps no url, so the preview degrades to a
+ * file chip instead of a broken image.
+ */
+export function mediaRefFromUrl(
+  kind: 'image' | 'video',
+  url: string,
+  extra?: Pick<MediaRef, 'name' | 'mime' | 'size'>,
+): MediaRef {
+  const blobref = USER_BLOBREF_RE.exec(url);
+  if (blobref !== null) {
+    return { kind, name: extra?.name, size: extra?.size, mime: blobref[1], blobHash: blobref[2] };
+  }
+  const daemon = DAEMON_FILE_RE.exec(url);
+  if (daemon !== null) {
+    const fileId = daemon[1] ?? '';
+    return { kind, ...extra, fileId: fileId === '' ? undefined : fileId };
+  }
+  if (!BROWSER_MEDIA_URL_RE.test(url)) return { kind, ...extra };
+  return { kind, ...extra, url, mime: extra?.mime ?? mimeFromDataUrl(url) };
 }
 
 /** Collect the structured media parts of a wire message content array. */
