@@ -2,7 +2,8 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-import { getNativePackageRoot } from './native-assets';
+import { getNativePackageRoot, getSeaAssetSource } from './native-assets';
+import { loadNativePackage } from './native-require';
 
 type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
 
@@ -12,6 +13,7 @@ interface ModuleWithLoad {
 
 const nodeRequire = createRequire(import.meta.url);
 let installed = false;
+let loadingKeyring = false;
 
 // pi-tui loads its platform-specific native helpers via an absolute-path
 // require() computed from import.meta.url / process.execPath
@@ -37,6 +39,16 @@ export function installNativeModuleHook(): void {
     parent: unknown,
     isMain: boolean,
   ): unknown {
+    if (request === '@napi-rs/keyring' && !loadingKeyring && getSeaAssetSource() !== null) {
+      loadingKeyring = true;
+      try {
+        const keyring = loadNativePackage('@napi-rs/keyring');
+        if (keyring === null) throw new Error('Native keyring assets are unavailable');
+        return keyring;
+      } finally {
+        loadingKeyring = false;
+      }
+    }
     if (
       typeof request === 'string' &&
       PI_TUI_NATIVE_PATTERN.test(request) &&

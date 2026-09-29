@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -15,7 +15,7 @@ import {
   buildRuntimeAssetKey,
   kikiDocsAsset,
 } from './manifest.mjs';
-import { resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
+import { nativeDeps, resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
 
 export { NATIVE_ASSET_MANIFEST_VERSION };
 
@@ -87,16 +87,13 @@ async function listKikiDocs(appRoot) {
   return files.toSorted((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
-function resolvePackageRootGeneric(requireFromApp, packageName, parentPackageName, appRoot, target) {
+function resolvePackageRootGeneric(requireFromApp, packageName, parentPackageName, parentRoot, appRoot, target) {
   try {
     return dirname(requireFromApp.resolve(`${packageName}/package.json`));
   } catch (rootError) {
-    if (parentPackageName !== null) {
+    if (parentRoot !== null) {
       try {
-        const parentPackageJsonPath = realpathSync(
-          requireFromApp.resolve(`${parentPackageName}/package.json`),
-        );
-        const requireFromParent = createRequire(pathToFileURL(parentPackageJsonPath));
+        const requireFromParent = createRequire(join(parentRoot, 'package.json'));
         return dirname(requireFromParent.resolve(`${packageName}/package.json`));
       } catch {}
     }
@@ -266,15 +263,25 @@ export async function collectNativeAssets({ appRoot, target }) {
 
   const manifestPackages = [];
   const assets = {};
-
-  for (const dep of targetDeps) {
-    const packageRoot = resolvePackageRootGeneric(
+  const packageRoots = new Map();
+  function resolveDepRoot(dep) {
+    if (packageRoots.has(dep.id)) return packageRoots.get(dep.id);
+    const parent = dep.parent === null ? null : nativeDeps.find((item) => item.id === dep.parent);
+    const parentRoot = parent === null || parent === undefined ? null : resolveDepRoot(parent);
+    const root = resolvePackageRootGeneric(
       requireFromApp,
-      dep.resolvedName,
-      dep.parentName,
+      dep.name(target),
+      parent?.name(target) ?? null,
+      parentRoot,
       appRoot,
       target,
     );
+    packageRoots.set(dep.id, root);
+    return root;
+  }
+
+  for (const dep of targetDeps) {
+    const packageRoot = resolveDepRoot(dep);
     const files = await collectPackageFiles({
       packageName: dep.resolvedName,
       packageRoot,

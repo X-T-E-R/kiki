@@ -53,6 +53,10 @@ describe('SSH credentials', () => {
       const entries = await readdir(path);
       expect((await stat(join(path, entries[0]!))).mode & 0o777).toBe(0o600);
     }
+    await store.forget('dev', 'password');
+    expect(await store.read('dev', 'password')).toBeUndefined();
+    expect(await store.save('dev', 'password', 'temporary', false)).toBe('memory');
+    expect(await store.read('dev', 'password')).toBe('temporary');
   });
 
   it.runIf(process.platform === 'win32')('round-trips a disposable secret through native Windows Credential Manager', async () => {

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'pathe';
@@ -26,7 +27,7 @@ interface SecretEntry {
 export type SecretEntryFactory = (account: string) => Promise<SecretEntry>;
 
 async function systemKeyring(account: string): Promise<SecretEntry> {
-  const { AsyncEntry } = await import('@napi-rs/keyring');
+  const { AsyncEntry } = createRequire(import.meta.url)('@napi-rs/keyring') as typeof import('@napi-rs/keyring');
   return new AsyncEntry('Kiki SSH', account, process.platform === 'linux'
     ? { linux: { store: 'secret-service' } }
     : undefined);
@@ -113,9 +114,14 @@ export class SshCredentialStore {
 
   async forget(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): Promise<void> {
     const account = this.account(hostId, kind);
+    let entry: SecretEntry | undefined;
+    try {
+      entry = await this.entryFactory(account);
+    } catch {
+    }
     let keyringError: unknown;
     try {
-      await (await this.entryFactory(account)).deleteCredential();
+      await entry?.deleteCredential();
     } catch (error) {
       keyringError = error;
     }

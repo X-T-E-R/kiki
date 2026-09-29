@@ -13,7 +13,14 @@ import {
   getNativePackageRoot,
 } from './native-assets';
 
-const smokePackages = ['@mariozechner/clipboard', '@kiki/pi-tui'];
+const smokePackages = ['@mariozechner/clipboard', '@napi-rs/keyring', '@kiki/pi-tui'];
+
+function smokeKeyringNativeLoad(): void {
+  const keyring = createRequire(import.meta.url)('@napi-rs/keyring') as { AsyncEntry?: unknown };
+  if (typeof keyring.AsyncEntry !== 'function') {
+    throw new TypeError('Native keyring binding does not export AsyncEntry');
+  }
+}
 
 function smokePiTuiNativeLoad(): void {
   const platform = process.platform;
@@ -114,6 +121,7 @@ async function runSmoke(): Promise<void> {
     }
   }
   smokePiTuiNativeLoad();
+  smokeKeyringNativeLoad();
   await smokeMinidbWorker();
   await smokeSearchWorker();
   process.stdout.write(

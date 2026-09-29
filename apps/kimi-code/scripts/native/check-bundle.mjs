@@ -10,6 +10,7 @@ const builtins = new Set([
 ]);
 
 const optionalRuntimeRequires = new Set([
+  '@napi-rs/keyring',
   'ajv-formats/dist/formats',
   'ajv/dist/runtime/validation_error',
   'bufferutil',

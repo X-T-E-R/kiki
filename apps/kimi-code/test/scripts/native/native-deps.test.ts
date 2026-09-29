@@ -56,6 +56,25 @@ describe('resolveTargetDeps', () => {
     ).toContain('@mariozechner/clipboard-win32-arm64-msvc');
   });
 
+  it('picks the keyring host and platform binding for every target', () => {
+    const expected = {
+      'darwin-arm64': '@napi-rs/keyring-darwin-arm64',
+      'darwin-x64': '@napi-rs/keyring-darwin-x64',
+      'linux-arm64': '@napi-rs/keyring-linux-arm64-gnu',
+      'linux-x64': '@napi-rs/keyring-linux-x64-gnu',
+      'win32-arm64': '@napi-rs/keyring-win32-arm64-msvc',
+      'win32-x64': '@napi-rs/keyring-win32-x64-msvc',
+    };
+    for (const target of SUPPORTED_TARGETS) {
+      const deps = resolveTargetDeps(target);
+      expect(deps.find((dep) => dep.id === 'keyring-host')?.resolvedName).toBe('@napi-rs/keyring');
+      expect(deps.find((dep) => dep.id === 'keyring-target')).toMatchObject({
+        resolvedName: expected[target as keyof typeof expected],
+        parentName: '@napi-rs/keyring',
+      });
+    }
+  });
+
   it('encodes pi-tui native file path per target', () => {
     const linuxPiTui = resolveTargetDeps('linux-arm64').find(
       (d) => d.resolvedName === '@kiki/pi-tui',
@@ -90,6 +109,16 @@ describe('nativeDeps registry shape', () => {
     const target = nativeDeps.find((d) => d.id === 'clipboard-target');
     expect(target?.collect).toBe('native-files');
     expect(target?.parent).toBe('clipboard-host');
+  });
+
+  it('collects the keyring host and its per-target native binding', () => {
+    expect(nativeDeps.find((d) => d.id === 'agent-core')?.collect).toBe('virtual');
+    expect(nativeDeps.find((d) => d.id === 'keyring-host')).toMatchObject({
+      collect: 'js-only', parent: 'agent-core',
+    });
+    expect(nativeDeps.find((d) => d.id === 'keyring-target')).toMatchObject({
+      collect: 'native-files', parent: 'keyring-host',
+    });
   });
 
   it('has pi-tui (collect=native-file-only, no parent)', () => {
