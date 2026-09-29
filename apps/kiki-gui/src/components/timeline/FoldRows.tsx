@@ -109,12 +109,18 @@ export function SubagentGroupRow({
       glyph={<Icon name="agent" />}
       label={tp('transcript.agents.dispatched', total)}
       detail={<span className="text-ink-faint tabular-nums">{t('transcript.agents.progress', { done, total })}</span>}
-      status={done < total ? (
-        <OutcomeMark
-          state="running"
-          labels={{ running: t('transcript.runningAria'), failed: t('transcript.failedAria'), stopped: t('transcript.stoppedAria'), done: t('transcript.doneAria') }}
-        />
-      ) : undefined}
+      // The live mark sits in the members' 28px disclosure column, so it
+      // lines up with their chevrons instead of floating left of them.
+      aside={
+        <span data-subagent-group-status className="flex h-7 w-7 shrink-0 items-center justify-center">
+          {done < total ? (
+            <OutcomeMark
+              state="running"
+              labels={{ running: t('transcript.runningAria'), failed: t('transcript.failedAria'), stopped: t('transcript.stoppedAria'), done: t('transcript.doneAria') }}
+            />
+          ) : null}
+        </span>
+      }
     >
       <div className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
         {group.members.map((member) => (

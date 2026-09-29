@@ -940,6 +940,7 @@ function SubagentCompactCard({
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
       stats={toolCalls.known ? <span className="font-sans">{tp('transcript.toolCalls', toolCalls.count)}</span> : undefined}
       meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
+      metaWidth="wide"
       aside={
         onExpand === undefined ? undefined : (
           <button

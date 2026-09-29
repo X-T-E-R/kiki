@@ -71,6 +71,8 @@ const ROW_TONE: Record<ActivityTone, string> = {
 const STATS_COLUMN = 'min-w-[52px] shrink-0 text-right font-mono text-[12px] tabular-nums text-ink-faint';
 const META_COLUMN = 'min-w-[46px] shrink-0 text-right text-[12px] tabular-nums whitespace-nowrap text-ink-faint';
 const META_COLUMN_AUTO = 'shrink-0 text-right text-[12px] whitespace-nowrap text-ink-faint';
+/** Wide enough for "1天 23小时" / "23h 59m", so a column of agent run times stays one column. */
+const META_COLUMN_WIDE = 'w-[76px] shrink-0 overflow-hidden text-right text-[12px] tabular-nums whitespace-nowrap text-ink-faint';
 const STATUS_COLUMN = 'flex h-3.5 w-3.5 shrink-0 items-center justify-center';
 
 export interface ActivityRowProps {
@@ -91,7 +93,7 @@ export interface ActivityRowProps {
    * the run. `auto` is for a named state ("Pending delivery") that must stay
    * readable words rather than being clipped into the numeric column.
    */
-  readonly metaWidth?: 'fixed' | 'auto';
+  readonly metaWidth?: 'fixed' | 'auto' | 'wide';
   /** Outcome mark column. */
   readonly status?: ReactNode;
   /** Present = the row discloses a body; absent = no chevron column. */
@@ -162,7 +164,7 @@ export function ActivityRow({
       {meta === undefined ? null : (
         <span
           title={metaTitle}
-          className={metaWidth === 'auto' ? META_COLUMN_AUTO : META_COLUMN}
+          className={metaWidth === 'auto' ? META_COLUMN_AUTO : metaWidth === 'wide' ? META_COLUMN_WIDE : META_COLUMN}
         >
           {meta}
         </span>
@@ -187,7 +189,7 @@ export function ActivityRow({
   const bleed = `${nested
     ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]'
     : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
-  const shell = `group/act flex min-h-[26px] items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${ROW_TONE[tone]} ${bleed} pr-2`;
+  const shell = `group/act flex min-h-[26px] min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row title={title} className={`anim-enter ${className}`} {...attrs}>
       <div className="flex items-center gap-1">
