@@ -712,8 +712,12 @@ export function Sidebar({
     }
     return totals;
   }, [sessions]);
+  const pinnedTotal = useMemo(
+    () => sessions.filter((session) => session.archived !== true && isPinnedSession(session)).length,
+    [sessions],
+  );
   const workspaceGroupKeys = groupBy === 'workspace'
-    ? sessionTree.filter((group) => group.key !== 'pinned').map((group) => group.key)
+    ? sessionTree.map((group) => group.key)
     : [];
   const allFolded = workspaceGroupKeys.length > 0 && workspaceGroupKeys.every((key) => collapsedGroups.has(key));
   const titleOf = useMemo(
@@ -1033,10 +1037,13 @@ export function Sidebar({
           </div>
         ) : null}
         {sessionTree.map((group) => {
-          const collapsible = groupBy === 'workspace' && group.key !== 'pinned';
+          // In the workspace view every bucket, Pinned included, uses the one
+          // workspace header: fold, count, remembered state. Pinned keeps
+          // every row visible (those are the sessions asked to stay on top).
+          const collapsible = groupBy === 'workspace';
           const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
           const expanded = expandedGroups.has(group.key);
-          const limit = collapsible && !expanded ? WORKSPACE_GROUP_PREVIEW : Infinity;
+          const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
           const shown = collapsed ? [] : group.nodes.slice(0, limit);
           const hidden = collapsed ? 0 : group.nodes.length - shown.length;
           const renderRow = (node: SessionTreeNode, nested: boolean) => {
@@ -1077,12 +1084,11 @@ export function Sidebar({
               </div>
             );
           };
-          // Workspace buckets get their own header (WorkspaceGroupHeader): fold,
-          // count, pin, the current-workspace mark. Pinned and time buckets keep
-          // the plain T5 label, 28px tall; in the workspace view the pinned
-          // label still reserves the rows' 7px state column, so every label
-          // starts on the row-title axis. A folded workspace still says when
-          // something inside needs you or is running.
+          // The workspace view gives every bucket (workspaces, Pinned,
+          // Ungrouped) one header, WorkspaceGroupHeader: fold, count, the
+          // current-workspace mark, and pin for a registered workspace. Time
+          // buckets keep the plain T5 label, 28px tall. A folded group still
+          // says when something inside needs you or is running.
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
           if (collapsible) {
             const workspace = workspaceOptions.find((entry) => entry.id === group.key);
@@ -1101,7 +1107,7 @@ export function Sidebar({
                   groupKey={group.key}
                   label={group.label}
                   count={group.total}
-                  totalCount={filtersActive ? workspaceTotals.get(group.key) : undefined}
+                  totalCount={filtersActive ? (group.key === 'pinned' ? pinnedTotal : workspaceTotals.get(group.key)) : undefined}
                   collapsed={collapsed}
                   foldable={!foldsSuspended}
                   current={group.key === activeWorkspaceId}
@@ -1130,13 +1136,12 @@ export function Sidebar({
             <div
               key={group.key}
               data-session-group-block={group.key}
-              className={`flex flex-col gap-0.5 ${groupBy === 'workspace' ? 'not-first:mt-4' : 'not-first:mt-3'}`}
+              className="flex flex-col gap-0.5 not-first:mt-3"
               role="group"
               aria-label={group.label}
             >
               {groupBy === 'none' && group.key === 'all' ? null : (
                 <p data-session-group={group.key} className={headerClass}>
-                  {groupBy === 'workspace' ? <span aria-hidden className="w-[7px] shrink-0" /> : null}
                   <span className="min-w-0 truncate">{group.label}</span>
                 </p>
               )}
@@ -1541,11 +1546,11 @@ function SessionRow({
 }
 
 /**
- * A workspace group's header: fold toggle (chevron in the rows' 7px state
- * column), name, count, and the pin toggle in the trailing slot the rows use
- * for their time. The workspace holding the open session says so; a folded
- * one still marks what inside needs you or is running. Toggle and pin are
- * sibling buttons, never nested.
+ * A bucket header in the workspace view (a workspace, Pinned, Ungrouped):
+ * fold toggle (chevron in the rows' 7px state column), name, count, and for
+ * a registered workspace the pin toggle in the trailing slot. The workspace
+ * holding the open session says so; a folded one still marks what inside
+ * needs you or is running. Toggle and pin are sibling buttons, never nested.
  */
 function WorkspaceGroupHeader({
   groupKey,
@@ -1585,10 +1590,10 @@ function WorkspaceGroupHeader({
       <span aria-hidden className="flex w-[7px] shrink-0 justify-center">
         {foldable ? <DisclosureChevron open={!collapsed} /> : null}
       </span>
-      {/* The name takes the selected ink when it holds the open session, so
-          the fact reads before the word "Current" does. */}
+      {/* Neutral ink throughout; the only colour on a header is the
+          "Current" mark and a folded group's status dot. */}
       <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className={`min-w-0 truncate ${current ? 'text-selected-ink' : ''}`}>{label}</span>
+        <span className="min-w-0 truncate">{label}</span>
         <span data-session-group-count className="shrink-0 font-normal text-ink-faint tabular-nums">{countText}</span>
         {current ? (
           <span data-session-group-current className="shrink-0 text-[11px] font-normal text-selected-ink">{t('sidebar.currentWorkspace')}</span>
@@ -1610,7 +1615,7 @@ function WorkspaceGroupHeader({
       </span>
     </>
   );
-  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-medium text-section-ink';
+  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-medium text-ink-soft';
   return (
     <div className="group/ws sticky top-0 z-[1] bg-canvas" data-session-group-header={groupKey}>
       {foldable ? (

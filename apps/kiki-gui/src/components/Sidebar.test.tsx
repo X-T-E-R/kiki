@@ -1362,4 +1362,57 @@ describe('Sidebar workspace groups', () => {
     expect(container.querySelector('[data-session-groups-fold-all]')).toBeNull();
     expect(readWorkspaceGroupMemory('local').collapsed).toEqual(['ws_a']);
   });
+
+  it('gives Pinned the same header: chevron, count, neutral ink, remembered fold, no pin action', async () => {
+    const pinned = { ...session('p1'), workspace_id: 'ws_b', metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } as Session['metadata'] };
+    const props = (): Partial<SidebarProps> => ({
+      ...grouped(),
+      sessions: [pinned, inA, inB],
+      sessionGroups: [
+        { key: 'pinned', label: 'Pinned', items: [pinned] },
+        { key: 'ws_a', label: 'alpha', items: [inA] },
+        { key: 'ws_b', label: 'beta', items: [inB] },
+      ],
+    });
+    const first = await mount(props());
+    const header = () => first.container.querySelector<HTMLButtonElement>('button[data-session-group="pinned"]')!;
+    const workspaceHeader = first.container.querySelector<HTMLButtonElement>('button[data-session-group="ws_a"]')!;
+    // One component, one class list: the pinned bucket lines up with the workspaces.
+    expect(header().className).toBe(workspaceHeader.className);
+    expect(header().className).toContain('text-ink-soft');
+    expect(header().className).not.toContain('text-section-ink');
+    expect(header().querySelector('svg')).not.toBeNull();
+    expect(header().querySelector('[data-session-group-count]')?.textContent).toBe('1');
+    expect(first.container.querySelector('[data-session-group-pin="pinned"]')).toBeNull();
+    await act(async () => { header().click(); });
+    expect(first.container.querySelector('[data-session-row="p1"]')).toBeNull();
+    expect(readWorkspaceGroupMemory('local').collapsed).toEqual(['pinned']);
+    act(() => { first.root.unmount(); });
+    const second = await mount(props());
+    expect(second.container.querySelector('[data-session-group="pinned"]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(second.container.querySelector('[data-session-row="p1"]')).toBeNull();
+  });
+
+  it('keeps accent ink off group names; only the Current mark carries it', async () => {
+    const { container } = await mount({ ...grouped(), activeSessionId: 'a1' });
+    const header = container.querySelector('[data-session-group-header="ws_a"]')!;
+    const tinted = [...header.querySelectorAll('[class*="text-selected-ink"], [class*="text-accent"], [class*="text-section-ink"]')];
+    expect(tinted.map((node) => node.hasAttribute('data-session-group-current'))).toEqual([true]);
+  });
+
+  it('never preview-truncates Pinned, and folds it with "collapse all"', async () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({
+      ...session(`pin${index}`),
+      metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } as Session['metadata'],
+    }));
+    const { container } = await mount({
+      ...grouped(),
+      sessions: [...many, inA],
+      sessionGroups: [{ key: 'pinned', label: 'Pinned', items: many }, { key: 'ws_a', label: 'alpha', items: [inA] }],
+    });
+    expect(container.querySelectorAll('[data-session-group-block="pinned"] [data-session-row]')).toHaveLength(10);
+    expect(container.querySelector('[data-session-group-more="pinned"]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-groups-fold-all]')!.click(); });
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
+  });
 });
