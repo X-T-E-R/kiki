@@ -69,6 +69,12 @@ or two — do not pad it out. Include the critical data, identifiers, and
 references needed to continue, and omit anything that does not change the next
 move.
 
+In the handoff, include a `## Standing directives` section containing the user's
+still-effective instructions in their own words, including corrections delivered
+while you were working. Keep task-only instructions here; do not create permanent
+memory from the summary. Include this section even when there are no such
+instructions (write `(none)`).
+
 Respond with text only. Do not call any tools — you already have everything you
 need in the conversation history.
 

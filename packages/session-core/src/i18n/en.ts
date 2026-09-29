@@ -5589,4 +5589,5 @@ export const en = {
   'ephemeral.saveFailed': 'Could not save the conversation: {detail}',
   'time.durationHours': '{h}h {m}m',
   'time.durationDays': '{d}d {h}h',
+  'agentPanel.notes.directives': 'User instructions',
 } as const;

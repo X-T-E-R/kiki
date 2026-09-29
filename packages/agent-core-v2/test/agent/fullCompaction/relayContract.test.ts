@@ -3,7 +3,7 @@ import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHan
 import { applyContextCompactionRecord } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { evaluateFreshEligibility } from '#/agent/fullCompaction/freshEligibility';
-import { renderPendingReceipts, renderRelay, type RelayInput } from '#/agent/fullCompaction/relayPackage';
+import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from '#/agent/fullCompaction/relayPackage';
 import { hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
 
 const user = (text: string, origin?: ContextMessage['origin']): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
@@ -35,6 +35,27 @@ describe('relay-v1 zero-model contract', () => {
     expect(live.messages.at(-1)).toEqual(input.history.at(-1));
   });
 
+  it('delivers a t424 steer after the t423 notes watermark even when the old user tail drops it', () => {
+    const notesCall = { ...assistant, toolCalls: [{ ...assistant.toolCalls[0]!, id: 'notes423' }] };
+    const steer: ContextMessage = { ...user('哦你也可以直接 pin grok 模型，都行的', { kind: 'user' }), source: { turnId: 424, stepId: 't424.1' } };
+    const history = [user('x'.repeat(120_000)), notesCall, steer, user('x'.repeat(120_000))];
+    const notesMeta = { ...meta, coveredMessageId: 'toolcall:notes423', writtenTurn: 423, writtenStep: 't423.1' };
+    const handoff: RelayInput = { ...input, history, compactCount: 3, meta: notesMeta, notes: { goal: 'Choose model', directives: 'Pin grok if the profile is unavailable.' },
+      memoryEntries: ['- [m_20260929_89b2ad94e2] Pin Grok if the profile fails'] };
+    const relay = renderRelay(handoff);
+    expect(relay).toContain('## Standing directives');
+    expect(relay).toContain('m_20260929_89b2ad94e2');
+    expect(relay).toContain('## User input since notes');
+    expect(relay).toContain('t424 (user): 哦你也可以直接 pin grok 模型');
+    expect(relay).toContain('HistoryRead {session_id:"s1", agent_id:"child", step_id:"t424.1"}');
+    expect(renderStandingDirectives(handoff)).toContain('直接 pin grok');
+    const eligibility = evaluateFreshEligibility({ history, compactCount: 3, notes: handoff.notes, meta: notesMeta,
+      windowEpoch: 0, strategy: 'fresh', threshold: 1_000_000, projectedTokens: 1, historyAvailable: true,
+      estimateMessage: (message) => Math.ceil(JSON.stringify(message.content).length / 4) });
+    expect(eligibility.reasons).toContain('user_input_since_notes:1');
+    expect(eligibility.reasons).not.toContain('user_input_elided');
+  });
+
   it('keeps each unabsorbed receipt in newest-first order even beyond the body budget', () => {
     const older = user('x'.repeat(40_000), { kind: 'task', taskId: 'older', status: 'completed', notificationId: 'n2' });
     const recent = user('new', { kind: 'task', taskId: 'newer', status: 'completed', notificationId: 'n3' });
@@ -63,6 +84,11 @@ describe('relay-v1 zero-model contract', () => {
     expect(mergeTodoNotes({ goal: 'keep' }, { goal: '' })).toBeUndefined();
     expect(mergeTodoNotes({ goal: 'keep' }, null)).toBeUndefined();
     expect(() => mergeTodoNotes({}, { next: 'x'.repeat(1_501) })).toThrow('1,500');
+    const expanded = mergeTodoNotes({ goal: 'a'.repeat(1_500), decided: 'b'.repeat(1_500),
+      evidence: 'c'.repeat(1_500), next: 'd'.repeat(1_500) }, { directives: 'e'.repeat(1_500) });
+    expect(expanded?.directives).toHaveLength(1_500);
+    expect(mergeTodoNotes({ goal: 'keep', directives: 'pin grok' }, { next: 'new' })?.directives).toBe('pin grok');
+    expect(renderRelay({ ...input, notes: { goal: 'keep', directives: 'pin grok', next: 'act' } })).toContain('goal: keep\ndirectives: pin grok\nnext: act');
   });
 
   it('applies safety reasons to both choices and risk reasons to auto only', () => {

@@ -2267,7 +2267,7 @@ describe('FullCompaction', () => {
         getNotes: () => ({ notes: { goal: 'finish request', next: 'continue' }, meta: {
           rev: 1, hash: 'fixture', writtenTurn: 2, writtenStep: 't2.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0,
         } }),
-        setNotes: () => {}, setTodos: () => {}, clear: () => {},
+        setNotes: () => {}, setCompactionDirectives: () => {}, setTodos: () => {}, clear: () => {},
         onDidChange: () => ({ dispose: () => {} }), onDidChangeAgent: () => ({ dispose: () => {} }),
       });
     }));
@@ -3550,6 +3550,9 @@ describe('FullCompaction', () => {
         'Compacted summary.\n\n## TODO List\n  [in_progress] Fix the auth bug\n  [pending] Add tests',
       ),
     });
+    expect(messageText(ctx.context.get().at(-1))).toContain('## Standing directives');
+    expect(messageText(ctx.context.get().at(-1))).toContain('## User input since notes');
+    expect(messageText(ctx.context.get().at(-1))).toContain('recent user two');
     expect(ctx.context.get().at(-1)?.content[0]).toMatchObject({
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),

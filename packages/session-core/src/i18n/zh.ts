@@ -5541,4 +5541,5 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'ephemeral.saveFailed': '没能保存对话：{detail}',
   'time.durationHours': '{h}小时{m}分',
   'time.durationDays': '{d}天 {h}小时',
+  'agentPanel.notes.directives': '用户指示',
 };

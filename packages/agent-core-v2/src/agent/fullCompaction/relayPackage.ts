@@ -1,4 +1,5 @@
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
+import { isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
 import { coveredMessageIndex } from './freshEligibility';
 import type { NotesMeta, TodoNotes } from '#/session/todo/todoNotes';
 import { renderTodoNotes } from '#/session/todo/todoNotes';
@@ -83,6 +84,49 @@ function boundaryLabel(section: readonly ContextMessage[]): string {
   return `${first} → ${last}`;
 }
 
+export function userInputSinceNotes(input: Pick<RelayInput, 'history' | 'compactCount' | 'meta'>): readonly ContextMessage[] {
+  const section = input.history.slice(0, input.compactCount);
+  const watermark = coveredMessageIndex(input.history, input.meta);
+  const after = watermark >= input.compactCount ? [] : section.slice(watermark + 1);
+  const users = after.filter((message) => isRealUserInput(message) &&
+    (message.origin === undefined || ['user', 'peer_thread', 'agent_message'].includes(message.origin.kind)));
+  return input.meta === undefined ? users.slice(-5) : users;
+}
+
+export function renderUserInputSinceNotes(input: RelayInput): { text: string; count: number; fits: boolean } {
+  const users = userInputSinceNotes(input);
+  const lines: string[] = [];
+  let remaining = 3_000;
+  let fits = true;
+  for (const message of users) {
+    const full = textOf(message).trim();
+    const excerpt = full.slice(0, 600);
+    const pointer = historyPointer(input, sourceOf(message), excerpt.slice(0, 60));
+    const turn = message.source?.turnId === undefined ? 'unknown' : `t${message.source.turnId}`;
+    const line = `- ${turn} (${message.origin?.kind ?? 'user'}): ${excerpt}${full.length > 600 ? '…' : ''} · ${pointer}`;
+    const cost = input.estimateText(line);
+    if (full.length > 600) fits = false;
+    if (cost <= remaining && full.length > 0) {
+      lines.push(line);
+      remaining -= cost;
+    } else {
+      fits = false;
+    }
+  }
+  if (users.length > lines.length) lines.push(`- ${users.length - lines.length} further user inputs exceed this block's budget; use HistoryRead/HistorySearch for the removed history.`);
+  return { text: `## User input since notes\n${lines.join('\n') || '(none)'}`, count: users.length, fits };
+}
+
+export function renderStandingDirectives(input: RelayInput): string {
+  const directives = input.notes?.directives?.trim() || '(none recorded in notes)';
+  const memory = input.memoryEntries?.length ? `\nMemory written in this session (live):\n${input.memoryEntries.join('\n')}` : '';
+  return [
+    `## Standing directives\n${directives}${memory}`,
+    renderUserInputSinceNotes(input).text,
+    'Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.',
+  ].join('\n\n');
+}
+
 export function renderPendingReceipts(input: RelayInput): string {
   const section = input.history.slice(0, input.compactCount);
   const after = section.slice(coveredMessageIndex(section, input.meta) + 1);
@@ -138,7 +182,7 @@ export function renderRelay(input: RelayInput): string {
     'The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.',
     `## Window\n${input.agentId}/${input.epoch + 1}\nRemoved history boundary: ${boundary}\n${boundaryPointers}`,
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
-    input.memoryEntries?.length ? `## Relevant frozen memory (read-only)\n${input.memoryEntries.join('\n')}` : '',
+    renderStandingDirectives(input),
     `## Notes metadata\nrevision ${input.meta?.rev ?? 0} · covered ${input.meta?.writtenStep ?? 'none'}`,
     input.todos.length > 0 ? renderTodoList(input.todos, '## TODO List') : '',
     lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer}` : '',

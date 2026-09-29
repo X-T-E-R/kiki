@@ -73,7 +73,7 @@ export function externalStateHints(input: {
       goal.completionCriterion === undefined ? '' : `Completion criterion: ${goal.completionCriterion}`,
     ].filter(Boolean).join('\n'), 1_536);
   }
-  const priority = ['goal', 'next', 'open'] as const;
+  const priority = ['directives', 'next', 'goal', 'open'] as const;
   const noteLines = [
     ...priority.flatMap((key) => input.notes?.[key] ? [truncateUtf8(`${key}: ${input.notes[key]}`, 1_800)] : []),
     ...NOTE_SECTIONS.filter((key) => !priority.includes(key as typeof priority[number]))

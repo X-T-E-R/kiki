@@ -12,6 +12,7 @@ export interface IAgentMemorySnapshot {
   readonly _serviceBrand: undefined;
   get(): Promise<string>;
   getSessionEntries(): Promise<readonly string[]>;
+  liveSessionEntries(): Promise<readonly MemoryEntry[]>;
   invalidate(): void;
 }
 export const IAgentMemorySnapshot = createDecorator<IAgentMemorySnapshot>('agentMemorySnapshot');
@@ -39,6 +40,19 @@ export class AgentMemorySnapshot implements IAgentMemorySnapshot {
   async getSessionEntries(): Promise<readonly string[]> {
     await this.get();
     return this.frozenRelated;
+  }
+
+  async liveSessionEntries(): Promise<readonly MemoryEntry[]> {
+    if (this.agent.agentId !== 'main') return [];
+    const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
+    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off') return [];
+    try {
+      const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+      const scopes: MemoryScope[] = [{ kind: 'workspace', workspaceId: this.session.workspaceId }, { kind: 'global' }];
+      const entries = (await Promise.all(scopes.map((scope) => store.list(scope)))).flat();
+      return entries.filter((entry) => entry.status === 'active' && entry.source.session === this.session.sessionId)
+        .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 20);
+    } catch { return []; }
   }
 
   invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }

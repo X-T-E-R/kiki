@@ -33,7 +33,7 @@ import { type LoopControl } from '#/agent/loop/configSection';
 import { contextWindowEpochKey } from './windowEpoch';
 import { ContextStrategyOverrideChanged, contextStrategyOverrideKey } from './contextStrategyOps';
 import { evaluateFreshEligibility, type ReasonCode } from './freshEligibility';
-import { renderPendingReceipts, renderRelay, type RelayInput } from './relayPackage';
+import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from './relayPackage';
 import {
   APIContextOverflowError,
   APIEmptyResponseError,
@@ -752,7 +752,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       };
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
-      const memoryEntries = choice.strategy !== 'summarize' ? await this.memorySnapshot.getSessionEntries() : [];
+      const memoryEntries = (await this.memorySnapshot.liveSessionEntries()).map((entry) => `- [${entry.id}] ${entry.title}`);
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
@@ -785,6 +785,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             projectedTokens: projected, instruction: customInstruction,
             historyAvailable: historyToolAvailable('HistoryRead') && historyToolAvailable('HistorySearch'),
             estimateMessage: (message) => this.tokenCounting.estimateMessage(message),
+            estimateText: relayInput.estimateText, sessionId: relayInput.sessionId, agentId: relayInput.agentId,
           });
       const reasons: ReasonCode[] = [...eligibility.reasons];
       failureReasons = reasons;
@@ -935,6 +936,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
         ...(choice.shadow || choice.strategy !== 'summarize' ? { strategy: 'summarize' as const, shapeVersion: 1, reasonCodes: reasons, fallbackFrom } : {}),
       });
+      const summarizedDirectives = attempt.summary.split(/^## Standing directives[ \t]*\r?\n/m)[1]?.split(/^## [^\r\n]+/m)[0]?.trim();
+      if (summarizedDirectives) {
+        try {
+          this.todo.setCompactionDirectives(summarizedDirectives, active.originTurnId ?? notes.meta?.writtenTurn ?? 0, this.scope.agentId);
+        } catch (error) {
+          this.log.warn('failed to record directives from compaction summary', { error });
+        }
+      }
 
       const properties: CompactionFinishedEvent = {
         turn_id: active.originTurnId,
@@ -985,9 +994,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const todos = this.currentTodos();
     const notes = renderTodoNotes(this.todo.getNotes?.(this.scope.agentId)?.notes);
     const receipts = renderPendingReceipts(input);
-    if (todos.length === 0 && !notes && !receipts) return summary;
     return [summary.trim(), todos.length ? renderTodoList(todos, '## TODO List') : '',
-      notes ? `## Working notes\n${notes}` : '', receipts].filter(Boolean).join('\n\n');
+      notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), receipts].filter(Boolean).join('\n\n');
   }
 
   private currentTodos(): readonly TodoItem[] {

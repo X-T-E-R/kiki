@@ -33,6 +33,7 @@ function makeTool(initial: readonly TodoItem[] = []): {
     },
     getNotes: () => ({ notes }),
     setNotes: (patch) => { notes = mergeTodoNotes(notes, patch); },
+    setCompactionDirectives: () => {},
     clear: () => { todos = []; },
     onDidChange: () => ({ dispose: () => {} }),
     onDidChangeAgent: () => ({ dispose: () => {} }),

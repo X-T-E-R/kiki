@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n';
 import { InspectorChevron, INSPECTOR_HEAD } from './InspectorSection';
 
 /** Section order: what the agent is after, then what it settled, then what is left. */
-const SECTIONS = ['goal', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'] as const;
+const SECTIONS = ['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'] as const;
 
 export interface AgentNotesSectionProps {
   readonly notes: TranscriptTodoNotes | undefined;

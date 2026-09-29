@@ -111,6 +111,27 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     this.publishTodos(handle);
   }
 
+  setCompactionDirectives(directives: string, turnId: number, agentId = MAIN_AGENT_ID): void {
+    const handle = this.agentLifecycle.get(agentId);
+    const text = directives.trim();
+    if (handle === undefined || !text || text === '(none)') return;
+    const states = handle.accessor.get(IAgentStateService);
+    const current = readTodoState(states.get(todoKey));
+    const previous = current.notes?.directives?.trim() ?? '';
+    const combined = !previous || text.includes(previous) ? text : previous.includes(text) ? previous : `${previous}\n${text}`;
+    const otherLength = Object.entries(current.notes ?? {}).reduce((sum, [key, value]) => sum + (key === 'directives' ? 0 : value.length), 0);
+    const clipped = combined.slice(0, Math.max(0, Math.min(1_500, 7_500 - otherLength)));
+    if (!clipped || clipped === previous) return;
+    const notes = mergeTodoNotes(current.notes, { directives: clipped });
+    const meta: NotesMeta = {
+      rev: (current.notesMeta?.rev ?? 0) + 1, hash: hashTodoNotes(notes),
+      writtenTurn: turnId, writtenStep: `t${turnId}.0`,
+      coveredMessageId: 'compaction_summary', windowEpoch: states.get(contextWindowEpochKey),
+    };
+    void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_notes', value: { notes, notesMeta: meta, writer: 'compaction' } }));
+    this.publishTodos(handle);
+  }
+
   setTodos(todos: readonly TodoItem[], agentId = MAIN_AGENT_ID): void {
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
