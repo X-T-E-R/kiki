@@ -1,11 +1,12 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { watchDispatchEvents } from '../../src/kiki/host-attach';
 import { readClaudeNotifications } from '../../src/kiki/host-claude';
-import { codexBindingPath, deliverCodexEvents } from '../../src/kiki/host-codex';
+import { codexBindingPath, deliverCodexEvents, registerHostCodexCommands } from '../../src/kiki/host-codex';
 
 const dispatchId = 'dispatch_MOCK001';
 const event = (seq: number, type: string, message?: string) => ({ seq, dispatchId, type, at: seq, message });
@@ -90,6 +91,23 @@ describe('external host wake adapters (mock seat and queue)', () => {
     const queue = vi.fn(async (_command: string, _thread: string, _message: string) => {});
     expect(await deliverCodexEvents({ workspace, home, dispatch: dispatchId, klient: klient as never, queue })).toBe(1);
     expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a Codex dispatch from explicit CLI arguments without waiting on stdin', async () => {
+    const program = new Command();
+    registerHostCodexCommands(program);
+    const stdin = vi.spyOn(process.stdin, 'setEncoding').mockImplementation(() => {
+      throw new Error('CLI attempted to read stdin');
+    });
+    try {
+      await expect(program.parseAsync([
+        'host-codex-queue', '--workspace', workspace, '--dispatch', dispatchId,
+        '--home', join(workspace, 'kiki-home'),
+      ], { from: 'user' })).resolves.toBe(program);
+      expect(stdin).not.toHaveBeenCalled();
+    } finally {
+      stdin.mockRestore();
+    }
   });
 
   it('mock Codex host keeps dispatch asynchronous and starts a turn on completion without user input', async () => {

@@ -136,16 +136,18 @@ export function registerHostCodexCommands(program: Command): void {
     .option('--dispatch <id>')
     .option('--home <dir>')
     .action(async (input: { workspace?: string; dispatch?: string; home?: string }) => {
-      const text = await new Promise<string>((done, reject) => {
-        let value = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', (chunk: string) => {
-          value += chunk;
-          if (value.length > 65_536) reject(new Error('Hook payload too large.'));
-        });
-        process.stdin.once('end', () => done(value));
-        process.stdin.once('error', reject);
-      });
+      const text = input.workspace !== undefined && input.dispatch !== undefined
+        ? ''
+        : await new Promise<string>((done, reject) => {
+            let value = '';
+            process.stdin.setEncoding('utf8');
+            process.stdin.on('data', (chunk: string) => {
+              value += chunk;
+              if (value.length > 65_536) reject(new Error('Hook payload too large.'));
+            });
+            process.stdin.once('end', () => done(value));
+            process.stdin.once('error', reject);
+          });
       const hook = text.length === 0 ? {} : JSON.parse(text) as { cwd?: string; dispatch_id?: string };
       const workspace = input.workspace ?? hook.cwd;
       const dispatch = input.dispatch ?? hook.dispatch_id;
