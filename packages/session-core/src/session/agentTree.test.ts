@@ -960,6 +960,16 @@ describe('buildAgentForest', () => {
     expect(resumed.byId['agent-1']!.endedAt).toBeUndefined();
   });
 
+  it('uses the current run start when an unknown roster retains an earlier start', () => {
+    const forest = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'running', startedAt: '2026-01-01T01:00:00.000Z' })],
+      [roster({ agentId: 'agent-1', status: 'unknown', startedAt: '2026-01-01T00:00:00.000Z' })],
+    );
+    expect(forest.byId['agent-1']).toMatchObject({
+      status: 'running', startedAt: '2026-01-01T01:00:00.000Z',
+    });
+  });
+
   it.each([false, true])(
     'lets a live suspended state outrank same-run task activity (detached=%s)',
     (detached) => {

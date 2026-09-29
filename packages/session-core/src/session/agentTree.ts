@@ -1064,6 +1064,7 @@ function applyStatus(
     return { accepted: false, newGeneration: false };
   }
   const comparableRuns = currentRank > 0 && nextRank > 0;
+  const currentStartedAt = parseStatusTimestamp(draft.startedAt);
   const startsAfterDisposal =
     isActiveStatus(status) &&
     nextStartedAt !== undefined &&
@@ -1072,6 +1073,8 @@ function applyStatus(
     (draft.statusStartedAt === undefined || draft.statusStartedAt <= draft.disposedAt);
   const nextRunIsNewer =
     startsAfterDisposal ||
+    (currentRank <= 0 && nextRank === 1 && nextStartedAt !== undefined &&
+      currentStartedAt !== undefined && nextStartedAt > currentStartedAt) ||
     (comparableRuns &&
       nextStartedAt !== undefined &&
       draft.statusEndedAt !== undefined &&
