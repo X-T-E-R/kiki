@@ -46,7 +46,6 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent, TerminatedPayload},
     ShellExt,
 };
-use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -1102,10 +1101,9 @@ impl SpaceBackendManager {
                 if let Ok(active) = self.active_space() { set_space_identity(app, &active); }
             }
             if mode == WindowMode::Switch && newly_pending > 0 && read_main_desktop_prefs(&main_home_for(Path::new(&space.path)).unwrap_or_else(|_| PathBuf::from(&space.path))).notifications {
-                let _ = app.notification().builder()
-                    .title(format!("Kiki · {}", space.name))
-                    .body(format!("{newly_pending} session(s) need your input"))
-                    .show();
+                let _ = show_native_notification(app.clone(), format!("Kiki · {}", space.name),
+                    Some(format!("{newly_pending} session(s) need your input")),
+                    Some("/activity".to_string()), Some(id.clone()));
             }
         }
         true
@@ -1611,16 +1609,42 @@ fn notification_action_opens(action: &str) -> bool {
     matches!(action, "default" | "open")
 }
 
-fn deliver_notification_click(app: &AppHandle, route: &str) {
+fn space_notification_navigation_script(route: &str) -> Option<&'static str> {
+    (route == "/activity").then_some("window.history.replaceState(null, '', '/activity'); window.location.reload()")
+}
+
+fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>) {
+    let mut switched = false;
+    if let Some(home_id) = home_id {
+        let Some(manager) = app.try_state::<SpaceBackendManager>() else { return; };
+        if let Err(error) = manager.switch(app, home_id) {
+            eprintln!("Kiki could not open the notification's space: {}", error.message);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            return;
+        }
+        switched = true;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
     let _ = app.emit("kiki://notification-click", serde_json::json!({ "route": route }));
+    if switched {
+        if let (Some(window), Some(script)) = (app.get_webview_window("main"), space_notification_navigation_script(route)) {
+            if let Err(error) = window.eval(script) {
+                eprintln!("Kiki could not open notification activity: {error}");
+            }
+        }
+        if let Ok(space) = app.state::<SpaceBackendManager>().active_space() { set_space_identity(app, &space); }
+    }
 }
 
-fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
     if route.is_some() { notification.action("open", "Open Kiki"); }
@@ -1637,7 +1661,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
         if let Some(route) = route {
             let handle = notify_rust::NotificationHandle::new(notification.finalize());
             thread::spawn(move || handle.wait_for_action(|action| {
-                if notification_action_opens(action) { deliver_notification_click(&app, &route); }
+                if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
             }));
             return Ok(());
         }
@@ -1646,7 +1670,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
     #[cfg(not(target_os = "macos"))]
     if let Some(route) = route {
         thread::spawn(move || handle.wait_for_action(|action| {
-            if notification_action_opens(action) { deliver_notification_click(&app, &route); }
+            if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
         }));
     }
     #[cfg(target_os = "macos")]
@@ -1656,7 +1680,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 
 #[tauri::command]
 async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route))
+    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, None))
         .await.map_err(|error| format!("Notification task failed: {error}"))?
 }
 
@@ -3182,6 +3206,14 @@ mod tests {
         assert!(notification_action_opens("open"));
         assert!(!notification_action_opens("__closed"));
         assert!(!notification_action_opens("reply"));
+    }
+
+    #[test]
+    fn cross_space_notification_only_reloads_into_activity() {
+        let script = space_notification_navigation_script("/activity").unwrap();
+        assert!(script.contains("'/activity'"));
+        assert!(script.contains("location.reload()"));
+        assert_eq!(space_notification_navigation_script("/s/another"), None);
     }
 
     #[test]
