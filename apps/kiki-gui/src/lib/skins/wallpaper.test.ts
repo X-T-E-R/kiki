@@ -17,6 +17,7 @@ import { applyBackdrop, setBackdropMediaResolver, type MediaResolver } from './b
 import type { BackgroundMediaRef, BackgroundSlot } from './background';
 import { displayBlob, downscaleImage, resetDisplayMedia } from './displayMedia';
 import { getMedia } from './mediaStore';
+import { PACK_MEDIA_CACHE_BYTES, mediaResolverFor, resetPackMediaResolver } from './useAppearancePacks';
 
 const image = (id: string): BackgroundMediaRef => ({ id, kind: 'image', mime: 'image/jpeg', name: `${id}.jpg`, bytes: 30_000_000 });
 const slot = (ref: BackgroundMediaRef, look = {}): BackgroundSlot => ({
@@ -134,5 +135,35 @@ describe('display-sized copies', () => {
     expect(await downscaleImage(gif, 2560)).toBe(gif);
     const video = new Blob(['v'], { type: 'video/mp4' });
     expect(await downscaleImage(video, 2560)).toBe(video);
+  });
+});
+
+describe('pack media resolver', () => {
+  afterEach(() => { resetPackMediaResolver(); });
+
+  it('is one resolver per server, so a second mount neither re-downloads nor keeps a second copy', async () => {
+    const fetch = vi.fn(async () => ({ ok: true, blob: async () => new Blob(['v'], { type: 'video/mp4' }) }));
+    vi.stubGlobal('fetch', fetch);
+    const endpoint = { url: 'http://127.0.0.1:1', token: 't' };
+    const first = mediaResolverFor(endpoint);
+    expect(mediaResolverFor({ ...endpoint })).toBe(first);
+    await first({ id: 'pack:harbor/drift.mp4' });
+    await mediaResolverFor(endpoint)({ id: 'pack:harbor/drift.mp4' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(mediaResolverFor({ url: endpoint.url, token: 'other' })).not.toBe(first);
+  });
+
+  it('drops the oldest pack file once the cache passes its byte budget', async () => {
+    const big = Math.ceil(PACK_MEDIA_CACHE_BYTES / 2) + 1;
+    const fetch = vi.fn(async () => ({ ok: true, blob: async () => ({ size: big, type: 'video/mp4' }) }));
+    vi.stubGlobal('fetch', fetch);
+    const resolve = mediaResolverFor({ url: 'http://127.0.0.1:1', token: '' });
+    await resolve({ id: 'pack:a/drift.mp4' });
+    await resolve({ id: 'pack:b/drift.mp4' });
+    await flush();
+    await resolve({ id: 'pack:b/drift.mp4' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await resolve({ id: 'pack:a/drift.mp4' });
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

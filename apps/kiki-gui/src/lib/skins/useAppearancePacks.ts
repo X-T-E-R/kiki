@@ -35,20 +35,66 @@ export function useServerEndpoint(): ServerEndpoint {
   return useMemo(() => ({ url: config.url, token: config.token }), [config.url, config.token]);
 }
 
-/** Media bytes for any ref: `pack:` ids from the server, the rest from this device. */
-export function mediaResolverFor(endpoint: ServerEndpoint) {
-  const cache = new Map<string, Promise<Blob | null>>();
-  return (ref: { id: string }) => {
+/**
+ * Pack files kept in memory, oldest dropped first once past this many bytes.
+ * Enough for one pack video at the size ceiling plus its pictures; a file
+ * already on screen stays alive through its object URL regardless.
+ */
+export const PACK_MEDIA_CACHE_BYTES = 128 * 1024 * 1024;
+
+type PackMediaResolver = (ref: { id: string }) => Promise<Blob | null>;
+
+let shared: { key: string; resolve: PackMediaResolver } | null = null;
+
+/**
+ * Media bytes for any ref: `pack:` ids from the server, the rest from this
+ * device. One resolver per server: every `useAppearancePacks` mount (app
+ * shell, settings page, skin picker) gets the same one, so opening settings
+ * neither re-downloads a pack video nor keeps a second copy of it.
+ */
+export function mediaResolverFor(endpoint: ServerEndpoint): PackMediaResolver {
+  const key = `${endpoint.url}\n${endpoint.token}`;
+  if (shared?.key === key) return shared.resolve;
+  const cache = new Map<string, { pending: Promise<Blob | null>; bytes: number }>();
+  const trim = () => {
+    let total = 0;
+    for (const entry of cache.values()) total += entry.bytes;
+    for (const [id, entry] of cache) {
+      if (total <= PACK_MEDIA_CACHE_BYTES || cache.size <= 1) break;
+      cache.delete(id);
+      total -= entry.bytes;
+    }
+  };
+  const resolve: PackMediaResolver = (ref) => {
     const pack = parsePackMediaId(ref.id);
     if (pack === null) return getMedia(ref.id);
-    let pending = cache.get(ref.id);
-    if (pending === undefined) {
-      pending = fetchPackFile(endpoint, pack.packId, pack.file).catch(() => null);
-      cache.set(ref.id, pending);
-      void pending.then((blob) => { if (blob === null) cache.delete(ref.id); });
+    const hit = cache.get(ref.id);
+    if (hit !== undefined) {
+      // Refresh recency.
+      cache.delete(ref.id);
+      cache.set(ref.id, hit);
+      return hit.pending;
     }
-    return pending;
+    const entry = { pending: fetchPackFile(endpoint, pack.packId, pack.file).catch(() => null), bytes: 0 };
+    cache.set(ref.id, entry);
+    void entry.pending.then((blob) => {
+      if (cache.get(ref.id) !== entry) return;
+      if (blob === null) {
+        cache.delete(ref.id);
+        return;
+      }
+      entry.bytes = blob.size;
+      trim();
+    });
+    return entry.pending;
   };
+  shared = { key, resolve };
+  return resolve;
+}
+
+/** Forget the shared resolver (tests). */
+export function resetPackMediaResolver(): void {
+  shared = null;
 }
 
 export function useAppearancePacks(): {

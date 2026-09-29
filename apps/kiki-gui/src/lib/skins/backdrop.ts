@@ -223,6 +223,8 @@ export type MediaResolver = (ref: BackgroundMediaRef) => Promise<Blob | null>;
 let resolver: MediaResolver = (ref) => getMedia(ref.id);
 
 export function setBackdropMediaResolver(next: MediaResolver): void {
+  // Every settings mount re-announces the same resolver; nothing changed.
+  if (next === resolver) return;
   resolver = next;
   // The resolver arrives with the connection; a pack slot restored from
   // storage on boot had nothing to fetch its media with until now. A load
