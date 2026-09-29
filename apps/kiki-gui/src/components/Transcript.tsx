@@ -59,6 +59,7 @@ import {
   latestTurnId,
   MAIN_AGENT_ID,
   readSubagentEndings,
+  stepObject,
   stabilizeAgentForest,
   type AgentForest,
   type AgentTreeNode,
@@ -84,7 +85,7 @@ import {
   type TurnTailInfo,
   type UserBlock,
 } from '@kiki/session-core/session';
-import { formatTokensPerSecond } from '@kiki/session-core/util';
+import { firstSentence, formatTokensPerSecond, plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
@@ -860,6 +861,22 @@ export function subagentAutoForm(
   return status === 'running' || status === 'background' ? 'full' : 'compact';
 }
 
+/** What a running subagent is doing now: its newest step, else its task. */
+function subagentActivity(block: SubagentBlock): string | undefined {
+  for (let index = block.transcript.length - 1; index >= 0; index -= 1) {
+    const step = block.transcript[index]!;
+    if (step.kind === 'tool') {
+      const object = stepObject(step);
+      return object.target === undefined ? step.name : `${step.name} ${object.target}`;
+    }
+    if ((step.kind === 'assistant' || step.kind === 'thinking') && step.text.trim() !== '') {
+      return firstSentence(step.text);
+    }
+  }
+  const task = block.description ?? block.instruction;
+  return task === undefined || task.trim() === '' ? undefined : plainInline(task.split('\n')[0]!);
+}
+
 /**
  * Compact collapsed form of a subagent card (terminal runs land here by
  * default): one row with status dot, name, terminal status, result summary,
@@ -890,7 +907,11 @@ function SubagentCompactCard({
   onExpand?: () => void;
 }) {
   const { t, tp, time } = useI18n();
-  const line = error ?? summary;
+  // A live run says what it is doing now (its latest step, else its task);
+  // an old receipt would contradict "Running". A settled run gives the
+  // receipt's first sentence as plain text, never raw markdown.
+  const live = status === 'running' || status === 'background' || status === 'suspended';
+  const line = error ?? (live ? subagentActivity(block) : summary === undefined ? undefined : firstSentence(summary));
   // The agent is the subject: its name is the label (the same line the main
   // and child timelines both use), the status word opens the detail and the
   // result summary follows. Unknown counts and timings leave their columns

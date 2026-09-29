@@ -8,6 +8,7 @@ import { memo, useState, type ReactNode } from 'react';
 
 import { basenameOf, extractToolOutputMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import type { AgentForest, MediaRun, SubagentBlock, SubagentEnding, SubagentGroup } from '@kiki/session-core/session';
+import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaPreview';
@@ -144,13 +145,6 @@ export function endingReceipt(ending: SubagentEnding, summary: string | undefine
   return body.join('\n').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&').trim();
 }
 
-/** First sentence of a receipt, markdown marks and headings dropped. */
-export function receiptHeadline(text: string): string {
-  const line = text.split('\n').map((entry) => entry.replace(/^#+\s*/, '').replace(/[*`_]/g, '').trim()).find((entry) => entry !== '') ?? '';
-  const cut = line.search(/[。！？]|[.!?](?:\s|$)/);
-  return cut === -1 ? line : line.slice(0, cut + 1);
-}
-
 function EndedMark({ outcome }: { outcome: SubagentEnding['outcome'] }) {
   // Neutral by rule: a finished run is history. Only the shape says how it ended.
   return outcome === 'completed'
@@ -186,7 +180,7 @@ export function SubagentEndedRow({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const receipt = endingReceipt(ending, summary);
-  const headline = receiptHeadline(receipt);
+  const headline = firstSentence(receipt);
   const how = t(`transcript.agentEnd.${ending.outcome}` as const);
   return (
     <ActivityRow

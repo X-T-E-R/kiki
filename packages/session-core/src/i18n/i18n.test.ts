@@ -151,6 +151,10 @@ describe('localized time', () => {
     expect(formatDuration(65_000, 'en')).toBe('1m 5s');
     expect(formatDuration(65_000, 'zh')).toBe('1分5秒');
     expect(formatDuration(2_500, 'zh')).toBe('2.5秒');
+    expect(formatDuration(81_090_000, 'zh')).toBe('22小时31分');
+    expect(formatDuration(81_090_000, 'en')).toBe('22h 31m');
+    expect(formatDuration(93_600_000, 'zh')).toBe('1天 2小时');
+    expect(formatDuration(3_599_000, 'zh')).toBe('59分59秒');
   });
 
   it('defaults to English when no locale is given', () => {

@@ -3693,6 +3693,8 @@ export const en = {
   'time.durationMs': '{n}ms',
   'time.durationSeconds': '{n}s',
   'time.durationMinutes': '{m}m {s}s',
+  'time.durationHours': '{h}h {m}m',
+  'time.durationDays': '{d}d {h}h',
 
   // ---- validation (client-side, shown inline) ----
   'val.permissionMode': 'Permission mode must be manual, auto, or yolo.',

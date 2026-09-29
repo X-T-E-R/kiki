@@ -26,7 +26,11 @@ export function formatDuration(ms: number, locale: Locale = 'en'): string {
   const seconds = ms / 1000;
   if (seconds < 60) return translate(locale, 'time.durationSeconds', { n: seconds.toFixed(1) });
   const minutes = Math.floor(seconds / 60);
-  return translate(locale, 'time.durationMinutes', { m: minutes, s: Math.round(seconds % 60) });
+  if (minutes < 60) return translate(locale, 'time.durationMinutes', { m: minutes, s: Math.round(seconds % 60) });
+  // Past an hour the seconds are noise; past a day, so are the minutes.
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return translate(locale, 'time.durationHours', { h: hours, m: minutes % 60 });
+  return translate(locale, 'time.durationDays', { d: Math.floor(hours / 24), h: hours % 24 });
 }
 
 export function formatTokens(count: number): string {

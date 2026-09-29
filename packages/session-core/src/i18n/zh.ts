@@ -3654,6 +3654,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'time.durationMs': '{n}毫秒',
   'time.durationSeconds': '{n}秒',
   'time.durationMinutes': '{m}分{s}秒',
+  'time.durationHours': '{h}小时{m}分',
+  'time.durationDays': '{d}天 {h}小时',
 
   // ---- validation (client-side, shown inline) ----
   'val.permissionMode': '权限模式必须是 manual、auto 或 yolo。',

@@ -1753,14 +1753,18 @@ describe('canonical SessionView product gates', () => {
         </I18nProvider>
       </MemoryRouter>,
     );
-    expect(html).toContain(`data-subagent-id="${CHILD_AGENT_ID}"`);
+    // The settled card is process now: it folds into the turn's "Worked" line,
+    // which counts it (the card itself renders once the fold is opened).
+    expect(html).toMatch(/data-history-fold="\d+"/);
+    expect(html).toMatch(/1 subagent|派出 1 个子智能体/);
     expect(html).toContain('data-row-action="edit"');
     expect(html).toContain('data-row-action="fork"');
     expect(html).toContain('data-row-action="regenerate"');
     expect(html).toContain('data-turn-tail');
     expect(html.includes('from subagent') || html.includes('子代理')).toBe(true);
     expect(html).not.toContain('data-steer');
-    expect(html).toContain('data-shell');
+    // The shell run folded with it; the fold counts it as a step.
+    expect(html).toMatch(/\d+ steps?|\d+ 步/);
   });
 });
 
