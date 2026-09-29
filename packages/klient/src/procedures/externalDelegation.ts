@@ -342,9 +342,10 @@ const lifecycleEventSchema = z
   .object({
     seq: z.number(),
     dispatchId: z.string(),
-    type: z.enum(['queued', 'started', 'completed', 'failed', 'cancelled', 'interrupted']),
+    type: z.enum(['queued', 'started', 'agent_notify', 'completed', 'failed', 'cancelled', 'interrupted']),
     at: z.number(),
     message: z.string().optional(),
+    messageId: z.string().optional(),
   })
   .strict();
 const normalizedExecutorContentSchema = z.discriminatedUnion('type', [
@@ -993,7 +994,7 @@ const events = defineDelegationProcedure({
   outputSchema: eventsOutputSchema,
   mcp: {
     toolName: 'kiki_events',
-    description: 'Read lifecycle or turn-detail events for an owned dispatch.',
+    description: 'Read ordered lifecycle and agent_notify events for an owned dispatch; pass the last seq as cursor to resume without replaying earlier events. Turn detail uses its own cursor.',
     input: {
       schema: eventsMcpInput,
       decode: (value) => ({ dispatchId: value.dispatch_id, cursor: value.cursor, limit: value.limit, detail: value.detail }),

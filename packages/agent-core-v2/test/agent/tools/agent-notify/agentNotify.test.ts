@@ -12,6 +12,7 @@ import {
   type IAgentCollaborationMessagingService,
 } from '#/session/agentCollaboration/messageMailbox';
 import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
+import type { ISessionExternalDelegationService } from '#/session/externalDelegation/externalDelegation';
 import { AgentNotifyInputSchema } from '#/agent/tools/agent-notify/agent-notify';
 import { AgentNotifyTool } from '#/agent/tools/agent-notify/agentNotifyTool';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
@@ -222,6 +223,7 @@ function createTool(options: {
     {
       isToolActive: () => options.toolPolicyEnabled ?? true,
     } as unknown as IAgentToolPolicyService,
+    { recordAgentNotify: async () => {} } as unknown as ISessionExternalDelegationService,
   );
   return { tool, send };
 }

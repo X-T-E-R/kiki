@@ -12,6 +12,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionExternalDelegationService } from '#/session/externalDelegation/externalDelegation';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import {
   AgentMessageMailboxFullError,
@@ -49,6 +50,7 @@ export class AgentNotifyTool implements IAgentNotifyTool {
     @IConfigService private readonly config: IConfigService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
+    @ISessionExternalDelegationService private readonly delegation: ISessionExternalDelegationService,
   ) {}
 
   resolveExecution(args: AgentNotifyInput): ToolExecution {
@@ -107,6 +109,12 @@ export class AgentNotifyTool implements IAgentNotifyTool {
           `Message identity "${acceptance.message.messageId}" was already used with different content.`,
         );
       }
+      await this.delegation.recordAgentNotify({
+        sourceAgentId: this.scope.agentId,
+        targetAgentId: parentAgentId,
+        messageId: acceptance.message.messageId,
+        message: args.message,
+      });
       return success({
         message_id: acceptance.message.messageId,
         status: acceptance.delivery,

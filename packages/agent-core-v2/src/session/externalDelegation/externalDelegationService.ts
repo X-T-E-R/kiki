@@ -53,6 +53,7 @@ import {
   KeyReservationRegistry,
   type ReservationResult,
 } from '#/session/dispatch/reservation';
+import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import { resolveExternalPermissionCeiling } from './permissionCeiling';
@@ -215,6 +216,7 @@ export class SessionExternalDelegationService
     @ISessionManager lifecycle: ISessionManager,
     @IModelService private readonly models: IModelService,
     @IConfigService private readonly config: IConfigService,
+    @IExternalHooksRunnerService private readonly hooks: IExternalHooksRunnerService,
     @IBootstrapService bootstrap: IBootstrapService,
   ) {
     super();
@@ -402,6 +404,36 @@ export class SessionExternalDelegationService
       content: request.message,
       idempotencyKey,
     });
+  }
+
+  async recordAgentNotify(input: {
+    readonly sourceAgentId: string;
+    readonly targetAgentId: string;
+    readonly messageId: string;
+    readonly message: string;
+  }): Promise<void> {
+    await this.ready;
+    const doc = this.document;
+    if (doc === undefined) return;
+    const dispatch = this.owningDispatch(doc, input.sourceAgentId);
+    if (dispatch === undefined || (input.targetAgentId !== MAIN_AGENT_ID && !this.dispatchLineages.get(dispatch.dispatchId)?.has(input.targetAgentId))) return;
+    const write = this.writeQueue.then(async () => {
+      if (doc.events.some((event) => event.messageId === input.messageId)) return;
+      const event: ExternalEventView = {
+        seq: doc.nextEventSeq,
+        dispatchId: dispatch.dispatchId,
+        type: 'agent_notify',
+        at: Date.now(),
+        message: input.message,
+        messageId: input.messageId,
+      };
+      this.publishEvent(doc, event);
+      await this.store.set(this.scope, STORE_KEY, doc);
+      this.changed.fire();
+      this.notifyExternalHook(event);
+    });
+    this.writeQueue = write.catch(() => {});
+    await write;
   }
 
   async interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage> {
@@ -1259,9 +1291,9 @@ export class SessionExternalDelegationService
     dispatch.usage = usage;
     this.controllers.delete(dispatchId);
     this.dispatchLineages.delete(dispatchId);
-    this.appendEvent(doc, dispatchId, status, dispatch.error);
+    const terminalEvent = this.appendEvent(doc, dispatchId, status, dispatch.error);
     this.syncInteractionConsumer(doc);
-    const published = this.persist();
+    const published = this.persist().then(() => this.notifyExternalHook(terminalEvent));
     const terminalization = (async () => {
       const settledBoundary = await this.executionSettled.get(dispatchId);
       const terminalBoundary = boundary ?? settledBoundary;
@@ -1305,8 +1337,25 @@ export class SessionExternalDelegationService
     dispatchId: string,
     type: ExternalEventView['type'],
     message?: string,
-  ): void {
-    this.publishEvent(doc, { seq: doc.nextEventSeq, dispatchId, type, at: Date.now(), message });
+  ): ExternalEventView {
+    const event = { seq: doc.nextEventSeq, dispatchId, type, at: Date.now(), message };
+    this.publishEvent(doc, event);
+    return event;
+  }
+
+  private notifyExternalHook(event: ExternalEventView): void {
+    void this.hooks.fireAndForgetTrigger('Notification', {
+      matcherValue: `external_delegation.${event.type}`,
+      cwd: this.workspace.workDir,
+      sessionId: this.sessionId,
+      inputData: {
+        type: `external_delegation.${event.type}`,
+        dispatch_id: event.dispatchId,
+        seq: event.seq,
+        message: event.message,
+        message_id: event.messageId,
+      },
+    }).catch((error: unknown) => this.log.error('External delegation notification hook failed.', { error }));
   }
 
   private publishEvent(doc: ExternalDelegationDocument, event: ExternalEventView): void {

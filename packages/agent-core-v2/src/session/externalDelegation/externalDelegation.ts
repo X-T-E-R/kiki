@@ -272,9 +272,10 @@ export interface ExternalEventsLookup extends ExternalPageLookup {
 export interface ExternalEventView {
   readonly seq: number;
   readonly dispatchId: string;
-  readonly type: 'queued' | 'started' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  readonly type: 'queued' | 'started' | 'agent_notify' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   readonly at: number;
   readonly message?: string;
+  readonly messageId?: string;
 }
 
 export interface ExternalTurnEventView {
@@ -403,6 +404,7 @@ export interface ISessionExternalDelegationService {
   dispatch(request: ExternalDispatchRequest): Promise<ExternalDispatchView>;
   continue(request: ExternalContinueRequest): Promise<ExternalDispatchView>;
   send(request: ExternalSendRequest): Promise<AgentMessageAcceptance>;
+  recordAgentNotify(input: { readonly sourceAgentId: string; readonly targetAgentId: string; readonly messageId: string; readonly message: string }): Promise<void>;
   interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage>;
   respond(request: ExternalRespondRequest): Promise<ExternalRespondView>;
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;

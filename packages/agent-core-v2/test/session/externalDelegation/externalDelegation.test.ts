@@ -54,6 +54,7 @@ import {
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { AgentTurnProjection } from '#/session/externalDelegation/turnProjection';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { SessionInteractionService } from '#/session/interaction/interactionService';
@@ -212,6 +213,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
     ix.stub(IBootstrapService, { getEnv: (name) => bootstrapEnv[name] });
     ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IExternalHooksRunnerService, { fireAndForgetTrigger: async () => [] });
     ix.stub(IModelService, { resolveId: (id: string) => id });
     ix.stub(IModelCatalog, {
       get: (id: string) => ({ id }) as Model,
@@ -1303,6 +1305,30 @@ describe('SessionExternalDelegationService', () => {
     ).resolves.toEqual({ items: [], nextCursor: undefined });
     const events = await service.events({ authority, dispatchId: dispatch.dispatchId });
     expect(events.items.map((event) => event.type)).toContain('queued');
+  });
+
+  it('persists AgentNotify before completion and resumes after its cursor without replay', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority, target: 'named', taskName: 'notifier', profileName: 'coder', message: 'work',
+    });
+    await service.recordAgentNotify({
+      sourceAgentId: 'external-child', targetAgentId: 'main', messageId: 'notify-1', message: 'checkpoint',
+    });
+    await service.recordAgentNotify({
+      sourceAgentId: 'external-child', targetAgentId: 'main', messageId: 'notify-1', message: 'checkpoint',
+    });
+    const before = await service.events({ authority, dispatchId: dispatch.dispatchId });
+    const notification = before.items.find((event) => event.type === 'agent_notify');
+    expect(notification).toMatchObject({ message: 'checkpoint', messageId: 'notify-1' });
+    expect(before.items.filter((event) => event.type === 'agent_notify')).toHaveLength(1);
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    const after = await service.events({ authority, dispatchId: dispatch.dispatchId, cursor: notification!.seq });
+    expect(after.items.map((event) => event.type)).toEqual(['completed']);
+    expect((await service.events({ authority, dispatchId: dispatch.dispatchId, cursor: after.items[0]!.seq })).items).toEqual([]);
   });
 
   it('reads active tool activity without rebuilding the journal', async () => {
