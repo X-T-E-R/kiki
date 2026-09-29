@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
@@ -196,6 +196,16 @@ it('elects one writer across hosts sharing the same database and leaves the othe
   await waitFor(() => host.snapshot().pendingSessions === 0);
   expect((await other.search(query)).rows.map((row) => row.value.text)).toEqual(['needle writer']);
   expect(other.snapshot().pendingSessions).toBe(0);
+  await host.close();
+  hosts.splice(hosts.indexOf(host), 1);
+  await waitFor(() => other.snapshot().state === 'ready', 10_000);
+  await appendFile(join(dir, 'agents', 'main', 'wire.jsonl'), JSON.stringify({ type: 'context.append_message', time: time + 1,
+    message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'needle promoted' }] },
+  }) + '
+');
+  other.sync([session]);
+  await waitFor(() => other.snapshot().pendingSessions === 0 && other.snapshot().documents === 2);
+  expect((await other.search(query)).rows.map((row) => row.value.text)).toEqual(['needle promoted', 'needle writer']);
 });
 
 it('keeps old rows searchable through memory-budget backoff without restarting the parent', async () => {

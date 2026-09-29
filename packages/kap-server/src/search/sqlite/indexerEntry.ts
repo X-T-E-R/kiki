@@ -24,15 +24,31 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     writer = false;
   }
   if (!writer) {
-    lease.close();
     report({ type: 'ready', pid: process.pid, writer: false });
-    const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
-    await new Promise<void>((resolve) => {
-      process.on('disconnect', resolve);
-      process.on('message', (message: IndexerRequest) => { if (message.type === 'close') resolve(); });
+    const elected = await new Promise<boolean>((resolve) => {
+      const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
+      const election = setInterval(() => {
+        try { lease.exec('BEGIN IMMEDIATE'); finish(true); }
+        catch (error) {
+          if (!/SQLITE_BUSY|database is locked/i.test(String(error))) {
+            report({ type: 'error', message: String(error) });
+            finish(false);
+          }
+        }
+      }, 2000);
+      const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
+      const onDisconnect = (): void => finish(false);
+      const finish = (won: boolean): void => {
+        clearInterval(heartbeat);
+        clearInterval(election);
+        process.off('message', onMessage);
+        process.off('disconnect', onDisconnect);
+        resolve(won);
+      };
+      process.on('message', onMessage);
+      process.on('disconnect', onDisconnect);
     });
-    clearInterval(heartbeat);
-    return;
+    if (!elected) { lease.close(); return; }
   }
   let index: SqliteSearchIndex | undefined;
   let pending = new Map<string, SqliteSessionInput>();
