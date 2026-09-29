@@ -62,7 +62,7 @@ MCP、插件和延迟提供的内置工具先公告名称。需要调用时，�
 
 **从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent；此前默认在整个工作区进行词元 AND 检索。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
 
-不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会打开原始用户输入；在 block 分页完善期间，读取整轮请传条目里的 `turn` 数字。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。旧的按 turn/step 读取形式在 block 分页完善期间仍可使用。
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
 
 ## 网络类
 

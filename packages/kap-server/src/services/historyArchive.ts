@@ -253,6 +253,18 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       return { status: 'ok', text, turn: row.turn, stepId: row.step, role: row.role,
         toolName: row.toolName, part: row.part, ref: nav.ref(row) };
     },
+    async directoryRef(workspace, session, agent, turn, step) {
+      return getNavigation?.().directoryRef(workspace, session, agent, turn, step);
+    },
+    async readDirectory(ref, maxChars, cursor) {
+      const nav = getNavigation?.();
+      if (nav === undefined) return { status: 'source_missing' };
+      try { return await nav.readBlocks(ref, maxChars, cursor); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'invalid_ref') return { status: 'invalid_ref' };
+        throw error;
+      }
+    },
     search: async ({
       query,
       mode,

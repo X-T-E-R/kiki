@@ -200,6 +200,41 @@ describe('history navigation source rows', () => {
       expect(merged).toBe(text);
       const recovered = await run({ ref: focus.blocks[0].ref, start_char: first.blocks[0].range.end });
       expect(recovered.blocks[0].text).toBe(text.slice(first.blocks[0].range.end, recovered.blocks[0].range.end));
+      const directory = await nav.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main',
+        kind: 'turns', order: 'newest', limit: 10 });
+      const turnRef = directory.turns?.[0]?.ref;
+      expect(turnRef).toBeDefined();
+      const collect = async (selector: Record<string, unknown>) => {
+        const blocks: Array<{ part: string; text: string; range: { start: number; end: number } }> = [];
+        let page = await run(selector);
+        let pages = 0;
+        while (true) {
+          pages += 1;
+          if (pages > 20) throw new Error('directory pagination did not terminate');
+          blocks.push(...page.blocks);
+          if (page.next_cursor === undefined) break;
+          page = await run({ cursor: page.next_cursor });
+        }
+        return blocks;
+      };
+      const turnBlocks = await collect({ ref: turnRef });
+      expect(turnBlocks[0]).toMatchObject({ part: 'prompt', text: '原话 one' });
+      expect(turnBlocks.filter((block) => block.part === 'output').map((block) => block.text).join('')).toBe(text);
+      expect(turnBlocks.some((block) => block.part === 'input')).toBe(true);
+      const numericBlocks = await collect({ turn: 4 });
+      expect(numericBlocks).toEqual(turnBlocks);
+      const stepRef = await archive.directoryRef?.('ws', 's', 'main', 4, 't4.1');
+      const stepBlocks = await collect({ ref: stepRef });
+      expect(stepBlocks.some((block) => block.part === 'prompt')).toBe(false);
+      expect(stepBlocks.filter((block) => block.part === 'output').map((block) => block.text).join('')).toBe(text);
+      expect(await collect({ step_id: 't4.1' })).toEqual(stepBlocks);
+      const beforeRevision = await run({ ref: turnRef });
+      expect(beforeRevision.next_cursor).toBeDefined();
+      await appendFile(wirePath, line({ type: 'context.append_loop_event', event: {
+        type: 'tool.result', toolCallId: 'call-1', result: { output: 'revised tool output' },
+      }, time: 1011 }));
+      await nav.scan('s', 'main');
+      expect(await run({ cursor: beforeRevision.next_cursor })).toMatchObject({ error: { code: 'stale_ref' } });
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });
