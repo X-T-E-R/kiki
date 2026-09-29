@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  aggregateLife,
   DONE_WINDOW_MS,
   lifeOf,
   motionPreference,
@@ -14,6 +13,7 @@ import {
   useLifeChanged,
   type LifeState,
 } from './motion';
+import { handoffMode, runNewSessionHandoff } from './newSessionHandoff';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -58,16 +58,6 @@ describe('lifeOf', () => {
   it('tolerates sparse session records', () => {
     expect(lifeOf({ busy: false }, NOW)).toBe('idle');
     expect(lifeOf({ busy: false, last_turn_reason: 'completed', updated_at: 'not a date' }, NOW)).toBe('idle');
-  });
-});
-
-describe('aggregateLife', () => {
-  it('surfaces the loudest state', () => {
-    expect(aggregateLife(['idle', 'working', 'waiting'])).toBe('waiting');
-    expect(aggregateLife(['done', 'working'])).toBe('working');
-    expect(aggregateLife(['failed', 'done'])).toBe('done');
-    expect(aggregateLife(['failed', 'idle'])).toBe('idle');
-    expect(aggregateLife([])).toBe('idle');
   });
 });
 
@@ -116,5 +106,60 @@ describe('useLifeChanged', () => {
     hook.render(undefined);
     expect(hook.render('done')).toBe(false);
     hook.unmount();
+  });
+});
+
+describe('runNewSessionHandoff', () => {
+  // A loose view of document so the test can install and remove the API.
+  type VtDoc = { startViewTransition?: unknown };
+  afterEach(() => {
+    delete document.documentElement.dataset['kikiMotion'];
+    delete (document as unknown as VtDoc).startViewTransition;
+    delete document.documentElement.dataset['kikiHandoff'];
+  });
+
+  it('switches straight to the session under reduced motion', () => {
+    document.documentElement.dataset['kikiMotion'] = 'reduce';
+    const startViewTransition = vi.fn();
+    (document as unknown as VtDoc).startViewTransition = startViewTransition;
+    const navigate = vi.fn();
+    expect(handoffMode()).toBe('instant');
+    runNewSessionHandoff({ text: 'hi', navigate });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(startViewTransition).not.toHaveBeenCalled();
+    expect(document.documentElement.dataset['kikiHandoff'] !== undefined).toBe(false);
+  });
+
+  it('falls back to a fade where View Transitions are missing, navigating at once', () => {
+    document.documentElement.dataset['kikiMotion'] = 'full';
+    const navigate = vi.fn();
+    expect(handoffMode()).toBe('fade');
+    runNewSessionHandoff({ text: 'hi', navigate });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.dataset['kikiHandoff']).toBe('fade');
+  });
+
+  it('navigates inside the View Transition update, synchronously, exactly once', () => {
+    document.documentElement.dataset['kikiMotion'] = 'full';
+    const navigate = vi.fn();
+    let finish!: () => void;
+    (document as unknown as VtDoc).startViewTransition = (update: () => unknown) => {
+      void update();
+      return { ready: Promise.resolve(), finished: new Promise<void>((resolve) => { finish = resolve; }) };
+    };
+    runNewSessionHandoff({ text: 'hi', navigate });
+    // No await: the create is already done and the route must not wait on motion.
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.dataset['kikiHandoff']).toBe('morph');
+    finish();
+  });
+
+  it('still navigates when the browser refuses to start a transition', () => {
+    document.documentElement.dataset['kikiMotion'] = 'full';
+    (document as unknown as VtDoc).startViewTransition = () => { throw new Error('InvalidStateError'); };
+    const navigate = vi.fn();
+    runNewSessionHandoff({ text: 'hi', navigate });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.dataset['kikiHandoff'] !== undefined).toBe(false);
   });
 });

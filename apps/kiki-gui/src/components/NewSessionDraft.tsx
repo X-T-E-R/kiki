@@ -52,6 +52,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
+import { runNewSessionHandoff } from '../lib/newSessionHandoff';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { useWorktreeAvailability } from '../lib/worktrees';
@@ -471,18 +472,22 @@ export function useNewSessionDraft({
         clearScopedNewSessionDraft(draftScopeId);
         // react-router's navigate returns a promise in data routers; the
         // navigation is fire-and-forget here (the catch below covers createSession).
-        navigate(`/s/${session.id}`, {
-          state: {
-            initialPrompt: handoff.initialPrompt,
-            initialAttachments: handoff.initialAttachments,
-            initialSkill: handoff.initialSkill,
-            model: context.modelOverride,
-            thinking: context.effectiveEffort,
-            permissionMode: context.permissionMode,
-            planMode: context.planMode,
-            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-          },
-          replace: false,
+        // The hand-off motion rides along with it and never delays the send.
+        runNewSessionHandoff({
+          text: handoff.initialPrompt,
+          navigate: () => navigate(`/s/${session.id}`, {
+            state: {
+              initialPrompt: handoff.initialPrompt,
+              initialAttachments: handoff.initialAttachments,
+              initialSkill: handoff.initialSkill,
+              model: context.modelOverride,
+              thinking: context.effectiveEffort,
+              permissionMode: context.permissionMode,
+              planMode: context.planMode,
+              goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+            },
+            replace: false,
+          }),
         });
       })
       .catch((error: unknown) => {

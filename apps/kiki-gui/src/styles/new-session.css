@@ -6,34 +6,48 @@
  * /s/:id heroes keep the shell's centred stack.
  */
 
-/* Anchor, not centre. The page's one heavy object is the composer; the band
- * under it is light T3/T4 text, so centring the whole stack leaves the
- * composer riding high with a faint tail below. Instead the stack starts from
- * the top at a height that puts the composer card's centre at ~43% of the
- * sheet, and the band flows down from there (scrolling when the window is
- * short). The middle region is a size container so the anchor follows the
- * sheet, not the window. --kiki-new-lead is the distance from the stack top
- * to the card's centre: chrome (wordmark row + target row + gaps) plus half
- * the card. */
-.conversation-shell[data-phase='hero']:has([data-hero-starters]) {
-  --kiki-new-lead: 250px;
-}
-.conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-middle {
-  container-type: size;
-  justify-content: flex-start;
-}
-.conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-body {
-  padding-top: max(24px, calc(var(--kiki-new-anchor, 45cqh) - var(--kiki-new-lead)));
-}
+/* One stack, optically centred. With nothing below the starters, the stack
+ * (brand, target row, composer, starters) is the whole composition, so it
+ * centres in the sheet and a foot under the seat lifts it a little above true
+ * centre, which is where the eye expects the page's one object. The foot
+ * grows with the sheet (a tall window lifts more) and stays small on phones,
+ * where the keyboard owns the lower half anyway. Short windows scroll the
+ * middle region (the shell's hero rule). */
 .conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-seat {
-  padding-bottom: 40px;
+  padding-bottom: clamp(32px, 12vh, 128px);
 }
 
-/* Hero workspace chip: transparent at rest; fill only on hover / open. The
- * chip sits on the same row as the pulse line, left-aligned with the
- * composer card rather than centered under the wordmark. */
+/* Hero workspace chip: transparent at rest; fill only on hover / open. It
+ * leads the target row, left-aligned with the composer card. */
 .hero-workspace-chip[aria-expanded='true'] {
   border-color: var(--color-hairline-strong);
+}
+
+/* The per-draft switches share the chip's row: drop their stacked-layout top
+ * margin and match the chip's 32px line on fine pointers, so the row reads as
+ * one baseline. Coarse pointers keep their 44px targets. */
+[data-hero-target] > div {
+  margin-top: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+}
+/* A switch's hint (why it is unavailable, what turning it on means) follows
+ * its label on the same line instead of hanging under it, so the row keeps
+ * one baseline; narrow widths wrap it after the label. */
+[data-hero-target] > div > p {
+  padding-left: 0;
+}
+[data-hero-target] > div > p::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--color-ink-faint);
+}
+@media (pointer: fine) {
+  [data-hero-target] > div > label {
+    min-height: 2rem;
+  }
 }
 
 /* Starters hang off the composer card (8px under it), so on /new they take
@@ -108,4 +122,106 @@
 }
 :root[data-kiki-motion='reduce'] .kiki-wordmark-echo {
   animation: none !important;
+}
+
+/* ---- the first-send hand-off (lib/newSessionHandoff.ts) ----
+ * /new → /s/:id is one continuous move, not a page swap. Under a View
+ * Transition three parts travel on their own: the composer card glides from
+ * the hero seat down to the dock, the sent text lifts out of the input and
+ * lands as the first user bubble, and the hero chrome (wordmark, claim,
+ * target row) fades away. Everything else cross-fades as the root. The
+ * durations sit on the motion tokens (base 240ms, slow 420ms), so the whole
+ * move is over in under half a second and reduced motion collapses it; the
+ * script skips the transition outright in that case. Names are scoped to the
+ * hand-off so no other navigation ever animates. */
+:root[data-kiki-handoff='morph'] .conversation-shell[data-phase='hero'] [data-hero-chrome] {
+  view-transition-name: kiki-hero-chrome;
+}
+:root[data-kiki-handoff='morph'] .conversation-seat [data-composer-card] {
+  view-transition-name: kiki-composer;
+}
+:root[data-kiki-handoff='morph'] [data-kiki-handoff-source],
+:root[data-kiki-handoff='morph'] [data-kiki-handoff-target],
+:root[data-kiki-handoff='morph'] .kiki-handoff-ghost {
+  view-transition-name: kiki-first-message;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--kiki-motion-base);
+  animation-timing-function: var(--kiki-ease-out);
+}
+::view-transition-group(kiki-composer),
+::view-transition-group(kiki-first-message) {
+  animation-duration: var(--kiki-motion-slow);
+  animation-timing-function: var(--kiki-ease-out);
+}
+/* The card keeps its own pixels while it moves: no cross-fade between the
+ * hero and docked snapshots (they are the same card), only the glide. */
+::view-transition-old(kiki-composer) {
+  display: none;
+}
+::view-transition-new(kiki-composer) {
+  animation: none;
+  height: 100%;
+}
+/* The message changes shape in flight (input text → bubble): the input line
+ * lets go early, the bubble arrives a beat later so it reads as landing. */
+::view-transition-old(kiki-first-message) {
+  /* The input line keeps its own type size in flight instead of being
+   * stretched to the bubble's box. */
+  height: 100%;
+  object-fit: none;
+  object-position: left center;
+  animation: kiki-handoff-out var(--kiki-motion-quick) var(--kiki-ease-out) both;
+}
+::view-transition-new(kiki-first-message) {
+  animation: kiki-handoff-in var(--kiki-motion-base) var(--kiki-ease-out) var(--kiki-motion-instant) both;
+}
+::view-transition-old(kiki-hero-chrome) {
+  animation: kiki-handoff-lift var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+@keyframes kiki-handoff-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes kiki-handoff-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes kiki-handoff-lift {
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--kiki-motion-distance) * -2));
+  }
+}
+
+/* Fallback (no View Transitions): the session view fades in on its own. */
+:root[data-kiki-handoff='fade'] .conversation-shell {
+  animation: kiki-rise var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+
+/* The landing spot's stand-in: the user bubble's shape and tokens, fixed
+ * where the first row renders, held until the real row is on screen. */
+.kiki-handoff-ghost {
+  position: fixed;
+  z-index: 8;
+  box-sizing: border-box;
+  overflow: hidden;
+  max-height: 15rem;
+  border-radius: 14px 14px 6px 14px;
+  background: var(--color-bubble-user);
+  padding: 0.625rem 1rem;
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  transition: opacity var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+.kiki-handoff-ghost[data-retiring] {
+  opacity: 0;
 }

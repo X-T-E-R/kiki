@@ -3,13 +3,14 @@
 /**
  * First-run surface of /new: the native folder picker in the workspace
  * popover, the empty-catalog explanation, and the provider-readiness rule
- * behind the hero guidance card. Also covers the hero footer's
- * "view all sessions" affordance, which must reveal the session list.
+ * behind the hero guidance card. Also pins what the page itself carries: the
+ * target row and the claim, and nothing that repeats the sidebar's session
+ * list or the composer's agent picker.
  */
 
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -24,10 +25,8 @@ import {
 } from './NewSessionDraft';
 import { NewSessionPage } from './NewSessionPage';
 
-const listSessions = vi.fn();
-
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: { listSessions } }),
+  useConnection: () => ({ client: {} }),
 }));
 
 vi.mock('./Composer', () => ({ Composer: () => null }));
@@ -249,20 +248,7 @@ describe('needsProviderSetup', () => {
   });
 });
 
-let currentPath = '';
-
-function LocationProbe() {
-  currentPath = useLocation().pathname;
-  return null;
-}
-
-async function mountNewSessionPage(
-  onToggleSidebar: () => void,
-  items: readonly Record<string, unknown>[] = [
-    { id: 'session-one', title: 'Earlier session', busy: false, updated_at: new Date().toISOString() },
-  ],
-): Promise<HTMLDivElement> {
-  listSessions.mockReset().mockResolvedValue({ items });
+async function mountNewSessionPage(): Promise<HTMLDivElement> {
   document.querySelector('#first-run-hero-footer')!.replaceChildren();
   const container = document.createElement('div');
   document.body.append(container);
@@ -273,8 +259,7 @@ async function mountNewSessionPage(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <I18nProvider>
           <MemoryRouter initialEntries={['/new']}>
-            <LocationProbe />
-            <NewSessionPage onToggleSidebar={onToggleSidebar} />
+            <NewSessionPage onToggleSidebar={() => {}} />
           </MemoryRouter>
         </I18nProvider>
       </QueryClientProvider>,
@@ -286,86 +271,30 @@ async function mountNewSessionPage(
   return container;
 }
 
-describe('the /new continuation band', () => {
+describe('the /new page', () => {
   it('shows automatic workspace creation without a workspace-required warning', async () => {
-    const container = await mountNewSessionPage(vi.fn());
-    expect(container.querySelector('[data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
+    const container = await mountNewSessionPage();
+    expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
     expect(container.textContent).not.toContain('Choose another workspace');
   });
 
   it('states what kiki is instead of asking an empty question', async () => {
-    const container = await mountNewSessionPage(vi.fn());
-    expect(container.querySelector('[data-hero-headline]')?.textContent).toBe('Your agents, your call.');
+    const container = await mountNewSessionPage();
+    expect(container.querySelector('[data-hero-brand] [data-hero-headline]')?.textContent).toBe('Your agents, your call.');
   });
 
-  it('ranks a session that needs you above one that is merely running', async () => {
-    await mountNewSessionPage(vi.fn(), [
-      { id: 'running', title: 'Running work', busy: true, updated_at: new Date().toISOString() },
-      { id: 'waiting', title: 'Waiting work', busy: true, pending_interaction: 'approval', updated_at: new Date().toISOString() },
-    ]);
-    const rows = [...document.querySelectorAll<HTMLElement>('#first-run-hero-footer [data-hero-recent]')];
-    expect(rows.map((row) => row.dataset['life'])).toEqual(['waiting', 'working']);
-    expect(rows[0]?.textContent).toContain('Waiting work');
-    expect(rows[0]?.textContent).toContain('Needs you');
+  it('keeps the temporary switch on the target row', async () => {
+    const container = await mountNewSessionPage();
+    expect(container.querySelector('[data-hero-target] [data-new-ephemeral-toggle]')).not.toBeNull();
   });
 
-  it('says every row state in shape and word so the order reads; idle draws neither', async () => {
-    await mountNewSessionPage(vi.fn(), [
-      { id: 'running', title: 'Running work', busy: true, updated_at: new Date().toISOString() },
-      { id: 'waiting', title: 'Waiting work', busy: true, pending_interaction: 'approval', updated_at: new Date().toISOString() },
-      { id: 'done', title: 'Done work', busy: false, last_turn_reason: 'completed', updated_at: new Date().toISOString() },
-      { id: 'idle', title: 'Idle work', busy: false, updated_at: new Date(Date.now() - 86_400_000).toISOString() },
-    ]);
-    const rows = [...document.querySelectorAll<HTMLElement>('#first-run-hero-footer [data-hero-recent]')];
-    expect(rows.map((row) => row.dataset['life'])).toEqual(['waiting', 'working', 'done', 'idle']);
-    const [waiting, running, done, idle] = rows;
-    const word = (row: HTMLElement | undefined) => row?.querySelector('[data-hero-recent-state]')?.textContent;
-    expect(waiting?.querySelector('.kiki-life[data-life="waiting"]')).not.toBeNull();
-    expect(word(waiting)).toBe('Needs you');
-    // Working: a still dot plus its word; rows never breathe.
-    expect(running?.querySelector('.kiki-life[data-life="working"]')?.hasAttribute('data-life-still')).toBe(true);
-    expect(word(running)).toBe('Working');
-    // Done: a hollow ring, not the working dot.
-    expect(done?.querySelector('.kiki-life[data-life="done"]')?.className).toContain('border-success');
-    expect(word(done)).toBe('Just finished');
-    expect(idle?.querySelector('.kiki-life')).toBeNull();
-    expect(word(idle)).toBeUndefined();
-  });
-
-  it('explains the empty continuation band instead of hiding it', async () => {
-    await mountNewSessionPage(vi.fn(), []);
+  it('carries no session list or agent roster of its own', async () => {
+    const container = await mountNewSessionPage();
     const footer = document.querySelector('#first-run-hero-footer')!;
-    expect(footer.querySelectorAll('[data-hero-recent]')).toHaveLength(0);
-    expect(footer.textContent).toContain('ready to pick back up');
-  });
-
-  it('opens the sidebar search, and the drawer too where the sidebar is hidden', async () => {
-    const searches = vi.fn();
-    window.addEventListener('kiki:session-search', searches);
-    const matchMedia = (matches: boolean) => vi.fn(() => ({ matches }) as unknown as MediaQueryList);
-    try {
-      // Desktop: the sidebar is docked, so only its search opens.
-      vi.stubGlobal('matchMedia', matchMedia(true));
-      const onToggleSidebar = vi.fn();
-      await mountNewSessionPage(onToggleSidebar);
-      const more = document.querySelector<HTMLButtonElement>('#first-run-hero-footer [data-recent-more]')!;
-      expect(more.textContent).toBe('All sessions');
-      await act(async () => { more.click(); });
-      expect(searches).toHaveBeenCalledTimes(1);
-      expect(onToggleSidebar).not.toHaveBeenCalled();
-      expect(currentPath).toBe('/new');
-
-      // Phone: the sidebar is a drawer; open it as well.
-      vi.stubGlobal('matchMedia', matchMedia(false));
-      const onToggleDrawer = vi.fn();
-      await mountNewSessionPage(onToggleDrawer);
-      const drawerMore = document.querySelector<HTMLButtonElement>('#first-run-hero-footer [data-recent-more]')!;
-      await act(async () => { drawerMore.click(); });
-      expect(onToggleDrawer).toHaveBeenCalledTimes(1);
-      expect(searches).toHaveBeenCalledTimes(2);
-    } finally {
-      window.removeEventListener('kiki:session-search', searches);
-      vi.stubGlobal('matchMedia', undefined);
+    // Starters stay: they only fill the draft.
+    expect(footer.querySelectorAll('[data-hero-starter]').length).toBeGreaterThan(0);
+    for (const scope of [container, footer]) {
+      expect(scope.querySelector('[data-hero-recents], [data-hero-team], [data-hero-pulse], [data-agent-capabilities]')).toBeNull();
     }
   });
 });

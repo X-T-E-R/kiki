@@ -214,9 +214,8 @@ try {
   await page.locator('textarea[data-composer]').fill('新会话草稿仍可发送');
   await remember('new-selected');
   assert.equal(evidence.states.at(-1).storage.newDraft.modelFromProfile, true);
-  // Continue into the existing session from /new's own continuation band (the
-  // rows now carry state + relative time, so match the row, not a bare name).
-  await page.locator('[data-hero-recent]').filter({ hasText: '连续性验证会话' }).first().click();
+  // Continue into the existing session from the sidebar, the one session list.
+  await page.locator('[data-session-row]').filter({ hasText: '连续性验证会话' }).first().click();
   await ready();
   await page.goBack();
   await ready();
@@ -227,11 +226,14 @@ try {
   assert.equal(evidence.states.at(-1).storage.newDraft.modelOverride, 'fixture/model-b');
   assert.equal(evidence.states.at(-1).storage.newDraft.effortOverride, 'high');
   assert.equal(evidence.states.at(-1).storage.newDraft.modelFromProfile, true);
+  // The draft dispatch diagnostic folds inside the workspace popover.
+  await page.locator('[data-hero-workspace] > button').click();
   await page.locator('[data-agent-capabilities] > button').click();
   await page.locator('[data-capability-target="research"]').waitFor();
   assert.equal(await page.locator('[data-capability-context="draft"]').count(), 1);
   assert.equal(await page.getByText('当前允许启动', { exact: true }).count(), 0);
   await shot('01-new-reload-draft-capabilities-zh');
+  await page.locator('[data-hero-workspace] > button').click();
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await page.waitForURL(/\/s\//);
   await ready();
@@ -316,6 +318,7 @@ try {
   evidence.checks.push('catalog error and deleted profile/model preserve choices with visible diagnostics; cwd effective query');
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-hero-workspace] > button').click();
   await page.locator('[data-agent-capabilities] > button').click();
   await page.locator('[data-capability-target="research"]').waitFor();
   await shot('06-draft-capabilities-narrow-zh');
@@ -323,11 +326,13 @@ try {
   capabilityError = true;
   await page.reload();
   await ready();
+  await page.locator('[data-hero-workspace] > button').click();
   await page.locator('[data-agent-capabilities] > button').click();
   await page.getByText(/capability fixture offline/).waitFor();
   capabilityError = false;
   await page.locator('[data-agent-capabilities]').getByRole('button', { name: '重试', exact: true }).click();
   await page.locator('[data-capability-target="research"]').waitFor();
+  await page.locator('[data-hero-workspace] > button').click();
   evidence.checks.push('capability error/retry and Chinese narrow layout');
 
   await page.setViewportSize({ width: 1440, height: 1000 });

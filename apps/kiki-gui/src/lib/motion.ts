@@ -36,14 +36,6 @@ export function lifeOf(session: LifeFacts, now: number = Date.now()): LifeState 
   return 'idle';
 }
 
-/** The loudest state across many sessions: waiting beats working beats done. */
-export function aggregateLife(states: readonly LifeState[]): LifeState {
-  for (const state of ['waiting', 'working', 'done'] as const) {
-    if (states.includes(state)) return state;
-  }
-  return 'idle';
-}
-
 /** Stagger index for a `.motion-stagger` child. Capped so long lists never wait. */
 export function staggerStyle(index: number, cap = 8): CSSProperties {
   return { '--kiki-i': Math.min(index, cap) } as CSSProperties;
