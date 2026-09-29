@@ -22,6 +22,8 @@ import {
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from '@kiki/protocol';
+import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
+import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -62,7 +64,35 @@ const taskConfigRequestSchema = z.object({
   print_wait_ceiling_s: AgentTaskConfigSchema.shape.printWaitCeilingS,
   print_background_mode: AgentTaskConfigSchema.shape.printBackgroundMode,
   print_max_turns: AgentTaskConfigSchema.shape.printMaxTurns,
+  bash_file_tool_hints: AgentTaskConfigSchema.shape.bashFileToolHints,
 });
+
+const worktreeConfigRequestSchema = z.object({
+  enabled: worktreeConfigSchema.shape.enabled.optional(),
+  root: worktreeConfigSchema.shape.root.optional(),
+  branch_prefix: worktreeConfigSchema.shape.branchPrefix.optional(),
+  default_base: worktreeConfigSchema.shape.defaultBase.optional(),
+  git_timeout_ms: worktreeConfigSchema.shape.gitTimeoutMs.optional(),
+  cleanup: z.object({
+    auto: worktreeConfigSchema.shape.cleanup.unwrap().shape.auto.optional(),
+    after_days: worktreeConfigSchema.shape.cleanup.unwrap().shape.afterDays.optional(),
+    disposable_ignored: worktreeConfigSchema.shape.cleanup.unwrap().shape.disposableIgnored.optional(),
+  }).strict().optional(),
+}).strict();
+
+const sessionResidencyConfigRequestSchema = z.object({
+  idle_ttl_ms: SessionResidencyConfigSchema.shape.idleTtlMs,
+  max_live_sessions: SessionResidencyConfigSchema.shape.maxLiveSessions,
+  min_idle_ms: SessionResidencyConfigSchema.shape.minIdleMs,
+  sweep_interval_ms: SessionResidencyConfigSchema.shape.sweepIntervalMs,
+  max_concurrent_restores: SessionResidencyConfigSchema.shape.maxConcurrentRestores,
+  max_queued_restores: SessionResidencyConfigSchema.shape.maxQueuedRestores,
+}).strict();
+
+const agentsDelegationConfigSchema = z.object({
+  sub: z.boolean().optional(),
+  independent: z.boolean().optional(),
+}).strict();
 
 const mcpConfigRequestSchema = z.object({
   startup_timeout_ms: McpSectionSchema.shape.startupTimeoutMs,
@@ -99,6 +129,9 @@ const replaceableConfigDomainSchema = z.enum([
   'prompt',
   'retry',
   'session_title',
+  'loop_control',
+  'worktree',
+  'session_residency',
 ]);
 
 export const providerConfigResponseSchema = z.object({
@@ -116,6 +149,7 @@ export const subagentConfigResponseSchema = SubagentConfigSchema;
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
   notify_parent: z.boolean().optional(),
+  delegation: agentsDelegationConfigSchema.optional(),
 });
 
 export const permissionReviewerResponseSchema = z.object({
@@ -226,6 +260,8 @@ export const patchConfigRequestSchema = z.object({
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
+  worktree: worktreeConfigRequestSchema.optional(),
+  session_residency: sessionResidencyConfigRequestSchema.optional(),
   background: z.unknown().optional(),
   subagent: z.object({
     timeout_ms: SubagentConfigSchema.shape.timeoutMs,
@@ -241,6 +277,7 @@ export const patchConfigRequestSchema = z.object({
   agents: z.object({
     enabled: z.boolean().optional(),
     notify_parent: z.boolean().optional(),
+    delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
   session_title: z.object({ model: z.string().optional() }).optional(),

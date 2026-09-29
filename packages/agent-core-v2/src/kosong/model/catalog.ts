@@ -127,6 +127,11 @@ export const providerCatalogItemSchema = z.object({
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
+  model_source: z.enum(['static', 'discover', 'oauth-catalog']).optional(),
+  // Header and env values may be credentials: only their names are read back.
+  custom_header_keys: z.array(z.string()).optional(),
+  env_keys: z.array(z.string()).optional(),
+  oauth: z.object({ storage: z.enum(['file', 'keyring']), signed_in: z.boolean() }).optional(),
 });
 export type ProviderCatalogItem = z.infer<typeof providerCatalogItemSchema>;
 
@@ -223,6 +228,10 @@ export function toProtocolProvider(
     has_api_key: credential.hasApiKey,
     status: credential.hasApiKey || credential.hasOAuthToken ? 'connected' : 'unconfigured',
     models: providerModels,
+    model_source: provider.modelSource,
+    custom_header_keys: provider.customHeaders === undefined ? undefined : Object.keys(provider.customHeaders),
+    env_keys: provider.env === undefined ? undefined : Object.keys(provider.env),
+    oauth: provider.oauth === undefined ? undefined : { storage: provider.oauth.storage, signed_in: credential.hasOAuthToken },
   };
 }
 

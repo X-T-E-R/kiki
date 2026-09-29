@@ -158,6 +158,11 @@ export const providerCatalogItemSchema = z.object({
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
+  model_source: z.enum(['static', 'discover', 'oauth-catalog']).optional(),
+  // Header and env values may be credentials: only their names are read back.
+  custom_header_keys: z.array(z.string()).optional(),
+  env_keys: z.array(z.string()).optional(),
+  oauth: z.object({ storage: z.enum(['file', 'keyring']), signed_in: z.boolean() }).optional(),
 });
 export type ProviderCatalogItem = z.infer<typeof providerCatalogItemSchema>;
 
@@ -228,6 +233,31 @@ export const modelIssueSchema = z.object({
 export type ModelIssue = z.infer<typeof modelIssueSchema>;
 
 /**
+ * Advanced per-model fields that already exist in `[models.<alias>]`. The wire
+ * uses snake_case; `overrides` keys are the same snake_case model fields.
+ */
+const cognitionPathRefSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+export const modelCognitionSchema = z
+  .object({
+    overlay: cognitionPathRefSchema.optional(),
+    steering: cognitionPathRefSchema.optional(),
+    anchor: cognitionPathRefSchema.optional(),
+    overlay_mode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
+    anchor_steps: z.number().int().min(1).optional(),
+    anchor_scope: z.enum(['session', 'turn']).optional(),
+  })
+  .strict();
+export type ModelCognitionWire = z.infer<typeof modelCognitionSchema>;
+export const modelPromptOverridesSchema = z
+  .object({
+    files: z.array(z.string().trim().min(1)).optional(),
+    fields: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+export const modelRequestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+export const modelOverridesSchema = z.record(z.string(), z.unknown());
+
+/**
  * The single-model read/write projection (`GET`/`PATCH /models/{id}`). The
  * stored entity is exposed field by field; `revision` is the compare-and-swap
  * token the next PATCH must carry so a concurrent edit cannot be silently
@@ -254,6 +284,14 @@ export const modelEntitySchema = z.object({
   parameter_sources: z.record(z.string(), z.string()),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
+  aliases: z.array(z.string()).optional(),
+  reasoning_key: z.string().optional(),
+  off_effort: z.string().optional(),
+  context_budget: z.number().int().min(1).optional(),
+  request_params: modelRequestParamsSchema.optional(),
+  cognition: modelCognitionSchema.optional(),
+  prompt_overrides: modelPromptOverridesSchema.optional(),
+  overrides: modelOverridesSchema.optional(),
   protocol: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
@@ -285,6 +323,14 @@ export const patchModelRequestSchema = z
     parameters: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
+    aliases: z.array(z.string().min(1)).nullable().optional(),
+    reasoning_key: z.string().min(1).nullable().optional(),
+    off_effort: z.string().min(1).nullable().optional(),
+    context_budget: z.number().int().min(1).nullable().optional(),
+    request_params: modelRequestParamsSchema.nullable().optional(),
+    cognition: modelCognitionSchema.nullable().optional(),
+    prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
+    overrides: modelOverridesSchema.nullable().optional(),
   })
   .strict();
 export type PatchModelRequest = z.infer<typeof patchModelRequestSchema>;
@@ -333,6 +379,10 @@ export const patchProviderRequestSchema = z
     defaults: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
+    model_source: z.enum(['static', 'discover', 'oauth-catalog']).nullable().optional(),
+    // Per-name writes: a string sets that entry, null removes it, absent names are kept.
+    custom_headers: z.record(z.string().min(1), z.string().nullable()).optional(),
+    env: z.record(z.string().min(1), z.string().nullable()).optional(),
   })
   .strict();
 export type PatchProviderRequest = z.infer<typeof patchProviderRequestSchema>;

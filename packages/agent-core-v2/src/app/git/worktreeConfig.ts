@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
+import { cloneRecord, isPlainObject, plainObjectToToml, transformPlainObject } from '#/app/config/toml';
 
 export const WORKTREE_SECTION = 'worktree';
 
@@ -18,4 +19,25 @@ export const worktreeConfigSchema = z.object({
 });
 
 export type WorktreeConfig = z.infer<typeof worktreeConfigSchema>;
-registerConfigSection(WORKTREE_SECTION, worktreeConfigSchema, { defaultValue: worktreeConfigSchema.parse({}) });
+// `[worktree.cleanup]` is nested, so its keys need the same snake_case <-> camelCase
+// mapping as the top level; the default conversion only covers one level.
+function worktreeFromToml(raw: unknown): unknown {
+  if (!isPlainObject(raw)) return raw;
+  const out = transformPlainObject(raw);
+  if (isPlainObject(out['cleanup'])) out['cleanup'] = transformPlainObject(out['cleanup']);
+  return out;
+}
+
+function worktreeToToml(value: unknown, raw: unknown): unknown {
+  if (!isPlainObject(value)) return value;
+  const { cleanup, ...rest } = value;
+  const out = plainObjectToToml(rest, raw);
+  if (isPlainObject(cleanup)) out['cleanup'] = plainObjectToToml(cleanup, cloneRecord(out['cleanup']));
+  return out;
+}
+
+registerConfigSection(WORKTREE_SECTION, worktreeConfigSchema, {
+  defaultValue: worktreeConfigSchema.parse({}),
+  fromToml: worktreeFromToml,
+  toToml: worktreeToToml,
+});

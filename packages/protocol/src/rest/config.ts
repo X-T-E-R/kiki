@@ -39,9 +39,15 @@ export const subagentConfigResponseSchema = z.object({
   allowedTools: z.array(z.string()).optional(),
 });
 
+export const agentsDelegationConfigSchema = z.object({
+  sub: z.boolean().optional(),
+  independent: z.boolean().optional(),
+}).strict();
+
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
   notify_parent: z.boolean().optional(),
+  delegation: agentsDelegationConfigSchema.optional(),
 });
 
 export const sessionTitleConfigResponseSchema = z.object({
@@ -107,6 +113,50 @@ export const permissionConfigPatchSchema = z.object({
   }).optional(),
 }).passthrough();
 
+export const worktreeConfigResponseSchema = z.object({
+  enabled: z.boolean(),
+  root: z.string(),
+  branchPrefix: z.string(),
+  defaultBase: z.enum(['head', 'fresh']),
+  gitTimeoutMs: z.number().int().min(1_000).max(600_000),
+  cleanup: z.object({
+    auto: z.boolean(),
+    afterDays: z.number().int().min(1),
+    disposableIgnored: z.array(z.string()),
+  }),
+});
+
+export const worktreeConfigPatchSchema = z.object({
+  enabled: z.boolean().optional(),
+  root: z.string().optional(),
+  branch_prefix: z.string().regex(/^[a-z0-9][a-z0-9/-]*\/$/).optional(),
+  default_base: z.enum(['head', 'fresh']).optional(),
+  git_timeout_ms: z.number().int().min(1_000).max(600_000).optional(),
+  cleanup: z.object({
+    auto: z.boolean().optional(),
+    after_days: z.number().int().min(1).optional(),
+    disposable_ignored: z.array(z.string()).optional(),
+  }).strict().optional(),
+}).strict();
+
+export const sessionResidencyConfigResponseSchema = z.object({
+  idleTtlMs: z.number().int().optional(),
+  maxLiveSessions: z.number().int().optional(),
+  minIdleMs: z.number().int().optional(),
+  sweepIntervalMs: z.number().int().optional(),
+  maxConcurrentRestores: z.number().int().optional(),
+  maxQueuedRestores: z.number().int().optional(),
+});
+
+export const sessionResidencyConfigPatchSchema = z.object({
+  idle_ttl_ms: z.number().int().min(0).max(86_400_000).optional(),
+  max_live_sessions: z.number().int().min(1).max(64).optional(),
+  min_idle_ms: z.number().int().min(0).max(86_400_000).optional(),
+  sweep_interval_ms: z.number().int().min(1_000).max(300_000).optional(),
+  max_concurrent_restores: z.number().int().min(1).max(4).optional(),
+  max_queued_restores: z.number().int().min(0).max(64).optional(),
+}).strict();
+
 export const interactionConfigResponseSchema = z.object({
   askUserQuestion: z.enum(['background', 'blocking']),
 });
@@ -138,6 +188,8 @@ export const configResponseSchema = z.object({
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
+  worktree: worktreeConfigResponseSchema.optional(),
+  session_residency: sessionResidencyConfigResponseSchema.optional(),
   background: z.unknown().optional(),
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
@@ -176,6 +228,8 @@ export const patchConfigRequestSchema = z.object({
   merge_all_available_skills: z.boolean().optional(),
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
+  worktree: worktreeConfigPatchSchema.optional(),
+  session_residency: sessionResidencyConfigPatchSchema.optional(),
   background: z.unknown().optional(),
   subagent: z.object({
     timeout_ms: z.number().int().nonnegative().optional(),
@@ -190,6 +244,7 @@ export const patchConfigRequestSchema = z.object({
   agents: z.object({
     enabled: z.boolean().optional(),
     notify_parent: z.boolean().optional(),
+    delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
   session_title: z.object({

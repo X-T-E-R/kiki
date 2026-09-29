@@ -22,6 +22,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { deepEqual } from '#/app/config/sectionDiff';
+import { camelToSnake, transformPlainObject } from '#/app/config/toml';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import { toProtocolProvider } from '#/kosong/model/catalog';
 import { resolveProviderCredentialState } from '#/kosong/model/catalogService';
@@ -237,11 +238,25 @@ function modelEntity(
     ])),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
+    aliases: record.aliases,
+    reasoning_key: record.reasoningKey,
+    off_effort: record.offEffort,
+    context_budget: record.contextBudget,
+    request_params: record.requestParams,
+    cognition: shallowSnake(record.cognition) as ModelEntity['cognition'],
+    prompt_overrides: record.promptOverrides as ModelEntity['prompt_overrides'],
+    overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
     base_url: record.baseUrl,
     revision: revisionOf(record),
     issues: modelIssues(record, providers, ref),
   };
+}
+
+/** Top-level keys only: nested maps (request params, prompt fields) keep their own keys. */
+function shallowSnake(value: object | undefined): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  return Object.fromEntries(Object.entries(value).map(([key, field]) => [camelToSnake(key), field]));
 }
 
 function writableRecord(record: ModelRecord): Record<string, unknown> {
@@ -339,6 +354,14 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('defaultEffort', patch.default_effort);
   setOrClear('adaptiveThinking', patch.adaptive_thinking);
   setOrClear('serviceTier', patch.service_tier);
+  setOrClear('aliases', patch.aliases);
+  setOrClear('reasoningKey', patch.reasoning_key);
+  setOrClear('offEffort', patch.off_effort);
+  setOrClear('contextBudget', patch.context_budget);
+  setOrClear('requestParams', patch.request_params);
+  setOrClear('promptOverrides', patch.prompt_overrides);
+  setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : transformPlainObject(patch.cognition));
+  setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
   if (patch.parameters !== undefined) {
     next['parameters'] = patchGenerationParameters(record.parameters, patch.parameters);
   }
@@ -359,6 +382,18 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
     }
   }
   return next as ModelRecord;
+}
+
+function applyNamedValues(
+  current: Readonly<Record<string, string>> | undefined,
+  patch: Readonly<Record<string, string | null>>,
+): Record<string, string> | undefined {
+  const next: Record<string, string> = { ...current };
+  for (const [name, value] of Object.entries(patch)) {
+    if (value === null) delete next[name];
+    else next[name] = value;
+  }
+  return Object.keys(next).length === 0 ? undefined : next;
 }
 
 function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderRequest): ProviderConfig {
@@ -404,6 +439,20 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
     } else {
       next.images = applyImagePolicyPatch(provider.images, patch.images);
     }
+  }
+  if (patch.model_source !== undefined) {
+    if (patch.model_source === null) setCleared(next, 'modelSource');
+    else next.modelSource = patch.model_source;
+  }
+  if (patch.custom_headers !== undefined) {
+    const headers = applyNamedValues(provider.customHeaders, patch.custom_headers);
+    if (headers === undefined) setCleared(next, 'customHeaders');
+    else next.customHeaders = headers;
+  }
+  if (patch.env !== undefined) {
+    const env = applyNamedValues(provider.env, patch.env);
+    if (env === undefined) setCleared(next, 'env');
+    else next.env = env;
   }
   if (patch.api_key !== undefined) {
     if (patch.api_key === '') {
