@@ -62,7 +62,7 @@ export interface SearchWorkerHostOptions {
   readonly requestTimeoutMs?: number;
   /** Watchdog budget per sync/reindex request (ms). Default 30 min. */
   readonly syncTimeoutMs?: number;
-  /** Worker heap cap. Default 2048. */
+  /** Worker heap cap, mirroring the text-build worker. Default 1024. */
   readonly maxOldSpaceMb?: number;
   /** Test hook: worker factory override. */
   readonly workerFactory?: (entry: { url: URL; data: SearchWorkerData; execArgv: string[] }) => Worker;
@@ -82,10 +82,11 @@ type PendingRequest = {
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_OLD_SPACE_MB = 2048;
+const DEFAULT_MAX_OLD_SPACE_MB = 1024;
 const STABLE_SESSION_MS = 60_000;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 10_000;
+const MEMORY_PRESSURE_BACKOFF_MS = 6 * 60 * 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_TIMEOUT_MS = 30 * 60_000;
 const ORPHAN_LOCK_GRACE_MS = 250;
@@ -482,8 +483,12 @@ export class SearchWorkerHost {
     this.reapPromise = this.reapLockFile(deadToken).finally(() => {
       this.reapPromise = null;
     });
+    const memoryPressure = this.lastFailure?.includes('JS heap out of memory') === true ||
+      this.lastFailure?.includes('reaching memory limit') === true;
     this.failures = sessionMs > STABLE_SESSION_MS ? Math.max(1, this.failures - 1) : this.failures + 1;
-    const backoff = Math.min(BACKOFF_BASE_MS * 2 ** (this.failures - 1), BACKOFF_CAP_MS);
+    const backoff = memoryPressure
+      ? MEMORY_PRESSURE_BACKOFF_MS
+      : Math.min(BACKOFF_BASE_MS * 2 ** (this.failures - 1), BACKOFF_CAP_MS);
     this.nextRetryAfter = Date.now() + backoff;
     this.log.warn('global search: worker exited unexpectedly; restart backed off', {
       code,

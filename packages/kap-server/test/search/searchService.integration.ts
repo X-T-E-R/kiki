@@ -2987,7 +2987,7 @@ describe('search worker host (stage 4)', () => {
     });
   }
 
-  it('starts the search worker with a 2 GiB old-space budget', async () => {
+  it('starts the search worker with a 1 GiB old-space budget', async () => {
     const host = new SearchWorkerHost({
       dir: join(home!, 'search-index'),
       log: noopLog,
@@ -2997,7 +2997,24 @@ describe('search worker host (stage 4)', () => {
     const worker = (host as unknown as {
       worker: Worker;
     }).worker;
-    expect(worker.resourceLimits?.maxOldGenerationSizeMb).toBe(2048);
+    expect(worker.resourceLimits?.maxOldGenerationSizeMb).toBe(1024);
+  });
+
+  it('backs off for hours after worker memory pressure instead of restarting the rebuild loop', async () => {
+    const host = new SearchWorkerHost({
+      dir: join(home!, 'search-index'),
+      log: noopLog,
+    });
+    hosts.push(host);
+    await host.ensureOpen();
+    const worker = (host as unknown as { worker: Worker }).worker;
+    worker.emit('error', new Error('Worker terminated due to reaching memory limit: JS heap out of memory'));
+    await worker.terminate();
+    await expect(host.status()).rejects.toMatchObject({ code: 'backoff' });
+    expect(host.lifecycleSnapshot()).toMatchObject({
+      state: 'degraded',
+      detail: expect.stringMatching(/restart backing off for 2\d{7}ms/),
+    });
   });
 
   it('restarts a killed worker, reaps its lock, and keeps serving', { timeout: 30_000 }, async () => {
