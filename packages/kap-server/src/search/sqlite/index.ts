@@ -129,7 +129,6 @@ async function wireFiles(dir: string): Promise<{ path: string; agentId: string }
 }
 
 export class SqliteSearchIndex {
-  private readonly bootSalt = randomUUID();
   private readonly pendingSessions = new Map<string, SqliteSessionInput>();
   private syncQueue: Promise<void> = Promise.resolve();
   private retryTimer?: NodeJS.Timeout;
@@ -141,7 +140,8 @@ export class SqliteSearchIndex {
   private readFiles = new Set<string>();
 
   private constructor(readonly db: DatabaseSync, readonly indexSubagents: boolean,
-    private readonly path: string, private readonly options: SqliteIndexOptions, readOnly = false) {
+    private readonly path: string, private readonly options: SqliteIndexOptions,
+    readOnly = false, private readonly bootSalt: string = randomUUID()) {
     if (readOnly) return;
     const inflight = db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined;
     if (inflight) {
@@ -163,11 +163,11 @@ export class SqliteSearchIndex {
     catch (error) { db.close(); throw error; }
   }
 
-  static openReader(path: string): SqliteSearchIndex {
+  static openReader(path: string, bootSalt?: string): SqliteSearchIndex {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-16384; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000');
-      return new SqliteSearchIndex(db, false, path, {}, true);
+      return new SqliteSearchIndex(db, false, path, {}, true, bootSalt);
     } catch (error) { db.close(); throw error; }
   }
 
@@ -639,14 +639,30 @@ export class SqliteSearchIndex {
     const matched = matchDocs(q, rows, page.kind === 'keyset' ? page.boundary : undefined, budget);
     incomplete ??= matched.incomplete;
     const valid: MatchedRow[] = [];
-    const identities = new Map<string, string | undefined>();
-    for (const row of matched.rows) {
-      const source = db.prepare('SELECT dir,identity FROM sessions WHERE id=?').get(row.value.sessionId) as
-        { dir: string; identity: string } | undefined;
-      if (!source || source.identity !== row.value.sessionIdentity) continue;
-      if (!identities.has(source.dir)) identities.set(source.dir, await identity(source.dir));
-      if (identities.get(source.dir) === source.identity) valid.push(row);
+    const identities = new Map<string, Promise<string | undefined>>();
+    const sourceQuery = db.prepare('SELECT dir,identity FROM sessions WHERE id=?');
+    const sources = new Map<string, { dir: string; identity: string } | undefined>();
+    for (let offset = 0; offset < matched.rows.length; offset += 16) {
       if (Date.now() > deadlineAt) { incomplete ??= 'deadline'; break; }
+      const batch = matched.rows.slice(offset, offset + 16).map((row) => {
+        if (!sources.has(row.value.sessionId)) sources.set(row.value.sessionId,
+          sourceQuery.get(row.value.sessionId) as { dir: string; identity: string } | undefined);
+        return { row, source: sources.get(row.value.sessionId) };
+      });
+      const verified = await Promise.all(batch.map(async ({ row, source }) => {
+        if (!source || source.identity !== row.value.sessionIdentity) return false;
+        let check = identities.get(source.dir);
+        if (!check) {
+          check = identity(source.dir);
+          identities.set(source.dir, check);
+        }
+        return await check === source.identity;
+      }));
+      for (let i = 0; i < batch.length; i++) {
+        if (Date.now() > deadlineAt) { incomplete ??= 'deadline'; break; }
+        if (verified[i]) valid.push(batch[i]!.row);
+      }
+      if (incomplete === 'deadline') break;
     }
     const { pageRows, hasMore } = paginateRows(q, page, valid);
     return { rows: pageRows, hasMore, incomplete,

@@ -83,6 +83,7 @@ it('queues bursts past eight worker slots with bounded backpressure', async () =
   await waitFor(() => host.snapshot().state === 'ready');
   const settled = await Promise.allSettled(Array.from({ length: 16 }, () => host.search(query)));
   expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(16);
+  expect(host.snapshot().queryWorkers).toBe(3);
   expect(host.snapshot().watchdogTimeouts).toBe(0);
 });
 
@@ -173,6 +174,7 @@ it('indexes in a child while a read-only worker serves search from the parent', 
   expect(result.rows.map((hit) => hit.value.text)).toEqual(['needle here']);
   expect(result.stale).toBe(false);
   expect(host.snapshot().indexerPid).not.toBe(process.pid);
+  expect(host.snapshot().indexerHeapLimit).toBeLessThan(512 * 1048576);
   expect(host.snapshot().watchdogTimeouts).toBe(0);
 });
 
@@ -201,8 +203,7 @@ it('elects one writer across hosts sharing the same database and leaves the othe
   await waitFor(() => other.snapshot().state === 'ready', 10_000);
   await appendFile(join(dir, 'agents', 'main', 'wire.jsonl'), JSON.stringify({ type: 'context.append_message', time: time + 1,
     message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'needle promoted' }] },
-  }) + '
-');
+  }) + '\n');
   other.sync([session]);
   await waitFor(() => other.snapshot().pendingSessions === 0 && other.snapshot().documents === 2);
   expect((await other.search(query)).rows.map((row) => row.value.text)).toEqual(['needle promoted', 'needle writer']);

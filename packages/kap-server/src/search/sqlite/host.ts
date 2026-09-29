@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { setPriority } from 'node:os';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,17 +35,20 @@ export interface SqliteHostSnapshot {
   readonly indexerTerminal: boolean;
   readonly indexerPid?: number;
   readonly indexerRss?: number;
+  readonly indexerHeapLimit?: number;
   readonly dbBytes?: number;
   readonly filesPending?: number;
   readonly lastBatchMs?: number;
   readonly indexerStatus?: SqliteSyncStatus;
   readonly inflight?: string;
   readonly pendingSessions: number;
+  readonly queryWorkers: number;
   readonly watchdogTimeouts: number;
 }
 
 const INDEXER_BACKOFF = [1000, 10_000, 60_000, 600_000];
 const MEMORY_BACKOFF = [60_000, 600_000, 3_600_000];
+const QUERY_ACTIVE_SLOTS = 8;
 
 export function seaIndexerArgs(database: string, execArgv: readonly string[]): string[] {
   return [
@@ -55,7 +59,9 @@ export function seaIndexerArgs(database: string, execArgv: readonly string[]): s
 
 export class SqliteSearchHost {
   private child?: ChildProcess;
-  private reader?: Worker;
+  private readonly readers: Worker[] = [];
+  private readonly readerLoads = [0, 0, 0];
+  private readonly bootSalt = randomUUID();
   private readonly pending = new Map<string, SqliteSessionInput>();
   private readonly sent = new Set<string>();
   private readonly resend = new Set<string>();
@@ -63,7 +69,7 @@ export class SqliteSearchHost {
   private reindexRequest?: { id: number; resolve: (value: { sessions: number; documents: number }) => void;
     reject: (error: Error) => void; timer: NodeJS.Timeout };
   private rebuilding = false;
-  private readonly queries = new Map<number, { resolve: (result: SqliteSearchResult) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly queries = new Map<number, { resolve: (result: SqliteSearchResult) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; release: () => void }>();
   private readonly queryWaiters: Array<{ resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
   private reservedQuerySlots = 0;
   private id = 0;
@@ -79,6 +85,7 @@ export class SqliteSearchHost {
   private readonlyWriter = false;
   private reason?: GlobalSearchUnavailableReason;
   private rss?: number;
+  private heapLimit?: number;
   private dbBytes?: number;
   private filesPending?: number;
   private lastBatchMs?: number;
@@ -97,9 +104,10 @@ export class SqliteSearchHost {
       reason: this.reason, stale: !!this.reason || this.rebuilding || this.pending.size > 0,
       indexedSessions, totalSessions, documents: this.status?.documents ?? 0,
       retryAfterMs: this.retryAt > Date.now() ? this.retryAt - Date.now() : undefined,
-      indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerStatus: this.status,
+      indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerHeapLimit: this.heapLimit, indexerStatus: this.status,
       dbBytes: this.dbBytes, filesPending: this.filesPending, lastBatchMs: this.lastBatchMs,
-      inflight: this.inflight, pendingSessions: this.pending.size, watchdogTimeouts: this.timeouts };
+      inflight: this.inflight, pendingSessions: this.pending.size,
+      queryWorkers: this.readers.length, watchdogTimeouts: this.timeouts };
   }
 
   async open(): Promise<void> {
@@ -171,7 +179,7 @@ export class SqliteSearchHost {
 
   async search(query: NormalizedQuery, pageToken?: string, budgets?: SearchBudgets): Promise<SqliteSearchResult & { stale: boolean }> {
     await this.openReader();
-    if (this.queries.size + this.reservedQuerySlots >= 8 || this.queryWaiters.length) {
+    if (this.queries.size + this.reservedQuerySlots >= QUERY_ACTIVE_SLOTS || this.queryWaiters.length) {
       if (this.queryWaiters.length >= 32) throw new GlobalSearchError('index_unavailable', 'search queue full');
       await new Promise<void>((resolve, reject) => {
         const waiter = { resolve, reject, timer: setTimeout(() => {
@@ -182,18 +190,21 @@ export class SqliteSearchHost {
       });
       this.reservedQuerySlots--;
     }
-    const reader = this.reader;
-    if (!reader || this.stopped) throw new GlobalSearchError('index_unavailable', 'search database is unavailable');
     const id = ++this.id;
+    const slot = this.readerLoads.indexOf(Math.min(...this.readerLoads));
+    const reader = this.readers[slot];
+    if (!reader || this.stopped) throw new GlobalSearchError('index_unavailable', 'search database is unavailable');
+    this.readerLoads[slot]!++;
     return new Promise((resolve, reject) => {
+      const release = (): void => { this.readerLoads[slot]!--; this.releaseQuerySlot(); };
       const timer = setTimeout(() => {
         this.timeouts++;
         this.failReader(new Error('query worker watchdog timed out'));
       }, this.options.queryTimeoutMs ?? 10_000);
-      this.queries.set(id, { resolve: (value) => resolve({ ...value, stale: this.snapshot().stale }), reject, timer });
+      this.queries.set(id, { resolve: (value) => resolve({ ...value, stale: this.snapshot().stale }), reject, timer, release });
       const request: QueryRequest = { id, type: 'search', query, pageToken, budgets };
       try { reader.postMessage(request); }
-      catch (error) { clearTimeout(timer); this.queries.delete(id); this.releaseQuerySlot(); reject(error); }
+      catch (error) { clearTimeout(timer); this.queries.delete(id); release(); reject(error); }
     });
   }
 
@@ -204,10 +215,10 @@ export class SqliteSearchHost {
     if (this.restart) clearTimeout(this.restart);
     const child = this.child;
     this.child = undefined;
-    const reader = this.reader;
-    this.reader = undefined;
+    const readers = this.readers.splice(0);
     for (const request of this.queries.values()) {
       clearTimeout(request.timer);
+      request.release();
       request.reject(new Error('search host closed'));
     }
     this.queries.clear();
@@ -215,7 +226,7 @@ export class SqliteSearchHost {
       clearTimeout(waiter.timer);
       waiter.reject(new Error('search host closed'));
     }
-    const readerExit = reader?.terminate();
+    const readerExit = Promise.all(readers.map((reader) => reader.terminate()));
     const childExit = child && child.exitCode === null ? new Promise<void>((resolve) => {
       const deadline = setTimeout(() => child.kill(), 5000);
       child.once('exit', () => { clearTimeout(deadline); resolve(); });
@@ -227,10 +238,13 @@ export class SqliteSearchHost {
   private startIndexer(): void {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
     const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
-    const entry = this.options.indexerEntry ?? fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
+    const entry = this.options.indexerEntry ?? process.env['KIKI_SQLITE_INDEXER_PATH'] ??
+      fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
+    const source = entry.endsWith('.ts');
     const args = sea ? seaIndexerArgs(this.options.database, process.execArgv) :
-      ['--max-old-space-size=256', '--experimental-transform-types', '--import', 'tsx', '--import',
-        new URL('./register-dev-hooks.mjs', import.meta.url).href, entry, this.options.database];
+      ['--max-old-space-size=256', ...(source ? ['--experimental-transform-types', '--import', 'tsx',
+        '--import', new URL('./register-dev-hooks.mjs', import.meta.url).href] : []),
+      entry, this.options.database];
     const child = spawn(process.execPath, args, {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
       env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${sea ? 384 : 256}`,
@@ -245,9 +259,11 @@ export class SqliteSearchHost {
     child.on('message', (message: IndexerEvent) => {
       if (this.child !== child) return;
       if (message.type === 'ready') {
+        const promoted = this.readonlyWriter && message.writer !== false;
         this.ready = true;
         this.readonlyWriter = message.writer === false;
         if (this.readonlyWriter) this.pending.clear();
+        else if (promoted) for (const [id, session] of this.known) this.pending.set(id, session);
         if (this.failures === 0) this.reason = undefined;
         this.retryAt = 0;
         this.flushPending();
@@ -263,6 +279,7 @@ export class SqliteSearchHost {
         });
       } else if (message.type === 'status') {
         this.rss = message.rss;
+        this.heapLimit = message.heapLimit;
         this.status = message.status;
         this.dbBytes = message.dbBytes;
         this.filesPending = message.pending;
@@ -354,28 +371,41 @@ export class SqliteSearchHost {
   }
 
   private async openReader(): Promise<void> {
-    if (this.reader || this.readerOpening) return this.readerOpening;
+    if (this.readers.length === 3 || this.readerOpening) return this.readerOpening;
+    this.readerOpening = (async () => {
+      while (this.readers.length < 3) await this.spawnReader();
+    })().finally(() => { this.readerOpening = undefined; });
+    return this.readerOpening;
+  }
+
+  private spawnReader(): Promise<void> {
     const entry = this.options.queryEntry ?? process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] ??
       fileURLToPath(new URL('./queryEntry.ts', import.meta.url));
     const source = entry.endsWith('.ts');
-    this.readerOpening = new Promise<void>((resolve, reject) => {
-      const worker = new Worker(pathToFileURL(entry), { workerData: this.options.database,
+    return new Promise<void>((resolve, reject) => {
+      const worker = new Worker(pathToFileURL(entry), { workerData: { database: this.options.database, bootSalt: this.bootSalt },
         execArgv: source ? ['--experimental-transform-types', '--import', 'tsx', '--import',
           new URL('./register-dev-hooks.mjs', import.meta.url).href] : [],
         resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 } });
-      const opening = setTimeout(() => { worker.terminate(); reject(new Error('query worker ready timed out')); }, 5000);
+      const opening = setTimeout(() => { void worker.terminate(); reject(new Error('query worker ready timed out')); }, 5000);
       worker.on('message', (event: QueryEvent) => {
         if (event.type === 'ready') {
           clearTimeout(opening);
-          this.reader = worker;
+          if (this.stopped) { void worker.terminate(); reject(new Error('search host closed')); return; }
+          this.readers.push(worker);
           resolve();
         } else if (event.type === 'result' || event.type === 'error') {
-          if (event.id === 0 && event.type === 'error') { clearTimeout(opening); reject(new Error(event.message)); return; }
+          if (event.id === 0 && event.type === 'error') {
+            clearTimeout(opening);
+            void worker.terminate();
+            reject(new Error(event.message));
+            return;
+          }
           const request = this.queries.get(event.id);
           if (!request) return;
           clearTimeout(request.timer);
           this.queries.delete(event.id);
-          this.releaseQuerySlot();
+          request.release();
           if (event.type === 'result') request.resolve(event.value);
           else request.reject(new Error(event.message));
         }
@@ -387,18 +417,17 @@ export class SqliteSearchHost {
       });
       worker.on('exit', () => {
         clearTimeout(opening);
-        if (this.reader === worker) this.failReader(new Error('query worker exited'));
+        if (this.readers.includes(worker)) this.failReader(new Error('query worker exited'));
       });
-    }).finally(() => { this.readerOpening = undefined; });
-    return this.readerOpening;
+    });
   }
 
-  private failReader(error: Error): Promise<number> | undefined {
-    const reader = this.reader;
-    this.reader = undefined;
-    const exit = reader?.terminate();
+  private failReader(error: Error): Promise<void> {
+    const readers = this.readers.splice(0);
+    const exit = Promise.all(readers.map((reader) => reader.terminate())).then(() => {});
     for (const [id, request] of this.queries) {
       clearTimeout(request.timer);
+      request.release();
       request.reject(error);
       this.queries.delete(id);
     }

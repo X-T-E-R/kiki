@@ -1,10 +1,13 @@
 import { parentPort, workerData } from 'node:worker_threads';
+import { setTimeout as delay } from 'node:timers/promises';
 import { SqliteSearchIndex, type SqliteSearchResult } from './index';
 import type { QueryEvent, QueryRequest } from './processProtocol';
 
 const port = parentPort;
 if (!port) throw new Error('query entry requires a worker thread');
 let reader: SqliteSearchIndex | undefined;
+const source: { database: string; bootSalt?: string } = typeof workerData === 'string'
+  ? { database: workerData } : workerData as { database: string; bootSalt: string };
 const recent = new Map<string, { expires: number; version: number; result: Promise<SqliteSearchResult> }>();
 const cacheMs = process.env['KIKI_SEARCH_QUERY_CACHE_MS'] === '0' ? 0 : 500;
 const send = (event: QueryEvent): void => port.postMessage(event);
@@ -16,7 +19,14 @@ port.on('message', async (message: QueryRequest) => {
     return;
   }
   try {
-    if (!reader) reader = SqliteSearchIndex.openReader(workerData as string);
+    if (!reader) for (let attempt = 0; attempt < 4 && !reader; attempt++) {
+      try { reader = SqliteSearchIndex.openReader(source.database, source.bootSalt); }
+      catch (error) {
+        if (attempt === 3 || !/SQLITE_BUSY|database is locked/i.test(String(error))) throw error;
+        await delay(50 * (attempt + 1));
+      }
+    }
+    if (!reader) throw new Error('search database reader did not open');
     const key = cacheMs ? JSON.stringify([message.query, message.pageToken, message.budgets]) : '';
     const version = cacheMs
       ? (reader.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version : 0;
