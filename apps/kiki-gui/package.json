@@ -49,8 +49,9 @@
     "test:integration": "vitest run .integration.",
     "fixtures": "node scripts/fixture-server.mjs",
     "proof": "node scripts/visual-proof.mjs",
+    "proof:smoke": "node scripts/visual-smoke.mjs",
     "proof:update-goldens": "node scripts/visual-proof.mjs --update-goldens",
-    "proof:test": "node --test scripts/visual-proof-options.test.mjs scripts/fixture-transcript.test.mjs"
+    "proof:test": "node --test scripts/visual-proof-options.test.mjs scripts/fixture-transcript.test.mjs scripts/visual-smoke.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

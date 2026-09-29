@@ -131,6 +131,65 @@ const SCENARIOS = [
       return [await shot(page, 'settings-appearance')];
     },
   },
+  {
+    name: 'subagents',
+    tags: ['smoke', 'agents'],
+    async run(page, link) {
+      await openSession(page, link, 'session_fixture_subagents');
+      await page.fill('textarea', 'Delegate the fixture work.');
+      await page.press('textarea', 'Control+Enter');
+      await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
+      await page.locator('[data-subagent-id="agent-review"]').first().waitFor({ timeout: 20_000 });
+      return [await shot(page, 'subagents')];
+    },
+  },
+  {
+    name: 'question-card',
+    tags: ['smoke', 'interactions'],
+    async run(page, link) {
+      await openSession(page, link, 'session_fixture_question');
+      await page.fill('textarea', 'Ask me the fixture questions.');
+      await page.press('textarea', 'Control+Enter');
+      const card = page.locator('[data-question-card]');
+      await card.waitFor({ timeout: 20_000 });
+      return [await shot(page, 'question-card')];
+    },
+  },
+  {
+    name: 'reconnect',
+    tags: ['smoke', 'connection'],
+    async run(page, link, control) {
+      await openSession(page, link, 'session_fixture_reconnect');
+      await page.fill('textarea', 'Start the two-segment stream.');
+      await page.press('textarea', 'Control+Enter');
+      await page.waitForSelector('text=Segment A', { timeout: 20_000 });
+      await control({ action: 'drop_ws' });
+      await page.locator('[data-app-banner]').waitFor({ timeout: 10_000 });
+      return [await shot(page, 'reconnect-banner')];
+    },
+  },
+  {
+    name: 'first-run',
+    tags: ['smoke', 'onboarding'],
+    onboarding: false,
+    async run(page, link) {
+      await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
+      await page.locator('[role="dialog"]').waitFor({ timeout: 20_000 });
+      return [await shot(page, 'first-run-onboarding')];
+    },
+  },
+  {
+    name: 'hero-shell-zh',
+    fixture: 'hero-shell',
+    locale: 'zh',
+    tags: ['smoke', 'shell', 'i18n'],
+    async run(page, link) {
+      await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-phase="hero"]', { timeout: 20_000 });
+      await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+      return [await shot(page, 'hero-zh')];
+    },
+  },
 ];
 
 const MIME = {
@@ -177,23 +236,40 @@ function withTimeout(promise, ms, label) {
 
 async function runScenario(browser, webUrl, scenario) {
   const started = Date.now();
-  const fixture = await startFixtureServer({ port: 0, scenario: scenario.name });
+  const fixture = await startFixtureServer({ port: 0, scenario: scenario.fixture ?? scenario.name });
   const fixtureUrl = `http://127.0.0.1:${fixture.http.address().port}`;
   const link = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
+  const control = async (body) => {
+    const response = await fetch(`${fixtureUrl}/__control`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`fixture control failed with HTTP ${response.status}`);
+    return response.json();
+  };
   const context = await browser.newContext({ viewport: VIEWPORT, reducedMotion: 'reduce' });
   const errors = [];
   try {
-    await context.addInitScript(() => {
+    await context.addInitScript(({ locale, onboardingCompleted }) => {
       try {
-        localStorage.setItem('kiki.locale', 'en');
-        if (localStorage.getItem('kiki.onboarding') === null) {
-          localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        localStorage.setItem('kiki.locale', locale);
+        if (onboardingCompleted) {
+          if (localStorage.getItem('kiki.onboarding') === null) {
+            localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+          }
+        } else {
+          localStorage.removeItem('kiki.onboarding');
+          localStorage.removeItem('kiki.newSessionDraft');
         }
       } catch { /* storage unavailable */ }
+    }, {
+      locale: scenario.locale ?? 'en',
+      onboardingCompleted: scenario.onboarding !== false,
     });
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
-    const shots = await withTimeout(scenario.run(page, link), SCENARIO_TIMEOUT_MS, `scenario ${scenario.name}`);
+    const shots = await withTimeout(scenario.run(page, link, control), SCENARIO_TIMEOUT_MS, `scenario ${scenario.name}`);
     if (errors.length > 0) throw new Error(`pageerror: ${errors.join(' | ')}`);
     return { name: scenario.name, ok: true, ms: Date.now() - started, shots };
   } catch (error) {
