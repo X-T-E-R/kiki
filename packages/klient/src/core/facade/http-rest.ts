@@ -328,6 +328,7 @@ export interface HttpRestFacade {
       body: HttpRestSearchMessagesBody,
       options?: HttpRestRequestOptions,
     ): Promise<HttpRestSearchMessagesResponse>;
+    retry(): Promise<{ retried: boolean }>;
   };
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */

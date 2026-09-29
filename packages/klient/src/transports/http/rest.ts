@@ -380,6 +380,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
       }),
+      retry: () => transport.json('/search/retry', { method: 'POST' }),
     },
 
     cron: {

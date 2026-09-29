@@ -1755,6 +1755,11 @@ export class KikiClient {
     }));
   }
 
+  /** Clear the SQLite indexer's retry backoff and restart it. */
+  retrySearchIndexer(): Promise<{ retried: boolean }> {
+    return this.run(this.rest.search.retry());
+  }
+
   /** `GET /api/cron` — paged cross-workspace scheduled tasks, next-fire order. */
   listCronTasks(query: { session_id?: string; page_size?: number; offset?: number } = {}): Promise<ListCronTasksResponse> {
     return this.run(this.rest.cron.list(query));
