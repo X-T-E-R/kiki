@@ -14,7 +14,13 @@ export interface ThreadSummary {
   readonly state: 'cold' | 'idle' | 'running';
 }
 
+export interface ThreadCaller {
+  readonly sessionId: string;
+  readonly workspaceId: string;
+}
+
 export interface ListThreadsInput {
+  readonly caller?: ThreadCaller;
   readonly workspaceId?: string;
   readonly cursor?: string;
   readonly limit?: number;
@@ -40,6 +46,7 @@ export interface ThreadTurn {
 }
 
 export interface ReadThreadInput {
+  readonly caller?: ThreadCaller;
   readonly thread: ThreadRef;
   readonly cursor?: string;
   readonly limit?: number;
@@ -52,6 +59,7 @@ export interface ReadThreadResult {
 }
 
 export interface SendThreadMessageInput {
+  readonly caller?: ThreadCaller;
   readonly target: ThreadRef;
   readonly content: string;
   readonly idempotencyKey: string;
@@ -83,6 +91,7 @@ export interface WaitThreadInput {
 }
 
 export interface WaitThreadsInput {
+  readonly caller?: ThreadCaller;
   readonly threads: readonly WaitThreadInput[];
   readonly timeoutMs?: number;
 }
@@ -115,7 +124,7 @@ export interface IThreadCommunicationService {
   getWorkspaceOverride(workspaceId: string): Promise<boolean | undefined>;
   setWorkspaceOverride(workspaceId: string, enabled: boolean): Promise<void>;
   clearWorkspaceOverride(workspaceId: string): Promise<void>;
-  isWorkspaceEnabled(workspaceId: string): Promise<boolean>;
+  isWorkspaceEnabled(workspaceId: string, caller?: ThreadCaller): Promise<boolean>;
 }
 
 export const IThreadCommunicationService: ServiceIdentifier<IThreadCommunicationService> =

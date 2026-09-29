@@ -41,6 +41,7 @@ import {
   type SendThreadMessageResult,
   type ThreadActivity,
   type ThreadActivityKind,
+  type ThreadCaller,
   type ThreadRef,
   type ThreadSummary,
   type ThreadTurn,
@@ -166,7 +167,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
     await this.ensureRecovery();
-    if (!(await this.globalEnabled())) return { threads: [] };
+    if (!(await this.globalEnabled(input.caller))) return { threads: [] };
     const limit = boundedLimit(input.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'list');
     if (decoded !== undefined && decoded.workspaceId !== input.workspaceId) {
@@ -211,7 +212,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   async readThread(input: ReadThreadInput): Promise<ReadThreadResult> {
     await this.ensureRecovery();
-    const summary = await this.requireThread(input.thread);
+    const summary = await this.requireThread(input.thread, input.caller);
     const limit = boundedLimit(input.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'read');
     const identity = threadIdentity(input.thread);
@@ -237,6 +238,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult> {
     return this.sendProducedMessage({
       producer: { kind: 'external_client' },
+      caller: input.caller,
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
@@ -246,12 +248,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    await this.requireThread(input.source);
+    await this.requireThread(input.source, input.source);
     if (sameThread(input.source, input.target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
     }
     return this.sendProducedMessage({
       producer: { kind: 'peer_thread', source: input.source },
+      caller: input.source,
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
@@ -260,13 +263,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async sendProducedMessage(input: {
     readonly producer: ThreadMessageProducer;
+    readonly caller?: ThreadCaller;
     readonly target: ThreadRef;
     readonly content: string;
     readonly idempotencyKey: string;
   }): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    await this.requireThread(input.target);
+    await this.requireThread(input.target, input.caller);
     const storedInput = {
       producer: input.producer,
       target: input.target,
@@ -322,7 +326,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'ThreadWait contains duplicate threads.');
       }
       seen.add(key);
-      if (!(await this.workspaceEnabled(item.thread.workspaceId))) {
+      if (!(await this.globalEnabled(input.caller)) || !(await this.workspaceEnabled(item.thread.workspaceId))) {
         throw threadDisabled(item.thread.workspaceId);
       }
     }
@@ -390,14 +394,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     });
   }
 
-  async isWorkspaceEnabled(workspaceId: string): Promise<boolean> {
+  async isWorkspaceEnabled(workspaceId: string, caller?: ThreadCaller): Promise<boolean> {
     await this.ensureRecovery();
-    return this.globalEnabled().then(async (enabled) => enabled && this.workspaceEnabled(workspaceId));
+    return this.globalEnabled(caller).then(async (enabled) => enabled && this.workspaceEnabled(workspaceId));
   }
 
-  private async globalEnabled(): Promise<boolean> {
+  private async globalEnabled(caller?: ThreadCaller): Promise<boolean> {
     await this.capabilities.ready;
-    return this.capabilities.threadEnabled();
+    return this.capabilities.threadEnabled(caller?.workspaceId, caller?.sessionId);
   }
 
   private async workspaceEnabled(workspaceId: string): Promise<boolean> {
@@ -414,9 +418,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
   }
 
-  private async requireThread(ref: ThreadRef): Promise<SessionSummary> {
+  private async requireThread(ref: ThreadRef, caller?: ThreadCaller): Promise<SessionSummary> {
     this.requireLocalHost(ref);
-    if (!(await this.globalEnabled()) || !(await this.workspaceEnabled(ref.workspaceId))) {
+    if (!(await this.globalEnabled(caller)) || !(await this.workspaceEnabled(ref.workspaceId))) {
       throw threadDisabled(ref.workspaceId);
     }
     const summary = await this.sessions.get(ref.sessionId);
@@ -525,7 +529,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let prompt: IAgentPromptService;
     let handle: PromptHandle;
     try {
-      await this.requireThread(message.target);
+      await this.requireThread(message.target, message.target);
       const session = await this.sessionManager.resume(message.target.sessionId);
       if (session === undefined) {
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
@@ -641,13 +645,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private async recoverPendingDeliveries(): Promise<void> {
     if (this.bootstrap.interactive === false) return;
     await this.config.ready;
-    if (this.closing || !(await this.globalEnabled())) return;
+    if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return;
     const targets = await this.mailbox.listPendingTargets({
       signal: this.mailboxController.signal,
     });
     for (const target of targets) {
-      if (this.closing || !(await this.globalEnabled())) return;
-      if (target.hostId !== this.hostId) continue;
+      if (this.closing) return;
+      if (target.hostId !== this.hostId || !(await this.globalEnabled(target))) continue;
       await this.requestTargetDrain(target);
     }
   }
@@ -834,7 +838,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     kind: ThreadActivityKind,
     reason: string,
   ): Promise<unknown> {
-    return this.globalEnabled().then((enabled) => {
+    return this.globalEnabled(target).then((enabled) => {
       if (!enabled || this.closing || this.bootstrap.interactive === false) return undefined;
       return this.mailbox.appendActivity({ target, kind, reason }, {
         signal: this.mailboxController.signal,

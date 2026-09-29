@@ -31,7 +31,7 @@ function resolveScope(kind: 'global' | 'workspace', session: ISessionContext): M
   return kind === 'global' ? { kind: 'global' } : { kind: 'workspace', workspaceId: session.workspaceId };
 }
 function available(snapshot: ICapabilitySnapshotService, session: ISessionContext): boolean {
-  return snapshot.memoryAvailable(session.workspaceId);
+  return snapshot.memoryAvailable(session.workspaceId, session.sessionId);
 }
 
 export interface IMemoryWriteTool extends AgentTool<z.infer<typeof writeSchema>> { readonly _serviceBrand: undefined }

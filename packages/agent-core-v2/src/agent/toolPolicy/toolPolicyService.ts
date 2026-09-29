@@ -109,7 +109,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     const capabilities = this.capabilities.current;
     const session = this.session.current;
     if (capabilities !== undefined && session !== undefined &&
-      !capabilities.toolAvailable(name, session.workspaceId)) return false;
+      !capabilities.toolAvailable(name, session.workspaceId, session.sessionId)) return false;
     return isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,

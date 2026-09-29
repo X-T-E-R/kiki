@@ -15,6 +15,7 @@ import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { IConfigService } from '#/app/config/config';
+import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
@@ -172,7 +173,9 @@ describe('ThreadCommunicationService', () => {
     });
     ix.stub(IConfigService, {
       ready: Promise.resolve(),
-      get: <T>() => ({ enabled: globalEnabled }) as T,
+      get: <T>(section: string) => (section === MEMORY_SECTION
+        ? { enabled: false, approval: 'auto', workspaces: {} }
+        : { enabled: globalEnabled }) as T,
     });
     ix.stub(ISessionIndex, {
       get: async (id: string) => summaries[id],
@@ -483,12 +486,34 @@ describe('ThreadCommunicationService', () => {
     workspaceOverrides.set('workspace-b', false);
     const listed = await service.listThreads();
     expect(listed.threads.map((thread) => thread.ref.workspaceId)).toEqual(['workspace-a']);
+    const caller = { workspaceId: 'workspace-b', sessionId: 'caller' };
+    ix.get(ICapabilitySnapshotService).memoryAvailable(caller.workspaceId, caller.sessionId);
     globalEnabled = false;
     workspaceOverrides.set('workspace-b', true);
-    expect(await service.isWorkspaceEnabled('workspace-b')).toBe(true);
-    ix.get(ICapabilitySnapshotService).refresh('workspace-b');
+    expect(await service.isWorkspaceEnabled('workspace-b', caller)).toBe(true);
     expect(await service.isWorkspaceEnabled('workspace-b')).toBe(false);
+    ix.get(ICapabilitySnapshotService).refresh(caller.workspaceId, caller.sessionId);
+    expect(await service.isWorkspaceEnabled('workspace-b', caller)).toBe(false);
     expect(await service.listThreads()).toEqual({ threads: [] });
+  });
+
+  it('uses the caller session snapshot for App-scoped Thread APIs', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const snapshots = ix.get(ICapabilitySnapshotService);
+    await snapshots.ready;
+    const a = { workspaceId: 'workspace-a', sessionId: 'session-a' };
+    const b = { workspaceId: 'workspace-a', sessionId: 'session-b' };
+    snapshots.memoryAvailable(a.workspaceId, a.sessionId);
+    snapshots.memoryAvailable(b.workspaceId, b.sessionId);
+    globalEnabled = false;
+    snapshots.refresh(b.workspaceId, b.sessionId);
+    expect(await service.isWorkspaceEnabled('workspace-a', a)).toBe(true);
+    expect((await service.listThreads({ caller: a })).threads.length).toBeGreaterThan(0);
+    expect(await service.isWorkspaceEnabled('workspace-a', b)).toBe(false);
+    expect(await service.listThreads({ caller: b })).toEqual({ threads: [] });
+    expect(await service.isWorkspaceEnabled('workspace-a')).toBe(false);
+    snapshots.refresh(a.workspaceId, a.sessionId);
+    expect(await service.isWorkspaceEnabled('workspace-a', a)).toBe(false);
   });
 
   it('paginates every enabled session when the requested limit is smaller than the index page', async () => {

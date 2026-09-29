@@ -8,10 +8,11 @@ export interface CapabilitySnapshotChange {
 export interface ICapabilitySnapshotService {
   readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
-  memoryAvailable(workspaceId: string): boolean;
-  threadEnabled(): boolean;
-  toolAvailable(name: string, workspaceId: string): boolean;
-  refresh(workspaceId: string): CapabilitySnapshotChange;
+  memoryAvailable(workspaceId: string, sessionId: string): boolean;
+  threadEnabled(workspaceId?: string, sessionId?: string): boolean;
+  anySessionThreadEnabled(): boolean;
+  toolAvailable(name: string, workspaceId: string, sessionId: string): boolean;
+  refresh(workspaceId: string, sessionId: string): CapabilitySnapshotChange;
 }
 
 export const ICapabilitySnapshotService: ServiceIdentifier<ICapabilitySnapshotService> =

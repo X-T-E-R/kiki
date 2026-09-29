@@ -107,7 +107,7 @@ abstract class ThreadToolBase {
   }
 
   protected async requireCallerEnabled(): Promise<void> {
-    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId)) return;
+    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId, this.callerRef())) return;
     throw new Error2(
       ErrorCodes.THREAD_DISABLED,
       `Thread communication is disabled for workspace "${this.session.workspaceId}".`,
@@ -136,6 +136,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
       execute: async () => {
         await this.requireCallerEnabled();
         const result = await this.threads.listThreads({
+          caller: this.callerRef(),
           workspaceId: input.workspace_id,
           cursor: input.cursor,
           limit: input.limit,
@@ -167,6 +168,7 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
       execute: async () => {
         await this.requireCallerEnabled();
         const result = await this.threads.readThread({
+          caller: this.callerRef(),
           thread: fromToolRef(input.thread),
           cursor: input.cursor,
           limit: input.limit,
@@ -233,6 +235,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
       execute: async () => {
         await this.requireCallerEnabled();
         const result = await this.threads.waitThreads({
+          caller: this.callerRef(),
           threads: input.threads.map((item) => ({
             thread: fromToolRef(item.thread),
             cursor: item.cursor,

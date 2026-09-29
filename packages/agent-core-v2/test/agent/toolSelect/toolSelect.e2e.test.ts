@@ -14,6 +14,7 @@ import { IAgentProfileCapabilityChangesService } from '#/agent/toolSelect/profil
 import { IAgentCapabilityRebuildService } from '#/agent/capabilityRebuild/capabilityRebuild';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IConfigService } from '#/app/config/config';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSection';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -24,7 +25,7 @@ import { SessionSkillCatalogService } from '#/session/sessionSkillCatalog/skillC
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import '#/agent/tools/select-tools/selectToolsTool';
 
-import { createTestAgent, type TestAgentContext } from '../../harness';
+import { appService, createTestAgent, type TestAgentContext } from '../../harness';
 
 const MCP_ALPHA = 'mcp__srv__alpha';
 const DASHBOARD_TOOL = 'dashboard_create';
@@ -488,7 +489,8 @@ describe('progressive tool disclosure end-to-end', () => {
     const config = ctx.get(IConfigService);
     await config.replace(MEMORY_SECTION, { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
     await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: true });
-    const threadDuringTurn = ctx.get(ICapabilitySnapshotService).threadEnabled();
+    const session = ctx.get(ISessionContext);
+    const threadDuringTurn = ctx.get(ICapabilitySnapshotService).threadEnabled(session.workspaceId, session.sessionId);
     release();
     expect(threadDuringTurn).toBe(false);
     await ctx.untilTurnEnd();
@@ -510,6 +512,63 @@ describe('progressive tool disclosure end-to-end', () => {
     const requests = wireEvents(ctx, 'llm.request').map((event) => event.args as { toolsHash?: string });
     expect(requests[1]!.toolsHash).toBe(requests[0]!.toolsHash);
     expect(requests[2]!.toolsHash).not.toBe(requests[1]!.toolsHash);
+  });
+
+  it('keeps session A frozen while session B advances at its own user boundary', async () => {
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.get(IAgentCapabilityRebuildService);
+    const capabilities = ctx.get(ICapabilitySnapshotService);
+    const config = ctx.get(IConfigService);
+    const b = createTestAgent(
+      { sessionId: 'test-session-b' },
+      appService(IConfigService, config),
+      appService(ICapabilitySnapshotService, capabilities),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => { started = resolve; });
+    const registration = ctx.get(IAgentToolRegistryService).register({
+      name: 'test_gate', description: 'Block session A.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      resolveExecution: () => ({ approvalRule: 'test_gate', execute: async () => { started(); await gate; return { output: 'done' }; } }),
+    });
+    try {
+      b.get(IAgentCapabilityRebuildService);
+      await b.rpc.setPermission({ mode: 'yolo' });
+      ctx.mockNextResponse({ type: 'function', id: 'call_gate_a', name: 'test_gate', arguments: '{}' });
+      ctx.mockNextResponse({ type: 'text', text: 'A done' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'A starts' }] });
+      await running;
+      const aSession = ctx.get(ISessionContext);
+      const bSession = b.get(ISessionContext);
+      expect(aSession.sessionId).not.toBe(bSession.sessionId);
+      await config.replace(MEMORY_SECTION, { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+      await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: true });
+      b.mockNextResponse({ type: 'text', text: 'B done' });
+      await b.rpc.prompt({ input: [{ type: 'text', text: 'B advances' }] });
+      await b.untilTurnEnd();
+      expect(toolNames(b.llmCalls[0]!.tools)).toContain('MemorySearch');
+      expect(toolNames(b.llmCalls[0]!.tools)).toContain('ThreadList');
+      expect(capabilities.threadEnabled(aSession.workspaceId, aSession.sessionId)).toBe(false);
+      expect(capabilities.memoryAvailable(aSession.workspaceId, aSession.sessionId)).toBe(false);
+      expect(capabilities.threadEnabled(bSession.workspaceId, bSession.sessionId)).toBe(true);
+      expect(capabilities.memoryAvailable(bSession.workspaceId, bSession.sessionId)).toBe(true);
+      release();
+      await ctx.untilTurnEnd();
+      expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+      ctx.mockNextResponse({ type: 'text', text: 'A next done' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'A advances' }] });
+      await ctx.untilTurnEnd();
+      expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
+      expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+        message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(1);
+    } finally {
+      release();
+      registration.dispose();
+      await b.dispose();
+    }
   });
 
   it.each(PREFIX_PROTOCOL_CASES)('keeps $name prefix when capability toggles revert before the next user message', async ({ provider }) => {

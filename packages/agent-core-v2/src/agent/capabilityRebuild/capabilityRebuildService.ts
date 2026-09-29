@@ -29,7 +29,7 @@ export class AgentCapabilityRebuildService extends Service implements IAgentCapa
     @IEventBus eventBus: IEventBus,
   ) {
     super();
-    this.capabilities.memoryAvailable(this.session.workspaceId);
+    this.capabilities.memoryAvailable(this.session.workspaceId, this.session.sessionId);
     this._register(eventBus.subscribe(TurnStarted, (event) => {
       const origin = event.origin;
       if (origin.kind === 'user' ||
@@ -47,7 +47,7 @@ export class AgentCapabilityRebuildService extends Service implements IAgentCapa
     if (turnId === undefined || turnId !== this.activeUserTurnId || turnId === this.lastTurnId) return;
     this.lastTurnId = turnId;
     await this.capabilities.ready;
-    const changed = this.capabilities.refresh(this.session.workspaceId);
+    const changed = this.capabilities.refresh(this.session.workspaceId, this.session.sessionId);
     if (!changed.memory && !changed.thread) return;
     if (changed.memory) await this.profile.refreshMemorySnapshot();
     else await this.profile.refreshSystemPrompt();

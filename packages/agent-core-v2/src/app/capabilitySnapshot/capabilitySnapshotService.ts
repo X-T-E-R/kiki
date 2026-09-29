@@ -9,51 +9,71 @@ import { ICapabilitySnapshotService, type CapabilitySnapshotChange } from './cap
 const MEMORY_TOOLS = new Set(['MemoryWrite', 'MemorySearch', 'MemoryRead']);
 const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait']);
 
+interface SessionSnapshot {
+  readonly workspaceId: string;
+  memory: boolean;
+  thread: boolean;
+}
+
 export class CapabilitySnapshotService implements ICapabilitySnapshotService {
   declare readonly _serviceBrand: undefined;
-  private readonly memoryByWorkspace = new Map<string, boolean>();
-  private thread: boolean;
+  private readonly bySession = new Map<string, SessionSnapshot>();
   readonly ready: Promise<void>;
 
   constructor(@IConfigService private readonly config: IConfigService) {
-    this.thread = config.get<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION)?.enabled ?? false;
     this.ready = config.ready.then(() => {
-      this.thread = config.get<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION)?.enabled ?? false;
-      for (const workspaceId of this.memoryByWorkspace.keys()) {
-        this.memoryByWorkspace.set(workspaceId, this.readMemory(workspaceId));
+      for (const snapshot of this.bySession.values()) {
+        snapshot.memory = this.readMemory(snapshot.workspaceId);
+        snapshot.thread = this.readThread();
       }
     });
   }
 
-  memoryAvailable(workspaceId: string): boolean {
-    let available = this.memoryByWorkspace.get(workspaceId);
-    if (available === undefined) {
-      available = this.readMemory(workspaceId);
-      this.memoryByWorkspace.set(workspaceId, available);
+  memoryAvailable(workspaceId: string, sessionId: string): boolean {
+    return this.snapshot(workspaceId, sessionId).memory;
+  }
+
+  threadEnabled(workspaceId?: string, sessionId?: string): boolean {
+    if (workspaceId === undefined || sessionId === undefined) return this.readThread();
+    return this.snapshot(workspaceId, sessionId).thread;
+  }
+
+  anySessionThreadEnabled(): boolean {
+    for (const snapshot of this.bySession.values()) {
+      if (snapshot.thread) return true;
     }
-    return available;
+    return false;
   }
 
-  threadEnabled(): boolean {
-    return this.thread;
-  }
-
-  toolAvailable(name: string, workspaceId: string): boolean {
-    if (MEMORY_TOOLS.has(name)) return this.memoryAvailable(workspaceId);
-    if (THREAD_TOOLS.has(name)) return this.thread;
+  toolAvailable(name: string, workspaceId: string, sessionId: string): boolean {
+    if (MEMORY_TOOLS.has(name)) return this.memoryAvailable(workspaceId, sessionId);
+    if (THREAD_TOOLS.has(name)) return this.threadEnabled(workspaceId, sessionId);
     return true;
   }
 
-  refresh(workspaceId: string): CapabilitySnapshotChange {
+  refresh(workspaceId: string, sessionId: string): CapabilitySnapshotChange {
+    const snapshot = this.snapshot(workspaceId, sessionId);
     const memory = this.readMemory(workspaceId);
-    const thread = this.config.get<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION)?.enabled ?? false;
-    const changed = {
-      memory: memory !== this.memoryAvailable(workspaceId),
-      thread: thread !== this.thread,
-    };
-    this.memoryByWorkspace.set(workspaceId, memory);
-    this.thread = thread;
+    const thread = this.readThread();
+    const changed = { memory: memory !== snapshot.memory, thread: thread !== snapshot.thread };
+    snapshot.memory = memory;
+    snapshot.thread = thread;
     return changed;
+  }
+
+  private snapshot(workspaceId: string, sessionId: string): SessionSnapshot {
+    let snapshot = this.bySession.get(sessionId);
+    if (snapshot === undefined) {
+      snapshot = { workspaceId, memory: this.readMemory(workspaceId), thread: this.readThread() };
+      this.bySession.set(sessionId, snapshot);
+    } else if (snapshot.workspaceId !== workspaceId) {
+      throw new Error(`Session "${sessionId}" belongs to another workspace.`);
+    }
+    return snapshot;
+  }
+
+  private readThread(): boolean {
+    return this.config.get<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION)?.enabled ?? false;
   }
 
   private readMemory(workspaceId: string): boolean {

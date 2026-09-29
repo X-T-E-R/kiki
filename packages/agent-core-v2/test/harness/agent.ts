@@ -423,6 +423,7 @@ interface ConfigureOptions {
 export type TestAgentContext = AgentTestContext;
 
 export interface TestAgentOptions {
+  readonly sessionId?: string | undefined;
   readonly generate?: GenerateFn | undefined;
   readonly telemetry?: ITelemetryService | undefined;
   readonly persistence?: WireRecordPersistence | undefined;
@@ -1075,7 +1076,7 @@ export class AgentTestContext {
     this.emitter.on('error', () => { });
     this.kimiConfig = applyTestAgentOptionsToConfig(emptyConfig(), options);
 
-    const sessionId = 'test-session';
+    const sessionId = options.sessionId ?? 'test-session';
     const agentId = 'main';
     const persistence = options.persistence ?? new InMemoryWireRecordPersistence();
 
