@@ -68,6 +68,19 @@ function product(choices) {
   return choices.reduce((rows, values) => rows.flatMap((row) => values.map((value) => [...row, value])), [[]]);
 }
 
+/**
+ * The dimensions in which a view differs from the canonical one, as a short
+ * suffix (`dark`, `390`, `zh`, `zh-dark-390`). Screenshot names carry it so two
+ * views of the same screen stay distinct files in one run directory — the old
+ * zh replica run got that separation from a second output directory.
+ */
+function viewSuffix(view) {
+  return ['theme', 'width'].filter((dim) => view[dim] !== CANONICAL_VIEW[dim])
+    .concat(view.locale === CANONICAL_VIEW.locale ? [] : ['locale'])
+    .map((dim) => (dim === 'locale' ? view.locale : view[dim]))
+    .join('-');
+}
+
 /** Job ids carry the non-canonical dimensions, so a FAIL line names its view. */
 function jobId(name, view) {
   const extras = ['theme', 'width'].filter((dim) => view[dim] !== CANONICAL_VIEW[dim]).map((dim) => `${dim}=${view[dim]}`);
@@ -250,6 +263,7 @@ async function waitForAppHandshake(control, timeoutMs) {
 
 async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
   const { entry, id, view } = job;
+  const suffix = viewSuffix(view);
   const started = Date.now();
   const fixture = await startFixtureServer({ port: 0, scenario: entry.fixture ?? entry.name });
   const fixtureUrl = `http://127.0.0.1:${fixture.http.address().port}`;
@@ -266,9 +280,11 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
   const errors = [];
   const jobShots = [];
   const shot = async (name) => {
-    if (shotNames.has(name)) throw new Error(`duplicate screenshot name in this run: ${name}`);
-    shotNames.add(name);
-    jobShots.push(name);
+    // A non-canonical view keeps its own copy of every screen.
+    const file = suffix === '' ? name : `${name}-${suffix}`;
+    if (shotNames.has(file)) throw new Error(`duplicate screenshot name in this run: ${file}`);
+    shotNames.add(file);
+    jobShots.push(file);
     // Settle finite animations (entrance fades, chevron turns) before capture:
     // a frame taken mid-entrance shows rows at partial opacity and chevrons
     // half-rotated, which reads as a design defect that is not there. Looping
@@ -282,8 +298,8 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
       await Promise.all(finite().map((animation) => animation.finished.catch(() => undefined)));
       return count;
     }).catch(() => 0);
-    await page.screenshot({ path: join(out, `${name}.png`) });
-    console.log(`[shot] ${name}.png${inFlight > 0 ? ` (settled ${inFlight} animations)` : ''}`);
+    await page.screenshot({ path: join(out, `${file}.png`) });
+    console.log(`[shot] ${file}.png${inFlight > 0 ? ` (settled ${inFlight} animations)` : ''}`);
     // KIKI_PROOF_PROBE="sel1|sel2": log the effective opacity (the product of
     // every ancestor's) and text colour of each match — a diagnostic for "is
     // this faint by design or caught mid-transition".
