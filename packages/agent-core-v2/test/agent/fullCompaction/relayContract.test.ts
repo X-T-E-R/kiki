@@ -25,7 +25,7 @@ describe('relay-v1 zero-model contract', () => {
       tokensBefore: 500, tokensAfter: live.tokensAfter, keptUserMessageCount: live.keptUserMessageCount,
       keptHeadUserMessageCount: live.keptHeadUserMessageCount, strategy: 'relay', shapeVersion: 1 });
     expect(replay).toEqual(live.messages);
-    expect(summary).toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
+    expect(summary).not.toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
     expect(summary).toContain('agent_id:"child"');
     expect(summary).toContain('Removed history boundary:');
     expect(summary).toContain('step_id:"t3.2"');

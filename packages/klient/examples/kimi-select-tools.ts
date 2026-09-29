@@ -141,7 +141,11 @@ const COMPUTER_USE_TOOLS: readonly Tool[] = [
   },
 ];
 
-const COMPUTER_USE_NAMES = COMPUTER_USE_TOOLS.map((t) => t.name);
+const COMPUTER_USE_ANNOUNCEMENTS = COMPUTER_USE_TOOLS.map(({ name, description }) => ({
+  name,
+  description,
+}));
+const COMPUTER_USE_NAMES = COMPUTER_USE_ANNOUNCEMENTS.map((tool) => tool.name);
 
 /** The builtin SelectTools schema, mirroring `SelectToolsInputSchema`. */
 const SELECT_TOOLS: Tool = {
@@ -187,10 +191,12 @@ const toolDeclarationMessage = (tools: readonly Tool[]): Message => ({
   tools,
 });
 
-const announcementMessage = (names: readonly string[]): Message => ({
+const announcementMessage = (
+  entries: typeof COMPUTER_USE_ANNOUNCEMENTS,
+): Message => ({
   role: 'system',
   content: [
-    { type: 'text', text: renderLoadableToolsAnnouncement(names, []) },
+    { type: 'text', text: renderLoadableToolsAnnouncement(entries, []) },
   ],
   toolCalls: [],
 });
@@ -309,7 +315,7 @@ async function probeWireEncoding(): Promise<void> {
     systemPrompt: SYSTEM_PROMPT,
     tools: [SELECT_TOOLS, { ...COMPUTER_USE_TOOLS[0]!, deferred: true }],
     messages: [
-      announcementMessage(COMPUTER_USE_NAMES),
+      announcementMessage(COMPUTER_USE_ANNOUNCEMENTS),
       userMessage('take a screenshot'),
       toolDeclarationMessage([COMPUTER_USE_TOOLS[0]!]),
     ],
@@ -413,7 +419,7 @@ async function step1Select(requester: ModelRequester, scenario: Scenario): Promi
         systemPrompt: SYSTEM_PROMPT,
         tools: [SELECT_TOOLS],
         messages: [
-          announcementMessage(COMPUTER_USE_NAMES),
+          announcementMessage(COMPUTER_USE_ANNOUNCEMENTS),
           userMessage(scenario.prompt),
         ],
       }),
@@ -461,7 +467,7 @@ async function step2UseLoadedTool(
     systemPrompt: SYSTEM_PROMPT,
     tools: [SELECT_TOOLS, { ...loadedTool, deferred: true }],
     messages: [
-      announcementMessage(COMPUTER_USE_NAMES),
+      announcementMessage(COMPUTER_USE_ANNOUNCEMENTS),
       userMessage(scenario.prompt),
       {
         role: 'assistant',

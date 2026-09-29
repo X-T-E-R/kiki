@@ -152,7 +152,16 @@ describe('server-v2 /api tools + mcp', () => {
       await createSession();
       const { body } = await getJson<{ tools: ToolWire[] }>('/api/tools');
       expect(body.code).toBe(0);
-      expect(listToolsResponseSchema.parse(body.data).tools.length).toBeGreaterThan(0);
+      const tools = listToolsResponseSchema.parse(body.data).tools;
+      expect(tools.length).toBeGreaterThan(0);
+      expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+        'EnterPlanMode', 'ExitPlanMode', 'HistorySearch', 'HistoryRead', 'HistoryList',
+      ]));
+      const resident = tools.filter((tool) =>
+        ['EnterPlanMode', 'ExitPlanMode', 'HistorySearch', 'HistoryRead', 'HistoryList'].includes(tool.name),
+      );
+      expect(resident).toHaveLength(5);
+      for (const tool of resident) expect(tool).toMatchObject({ source: 'builtin', active: true });
     });
 
     it('projects registered tools with source mapping and mcp server id', async () => {

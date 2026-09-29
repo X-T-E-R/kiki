@@ -31,12 +31,10 @@ export class PlanFeature extends Feature {
     this.contributeTool(IEnterPlanModeTool, EnterPlanModeTool, {
       name: 'EnterPlanMode',
       domain: 'plan',
-      disclosure: 'deferred',
     });
     this.contributeTool(IExitPlanModeTool, ExitPlanModeTool, {
       name: 'ExitPlanMode',
       domain: 'plan',
-      disclosure: 'deferred',
     });
   }
 }

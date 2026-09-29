@@ -205,27 +205,30 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
 
   loadableToolsAnnouncement(): string | undefined {
     if (!this.enabled()) return undefined;
-    const loadable = this.loadableToolNames();
-    const loadableSet = new Set(loadable);
+    const loadable = this.loadableTools();
+    const loadableNames = loadable.map((info) => info.name);
+    const loadableSet = new Set(loadableNames);
     const announced = foldAnnouncedToolNames(this.context.get());
-    const added = loadable.filter((name) => !announced.has(name));
+    const added = loadable.filter((info) => !announced.has(info.name));
+    const addedNames = new Set(added.map((info) => info.name));
     const latestSchemas = new Map<string, Tool>();
     for (const message of this.context.get()) {
       for (const tool of message.tools ?? []) latestSchemas.set(tool.name, tool);
     }
-    for (const name of loadable) {
-      if (this.pendingLoaded.has(name) || !announced.has(name) || added.includes(name)) continue;
-      const info = this.toolRegistry.list().find((entry) => entry.name === name);
-      if (info?.source !== 'mcp' && info?.source !== 'plugin') continue;
+    for (const info of loadable) {
+      const name = info.name;
+      if (this.pendingLoaded.has(name) || !announced.has(name) || addedNames.has(name)) continue;
       const previous = latestSchemas.get(name);
       const current = this.schemaOf(name);
       if (previous === undefined || current === undefined ||
         JSON.stringify(previous) === JSON.stringify(current)) continue;
       this.pendingLoaded.add(name);
-      added.push(name);
+      added.push(info);
+      addedNames.add(name);
     }
+    const residents = this.residentToolNames();
     const removed = [...announced]
-      .filter((name) => !loadableSet.has(name))
+      .filter((name) => !loadableSet.has(name) && !residents.has(name))
       .toSorted((a, b) => a.localeCompare(b));
     if (added.length === 0 && removed.length === 0) return undefined;
     return renderLoadableToolsAnnouncement(added, removed);
@@ -262,6 +265,10 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   private loadableToolNames(): string[] {
+    return this.loadableTools().map((info) => info.name);
+  }
+
+  private loadableTools(): ToolInfo[] {
     return this.toolRegistry
       .list()
       .filter(
@@ -269,8 +276,16 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
           this.isDynamicallyLoadable(info) &&
           this.toolPolicy.isToolActive(info.name, info.source),
       )
-      .map((info) => info.name)
-      .toSorted((a, b) => a.localeCompare(b));
+      .toSorted((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private residentToolNames(): Set<string> {
+    return new Set(
+      this.toolRegistry
+        .list()
+        .filter((info) => !this.isDynamicallyLoadable(info))
+        .map((info) => info.name),
+    );
   }
 
   private loadedToolNames(): Set<string> {
@@ -305,7 +320,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   private isDynamicallyLoadable(info: ToolInfo): boolean {
-    return info.source === 'mcp' || info.source === 'plugin' || info.disclosure === 'deferred';
+    return info.source === 'mcp' || info.source === 'plugin';
   }
 
   private schemaOf(name: string): Tool | undefined {

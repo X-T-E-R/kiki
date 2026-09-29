@@ -26,6 +26,7 @@ tools:
   - MemoryWrite
   - HistorySearch
   - HistoryRead
+  - HistoryList
   - ReadMediaFile
   - TodoList
   - Skill

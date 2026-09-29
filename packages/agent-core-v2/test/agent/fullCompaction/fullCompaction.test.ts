@@ -2258,7 +2258,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('uses fresh relay with deferred history tools and a fully kept post-watermark user request', async () => {
+  it('uses fresh relay with resident history tools and a fully kept post-watermark user request', async () => {
     vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'true');
     const ctx = testAgent(sessionServices((reg) => {
       reg.defineInstance(ISessionTodoService, {
@@ -2277,13 +2277,13 @@ describe('FullCompaction', () => {
       tools: ['SelectTools', 'HistoryRead', 'HistorySearch', 'TodoList'],
     });
     const registry = ctx.get(IAgentToolRegistryService);
-    const read = registry.register(mcpTool('HistoryRead', {}), { source: 'builtin', disclosure: 'deferred' });
-    const search = registry.register(mcpTool('HistorySearch', {}), { source: 'builtin', disclosure: 'deferred' });
+    const read = registry.register(mcpTool('HistoryRead', {}), { source: 'builtin' });
+    const search = registry.register(mcpTool('HistorySearch', {}), { source: 'builtin' });
     try {
       const select = ctx.get(IAgentToolSelectService);
       expect(select.enabled()).toBe(true);
-      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).not.toContain('HistoryRead');
-      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).toContain('SelectTools');
+      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).toContain('HistoryRead');
+      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).not.toContain('SelectTools');
       ctx.appendExchange(1, 'x'.repeat(120_000), 'old answer', 35_000);
       ctx.context.append({ role: 'assistant', content: [], toolCalls: [
         { type: 'function', id: 'notes-call', name: 'TodoList', arguments: '{"notes":{"goal":"finish"}}' },
@@ -2297,7 +2297,7 @@ describe('FullCompaction', () => {
       expect(ctx.llmCalls).toHaveLength(0);
       const relay = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
       expect(messageText(relay)).toContain('## Working notes');
-      expect(messageText(relay)).toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
+      expect(messageText(relay)).not.toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
       expect(ctx.compactHistory().some((message) => message.text === 'short new request')).toBe(true);
       await ctx.expectResumeMatches();
     } finally {

@@ -144,7 +144,7 @@ export function renderRelay(input: RelayInput): string {
     lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer}` : '',
     evidence.length > 0 ? `## Evidence since notes\n${evidence.join('\n')}` : '',
     renderPendingReceipts(input),
-    `## History\nIf HistoryRead or HistorySearch is not loaded, call SelectTools with ["HistoryRead", "HistorySearch"] first.\n${historyPointer(input, lastBoundarySource)} · ${sourceCoordinates(lastBoundarySource)}\nHistorySearch {scope:'this_session', agent_id:'${input.agentId}', query:'<terms>'}`,
+    `## History\n${historyPointer(input, lastBoundarySource)} · ${sourceCoordinates(lastBoundarySource)}\nHistorySearch {scope:'this_session', agent_id:'${input.agentId}', query:'<terms>'}`,
   ];
   return blocks.filter(Boolean).join('\n\n');
 }

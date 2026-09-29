@@ -74,6 +74,15 @@ describe('foldAnnouncedToolNames', () => {
     expect([...foldAnnouncedToolNames([trigger])]).toEqual(['a']);
   });
 
+  it('folds descriptions in new announcements while retaining old name-only lines', () => {
+    const history = [
+      announcement(['old — Old description.'], []),
+      announcement(['new — New description.'], ['old']),
+      announcement(['old — Restored description.'], []),
+    ];
+    expect([...foldAnnouncedToolNames(history)].toSorted()).toEqual(['new', 'old']);
+  });
+
   it('is not confused by the guidance sentence in the same message', () => {
     const history = [announcement(['x'], ['y'])];
     expect([...foldAnnouncedToolNames(history)]).toEqual(['x']);
@@ -89,6 +98,15 @@ describe('renderLoadableToolsAnnouncement', () => {
     const removedOnly = renderLoadableToolsAnnouncement([], ['b']);
     expect(removedOnly).toContain('<tools_removed>\nb\n</tools_removed>');
     expect(removedOnly).not.toContain('<tools_added>');
+  });
+
+  it('renders the first description sentence and truncates it to about 100 characters', () => {
+    const description = `${'a'.repeat(120)}. This sentence is not included.`;
+    const rendered = renderLoadableToolsAnnouncement([{ name: 'alpha', description }], []);
+    const line = rendered.match(/<tools_added>\n([^\n]+)\n<\/tools_added>/u)?.[1];
+    expect(line).toBe(`alpha — ${'a'.repeat(99)}…`);
+    expect(line).not.toContain('This sentence');
+    expect(line?.length).toBe(108);
   });
 });
 

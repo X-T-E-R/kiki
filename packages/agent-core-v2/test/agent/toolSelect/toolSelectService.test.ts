@@ -573,7 +573,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
     expect(shaped.every((entry) => entry.deferred === undefined)).toBe(true);
   });
 
-  it('keeps deferred user tools inline while the disclosure gate is closed', () => {
+  it('keeps user tools inline while the disclosure gate is closed', () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
 
@@ -652,20 +652,27 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(byName.get(SELECT_TOOLS_TOOL_NAME)?.deferred).toBeUndefined();
   });
 
-  it('defers only opted-in user tools and restores them after selection', () => {
+  it('keeps builtins resident even when stale deferred metadata is present', () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(new EchoTool('HistoryRead'), {
+      source: 'builtin', disclosure: 'deferred',
+    }));
+
+    const shaped = h.sut.shapeTools(h.registry.list());
+    expect(shaped.map((entry) => entry.name)).toEqual(['HistoryRead']);
+    expect(shaped[0]?.deferred).toBeUndefined();
+    expect(h.sut.isLoadable('HistoryRead')).toBe(false);
+  });
+
+  it('keeps user tools resident regardless of deferred metadata', () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     registerUser(h, new EchoTool(USER_INLINE));
 
-    const beforeLoad = h.sut.shapeTools(h.registry.list());
-    expect(beforeLoad.map((entry) => entry.name)).toContain(USER_INLINE);
-    expect(beforeLoad.map((entry) => entry.name)).not.toContain(USER_DEFERRED);
-
-    h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
-    const afterLoad = h.sut.shapeTools(h.registry.list());
-    expect(afterLoad.map((entry) => entry.name)).toContain(USER_DEFERRED);
-    expect(afterLoad.find((entry) => entry.name === USER_DEFERRED)?.deferred).toBe(true);
-    expect(afterLoad.find((entry) => entry.name === USER_INLINE)?.deferred).toBeUndefined();
+    const shaped = h.sut.shapeTools(h.registry.list());
+    expect(shaped.map((entry) => entry.name)).toEqual([USER_DEFERRED, USER_INLINE]);
+    expect(shaped.every((entry) => entry.deferred === undefined)).toBe(true);
+    expect(h.sut.isLoadable(USER_DEFERRED)).toBe(false);
   });
 
   it('keeps a stable CallTool on OpenAI with deferred tools but not Kimi', () => {
@@ -705,16 +712,13 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
-  it('reports an unloaded deferred tool as loadable only when SelectTools is exposed', () => {
+  it('does not expose user tools through the dynamic loading protocol', () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
-    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(USER_DEFERRED);
-    expect(h.sut.isLoadable(USER_DEFERRED)).toBe(true);
-    activeToolNames = new Set(['another-tool']);
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toContain(USER_DEFERRED);
     expect(h.sut.isLoadable(USER_DEFERRED)).toBe(false);
-    activeToolNames = new Set([USER_DEFERRED]);
-    disclosureToolActive = false;
+    activeToolNames = new Set(['another-tool']);
     expect(h.sut.isLoadable(USER_DEFERRED)).toBe(false);
   });
 
@@ -771,7 +775,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
       }));
       reg.define(IAgentToolPolicyService, AgentToolPolicyService);
     });
-    disposables.add(h.registry.register(new EchoTool('BoardRead'), { source: 'builtin', disclosure: 'deferred' }));
+    disposables.add(h.registry.register(new EchoTool('BoardRead'), { source: 'builtin' }));
     h.contextMemory.history.push(schemaMessage('BoardRead'));
 
     expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
@@ -779,7 +783,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
 
     allowedTools = ['BoardRead'];
-    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: ['BoardRead'], unknown: [] });
+    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
     expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).toEqual(['BoardRead']);
     expect(h.sut.shapeHistory(h.contextMemory.get())[0]?.tools?.map((tool) => tool.name)).toEqual(['BoardRead']);
 
@@ -788,7 +792,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
   });
 
-  it('preserves an announced schema after unregister without exposing the tool', () => {
+  it('preserves a resident schema after unregister without exposing the tool', () => {
     const h = createHarness();
     const registration = registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
@@ -805,7 +809,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
-  it('preserves a deferred schema after re-registering the user tool inline', () => {
+  it('preserves a resident schema after re-registering the user tool', () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
@@ -850,17 +854,16 @@ describe('AgentToolSelectService.load', () => {
     expect(declared?.origin).toEqual({ kind: 'injection', variant: DYNAMIC_TOOL_SCHEMA_VARIANT });
   });
 
-  it('loads the schema of an opted-in user tool', async () => {
+  it('does not load a user tool even when its metadata says deferred', async () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
 
     expect(h.sut.load([USER_DEFERRED])).toEqual({
-      toLoad: [USER_DEFERRED],
+      toLoad: [],
       alreadyAvailable: [],
-      unknown: [],
+      unknown: [USER_DEFERRED],
     });
-    const declared = await declareSchemas(h);
-    expect(declared?.tools?.map((tool) => tool.name)).toEqual([USER_DEFERRED]);
+    expect(await declareSchemas(h)).toBeUndefined();
   });
 
   it('sorts the declared schemas by name', async () => {
@@ -1092,18 +1095,13 @@ describe('AgentToolSelectService executor interception', () => {
     expect(echo.calls).toBe(1);
   });
 
-  it('intercepts an unloaded deferred user tool and runs it after selection', async () => {
+  it('runs a user tool without dynamic loading even when metadata says deferred', async () => {
     const h = createExecutorHarness();
     const dashboard = new EchoTool(USER_DEFERRED);
     registerUser(h, dashboard, 'deferred');
 
-    const beforeLoad = await execute(h, toolCall('call-1', USER_DEFERRED));
-    expect(beforeLoad[0]!.result.output).toContain('is available but not loaded');
-    expect(dashboard.calls).toBe(0);
-
-    h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
-    const afterLoad = await execute(h, toolCall('call-2', USER_DEFERRED));
-    expect(afterLoad[0]!.result.output).toBe('echo ok');
+    const result = await execute(h, toolCall('call-1', USER_DEFERRED));
+    expect(result[0]!.result.output).toBe('echo ok');
     expect(dashboard.calls).toBe(1);
   });
 
@@ -1153,7 +1151,7 @@ describe('AgentToolSelectService executor interception', () => {
     const initial = wire();
     old.dispose();
     registerMcp(h, new StubMcpTool(MCP_ALPHA, 'updated', REQUIRED_PAYLOAD_PARAMETERS));
-    expect(h.sut.loadableToolsAnnouncement()).toContain(`<tools_added>\n${MCP_ALPHA}\n</tools_added>`);
+    expect(h.sut.loadableToolsAnnouncement()).toContain(`<tools_added>\n${MCP_ALPHA} — ${MCP_ALPHA} desc\n</tools_added>`);
     expect(h.sut.drainPendingToolSchemas()?.[0]?.parameters).toEqual(REQUIRED_PAYLOAD_PARAMETERS);
     expect(wire()).toBe(initial);
   });
@@ -1226,7 +1224,7 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
 
     const first = await announce(h);
-    expect(first).toContain(`<tools_added>\n${MCP_ALPHA}\n${MCP_BETA}\n</tools_added>`);
+    expect(first).toContain(`<tools_added>\n${MCP_ALPHA} — ${MCP_ALPHA} desc\n${MCP_BETA} — ${MCP_BETA} desc\n</tools_added>`);
     expect(first).not.toContain('<tools_removed>');
 
     expect(await announce(h, 2)).toBeUndefined();
@@ -1242,7 +1240,7 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
 
     h.eventBus.publish(new TurnStarted({ turnId: 99, origin: { kind: 'user' } }));
     const diff = await announce(h);
-    expect(diff).toContain(`<tools_added>\n${MCP_GAMMA}\n</tools_added>`);
+    expect(diff).toContain(`<tools_added>\n${MCP_GAMMA} — ${MCP_GAMMA} desc\n</tools_added>`);
   });
 
   it('diffs registry additions and removals against the folded announcements', async () => {
@@ -1258,7 +1256,7 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     h.eventBus.publish(new TurnStarted({ turnId: 99, origin: { kind: 'user' } }));
 
     const diff = await announce(h);
-    expect(diff).toContain(`<tools_added>\n${MCP_GAMMA}\n</tools_added>`);
+    expect(diff).toContain(`<tools_added>\n${MCP_GAMMA} — ${MCP_GAMMA} desc\n</tools_added>`);
     expect(diff).toContain(`<tools_removed>\n${MCP_BETA}\n</tools_removed>`);
   });
 
@@ -1272,7 +1270,7 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
 
     h.contextMemory.clear();
     const reannounced = await announceAfterCompaction(h);
-    expect(reannounced).toContain(`<tools_added>\n${MCP_ALPHA}\n${MCP_BETA}\n</tools_added>`);
+    expect(reannounced).toContain(`<tools_added>\n${MCP_ALPHA} — ${MCP_ALPHA} desc\n${MCP_BETA} — ${MCP_BETA} desc\n</tools_added>`);
   });
 
   it('announces only profile-active tools', async () => {
@@ -1282,8 +1280,17 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     activeToolNames = new Set([MCP_BETA]);
 
     const first = await announce(h);
-    expect(first).toContain(`<tools_added>\n${MCP_BETA}\n</tools_added>`);
+    expect(first).toContain(`<tools_added>\n${MCP_BETA} — ${MCP_BETA} desc\n</tools_added>`);
     expect(first).not.toContain(MCP_ALPHA);
+  });
+
+  it('silently drops a resident name from historical loadable announcements', async () => {
+    const h = createHarness();
+    registerBuiltin(h, new EchoTool('HistoryRead'));
+    h.contextMemory.landAnnouncement('<tools_added>\nHistoryRead\n</tools_added>');
+    h.contextMemory.history.push(schemaMessage('HistoryRead'));
+
+    expect(await announce(h)).toBeUndefined();
   });
 
   it('stays silent while the gate is closed', async () => {

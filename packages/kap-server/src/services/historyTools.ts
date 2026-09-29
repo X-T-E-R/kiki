@@ -11,11 +11,11 @@ import {
 } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 
 registerAgentToolService(IHistorySearchTool, HistorySearchTool, {
-  name: 'HistorySearch', domain: 'history', disclosure: 'deferred',
+  name: 'HistorySearch', domain: 'history',
 });
 registerAgentToolService(IHistoryReadTool, HistoryReadTool, {
-  name: 'HistoryRead', domain: 'history', disclosure: 'deferred',
+  name: 'HistoryRead', domain: 'history',
 });
 registerAgentToolService(IHistoryListTool, HistoryListTool, {
-  name: 'HistoryList', domain: 'history', disclosure: 'deferred',
+  name: 'HistoryList', domain: 'history',
 });

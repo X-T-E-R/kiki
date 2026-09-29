@@ -6,6 +6,11 @@ export const DYNAMIC_TOOL_SCHEMA_VARIANT = 'dynamic_tool_schema';
 
 export const LOADABLE_TOOLS_VARIANT = 'loadable-tools';
 
+export interface ToolAnnouncementEntry {
+  readonly name: string;
+  readonly description: string;
+}
+
 export function isDynamicToolSchemaMessage(message: ContextMessage): boolean {
   return message.tools !== undefined && message.tools.length > 0;
 }
@@ -76,7 +81,8 @@ function matchToolNameBlocks(text: string, pattern: RegExp): string[] {
   for (const match of text.matchAll(pattern)) {
     const body = match[1] ?? '';
     for (const line of body.split('\n')) {
-      const name = line.trim();
+      const separator = line.indexOf(' — ');
+      const name = (separator >= 0 ? line.slice(0, separator) : line).trim();
       if (name.length > 0) names.push(name);
     }
   }
@@ -84,12 +90,12 @@ function matchToolNameBlocks(text: string, pattern: RegExp): string[] {
 }
 
 export function renderLoadableToolsAnnouncement(
-  added: readonly string[],
+  added: readonly (string | ToolAnnouncementEntry)[],
   removed: readonly string[],
 ): string {
   const sections: string[] = [];
   if (added.length > 0) {
-    sections.push(`<tools_added>\n${added.join('\n')}\n</tools_added>`);
+    sections.push(`<tools_added>\n${added.map(renderToolAnnouncement).join('\n')}\n</tools_added>`);
   }
   if (removed.length > 0) {
     sections.push(`<tools_removed>\n${removed.join('\n')}\n</tools_removed>`);
@@ -100,4 +106,17 @@ export function renderLoadableToolsAnnouncement(
       'Fold all announcements in this conversation in order to get the current list.',
   );
   return sections.join('\n\n');
+}
+
+function renderToolAnnouncement(entry: string | ToolAnnouncementEntry): string {
+  if (typeof entry === 'string') return entry;
+  const description = firstDescriptionSentence(entry.description);
+  return description.length === 0 ? entry.name : `${entry.name} — ${description}`;
+}
+
+function firstDescriptionSentence(description: string): string {
+  const normalized = description.trim().replaceAll(/\s+/gu, ' ');
+  const sentence = normalized.match(/^.*?[.!?。！？]/u)?.[0]?.trim() ?? normalized;
+  if (sentence.length <= 100) return sentence;
+  return `${sentence.slice(0, 99).trimEnd()}…`;
 }

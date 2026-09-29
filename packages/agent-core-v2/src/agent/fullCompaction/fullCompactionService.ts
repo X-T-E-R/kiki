@@ -775,7 +775,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       }).tokensAfter;
       const visibleTools = this.toolSelect.shapeTools(this.toolRegistry.list());
       const historyToolAvailable = (name: string) => this.toolPolicy.isToolActive(name, 'builtin') &&
-        (visibleTools.some((tool) => tool.name === name) || this.toolSelect.isLoadable(name));
+        visibleTools.some((tool) => tool.name === name);
       const eligibility = choice.strategy === 'summarize' && !choice.shadow
         ? { eligible: false, safe: false, reasons: [] as ReasonCode[] }
         : renderFailed ? { eligible: false, safe: false, reasons: ['relay_render_failed'] as ReasonCode[] }

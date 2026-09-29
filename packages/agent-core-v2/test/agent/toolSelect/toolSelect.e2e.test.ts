@@ -34,6 +34,36 @@ const DISCLOSURE_CAPABILITIES = {
   dynamically_loaded_tools: true,
 } as const;
 
+const PREFIX_PROTOCOL_CASES = [
+  {
+    name: 'deepseek-chat',
+    provider: {
+      type: 'openai',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.example.test/v1',
+      model: 'deepseek-chat',
+    },
+  },
+  {
+    name: 'k3',
+    provider: {
+      type: 'kimi',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.example.test/v1',
+      model: 'kimi-k3',
+    },
+  },
+  {
+    name: 'gpt',
+    provider: {
+      type: 'openai_responses',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.example.test/v1',
+      model: 'gpt-5',
+    },
+  },
+] as const;
+
 type WireEvent = Extract<
   TestAgentContext['allEvents'][number],
   { readonly type: '[wire]' }
@@ -143,20 +173,19 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(toolNames(firstWire.tools)).not.toContain('CallTool');
   });
 
-  it('still exposes deferred plan tools without an MCP server or plugin', async () => {
+  it('keeps plan tools resident without an MCP server or plugin', async () => {
     registration?.dispose();
     registration = undefined;
-    ctx.mockNextResponse(selectToolsCall('call_select_plan', ['EnterPlanMode']));
-    ctx.mockNextResponse({ type: 'text', text: 'plan tool loaded' });
+    ctx.mockNextResponse({ type: 'text', text: 'plan tools are resident' });
 
-    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'load the plan tool' }] });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the available plan tools' }] });
     await ctx.untilTurnEnd();
 
-    expect(historyText(ctx.llmCalls[0]!.history)).toContain('EnterPlanMode');
-    expect(historyText(ctx.llmCalls[0]!.history)).not.toContain(MCP_ALPHA);
-    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain('SelectTools');
-    expect(ctx.llmCalls[1]!.history.some((message) =>
-      message.tools?.some((tool) => tool.name === 'EnterPlanMode'))).toBe(true);
+    const firstWire = ctx.llmCalls[0]!;
+    expect(toolNames(firstWire.tools)).toContain('EnterPlanMode');
+    expect(toolNames(firstWire.tools)).toContain('ExitPlanMode');
+    expect(toolNames(firstWire.tools)).not.toContain('SelectTools');
+    expect(historyText(firstWire.history)).not.toContain('<tools_added>');
   });
 
   it('announces the manifest, loads by name, keeps the top-level table byte-stable, and dispatches on the next step', async () => {
@@ -238,7 +267,7 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(alpha.calls).toBe(1);
   });
 
-  it('loads and dispatches a user tool registered through the domain service', async () => {
+  it('keeps a user tool resident when its metadata says deferred', async () => {
     ctx.get(IAgentUserToolService).register({
       name: DASHBOARD_TOOL,
       description: 'Create a dashboard.',
@@ -250,7 +279,6 @@ describe('progressive tool disclosure end-to-end', () => {
       },
       disclosure: 'deferred',
     });
-    ctx.mockNextResponse(selectToolsCall('call_select_1', [DASHBOARD_TOOL]));
     ctx.mockNextResponse({
       type: 'function',
       id: 'call_dashboard_1',
@@ -264,26 +292,37 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.untilTurnEnd();
 
     const firstWire = ctx.llmCalls[0]!;
-    expect(toolNames(firstWire.tools)).not.toContain(DASHBOARD_TOOL);
-    expect(historyText(firstWire.history)).toContain(DASHBOARD_TOOL);
-
-    const secondWire = ctx.llmCalls[1]!;
-    const injected = secondWire.history.find((message) =>
-      message.tools?.some((tool) => tool.name === DASHBOARD_TOOL),
-    );
-    expect(injected?.tools?.find((tool) => tool.name === DASHBOARD_TOOL)?.parameters).toEqual({
-      type: 'object',
-      properties: { title: { type: 'string' } },
-      required: ['title'],
-      additionalProperties: false,
-    });
-    expect(secondWire.tools).toEqual(firstWire.tools);
-    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
-      `Loaded: ${DASHBOARD_TOOL}`,
-    );
+    expect(toolNames(firstWire.tools)).toContain(DASHBOARD_TOOL);
+    expect(historyText(firstWire.history)).not.toContain(`${DASHBOARD_TOOL} —`);
+    expect(ctx.llmCalls[1]!.tools).toEqual(firstWire.tools);
     expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
       'dashboard-created',
     );
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('keeps the system and tools prefix stable for $name', async ({ provider }) => {
+    registration?.dispose();
+    registration = undefined;
+    ctx.configure({
+      provider,
+      modelCapabilities: DISCLOSURE_CAPABILITIES,
+      tools: ['EnterPlanMode', 'ExitPlanMode'],
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'first response' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prefix check' }] });
+    await ctx.untilTurnEnd();
+    ctx.mockNextResponse({ type: 'text', text: 'second response' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second prefix check' }] });
+    await ctx.untilTurnEnd();
+
+    const calls = wireEvents(ctx, 'llm.request');
+    const snapshots = wireEvents(ctx, 'llm.tools_snapshot');
+    expect(calls).toHaveLength(2);
+    expect(snapshots).toHaveLength(1);
+    expect((calls[0]!.args as { toolsHash?: string }).toolsHash).toBe(
+      (calls[1]!.args as { toolsHash?: string }).toolsHash,
+    );
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
   });
 
   it('re-injects a selected schema after undo slices the tail of the loaded exchange', async () => {
