@@ -166,6 +166,9 @@ export default {
       default_model: 'fixture/kiki-pro',
       request_identity: { preset: 'kimi_code' },
       models: ['fixture/kiki-pro', 'fixture/kiki-lite'],
+      // Write-only extras: names only, values never read back.
+      custom_header_keys: ['X-Team'],
+      env_keys: ['KIMI_BASE_URL'],
     },
     {
       // The OAuth-managed provider: its collapsed summary still carries the

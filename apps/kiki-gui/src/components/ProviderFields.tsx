@@ -81,6 +81,7 @@ import {
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSelect } from './settings/SettingsPrimitives';
 import { SecretField, type SecretDraft } from './settings/SecretField';
+import { ProviderConnectionExtras } from './settings/ProviderConnectionExtras';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 /**
@@ -1430,7 +1431,10 @@ export function ProviderEditor({
             refreshProviderId={provider.id}
             catalogModels={catalogModels}
             onRefreshed={onSaved}
-            advancedExtra={<SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />}
+            advancedExtra={<>
+              <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
+              <ProviderConnectionExtras providerId={provider.id} onSaved={onSaved} />
+            </>}
           />
         </fieldset>
         <div className="flex flex-wrap items-center gap-2">

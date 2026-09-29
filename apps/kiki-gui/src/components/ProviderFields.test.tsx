@@ -419,7 +419,8 @@ describe('ProviderEditor save channel', () => {
     expect(keyInput(first).value).toBe('YOUR_API_KEY');
     expect(buttonByText(first, 'Save provider').disabled).toBe(false);
     expect(reportDirty.mock.calls.findLast(([id]) => id === 'provider:edge:gateway')).toEqual(['provider:edge:gateway', true]);
-    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(3);
+    // Revision reads plus the generation defaults and connection extras editors' own entity reads.
+    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(4);
     await act(async () => { buttonByText(first, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {
       base_url: 'https://draft.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',

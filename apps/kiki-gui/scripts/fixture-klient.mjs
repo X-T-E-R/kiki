@@ -311,6 +311,14 @@ export class FixtureKlient {
         if (patch.base_url !== undefined) next.base_url = patch.base_url ?? undefined;
         if (patch.default_model !== undefined) next.default_model = patch.default_model ?? undefined;
         if (patch.api_key !== undefined) next.has_api_key = patch.api_key !== '';
+        if (patch.model_source !== undefined) next.model_source = patch.model_source ?? undefined;
+        // Header/env values are write-only: keep only the names, like kap-server.
+        for (const [field, keys] of [['custom_headers', 'custom_header_keys'], ['env', 'env_keys']]) {
+          if (patch[field] === undefined) continue;
+          const names = new Set(next[keys] ?? []);
+          for (const [name, value] of Object.entries(patch[field])) value === null ? names.delete(name) : names.add(name);
+          next[keys] = names.size === 0 ? undefined : [...names];
+        }
         server.providers[index] = next;
         return { ...next, revision: revisionOf(next) };
       }
