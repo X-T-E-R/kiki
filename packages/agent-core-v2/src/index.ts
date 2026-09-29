@@ -513,6 +513,7 @@ import '#/agent/tools/agent-send/agentSendTool';
 export * from '#/agent/tools/thread-communication/threadCommunicationTools';
 export * from '#/agent/tools/thread-communication/threadCreateTool';
 export * from '#/agent/tools/history/historyTools';
+export * from '#/agent/tools/history/historyListTool';
 export * from '#/app/sessionManager/sessionLookup';
 export * from '#/workspace/workspaceContext/workspaceContext';
 export * from '#/workspace/sessionLifecycle/sessionLifecycle';

@@ -35,6 +35,7 @@ import {
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { historyArchiveSeed } from './services/historyArchive';
+import { historyDirectorySeed } from './services/history/historyDirectory';
 import './services/historyTools';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
@@ -327,7 +328,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
         replyStyleGuide: opts.hostIdentity.replyStyleGuide,
       },
     },
-    [...logSeed(logging), ...panelBoardSeeds(() => core), ...historyArchiveSeed(() => core, () => transcriptService), ...(opts.seeds ?? [])],
+    [...logSeed(logging), ...panelBoardSeeds(() => core),
+      ...historyArchiveSeed(() => core, () => transcriptService),
+      ...historyDirectorySeed(() => transcriptService), ...(opts.seeds ?? [])],
   );
 
   if (exposureClass !== 'loopback') {

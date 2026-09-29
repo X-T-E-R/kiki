@@ -23,6 +23,7 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   Goal: 'goal',
   Glob: 'fsRead',
   Grep: 'fsRead',
+  HistoryList: 'history',
   HistoryRead: 'history',
   HistorySearch: 'history',
   MemoryRead: 'memory',
