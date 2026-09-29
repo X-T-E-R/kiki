@@ -8,6 +8,7 @@ export const EXECUTOR_LOSS_CODES = [
   'acp_no_step_boundaries',
   'codex_no_step_boundaries',
   'profile_as_user_preamble',
+  'prompt_delivery_downgraded',
   'tool_input_partial',
   'tool_output_summary_only',
   'message_id_missing',
@@ -28,6 +29,8 @@ export const EXECUTOR_PROFILE_DELIVERIES = [
   'native',
   'first_prompt_preamble',
   'system_prompt_override',
+  'developer_instructions',
+  'base_instructions',
 ] as const;
 export type ExecutorProfileDelivery = (typeof EXECUTOR_PROFILE_DELIVERIES)[number];
 
@@ -46,6 +49,23 @@ export const executorCumulativeUsageSchema = z.object({
 });
 
 export type ExecutorCumulativeUsage = z.infer<typeof executorCumulativeUsageSchema>;
+
+const executorPromptDeliverySchema = z.object({
+  executorId: z.string().min(1).optional(),
+  turnId: z.number().int().nonnegative().optional(),
+  promptId: z.string().optional(),
+  origin: z.string(),
+  method: z.enum(['native_steer', 'next_turn_preamble', 'undelivered']),
+  status: z.enum(['delivered', 'queued', 'undelivered']),
+});
+
+export class ExecutorHintDelivery extends Event2<z.infer<typeof executorPromptDeliverySchema>> {
+  static override readonly type = 'executor.prompt.delivery';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = executorPromptDeliverySchema;
+}
+export interface ExecutorHintDelivery extends z.infer<typeof executorPromptDeliverySchema> {}
 
 export interface ExecutorTurnMetadataPayload {
   readonly turnId: number;
@@ -127,7 +147,8 @@ export interface ExecutorPlanRemove extends z.infer<typeof executorPlanRemoveSch
 
 const executorRuntimeUpdateSchema = z.object({
   turnId: z.number().int().nonnegative(),
-  kind: z.enum(['commands', 'mode', 'config', 'session', 'usage', 'unknown']),
+  executorId: z.string().min(1).optional(),
+  kind: z.enum(['commands', 'mode', 'config', 'session', 'usage', 'diff', 'compaction', 'unknown']),
   value: z.unknown(),
 });
 
@@ -169,6 +190,7 @@ export const externalExecutorKey = defineState(
     lastCumulativeUsage: event.lastCumulativeUsage ?? state.lastCumulativeUsage,
   }))
   .on(ExecutorTurnMetadata, () => {})
+  .on(ExecutorHintDelivery, () => {})
   .on(ExecutorPlanUpdate, () => {})
   .on(ExecutorPlanRemove, () => {})
   .on(ExecutorRuntimeUpdate, () => {});

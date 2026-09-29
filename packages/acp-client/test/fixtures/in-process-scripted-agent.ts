@@ -21,6 +21,7 @@ export interface InProcessAgentScript {
   readonly permissionOptions?: readonly PermissionOption[];
   readonly stopReason?: StopReason;
   readonly hangPrompt?: boolean;
+  readonly modeUpdate?: string;
 }
 
 export interface InProcessAgentHistory {
@@ -121,8 +122,14 @@ export function createInProcessScriptedAgent(
       history.configValues.push({ configId: params.configId, value: params.value });
       return { configOptions };
     })
-    .onRequest(methods.agent.session.setMode, () => {
+    .onRequest(methods.agent.session.setMode, async ({ client }) => {
       history.methods.push('session/set_mode');
+      if (script.modeUpdate !== undefined) {
+        await client.notify(methods.client.session.update as string, {
+          sessionId,
+          update: { sessionUpdate: 'current_mode_update', currentModeId: script.modeUpdate },
+        });
+      }
       return {};
     })
     .onRequest(methods.agent.session.prompt, async ({ client }) => {

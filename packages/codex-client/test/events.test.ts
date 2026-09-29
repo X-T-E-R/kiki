@@ -54,7 +54,19 @@ describe('Codex notification mapping', () => {
     }]);
   });
 
-  it.each(['webSearch', 'functionCallOutput', 'hookPrompt', 'subAgentActivity', 'imageGeneration', 'contextCompaction'])(
+  it('maps web search, collaboration, diff and compaction to timeline events', () => {
+    for (const type of ['webSearch', 'collabAgentToolCall', 'subAgentActivity']) {
+      expect(mapCodexNotification('item/started', {
+        item: { id: 'tool-1', type, query: 'docs', input: { agent: 'reviewer', prompt: 'check' } },
+      }).events).toEqual([expect.objectContaining({ type: 'tool.call', toolCallId: 'tool-1' })]);
+    }
+    expect(mapCodexNotification('turn/diff/updated', { diff: '--- a/file' }).events)
+      .toEqual([{ type: 'turn.diff', diff: '--- a/file' }]);
+    expect(mapCodexNotification('thread/compacted', { threadId: 'thread-1' }).events)
+      .toEqual([{ type: 'context.compacted', threadId: 'thread-1' }]);
+  });
+
+  it.each(['functionCallOutput', 'hookPrompt', 'imageGeneration', 'contextCompaction'])(
     'reports unsupported %s item boundaries as unknown events',
     (type) => {
       expect(mapCodexNotification('item/started', {

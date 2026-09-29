@@ -35,6 +35,7 @@ export interface ProfileModelState {
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;
@@ -70,6 +71,7 @@ const profileBindSchema = z.object({
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
+  executorPrompt: z.custom<import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt>().optional(),
   executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
   thinkingEffortAdjusted: z.boolean().optional(),
@@ -178,6 +180,7 @@ export const profileKey = defineState(
     executorId: e.executorId,
     executorProtocol: e.executorProtocol,
     executorOptions: e.executorOptions,
+    executorPrompt: e.executorPrompt,
     executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,
     thinkingEffortAdjusted: e.thinkingEffortAdjusted ?? false,

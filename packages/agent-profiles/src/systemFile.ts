@@ -86,9 +86,6 @@ function loadUpgradedSystemMd(
     forceOverride: true,
   });
   const main = definition.main ?? builtinDefault.main;
-  if (main === true && definition.executor !== undefined && definition.executor !== 'native') {
-    throw new Error(`External executor "${definition.executor}" is unsupported for main agent profile ${path}`);
-  }
   return agentProfileFromFile(
     {
       ...definition,

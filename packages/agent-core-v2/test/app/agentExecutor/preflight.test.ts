@@ -1,6 +1,7 @@
 import { PassThrough, Readable } from 'node:stream';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CodexAppServerClient } from '@kiki/codex-client';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -128,7 +129,7 @@ describe('AgentExecutorPreflightService', () => {
     );
   });
 
-  afterEach(() => services.dispose());
+  afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
 
   it('probes all eight harnesses and selects discovered sources plus the Gemini fallback', async () => {
     processService.outputs.set('grok --version', { output: 'grok 1.0.13' });
@@ -166,6 +167,42 @@ describe('AgentExecutorPreflightService', () => {
     ]));
   });
 
+  it('reports a confirmed login only from the declared command probe and caches its check', async () => {
+    processService.outputs.set('claude-agent-acp --version', { output: '0.81.2' });
+    processService.outputs.set('claude auth status --json', { output: '{"loggedIn":true}' });
+    const preflight = services.get(IAgentExecutorPreflightService);
+    const [loggedIn] = await preflight.run(['claude-acp']);
+    expect(loggedIn?.loginStatus).toBe('logged_in');
+    expect(preflight.lastCheck('claude-acp')?.loginStatus).toBe('logged_in');
+    processService.outputs.set('claude auth status --json', { output: '{"loggedIn":false}' });
+    const [loggedOut] = await preflight.run(['claude-acp']);
+    expect(loggedOut?.loginStatus).toBe('logged_out');
+    processService.outputs.set('claude auth status --json', { output: '{"unexpected":true}' });
+    const [unknown] = await preflight.run(['claude-acp']);
+    expect(unknown?.loginStatus).toBe('unknown');
+  });
+
+  it('classifies Codex account/read and closes the probe on every outcome', async () => {
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.158.0' });
+    const connect = vi.spyOn(CodexAppServerClient.prototype, 'connect').mockResolvedValue();
+    const request = vi.spyOn(CodexAppServerClient.prototype, 'request')
+      .mockResolvedValueOnce({ account: { type: 'chatgpt' } })
+      .mockResolvedValueOnce({ account: null })
+      .mockResolvedValueOnce({ unexpected: true })
+      .mockRejectedValueOnce(new Error('offline'));
+    const shutdown = vi.spyOn(CodexAppServerClient.prototype, 'shutdown').mockResolvedValue();
+    const preflight = services.get(IAgentExecutorPreflightService);
+    const results = [];
+    for (let index = 0; index < 4; index += 1) {
+      const [result] = await preflight.run(['codex-app-server']);
+      results.push(result?.loginStatus);
+    }
+    expect(results).toEqual(['logged_in', 'logged_out', 'unknown', 'unknown']);
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(request).toHaveBeenCalledWith('account/read', { refreshToken: false }, expect.any(AbortSignal));
+    expect(shutdown).toHaveBeenCalledTimes(4);
+  });
+
   it('honors an explicit source id even when an earlier source is available', async () => {
     services.set(IHostFileSystem, fsWith([
       'C:/tools/codex.exe',
@@ -199,6 +236,22 @@ describe('AgentExecutorPreflightService', () => {
       version: 'codex-cli 0.150.0',
     });
     expect(result?.sources?.filter((source) => source.available)).toHaveLength(2);
+  });
+
+  it('reports a custom executor with descriptor-only diagnostics and no id branch', async () => {
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({ 'new-acp': {
+        protocol: 'acp-v1', command: 'new-agent', args: ['acp'],
+        diagnostics: [{ kind: 'message', severity: 'info', message: 'Custom agent ready.' }],
+      } }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+    processService.outputs.set('new-agent --version', { output: 'new-agent 1.0' });
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['new-acp']);
+    expect(result).toMatchObject({ id: 'new-acp', status: 'ready', version: 'new-agent 1.0',
+      resolvedArgs: ['acp'], diagnostics: [{ severity: 'info', message: 'Custom agent ready.' }] });
   });
 
   it('resolves sources lazily and stops after the first available source', async () => {

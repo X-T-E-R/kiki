@@ -149,6 +149,8 @@ import type {
   ProfileUpdateData,
 } from './profile';
 import { IAgentProfileService, ProfileError, ProfileErrors } from './profile';
+import { renderExternalPrompt } from './externalPrompt';
+import { resolveProfilePromptFields } from './promptFieldSnapshot';
 import { TOOLS_SECTION, type ToolsConfig } from '#/agent/toolPolicy/configSection';
 import { isToolActiveComposed, findInactiveToolPatterns, literalToolNames, type InactiveToolPattern } from '#/agent/toolPolicy/evaluate';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -194,6 +196,11 @@ function describeInactiveToolPattern(
 }
 
 export const PLUGIN_SECTIONS_MAX_BYTES = 64 * 1024;
+
+const NATIVE_SSH_SYSTEM_PROMPT =
+  'SSH tools can target a configured remote host with the host argument or an ssh://host/path URI. ' +
+  'Use host: "local" to explicitly target this machine. Remote hosts have independent filesystems and permission rules. ' +
+  'Do not assume a remote path refers to a local file.';
 
 export const profileActiveToolNamesOverlayKey = defineState<readonly string[] | undefined>(
   'profile.activeToolNamesOverlay',
@@ -403,6 +410,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorId: snapshot.executorId,
         executorProtocol: snapshot.executorProtocol,
         executorOptions: snapshot.executorOptions,
+        executorPrompt: snapshot.executorPrompt,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
         thinkingEffortAdjusted: snapshot.thinkingEffortAdjusted,
@@ -701,12 +709,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.delegationPosition =
       input.delegationPosition ??
       (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
-    if (this.delegationPosition === 'main') {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `External executor "${executor.descriptor.id}" is unsupported for the main agent`,
-      );
-    }
     if ([profile, ...(profile.modelProfiles ?? [])].some((entry) =>
       entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined,
     )) {
@@ -722,25 +724,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileModelAlias: profile.modelAlias,
     });
     const requestedAlias = requested.alias;
-    if (requestedAlias === undefined || requestedAlias === '') {
-      throw new ProfileError(
-        ProfileErrors.codes.MODEL_NOT_CONFIGURED,
-        `model is required to bind external executor profile "${selection.baseProfile.name}"`,
-      );
+    if ((requestedAlias === undefined || requestedAlias === '') && this.delegationPosition !== 'main') {
+      throw new ProfileError(ProfileErrors.codes.MODEL_NOT_CONFIGURED,
+        `model is required to bind external executor profile "${selection.baseProfile.name}"`);
     }
     const configuredThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
-      profileThinking: resolveProfileThinkingDefault(profile, requestedAlias, (id) => id),
+      profileThinking: resolveProfileThinkingDefault(profile, requestedAlias ?? '', (id) => id),
     });
     const requestedThinking = configuredThinking ?? 'off';
-    const validated = this.requireValidBinding(
-      this.executors.validateBinding(executor.descriptor.id, executor.options, {
-        modelAlias: requestedAlias,
-        thinkingEffort: requestedThinking,
-      }),
-    );
-    const alias = validated.modelAlias!;
+    const validation = this.executors.validateBinding(executor.descriptor.id, executor.options, {
+      modelAlias: requestedAlias,
+      thinkingEffort: requestedThinking,
+      explicitFields: [
+        ...(profile.tools === undefined ? [] : ['tools']),
+        ...(profile.disallowedTools === undefined ? [] : ['disallowed_tools']),
+        ...(profile.thinkingEffort === undefined && input.thinking === undefined ? [] : ['thinking_effort']),
+        ...(profile.serviceTier === undefined ? [] : ['service_tier']),
+        ...(profile.requestParams === undefined ? [] : ['request_params']),
+        ...(profile.contextBudget === undefined ? [] : ['context_budget']),
+        ...(profile.autoCompact === undefined ? [] : ['auto_compact']),
+        ...(profile.maxCompletionTokens === undefined ? [] : ['max_completion_tokens']),
+      ],
+    });
+    const validated = this.requireValidBinding(validation);
+    const alias = validated.modelAlias;
     const thinkingLevel = validated.thinkingEffort as ThinkingEffort;
     const normalizedRequestedThinking =
       normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
@@ -755,9 +764,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
     this.assertRouteBindable(selection.route?.id);
-    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
-    assertSubagentModelNotDenied(this.config, alias);
-    const profileModelThinking = resolveModelProfileEntry(profile.modelProfiles, alias, (id) => id)?.thinkingEffort;
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias ?? '');
+    if (alias !== undefined) assertSubagentModelNotDenied(this.config, alias);
+    const profileModelThinking = resolveModelProfileEntry(profile.modelProfiles, alias ?? '', (id) => id)?.thinkingEffort;
     const baseModelSelection = input.bindingSelection?.model ?? {
       source: requested.source === 'input' ? 'dispatch-explicit'
         : requested.source === 'route' ? 'route-default' : 'profile-default',
@@ -778,7 +787,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       source: 'executor-normalized' as const,
       requestedValue: requestedThinking,
     };
-    const bindingAdvisories = this.collectBindingAdvisories({
+    const bindingAdvisories = alias === undefined ? [] : this.collectBindingAdvisories({
       profile: selection.baseProfile,
       profileName: selection.baseProfile.name,
       route: selection.route,
@@ -793,7 +802,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
     this.promptFieldSnapshot = assembled.promptFields;
-    this.promptConfigurationSignature = this.promptFieldSignature(profile, alias, assembled.promptFields);
+    this.promptConfigurationSignature = this.promptFieldSignature(profile, alias ?? '', assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
       modelAlias: alias,
       profileName: selection.baseProfile.name,
@@ -809,6 +818,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorId: executor.descriptor.id,
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
+      executorPrompt: profile.executorPrompt,
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: thinkingLevel,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
@@ -835,6 +845,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt: assembled.text,
       disallowedTools: [],
     });
+    if (validation.ok) for (const advisory of validation.advisories ?? []) {
+      await this.dispatcher.dispatch(new WarningIssued({ code: advisory.code, message: advisory.message }));
+    }
     this.seedAgentsMdReminder(assembled.text, context);
     this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
@@ -890,13 +903,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the model.');
     }
     assertSubagentModelNotDenied(this.config, model, this.isExternalExecutor ? undefined : this.models);
-    if (this.isExternalExecutor) {
-      if (changedModel || thinking !== previous.thinkingLevel) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID,
-          `Executor "${previous.executorId}" does not support changing a resumed thread binding; no thread or executor was replaced.`,
-          { details: { executor: previous.executorId, previousModel: previous.modelAlias, requestedModel: model, previousEffort: previous.thinkingLevel, requestedEffort: thinking } });
-      }
-    } else {
+    if (!this.isExternalExecutor) {
       this.assertThinkingEffortSupported(thinking, this.modelCatalog.get(model), model);
     }
     const forcedThinking = this.isExternalExecutor
@@ -939,7 +946,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const base = previous.boundProfile?.promptBase;
       if (base !== undefined) {
         const withModel = applyMatchedModelProfilePrompt(base.text, constraints?.modelProfiles, model, (id) => this.models.resolveId(id));
-        systemPrompt = injectDelegationContext(await this.applyCognitionOverlay(withModel, model), base.delegationSnippet);
+        systemPrompt = this.isExternalExecutor
+          ? withModel
+          : injectDelegationContext(await this.applyCognitionOverlay(withModel, model), base.delegationSnippet);
         environmentDisclosure = base.environment;
       } else if (this.declaresCognitionOverlay(previous.modelAlias) || this.declaresCognitionOverlay(model)
         || declaresModelProfilePrompt(constraints?.modelProfiles, previous.modelAlias, (id) => this.models.resolveId(id))
@@ -1396,51 +1405,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     profile: ResolvedAgentProfile,
     alias: string,
   ): Promise<ResolvedPromptFieldOverrides> {
-    const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
-    const model = alias.length === 0 ? undefined : this.models.get(alias);
-    const resolveId = (profile.executor ?? 'native') === 'native'
-      ? (id: string) => this.models.resolveId(id)
-      : (id: string) => id;
-    const modelProfile = resolveModelProfileEntry(profile.modelProfiles, alias, resolveId);
-    const sourcePath = profile.sourcePath?.replaceAll('\\', '/');
-    const resolved = await this.promptFields.resolve({
-      global: { surface: 'global', overrides: promptConfig?.overrides },
-      model: { surface: 'model', overrides: model?.promptOverrides },
-      profile: {
-        surface: sourcePath?.endsWith('/SYSTEM.md') === true ? 'system' : 'profile',
-        overrides: profile.promptOverrideLayers ?? profile.promptOverrides,
-        sourcePath: profile.sourcePath,
-      },
-      profileModel: { surface: 'profile-model', overrides: modelProfile?.promptOverrides },
-      context: {
-        profileName: profile.name,
-        modelAlias: alias,
-        executor: profile.executor ?? 'native',
-        delegationPosition: this.delegationPosition,
-      },
-      customVariables: promptConfig?.variables,
-    });
-    const customBody = profile.fileDefinition !== undefined || sourcePath?.endsWith('/SYSTEM.md') === true;
-    const profileShadowsSystem = customBody
-      && profile.systemPromptMode !== 'prepend'
-      && profile.systemPromptMode !== 'append'
-      && profile.systemPromptMode !== 'inherit';
-    const cognitionShadowsSystem = (profile.executor ?? 'native') === 'native'
-      && model?.cognition?.overlayMode === 'replace'
-      && cognitionPathRefs(model.cognition.overlay).length > 0;
-    const intentOverride = resolved.values['system.intent_tool_use'];
-    const intentShadowsReplyStyle = intentOverride !== undefined && !intentOverride.includes('${reply_style_guide}');
-    if (!profileShadowsSystem && !cognitionShadowsSystem && !intentShadowsReplyStyle) return resolved;
-    const fields = resolved.fields.map((field) =>
-      (field.id.startsWith('system.') && field.id !== 'system.shared' && (profileShadowsSystem || cognitionShadowsSystem))
-        || (field.id === 'system.reply_style' && intentShadowsReplyStyle)
-        ? { ...field, status: 'shadowed' as const }
-        : field,
-    );
-    return {
-      values: Object.fromEntries(fields.filter((field) => field.status === 'effective').map((field) => [field.id, field.value])),
-      fields,
-    };
+    return resolveProfilePromptFields(profile, alias, this.delegationPosition,
+      this.config, this.models, this.promptFields);
   }
 
   private async assembleBoundSystemPrompt(
@@ -1475,11 +1441,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const snippet = snippetTemplate === undefined
       ? undefined
       : renderPrompt(snippetTemplate, customPromptVariables(promptVariables));
-    const body = (profile.executor ?? 'native') === 'native'
-      ? await this.applyCognitionOverlay(withModel, alias)
-      : withModel;
+    const external = (profile.executor ?? 'native') !== 'native';
+    const body = external
+      ? renderExternalPrompt(profile, { ...context, promptVariables, promptFields: promptFields.values }, promptFields, withModel)
+      : await this.applyCognitionOverlay(withModel, alias);
     return {
-      text: injectDelegationContext(body, snippet),
+      text: external ? body : injectDelegationContext(body, snippet),
       environment: rendered.environment,
       promptBase: { text: rendered.text, environment: rendered.environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
       promptFields,
@@ -1551,6 +1518,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         this.profileState.executorOptions === undefined
           ? undefined
           : { ...this.profileState.executorOptions },
+      executorPrompt: this.profileState.executorPrompt,
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,
       effectiveThinkingLevel: thinking.effective,
@@ -1593,6 +1561,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   getEffectiveThinkingLevel(): ThinkingEffort {
     if (this.isExternalExecutor) return this.profileState.thinkingLevel as ThinkingEffort;
     return this.resolveThinkingState(this.tryResolveRawModel()).effective;
+  }
+
+  resolveContextStrategy(): import('@kiki/agent-profiles/agentProfile').ContextStrategy | undefined {
+    const bound = this.profileState.boundProfile ?? this.activeProfile;
+    const candidate = this.profileState.profileName === undefined ? undefined : this.catalog.get(this.profileState.profileName);
+    const profile = candidate?.definitionId !== undefined && candidate.definitionId === bound?.definitionId
+      ? candidate : bound;
+    const model = this.tryResolveRawModel();
+    const entry = model === undefined ? undefined : resolveModelProfileEntry(
+      profile?.modelProfiles, model.id, (id) => this.models.resolveId(id),
+    );
+    return entry?.contextStrategy ?? profile?.contextStrategy;
   }
 
   resolveModelContext(): ProfileModelContext {
@@ -1694,7 +1674,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   isRunnable(): boolean {
-    return this.profileName !== undefined && this.hasModel();
+    return this.profileName !== undefined && (this.isExternalExecutor || this.hasModel());
   }
 
   hasProvider(): boolean {
@@ -1706,7 +1686,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   getSystemPrompt(): string {
     const variables = customPromptVariables(this.config.get<PromptConfig>(PROMPT_SECTION)?.variables);
-    return appendSharedPromptField(this.systemPrompt, this.promptFieldSnapshot, variables);
+    const prompt = appendSharedPromptField(this.systemPrompt, this.promptFieldSnapshot, variables);
+    return this.runtime.nativeSshEnabled?.() ? `${prompt}\n\n${NATIVE_SSH_SYSTEM_PROMPT}` : prompt;
   }
 
   getPromptFieldSnapshot(options?: { readonly anchor?: boolean }): ResolvedPromptFieldOverrides {

@@ -6,6 +6,11 @@ import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
   agentProfileSourceDiagnosticCodeSchema,
+  executorCheckResponseSchema,
+  executorDetailResponseSchema,
+  executorPromptPreviewRequestSchema,
+  executorPromptPreviewResponseSchema,
+  updateNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileSchema,
@@ -13,6 +18,15 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('accepts rendered executor prompt blocks and rejects malformed preview input', () => {
+    expect(executorPromptPreviewRequestSchema.parse({ executor: 'codex-app-server', workspace: 'wd-a' }))
+      .toEqual({ executor: 'codex-app-server', workspace: 'wd-a' });
+    expect(executorPromptPreviewRequestSchema.safeParse({ workspace: '', extra: true }).success).toBe(false);
+    expect(executorPromptPreviewResponseSchema.parse({
+      executor: 'codex-app-server', delivery: { requested: 'append', actual: 'preamble', downgraded: true },
+      blocks: [{ id: 'body', text: 'Hello' }], text: 'Hello',
+    }).blocks).toEqual([{ id: 'body', text: 'Hello' }]);
+  });
   it('keeps unknown panel metrics nullable and strips dynamic prompt and credential fields', () => {
     const parsed = agentCapabilitiesResponseSchema.parse({
       context: 'live', owner: { agent_id: 'child' }, available: false, targets: [],
@@ -198,6 +212,36 @@ describe('named agent profile REST protocol', () => {
     expect(futureParsed.skills?.[0]?.unavailable_reason_code).toBe('future_skill_reason');
     expect(agentCapabilitiesProducerResponseSchema.safeParse(futurePayload).success).toBe(false);
     expect(agentCapabilityReasonCodeSchema.safeParse('future_tool_reason').success).toBe(false);
+  });
+
+  it('accepts executor login state and explicitly configured prompt delivery', () => {
+    const check = executorCheckResponseSchema.parse({
+      id: 'codex', status: 'ready', command: 'codex', resolved_args: ['app-server'],
+      login_status: 'unknown', diagnostics: [],
+    });
+    expect(check.login_status).toBe('unknown');
+    expect(executorCheckResponseSchema.safeParse({ ...check, login_status: 'expired' }).success).toBe(false);
+
+    const detail = executorDetailResponseSchema.parse({
+      id: 'codex', label: 'Codex', protocol: 'codex-app-server', status: 'ready',
+      model_binding: 'mapped', thinking_binding: 'mapped',
+      connection: { login_status: 'logged_in', default_args: ['app-server'] },
+    });
+    expect(detail.connection?.login_status).toBe('logged_in');
+
+    const patch = updateNamedAgentProfileRequestSchema.parse({
+      scope: 'user', workspace_id: 'wd_a', executor_prompt: {
+        delivery: 'append', include: ['agents_md', 'system.identity', 'delegation.*'],
+        per_engine: { codex: { delivery: 'preamble', body: 'Codex-specific instructions', append: 'Additional context' } },
+      },
+    });
+    expect(patch.executor_prompt?.per_engine?.['codex']?.delivery).toBe('preamble');
+    expect(updateNamedAgentProfileRequestSchema.parse({
+      scope: 'user', workspace_id: 'wd_a', executor_prompt: null,
+    }).executor_prompt).toBeNull();
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user', workspace_id: 'wd_a', executor_prompt: { delivery: 'implicit', include: [] },
+    }).success).toBe(false);
   });
 
   it('accepts the named-profile disable config patch', () => {

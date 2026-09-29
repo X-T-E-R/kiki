@@ -1,17 +1,19 @@
 import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 import { join } from 'pathe';
 
 import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/shippedAgentProfiles';
 import { Error2 } from '#/_base/errors/errors';
 import { CoreErrors } from '#/_base/errors/codes';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
-import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
+import { parseFrontmatter } from '#/_base/text/frontmatter';
 import { parseAgentFileText } from './internal/agentFile';
 import { projectAgentRoots, userAgentRoots, projectAgentRootCandidates } from './internal/agentRoots';
 import { parseAgentRouteFileText } from './internal/agentRouteFile';
@@ -64,8 +66,18 @@ const TOP_LEVEL_KEYS = new Set([
   'sourcePath',
   'description',
   'whenToUse',
+  'main',
+  'executor',
+  'executorPrompt',
   'modelAlias',
   'thinkingEffort',
+  'allowedModels',
+  'denyModels',
+  'allowedEfforts',
+  'subagents',
+  'subagentPolicy',
+  'spawnConstraints',
+  'modelProfiles',
   'serviceTier',
   'autoCompact',
   'tools',
@@ -93,6 +105,7 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     private readonly workspaceLoader: IWorkspaceAgentProfileLoader,
     private readonly extraLoader: IExtraAgentProfileLoader,
     private readonly bootstrap: IBootstrapService,
+    private readonly executors: IAgentExecutorRegistry,
     private readonly atomicTextWriter: AtomicTextWriter = atomicWrite,
   ) {}
 
@@ -223,6 +236,46 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.thinkingEffort !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'thinking_effort', request.thinkingEffort);
     }
+    if (request.main !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'main', request.main);
+    }
+    if (request.executor !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor', request.executor);
+    }
+    if (request.executorPrompt !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor_prompt', request.executorPrompt);
+    }
+    if (request.allowedModels !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_models', request.allowedModels);
+    }
+    if (request.denyModels !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'deny_models', request.denyModels);
+    }
+    if (request.allowedEfforts !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_efforts', request.allowedEfforts);
+    }
+    if (request.subagentPolicy !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'subagent_policy', request.subagentPolicy);
+    }
+    if (request.spawnConstraints !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'spawn_constraints', request.spawnConstraints === null
+        ? null : {
+            allowed_models: request.spawnConstraints.allowedModels,
+            deny_models: request.spawnConstraints.denyModels,
+            allowed_efforts: request.spawnConstraints.allowedEfforts,
+            disallowed_tools: request.spawnConstraints.disallowedTools,
+          });
+    }
+    if (request.subagents !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'subagents', request.subagents === null
+        ? null
+        : mergeSubagentEntries(frontmatterField(nextProfileText, 'subagents'), request.subagents));
+    }
+    if (request.modelProfiles !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'model_profiles', request.modelProfiles === null
+        ? null
+        : mergeModelProfileEntries(frontmatterField(nextProfileText, 'model_profiles'), request.modelProfiles));
+    }
     if (request.serviceTier !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'service_tier', request.serviceTier);
     }
@@ -271,15 +324,12 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
           message: `profile name must remain ${request.name}`,
         }]);
       }
-      const builtin = this.registry.entries().find((entry) => entry.sourceId === 'builtin')
-        ?.contribution.profiles.find((candidate) => candidate.name === parsedProfile.name);
-      const main = parsedProfile.main ?? builtin?.main
-        ?? (parsedProfile.name === DEFAULT_AGENT_PROFILE_NAME ? true : undefined);
-      if (main === true && parsedProfile.executor !== undefined && parsedProfile.executor !== 'native') {
-        throw validationError([{
-          path: 'rawText',
-          message: `External executor "${parsedProfile.executor}" is unsupported for main agent profile "${parsedProfile.name}"`,
-        }]);
+      if (parsedProfile.executor !== undefined && parsedProfile.executor !== 'native') {
+        const validation = this.executors.validateBinding(parsedProfile.executor, parsedProfile.executorOptions, {
+          modelAlias: parsedProfile.modelAlias,
+          thinkingEffort: parsedProfile.thinkingEffort,
+        });
+        if (!validation.ok) throw validationError([{ path: 'executor', message: validation.diagnostic }]);
       }
     }
     if (nextProfileText !== profileText) {
@@ -438,6 +488,37 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   }
   validateStringList(request.tools, 'tools', issues);
   validateStringList(request.disallowedTools, 'disallowedTools', issues);
+  if (request.main !== undefined && request.main !== null && typeof request.main !== 'boolean') {
+    issues.push({ path: 'main', message: 'main must be boolean or null' });
+  }
+  validateOptionalString(request.executor, 'executor', issues);
+  if (request.executorPrompt !== undefined && request.executorPrompt !== null) {
+    const parsed = executorPromptSchema.safeParse(request.executorPrompt);
+    if (!parsed.success) issues.push({ path: 'executorPrompt', message: parsed.error.message });
+  }
+  validateStringList(request.allowedModels, 'allowedModels', issues);
+  validateStringList(request.denyModels, 'denyModels', issues);
+  validateStringList(request.allowedEfforts, 'allowedEfforts', issues);
+  if (request.subagentPolicy !== undefined && request.subagentPolicy !== null
+    && request.subagentPolicy !== 'advisory' && request.subagentPolicy !== 'strict') {
+    issues.push({ path: 'subagentPolicy', message: 'subagentPolicy must be advisory, strict, or null' });
+  }
+  if (request.spawnConstraints !== undefined && request.spawnConstraints !== null) {
+    if (!isRecord(request.spawnConstraints)) {
+      issues.push({ path: 'spawnConstraints', message: 'spawnConstraints must be a mapping or null' });
+    } else {
+      for (const [key, value] of Object.entries(request.spawnConstraints)) {
+        if (!['allowedModels', 'denyModels', 'allowedEfforts', 'disallowedTools'].includes(key)) {
+          issues.push({ path: `spawnConstraints.${key}`, message: `unknown spawn constraint "${key}"` });
+        } else {
+          validateStringList(value, `spawnConstraints.${key}`, issues);
+          if (value === null) issues.push({ path: `spawnConstraints.${key}`, message: 'constraint lists cannot be null' });
+        }
+      }
+    }
+  }
+  validateSubagentUpdates(request.subagents, issues);
+  validateModelProfileUpdates(request.modelProfiles, issues);
   if (request.prompt !== undefined && typeof request.prompt !== 'string') {
     issues.push({ path: 'prompt', message: 'prompt must be a string' });
   }
@@ -476,8 +557,18 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   const structuredFields = [
     request.description,
     request.whenToUse,
+    request.main,
+    request.executor,
+    request.executorPrompt,
     request.modelAlias,
     request.thinkingEffort,
+    request.allowedModels,
+    request.denyModels,
+    request.allowedEfforts,
+    request.subagents,
+    request.subagentPolicy,
+    request.spawnConstraints,
+    request.modelProfiles,
     request.serviceTier,
     request.autoCompact,
     request.tools,
@@ -566,6 +657,120 @@ function readOnlyError(name: string, source: string): Error2 {
   );
 }
 
+function frontmatterField(text: string, key: string): unknown {
+  try {
+    const { data } = parseFrontmatter(text);
+    return isRecord(data) ? data[key] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withKeyUpdates(
+  base: Record<string, unknown>,
+  updates: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const next = { ...base };
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue;
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
+
+function mergeSubagentEntries(
+  current: unknown,
+  updates: NonNullable<AgentProfileWriteRequest['subagents']>,
+): unknown[] {
+  const existing = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(current)) {
+    for (const item of current) {
+      if (isRecord(item) && typeof item['name'] === 'string') existing.set(item['name'], item);
+    }
+  }
+  return updates.map((entry) => {
+    const name = typeof entry === 'string' ? entry.trim() : entry.name.trim();
+    const prior = existing.get(name);
+    if (typeof entry === 'string') return prior ?? name;
+    const merged = withKeyUpdates(prior ?? { name }, {
+      model_alias: entry.modelAlias,
+      thinking_effort: entry.thinkingEffort,
+      allowed_models: entry.allowedModels,
+    });
+    return Object.keys(merged).length === 1 ? name : merged;
+  });
+}
+
+function mergeModelProfileEntries(
+  current: unknown,
+  updates: NonNullable<AgentProfileWriteRequest['modelProfiles']>,
+): Record<string, unknown>[] {
+  const existing = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(current)) {
+    for (const item of current) {
+      if (isRecord(item) && typeof item['alias'] === 'string') existing.set(item['alias'], item);
+    }
+  }
+  return updates.map((entry) => withKeyUpdates(existing.get(entry.alias) ?? { alias: entry.alias }, {
+    when: entry.when,
+    thinking_effort: entry.thinkingEffort,
+  }));
+}
+
+function validateSubagentUpdates(value: unknown, issues: ValidationIssue[]): void {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) {
+    issues.push({ path: 'subagents', message: 'subagents must be an array or null' });
+    return;
+  }
+  const seen = new Set<string>();
+  value.forEach((entry, index) => {
+    const path = `subagents.${index}`;
+    const name = typeof entry === 'string' ? entry : isRecord(entry) ? entry['name'] : undefined;
+    if (typeof name !== 'string' || name.trim() === '') {
+      issues.push({ path, message: 'subagent entries must name a profile' });
+      return;
+    }
+    if (seen.has(name.trim())) issues.push({ path, message: `duplicate subagent ${name.trim()}` });
+    seen.add(name.trim());
+    if (!isRecord(entry)) return;
+    for (const key of Object.keys(entry)) {
+      if (!['name', 'modelAlias', 'thinkingEffort', 'allowedModels'].includes(key)) {
+        issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
+      }
+    }
+    validateModelAlias(entry['modelAlias'], `${path}.modelAlias`, issues);
+    validateOptionalString(entry['thinkingEffort'], `${path}.thinkingEffort`, issues);
+    validateStringList(entry['allowedModels'], `${path}.allowedModels`, issues);
+  });
+}
+
+function validateModelProfileUpdates(value: unknown, issues: ValidationIssue[]): void {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) {
+    issues.push({ path: 'modelProfiles', message: 'modelProfiles must be an array or null' });
+    return;
+  }
+  const seen = new Set<string>();
+  value.forEach((entry, index) => {
+    const path = `modelProfiles.${index}`;
+    if (!isRecord(entry) || typeof entry['alias'] !== 'string' || !MODEL_ALIAS_PATTERN.test(entry['alias'])) {
+      issues.push({ path: `${path}.alias`, message: 'model profile entries need an alias without whitespace' });
+      return;
+    }
+    if (seen.has(entry['alias'])) issues.push({ path, message: `duplicate model profile ${entry['alias']}` });
+    seen.add(entry['alias']);
+    for (const key of Object.keys(entry)) {
+      if (!['alias', 'when', 'thinkingEffort'].includes(key)) {
+        issues.push({ path: `${path}.${key}`, message: `field "${key}" is not editable` });
+      }
+    }
+    validateOptionalString(entry['when'], `${path}.when`, issues);
+    validateOptionalString(entry['thinkingEffort'], `${path}.thinkingEffort`, issues);
+  });
+}
+
 function replacePromptBody(text: string, prompt: string): string {
   const block = locateFrontmatter(text);
   const newline = text.indexOf('\n', block.contentEnd);
@@ -577,7 +782,7 @@ function replacePromptBody(text: string, prompt: string): string {
 function updateFrontmatterScalar(
   text: string,
   key: string,
-  value: string | number | boolean | readonly string[] | null,
+  value: string | number | boolean | readonly unknown[] | Readonly<Record<string, unknown>> | null,
 ): string {
   const block = locateFrontmatter(text);
   const lines = scanLines(block.content);
@@ -600,6 +805,12 @@ function updateFrontmatterScalar(
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
       const candidate = lines[cursor]!;
       if (/^[A-Za-z0-9_-]+[ \\t]*:/.test(candidate.content)) break;
+      end = candidate.end;
+    }
+  } else {
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const candidate = lines[cursor]!;
+      if (!/^\s+\S/.test(candidate.content)) break;
       end = candidate.end;
     }
   }

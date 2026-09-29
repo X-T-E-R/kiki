@@ -27,6 +27,7 @@ export async function discoverAgentFiles(
   options?: { readonly includeRoutes?: boolean },
 ): Promise<AgentFileDiscoveryResult> {
   const byName = new Map<string, AgentFileDefinition>();
+  const shadowedFiles = new Map<string, string[]>();
   const byRouteId = new Map<string, AgentFileDiscoveryResult['routes'][number]>();
   const skipped: SkippedAgentFile[] = [];
   const deferredDirectories: Array<{ path: string; root: AgentFileRoot }> = [];
@@ -62,6 +63,9 @@ export async function discoverAgentFiles(
       if (prior === undefined) {
         byName.set(agent.name, agent);
       } else if (prior.path !== agent.path) {
+        const paths = shadowedFiles.get(prior.definitionId) ?? [];
+        paths.push(agent.path);
+        shadowedFiles.set(prior.definitionId, paths);
         const reason = `Duplicate agent profile "${agent.name}" at ${agent.path}; keeping higher-priority ${prior.path}`;
         warnCapped(agent.path, reason);
       }
@@ -194,6 +198,7 @@ export async function discoverAgentFiles(
   });
   return {
     agents,
+    shadowedFiles,
     routes: [...byRouteId.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
     skipped,
     scannedRoots: roots.map((root) => root.path),

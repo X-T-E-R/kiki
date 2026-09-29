@@ -80,6 +80,8 @@ interface OpenResponse {
   readonly sessionId: string;
   readonly mode: Exclude<AcpSessionOpenMode, 'live'>;
   readonly configOptions: readonly SessionConfigOption[];
+  readonly currentModeId?: string;
+  readonly availableModes?: readonly string[];
 }
 
 class ValidatedNdjsonInput extends Transform {
@@ -245,6 +247,8 @@ export class AcpProcessClient {
   #connection: ClientConnection | undefined;
   #capabilities: AgentCapabilities = {};
   #openResult: AcpOpenSessionResult | undefined;
+  #observedModeId: string | undefined;
+  #modeWaiter: ((mode: string) => void) | undefined;
   #activeTurn: ActiveTurn | undefined;
   #startupInFlight = false;
   #loadReplayCount = 0;
@@ -363,16 +367,25 @@ export class AcpProcessClient {
         );
       }
       if (options.modeId !== undefined) {
-        await this.#requestDuringStartup(
-          connection.agent.request(methods.agent.session.setMode, {
-            sessionId: this.#openResult.sessionId,
-            modeId: options.modeId,
-          }),
-          deadline,
-          options.signal,
-        );
+        this.#observedModeId = undefined;
+        const observed = new Promise<string>((resolve) => { this.#modeWaiter = resolve; });
+        try {
+          await this.#requestDuringStartup(
+            connection.agent.request(methods.agent.session.setMode, {
+              sessionId: this.#openResult.sessionId,
+              modeId: options.modeId,
+            }),
+            deadline,
+            options.signal,
+          );
+          if (this.#observedModeId === undefined) {
+            await Promise.race([observed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+          }
+        } finally {
+          this.#modeWaiter = undefined;
+        }
       }
-      this.#openResult = { ...this.#openResult, configOptions };
+      this.#openResult = { ...this.#openResult, configOptions, currentModeId: this.#observedModeId };
       this.#setState('ready');
       return this.#openResult;
     } catch (error) {
@@ -767,6 +780,8 @@ export class AcpProcessClient {
       initialize,
       capabilities: this.#capabilities,
       configOptions,
+      currentModeId: opened.currentModeId,
+      availableModes: opened.availableModes,
       sessionRef,
       loadReplayObserved: this.#loadReplayCount > 0,
       quarantinedUpdateCount: this.#loadReplayCount,
@@ -813,6 +828,8 @@ export class AcpProcessClient {
           sessionId: priorSessionId,
           mode: 'resume',
           configOptions: sessionConfigOptionsFromResponse(response),
+          currentModeId: response.modes?.currentModeId,
+          availableModes: response.modes?.availableModes.map((mode) => mode.id),
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -834,6 +851,8 @@ export class AcpProcessClient {
           sessionId: priorSessionId,
           mode: 'load',
           configOptions: sessionConfigOptionsFromResponse(response),
+          currentModeId: response.modes?.currentModeId,
+          availableModes: response.modes?.availableModes.map((mode) => mode.id),
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -857,6 +876,8 @@ export class AcpProcessClient {
       sessionId: response.sessionId,
       mode: 'new',
       configOptions: sessionConfigOptionsFromResponse(response),
+      currentModeId: response.modes?.currentModeId,
+      availableModes: response.modes?.availableModes.map((mode) => mode.id),
     };
   }
 
@@ -882,6 +903,10 @@ export class AcpProcessClient {
   #handleSessionUpdate(params: unknown): void {
     try {
       const mapped = mapAcpSessionNotification(params);
+      if (mapped.event.type === 'mode.update' && mapped.sessionId === this.#openResult?.sessionId) {
+        this.#observedModeId = mapped.event.currentModeId;
+        this.#modeWaiter?.(mapped.event.currentModeId);
+      }
       if (this.#state === 'opening_session' && this.#openingMode === 'load') {
         this.#loadReplayCount += 1;
         return;

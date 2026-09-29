@@ -3,8 +3,8 @@ import { isPlainObject } from './configPure';
 import { camelToSnake } from './toml';
 
 const SUBAGENT_BINDING_REPLACEMENT =
-  'Subagent model and effort bindings come from the agent profile (or its route or the caller ' +
-  'lease), or from an explicit model_alias and effort at dispatch.';
+  'Subagent models come from an explicit dispatch model_alias, the agent profile (or its route or caller lease), ' +
+  'or [subagent].default_model when no model is pinned. Effort follows explicit dispatch, profile, and model defaults.';
 
 const REMOVED_SECTION_SNAKE = 'secondary_model';
 

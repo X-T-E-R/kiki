@@ -14,6 +14,10 @@ import { IAgentStateService as StateServiceId } from '#/agent/state/agentState';
 import { IAgentExecutorRegistry as ExecutorRegistryId } from '#/app/agentExecutor/agentExecutor';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { NativeAgentExecutorSession } from '#/agent/execution/nativeAgentExecutorSession';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
@@ -77,6 +81,11 @@ function executionService(
   ix.set(StateServiceId, stateService);
   ix.stub(IAgentLoopService, {});
   ix.stub(IAgentPromptService, {});
+  ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
+  ix.stub(IAgentContextMemoryService, { get: () => [] });
+  ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({ notes: {} }) });
+  ix.stub(IAgentGoalService, { getGoal: () => ({ goal: null }) });
+  ix.stub(IEventDispatcher, { dispatch: async () => {} });
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
   return ix.get(IAgentExecutionService) as AgentExecutionService;
 }
@@ -404,6 +413,7 @@ describe('AgentExecutionService', () => {
     };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
+      list: () => [],
       get: () => ({ id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' }),
       resolve: () => ({
         descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
@@ -518,6 +528,7 @@ describe('AgentExecutionService', () => {
     };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
+      list: () => [],
       get: () => ({ id: executorId, protocol, args: [], revision: 'r1' }),
       resolve: () => ({
         descriptor: { id: executorId, protocol, args: [], revision: 'r1' },
@@ -552,7 +563,7 @@ describe('AgentExecutionService', () => {
       { modelAlias: 'model-a', thinkingLevel: 'high' },
       { modelAlias: 'model-b', thinkingLevel: 'xhigh' },
     ]);
-    expect(contexts.map((context) => context.binding.systemPrompt)).toEqual(['\n\nAll executors share this instruction.', '\n\nAll executors share this instruction.']);
+    expect(contexts.map((context) => context.binding.systemPrompt)).toEqual(['', '']);
     expect(binding.systemPrompt).toBe('');
     expect(shutdowns[0]).toHaveBeenCalledTimes(1);
     expect(shutdowns[1]).not.toHaveBeenCalled();
@@ -585,6 +596,7 @@ describe('AgentExecutionService', () => {
     };
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
+      list: () => [],
       get: () => ({ id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' }),
       resolve: () => ({
         descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
@@ -617,6 +629,7 @@ describe('AgentExecutionService', () => {
     const ix = new TestInstantiationService();
     const registry: IAgentExecutorRegistry = {
       _serviceBrand: undefined,
+      list: () => [],
       get: () => ({ id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' }),
       resolve: () => ({
         descriptor: { id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' },

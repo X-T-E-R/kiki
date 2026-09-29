@@ -153,6 +153,7 @@ export async function acquireWorkspaceProfileCatalog(
     });
     trimWorkspaceCatalogCache(entries);
     return { workspaceId, catalog: acquired.catalog, skills: lease.instance.program.skills.catalog,
+      instance: lease.instance,
       dispose: () => { acquired.users -= 1; lease.dispose(); trimWorkspaceCatalogCache(entries); } };
   } catch (error) {
     if (entry !== undefined) entry.users -= 1;

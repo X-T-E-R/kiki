@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { ExecutorPrompt } from './executorPrompt';
 import type { PromptOverrides } from './promptOverrides';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 import type { ToolGroupId } from './toolGroups';
@@ -22,6 +23,7 @@ export type SubagentDeclaration =
   | { readonly kind: 'set'; readonly names: readonly string[] };
 
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
+export type ContextStrategy = 'summarize' | 'auto' | 'fresh';
 
 export interface AgentModelParameters {
   readonly autoCompact?: number;
@@ -33,6 +35,7 @@ export interface AgentModelParameters {
 
 export interface AgentModelProfile extends AgentModelParameters {
   readonly alias: string;
+  readonly contextStrategy?: ContextStrategy;
   readonly when?: string;
   readonly thinkingEffort?: string;
   readonly allowedEfforts?: readonly string[];
@@ -83,6 +86,7 @@ export interface SystemPromptRenderResult {
 }
 
 export interface AgentProfile extends AgentModelParameters {
+  readonly contextStrategy?: ContextStrategy;
   readonly fileDefinition?: import('./agentFileTypes').AgentFileDefinition;
   readonly routeDefinition?: AgentProfileRouteDefinition;
   readonly name: string;
@@ -90,6 +94,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly routeId?: string;
   readonly description?: string;
   readonly sourcePath?: string;
+  readonly shadowedFiles?: readonly string[];
   readonly whenToUse?: string;
   readonly override?: boolean;
   readonly private?: boolean;
@@ -106,6 +111,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly spawnConstraints?: SpawnConstraints;
   readonly executor?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorPrompt?: ExecutorPrompt;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

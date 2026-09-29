@@ -13,6 +13,7 @@ import type {
 
 import type { Hooks } from '#/hooks';
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
+import type { NegotiatedExecutorCapabilities } from './capabilities';
 import type {
   AgentRunHandle,
   AgentRunRequest,
@@ -68,10 +69,35 @@ export interface AgentExecutorPermissionModeMapping {
 }
 
 export type AgentExecutorProfileDelivery = 'system_prompt_override';
+export type ExecutorPromptDelivery = 'append' | 'replace' | 'preamble';
+export interface AgentExecutorPermission {
+  readonly via: 'config_option' | 'session_mode' | 'argv' | 'turn_param';
+  readonly flag?: string;
+  readonly configId?: string;
+  readonly configCategory?: string;
+  readonly manual: string;
+  readonly review?: string;
+  readonly auto: string;
+  readonly yolo: string;
+  readonly trustEngineSettings?: boolean;
+}
+
+export type AgentExecutorDiagnosticRule =
+  | { readonly kind: 'message'; readonly severity: 'info' | 'warning'; readonly message: string }
+  | { readonly kind: 'env'; readonly name: string; readonly present: string; readonly absent: string }
+  | { readonly kind: 'path'; readonly path: string; readonly envHome?: string;
+      readonly present: string; readonly absent: string; readonly absentSeverity: 'info' | 'warning' }
+  | { readonly kind: 'dependency'; readonly command: string; readonly args: readonly string[];
+      readonly unavailable: string; readonly failed: string }
+  | { readonly kind: 'flag'; readonly args: readonly string[]; readonly stable: string;
+      readonly fallback: string; readonly stableMessage: string; readonly fallbackMessage: string;
+      readonly missingMessage: string }
+  | { readonly kind: 'version'; readonly min: string; readonly warning: string; readonly normal: string };
 
 export interface AgentExecutorDescriptor {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
+  readonly label?: string;
   readonly command?: string;
   readonly sources?: readonly AgentExecutorBinarySource[];
   readonly source?: string;
@@ -79,6 +105,10 @@ export interface AgentExecutorDescriptor {
   readonly sourceProbes?: readonly AgentExecutorSourceProbe[];
   readonly version?: string;
   readonly versionProbe?: AgentExecutorVersionProbe;
+  readonly diagnostics?: readonly AgentExecutorDiagnosticRule[];
+  readonly auth?: { readonly kind: 'command-json'; readonly command: string;
+    readonly args: readonly string[]; readonly loggedInKey: string }
+    | { readonly kind: 'codex-account' };
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly startupTimeoutMs?: number;
@@ -90,6 +120,12 @@ export interface AgentExecutorDescriptor {
   readonly thoughtConfigCategory?: string;
   readonly thoughtConfigId?: string;
   readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
+  readonly permission?: AgentExecutorPermission;
+  readonly promptDeliveries?: readonly ExecutorPromptDelivery[];
+  readonly defaultProfile?: boolean;
+  readonly installHint?: string;
+  readonly loginCommand?: readonly string[];
+  readonly steerDelivery?: 'native' | 'next_turn_preamble';
   /**
    * Declares that the harness accepts the frozen profile as a real system
    * prompt through the `session/new` `_meta.systemPromptOverride` extension.
@@ -117,6 +153,8 @@ export interface AgentExecutorSession {
     options: RunAgentOptions,
   ): Promise<AgentRunHandle>;
   status(): AgentExecutionStatus;
+  steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean>;
+  updateBinding?(binding: ProfileBindingSnapshot): void;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;
   shutdown(reason?: unknown): Promise<void>;
@@ -141,11 +179,12 @@ export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot)
       executorProtocol: binding.executorProtocol,
       executorOptions: binding.executorOptions,
       executorDescriptorRevision: binding.executorDescriptorRevision,
-      profileDefinitionId: binding.profileDefinitionId,
-      routeId: binding.routeId,
       modelAlias: binding.modelAlias,
       thinkingLevel: binding.thinkingLevel,
+      profileDefinitionId: binding.profileDefinitionId,
+      routeId: binding.routeId,
       systemPrompt: binding.systemPrompt,
+      executorPrompt: binding.executorPrompt,
       renderGeneration: binding.renderGeneration,
     }))
     .digest('hex');
@@ -169,6 +208,7 @@ export interface IAgentExecutorRegistry {
   readonly _serviceBrand: undefined;
 
   get(id: string): AgentExecutorDescriptor | undefined;
+  list(): readonly AgentExecutorDescriptor[];
   resolve(id?: string, options?: unknown): ResolvedAgentExecutor;
   validateBinding(
     id: string,
@@ -177,6 +217,8 @@ export interface IAgentExecutorRegistry {
   ): ExecutorValidationResult;
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
   discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
+  recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void;
+  negotiated?(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined;
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined;
 }
 

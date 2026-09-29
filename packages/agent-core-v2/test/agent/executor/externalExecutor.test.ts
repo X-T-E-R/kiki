@@ -18,13 +18,19 @@ import { buildModeOption } from '../../../../acp-server/src/config-options';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import type { GoalSnapshot } from '#/agent/goal/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import type { TodoItem } from '#/session/todo/todoItem';
+import type { TodoNotes } from '#/session/todo/todoNotes';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -35,6 +41,7 @@ import {
   resolveAcpProcessArgs,
 } from '#/agent/execution/acpAgentExecutorSession';
 import {
+  ExecutorHintDelivery,
   ExecutorPlanUpdate,
   ExecutorRuntimeUpdate,
   ExecutorSessionUpdated,
@@ -67,6 +74,9 @@ interface FakeHarnessOptions {
   readonly mode?: AcpOpenSessionResult['mode'];
   readonly events?: readonly NormalizedExecutorEvent[];
   readonly history?: readonly ContextMessage[];
+  readonly todos?: readonly TodoItem[];
+  readonly notes?: TodoNotes;
+  readonly goal?: GoalSnapshot | null;
   readonly prior?: ReturnType<typeof stateHarness>['prior'];
   readonly approval?: () => Promise<ApprovalResponse>;
   readonly permissionSignal?: AbortController;
@@ -85,6 +95,7 @@ interface FakeHarnessOptions {
   readonly executorId?: string;
   readonly providerName?: string;
   readonly modelAlias?: string;
+  readonly unpinModel?: boolean;
   readonly thinkingEffort?: string;
   readonly modelBinding?: 'session_config' | 'argv';
   readonly modelArgs?: readonly string[];
@@ -270,6 +281,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
+    [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
   let configured = options.sessionConfigOptions === undefined
@@ -396,9 +408,11 @@ function createHarness(options: FakeHarnessOptions = {}) {
       revision: 'r1',
     },
     binding: {
-      modelAlias: options.modelAlias ?? 'model-a',
+      modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'model-a',
       thinkingLevel: options.thinkingEffort ?? 'high',
       systemPrompt: 'Frozen profile',
+      executorPrompt: options.profileDelivery === 'system_prompt_override'
+        ? { delivery: 'replace', include: [] } : undefined,
       executorId: options.executorId ?? 'example-acp',
       executorProtocol: 'acp-v1',
       executorDescriptorRevision: 'r1',
@@ -460,6 +474,12 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
   const agentId = harness.executorContext.agent.id;
   ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
   ix.set(IAgentContextMemoryService, harness.contextMemory);
+  ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
+  ix.stub(ISessionTodoService, {
+    getTodos: () => options.todos ?? [],
+    getNotes: () => ({ notes: options.notes }),
+  });
+  ix.stub(IAgentGoalService, { getGoal: () => ({ goal: options.goal ?? null }) });
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
   ix.set(IAgentExecutorRegistry, {
     resolveExecutable: async () => ({
@@ -496,6 +516,7 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
     ix,
     execution,
     starts: harness.starts,
+    events: harness.events,
     pendingTurns: harness.pendingTurns,
     interaction: harness.interaction,
     client: harness.client,
@@ -642,10 +663,10 @@ describe('ACP external executor', () => {
       'cursor-model',
       'acp',
     ]);
-    expect(() => resolveAcpProcessArgs({
+    expect(resolveAcpProcessArgs({
       ...context,
       binding: { ...context.binding, modelAlias: undefined },
-    })).toThrow(/requires a pinned argv model/);
+    })).toEqual(['acp']);
   });
 
   it('suppresses an exact outbound prompt echo from external user frames', async () => {
@@ -673,6 +694,109 @@ describe('ACP external executor', () => {
     await run.completion;
 
     expect(harness.appendedMessages).toEqual([]);
+  });
+
+  it('delivers pending Todo, goal and notification context before an external turn', async () => {
+    const harness = createExecutionHarness({ history: [
+      { id: 'todo-1', role: 'user', content: [{ type: 'text', text: 'Todo: finish tests' }],
+        toolCalls: [], origin: { kind: 'injection', variant: 'todo_list_reminder' } },
+      { id: 'goal-1', role: 'user', content: [{ type: 'text', text: 'Goal: land backend' }],
+        toolCalls: [], origin: { kind: 'injection', variant: 'goal_state' } },
+      { id: 'notify-1', role: 'user', content: [{ type: 'text', text: 'Child completed' }],
+        toolCalls: [], origin: { kind: 'task', taskId: 'child', status: 'completed', notificationId: 'done' } },
+      { id: 'notify-2', role: 'user', content: [{ type: 'text', text: 'AgentNotify: sibling ready' }],
+        toolCalls: [], origin: { kind: 'agent_message', messageId: 'notify-2', senderAgentId: 'sibling', senderTaskName: 'sibling' } },
+    ] });
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'Continue' },
+        { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toContain('Todo: finish tests');
+      expect(harness.starts[0]?.prompt).toContain('Goal: land backend');
+      expect(harness.starts[0]?.prompt).toContain('Child completed');
+      expect(harness.starts[0]?.prompt).toContain('AgentNotify: sibling ready');
+      expect(harness.starts[0]?.prompt).toContain('Continue');
+      run.turn.cancel();
+      await harness.turnCancel();
+      await run.completion.catch(() => undefined);
+    } finally {
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
+  });
+
+  it('sends live Todo and goal state with delivery events even without injected history', async () => {
+    const harness = createExecutionHarness({
+      todos: [{ title: 'Finish integration', status: 'in_progress' }],
+      notes: { next: 'Run the server test' },
+      goal: {
+        goalId: 'goal-1', objective: 'Land the external harness', status: 'active',
+        completionCriterion: 'All tests green', turnsUsed: 0, tokensUsed: 0, wallClockMs: 0,
+        budget: {
+          tokenBudget: null, turnBudget: null, wallClockBudgetMs: null,
+          remainingTokens: null, remainingTurns: null, remainingWallClockMs: null,
+          tokenBudgetReached: false, turnBudgetReached: false, wallClockBudgetReached: false,
+          overBudget: false,
+        },
+      },
+    });
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'Continue' },
+        { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toContain('Goal (active): Land the external harness');
+      expect(harness.starts[0]?.prompt).toContain('Completion criterion: All tests green');
+      expect(harness.starts[0]?.prompt).toContain('[in_progress] Finish integration');
+      expect(harness.starts[0]?.prompt).toContain('next: Run the server test');
+      expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).toMatchObject([
+        { origin: 'goal_state', method: 'next_turn_preamble', status: 'delivered' },
+        { origin: 'todo_state', method: 'next_turn_preamble', status: 'delivered' },
+      ]);
+      await harness.turnCancel();
+      await run.completion.catch(() => undefined);
+    } finally {
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
+  });
+
+  it('leaves an external prompt unchanged when no hints or state exist', async () => {
+    const harness = createExecutionHarness();
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'Continue' },
+        { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toMatch(/--- END KIKI FROZEN PROFILE INSTRUCTIONS ---\n\nContinue$/);
+      expect(harness.starts[0]?.prompt).not.toContain('[Kiki todo_state]');
+      expect(harness.starts[0]?.prompt).not.toContain('[Kiki goal_state]');
+      expect(harness.events.some((event) => event instanceof ExecutorHintDelivery)).toBe(false);
+      await harness.turnCancel();
+      await run.completion.catch(() => undefined);
+    } finally {
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
+  });
+
+  it('marks an oversized context hint undelivered and forwards the following notification', async () => {
+    const harness = createExecutionHarness({ history: [
+      { id: 'large', role: 'user', content: [{ type: 'text', text: 'x'.repeat(9 * 1024) }],
+        toolCalls: [], origin: { kind: 'injection', variant: 'large' } },
+      { id: 'notify', role: 'user', content: [{ type: 'text', text: 'Child completed' }],
+        toolCalls: [], origin: { kind: 'task', taskId: 'child', status: 'completed', notificationId: 'done' } },
+    ] });
+    try {
+      const run = await harness.execution.run({ kind: 'prompt', prompt: 'Continue' },
+        { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toContain('Child completed');
+      expect(harness.starts[0]?.prompt).not.toContain('x'.repeat(9 * 1024));
+      expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).toMatchObject([
+        { origin: 'injection:large', method: 'undelivered', status: 'undelivered' },
+        { origin: 'task', method: 'next_turn_preamble', status: 'delivered' },
+      ]);
+      await harness.turnCancel();
+      await run.completion.catch(() => undefined);
+    } finally {
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
   });
 
   it('forwards queued collaboration mail through the next ordinary ACP resume before acknowledging it', async () => {
@@ -1245,6 +1369,25 @@ describe('ACP external executor', () => {
     )).toHaveLength(1);
   });
 
+  it.each(['grok-acp', 'claude-acp'] as const)('resumes an unpinned %s session with the harness default model', async (executorId) => {
+    const harness = createHarness({
+      executorId, unpinModel: true, thinkingEffort: 'off', mode: 'resume',
+      prior: {
+        executorId, descriptorRevision: 'r1',
+        sessionRef: { executorId, version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+    });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'Continue' },
+      { signal: new AbortController().signal });
+    await run.completion;
+    expect(harness.selections).not.toContainEqual({ configId: 'model-id', value: 'model-a' });
+    expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata))
+      .toMatchObject({ executorId, resumeMode: 'resume' });
+    expect(harness.usageRecords[0]?.[3]).toMatchObject({ modelAlias: undefined, executorId });
+    await harness.session.shutdown();
+  });
+
   it.each([
     [
       'missing selected value even when currentValue matches',
@@ -1485,10 +1628,10 @@ describe('ACP external executor', () => {
       const sent = JSON.stringify(harness.starts[0]);
       expect(sent).toContain('Role NEW');
       expect(sent).not.toContain('Role OLD');
-      expect(sent.split('SHARED_NEW')).toHaveLength(2);
+      expect(sent).not.toContain('SHARED_NEW');
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
-      expect(sent.split(snippet!)).toHaveLength(2);
+      expect(sent).not.toContain(snippet!);
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
@@ -1507,7 +1650,7 @@ describe('ACP external executor', () => {
           { signal: new AbortController().signal },
         );
         expect(JSON.stringify(harness.starts[0])).toContain('Frozen profile');
-        expect(JSON.stringify(harness.starts[0]).split('ALL_EXECUTORS_SHARED')).toHaveLength(2);
+        expect(JSON.stringify(harness.starts[0])).not.toContain('ALL_EXECUTORS_SHARED');
         harness.pendingTurns.add(run.turn.id);
         if (close === 'scope-close') harness.ix.dispose();
         if (close === 'replacement') {
@@ -1657,24 +1800,26 @@ describe('ACP external executor', () => {
     expect(harness.selections).not.toContainEqual({ configId: 'brain-1', value: 'high' });
   });
 
-  it('runs with a permission_mode_unverified loss when the descriptor has no permission mapping', async () => {
-    const harness = createHarness({
-      permissionMapping: null,
-      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
-    });
+  it('rejects manual mode without a verified permission mapping and labels auto as unverified', async () => {
+    const manual = createHarness({ permissionMapping: null });
+    await expect(manual.session.run(
+      { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
+    )).rejects.toThrow(/cannot verify manual permission mode/);
+    expect(manual.starts).toHaveLength(0);
+    await manual.session.shutdown();
 
-    const run = await harness.session.run(
-      { kind: 'prompt', prompt: 'work' },
-      { signal: new AbortController().signal },
+    const auto = createHarness({ permissionMapping: null, permissionMode: 'auto' });
+    const run = await auto.session.run(
+      { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
     );
     await run.completion;
-
-    expect(harness.starts).toHaveLength(1);
-    expect(harness.selections).not.toContainEqual({ configId: 'auto_approve', value: false });
-    const metadata = harness.events.find(
+    expect(auto.starts).toHaveLength(1);
+    expect(auto.selections).not.toContainEqual({ configId: 'auto_approve', value: false });
+    const metadata = auto.events.find(
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
     expect(metadata?.losses).toEqual(expect.arrayContaining(['permission_mode_unverified']));
+    await auto.session.shutdown();
   });
 
   it('records dropped additional directories when the harness does not declare support for them', async () => {

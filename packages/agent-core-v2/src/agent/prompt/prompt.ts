@@ -88,6 +88,9 @@ export interface PromptHandle extends PromptSnapshot {
   readonly completion: Promise<PromptCompletion>;
 }
 
+/** How long an unrenewed edit hold keeps a queued prompt parked. */
+export const PROMPT_EDIT_HOLD_TTL_MS = 5 * 60_000;
+
 export interface PromptQueueHold {
   readonly reason: 'recovery';
   readonly count: number;
@@ -195,6 +198,14 @@ export interface IAgentPromptService {
     expectedRevision?: number,
   ): PromptHandle;
   move(promptId: string, targetIndex: number): void;
+  /**
+   * Edit hold: while a client edits a queued prompt, that prompt and every
+   * prompt queued after it wait (manual order is kept); prompts ahead of it
+   * still launch. The hold lapses on its own after `PROMPT_EDIT_HOLD_TTL_MS`
+   * unless renewed, so a client that disappears mid-edit cannot stall the
+   * queue. Explicit steer still bypasses it.
+   */
+  setEditHold(promptId: string, held: boolean): void;
   /** Send selected prompts now: join the active turn, or launch their own turns while idle, bypassing timing and recovery holds only for those prompts. */
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   /**

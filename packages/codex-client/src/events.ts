@@ -60,6 +60,12 @@ export function mapCodexNotification(
       }],
     };
   }
+  if (method === 'turn/diff/updated') {
+    return { events: [{ type: 'turn.diff', diff: requiredString(params['diff'], `${method}.diff`) }] };
+  }
+  if (method === 'thread/compacted') {
+    return { events: [{ type: 'context.compacted', threadId: requiredString(params['threadId'], `${method}.threadId`) }] };
+  }
   if (method === 'turn/plan/updated') {
     return {
       events: [{
@@ -151,7 +157,14 @@ function toolStarted(
       rawInput: item['arguments'],
     };
   }
-  if (type === 'dynamicToolCall' || type === 'collabAgentToolCall') {
+  if (type === 'webSearch') {
+    return {
+      type: 'tool.call', toolCallId: id, title: optionalString(item['query']) ?? 'Web search',
+      kind: 'webSearch', status: optionalString(item['status']) ?? 'in_progress',
+      rawInput: { query: item['query'], action: item['action'] },
+    };
+  }
+  if (type === 'dynamicToolCall' || type === 'collabAgentToolCall' || type === 'subAgentActivity') {
     return {
       type: 'tool.call',
       toolCallId: id,

@@ -38,6 +38,15 @@ describe('parseAgentFileText', () => {
     expect(() => parse('---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: opus\n    auto_compact: "85%"\n---\nbody\n')).toThrow(/profile model_profiles\[0\]\.auto_compact.*absolute positive integer token count/);
   });
 
+  it('parses context_strategy at profile and model levels and rejects invalid values', () => {
+    const def = parse('---\nname: solo\ndescription: d\ncontext_strategy: auto\nmodel_profiles:\n  - alias: opus\n    context_strategy: fresh\n---\nbody\n');
+    const profile = agentProfileFromFile(def, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }));
+    expect(profile.contextStrategy).toBe('auto');
+    expect(profile.modelProfiles?.[0]?.contextStrategy).toBe('fresh');
+    expect(() => parse('---\nname: solo\ndescription: d\ncontext_strategy: relay\n---\nbody\n')).toThrow(/"context_strategy".*must be/);
+    expect(() => parse('---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: opus\n    context_strategy: invalid\n---\nbody\n')).toThrow(/model_profiles\[0\]\.context_strategy.*must be/);
+  });
+
   it('parses a full agent file', () => {
     const def = parse(FULL_FILE);
 

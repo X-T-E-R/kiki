@@ -292,6 +292,7 @@ function externalExecutorRegistry(
   };
   return {
     _serviceBrand: undefined,
+    list: () => [descriptor],
     get: (id) => id === 'native'
       ? { id: 'native', protocol: 'native', args: [], revision: 'native' }
       : id === descriptor.id
@@ -2117,7 +2118,7 @@ describe('AgentProfileService.bind', () => {
   it.each([
     ['model', { modelAlias: 'external-new', allowModelChange: true }],
     ['effort', { thinkingEffort: 'high' }],
-  ] as const)('rejects an external resume %s change without resolving another executor', async (_, input) => {
+  ] as const)('updates external resume %s binding without resolving another executor', async (_, input) => {
     const registry = externalExecutorRegistry();
     const external = normalizeAgentProfile({
       name: 'resume-external',
@@ -2129,11 +2130,12 @@ describe('AgentProfileService.bind', () => {
     const svc = await bindExternalResumeProfile(external, registry);
     const resolveExecutable = vi.spyOn(registry, 'resolveExecutable');
 
-    await expect(prepareResumeBinding(svc, input)).rejects.toThrow(/does not support changing/);
+    const apply = await prepareResumeBinding(svc, input);
+    apply();
     expect(resolveExecutable).not.toHaveBeenCalled();
     expect(svc.data()).toMatchObject({
-      modelAlias: 'external-old',
-      thinkingLevel: 'low',
+      modelAlias: 'modelAlias' in input ? 'external-new' : 'external-old',
+      thinkingLevel: 'thinkingEffort' in input ? 'high' : 'low',
     });
   });
 

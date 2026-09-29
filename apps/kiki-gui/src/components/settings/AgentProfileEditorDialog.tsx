@@ -12,6 +12,8 @@ import { useDirtyReporter } from '../dirtyGuard';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { formatCompactTokens } from '../../lib/autoCompact';
+import { CompactPointField } from './CompactPointField';
 
 /**
  * Three-way state of one frontmatter tool list. `inherit` writes nothing (the
@@ -121,8 +123,9 @@ function ToolListField({
 /**
  * Dedicated pop-up editor for one named agent profile (main or subagent).
  * Collects every field the structured PATCH contract opens — description,
- * when-to-use, pinned model, thinking effort, service tier, tool lists, and
- * per-route model aliases — and saves them in one shot, replacing the old
+ * when-to-use, pinned model, thinking effort, service tier, the automatic
+ * compaction point (tokens), tool lists, and per-route model aliases — and
+ * saves them in one shot, replacing the old
  * scattered inline fieldset. Only the fields the user actually touched ride
  * the PATCH: an untouched `tools: []` must stay an empty list (deny every
  * tool) instead of being re-serialized as "no such field". Read-only
@@ -154,7 +157,9 @@ export function AgentProfileEditorDialog({
     tools: toolFieldFrom(profile.tools),
     disallowedTools: toolFieldFrom(profile.disallowed_tools),
     routeAliases: Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
+    autoCompact: profile.auto_compact,
   }));
+  const [autoCompact, setAutoCompact] = useState(baseline.autoCompact);
   const [description, setDescription] = useState(baseline.description);
   const [whenToUse, setWhenToUse] = useState(baseline.whenToUse);
   const [modelAlias, setModelAlias] = useState(baseline.modelAlias);
@@ -170,6 +175,9 @@ export function AgentProfileEditorDialog({
     staleTime: 60_000,
   });
 
+  // `%` input converts against the pinned model's window when one is pinned.
+  const pinnedWindow = (modelsQuery.data?.items ?? []).find((item) => item.id === modelAlias.trim())?.max_context_size;
+
   const changedRoutes = profile.routes.filter((route) =>
     (routeAliases[route.id] ?? '') !== (baseline.routeAliases[route.id] ?? ''));
   const dirty = description !== baseline.description
@@ -179,7 +187,8 @@ export function AgentProfileEditorDialog({
     || serviceTier !== baseline.serviceTier
     || !toolFieldsEqual(tools, baseline.tools)
     || !toolFieldsEqual(disallowedTools, baseline.disallowedTools)
-    || changedRoutes.length > 0;
+    || changedRoutes.length > 0
+    || autoCompact !== baseline.autoCompact;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
   const mainCannotFollowCaller = profile.main === true && modelAlias.trim() === 'inherit';
@@ -212,6 +221,7 @@ export function AgentProfileEditorDialog({
         service_tier: serviceTier !== baseline.serviceTier
           ? (serviceTier === '' ? null : serviceTier)
           : undefined,
+        auto_compact: autoCompact !== baseline.autoCompact ? (autoCompact ?? null) : undefined,
         tools: toolFieldsEqual(tools, baseline.tools) ? undefined : toolFieldBody(tools),
         disallowed_tools: toolFieldsEqual(disallowedTools, baseline.disallowedTools)
           ? undefined
@@ -317,6 +327,19 @@ export function AgentProfileEditorDialog({
               {['auto', 'default', 'flex', 'priority'].map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
+        </div>
+        <div data-profile-auto-compact className="space-y-1">
+          <CompactPointField
+            dataAttribute="profile"
+            label={t('st.compact.profileLabel')}
+            value={autoCompact}
+            onChange={setAutoCompact}
+            windowTokens={pinnedWindow}
+            placeholder={t('st.compact.profilePlaceholder')}
+            hint={profile.context_budget !== undefined
+              ? t('st.compact.profileHintBudget', { tokens: formatCompactTokens(profile.context_budget) })
+              : t('st.compact.profileHint')}
+          />
         </div>
         <ToolListField
           field={tools}

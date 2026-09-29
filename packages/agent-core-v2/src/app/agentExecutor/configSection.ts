@@ -28,6 +28,18 @@ const AgentExecutorPermissionModeMappingSchema = z
     }
   });
 
+const AgentExecutorPermissionSchema = z.object({
+  via: z.enum(['config_option', 'session_mode', 'argv', 'turn_param']),
+  flag: z.string().min(1).optional(),
+  configId: sourceId.optional(),
+  configCategory: sourceId.optional(),
+  manual: sourceId,
+  review: sourceId.optional(),
+  auto: sourceId,
+  yolo: sourceId,
+  trustEngineSettings: z.boolean().optional(),
+}).strict();
+
 const AgentExecutorSourceSchema = z.discriminatedUnion('kind', [
   z.object({
     id: sourceId,
@@ -56,10 +68,27 @@ const AgentExecutorSourceSchema = z.discriminatedUnion('kind', [
 export const AgentExecutorConfigSchema = z
   .object({
     protocol: z.string().trim().min(1),
+    label: z.string().trim().min(1).optional(),
     command: z.string().trim().min(1).optional(),
     sources: z.array(AgentExecutorSourceSchema).min(1).optional(),
     source: sourceId.optional(),
     versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
+    diagnostics: z.array(z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('message'), severity: z.enum(['info', 'warning']), message: z.string() }).strict(),
+      z.object({ kind: z.literal('env'), name: sourceId, present: z.string(), absent: z.string() }).strict(),
+      z.object({ kind: z.literal('path'), path: sourceId, envHome: sourceId.optional(),
+        present: z.string(), absent: z.string(), absentSeverity: z.enum(['info', 'warning']) }).strict(),
+      z.object({ kind: z.literal('dependency'), command: sourceId, args: z.array(z.string()),
+        unavailable: z.string(), failed: z.string() }).strict(),
+      z.object({ kind: z.literal('flag'), args: z.array(z.string()), stable: sourceId,
+        fallback: sourceId, stableMessage: z.string(), fallbackMessage: z.string(), missingMessage: z.string() }).strict(),
+      z.object({ kind: z.literal('version'), min: sourceId, warning: z.string(), normal: z.string() }).strict(),
+    ])).optional(),
+    auth: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('command-json'), command: sourceId,
+        args: z.array(z.string()), loggedInKey: sourceId }).strict(),
+      z.object({ kind: z.literal('codex-account') }).strict(),
+    ]).optional(),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
     startupTimeoutMs: z.number().int().positive().optional(),
@@ -71,6 +100,12 @@ export const AgentExecutorConfigSchema = z
     thoughtConfigCategory: z.string().trim().min(1).optional(),
     thoughtConfigId: sourceId.optional(),
     permissionModeMapping: AgentExecutorPermissionModeMappingSchema.optional(),
+    permission: AgentExecutorPermissionSchema.optional(),
+    promptDeliveries: z.array(z.enum(['append', 'replace', 'preamble'])).optional(),
+    defaultProfile: z.boolean().optional(),
+    installHint: z.string().optional(),
+    loginCommand: z.array(z.string()).optional(),
+    steerDelivery: z.enum(['native', 'next_turn_preamble']).optional(),
     profileDelivery: z.literal('system_prompt_override').optional(),
     revision: z.string().trim().min(1).optional(),
   })
@@ -109,6 +144,11 @@ const TOML_TO_RUNTIME = {
   thought_config_category: 'thoughtConfigCategory',
   thought_config_id: 'thoughtConfigId',
   permission_mode_mapping: 'permissionModeMapping',
+  prompt_deliveries: 'promptDeliveries',
+  default_profile: 'defaultProfile',
+  install_hint: 'installHint',
+  login_command: 'loginCommand',
+  steer_delivery: 'steerDelivery',
   profile_delivery: 'profileDelivery',
   version_probe: 'versionProbe',
 } as const;
@@ -123,6 +163,11 @@ const RUNTIME_TO_TOML = {
   thoughtConfigCategory: 'thought_config_category',
   thoughtConfigId: 'thought_config_id',
   permissionModeMapping: 'permission_mode_mapping',
+  promptDeliveries: 'prompt_deliveries',
+  defaultProfile: 'default_profile',
+  installHint: 'install_hint',
+  loginCommand: 'login_command',
+  steerDelivery: 'steer_delivery',
   profileDelivery: 'profile_delivery',
   versionProbe: 'version_probe',
 } as const;
@@ -153,6 +198,24 @@ export function agentExecutorsFromToml(value: unknown): unknown {
         delete mapping['config_category'];
       }
       descriptor['permissionModeMapping'] = mapping;
+    }
+    if (isPlainObject(descriptor['permission'])) {
+      const permission: Record<string, unknown> = { ...descriptor['permission'] };
+      for (const [wire, runtime] of [
+        ['config_id', 'configId'], ['config_category', 'configCategory'],
+        ['trust_engine_settings', 'trustEngineSettings'],
+      ] as const) {
+        if (Object.hasOwn(permission, wire)) {
+          permission[runtime] = permission[wire];
+          delete permission[wire];
+        }
+      }
+      descriptor['permission'] = permission;
+    }
+    if (isPlainObject(descriptor['auth']) && Object.hasOwn(descriptor['auth'], 'logged_in_key')) {
+      const auth: Record<string, unknown> = { ...descriptor['auth'], loggedInKey: descriptor['auth']['logged_in_key'] };
+      delete auth['logged_in_key'];
+      descriptor['auth'] = auth;
     }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {
@@ -200,6 +263,24 @@ export function agentExecutorsToToml(value: unknown): unknown {
         delete mapping['configCategory'];
       }
       descriptor['permission_mode_mapping'] = mapping;
+    }
+    if (isPlainObject(descriptor['permission'])) {
+      const permission: Record<string, unknown> = { ...descriptor['permission'] };
+      for (const [runtime, wire] of [
+        ['configId', 'config_id'], ['configCategory', 'config_category'],
+        ['trustEngineSettings', 'trust_engine_settings'],
+      ] as const) {
+        if (Object.hasOwn(permission, runtime)) {
+          permission[wire] = permission[runtime];
+          delete permission[runtime];
+        }
+      }
+      descriptor['permission'] = permission;
+    }
+    if (isPlainObject(descriptor['auth']) && Object.hasOwn(descriptor['auth'], 'loggedInKey')) {
+      const auth: Record<string, unknown> = { ...descriptor['auth'], logged_in_key: descriptor['auth']['loggedInKey'] };
+      delete auth['loggedInKey'];
+      descriptor['auth'] = auth;
     }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {

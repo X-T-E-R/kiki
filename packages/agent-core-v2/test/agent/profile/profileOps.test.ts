@@ -6,6 +6,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentProfileService } from '#/agent/profile/profileService';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
@@ -211,6 +212,7 @@ function buildHost(key: string): {
     new AgentTelemetryContextService(),
   );
   host.stub(IConfigService, createConfigStub());
+  host.stub(IAgentRuntimeService, { _serviceBrand: undefined, nativeSshEnabled: () => false });
   host.stub(IPromptFieldRegistry, {
     _serviceBrand: undefined,
     onDidChange: Event.None as Event<{ readonly ref?: string }>,

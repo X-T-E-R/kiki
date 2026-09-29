@@ -1,5 +1,6 @@
 import type {
   AgentModelProfile,
+  ContextStrategy,
   AgentProfileRouteDefinition,
   AgentSubagentPolicy,
   AgentSystemPromptMode,
@@ -8,6 +9,7 @@ import type {
   SubagentDeclaration,
 } from './agentProfile';
 import type { SkippedAgentFile } from './agentProfileContribution';
+import type { ExecutorPrompt } from './executorPrompt';
 import type { PromptOverrides } from './promptOverrides';
 import type { AgentProfileDiagnostic } from './scopedAgentProfile';
 import type { SpawnConstraints, SubagentLease, SourceSubagentLease } from './subagentLease';
@@ -25,6 +27,7 @@ export interface AgentFileRoot {
 
 export interface AgentFileDefinition {
   readonly autoCompact?: number;
+  readonly contextStrategy?: ContextStrategy;
   readonly contextBudget?: number;
   readonly maxCompletionTokens?: number;
   readonly name: string;
@@ -46,6 +49,7 @@ export interface AgentFileDefinition {
   readonly spawnConstraints?: SpawnConstraints;
   readonly executor?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorPrompt?: ExecutorPrompt;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
@@ -75,6 +79,7 @@ export interface AgentFileScopedBinding {
 
 export interface AgentFileDiscoveryResult {
   readonly agents: readonly AgentFileDefinition[];
+  readonly shadowedFiles?: ReadonlyMap<string, readonly string[]>;
   readonly routes: readonly AgentProfileRouteDefinition[];
   readonly skipped: readonly SkippedAgentFile[];
   readonly scannedRoots: readonly string[];

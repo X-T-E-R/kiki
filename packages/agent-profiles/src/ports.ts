@@ -20,10 +20,24 @@ export type ExecutorOptions = Readonly<Record<string, string | number | boolean>
 export interface ExecutorBinding {
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly explicitFields?: readonly string[];
+}
+
+export interface ExecutorFieldState {
+  readonly state: 'applied' | 'mapped' | 'ignored';
+  readonly reason?: string;
+}
+
+export interface ExecutorFieldAdvisory {
+  readonly code: 'executor_field_ignored';
+  readonly field: string;
+  readonly message: string;
 }
 
 export type ExecutorValidationResult =
-  | { readonly ok: true; readonly binding: ExecutorBinding }
+  | { readonly ok: true; readonly binding: ExecutorBinding;
+      readonly fields?: Readonly<Record<string, ExecutorFieldState>>;
+      readonly advisories?: readonly ExecutorFieldAdvisory[] }
   | { readonly ok: false; readonly diagnostic: string };
 
 export interface ExecutorValidator {

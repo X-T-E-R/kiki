@@ -178,6 +178,21 @@ describe('AcpProcessClient session capability negotiation', () => {
   });
 
   it.each([
+    ['manual', 'manual'],
+    ['auto', 'auto'],
+    [undefined, undefined],
+  ])('returns only a witnessed session mode update (%s -> %s)', async (modeUpdate, expected) => {
+    const { client, history } = await openWithScriptedAgent({ modeUpdate }, {});
+    try {
+      const configured = await client.configureSession({ modeId: 'manual' });
+      expect(configured.currentModeId).toBe(expected);
+      expect(history.methods).toContain('session/set_mode');
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it.each([
     [{}, 'resume'],
     [{ resume: 'method_not_found' as const }, 'load'],
     [{ resume: 'unknown_session' as const, load: 'unknown_session' as const }, 'new'],

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { executorPromptSchema } from '../executorPrompt';
 
 const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
@@ -76,6 +77,14 @@ export const namedAgentRouteSchema = z.object({
 });
 export type NamedAgentRoute = z.infer<typeof namedAgentRouteSchema>;
 
+export const namedAgentExecutorFieldStateSchema = z.enum(['applied', 'mapped', 'ignored']);
+export type NamedAgentExecutorFieldState = z.infer<typeof namedAgentExecutorFieldStateSchema>;
+export const namedAgentExecutorFieldSchema = z.object({
+  state: namedAgentExecutorFieldStateSchema,
+  reason: z.string().optional(),
+});
+export type NamedAgentExecutorField = z.infer<typeof namedAgentExecutorFieldSchema>;
+
 export const namedAgentProfileSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -90,8 +99,13 @@ export const namedAgentProfileSchema = z.object({
   executor: z.string().optional(),
   executor_protocol: z.string().optional(),
   executor_options: requestParamsSchema.optional(),
+  executor_prompt: executorPromptSchema.optional(),
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
+  /** Role-level model recommendations (soft; `["*"]` normalizes to absent). */
+  allowed_models: z.array(z.string()).optional(),
+  deny_models: z.array(z.string()).optional(),
+  allowed_efforts: z.array(z.string()).optional(),
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
   context_budget: z.number().int().min(1).optional(),
@@ -103,6 +117,10 @@ export const namedAgentProfileSchema = z.object({
   spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
   subagent_policy: z.enum(['advisory', 'strict']).optional(),
   subagents: z.array(z.union([z.string(), namedAgentSubagentLeaseSchema])).optional(),
+  /** Same-source files that lost name discovery to this profile. */
+  shadowed_files: z.array(z.string()).optional(),
+  /** External executor field applicability, keyed by wire field name; absent for native execution. */
+  executor_fields: z.record(z.string(), namedAgentExecutorFieldSchema).optional(),
   disabled: z.boolean(),
   routes: z.array(namedAgentRouteSchema),
 });
@@ -401,14 +419,47 @@ export const createNamedAgentProfileRequestSchema = z.object({
 });
 export type CreateNamedAgentProfileRequest = z.infer<typeof createNamedAgentProfileRequestSchema>;
 
+export const updateNamedAgentSubagentEntrySchema = z.union([
+  z.string().trim().min(1),
+  z.object({
+    name: z.string().trim().min(1),
+    model_alias: modelAliasSchema.nullable().optional(),
+    thinking_effort: optionalProfileStringSchema,
+    allowed_models: profileStringListSchema,
+  }).strict(),
+]);
+export type UpdateNamedAgentSubagentEntry = z.infer<typeof updateNamedAgentSubagentEntrySchema>;
+
+export const updateNamedAgentModelProfileEntrySchema = z.object({
+  alias: modelAliasSchema,
+  when: optionalProfileStringSchema,
+  thinking_effort: optionalProfileStringSchema,
+}).strict();
+export type UpdateNamedAgentModelProfileEntry = z.infer<typeof updateNamedAgentModelProfileEntrySchema>;
+
 export const updateNamedAgentProfileRequestSchema = z.object({
   scope: z.enum(['user', 'project', 'extra']),
   workspace_id: z.string().min(1),
   source_file: z.string().min(1).optional(),
   description: z.string().trim().min(1).optional(),
   when_to_use: optionalProfileStringSchema,
+  main: z.boolean().nullable().optional(),
+  executor: z.string().trim().min(1).nullable().optional(),
+  executor_prompt: executorPromptSchema.nullable().optional(),
   pinned_model_alias: modelAliasSchema.nullable().optional(),
   thinking_effort: optionalProfileStringSchema,
+  allowed_models: profileStringListSchema,
+  deny_models: profileStringListSchema,
+  allowed_efforts: profileStringListSchema,
+  /**
+   * Whole ordered list. A bare name keeps that entry's existing lease mapping
+   * untouched; a mapping merges the given keys onto it (`null` deletes a key).
+   */
+  subagents: z.array(updateNamedAgentSubagentEntrySchema).nullable().optional(),
+  subagent_policy: z.enum(['advisory', 'strict']).nullable().optional(),
+  spawn_constraints: namedAgentSpawnConstraintsSchema.nullable().optional(),
+  /** Whole ordered list keyed by alias; unlisted per-model keys are preserved. */
+  model_profiles: z.array(updateNamedAgentModelProfileEntrySchema).nullable().optional(),
   service_tier: serviceTierSchema.nullable().optional(),
   auto_compact: z.number().int().positive().safe().nullable().optional(),
   tools: profileStringListSchema,
@@ -420,8 +471,18 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   const hasStructuredUpdate =
     value.description !== undefined ||
     value.when_to_use !== undefined ||
+    value.main !== undefined ||
+    value.executor !== undefined ||
+    value.executor_prompt !== undefined ||
     value.pinned_model_alias !== undefined ||
     value.thinking_effort !== undefined ||
+    value.allowed_models !== undefined ||
+    value.deny_models !== undefined ||
+    value.allowed_efforts !== undefined ||
+    value.subagents !== undefined ||
+    value.subagent_policy !== undefined ||
+    value.spawn_constraints !== undefined ||
+    value.model_profiles !== undefined ||
     value.service_tier !== undefined ||
     value.auto_compact !== undefined ||
     value.tools !== undefined ||

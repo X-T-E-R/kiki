@@ -3,6 +3,7 @@ import type {
   AgentProfileRouteDefinition,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { ServiceTier } from '#/kosong/contract/provider';
+import type { ExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 
 export type AgentProfileWriteScope = 'user' | 'project' | 'extra';
 
@@ -10,6 +11,26 @@ export interface AgentProfileRouteUpdate {
   readonly id: string;
   readonly description?: string;
   readonly modelAlias?: string | null;
+}
+
+/**
+ * One `subagents` entry. A bare name keeps that entry's existing lease mapping
+ * untouched; a mapping merges the given keys onto it (`null` deletes a key).
+ */
+export type AgentProfileSubagentUpdate =
+  | string
+  | {
+      readonly name: string;
+      readonly modelAlias?: string | null;
+      readonly thinkingEffort?: string | null;
+      readonly allowedModels?: readonly string[] | null;
+    };
+
+/** One `model_profiles` entry keyed by alias; unlisted per-model keys are preserved. */
+export interface AgentProfileModelProfileUpdate {
+  readonly alias: string;
+  readonly when?: string | null;
+  readonly thinkingEffort?: string | null;
 }
 
 export interface AgentProfileCreateRequest {
@@ -31,8 +52,23 @@ export interface AgentProfileWriteRequest {
   readonly sourcePath?: string;
   readonly description?: string;
   readonly whenToUse?: string | null;
+  readonly main?: boolean | null;
+  readonly executor?: string | null;
+  readonly executorPrompt?: ExecutorPrompt | null;
   readonly modelAlias?: string | null;
   readonly thinkingEffort?: string | null;
+  readonly allowedModels?: readonly string[] | null;
+  readonly denyModels?: readonly string[] | null;
+  readonly allowedEfforts?: readonly string[] | null;
+  readonly subagents?: readonly AgentProfileSubagentUpdate[] | null;
+  readonly subagentPolicy?: 'advisory' | 'strict' | null;
+  readonly spawnConstraints?: {
+    readonly allowedModels?: readonly string[];
+    readonly denyModels?: readonly string[];
+    readonly allowedEfforts?: readonly string[];
+    readonly disallowedTools?: readonly string[];
+  } | null;
+  readonly modelProfiles?: readonly AgentProfileModelProfileUpdate[] | null;
   readonly serviceTier?: ServiceTier | null;
   readonly autoCompact?: number | null;
   readonly tools?: readonly string[] | null;

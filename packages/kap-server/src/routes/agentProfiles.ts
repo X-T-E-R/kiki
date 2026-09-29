@@ -7,6 +7,8 @@ import {
   ErrorCodes,
   IAgentProfileRegistry,
   IAgentExecutorRegistry,
+  IAgentExecutorPreflightService,
+  executorCapabilities,
   IConfigService,
   ISessionAgentProfileCatalog,
   ISessionContext,
@@ -16,6 +18,7 @@ import {
   isError2,
   type AgentProfile,
   type AgentProfileCatalogSnapshot,
+  type AgentExecutorDescriptor,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
   type DisabledNamedProfilesConfig,
@@ -28,6 +31,11 @@ import {
   createNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
+  listExecutorsResponseSchema,
+  executorDetailResponseSchema,
+  executorCheckResponseSchema,
+  executorPromptPreviewRequestSchema,
+  executorPromptPreviewResponseSchema,
   namedAgentProfileNameParamsSchema,
   namedAgentProfileSchema,
   updateNamedAgentProfileRequestSchema,
@@ -40,6 +48,7 @@ import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
+import { previewExecutorPrompt } from './executorPromptPreview';
 
 interface AgentProfilesRouteHost {
   get(
@@ -100,6 +109,65 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.get(capabilitiesRoute.path, capabilitiesRoute.options,
     capabilitiesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const executorsRoute = defineRoute({
+    method: 'GET',
+    path: '/executors',
+    success: { data: listExecutorsResponseSchema },
+    description: 'List configured execution engines and local binary discovery status',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const config = core.accessor.get(IConfigService);
+    await config.ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const preflight = core.accessor.get(IAgentExecutorPreflightService);
+    const items = await Promise.all(registry.list().map((descriptor) =>
+      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id))));
+
+    reply.send(okEnvelope({ items }, req.id));
+  });
+  app.get(executorsRoute.path, executorsRoute.options,
+    executorsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const executorParams = z.object({ id: z.string().min(1) });
+  const executorDetailRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}', params: executorParams,
+    success: { data: executorDetailResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Inspect execution engine capability and connection settings', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get(req.params.id);
+    if (descriptor === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Executor not found', req.id));
+      return;
+    }
+    const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
+    reply.send(okEnvelope(await projectExecutor(descriptor, registry, check), req.id));
+  });
+  app.get(executorDetailRoute.path, executorDetailRoute.options,
+    executorDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const executorCheckRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/check', params: executorParams,
+    success: { data: executorCheckResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Check executable discovery and declared authentication hints', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    if (core.accessor.get(IAgentExecutorRegistry).get(req.params.id) === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Executor not found', req.id));
+      return;
+    }
+    const [result] = await core.accessor.get(IAgentExecutorPreflightService).run([req.params.id]);
+    reply.send(okEnvelope({ id: result!.id, status: result!.status, version: result!.version,
+      command: result!.command, selected_source: result!.selectedSource,
+      resolved_args: result!.resolvedArgs, diagnostics: result!.diagnostics,
+      login_status: result!.loginStatus }, req.id));
+  });
+  app.post(executorCheckRoute.path, executorCheckRoute.options,
+    executorCheckRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const listRoute = defineRoute(
     {
@@ -177,6 +245,61 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     listRoute.options,
     listRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2],
   );
+
+  const executorPromptPreviewRoute = defineRoute({
+    method: 'POST',
+    path: '/agents/{name}/executor-prompt:preview',
+    params: namedAgentProfileNameParamsSchema,
+    body: executorPromptPreviewRequestSchema,
+    success: { data: executorPromptPreviewResponseSchema },
+    errors: {
+      [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+      [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {},
+      [ErrorCode.VALIDATION_FAILED]: {},
+    },
+    description: 'Render the prompt blocks and actual delivery for an external executor',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    let workspaceId = req.body.workspace;
+    if (workspaceId === undefined) {
+      const keys = [...new Set(core.accessor.get(IAgentProfileRegistry).entries()
+        .filter((entry) => entry.contribution.profiles.some((profile) => profile.name === req.params.name))
+        .map((entry) => entry.workspaceKey).filter((key): key is string => key !== undefined))];
+      if (keys.length === 1) workspaceId = keys[0];
+      else {
+        const workspaces = await core.accessor.get(IWorkspaceService).list();
+        if (workspaces.length === 1) workspaceId = workspaces[0]!.id;
+      }
+    }
+    if (workspaceId === undefined) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Specify workspace when multiple workspaces are available', req.id));
+      return;
+    }
+    const workspace = await acquireWorkspaceProfileCatalog(core, { workspace_id: workspaceId });
+    if (workspace === undefined) {
+      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
+      return;
+    }
+    try {
+      const profile = workspace.catalog.get(req.params.name);
+      if (profile === undefined) {
+        reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Agent profile not found', req.id));
+        return;
+      }
+      const executorId = req.body.executor ?? profile.executor ?? 'native';
+      const descriptor = core.accessor.get(IAgentExecutorRegistry).get(executorId);
+      if (descriptor === undefined || descriptor.protocol === 'native') {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Select an external executor for prompt preview', req.id));
+        return;
+      }
+      reply.send(okEnvelope(await previewExecutorPrompt(core, workspace.instance, profile, executorId), req.id));
+    } finally {
+      workspace.dispose();
+    }
+  });
+  app.post(executorPromptPreviewRoute.path, executorPromptPreviewRoute.options,
+    executorPromptPreviewRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const createRoute = defineRoute({
     method: 'POST',
@@ -277,8 +400,33 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           sourcePath: req.body.source_file,
           description: req.body.description,
           whenToUse: req.body.when_to_use,
+          main: req.body.main,
+          executor: req.body.executor,
+          executorPrompt: req.body.executor_prompt,
           modelAlias: req.body.pinned_model_alias,
           thinkingEffort: req.body.thinking_effort,
+          allowedModels: req.body.allowed_models,
+          denyModels: req.body.deny_models,
+          allowedEfforts: req.body.allowed_efforts,
+          subagents: req.body.subagents?.map((entry) => typeof entry === 'string' ? entry : {
+            name: entry.name,
+            modelAlias: entry.model_alias,
+            thinkingEffort: entry.thinking_effort,
+            allowedModels: entry.allowed_models,
+          }) ?? req.body.subagents,
+          subagentPolicy: req.body.subagent_policy,
+          spawnConstraints: req.body.spawn_constraints === null ? null : req.body.spawn_constraints === undefined
+            ? undefined : {
+                allowedModels: req.body.spawn_constraints.allowed_models,
+                denyModels: req.body.spawn_constraints.deny_models,
+                allowedEfforts: req.body.spawn_constraints.allowed_efforts,
+                disallowedTools: req.body.spawn_constraints.disallowed_tools,
+              },
+          modelProfiles: req.body.model_profiles?.map((entry) => ({
+            alias: entry.alias,
+            when: entry.when,
+            thinkingEffort: entry.thinking_effort,
+          })) ?? req.body.model_profiles,
           serviceTier: req.body.service_tier,
           autoCompact: req.body.auto_compact,
           tools: req.body.tools,
@@ -490,6 +638,7 @@ function toNamedAgentProfile(
     workspace_id: registration.workspaceKey,
     workspace_ids: workspaceIds === undefined ? undefined : [...workspaceIds],
     source_file: profile.sourcePath,
+    shadowed_files: profile.shadowedFiles === undefined ? undefined : [...profile.shadowedFiles],
     prompt: profile.fileDefinition?.prompt,
     main: profile.main === true,
     override: profile.override === true ? true : undefined,
@@ -499,8 +648,12 @@ function toNamedAgentProfile(
       profile.executorOptions === undefined
         ? undefined
         : { ...profile.executorOptions },
+    executor_prompt: profile.executorPrompt,
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
+    allowed_models: profile.allowedModels === undefined ? undefined : [...profile.allowedModels],
+    deny_models: profile.denyModels === undefined ? undefined : [...profile.denyModels],
+    allowed_efforts: profile.allowedEfforts === undefined ? undefined : [...profile.allowedEfforts],
     service_tier: profile.serviceTier,
     request_params: profile.requestParams === undefined ? undefined : { ...profile.requestParams },
     context_budget: profile.contextBudget,
@@ -534,10 +687,56 @@ function toNamedAgentProfile(
       return lease === undefined ? name : toNamedAgentSubagentLease(lease, binding);
     }),
     disabled: disabledNamed.has(profile.name),
+    executor_fields: executorFields(executorId, executor),
     routes: (registration.contribution.routes ?? [])
       .filter((candidate) => candidate.profile === profile.name)
       .map(toNamedAgentRoute)
       .toSorted((a, b) => a.id.localeCompare(b.id)),
+  };
+}
+
+function executorFields(
+  id: string,
+  descriptor: AgentExecutorDescriptor | undefined,
+): NamedAgentProfile['executor_fields'] {
+  if (id === 'native') return undefined;
+  const applied = { state: 'applied' as const };
+  const ignored = (reason: string) => ({ state: 'ignored' as const, reason });
+  const mapped = (reason: string) => ({ state: 'mapped' as const, reason });
+  const modelMapped = descriptor?.protocol === 'codex-app-server'
+    || descriptor?.modelBinding === 'argv' || descriptor?.modelBinding === 'session_config';
+  const thoughtMapped = descriptor?.protocol === 'codex-app-server'
+    || descriptor?.thoughtConfigId !== undefined || descriptor?.thoughtConfigCategory !== undefined;
+  return {
+    name: applied,
+    description: applied,
+    when_to_use: applied,
+    main: applied,
+    executor: applied,
+    prompt: mapped(descriptor?.profileDelivery === 'system_prompt_override'
+      ? 'Delivered as an executor system prompt override'
+      : descriptor?.protocol === 'codex-app-server'
+        ? 'Delivered as developer instructions'
+        : 'Delivered in the first user message'),
+    pinned_model_alias: modelMapped ? mapped('Uses the executor model identifier')
+      : ignored('No executor model binding is declared'),
+    allowed_models: applied,
+    deny_models: applied,
+    thinking_effort: thoughtMapped ? mapped('Uses the executor thinking setting')
+      : ignored('No executor thinking setting is declared'),
+    allowed_efforts: applied,
+    service_tier: ignored('Provider service tiers apply only to native execution'),
+    request_params: ignored('Provider request parameters apply only to native execution'),
+    tools: ignored('Tools are controlled by the external executor'),
+    disallowed_tools: ignored('Tools are controlled by the external executor'),
+    context_budget: ignored('Context budgets are controlled by the external executor'),
+    auto_compact: ignored('Compaction is controlled by the external executor'),
+    max_completion_tokens: ignored('Output limits are controlled by the external executor'),
+    subagents: applied,
+    subagent_policy: applied,
+    spawn_constraints: applied,
+    routes: applied,
+    model_profiles: applied,
   };
 }
 
@@ -669,6 +868,48 @@ function scopedBindingDiagnosticCode(
     default:
       return AgentProfileSourceDiagnosticCodes.UNAVAILABLE;
   }
+}
+
+async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
+  check?: ReturnType<IAgentExecutorPreflightService['lastCheck']>) {
+  const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id).catch(() => undefined);
+  const selected = probes?.find((probe) => probe.available);
+  const capabilities = executorCapabilities(descriptor);
+  return {
+    id: descriptor.id,
+    label: descriptor.label ?? (descriptor.id === 'native' ? 'Kiki' : descriptor.id),
+    protocol: descriptor.protocol,
+    status: descriptor.id === 'native' || selected !== undefined ? 'ready' as const
+      : probes === undefined ? 'unknown' as const : 'unavailable' as const,
+    version: selected?.version,
+    model_binding: descriptor.protocol === 'native' || capabilities.modelBinding !== undefined
+      ? 'mapped' as const : 'unavailable' as const,
+    thinking_binding: descriptor.protocol === 'native' || capabilities.thinkingBinding
+      ? 'mapped' as const : 'unavailable' as const,
+    capabilities: {
+      prompt_deliveries: capabilities.promptDeliveries,
+      steer: capabilities.steer,
+      permission: { via: capabilities.permission?.via,
+        trust_engine_settings: capabilities.permission?.trustEngineSettings === true },
+      model_binding: capabilities.modelBinding,
+      thinking_binding: capabilities.thinkingBinding,
+      negotiated: registry.negotiated?.(descriptor.id, selected?.version) === undefined ? undefined : (() => {
+        const observed = registry.negotiated!(descriptor.id, selected?.version)!;
+        return { models: observed.models, thinking_levels: observed.thinkingLevels,
+          auth_methods: observed.authMethods, resume: observed.resume, load: observed.load,
+          permission_modes: observed.permissionModes };
+      })(),
+    },
+    connection: {
+      command: selected?.command ?? descriptor.command,
+      source: selected?.id,
+      install_hint: descriptor.installHint,
+      login_command: descriptor.loginCommand,
+      login_status: check?.loginStatus ?? 'unknown' as const,
+      default_args: [...descriptor.args],
+    },
+    default_profile: descriptor.defaultProfile === true,
+  };
 }
 
 function toNamedAgentRoute(route: AgentProfileRouteDefinition): NamedAgentProfile['routes'][number] {

@@ -33,6 +33,7 @@ import {
   resolveExecutorSource,
 } from './binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
+import type { NegotiatedExecutorCapabilities } from './capabilities';
 import {
   AGENT_EXECUTORS_SECTION,
   type AgentExecutorConfig,
@@ -58,6 +59,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       provider,
     ]),
   );
+  private readonly negotiatedById = new Map<string, {
+    readonly revision: string;
+    readonly version: string | undefined;
+    readonly capabilities: NegotiatedExecutorCapabilities;
+  }>();
 
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -72,6 +78,26 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       AGENT_EXECUTORS_SECTION,
     )?.[id] ?? BUILTIN_AGENT_EXECUTORS[id];
     return entry === undefined ? undefined : descriptorFromConfig(id, entry);
+  }
+
+  list(): readonly AgentExecutorDescriptor[] {
+    const configured = this.config.get<AgentExecutorsConfig | undefined>(AGENT_EXECUTORS_SECTION) ?? {};
+    return ['native', ...new Set([...Object.keys(BUILTIN_AGENT_EXECUTORS), ...Object.keys(configured)]).values()]
+      .map((id) => this.get(id)!)
+      .toSorted((a, b) => a.id.localeCompare(b.id));
+  }
+
+  recordNegotiated(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void {
+    const descriptor = this.get(id);
+    if (descriptor !== undefined) this.negotiatedById.set(id, {
+      revision: descriptor.revision, version, capabilities,
+    });
+  }
+
+  negotiated(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined {
+    const cached = this.negotiatedById.get(id);
+    return cached !== undefined && cached.revision === this.get(id)?.revision && cached.version === version
+      ? cached.capabilities : undefined;
   }
 
   resolve(id = 'native', options: unknown = {}): ResolvedAgentExecutor {
@@ -134,7 +160,36 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
           };
         }
       }
-      return result;
+      const descriptor = resolved.descriptor;
+      const observed = this.negotiatedById.get(id);
+      const negotiated = observed?.revision === descriptor.revision ? observed.capabilities : undefined;
+      const fields = {
+        name: { state: 'applied' as const }, description: { state: 'applied' as const },
+        when: { state: 'applied' as const }, main: { state: 'applied' as const },
+        executor_prompt: { state: 'mapped' as const },
+        model_alias: { state: 'mapped' as const },
+        thinking_effort: descriptor.protocol === 'codex-app-server' ||
+          (negotiated?.thinkingLevels?.length ?? 0) > 0 || descriptor.thoughtConfigId !== undefined ||
+          descriptor.thoughtConfigCategory !== undefined
+          ? { state: 'mapped' as const }
+          : { state: 'ignored' as const, reason: 'The executor did not advertise a thinking-level setting' },
+        tools: { state: 'ignored' as const, reason: 'Tools are managed by the external executor' },
+        disallowed_tools: { state: 'ignored' as const, reason: 'Tools are managed by the external executor' },
+        service_tier: { state: 'ignored' as const, reason: 'Provider settings require native execution' },
+        request_params: { state: 'ignored' as const, reason: 'Provider settings require native execution' },
+        context_budget: { state: 'ignored' as const, reason: 'Provider settings require native execution' },
+        auto_compact: { state: 'ignored' as const, reason: 'Compaction is managed by the external executor' },
+        max_completion_tokens: { state: 'ignored' as const, reason: 'Provider settings require native execution' },
+      };
+      const advisories = (binding.explicitFields ?? []).flatMap((field) => {
+        const state = fields[field as keyof typeof fields];
+        return state?.state === 'ignored'
+          ? [{ code: 'executor_field_ignored' as const, field,
+              message: `${field} is ignored by executor "${id}": ${state.reason}` }]
+          : [];
+      });
+      return { ...result, binding: { modelAlias: result.binding.modelAlias,
+        thinkingEffort: result.binding.thinkingEffort }, fields, advisories };
     } catch (error) {
       return {
         ok: false,
@@ -209,10 +264,13 @@ function descriptorFromConfig(
   return {
     id,
     protocol: config.protocol,
+    label: config.label,
     command: config.command,
     sources: config.sources,
     source: config.source,
     versionProbe: config.versionProbe,
+    diagnostics: config.diagnostics,
+    auth: config.auth,
     args: [...config.args],
     env: config.env,
     startupTimeoutMs: config.startupTimeoutMs,
@@ -224,6 +282,12 @@ function descriptorFromConfig(
     thoughtConfigCategory: config.thoughtConfigCategory,
     thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
+    permission: config.permission,
+    promptDeliveries: config.promptDeliveries,
+    defaultProfile: config.defaultProfile,
+    installHint: config.installHint,
+    loginCommand: config.loginCommand,
+    steerDelivery: config.steerDelivery,
     profileDelivery: config.profileDelivery,
     revision: descriptorRevisionFromConfig(config),
   };

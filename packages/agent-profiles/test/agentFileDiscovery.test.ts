@@ -87,6 +87,7 @@ describe('discoverAgentFiles', () => {
       expect(result.agents).toHaveLength(1);
       expect(result.agents[0]?.description).toBe('reviewer agent');
       expect(result.agents[0]?.source).toBe('user');
+      expect(result.shadowedFiles?.get(result.agents[0]!.definitionId)).toEqual([join(other, 'reviewer.md')]);
     } finally {
       await rm(other, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

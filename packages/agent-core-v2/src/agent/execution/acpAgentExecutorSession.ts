@@ -15,6 +15,8 @@ import {
   type NormalizedExecutorEvent,
 } from '@kiki/acp-client';
 
+import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import {
   agentExecutorBindingFingerprint,
   type AgentExecutionStatus,
@@ -105,6 +107,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   readonly #permissionMode: IAgentPermissionModeService;
+  readonly #spawnPermissionMode: IAgentPermissionModeService['mode'];
   #active: ActiveExternalTurn | undefined;
   #permissionContext:
     | { readonly turn: MutableExternalTurn; readonly recorder: ExternalTurnRecorder }
@@ -114,7 +117,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #shutdown = false;
 
   constructor(
-    private readonly context: AgentExecutorContext,
+    private context: AgentExecutorContext,
     clientFactory: (
       processService: HostProcessServiceLike,
       permissionHandler: (
@@ -152,6 +155,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
+    this.#spawnPermissionMode = this.#permissionMode.mode;
     this.#client = clientFactory(
       processService,
       (request, options) => this.#requestPermission(request, options),
@@ -191,6 +195,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const configured = await this.#configure(opened, options.signal, losses);
+    this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
+      this.context.descriptor.id, this.context.descriptor.version, {
+        models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
+        thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
+        authMethods: opened.initialize.authMethods?.map((method) => method.id),
+        resume: opened.capabilities.sessionCapabilities?.resume != null,
+        load: opened.capabilities.loadSession === true,
+        permissionModes: opened.availableModes,
+      },
+    );
     const prior = this.#states.get(externalExecutorKey);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
     const reusablePrior = prior.bindingFingerprint === bindingFingerprint;
@@ -212,6 +226,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       opened.mode === 'new' &&
       sessionOptions.systemPromptOverride !== undefined;
     if (deliverProfile && !profileOverrideDelivered) losses.add('profile_as_user_preamble');
+    if (resolvePromptDelivery(this.context.descriptor, this.context.binding).downgraded) {
+      losses.add('prompt_delivery_downgraded');
+    }
     const profileDelivery: ExecutorProfileDelivery = deliverProfile
       ? profileOverrideDelivered
         ? 'system_prompt_override'
@@ -234,7 +251,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       {
         executorId: this.context.descriptor.id,
         protocol: this.context.descriptor.protocol,
-        model: this.context.binding.modelAlias!,
+        model: this.context.binding.modelAlias ?? 'harness-default',
         modelAlias: this.context.binding.modelAlias,
         provider: resolveExternalModelProvider(
           this.context.agent,
@@ -351,6 +368,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       return { state: 'starting' };
     }
     return { state: 'idle' };
+  }
+
+  updateBinding(binding: AgentExecutorContext['binding']): void {
+    if (this.#active !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP binding cannot change during a turn');
+    this.context = { ...this.context, binding };
   }
 
   cancel(reason?: unknown): boolean {
@@ -495,10 +517,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
           : undefined,
       systemPromptOverride:
-        this.context.descriptor.profileDelivery === 'system_prompt_override' &&
-          systemPrompt.length > 0
-          ? systemPrompt
-          : undefined,
+        resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
+          this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
+          ? systemPrompt : undefined,
       signal,
     };
   }
@@ -516,7 +537,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       );
     }
     let configured = opened;
-    if (modelBinding === 'session_config') {
+    if (modelBinding === 'session_config' && this.context.binding.modelAlias !== undefined) {
       const model = selectConfig(
         configured.configOptions,
         this.context.descriptor.modelConfigId,
@@ -550,22 +571,42 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }
     }
 
-    const mapping = this.context.descriptor.permissionModeMapping;
-    if (mapping === undefined) {
-      losses.add('permission_mode_unverified');
+    const declared = this.context.descriptor.permission;
+    const mapping = this.context.descriptor.permissionModeMapping ?? (declared?.via === 'config_option'
+      ? { configId: declared.configId, configCategory: declared.configCategory,
+          manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
+      : undefined);
+    const mode = this.#permissionMode.mode;
+    if (mapping !== undefined) {
+      const permission = permissionConfig(configured.configOptions, mapping, mode);
+      const verified = await this.#client.configureSession({ configOptions: [permission.selection], signal });
+      assertConfigured(verified.configOptions, permission.selection, 'permission mode');
+      return verified;
+    }
+    if (declared?.via === 'argv') {
+      if (mode !== this.#spawnPermissionMode || declared.flag === undefined) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID,
+          `External executor "${this.context.descriptor.id}" requires a fresh process for ${mode} permission mode`);
+      }
       return configured;
     }
-    const permission = permissionConfig(
-      configured.configOptions,
-      mapping,
-      this.#permissionMode.mode,
-    );
-    const verified = await this.#client.configureSession({
-      configOptions: [permission.selection],
-      signal,
-    });
-    assertConfigured(verified.configOptions, permission.selection, 'permission mode');
-    return verified;
+    if (declared?.via === 'session_mode') {
+      const selected = declared[mode === 'review' ? 'review' : mode] ?? declared.manual;
+      if (opened.availableModes !== undefined && !opened.availableModes.includes(selected)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID,
+          `External executor "${this.context.descriptor.id}" does not advertise ${selected} permission mode`);
+      }
+      configured = await this.#client.configureSession({ modeId: selected, signal });
+      if (configured.currentModeId === selected) return configured;
+    }
+    if (mode === 'manual' || mode === 'review') {
+      if (declared?.trustEngineSettings !== true) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID,
+          `External executor "${this.context.descriptor.id}" cannot verify ${mode} permission mode`);
+      }
+    }
+    losses.add('permission_mode_unverified');
+    return configured;
   }
 
   #reserveTurnId(): number {
@@ -638,13 +679,16 @@ function requiredCommand(context: AgentExecutorContext): string {
 }
 
 export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly string[] {
-  if (context.descriptor.modelBinding !== 'argv') return context.descriptor.args;
+  const declared = context.descriptor.permission;
+  const mode = declared?.via === 'argv'
+    ? context.agent.accessor.get(IAgentPermissionModeService).mode : undefined;
+  const permissionArgs = mode === undefined || declared?.flag === undefined ? []
+    : [declared.flag, declared[mode === 'review' ? 'review' : mode] ?? declared.manual];
+  if (context.descriptor.modelBinding !== 'argv') return [...permissionArgs, ...context.descriptor.args];
   const model = context.binding.modelAlias;
-  if (model === undefined || model.length === 0) {
-    throw new Error2(
-      ErrorCodes.MODEL_NOT_CONFIGURED,
-      `External executor "${context.descriptor.id}" requires a pinned argv model`,
-    );
+  if (model === undefined) return [...permissionArgs, ...context.descriptor.args];
+  if (model.length === 0) {
+    throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'External argv model cannot be empty');
   }
   const template = context.descriptor.modelArgs;
   if (template === undefined || template.length === 0) {
@@ -664,7 +708,7 @@ export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly s
       `External executor "${context.descriptor.id}" model_args must contain exactly one {model} placeholder`,
     );
   }
-  return [...modelArgs, ...context.descriptor.args];
+  return [...permissionArgs, ...modelArgs, ...context.descriptor.args];
 }
 
 function isTerminalTurnState(state: NonNullable<Turn['state']>): boolean {

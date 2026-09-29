@@ -38,6 +38,7 @@ export function agentProfileFromFile(
     spawnConstraints: definition.spawnConstraints,
     executor: definition.executor,
     executorOptions: definition.executorOptions,
+    executorPrompt: definition.executorPrompt,
     modelAlias: definition.modelAlias,
     thinkingEffort: definition.thinkingEffort,
     allowedModels: definition.allowedModels,
@@ -48,6 +49,7 @@ export function agentProfileFromFile(
     requestParams: definition.requestParams,
     contextBudget: definition.contextBudget,
     autoCompact: definition.autoCompact,
+    contextStrategy: definition.contextStrategy,
     maxCompletionTokens: definition.maxCompletionTokens,
     promptOverrides: definition.promptOverrides,
     systemPromptMode: definition.systemPromptMode,
@@ -157,7 +159,10 @@ export function profilesFromDiscovery(
       validation,
     );
     if (validated.error === undefined) {
-      profiles.push(validated.profile);
+      profiles.push(normalizeAgentProfile({
+        ...validated.profile,
+        shadowedFiles: result.shadowedFiles?.get(definition.definitionId),
+      }));
     } else {
       skipped.push({
         path: definition.path,

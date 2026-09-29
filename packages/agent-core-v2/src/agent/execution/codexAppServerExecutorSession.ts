@@ -12,6 +12,8 @@ import {
   type HostProcessServiceLike,
 } from '@kiki/codex-client';
 
+import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import {
   agentExecutorBindingFingerprint,
   type AgentExecutionStatus,
@@ -20,6 +22,7 @@ import {
 } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -61,6 +64,7 @@ interface CodexClientLike {
   startThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
   resumeThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
   startTurn(params: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<CodexTurnHandle>;
+  request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown>;
   shutdown(reason?: unknown): Promise<void>;
 }
 
@@ -111,7 +115,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   #shutdown = false;
 
   constructor(
-    private readonly context: AgentExecutorContext,
+    private context: AgentExecutorContext,
     clientFactory: (
       processService: HostProcessServiceLike,
       onServerRequest: (
@@ -196,9 +200,16 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       losses.add('resume_new_session_handoff');
       if (opened.handoff.truncated) losses.add('handoff_truncated');
     }
-    const remotePrompt = opened.handoff === undefined
-      ? prompt
-      : `${HANDOFF_BEGIN}\n${opened.handoff.text}\n${HANDOFF_END}\n\n${prompt}`;
+    const delivery = resolvePromptDelivery(this.context.descriptor, this.context.binding);
+    if (delivery.downgraded) losses.add('prompt_delivery_downgraded');
+    const deliverPreamble = delivery.actual === 'preamble' &&
+      (prior.profileDeliveredSessionId !== opened.threadId || opened.mode === 'new' || opened.mode === 'handoff');
+    if (deliverPreamble) losses.add('profile_as_user_preamble');
+    const remotePrompt = [
+      deliverPreamble ? `--- BEGIN KIKI PROFILE ---\n${this.context.binding.systemPrompt}\n--- END KIKI PROFILE ---` : undefined,
+      opened.handoff === undefined ? undefined : `${HANDOFF_BEGIN}\n${opened.handoff.text}\n${HANDOFF_END}`,
+      prompt,
+    ].filter((part) => part !== undefined).join('\n\n');
     const recorder = new ExternalTurnRecorder(
       this.context.agent,
       turnId,
@@ -206,14 +217,15 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       {
         executorId: this.context.descriptor.id,
         protocol: this.context.descriptor.protocol,
-        model: this.context.binding.modelAlias!,
+        model: this.context.binding.modelAlias ?? 'harness-default',
         modelAlias: this.context.binding.modelAlias,
         provider: resolveExternalModelProvider(
           this.context.agent,
           this.context.binding.modelAlias,
         ),
         resumeMode: opened.mode,
-        profileDelivery: 'native',
+        profileDelivery: delivery.actual === 'preamble' ? 'first_prompt_preamble'
+          : delivery.actual === 'replace' ? 'base_instructions' : 'developer_instructions',
         outboundPrompt: remotePrompt,
         initialLosses: [...losses],
       },
@@ -242,10 +254,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       handle = await this.#client.startTurn({
         threadId: opened.threadId,
         input: [{ type: 'text', text: remotePrompt }],
+        model: this.context.binding.modelAlias,
         effort: this.context.binding.thinkingLevel === 'off'
           ? undefined
           : this.context.binding.thinkingLevel,
-        approvalPolicy: 'on-request',
+        approvalPolicy: this.#approvalPolicy(),
         sandboxPolicy: {
           type: 'workspaceWrite',
           writableRoots: roots.additionalDirs,
@@ -309,6 +322,32 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (state === 'broken') return { state: 'broken' };
     if (state === 'spawning' || state === 'initializing') return { state: 'starting' };
     return { state: 'idle' };
+  }
+
+  updateBinding(binding: AgentExecutorContext['binding']): void {
+    if (this.#active !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Codex binding cannot change during a turn');
+    if (this.context.binding.modelAlias !== binding.modelAlias) this.#modelValidated = false;
+    this.context = { ...this.context, binding };
+  }
+
+  async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean> {
+    const active = this.#active;
+    const remote = this.#client.status();
+    if (active === undefined || active.turn.signal.aborted || remote.threadId !== this.#threadId || !remote.turnId) return false;
+    if (message.content.length === 0 || message.content.some((part) => part.type !== 'text')) return false;
+    const text = message.content.map((part) => part.type === 'text' ? part.text : '').join('\n');
+    if (text.trim().length === 0) return false;
+    try {
+      const response = await this.#client.request('turn/steer', {
+        threadId: remote.threadId,
+        expectedTurnId: remote.turnId,
+        input: [{ type: 'text', text }],
+      }, active.turn.signal);
+      return typeof response === 'object' && response !== null && 'turnId' in response && response.turnId === remote.turnId;
+    } catch (error) {
+      if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return false;
+      throw error;
+    }
   }
 
   cancel(reason?: unknown): boolean {
@@ -390,9 +429,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   async #validateModel(signal: AbortSignal): Promise<void> {
     if (this.#modelValidated) return;
     const model = this.context.binding.modelAlias;
-    if (model === undefined || model.length === 0) {
-      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Codex app-server requires a pinned model id');
-    }
     let listed: CodexModelListResult;
     try {
       listed = await this.#client.listModels(signal);
@@ -403,8 +439,16 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         { cause: error },
       );
     }
-    const advertised = listed.data.find((candidate) => candidate.id === model);
-    if (advertised === undefined) {
+    this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
+      this.context.descriptor.id, this.context.descriptor.version, {
+        models: listed.data.map((candidate) => candidate.id),
+        thinkingLevels: [...new Set(listed.data.flatMap((candidate) =>
+          (candidate.supportedReasoningEfforts ?? []).flatMap((entry) => entry.reasoningEffort === undefined ? [] : [entry.reasoningEffort])))],
+        resume: true,
+      },
+    );
+    const advertised = model === undefined ? undefined : listed.data.find((candidate) => candidate.id === model);
+    if (model !== undefined && advertised === undefined) {
       throw new Error2(
         ErrorCodes.MODEL_NOT_FOUND,
         `Codex app-server model "${model}" is not advertised by model/list`,
@@ -412,10 +456,13 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       );
     }
     const effort = this.context.binding.thinkingLevel;
-    const efforts = (advertised.supportedReasoningEfforts ?? []).flatMap((candidate) => {
+    const efforts = (advertised?.supportedReasoningEfforts ?? []).flatMap((candidate) => {
       const value = candidate.reasoningEffort;
       return typeof value === 'string' && value.length > 0 ? [value] : [];
     });
+    if (model === undefined && effort !== 'off') {
+      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Codex thinking effort requires a pinned model');
+    }
     if (effort !== 'off' && efforts.length > 0 && !efforts.includes(effort)) {
       throw new Error2(
         ErrorCodes.MODEL_NOT_FOUND,
@@ -451,9 +498,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           threadId: priorThreadId,
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
-          approvalPolicy: 'on-request',
+          approvalPolicy: this.#approvalPolicy(),
           sandbox: 'workspace-write',
-          developerInstructions: this.context.binding.systemPrompt,
+          ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
         return { threadId: resumed.thread.id, mode: 'resume' };
@@ -480,12 +527,29 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const started = await this.#client.startThread({
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
-      approvalPolicy: 'on-request',
+      approvalPolicy: this.#approvalPolicy(),
       sandbox: 'workspace-write',
-      developerInstructions: this.context.binding.systemPrompt,
+      ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
     return started;
+  }
+
+  #instructions(): Readonly<Record<string, string>> {
+    const delivery = resolvePromptDelivery(this.context.descriptor, this.context.binding).actual;
+    const prompt = this.context.binding.systemPrompt;
+    if (prompt.length === 0 || delivery === 'preamble') return {};
+    return delivery === 'replace' ? { baseInstructions: prompt } : { developerInstructions: prompt };
+  }
+
+  #approvalPolicy(): string {
+    const mode = this.context.agent.accessor.get(IAgentPermissionModeService).mode;
+    const mapping = this.context.descriptor.permission;
+    if (mapping?.via === 'turn_param') return mapping[mode === 'review' ? 'review' : mode] ?? mapping.manual;
+    if (mode === 'manual' || mode === 'review') {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Codex permission policy cannot be verified for manual/review mode');
+    }
+    return 'on-request';
   }
 
   #roots(): { readonly workDir: string; readonly additionalDirs?: readonly string[] } {

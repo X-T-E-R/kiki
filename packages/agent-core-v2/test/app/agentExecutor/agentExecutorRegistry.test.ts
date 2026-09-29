@@ -118,6 +118,19 @@ describe('AgentExecutorRegistryService', () => {
     expect(JSON.stringify({ revision: first.revision })).not.toContain(secret);
   });
 
+  it('exposes negotiated capabilities only for the matching executor revision and binary version', () => {
+    let command = 'test-acp';
+    const config = { ...configWith({}), get: <T>() => ({ test: {
+      protocol: 'acp-v1', command, args: [],
+    } }) as T };
+    const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
+    registry.recordNegotiated('test', '1.0', { models: ['one'], resume: true });
+    expect(registry.negotiated('test', '1.0')).toEqual({ models: ['one'], resume: true });
+    expect(registry.negotiated('test', '2.0')).toBeUndefined();
+    command = 'replacement-acp';
+    expect(registry.negotiated('test', '1.0')).toBeUndefined();
+  });
+
   it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {
     const descriptor = (args: readonly string[]) => new AgentExecutorRegistryService(configWith({
       secure: {
@@ -269,7 +282,14 @@ describe('AgentExecutorRegistryService', () => {
       'identity',
       {},
       binding,
-    )).toEqual({ ok: true, binding });
+    )).toMatchObject({ ok: true, binding,
+      fields: { tools: { state: 'ignored' }, model_alias: { state: 'mapped' } }, advisories: [] });
+    expect(services.get(IAgentExecutorRegistry).validateBinding(
+      'identity', {}, { ...binding, explicitFields: ['tools', 'auto_compact'] },
+    )).toMatchObject({ ok: true, advisories: [
+      { code: 'executor_field_ignored', field: 'tools' },
+      { code: 'executor_field_ignored', field: 'auto_compact' },
+    ] });
   });
 
   it('uses only provider-declared external binding normalization', () => {
@@ -304,12 +324,14 @@ describe('AgentExecutorRegistryService', () => {
       'fake-acp',
       {},
       { modelAlias: 'external-model', thinkingEffort: 'xhigh' },
-    )).toEqual({
+    )).toMatchObject({
       ok: true,
       binding: {
         modelAlias: 'external-model-canonical',
         thinkingEffort: 'xhigh',
       },
+      fields: { model_alias: { state: 'mapped' } },
+      advisories: [],
     });
   });
 
@@ -359,6 +381,21 @@ describe('AgentExecutorRegistryService', () => {
         shell: true,
       },
     })).toThrow();
+  });
+
+  it('round-trips nested permission settings and diagnostic declarations', () => {
+    const parsed = AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
+      custom: { protocol: 'acp-v1', command: 'custom-agent',
+        permission: { via: 'config_option', config_id: 'mode', manual: 'ask', auto: 'auto', yolo: 'all',
+          trust_engine_settings: true },
+        diagnostics: [{ kind: 'message', severity: 'info', message: 'Check config' }],
+      },
+    }));
+    expect(parsed['custom']?.permission).toMatchObject({ configId: 'mode', trustEngineSettings: true });
+    expect(agentExecutorsToToml(parsed)).toMatchObject({ custom: {
+      permission: { config_id: 'mode', trust_engine_settings: true },
+      diagnostics: [{ kind: 'message', severity: 'info', message: 'Check config' }],
+    } });
   });
 
   it('gates the system prompt override per descriptor without invalidating resumable sessions', () => {

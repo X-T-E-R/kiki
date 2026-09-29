@@ -475,8 +475,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   private validateRestoreBindingInput(agentId: string, binding: AgentRestoreBinding): void {
-    const required: readonly [keyof AgentRestoreBinding, string | undefined][] = [
-      ['modelAlias', binding.modelAlias],
+    const required: readonly (readonly [keyof AgentRestoreBinding, string | undefined])[] = [
+      ...(binding.executorId === undefined || binding.executorId === 'native'
+        ? [['modelAlias', binding.modelAlias] as const] : []),
       ['thinkingEffort', binding.thinkingEffort],
       ['executorId', binding.executorId],
       ['executorProtocol', binding.executorProtocol],

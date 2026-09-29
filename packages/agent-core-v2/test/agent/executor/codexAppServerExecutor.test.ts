@@ -13,12 +13,16 @@ import { attachExternalMailboxHarness } from './mailboxHarness';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
+import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -52,6 +56,7 @@ interface HarnessOptions {
   readonly models?: readonly string[];
   readonly modelReasoningEfforts?: readonly string[];
   readonly modelAlias?: string;
+  readonly unpinModel?: boolean;
   readonly thinkingEffort?: string;
   readonly priorThreadId?: string;
   readonly priorBindingFingerprint?: string;
@@ -66,6 +71,7 @@ interface HarnessOptions {
   readonly questionAnswer?: string;
   readonly questionAnswers?: Readonly<Record<string, string>>;
   readonly deferTurnCompletion?: boolean;
+  readonly steerResponse?: unknown;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -183,6 +189,7 @@ function createHarness(options: HarnessOptions = {}) {
   } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
+    [IAgentPermissionModeService, { mode: 'manual' }],
     [IModelCatalog, modelCatalog],
     [IAgentUsageService, usage],
     [IEventDispatcher, dispatcher],
@@ -193,6 +200,7 @@ function createHarness(options: HarnessOptions = {}) {
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
     [IWireService, wire],
+    [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
   ]);
   const context: AgentExecutorContext = {
     agent: {
@@ -204,10 +212,11 @@ function createHarness(options: HarnessOptions = {}) {
       protocol: 'codex-app-server',
       command: 'codex',
       args: [],
+      permission: { via: 'turn_param', manual: 'on-request', auto: 'on-request', yolo: 'never' },
       revision: 'r1',
     },
     binding: {
-      modelAlias: options.modelAlias ?? 'gpt-test',
+      modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'gpt-test',
       thinkingLevel: options.thinkingEffort ?? 'high',
       systemPrompt: 'Frozen profile instructions',
       executorId: 'codex-app-server',
@@ -235,7 +244,10 @@ function createHarness(options: HarnessOptions = {}) {
     return true;
   });
   const client = {
-    status: () => ({ state: 'ready' as const }),
+    status: () => resolveTurnCompletion === undefined
+      ? { state: 'ready' as const }
+      : { state: 'turning' as const, threadId: 'thread-new', turnId: 'turn-1' },
+    request: vi.fn(async (_method: string, _params: unknown) => options.steerResponse ?? { turnId: 'turn-1' }),
     connect: async () => {},
     listModels: async () => {
       const models = [...(options.models ?? [options.modelAlias ?? 'gpt-test'])];
@@ -371,6 +383,9 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   const agentId = harness.context.agent.id;
   ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
   ix.set(IAgentContextMemoryService, harness.memory);
+  ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
+  ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({}) });
+  ix.stub(IAgentGoalService, { getGoal: () => ({ goal: null }) });
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
   ix.set(IAgentExecutorRegistry, {
     resolveExecutable: async () => ({
@@ -392,6 +407,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
     scope: (subKey) => subKey === undefined ? agentId : `${agentId}/${subKey}`,
   });
   ix.set(IAgentStateService, harness.states);
+  ix.set(IAgentPermissionModeService, { mode: 'manual' } as IAgentPermissionModeService);
   ix.set(IAgentUsageService, harness.usage);
   ix.set(IEventDispatcher, harness.dispatcher);
   ix.set(IModelCatalog, harness.modelCatalog);
@@ -417,6 +433,25 @@ function createExecutionHarness(options: HarnessOptions = {}) {
 }
 
 describe('Codex app-server external executor', () => {
+  it('delivers a text steer into the active remote turn and rejects stale acknowledgments', async () => {
+    const harness = createHarness({ deferTurnCompletion: true });
+    await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    const message: ContextMessage = {
+      role: 'user', content: [{ type: 'text', text: 'adjust course' }], toolCalls: [],
+    };
+    expect(await harness.session.steer(message)).toBe(true);
+    expect(harness.client.request).toHaveBeenCalledWith('turn/steer', {
+      threadId: 'thread-new', expectedTurnId: 'turn-1', input: [{ type: 'text', text: 'adjust course' }],
+    }, expect.any(AbortSignal));
+    expect(await harness.session.steer({ ...message, content: [{ type: 'image_url', imageUrl: { url: 'https://example.test/image.png' } }] })).toBe(false);
+    await harness.session.shutdown();
+
+    const stale = createHarness({ deferTurnCompletion: true, steerResponse: { turnId: 'earlier-turn' } });
+    await stale.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    expect(await stale.session.steer(message)).toBe(false);
+    await stale.session.shutdown();
+  });
+
   it('validates the exact model, maps the native thread and turn settings, and records output', async () => {
     const harness = createHarness();
     const handle = await harness.session.run(
@@ -438,7 +473,7 @@ describe('Codex app-server external executor', () => {
     });
     expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({
       protocol: 'codex-app-server',
-      profileDelivery: 'native',
+      profileDelivery: 'developer_instructions',
       losses: ['codex_no_step_boundaries'],
     });
     expect(harness.usageRecords).toEqual([[
@@ -532,6 +567,20 @@ describe('Codex app-server external executor', () => {
       threadId: 'thread-new',
       effort: 'xhigh',
     });
+    await harness.session.shutdown();
+  });
+
+  it('keeps the Codex thread on an idle model/effort change and revalidates the new model', async () => {
+    const harness = createHarness({ models: ['gpt-test', 'gpt-next'], modelReasoningEfforts: ['high', 'xhigh'] });
+    const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
+    await first.completion;
+    await harness.session.settled();
+    harness.session.updateBinding({ ...harness.context.binding, modelAlias: 'gpt-next', thinkingLevel: 'xhigh' });
+    const second = await harness.session.run({ kind: 'prompt', prompt: 'second' }, { signal: new AbortController().signal });
+    await second.completion;
+    expect(harness.starts).toHaveLength(1);
+    expect(harness.prompts[1]).toMatchObject({ threadId: 'thread-new', model: 'gpt-next', effort: 'xhigh' });
+    expect(harness.modelLists).toHaveLength(2);
     await harness.session.shutdown();
   });
 
@@ -793,6 +842,21 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
+  it('resumes an unpinned Codex main thread with the harness default model', async () => {
+    const harness = createHarness({ priorThreadId: 'thread-old', unpinModel: true, thinkingEffort: 'off' });
+    const handle = await harness.session.run({ kind: 'prompt', prompt: 'Continue' },
+      { signal: new AbortController().signal });
+    await handle.completion;
+    expect(harness.resumes).toHaveLength(1);
+    expect(harness.starts).toHaveLength(0);
+    expect(harness.prompts[0]?.['model']).toBeUndefined();
+    expect(JSON.stringify(harness.prompts[0])).not.toContain('"model"');
+    expect(harness.usageRecords[0]?.[3]).toMatchObject({
+      modelAlias: undefined, executorId: 'codex-app-server',
+    });
+    await harness.session.shutdown();
+  });
+
   it('falls back to a fresh thread only for protocol resume failures', async () => {
     const history: ContextMessage[] = [{
       role: 'user',
@@ -844,10 +908,10 @@ describe('Codex app-server external executor', () => {
       const sent = String(harness.starts[0]?.['developerInstructions']);
       expect(sent).toContain('Role NEW');
       expect(sent).not.toContain('Role OLD');
-      expect(sent.split('SHARED_NEW')).toHaveLength(2);
+      expect(sent).not.toContain('SHARED_NEW');
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
-      expect(sent.split(snippet!)).toHaveLength(2);
+      expect(sent).not.toContain(snippet!);
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
@@ -865,7 +929,7 @@ describe('Codex app-server external executor', () => {
           { kind: 'prompt', prompt: 'work' },
           { signal: new AbortController().signal },
         );
-        expect(harness.starts[0]?.['developerInstructions']).toBe('Frozen profile instructions\n\nALL_EXECUTORS_SHARED');
+        expect(harness.starts[0]?.['developerInstructions']).toBe('Frozen profile instructions');
         harness.pendingTurns.add(run.turn.id);
         if (close === 'scope-close') harness.ix.dispose();
         if (close === 'replacement') {

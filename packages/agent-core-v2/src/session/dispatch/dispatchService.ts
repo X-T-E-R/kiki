@@ -702,7 +702,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const modelSource = input.modelAlias !== undefined ? 'dispatch-explicit' as const
       : selection.route?.lockedModelAlias !== undefined ? 'route-default' as const
         : target.lease?.modelAlias !== undefined ? 'caller-lease-default' as const
-          : 'profile-default' as const;
+          : profile.modelAlias !== undefined ? 'profile-default' as const : 'config-default' as const;
     const profileThinking = resolveRoleThinkingDefault(
       roleConstraints,
       binding.model,

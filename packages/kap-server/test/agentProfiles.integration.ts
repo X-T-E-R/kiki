@@ -77,6 +77,84 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('lists executor capabilities and round-trips a file profile spawn constraint patch', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    const profilePath = join(home!, 'agents', 'reviewer.md');
+    await writeFile(profilePath, '---\nname: reviewer\ndescription: Reviews changes\nexecutor: codex-app-server\n---\nReview changes.\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const executors = (await (await authedFetch(server, base, '/api/executors')).json()) as Envelope<{
+      items: Array<{ id: string; label: string; protocol: string; status: string }>;
+    }>;
+    expect(executors.code).toBe(0);
+    expect(executors.data.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'native', label: 'Kiki', status: 'ready' }),
+      expect.objectContaining({ id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server' }),
+    ]));
+    const listed = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
+    const profiles = listNamedAgentProfilesResponseSchema.parse(((await listed.json()) as Envelope<unknown>).data);
+    const reviewer = profiles.items.find((item) => item.name === 'reviewer')!;
+    expect(reviewer.executor_fields).toMatchObject({
+      prompt: { state: 'mapped' }, pinned_model_alias: { state: 'mapped' },
+      tools: { state: 'ignored' }, spawn_constraints: { state: 'applied' },
+    });
+    const patched = (await (await authedFetch(server, base, '/api/agents/reviewer', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace_id: reviewer.workspace_id, scope: 'user',
+        spawn_constraints: { allowed_models: ['provider/model'], disallowed_tools: ['Bash'] } }),
+    })).json()) as Envelope<unknown>;
+    expect(patched.code).toBe(0);
+    expect(patched.data).toMatchObject({ spawn_constraints: {
+      allowed_models: ['provider/model'], disallowed_tools: ['Bash'],
+    } });
+    expect(await readFile(profilePath, 'utf8')).toContain('spawn_constraints:');
+    const cleared = (await (await authedFetch(server, base, '/api/agents/reviewer', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace_id: reviewer.workspace_id, scope: 'user', spawn_constraints: null }),
+    })).json()) as Envelope<unknown>;
+    expect(cleared.code).toBe(0);
+    expect(cleared.data).not.toHaveProperty('spawn_constraints');
+  });
+
+  it('previews actual ordered external prompt text and resolved delivery without launching an engine', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'AGENTS.md'), 'Workspace policy for preview.\n');
+    await writeFile(join(home!, 'agents', 'reviewer.md'), [
+      '---', 'name: reviewer', 'description: Reviews changes', 'executor: codex-app-server',
+      'executor_prompt:', '  delivery: replace', '  include: [agents_md, workspace_info]',
+      '  body: Codex-only instructions', '  append: Final instruction', '---', 'Profile fallback.', '',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const listed = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
+    const reviewer = listNamedAgentProfilesResponseSchema.parse(((await listed.json()) as Envelope<unknown>).data)
+      .items.find((item) => item.name === 'reviewer')!;
+    const response = await authedFetch(server, base, '/api/agents/reviewer/executor-prompt:preview', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: reviewer.workspace_id }),
+    });
+    const result = await response.json() as Envelope<import('@kiki/protocol').ExecutorPromptPreviewResponse>;
+    expect(result.code).toBe(0);
+    expect(result.data.delivery).toEqual({ requested: 'replace', actual: 'replace', downgraded: false });
+    expect(result.data.blocks.map((block) => block.id)).toEqual(['body', 'append', 'agents_md', 'workspace_info']);
+    expect(result.data.blocks[0]?.text).toBe('Codex-only instructions');
+    expect(result.data.blocks[2]?.text).toContain('Workspace policy for preview.');
+    expect(result.data.text).toBe(result.data.blocks.map((block) => block.text).join('\n\n'));
+    const fallback = await authedFetch(server, base, '/api/agents/reviewer/executor-prompt:preview', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: reviewer.workspace_id, executor: 'claude-acp' }),
+    });
+    const downgraded = await fallback.json() as Envelope<import('@kiki/protocol').ExecutorPromptPreviewResponse>;
+    expect(downgraded.code).toBe(0);
+    expect(downgraded.data.delivery).toEqual({ requested: 'replace', actual: 'preamble', downgraded: true });
+    expect(downgraded.data.blocks[0]?.text).toBe('Codex-only instructions');
+    const rejected = await authedFetch(server, base, '/api/agents/reviewer/executor-prompt:preview', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: reviewer.workspace_id, executor: 'native' }),
+    });
+    expect((await rejected.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+  });
+
   it('reuses draft catalog projections until workspace close without retaining a workspace lease', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     const info = vi.spyOn(server.core.accessor.get(ILogService), 'info');
@@ -424,7 +502,30 @@ describe('GET /api/agents', () => {
     expect(await read()).toEqual(before);
   });
 
-  it.each([undefined, false, true])('R2 validates inherited main before an external executor write: main=%s', async (main) => {
+  it('creates an external main session without a Kiki model pin', async () => {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    server.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'external-main-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({
+        name: 'external-main', definitionId: 'external-main-fixture', main: true,
+        executor: 'grok-acp', systemPrompt: () => '',
+      })] },
+    });
+    const response = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'external-main' } }),
+    });
+    const created = await response.json() as Envelope<{ id: string }>;
+    expect(created.code, JSON.stringify(created)).toBe(0);
+    const main = server.core.accessor.get(ISessionManager).get(created.data.id)!
+      .accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService);
+    expect(main.data()).toMatchObject({ executorId: 'grok-acp', thinkingLevel: 'off', systemPrompt: '' });
+    expect(main.data().modelAlias).toBeUndefined();
+    expect(main.isRunnable()).toBe(true);
+  });
+
+  it.each([undefined, false, true])('preserves effective main on an external executor write: main=%s', async (main) => {
     const path = join(home!, 'agents', 'agent.md');
     await mkdir(join(home!, 'agents'), { recursive: true });
     const original = '---\nname: agent\ndescription: Restricted override\noverride: true\ntools: [Read]\nsubagents: []\n---\nRestricted prompt.';
@@ -444,15 +545,9 @@ describe('GET /api/agents', () => {
       body: JSON.stringify({ workspace_id: before.workspace_id, scope: 'user', source_file: before.source_file, raw_text: rawText }),
     });
     const result = await response.json() as Envelope<unknown>;
-    if (main === false) {
-      expect(result.code).toBe(0);
-      expect(await readFile(path, 'utf8')).toBe(rawText);
-      expect(await read()).toMatchObject({ main: false, source: 'user', executor: 'grok-acp', tools: ['Read'], subagents: [] });
-    } else {
-      expect(result.code).toBe(ErrorCode.VALIDATION_FAILED);
-      expect(await readFile(path)).toEqual(Buffer.from(original));
-      expect(await read()).toEqual(before);
-    }
+    expect(result.code).toBe(0);
+    expect(await readFile(path, 'utf8')).toBe(rawText);
+    expect(await read()).toMatchObject({ main: main !== false, source: 'user', executor: 'grok-acp', tools: ['Read'], subagents: [] });
   });
 
   it('projects caller leases and frozen live targets without launching children or exposing private configuration', async () => {
@@ -528,7 +623,9 @@ describe('GET /api/agents', () => {
       expect(lifecycle.list()).toHaveLength(1);
       registration.dispose();
       const after = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
-      expect((await after.json() as Envelope<unknown>).data).toEqual(body.data);
+      const afterBody = await after.json() as Envelope<typeof body.data>;
+      expect(afterBody.code).toBe(0);
+      expect(afterBody.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual(['explore', 'general']);
       expect(tool.description).toBe(description);
     } finally {
       registration.dispose();
@@ -1578,6 +1675,8 @@ describe('GET /api/agents', () => {
   });
 
   it('returns field details when the PATCH body requests non-editable fields', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'reviewer.md'), '---\nname: reviewer\ndescription: Reviewer\n---\nReview changes.\n');
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -1586,14 +1685,18 @@ describe('GET /api/agents', () => {
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
+    const listed = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
+    const profile = listNamedAgentProfilesResponseSchema.parse((await listed.json() as Envelope<unknown>).data)
+      .items.find((item) => item.name === 'reviewer');
+    expect(profile).toBeDefined();
 
     const response = await authedFetch(server, base, '/api/agents/reviewer', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         scope: 'user',
-        workspace_id: 'wd_test',
-        subagents: ['explore'],
+        workspace_id: profile?.workspace_id,
+        executor_fields: { tools: { state: 'applied' } },
       }),
     });
     const body = (await response.json()) as Envelope<null> & {
@@ -1601,8 +1704,50 @@ describe('GET /api/agents', () => {
     };
     expect(body.code).toBe(40001);
     expect(body.details).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: expect.stringMatching(/subagents|^$/) }),
+      expect.objectContaining({ path: expect.stringMatching(/executor_fields|^$/) }),
     ]));
+  });
+
+  it('patches main, role models, subagents and model profiles and projects them back', async () => {
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const session = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    expect(((await session.json()) as Envelope<unknown>).code).toBe(0);
+    const listed = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
+    const workspaceId = listNamedAgentProfilesResponseSchema.parse(listed.data).items
+      .find((profile) => profile.source === 'user')?.workspace_id;
+    expect(workspaceId).toBeTruthy();
+    const created = await authedFetch(server, base, '/api/agent-profiles', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace_id: workspaceId, scope: 'user', name: 'team-lead', description: 'Lead', prompt: 'Lead the team.' }),
+    });
+    expect(((await created.json()) as Envelope<unknown>).code).toBe(0);
+    const patch = await authedFetch(server, base, '/api/agents/team-lead', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspace_id: workspaceId, scope: 'user', main: true,
+        allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
+        subagents: ['explore', { name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' }],
+        model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
+      }),
+    });
+    const patched = (await patch.json()) as Envelope<unknown>;
+    expect(patched.code).toBe(0);
+    expect(patched.data).toMatchObject({
+      main: true, allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
+      model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
+    });
+    const subagents = (patched.data as { subagents?: unknown[] }).subagents;
+    expect(subagents?.[0]).toBe('explore');
+    expect(subagents?.[1]).toMatchObject({ name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' });
+    const text = await readFile(join(home!, 'agents', 'team-lead.md'), 'utf8');
+    expect(text).toContain('main: true');
+    expect(text.trimEnd().endsWith('Lead the team.')).toBe(true);
   });
 
   it('reads only the selected agent wire when restoring persisted usage after restart', async () => {

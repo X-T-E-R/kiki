@@ -118,6 +118,8 @@ export interface AcpOpenSessionResult {
   readonly initialize: InitializeResponse;
   readonly capabilities: AgentCapabilities;
   readonly configOptions: readonly SessionConfigOption[];
+  readonly currentModeId?: string;
+  readonly availableModes?: readonly string[];
   readonly sessionRef: ExecutorSessionRefEnvelope;
   readonly loadReplayObserved: boolean;
   readonly quarantinedUpdateCount: number;

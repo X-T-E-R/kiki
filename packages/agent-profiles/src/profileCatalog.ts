@@ -91,10 +91,6 @@ export function projectAgentProfileCatalog(input: {
       const profile = declared.name === DEFAULT_AGENT_PROFILE_NAME && declared.main === undefined
         ? { ...declared, main: true as const }
         : declared;
-      if (profile.main === true && profile.executor !== undefined && profile.executor !== 'native') {
-        input.warn(`External executor "${profile.executor}" is unsupported for main agent profile "${profile.name}"`);
-        continue;
-      }
       if (input.disabledNamedProfiles.has(profile.name)
         && !(profile.name === DEFAULT_AGENT_PROFILE_NAME && profile.main === true)) continue;
       const candidates = fileCandidates.get(profile.name) ?? [];

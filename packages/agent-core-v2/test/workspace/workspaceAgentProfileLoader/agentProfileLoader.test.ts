@@ -392,6 +392,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     workspaceLoader,
     extraLoader,
     bootstrap,
+    get(IAgentExecutorRegistry),
     opts?.atomicTextWriter,
   );
 
@@ -637,6 +638,124 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('patches spawn constraints, reloads them and clears the mapping without changing the prompt', async () => {
+    await withFixture(async (fixture) => {
+      const path = await writeAgent(join(fixture.homeDir, 'agents'), 'reviewer.md', agentMd('reviewer', 'Inspect changes.'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const updated = await stack.writer.update({
+          name: 'reviewer', scope: 'user', spawnConstraints: {
+            allowedModels: ['provider/model'], denyModels: ['provider/unsafe'],
+            allowedEfforts: ['high'], disallowedTools: ['Bash'],
+          },
+        });
+        expect(updated.profile.spawnConstraints).toEqual({
+          allowedModels: ['provider/model'], denyModels: ['provider/unsafe'],
+          allowedEfforts: ['high'], disallowedTools: ['Bash'],
+        });
+        expect(await readFile(path, 'utf8')).toContain('spawn_constraints:');
+        const before = await readFile(path, 'utf8');
+        await expect(stack.writer.update({ name: 'reviewer', scope: 'user', spawnConstraints: {
+          allowedModels: ['provider/model'], unexpected: ['bad'],
+        } as never })).rejects.toMatchObject({ code: 'validation.failed' });
+        expect(await readFile(path, 'utf8')).toBe(before);
+        const cleared = await stack.writer.update({ name: 'reviewer', scope: 'user', spawnConstraints: null });
+        expect(cleared.profile.spawnConstraints).toBeUndefined();
+        expect(await readFile(path, 'utf8')).not.toContain('spawn_constraints:');
+      });
+    });
+  });
+
+  it('patches main, executor, role models, subagents and model profiles while keeping untouched lease keys', async () => {
+    await withFixture(async (fixture) => {
+      const original = [
+        '---',
+        'name: lead',
+        'description: Lead',
+        'subagents:',
+        '  - explore',
+        '  - name: worker',
+        '    model_alias: fixture/a',
+        '    source: ./_private/worker.md',
+        'model_profiles:',
+        '  - alias: fixture/a',
+        '    when: long tasks',
+        '    request_params: { temperature: 0.2 }',
+        'tools: [Read,',
+        '  Bash]',
+        '---',
+        '',
+        'Lead body.',
+        '',
+      ].join('\n');
+      const profilePath = await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', original);
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const result = await stack.writer.update({
+          name: 'lead',
+          scope: 'user',
+          main: true,
+          allowedModels: ['fixture/a', 'fixture/b'],
+          allowedEfforts: ['high', 'max'],
+          subagentPolicy: 'strict',
+          subagents: ['worker', { name: 'explore', thinkingEffort: 'max' }, { name: 'review', modelAlias: 'fixture/b' }],
+          modelProfiles: [
+            { alias: 'fixture/b', when: 'short reviews', thinkingEffort: 'high' },
+            { alias: 'fixture/a', when: 'very long tasks' },
+          ],
+          disallowedTools: ['Write'],
+        });
+        expect(result.profile).toMatchObject({
+          main: true,
+          allowedModels: ['fixture/a', 'fixture/b'],
+          allowedEfforts: ['high', 'max'],
+          subagentPolicy: 'strict',
+          subagents: ['worker', 'explore', 'review'],
+        });
+        expect(result.profile.subagentLeases?.['explore']).toMatchObject({ thinkingEffort: 'max' });
+        expect(result.profile.subagentLeases?.['review']).toMatchObject({ modelAlias: 'fixture/b' });
+        expect(result.profile.modelProfiles?.map((entry) => [entry.alias, entry.when, entry.thinkingEffort]))
+          .toEqual([['fixture/b', 'short reviews', 'high'], ['fixture/a', 'very long tasks', undefined]]);
+        expect(result.profile.modelProfiles?.[1]?.requestParams).toEqual({ temperature: 0.2 });
+        const text = await readFile(profilePath, 'utf8');
+        expect(text).toContain('"source":"./_private/worker.md"');
+        expect(text).toContain('main: true');
+        expect(text.endsWith('\nLead body.\n')).toBe(true);
+
+        const cleared = await stack.writer.update({
+          name: 'lead', scope: 'user', main: null, allowedModels: null, allowedEfforts: null,
+          subagentPolicy: null, subagents: null, modelProfiles: null,
+        });
+        expect(cleared.profile.main).toBeUndefined();
+        expect(cleared.profile.allowedModels).toBeUndefined();
+        expect(cleared.profile.subagents).toBeUndefined();
+        expect(cleared.profile.modelProfiles).toBeUndefined();
+        expect(cleared.profile.disallowedTools).toEqual(['Write']);
+        expect(cleared.profile.tools).toEqual(['Read', 'Bash']);
+      });
+    });
+  });
+
+  it('rejects malformed subagent and model-profile updates before writing', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', agentMd('lead', 'Lead'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const before = await readFile(profilePath, 'utf8');
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', subagents: ['explore', 'explore'] }))
+          .rejects.toMatchObject({ code: 'validation.failed' });
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', modelProfiles: [{ alias: 'has space' }] }))
+          .rejects.toMatchObject({ code: 'validation.failed' });
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', executor: 'grok-acp', main: true }))
+          .rejects.toMatchObject({ code: 'validation.failed' });
+        expect(await readFile(profilePath, 'utf8')).toBe(before);
+        const updated = await stack.writer.update({ name: 'lead', scope: 'user', main: true });
+        expect(updated.profile.main).toBe(true);
+        expect(await readFile(profilePath, 'utf8')).toContain('main: true');
+      });
+    });
+  });
+
   it('creates scoped profiles without overwriting and duplicates a loaded template', async () => {
     await withFixture(async (fixture) => {
       await withStack(fixture, undefined, async (stack) => {
@@ -836,7 +955,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('rejects non-editable fields, malformed aliases, and read-only sources', async () => {
+  it('rejects malformed spawn constraints and aliases, and read-only sources', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
         join(fixture.homeDir, 'agents'),
@@ -848,7 +967,7 @@ describe('agent profile loaders + session catalog', () => {
         await expect(stack.writer.update({
           name: 'reviewer',
           scope: 'user',
-          subagents: ['explore'],
+          spawnConstraints: { allowedModels: [''] },
         } as never)).rejects.toMatchObject({ code: 'validation.failed' });
         await expect(stack.writer.update({
           name: 'reviewer',

@@ -7,6 +7,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 export interface HostProcessOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly envUnset?: readonly string[];
   readonly shell?: boolean | string;
   readonly detached?: boolean;
   readonly windowsHide?: boolean;

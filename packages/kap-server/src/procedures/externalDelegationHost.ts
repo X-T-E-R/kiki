@@ -388,6 +388,10 @@ function publicExecutorEvent(event: NormalizedExecutorEvent): NormalizedExecutor
       return { type: event.type, configOptions: event.configOptions };
     case 'session.info':
       return { type: event.type, title: event.title, meta: event.meta };
+    case 'turn.diff':
+      return { type: event.type, diff: event.diff };
+    case 'context.compacted':
+      return { type: event.type, threadId: event.threadId };
     case 'usage':
       return { type: event.type, used: event.used, size: event.size, cost: event.cost };
     case 'unknown':

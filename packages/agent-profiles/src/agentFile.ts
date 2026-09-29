@@ -1,6 +1,7 @@
 import { dirname } from 'pathe';
 
 import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema } from './agentProfile';
+import { executorPromptSchema } from './executorPrompt';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
@@ -49,6 +50,7 @@ const AGENT_FILE_KEYS = new Set([
   'spawn_constraints',
   'executor',
   'executor_options',
+  'executor_prompt',
   'model_alias',
   'thinking_effort',
   'allowed_models',
@@ -59,6 +61,7 @@ const AGENT_FILE_KEYS = new Set([
   'request_params',
   'context_budget',
   'auto_compact',
+  'context_strategy',
   'max_completion_tokens',
   'prompt_overrides',
   'system_prompt_mode',
@@ -191,9 +194,12 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       `Frontmatter field "executor" in ${options.path} is required when executor_options is set`,
     );
   }
-  if (main && executor !== undefined && executor !== 'native') {
+  const rawExecutorPrompt = frontmatter['executor_prompt'];
+  const parsedExecutorPrompt = rawExecutorPrompt === undefined
+    ? undefined : executorPromptSchema.safeParse(rawExecutorPrompt);
+  if (parsedExecutorPrompt !== undefined && !parsedExecutorPrompt.success) {
     throw new AgentFileParseError(
-      `External executor "${executor}" is unsupported for main agent profile ${options.path}`,
+      `Frontmatter field "executor_prompt" in ${options.path} is invalid: ${parsedExecutorPrompt.error.message}`,
     );
   }
   rejectModelPreference(frontmatter['model_preference'], options.path);
@@ -298,6 +304,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     spawnConstraints,
     executor,
     executorOptions,
+    executorPrompt: parsedExecutorPrompt?.data,
     modelAlias,
     thinkingEffort,
     allowedModels,
@@ -308,6 +315,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     requestParams,
     contextBudget: parseTokenBudget(frontmatter['context_budget'], 'context_budget', options.path),
     autoCompact: parseAutoCompactTokens(frontmatter['auto_compact'], 'profile auto_compact', options.path),
+    contextStrategy: parseContextStrategy(frontmatter['context_strategy'], 'context_strategy', options.path),
     maxCompletionTokens: parseTokenBudget(frontmatter['max_completion_tokens'], 'max_completion_tokens', options.path),
     promptOverrides,
     systemPromptMode: resolvedSystemPromptMode,
@@ -329,6 +337,7 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'request_params',
   'context_budget',
   'auto_compact',
+  'context_strategy',
   'max_completion_tokens',
   'prompt_overrides',
 ]);
@@ -405,6 +414,7 @@ function parseModelProfiles(
       requestParams: parseRequestParams(item['request_params'], filePath),
       contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
       autoCompact: parseAutoCompactTokens(item['auto_compact'], `profile ${prefix}.auto_compact`, filePath),
+      contextStrategy: parseContextStrategy(item['context_strategy'], `${prefix}.context_strategy`, filePath),
       maxCompletionTokens: parseTokenBudget(item['max_completion_tokens'], `${prefix}.max_completion_tokens`, filePath),
       promptOverrides: Object.hasOwn(item, 'prompt_overrides')
         ? parsePromptOverridesField(item['prompt_overrides'], `${prefix}.prompt_overrides`, filePath)
@@ -601,6 +611,18 @@ function parseOptionalBoolean(
   if (typeof value === 'boolean') return value;
   throw new AgentFileParseError(
     `Frontmatter field "${field}" in ${filePath} must be a boolean`,
+  );
+}
+
+function parseContextStrategy(
+  value: unknown,
+  field: string,
+  filePath: string,
+): AgentFileDefinition['contextStrategy'] {
+  if (value === undefined) return undefined;
+  if (value === 'summarize' || value === 'auto' || value === 'fresh') return value;
+  throw new AgentFileParseError(
+    `Frontmatter field "${field}" in ${filePath} must be "summarize", "auto", or "fresh"`,
   );
 }
 

@@ -43,6 +43,8 @@ export type NormalizedExecutorEvent =
   | { readonly type: 'mode.update'; readonly currentModeId: string }
   | { readonly type: 'config.update'; readonly configOptions: readonly unknown[] }
   | { readonly type: 'session.info'; readonly title?: string; readonly meta?: unknown }
+  | { readonly type: 'turn.diff'; readonly diff: string }
+  | { readonly type: 'context.compacted'; readonly threadId: string }
   | {
       readonly type: 'usage';
       readonly used: number;

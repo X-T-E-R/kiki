@@ -6,9 +6,14 @@ import {
 } from '#/_base/di/scope';
 import { linkAbortSignal } from '#/_base/utils/abort';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -23,6 +28,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import type {
   AgentRunHandle,
   AgentRunRequest,
@@ -30,7 +36,8 @@ import type {
 } from '#/session/subagent/subagent';
 
 import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
-import { externalExecutorKey } from './externalExecutorOps';
+import { ExecutorHintDelivery, externalExecutorKey } from './externalExecutorOps';
+import { externalPromptHints, externalStateHints, type ExternalPromptHint } from './externalPromptHints';
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
 
 interface ActiveRun {
@@ -50,6 +57,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
 
   private readonly agent: AgentExecutorAgentContext;
   private readonly runs = new Set<ActiveRun>();
+  private readonly deliveredHints = new Set<string>();
   private session: AgentExecutorSession | undefined;
   private sessionBindingKey: string | undefined;
   private broken: unknown;
@@ -113,27 +121,48 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
         afterStartCallbacks.push(callback);
       },
     };
+    let hints: ExternalPromptHint[] = [];
     try {
       await this.hooks.onWillRun.run(runContext);
       controller.signal.throwIfAborted();
       const session = await this.resolveSession();
       controller.signal.throwIfAborted();
-      const handle = await session.run(runContext.request ?? request, {
-        ...options,
-        signal: controller.signal,
-      });
+      let outbound = runContext.request ?? request;
+      if ((this.profile.data().executorId ?? 'native') !== 'native' && outbound.kind !== 'retry') {
+        await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+        const todos = this.agent.accessor.get(ISessionTodoService);
+        hints = [
+          ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get(), this.deliveredHints),
+          ...externalStateHints({
+            todos: todos.getTodos(this.agent.id),
+            notes: todos.getNotes(this.agent.id).notes,
+            goal: this.agent.accessor.get(IAgentGoalService).getGoal().goal,
+          }),
+        ];
+        const deliverable = hints.filter((hint) => hint.text.length > 0);
+        if (deliverable.length > 0) outbound = { ...outbound, prompt: [
+          ...deliverable.map((hint) => `[Kiki ${hint.origin}]\n${hint.text}`), outbound.prompt,
+        ].join('\n\n') };
+      }
+      const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
-      void handle.completion.then(
-        () => this.finishRun(active),
-        () => this.finishRun(active),
-      );
-      await Promise.allSettled(
-        afterStartCallbacks.map(async (callback) => {
-          await callback();
-        }),
-      );
+      void handle.completion.then(() => this.finishRun(active), () => this.finishRun(active));
+      for (const hint of hints) {
+        const delivered = hint.text.length > 0;
+        if (delivered && hint.id !== undefined) this.deliveredHints.add(hint.id);
+        void this.agent.accessor.get(IEventDispatcher).dispatch(new ExecutorHintDelivery({
+          executorId: this.profile.data().executorId, turnId: handle.turn.id, origin: hint.origin,
+          method: delivered ? 'next_turn_preamble' : 'undelivered',
+          status: delivered ? 'delivered' : 'undelivered',
+        })).catch(() => undefined);
+      }
+      await Promise.allSettled(afterStartCallbacks.map(async (callback) => { await callback(); }));
       return handle;
     } catch (error) {
+      for (const hint of hints) void this.agent.accessor.get(IEventDispatcher).dispatch(new ExecutorHintDelivery({
+        executorId: this.profile.data().executorId, origin: hint.origin,
+        method: 'undelivered', status: 'undelivered',
+      })).catch(() => undefined);
       this.finishRun(active);
       throw error;
     }
@@ -182,9 +211,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
 
   steer(message: ContextMessage): Promise<boolean> {
     if (this.status().state !== 'running') return Promise.resolve(false);
-    return this.session instanceof NativeAgentExecutorSession
-      ? this.session.steer(message)
-      : Promise.resolve(false);
+    return this.session?.steer?.(message) ?? Promise.resolve(false);
   }
 
   cancel(reason?: unknown): boolean {
@@ -234,11 +261,15 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
 
   private async resolveSession(): Promise<AgentExecutorSession> {
     await this.profile.preparePromptConfiguration();
-    const binding = { ...this.profile.data(), systemPrompt: this.profile.getSystemPrompt() };
-    const executorId = binding.executorId ?? 'native';
+    const data = this.profile.data();
+    const executorId = data.executorId ?? 'native';
+    const binding = { ...data, systemPrompt: executorId === 'native'
+      ? this.profile.getSystemPrompt() : data.systemPrompt };
     assertResearchExecutor(binding.executionRestriction, executorId);
-    const bindingKey =
-      executorId === 'native' ? 'native' : agentExecutorBindingFingerprint(binding);
+    const modeKey = this.executors.get?.(executorId)?.permission?.via === 'argv'
+      ? `:${this.agent.accessor.get(IAgentPermissionModeService).mode}` : '';
+    const bindingKey = executorId === 'native' ? 'native'
+      : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
       const status = this.session.status();
       if (status.state !== 'idle') {
@@ -252,7 +283,13 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       this.session = undefined;
       this.sessionBindingKey = undefined;
     }
-    if (this.session !== undefined) return this.session;
+    if (this.session !== undefined) {
+      if (this.session.status().state !== 'idle' && executorId !== 'native') {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor binding cannot change during a turn');
+      }
+      this.session.updateBinding?.(binding);
+      return this.session;
+    }
     try {
       if (executorId === 'native') {
         this.session = new NativeAgentExecutorSession(this.agent, this.loop, this.prompt);

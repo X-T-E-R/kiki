@@ -20,6 +20,7 @@ import {
 import { TurnEnded, TurnPrompt } from '#/agent/loop/turnOps';
 import { ToolCallStarted, ToolProgress, ToolResultEvent } from '#/agent/toolExecutor/toolExecutorEvents';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { toKimiErrorPayload } from '#/errors';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -192,6 +193,12 @@ export class ExternalTurnRecorder {
         this.losses.add('usage_context_only');
         await this.#runtimeUpdate('usage', boundedUnknown(event));
         return;
+      case 'turn.diff':
+        await this.#runtimeUpdate('diff', boundedUnknown(event.diff));
+        return;
+      case 'context.compacted':
+        await this.#runtimeUpdate('compaction', { threadId: event.threadId });
+        return;
       case 'unknown':
         this.losses.add('unknown_update_dropped');
         await this.#runtimeUpdate('unknown', { updateType: event.updateType });
@@ -325,11 +332,7 @@ export class ExternalTurnRecorder {
         name: event.title,
         args: tool.rawInput,
         description: event.kind,
-        display: {
-          kind: 'generic',
-          summary: event.title,
-          detail: boundedUnknown({ kind: event.kind, locations: event.locations }),
-        },
+        display: externalToolDisplay(event),
       }),
     );
   }
@@ -411,11 +414,11 @@ export class ExternalTurnRecorder {
   }
 
   async #runtimeUpdate(
-    kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'unknown',
+    kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown',
     value: unknown,
   ): Promise<void> {
     await this.#dispatcher.dispatch(
-      new ExecutorRuntimeUpdate({ turnId: this.turnId, kind, value }),
+      new ExecutorRuntimeUpdate({ turnId: this.turnId, executorId: this.metadata.executorId, kind, value }),
     );
   }
 
@@ -562,6 +565,39 @@ export class ExternalTurnRecorder {
       });
     }
   }
+}
+
+export function externalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {
+  const input = objectOf(event.rawInput);
+  const location = objectOf(event.locations?.[0]);
+  const change = Array.isArray(event.rawInput) ? objectOf(event.rawInput[0]) : undefined;
+  const path = stringOf(location?.['path']) ?? stringOf(input?.['path']) ?? stringOf(input?.['file_path'])
+    ?? stringOf(change?.['path']);
+  const command = stringOf(input?.['command']) ?? stringOf(input?.['cmd']);
+  if (event.kind === 'execute' || event.kind === 'command') return { kind: 'command', command: command ?? event.title };
+  if (event.kind === 'search' || event.kind === 'webSearch') {
+    return { kind: 'search', query: stringOf(input?.['query']) ?? event.title };
+  }
+  if (event.kind === 'collabAgentToolCall' || event.kind === 'subAgentActivity') {
+    return { kind: 'agent_call', agent_name: stringOf(input?.['agent']) ?? stringOf(input?.['recipient']) ?? event.title,
+      prompt: stringOf(input?.['prompt']) ?? stringOf(input?.['message']) ?? event.title };
+  }
+  if (event.kind === 'fetch') {
+    const url = stringOf(input?.['url']);
+    if (url !== undefined) return { kind: 'url_fetch', url };
+  }
+  if (path !== undefined) {
+    if (event.kind === 'read') return { kind: 'file_io', operation: 'read', path };
+    if (event.kind === 'edit' || event.kind === 'delete' || event.kind === 'move' || event.kind === 'file') {
+      const diff = event.content?.map((item) => objectOf(item)).find((item) => item?.['type'] === 'diff');
+      const before = stringOf(diff?.['oldText']);
+      const after = stringOf(diff?.['newText']);
+      if (before !== undefined && after !== undefined) return { kind: 'diff', path, before, after };
+      return { kind: 'file_io', operation: 'edit', path };
+    }
+  }
+  return { kind: 'generic', summary: event.title,
+    detail: boundedUnknown({ kind: event.kind, locations: event.locations }) };
 }
 
 function externalContentText(content: ExternalExecutorContent): string {
