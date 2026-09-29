@@ -74,7 +74,7 @@ function resultCount(output: unknown): number | undefined {
 }
 
 const ROW =
-  'group/step -mx-2 flex min-h-7 w-[calc(100%+1rem)] items-center gap-2 rounded-md px-2 py-0.5 text-left transition-colors duration-150 hover:bg-panel';
+  'group/step -mx-2 flex min-h-7 w-[calc(100%+1rem)] min-w-0 items-center gap-2 rounded-md px-2 py-0.5 text-left transition-colors duration-150 hover:bg-panel';
 
 export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
   const { t, tp, locale } = useI18n();

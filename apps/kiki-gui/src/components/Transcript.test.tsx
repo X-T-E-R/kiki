@@ -24,7 +24,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -44,6 +44,7 @@ import {
   projectAgentTranscriptView,
   type AgentForest,
   type Block,
+  type DisplayNode,
   type SessionViewState,
 } from '@kiki/session-core/session';
 import { writeSettings } from '@kiki/session-core/settings';
@@ -65,7 +66,7 @@ import {
 import { I18nProvider } from '../i18n';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
-import { locateInTimeline, normalizeTurnId, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
+import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
@@ -3908,5 +3909,326 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(settled?.hasAttribute('data-media-run-latest')).toBe(false);
     expect(settled?.querySelector('img')?.className).toContain('h-9');
     expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
+  });
+});
+
+describe('semantic tool cards', () => {
+  const THREAD_REF = { host_id: 'local', workspace_id: 'ws_example', session_id: 'session_peer' };
+
+  function semanticTool(
+    name: string,
+    args: unknown,
+    output: unknown,
+    overrides: Partial<Extract<Block, { kind: 'tool' }>> = {},
+  ): Extract<Block, { kind: 'tool' }> {
+    return {
+      kind: 'tool',
+      id: `tool-${name}`,
+      toolCallId: `call-${name}`,
+      name,
+      argsText: JSON.stringify(args),
+      args,
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output,
+      isError: false,
+      durationMs: undefined,
+      progressText: undefined,
+      ...overrides,
+    };
+  }
+
+  /** Renders one card inside a router whose location the test can read. */
+  async function renderCard(
+    block: Extract<Block, { kind: 'tool' }>,
+    options: { sessionId?: string; onOpenAgent?: (agentId: string) => void } = {},
+  ): Promise<{ container: HTMLDivElement; path: () => string }> {
+    const { root, container } = makeRoot();
+    let location = '';
+    function Probe() {
+      const current = useLocation();
+      location = `${current.pathname}${current.search}`;
+      return null;
+    }
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <MemoryRouter initialEntries={['/s/session_here']}>
+            <I18nProvider>
+              <MediaPreviewProvider sessionId={options.sessionId ?? 'session_here'}>
+                <ToolCard block={block} onOpenAgent={options.onOpenAgent} />
+              </MediaPreviewProvider>
+            </I18nProvider>
+            <Probe />
+          </MemoryRouter>,
+        );
+      });
+    });
+    return { container, path: () => location };
+  }
+
+  async function expand(container: HTMLElement): Promise<void> {
+    await act(async () => { click(container.querySelector('[data-activity-toggle]')!); });
+  }
+
+  async function openRaw(container: HTMLElement): Promise<void> {
+    await act(async () => { click(container.querySelector('[data-tool-raw-toggle]')!); });
+  }
+
+  it('says who a thread message went to, whether it landed, and jumps to that thread', async () => {
+    const content = `Please rebase onto main and rerun the integration suite. ${'context '.repeat(20)}`;
+    const { container, path } = await renderCard(semanticTool(
+      'ThreadSend',
+      { thread: THREAD_REF, content, idempotency_key: 'send-1' },
+      JSON.stringify({ messageId: 'msg_1', targetSeq: 4, acceptedAt: 1_767_225_600_000, deduplicated: false, delivery: 'pending' }, null, 2),
+    ));
+    const row = container.querySelector('[data-tool-semantic="ThreadSend"]')!;
+    expect(row.querySelector('[data-activity-toggle]')?.textContent).toContain('Send to');
+    expect(row.textContent).toContain('session_peer');
+    expect(row.querySelector('[data-tool-semantic-detail]')?.textContent).toMatch(/Please rebase onto main.*…$/);
+    expect(row.querySelector('[data-tool-state]')?.textContent).toBe('Pending delivery');
+    expect(row.textContent).not.toContain('"idempotency_key"');
+    await act(async () => { click(row.querySelector('[data-tool-jump="session"]')!); });
+    expect(path()).toBe('/s/session_peer');
+  });
+
+  it('names a new thread by its title and marks an undeliverable send as a failure word', async () => {
+    const created = await renderCard(semanticTool(
+      'ThreadCreate',
+      { title: 'Release notes draft', prompt: 'Draft the notes for 0.3' },
+      JSON.stringify({ id: 'session_new', title: 'Release notes draft', cwd: 'C:/work/app', profile: 'agent', prompt_started: true, message: 'Thread created in the session list.' }, null, 2),
+    ));
+    expect(created.container.textContent).toContain('New thread');
+    expect(created.container.textContent).toContain('Release notes draft');
+    await act(async () => { click(created.container.querySelector('[data-tool-jump="session"]')!); });
+    expect(created.path()).toBe('/s/session_new');
+    const failed = await renderCard(semanticTool(
+      'ThreadSend',
+      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      JSON.stringify({ messageId: 'm', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery: 'undeliverable' }),
+    ));
+    const state = failed.container.querySelector('[data-tool-state]');
+    expect(state?.textContent).toBe('Not delivered');
+    expect(state?.className).toContain('text-danger');
+  });
+
+  it('shows what a thread wait returned, per thread, with the turn to open', async () => {
+    const { container, path } = await renderCard(semanticTool(
+      'ThreadWait',
+      { threads: [{ thread: THREAD_REF }], timeout_ms: 30_000 },
+      JSON.stringify({
+        threads: [{
+          thread: { hostId: 'local', workspaceId: 'ws_example', sessionId: 'session_peer' },
+          cursor: 'c2',
+          activities: [{ ref: { hostId: 'local', workspaceId: 'ws_example', sessionId: 'session_peer' }, seq: 7, kind: 'terminal', at: 1, reason: 'completed', turnId: 3 }],
+        }],
+        timedOut: false,
+      }),
+    ));
+    expect(container.textContent).toContain('Wait on');
+    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('1 update');
+    await expand(container);
+    const item = container.querySelector('[data-tool-semantic-items] [data-tool-semantic-link="session"]')!;
+    expect(item.textContent).toContain('turn ended · completed');
+    await act(async () => { click(item); });
+    expect(path()).toBe('/s/session_peer?turn=3');
+  });
+
+  it('reads an AgentRun result as the agent, its profile and outcome, with a way to open it', async () => {
+    const opened: string[] = [];
+    const { container } = await renderCard(semanticTool(
+      'AgentRun',
+      { prompt: 'Map the auth flow', description: 'Map auth flow', profile: 'explore' },
+      'agent_id: agent-7\nactual_profile: explore\nparent_notify: enabled\nstatus: completed\n\n[summary]\nThe auth flow starts in login.ts.',
+    ), { onOpenAgent: (id) => { opened.push(id); } });
+    expect(container.textContent).toContain('Run agent');
+    expect(container.textContent).toContain('Map auth flow');
+    expect(container.textContent).toContain('explore');
+    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('completed');
+    await act(async () => { click(container.querySelector('[data-tool-jump="agent"]')!); });
+    expect(opened).toEqual(['agent-7']);
+    await expand(container);
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('The auth flow starts in login.ts.');
+  });
+
+  it('gives a task its id, status and a clipped output preview, with the raw text one disclosure away', async () => {
+    const output = [
+      'retrieval_status: success',
+      'task_id: bash-k3',
+      'kind: process',
+      'description: pnpm test',
+      'status: failed',
+      'exit_code: 1',
+      'output_size_bytes: 2048',
+      '',
+      '[output]',
+      ...Array.from({ length: 30 }, (_, index) => `line ${String(index + 1)}`),
+    ].join('\n');
+    const { container } = await renderCard(semanticTool('TaskOutput', { task_id: 'bash-k3' }, output));
+    expect(container.textContent).toContain('Task output');
+    expect(container.textContent).toContain('pnpm test');
+    const state = container.querySelector('[data-tool-state]');
+    expect(state?.textContent).toBe('failed');
+    expect(state?.className).toContain('text-danger');
+    await expand(container);
+    const fields = container.querySelector('[data-tool-semantic-fields]')!;
+    expect(fields.textContent).toContain('bash-k3');
+    expect(fields.textContent).toContain('Exit code');
+    const preview = container.querySelector('[data-tool-semantic-preview]')!.textContent!;
+    expect(preview).toContain('line 1');
+    expect(preview).not.toContain('line 30');
+    expect(container.querySelector('[data-tool-raw]')).toBeNull();
+    await openRaw(container);
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('line 30');
+  });
+
+  it('counts a TaskWait timeout as the wait running out, not the task', async () => {
+    const { container } = await renderCard(semanticTool(
+      'TaskWait',
+      { timeout: 30, task_id: 'agent-x1' },
+      'wait_status: timed_out\ntask_id: agent-x1\nwaited_ms: 30004\ntimeout_ms: 30000\nThe wait timed out, not the task. The task is still running.',
+    ));
+    expect(container.textContent).toContain('Wait for task');
+    expect(container.textContent).toContain('agent-x1');
+    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('Timed out');
+  });
+
+  it('shows a history search as its query and hit count, and jumps back to a hit turn in this session', async () => {
+    resetTimelineLocatorsForTests();
+    const targets: unknown[] = [];
+    const unregister = registerTimelineLocator('session_here', 'main', {
+      isVisible: () => true,
+      locate: (target) => { targets.push(target); return Promise.resolve({ status: 'found' as const }); },
+    });
+    const { container } = await renderCard(semanticTool(
+      'HistorySearch',
+      { query: 'rate limit', scope: 'session' },
+      JSON.stringify({
+        schema_version: 2,
+        status: 'ok',
+        target: { workspace_id: 'ws_example', session_id: 'session_here', agent_id: 'main' },
+        scope_used: 'session',
+        mode_used: 'auto',
+        hits: [
+          { session_id: 'session_here', agent_id: 'main', role: 'assistant', turn: 12, step_id: 't12.1', ref: 'r1', time: '2026-01-01T00:00:00.000Z', snippet: 'We hit the provider rate limit at 40 rpm.', matched: ['rate limit'] },
+          { session_id: 'session_here', agent_id: 'main', role: 'user', turn: 4, step_id: null, ref: 'r2', time: '2026-01-01T00:00:00.000Z', snippet: 'Why is there a rate limit?', matched: ['rate limit'] },
+        ],
+        next_cursor: null,
+        has_more: false,
+      }),
+    ));
+    expect(container.textContent).toContain('Search history');
+    expect(container.textContent).toContain('rate limit');
+    expect(container.querySelector('[data-tool-count]')?.textContent).toBe('2 hits');
+    await expand(container);
+    const hits = container.querySelectorAll('[data-tool-semantic-items] [data-tool-semantic-link="session"]');
+    expect(hits).toHaveLength(2);
+    expect(hits[0]!.textContent).toContain('Turn 12');
+    await act(async () => { click(hits[0]!); });
+    expect(targets).toEqual([{ kind: 'turn', turnId: 't12' }]);
+    unregister();
+  });
+
+  it('names the board card a write touched and links to the board', async () => {
+    const { container, path } = await renderCard(semanticTool(
+      'BoardWrite',
+      { action: 'create', requestKey: 'rk-1', title: 'Ship thread cards', priority: 'P1' },
+      JSON.stringify({ ok: true, value: {
+        id: 'card_1', workspaceId: 'ws_example', storage: { root: 'C:/work', storageId: 's1', kind: 'workspace' },
+        title: 'Ship thread cards', priority: 'P1', status: 'active', revision: 1, createdAt: 'x', updatedAt: 'x',
+        completedAt: null, archived: false, category: 'gui', sessionIds: [], executionIds: [], description: '', prd: '',
+      } }),
+    ));
+    expect(container.textContent).toContain('New card');
+    expect(container.textContent).toContain('Ship thread cards');
+    await expand(container);
+    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('workspace');
+    await act(async () => { click(container.querySelector('[data-tool-jump="route"]')!); });
+    expect(path()).toBe('/board');
+  });
+
+  it('folds SelectTools into one line naming the tools it loaded', async () => {
+    const { container } = await renderCard(semanticTool(
+      'SelectTools',
+      { names: ['HistoryRead', 'HistorySearch'] },
+      'Loaded: HistoryRead, HistorySearch',
+    ));
+    const row = container.querySelector('[data-tool-semantic="SelectTools"]')!;
+    expect(row.querySelector('[data-activity-toggle]')?.textContent).toContain('Load toolsHistoryRead, HistorySearch');
+    expect(row.textContent).not.toContain('"names"');
+  });
+
+  it('renders a CallTool bridge as the tool it calls, with that tool’s card', async () => {
+    const { container } = await renderCard(semanticTool(
+      'CallTool',
+      { name: 'HistoryList', arguments: { kind: 'turns', limit: 2 } },
+      JSON.stringify({ schema_version: 2, status: 'ok', kind: 'turns', turns: [
+        { ref: 'r1', turn: 1, started_at: 'x', prompt_excerpt: 'Set up CI', answer_excerpt: 'Done', step_count: 3, tool_count: 5 },
+        { ref: 'r2', turn: 2, started_at: 'x', prompt_excerpt: 'Fix lint', answer_excerpt: 'Fixed', step_count: 1, tool_count: 1 },
+      ], has_more: false }),
+    ));
+    const row = container.querySelector('[data-tool-semantic="HistoryList"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).not.toContain('CallTool');
+    expect(row?.textContent).toContain('List turns');
+    expect(container.querySelector('[data-tool-count]')?.textContent).toBe('2 turns');
+  });
+
+  it('keeps failure, stop and running states identical to any other step', async () => {
+    const failed = await renderCard(semanticTool(
+      'ThreadSend',
+      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      'Thread communication is disabled for this session.',
+      { status: 'error', isError: true },
+    ));
+    expect(failed.container.querySelector('[data-outcome="failed"]')).not.toBeNull();
+    expect(failed.container.textContent).toContain('Thread communication is disabled');
+    expect(failed.container.querySelector('[data-tool-state]')).toBeNull();
+    const stopped = await renderCard(semanticTool('TaskWait', { timeout: 60 }, 'user cancelled', { status: 'stopped' }));
+    expect(stopped.container.querySelector('[data-outcome="stopped"]')).not.toBeNull();
+    expect(stopped.container.textContent).toContain('Stopped — user cancelled');
+    const running = await renderCard(semanticTool('HistorySearch', { query: 'deploy' }, undefined, { status: 'running' }));
+    expect(running.container.textContent).toContain('Search history');
+    expect(running.container.textContent).toContain('deploy');
+    expect(running.container.querySelector('[data-tool-count]')).toBeNull();
+    expect(running.container.querySelector('[aria-label="running"]')).not.toBeNull();
+  });
+
+  it('shows todo progress, the question asked, and the page fetched', async () => {
+    const todo = await renderCard(semanticTool(
+      'TodoList',
+      { todos: [{ title: 'Inventory', status: 'done' }, { title: 'Wire cards', status: 'in_progress' }, { title: 'Screenshots', status: 'pending' }] },
+      'Todo list updated.\nCurrent todo list:\n  [done] Inventory\n  [in_progress] Wire cards\n  [pending] Screenshots',
+    ));
+    expect(todo.container.textContent).toContain('Update todos');
+    expect(todo.container.textContent).toContain('Wire cards');
+    expect(todo.container.querySelector('[data-tool-count]')?.textContent).toBe('1/3');
+    const ask = await renderCard(semanticTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'Which branch?', header: 'Branch', options: [{ label: 'main', description: '' }, { label: 'dev', description: '' }], multi_select: false }] },
+      JSON.stringify({ answers: { 'Which branch?': 'main' } }),
+    ));
+    expect(ask.container.textContent).toContain('Which branch?');
+    expect(ask.container.querySelector('[data-tool-state]')?.textContent).toBe('Answered');
+    const fetched = await renderCard(semanticTool(
+      'FetchURL',
+      { url: 'https://example.com/docs' },
+      'Fetched https://example.com/docs. If you use it in your answer, cite this page as a markdown link, e.g. [title](url).\n\n# Docs\nBody text.',
+      { display: { kind: 'url_fetch', url: 'https://example.com/docs' } },
+    ));
+    expect(fetched.container.textContent).toContain('Fetch page');
+    expect(fetched.container.textContent).toContain('https://example.com/docs');
+  });
+
+  it('drops a settled AgentSend call once its Input sent entry stands for it', () => {
+    const call = semanticTool('AgentSend', { target: 'explorer', message: 'go' }, JSON.stringify({ message_id: 'm', status: 'delivered', deduplicated: false, target: { task_name: 'explorer', agent_id: 'agent-1' } }));
+    const sent: Block = {
+      kind: 'subagent-event', id: 'event-sent', subagentId: 'agent-1', parentAgentId: 'main', name: 'explorer',
+      event: 'sent', status: 'running', at: '2026-01-01T00:00:00.000Z', message: 'go', delivery: 'delivered', anchorToolCallId: call.toolCallId,
+    };
+    expect(mergeSubagentRows([call, sent] as DisplayNode[])).toEqual([sent]);
+    const failedCall = { ...call, status: 'error' as const, isError: true };
+    expect(mergeSubagentRows([failedCall, sent] as DisplayNode[])).toEqual([failedCall, sent]);
   });
 });

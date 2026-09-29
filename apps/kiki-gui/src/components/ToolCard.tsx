@@ -22,6 +22,14 @@ import { FilePathLink, MediaPartList } from './mediaPreview';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
 import { useFindReveal } from './timeline/findReveal';
+import {
+  SEMANTIC_STATE_TONE,
+  SemanticBody,
+  SemanticDetailLine,
+  SemanticJump,
+  useSemanticContext,
+} from './timeline/ToolSemanticParts';
+import { describeTool } from './toolSemantics';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -399,6 +407,13 @@ export const ToolCard = memo(function ToolCard({
     [block.display, block.args],
   );
   const stat = editSource !== undefined ? diffStat(editSource.hunks) : undefined;
+  // Built-in tools say what they did in their own terms (a thread, a task, a
+  // history hit); the raw payload stays one disclosure away.
+  const semanticContext = useSemanticContext();
+  const semantics = useMemo(
+    () => (memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContext)),
+    [memoryRow, bridged, realName, block, semanticContext],
+  );
 
   if (memoryRow) return <MemoryToolRow block={block} />;
 
@@ -443,6 +458,68 @@ export const ToolCard = memo(function ToolCard({
       : block.status === 'done' && frameDuration < DURATION_WORTH_SHOWING_MS
         ? undefined
         : time.formatDuration(frameDuration);
+  const inputWell = (
+    <div>
+      <p className={label}>{t('tc.input')}</p>
+      <pre className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+        {block.args !== undefined
+          ? truncateJson(block.args, t('tc.truncated'))
+          : block.argsText !== ''
+            ? block.argsText
+            : t('tc.noInput')}
+      </pre>
+    </div>
+  );
+  const outputWell = block.output !== undefined ? (
+    <div>
+      <p className={label}>
+        {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
+      </p>
+      <OutputView output={block.output} agentId={agentId} />
+    </div>
+  ) : null;
+
+  if (semantics !== undefined) {
+    // One skeleton for every built-in tool: the verb, what it acted on, the
+    // outcome in the trailing column; failure, stop and progress read exactly
+    // as they do on any other step.
+    const settled = block.status === 'done';
+    const semanticDetail = errorSummary !== undefined || block.status === 'stopped'
+      ? target
+      : semantics.object === undefined && semantics.note === undefined && block.status === 'running' && block.progressText !== undefined
+        ? <span className="text-ink-faint">{block.progressText}</span>
+        : <SemanticDetailLine semantics={semantics} />;
+    const stateMeta = settled && semantics.state !== undefined ? (
+      <span data-tool-state className={SEMANTIC_STATE_TONE[semantics.state.tone]}>{semantics.state.text}</span>
+    ) : undefined;
+    return (
+      <ActivityRow
+        nested={nested}
+        attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId, 'data-tool-semantic': block.name }}
+        glyph={<Icon name={semantics.icon} />}
+        tone={tone}
+        label={<span title={block.name}>{semantics.verb}</span>}
+        detail={semanticDetail}
+        expanded={expanded}
+        onToggle={() => { setExpanded((value) => !value); }}
+        stats={settled && semantics.count !== undefined ? <span data-tool-count>{semantics.count}</span> : undefined}
+        meta={stateMeta ?? durationMeta}
+        metaWidth={stateMeta === undefined ? 'fixed' : 'auto'}
+        status={<StatusIcon block={block} />}
+        aside={semantics.link === undefined ? undefined : <SemanticJump link={semantics.link} onOpenAgent={onOpenAgent} />}
+      >
+        {expanded ? (
+          <SemanticBody
+            semantics={semantics}
+            onOpenAgent={onOpenAgent}
+            error={block.status === 'error' ? errorTitle : undefined}
+            raw={<>{inputWell}{outputWell}</>}
+          />
+        ) : undefined}
+      </ActivityRow>
+    );
+  }
+
   return (
     <ActivityRow
       nested={nested}
@@ -492,26 +569,8 @@ export const ToolCard = memo(function ToolCard({
                   ) : null}
                   <DiffCard hunks={editSource.hunks} />
                 </div>
-              ) : (
-                <div>
-                  <p className={label}>{t('tc.input')}</p>
-                  <pre className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-                    {block.args !== undefined
-                      ? truncateJson(block.args, t('tc.truncated'))
-                      : block.argsText !== ''
-                        ? block.argsText
-                        : t('tc.noInput')}
-                  </pre>
-                </div>
-              )}
-              {block.output !== undefined ? (
-                <div>
-                  <p className={label}>
-                    {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
-                  </p>
-                  <OutputView output={block.output} agentId={agentId} />
-                </div>
-              ) : null}
+              ) : inputWell}
+              {outputWell}
               {block.agentRefs !== undefined && block.agentRefs.length > 0 && onOpenAgent !== undefined ? (
                 <div>
                   <p className={label}>{t('tc.spawnedAgents')}</p>

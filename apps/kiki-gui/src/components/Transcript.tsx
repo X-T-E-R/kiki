@@ -1724,18 +1724,25 @@ const CARD_ABSORBED_EVENTS: ReadonlySet<SubagentEventBlock['event']> = new Set([
 export function mergeSubagentRows(nodes: readonly DisplayNode[]): readonly DisplayNode[] {
   const cards = new Set<string>();
   const dispatchCalls = new Set<string>();
+  // An AgentSend call already reads as its "Input sent" entry (message and
+  // delivery included), so a settled call gives way to the entry it anchors.
+  const sentCalls = new Set<string>();
   for (const node of nodes) {
+    if (node.kind === 'subagent-event' && node.event === 'sent' && node.anchorToolCallId !== undefined) {
+      sentCalls.add(node.anchorToolCallId);
+    }
     if (node.kind !== 'subagent') continue;
     cards.add(node.subagentId);
     if (node.parentToolCallId !== undefined) dispatchCalls.add(node.parentToolCallId);
   }
-  if (cards.size === 0) return nodes;
+  if (cards.size === 0 && sentCalls.size === 0) return nodes;
   const absorbed = (node: DisplayNode): boolean => {
     if (node.kind === 'subagent-event') {
       return cards.has(node.subagentId) && CARD_ABSORBED_EVENTS.has(node.event);
     }
     if (node.kind !== 'tool' || node.status === 'error' || node.isError === true) return false;
     if (dispatchCalls.has(node.toolCallId)) return true;
+    if (node.status === 'done' && sentCalls.has(node.toolCallId)) return true;
     const refs = node.agentRefs ?? [];
     return refs.length > 0 && refs.every((ref) => cards.has(ref.agentId));
   };
