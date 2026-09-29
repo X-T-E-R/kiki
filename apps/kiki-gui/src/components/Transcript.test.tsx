@@ -1010,28 +1010,6 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-status]')).toBeNull();
   });
 
-  it('says why a compaction fell back and lists the reasons on request', async () => {
-    const container = await renderTranscript([
-      {
-        kind: 'notice',
-        id: 'marker-c1',
-        text: 'compaction',
-        tone: 'neutral',
-        i18n: { key: 'transcript.marker.compactionFallback' },
-        reasonCodes: ['notes_missing', 'tool_error', 'future_code'],
-        createdAt: '2026-01-01T00:00:00.000Z',
-      },
-    ]);
-    const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe('Fresh start conditions were not met · summarized instead');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
-    await act(async () => { click(toggle); });
-    const items = [...container.querySelectorAll('[data-notice-reason-list] li')].map((item) => item.textContent);
-    expect(items).toHaveLength(3);
-    expect(items[2]).toBe('future_code');
-  });
-
   it('names an injected reminder by its first readable line and keeps the body folded', async () => {
     const container = await renderTranscript([
       {

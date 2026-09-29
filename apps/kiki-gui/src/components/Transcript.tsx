@@ -1192,43 +1192,16 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
  */
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
-  const [open, setOpen] = useState(false);
   const text = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
-  // Why a compaction took the path it did (e.g. summary instead of a fresh
-  // window): one sentence per engine reason code; an unknown code reads as-is.
-  const reasons = (block.reasonCodes ?? []).map((code) => {
-    const key = `transcript.marker.reason.${code}` as I18nKey;
-    const translated = t(key);
-    return translated === key ? code : translated;
-  });
-  const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
-  const label = block.tone === 'danger' ? <span className="font-medium text-danger">{text}</span> : text;
+  const title = time.absoluteTime(block.createdAt);
   return (
-    <div data-notice-reasons={reasons.length > 0 ? reasons.length : undefined}>
-      <TimelineDivider
-        tone={block.tone === 'danger' ? 'warn' : 'plain'}
-        title={title}
-        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
-      >
-        {reasons.length > 0 ? (
-          <button
-            type="button"
-            data-notice-reasons-toggle
-            aria-expanded={open}
-            onClick={() => { setOpen((value) => !value); }}
-            className="inline-flex min-h-6 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            {label}
-            <DisclosureChevron open={open} />
-          </button>
-        ) : label}
-      </TimelineDivider>
-      {open && reasons.length > 0 ? (
-        <ul data-notice-reason-list className="mx-auto mt-0.5 mb-1 flex max-w-[28rem] list-disc flex-col gap-0.5 pl-5 text-[12px] leading-snug text-ink-soft">
-          {reasons.map((reason, index) => <li key={`${block.id}:${index}`}>{reason}</li>)}
-        </ul>
-      ) : null}
-    </div>
+    <TimelineDivider
+      tone={block.tone === 'danger' ? 'warn' : 'plain'}
+      title={title}
+      attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
+    >
+      {block.tone === 'danger' ? <span className="font-medium text-danger">{text}</span> : text}
+    </TimelineDivider>
   );
 });
 

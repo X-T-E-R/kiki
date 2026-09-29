@@ -2,7 +2,8 @@
  * MediaLightbox — fullscreen image viewer over the Dialog primitive: dark
  * backdrop, click/Esc to close, fit↔actual-size zoom toggle, and a download
  * button. The image itself never closes the overlay on click (it zooms);
- * closing happens from the backdrop, the × button, or Escape.
+ * closing happens from the backdrop, the × button, or Escape. Actual size is
+ * one image pixel per device pixel, and a mouse drag pans it.
  */
 
 import { useState } from 'react';
@@ -10,6 +11,7 @@ import { useState } from 'react';
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
+import { useDevicePixelRatio, useDragPan } from './ImageViewport';
 
 export function MediaLightbox({
   src,
@@ -22,6 +24,9 @@ export function MediaLightbox({
 }) {
   const { t } = useI18n();
   const [actualSize, setActualSize] = useState(false);
+  const [naturalWidth, setNaturalWidth] = useState<number | undefined>();
+  const dpr = useDevicePixelRatio();
+  const pan = useDragPan(actualSize);
   const label = name ?? t('media.viewImage');
 
   const download = () => {
@@ -61,19 +66,26 @@ export function MediaLightbox({
         </button>
       </div>
       <div
+        {...pan.handlers}
         className={
           actualSize
-            ? 'max-h-[86vh] max-w-[94vw] overflow-auto'
+            ? `max-h-[86vh] max-w-[94vw] select-none overflow-auto ${pan.dragging ? 'cursor-grabbing' : 'cursor-grab'}`
             : 'flex items-center justify-center'
         }
       >
         <img
           src={src}
           alt={label}
-          onClick={() => { setActualSize((value) => !value); }}
+          draggable={false}
+          onLoad={(event) => { setNaturalWidth(event.currentTarget.naturalWidth); }}
+          onClick={() => {
+            if (pan.consumePan()) return;
+            setActualSize((value) => !value);
+          }}
+          style={actualSize && naturalWidth !== undefined ? { width: naturalWidth / dpr } : undefined}
           className={
             actualSize
-              ? 'max-w-none cursor-zoom-out'
+              ? 'max-w-none'
               : 'max-h-[80vh] max-w-[92vw] cursor-zoom-in rounded-lg object-contain'
           }
         />

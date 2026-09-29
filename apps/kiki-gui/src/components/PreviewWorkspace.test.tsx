@@ -50,7 +50,10 @@ vi.mock('../state/connection', async (importOriginal) => {
     previewHostFile: (path: string) =>
       path === '/work/docs/long.md' ? Promise.resolve({ text: '# Beginning\n', truncated: true })
         : path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
-    readHostFileBytes: () => Promise.reject(new Error('not found')),
+    readHostFileBytes: (path: string) =>
+      path === '/work/shots/screen.png'
+        ? Promise.resolve({ bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' })
+        : Promise.reject(new Error('not found')),
   };
   connectionMock.activeClient = fakeClient;
   connectionMock.defaultClient = fakeClient;
@@ -810,6 +813,70 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     expect(fullscreenEscape.defaultPrevented).toBe(true);
     expect(workspace().classList.contains('fixed')).toBe(false);
     expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+  });
+});
+
+describe('PreviewWorkspace image tabs', () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  async function openImageTab() {
+    let objectUrls = 0;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:original-${++objectUrls}`);
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/shots/screen.png" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/shots/screen.png');
+    await act(async () => { await Promise.resolve(); });
+    const image = workspace().querySelector<HTMLImageElement>('[data-image-viewport] img')!;
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1440 });
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 900 });
+    await act(async () => { image.dispatchEvent(new Event('load')); });
+    return { image, objectUrls: () => objectUrls };
+  }
+
+  it('renders the original bytes, never a downscaled thumbnail', async () => {
+    const { image, objectUrls } = await openImageTab();
+    // One object URL: the original blob. A thumbnail would add a second one.
+    expect(objectUrls()).toBe(1);
+    expect(image.getAttribute('src')).toBe('blob:original-1');
+    expect(workspace().querySelector('[data-image-meta]')?.textContent).toContain('1440 × 900');
+    expect(workspace().querySelector<HTMLElement>('[data-image-viewport]')?.dataset['imageViewport']).toBe('fit');
+    expect(image.className).toContain('max-w-full');
+  });
+
+  it('toggles fit and 100% by click or the zoom buttons, sizing 100% in device pixels', async () => {
+    const dpr = vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
+    const { image } = await openImageTab();
+    const viewport = () => workspace().querySelector<HTMLElement>('[data-image-viewport]')!;
+    await act(async () => { viewport().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(viewport().dataset['imageViewport']).toBe('actual');
+    expect(image.style.width).toBe('720px');
+    expect(image.className).not.toContain('max-w-full');
+    expect(workspace().querySelector('[data-image-zoom="actual"]')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => {
+      workspace().querySelector('[data-image-zoom="fit"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(viewport().dataset['imageViewport']).toBe('fit');
+    expect(image.style.width).toBe('');
+    dpr.mockRestore();
   });
 });
 

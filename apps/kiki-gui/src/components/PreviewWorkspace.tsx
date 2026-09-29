@@ -2,9 +2,10 @@
  * PreviewWorkspace — the resident multi-tab preview panel. One tab per host
  * file path, built-in skill or agent panel; tabs close via the × or the context
  * menu (close / close others / close all), reorder by drag, and mark unsaved
- * buffers with a dot. Content routes by extension: images escalate to the
- * lightbox, markdown toggles rendered/source, code/text open in a CodeMirror
- * view, and unknown binaries get the download fallback. Text files are editable where a write
+ * buffers with a dot. Content routes by extension: images render at full
+ * resolution (fit width or 100%, with the lightbox one click away),
+ * markdown toggles rendered/source, code/text open in a CodeMirror view, and
+ * unknown binaries get the download fallback. Text files are editable where a write
  * channel exists (desktop); everything degrades to read-only otherwise. Every
  * tab's view stays mounted while hidden so editor buffers survive tab
  * switches. Collapsing the panel hides it in place for the same reason: the
@@ -46,10 +47,10 @@ import {
 import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace';
 import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
-import { previewThumbnail } from './imageThumbnail';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
+import { ImageViewport } from './ImageViewport';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -1074,34 +1075,29 @@ function ImageTabView({
   readonly onOpenImage: (src: string, name?: string) => void;
 }) {
   const { t } = useI18n();
-  const connection = useOptionalConnection();
+  const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
     | { readonly status: 'error' }
-    | { readonly status: 'ready'; readonly url: string; readonly thumbnailUrl?: string; readonly size: number }
+    | { readonly status: 'ready'; readonly url: string; readonly size: number }
   >({ status: 'loading' });
 
+  // The tab shows the original bytes: a downscaled preview thumbnail here is
+  // what made full-size screenshots unreadable.
   useEffect(() => {
-    const client = connection?.client;
     if (client === undefined) {
       setState({ status: 'error' });
       return;
     }
     let cancelled = false;
     let objectUrl: string | undefined;
-    let thumbnailUrl: string | undefined;
     setState({ status: 'loading' });
     client.readHostFileBytes(path).then(
-      async ({ bytes, mime }) => {
+      ({ bytes, mime }) => {
         if (cancelled) return;
-        thumbnailUrl = await previewThumbnail(bytes, mime);
-        if (cancelled) {
-          if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
-          return;
-        }
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', url: objectUrl, thumbnailUrl, size: bytes.byteLength });
+        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
       },
       () => {
         if (!cancelled) setState({ status: 'error' });
@@ -1110,40 +1106,46 @@ function ImageTabView({
     return () => {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
     };
-  }, [connection, path]);
+  }, [client, path]);
+
+  if (state.status !== 'ready') {
+    return (
+      <>
+        <TabPathCaption path={path} />
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          {state.status === 'loading' ? (
+            <p className="flex items-center gap-2 text-[12px] text-ink-faint">
+              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+              {t('preview.loading')}
+            </p>
+          ) : (
+            <p className="text-[12.5px] text-danger">{t('preview.failed')}</p>
+          )}
+        </div>
+      </>
+    );
+  }
 
   return (
-    <>
-      <TabPathCaption path={path} />
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        {state.status === 'loading' ? (
-          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-            {t('preview.loading')}
-          </p>
-        ) : state.status === 'error' ? (
-          <p className="text-[12.5px] text-danger">{t('preview.failed')}</p>
-        ) : (
-          <button
-            type="button"
-            onClick={() => { onOpenImage(state.url, name); }}
-            className="block"
-            title={t('media.viewImage')}
-          >
-            <img
-              src={state.thumbnailUrl ?? state.url}
-              alt={name}
-              className="max-h-[70vh] rounded-lg border border-hairline object-contain"
-            />
-            <span className="mt-1 block font-mono text-[11px] text-ink-faint">
-              {formatBytes(state.size)}
-            </span>
-          </button>
-        )}
-      </div>
-    </>
+    <ImageViewport
+      src={state.url}
+      alt={name}
+      caption={<span title={path}>{path}</span>}
+      meta={formatBytes(state.size)}
+      onError={() => { setState({ status: 'error' }); }}
+      actions={
+        <button
+          type="button"
+          onClick={() => { onOpenImage(state.url, name); }}
+          title={t('media.viewImage')}
+          aria-label={t('media.viewImage')}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        >
+          <Icon name="eye" size={14} />
+        </button>
+      }
+    />
   );
 }
 
