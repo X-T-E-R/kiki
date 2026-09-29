@@ -4441,7 +4441,6 @@ export const en = {
   'st.perm.rulesHint': 'Saved on this server and applied to tool calls. Deny takes priority over Ask, then Allow, regardless of list order; within one decision, the first match wins.',
   'st.perm.rulesEmpty': 'No saved rules. Add one to allow, deny, or ask for a tool or command pattern.',
   'st.perm.loading': 'Loading rules…',
-  'st.perm.rulesSaved': 'Rules saved.',
   'st.perm.pattern': 'Tool or command pattern',
   'st.perm.invalidPattern': 'Enter a tool name or ToolName(argument-pattern), such as Bash(rm -rf*).',
   'st.perm.decision': 'Decision',

@@ -4381,7 +4381,6 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.perm.rulesHint': '规则保存在这台服务器上，工具调用时生效。拒绝优先于询问，询问优先于允许；同一类决定命中多条规则时，以最靠前的为准。',
   'st.perm.rulesEmpty': '还没有保存规则。添加一条，按工具或命令模式设置允许、拒绝或询问。',
   'st.perm.loading': '正在加载规则…',
-  'st.perm.rulesSaved': '规则已保存。',
   'st.perm.pattern': '工具或命令模式',
   'st.perm.invalidPattern': '输入工具名或 ToolName(参数模式)，例如 Bash(rm -rf*)。',
   'st.perm.decision': '决定',
