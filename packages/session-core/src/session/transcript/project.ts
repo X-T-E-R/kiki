@@ -2609,7 +2609,7 @@ export function projectAgentTranscriptView(
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
     abortableTurnId: runningTurn?.ordinal,
     pendingInteraction,
-    todos: agentTodo?.items ?? todos.at(-1)?.items ?? [],
+    todos: todos.at(-1)?.items ?? [],
     todoNotes: agentTodo?.notes,
     todoNotesMeta: agentTodo?.notesMeta,
     tasks: tasks.map(transcriptTaskToSessionTask),
