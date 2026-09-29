@@ -84,6 +84,9 @@ export function Dialog({
     ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || (modal && !modal.isTop())) return;
+      // A confirmation rendered inline inside this panel (not stacked) owns
+      // Escape while it is open: it closes, this panel stays.
+      if ((panelRef.current?.querySelector('[aria-modal="true"]') ?? null) !== null) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
