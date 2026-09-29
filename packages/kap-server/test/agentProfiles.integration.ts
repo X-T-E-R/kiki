@@ -120,6 +120,37 @@ describe('GET /api/agents', () => {
     expect(cleared.data).not.toHaveProperty('spawn_constraints');
   });
 
+  it('preserves inherited and explicit subagent policies in the profile projection', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'inherited-policy.md'), [
+      '---', 'name: inherited-policy', 'description: Inherits the configured policy', '---',
+      'Use the configured subagent policy.', '',
+    ].join('\n'));
+    await writeFile(join(home!, 'agents', 'strict-policy.md'), [
+      '---', 'name: strict-policy', 'description: Strict dispatch', 'subagent_policy: strict',
+      'subagents: [explore]', '---', 'Dispatch only the listed profile.', '',
+    ].join('\n'));
+    await writeFile(join(home!, 'agents', 'advisory-policy.md'), [
+      '---', 'name: advisory-policy', 'description: Advisory dispatch', 'subagent_policy: advisory',
+      'subagents: [explore]', '---', 'Recommend the listed profile.', '',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const response = await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
+    const body = await response.json() as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    const profiles = listNamedAgentProfilesResponseSchema.parse(body.data).items;
+    const find = (name: string) => profiles.find((profile) => profile.name === name);
+    const inherited = find('inherited-policy');
+    const strict = find('strict-policy');
+    const advisory = find('advisory-policy');
+    expect(inherited).toBeDefined();
+    expect(inherited).not.toHaveProperty('subagent_policy');
+    expect(strict).toMatchObject({ subagent_policy: 'strict' });
+    expect(advisory).toMatchObject({ subagent_policy: 'advisory' });
+  });
+
   it('previews actual ordered external prompt text and resolved delivery without launching an engine', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     await writeFile(join(home!, 'AGENTS.md'), 'Workspace policy for preview.\n');
@@ -913,7 +944,6 @@ describe('GET /api/agents', () => {
         allowed_efforts: ['high'],
         disallowed_tools: ['Write'],
       },
-      subagent_policy: 'advisory',
       subagents: [
         'explore',
         {

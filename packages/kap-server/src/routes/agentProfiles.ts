@@ -687,7 +687,7 @@ function toNamedAgentProfile(
             ? undefined
             : [...profile.spawnConstraints.disallowedTools],
         },
-    subagent_policy: profile.subagentPolicy ?? 'advisory',
+    subagent_policy: profile.subagentPolicy,
     subagents: profile.subagents?.map((name) => {
       const lease = profile.subagentLeases?.[name];
       const binding = lease?.source === undefined
