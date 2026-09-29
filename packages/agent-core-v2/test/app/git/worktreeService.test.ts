@@ -129,6 +129,34 @@ describe('managed worktree removal', () => {
     expect(existsSync(record.path)).toBe(true);
   }, 30000);
 
+  it('retains a new branch with unpushed commits after returning to the original branch', async () => {
+    const record = await worktrees.create({ sessionId: 'session_test', workspaceId: 'workspace_test', sourceRoot: source, isolation: { kind: 'worktree' } });
+    git(record.path, 'config', 'user.email', 'test@example.com');
+    git(record.path, 'config', 'user.name', 'Test');
+    git(record.path, 'switch', '-c', 'alternate');
+    writeFileSync(join(record.path, 'file.txt'), 'alternate\n');
+    git(record.path, 'add', 'file.txt');
+    git(record.path, 'commit', '-m', 'alternate change');
+    git(record.path, 'switch', record.branch);
+    expect((await worktrees.inspect(record.id)).unpushedCommits).toBe(1);
+    expect((await worktrees.remove(record.id)).outcome).toBe('retained_unpushed');
+    expect(existsSync(record.path)).toBe(true);
+  }, 30000);
+
+  it('retains a custom ref created in the worktree after leaving detached HEAD', async () => {
+    const record = await worktrees.create({ sessionId: 'session_test', workspaceId: 'workspace_test', sourceRoot: source, isolation: { kind: 'worktree' } });
+    git(record.path, 'config', 'user.email', 'test@example.com');
+    git(record.path, 'config', 'user.name', 'Test');
+    git(record.path, 'switch', '--detach');
+    writeFileSync(join(record.path, 'file.txt'), 'custom ref\n');
+    git(record.path, 'add', 'file.txt');
+    git(record.path, 'commit', '-m', 'custom ref change');
+    git(record.path, 'update-ref', 'refs/keep/demo', git(record.path, 'rev-parse', 'HEAD'));
+    git(record.path, 'switch', record.branch);
+    expect((await worktrees.inspect(record.id)).unpushedCommits).toBe(1);
+    expect((await worktrees.remove(record.id)).outcome).toBe('retained_unpushed');
+  }, 30000);
+
   it('retains an ignored file outside disposable directories', async () => {
     writeFileSync(join(source, '.gitignore'), 'node_modules/\nprivate.log\n');
     git(source, 'add', '.gitignore');

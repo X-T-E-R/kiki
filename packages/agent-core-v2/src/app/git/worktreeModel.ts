@@ -35,6 +35,7 @@ export interface WorktreeRecord {
   readonly path: string;
   readonly branch: string;
   readonly branchCreated: boolean;
+  readonly refBaseline?: readonly string[];
   readonly base: { readonly mode: 'head' | 'fresh' | 'ref'; readonly ref: string; readonly commit: string };
   readonly owner: { readonly kind: 'session'; readonly sessionId: string };
   readonly state: 'creating' | 'ready' | 'removing' | 'remove_failed' | 'removed' | 'orphaned';

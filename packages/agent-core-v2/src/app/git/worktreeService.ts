@@ -163,12 +163,14 @@ export class WorktreeService implements IWorktreeService {
         !(await this.git(input.workspaceId, sourceRoot, ['check-ref-format', '--branch', branch], true))) throw new Error('invalid worktree branch');
       const existing = await this.git(input.workspaceId, sourceRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], true);
       const branchCreated = existing === '';
+      const refBaseline = (await this.git(input.workspaceId, sourceRoot,
+        ['for-each-ref', '--format=%(refname)', 'refs'])).split('\n').filter(Boolean);
       const id = `wt_${randomBytes(8).toString('hex')}`;
       const path = join(root, fingerprint, randomBytes(2).toString('hex'));
       await createWorktreeParent(path);
       const now = Date.now();
       const record: WorktreeRecord = {
-        id, version: 1, repo: { fingerprint, commonDir, sourceRoot, workspaceId: input.workspaceId }, path, branch, branchCreated,
+        id, version: 1, repo: { fingerprint, commonDir, sourceRoot, workspaceId: input.workspaceId }, path, branch, branchCreated, refBaseline,
         base: { mode: base === 'head' ? 'head' : base === 'fresh' ? 'fresh' : 'ref', ref: baseRef, commit },
         owner: { kind: 'session', sessionId: input.sessionId }, state: 'creating', createdAt: now, updatedAt: now,
       };
@@ -214,7 +216,13 @@ export class WorktreeService implements IWorktreeService {
       const status = await this.git(workspaceId, record.path, ['status', '--porcelain=v1', '--untracked-files=all', '-z']);
       const dirty = status.split('\0').filter(Boolean);
       const ahead = await this.git(workspaceId, record.path, ['rev-list', '--count', `${record.base.commit}..HEAD`]);
-      const unpushed = await this.git(workspaceId, record.path, ['rev-list', '--count', 'HEAD', '--not', record.base.commit, '--remotes']);
+      const refs = (await this.git(workspaceId, record.path,
+        ['for-each-ref', '--format=%(refname)', 'refs']))
+        .split('\n').filter((ref) => ref !== '' && !ref.startsWith('refs/remotes/'));
+      const ownedRefs = refs.filter((ref) => ref === `refs/heads/${record.branch}` ||
+        record.refBaseline === undefined || !record.refBaseline.includes(ref));
+      const unpushed = await this.git(workspaceId, record.path,
+        ['rev-list', '--count', 'HEAD', ...ownedRefs, '--not', record.base.commit, '--remotes']);
       const ignored = await this.git(workspaceId, record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']);
       const disposable = this.config.get<WorktreeConfig>(WORKTREE_SECTION).cleanup.disposableIgnored;
       const nonDisposable = ignored.split('\0').filter(Boolean).filter((name) => !disposable.some((pattern) => {
