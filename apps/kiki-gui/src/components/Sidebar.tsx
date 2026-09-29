@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
 import type { Session, Workspace } from '@kiki/protocol';
@@ -647,6 +647,15 @@ export function Sidebar({
     () => nestSessionThreads(sessionGroups, { crossGroups: groupBy !== 'workspace' }),
     [sessionGroups, groupBy],
   );
+  // Temporary conversations stay out of the paged list (and its search and
+  // grouping); they get their own block at the top while any exist. The key
+  // sits under ['sessions'], so every list refresh refreshes it too.
+  const ephemeralQuery = useQuery({
+    queryKey: ['sessions', 'ephemeral'],
+    queryFn: () => client.listEphemeralSessions(),
+    refetchInterval: 15_000,
+  });
+  const ephemeralSessions = ephemeralQuery.data?.items ?? [];
   const titleOf = useMemo(
     () => new Map(sessions.map((session) => [session.id, sessionLabel(session, untitled)])),
     [sessions, untitled],
@@ -911,6 +920,36 @@ export function Sidebar({
           <p role="status" className="mx-1 mb-1 border-l-2 border-success py-0.5 pl-2 text-[12px] text-ink-soft">
             {actionNotice}
           </p>
+        ) : null}
+        {ephemeralSessions.length > 0 ? (
+          <div
+            data-session-group-block="ephemeral"
+            className="mb-3 flex flex-col gap-0.5"
+            role="group"
+            aria-label={t('ephemeral.group')}
+          >
+            <p data-session-group="ephemeral" className="sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink">
+              <span className="min-w-0 truncate">{t('ephemeral.group')}</span>
+            </p>
+            {ephemeralSessions.map((session) => (
+              <div key={session.id} data-session-node="root" data-session-ephemeral>
+                <SessionRow
+                  session={session}
+                  active={session.id === activeSessionId}
+                  menuOpen={false}
+                  untitled={untitled}
+                  activity={activity.byId.get(session.id)}
+                  elapsedFor={activity.elapsedFor}
+                  showLocation
+                  temporary
+                  onOpen={() => { navigate(`/s/${session.id}`); }}
+                  onMenu={() => undefined}
+                  onTogglePin={() => undefined}
+                  seen={seen}
+                />
+              </div>
+            ))}
+          </div>
         ) : null}
         {sessionTree.map((group) => {
           const collapsible = groupBy === 'workspace' && group.key !== 'pinned';
@@ -1218,6 +1257,7 @@ function SessionRow({
   onMenu,
   onTogglePin,
   seen,
+  temporary = false,
 }: {
   session: Session;
   active: boolean;
@@ -1239,6 +1279,8 @@ function SessionRow({
   onTogglePin: () => void;
   /** Local read-state marks; drives the unread state. */
   seen: SessionSeenMap;
+  /** A temporary conversation: no pin, no menu (end or keep it from its header). */
+  temporary?: boolean;
 }) {
   const { t, tp } = useI18n();
   const archived = session.archived === true;
@@ -1343,7 +1385,7 @@ function SessionRow({
             <span
               data-session-time
               className={`min-w-13 shrink-0 text-right text-[12px] leading-4 font-normal text-ink-faint tabular-nums ${
-                menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
+                temporary ? '' : menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
               }`}
             >
               <RelativeTime at={session.updated_at} />
@@ -1378,6 +1420,7 @@ function SessionRow({
       {/* Hover/focus affordances: quick pin toggle, then the full action
         * menu. They take over the trailing time slot; both stay reachable
         * from the keyboard via focus-within. */}
+      {temporary ? null : (
       <div
         className={`absolute top-0.5 right-1 flex items-center transition-opacity duration-150 ${
           menuOpen ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
@@ -1413,6 +1456,7 @@ function SessionRow({
           <Icon name="more" size={14} />
         </button>
       </div>
+      )}
     </div>
   );
 }

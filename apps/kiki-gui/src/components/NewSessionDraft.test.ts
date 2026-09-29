@@ -204,6 +204,14 @@ describe('buildNewSessionCreate', () => {
     expect(body.agent_config).toMatchObject({ profile: 'agent' });
   });
 
+  it('marks the create temporary only when asked', () => {
+    const base = { profile: 'agent', permissionMode: 'manual' as const, planMode: false, cwd: '' };
+    expect(buildNewSessionCreate(base).ephemeral).toBeUndefined();
+    expect(buildNewSessionCreate({ ...base, ephemeral: true })).toMatchObject({ ephemeral: true });
+    expect(buildNewSessionCreate({ ...base, cwd: 'C:/repo', ephemeral: true, worktree: true }))
+      .toMatchObject({ metadata: { cwd: 'C:/repo' }, isolation: { kind: 'worktree' }, ephemeral: true });
+  });
+
   it('adds worktree isolation only when explicitly requested', () => {
     const base = { profile: 'agent', permissionMode: 'manual' as const, planMode: false };
     expect(buildNewSessionCreate({ ...base, cwd: '', workspaceId: 'wd_fixture_0123456789ab' }).isolation).toBeUndefined();

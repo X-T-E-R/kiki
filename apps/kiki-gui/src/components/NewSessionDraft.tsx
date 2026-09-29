@@ -98,6 +98,14 @@ function clearScopedNewSessionDraft(scopeId: string): void {
 
 export const AUTO_WORKSPACE_ID = '__auto__';
 
+// The temporary choice survives navigating back to /new, but not a window restart.
+let ephemeralForWindow = false;
+
+/** Test seam: a fresh window's temporary choice. */
+export function resetEphemeralChoiceForTests(): void {
+  ephemeralForWindow = false;
+}
+
 /** One-shot skill activation carried across the /new → /s/:id navigation. */
 export interface DraftSkillHandoff {
   readonly name: string;
@@ -116,6 +124,7 @@ export function buildNewSessionCreate(input: {
   readonly planMode: boolean;
   /** Opt-in only: run in a fresh Kiki-managed worktree of the target repository. */
   readonly worktree?: boolean;
+  readonly ephemeral?: boolean;
 }): SessionCreate {
   const agent_config = {
     profile: input.profile,
@@ -126,8 +135,8 @@ export function buildNewSessionCreate(input: {
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
   return input.cwd !== ''
-    ? { metadata: { cwd: input.cwd }, agent_config, ...isolation }
-    : { workspace_id: input.workspaceId, agent_config, ...isolation };
+    ? { metadata: { cwd: input.cwd }, agent_config, ...isolation, ephemeral: input.ephemeral }
+    : { workspace_id: input.workspaceId, agent_config, ...isolation, ephemeral: input.ephemeral };
 }
 
 /**
@@ -203,6 +212,13 @@ export function useNewSessionDraft({
   const [goalObjective, setGoalObjective] = useState('');
   // Never persisted: every new draft starts in the current checkout.
   const [worktreeRequested, setWorktreeRequested] = useState(false);
+  // Remembered for this window only, so a new window never starts temporary
+  // without the user choosing it again.
+  const [ephemeral, setEphemeralState] = useState(ephemeralForWindow);
+  const setEphemeral = useCallback((value: boolean) => {
+    ephemeralForWindow = value;
+    setEphemeralState(value);
+  }, []);
   const [modelOverride, setModelOverrideState] = useState(() =>
     resolveSessionModelOverride(initialRestoredDraft.modelOverride),
   );
@@ -391,6 +407,7 @@ export function useNewSessionDraft({
     planMode,
     goalObjective,
     worktree,
+    ephemeral,
   });
   sendContextRef.current = {
     busy: busy || selectionBlocked,
@@ -404,6 +421,7 @@ export function useNewSessionDraft({
     planMode,
     goalObjective,
     worktree,
+    ephemeral,
   };
 
   const createThenNavigate = useCallback((handoff: {
@@ -440,6 +458,7 @@ export function useNewSessionDraft({
       permissionMode: context.permissionMode,
       planMode: context.planMode,
       worktree: context.worktree,
+      ephemeral: context.ephemeral || undefined,
     });
 
     // Returned so the composer's send latch rides the create round trip: a
@@ -557,6 +576,8 @@ export function useNewSessionDraft({
     worktreeAvailability,
     worktreeRequested,
     setWorktreeRequested,
+    ephemeral,
+    setEphemeral,
     agentProfileCatalogMode,
     agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,

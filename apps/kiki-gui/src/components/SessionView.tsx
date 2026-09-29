@@ -107,6 +107,7 @@ import {
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
 import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
 import { AnnotationTray } from './AnnotationTray';
+import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { pushToast } from '../lib/toasts';
@@ -249,6 +250,7 @@ function Header({
             onRename={onRenameSession}
             onOpenRail={onToggleRail}
           />
+          {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
           {/* What is waiting on you — the count and the batch decisions —
               lives in the tray above the composer, which lists the items
               themselves. The header keeps one quiet state word and ONE
@@ -1515,11 +1517,19 @@ export function SessionView({
 
   // The sessions list lives in App (single owner, page-1 polling); this view
   // only merges the polled record for ITS session into the live controller.
+  // Temporary conversations never enter that list; the sidebar's own query
+  // for them (shared through the cache) carries their record instead.
+  const ephemeralQuery = useQuery({
+    queryKey: ['sessions', 'ephemeral'],
+    queryFn: () => client.listEphemeralSessions(),
+    refetchInterval: 15_000,
+  });
   useEffect(() => {
     if (controller === null) return;
-    const record = sessions.find((item) => item.id === controller.sessionId);
+    const record = sessions.find((item) => item.id === controller.sessionId)
+      ?? ephemeralQuery.data?.items.find((item) => item.id === controller.sessionId);
     if (record !== undefined) controller.handleSessionRecord(record);
-  }, [controller, sessions]);
+  }, [controller, sessions, ephemeralQuery.data]);
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -3060,6 +3070,13 @@ export function SessionView({
             {recoveryHold ? (
               <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
                 onConfirm={handleRecoveryConfirm} />
+            ) : null}
+            {state.session?.ephemeral === true ? (
+              <EphemeralBar
+                session={state.session}
+                busy={state.busy}
+                onSaved={() => { void controller?.refreshSession(); }}
+              />
             ) : null}
             <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
             <NeedsYouTray

@@ -127,19 +127,23 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     sessions: {
-      list: (query: HttpRestListSessionsQuery = {}) => transport.json<PageResponse<Session>>('/sessions', {
+      list: (query: HttpRestListSessionsQuery = {}) => transport.json<import('@kiki/protocol').ListSessionsResponse>('/sessions', {
         query: {
           page_size: query.page_size ?? 100,
           before_id: query.before_id,
           after_id: query.after_id,
           busy: query.busy,
           include_archive: query.include_archive,
+          include_ephemeral: query.include_ephemeral,
           archived_only: query.archived_only,
           exclude_empty: query.exclude_empty,
           workspace_id: query.workspace_id,
         },
       }),
+      listEphemeral: () => transport.json<import('@kiki/protocol').ListEphemeralSessionsResponse>('/sessions/ephemeral'),
       create: (body: SessionCreate) => transport.json<Session>('/sessions', { method: 'POST', body }),
+      saveEphemeral: (sessionId: string) => transport.json<Session>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/save`, { method: 'POST', body: {} }),
+      endEphemeral: (sessionId: string, body = {}) => transport.json<import('@kiki/protocol').EndEphemeralSessionResponse>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/end`, { method: 'POST', body }),
       compact: (sessionId: string, body = {}) => transport.json(
         `/sessions/${encodeURIComponent(sessionId)}:compact`,
         { method: 'POST', body },

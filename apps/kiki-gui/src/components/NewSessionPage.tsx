@@ -31,6 +31,7 @@ import { RelativeTime } from './RelativeTime';
 import { LifeMark } from './LifeMark';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
+import { EphemeralOption } from './EphemeralOption';
 import { useI18n } from '../i18n';
 import { agentProfileCatalogQueryKey, loadAgentProfileCatalog } from '../lib/agentProfileCatalog';
 import { aggregateLife, lifeOf, staggerStyle, type LifeState } from '../lib/motion';
@@ -649,6 +650,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
             </span>
           </div>
           <WorktreeOption state={state} />
+          <EphemeralOption state={state} />
           {showTargetHint ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}

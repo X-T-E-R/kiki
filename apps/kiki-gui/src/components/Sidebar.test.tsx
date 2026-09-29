@@ -32,12 +32,13 @@ import {
 const searchMessages = vi.fn();
 const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 const setWorkspacePinned = vi.fn(async () => {});
+const listEphemeralSessions = vi.fn(async (): Promise<{ items: Session[] }> => ({ items: [] }));
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useConnection: () => ({
-    client: { searchMessages, retrySearchIndexer, setWorkspacePinned },
+    client: { searchMessages, retrySearchIndexer, setWorkspacePinned, listEphemeralSessions },
     scopeId: connectionScope.id,
     meta: {
       server_version: '1.0.0',
@@ -134,6 +135,8 @@ beforeEach(() => {
   searchMessages.mockReset();
   retrySearchIndexer.mockClear();
   setWorkspacePinned.mockClear();
+  listEphemeralSessions.mockReset();
+  listEphemeralSessions.mockResolvedValue({ items: [] });
   connectionScope.id = 'local';
 });
 
@@ -516,6 +519,31 @@ describe('Sidebar session row states', () => {
     });
     expect(mixed.container.querySelector('[data-session-row="s-both"]')?.getAttribute('data-session-row-state'))
       .toBe('needs-me');
+  });
+});
+
+describe('Sidebar temporary conversations', () => {
+  it('lists them in their own block above the history, without row actions', async () => {
+    const saved = session('s-saved');
+    listEphemeralSessions.mockResolvedValue({ items: [{ ...session('s-temp'), ephemeral: true }] });
+    const { container } = await mount({
+      sessions: [saved],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [saved] }],
+    });
+    await settle();
+    const block = container.querySelector('[data-session-group-block="ephemeral"]');
+    expect(block?.getAttribute('aria-label')).toBe('Temporary');
+    expect(block?.querySelector('[data-session-row="s-temp"]')).not.toBeNull();
+    expect(block?.querySelector('[data-session-pin-toggle]')).toBeNull();
+    // It opens the block list, and never joins the paged groups.
+    const blocks = [...container.querySelectorAll('[data-session-group-block]')].map((node) => node.getAttribute('data-session-group-block'));
+    expect(blocks).toEqual(['ephemeral', 'today']);
+  });
+
+  it('shows no block while there are none', async () => {
+    const { container } = await mount();
+    await settle();
+    expect(container.querySelector('[data-session-group-block="ephemeral"]')).toBeNull();
   });
 });
 

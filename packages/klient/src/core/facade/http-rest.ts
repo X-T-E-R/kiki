@@ -212,8 +212,11 @@ export interface HttpRestFacade {
   };
 
   readonly sessions: {
-    list(query?: HttpRestListSessionsQuery): Promise<PageResponse<Session>>;
+    list(query?: HttpRestListSessionsQuery): Promise<import('@kiki/protocol').ListSessionsResponse>;
+    listEphemeral(): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
+    saveEphemeral(sessionId: string): Promise<Session>;
+    endEphemeral(sessionId: string, body?: { readonly worktree?: 'keep' | 'remove' }): Promise<import('@kiki/protocol').EndEphemeralSessionResponse>;
     compact(sessionId: string, body?: { readonly instruction?: string }): Promise<import('@kiki/protocol').CompactSessionResponse>;
     getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus>;
     setAutoCompact(sessionId: string, agentId: string, input: import('@kiki/protocol').AutoCompactWrite): Promise<import('@kiki/protocol').AutoCompactWriteResult>;

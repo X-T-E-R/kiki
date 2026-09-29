@@ -1003,12 +1003,24 @@ export class KikiClient {
     if (lease !== undefined) this.serverLeaseId = lease.lease_id;
   }
 
-  listSessions(query: ListSessionsOptions = {}): Promise<PageResponse<Session>> {
+  listSessions(query: ListSessionsOptions = {}): Promise<import('@kiki/protocol').ListSessionsResponse> {
     return this.run(() => this.rest.sessions.list(query));
+  }
+
+  listEphemeralSessions(): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse> {
+    return this.run(() => this.rest.sessions.listEphemeral());
   }
 
   createSession(body: SessionCreate): Promise<Session> {
     return this.run(() => this.rest.sessions.create(body));
+  }
+
+  saveEphemeralSession(sessionId: string): Promise<Session> {
+    return this.run(() => this.rest.sessions.saveEphemeral(sessionId));
+  }
+
+  endEphemeralSession(sessionId: string, worktree?: 'keep' | 'remove'): Promise<import('@kiki/protocol').EndEphemeralSessionResponse> {
+    return this.run(() => this.rest.sessions.endEphemeral(sessionId, { worktree }));
   }
 
   /** Cross-session usage aggregation. Filter axes travel in the query. */
