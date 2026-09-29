@@ -186,10 +186,22 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Visible keyboard focus on all interactive elements. */
+/* Visible keyboard focus on all interactive elements. The ring width is a
+ * token so a skin can thicken it (High contrast: 3px); 2px everywhere else. */
+:root {
+  --focus-ring-width: 2px;
+}
+:root[data-skin='contrast'] {
+  --focus-ring-width: 3px;
+}
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: 2px;
+}
+/* Tailwind's `focus-visible:outline-2` rings (most buttons and fields) set
+ * their own width; High contrast widens those too. Other skins never match. */
+:root[data-skin='contrast'] :focus-visible {
+  outline-width: var(--focus-ring-width);
 }
 
 /* Reduce motion for the focus outline when users prefer reduced motion. */
@@ -595,8 +607,8 @@ body[data-pane-resizing='true'] {
  *   selected        (aria-current) the selected wash plus a short mark in the
  *                   row's left padding, inset from the corners so the radius
  *                   never cuts it and clear of the status-mark column.
- *   focus-visible   a 2px accent ring drawn inside the row, so a scrolling
- *                   list never crops it.
+ *   focus-visible   an accent ring (--focus-ring-width) drawn inside the
+ *                   row, so a scrolling list never crops it.
  * A row that can be selected keeps at least 8px of left padding. Inspector
  * peek (hovering an agent's card or pane) uses the hover wash, without
  * retargeting the rail. */
@@ -632,8 +644,8 @@ body[data-pane-resizing='true'] {
   pointer-events: none;
 }
 .row-interactive:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
+  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline-offset: calc(-1 * var(--focus-ring-width));
 }
 @media (forced-colors: active) {
   .row-interactive[aria-current]::before {
@@ -968,7 +980,7 @@ body[data-pane-resizing='true'] {
   }
 }
 .composer-header-half:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: 1px;
 }
 /* The open pill: a soft inner ring and ink text, never a lighter block. */
