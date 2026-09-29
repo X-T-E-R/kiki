@@ -7,6 +7,8 @@ import {
   type ToolExecution,
 } from '#/tool/toolContract';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -28,10 +30,11 @@ import {
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   ensureRgPath,
   rgUnavailableMessage,
+  type EnsureRgPathOptions,
   type RgProbe,
 } from '#/os/backends/node-local/tools/rgLocator';
 import {
@@ -78,7 +81,17 @@ export class GrepTool implements IGrepTool {
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
+    @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {}
+
+  private rgShareOptions(): Pick<EnsureRgPathOptions, 'shareDir' | 'fallbackShareDirs'> {
+    if (this.bootstrap === undefined) return {};
+    const baseHomeDir = resolveSpaceInheritance(this.bootstrap).baseHomeDir;
+    return {
+      shareDir: this.bootstrap.homeDir,
+      fallbackShareDirs: baseHomeDir === undefined ? [] : [baseHomeDir],
+    };
+  }
 
   private workspace(view: RuntimeWorkspaceView): WorkspaceConfig {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
@@ -120,7 +133,7 @@ export class GrepTool implements IGrepTool {
       description: `Searching for '${args.pattern}' in ${searchPath}`,
       display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
       approvalRule: toolApprovalRule(this.name, args.pattern, inspected, target.host),
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.pattern),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.pattern),
       execute: async ({ signal }) => {
         const lease = target.host === undefined
           ? this.runtime.acquire(['fs', 'process']) : acquireToolRuntime(this.runtime, target.host, ['fs', 'process']);
@@ -169,6 +182,7 @@ export class GrepTool implements IGrepTool {
         const resolution = await ensureRgPath(this.createRgProbe(processService), {
           signal,
           allowCachedFallback: true,
+          ...this.rgShareOptions(),
         });
         rgPath = resolution.path;
         if (resolution.source !== 'system-path') {

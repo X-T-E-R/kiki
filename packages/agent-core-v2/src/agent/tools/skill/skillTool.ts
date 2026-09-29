@@ -18,7 +18,7 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesGlobRuleSubject, matchesStringRuleSubject } from '#/tool/rule-match';
 
 import {
   ISkillTool,
@@ -56,7 +56,7 @@ export class SkillTool implements ISkillTool {
       description: `Invoke skill ${label}`,
       display: { kind: 'skill_call', skill_name: label, args: args.args },
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, label),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, label),
       execute: () => this.execution(args),
     };
     const inspected = inspectAgentRuntime(this.runtime);
