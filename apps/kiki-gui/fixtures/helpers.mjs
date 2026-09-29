@@ -10,8 +10,25 @@ export function fid(prefix) {
   return `${prefix}_fx_${String(counter).padStart(4, '0')}`;
 }
 
+/**
+ * Reset the fixture-id counter. Scenario modules build their data once, at
+ * first import, from this shared counter — the runner evaluates them one at a
+ * time with the counter reset in between, so a scenario's ids no longer depend
+ * on which browser context happened to load it first.
+ */
+export function resetFid() {
+  counter = 0;
+}
+
+/**
+ * Fixture clock. A fixed epoch keeps relative-time copy ("3 min ago") stable
+ * across runs and across screenshots of the same commit; `KIKI_FIXTURE_EPOCH`
+ * overrides it for a one-off dated run.
+ */
+const EPOCH = new Date(process.env.KIKI_FIXTURE_EPOCH ?? '2026-01-01T12:00:00.000Z').getTime();
+
 export function ts(minutesAgo = 0) {
-  return new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  return new Date(EPOCH - minutesAgo * 60_000).toISOString();
 }
 
 export function textOf(text) {

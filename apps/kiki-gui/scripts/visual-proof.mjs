@@ -1,14 +1,19 @@
 /**
- * kiki-gui visual proof — boots the fixture server + the vite dev server,
- * drives the real GUI with playwright chromium through every fixture
- * scenario, and writes screenshots to an ignored disposable directory by
- * default. The app contains zero fixture-specific code paths: it connects to
- * the fixture server exactly like a real kap-server (deep link with server URL
- * + fixture token).
+ * kiki-gui visual proof — walks every GUI fixture scenario against a static
+ * production build with playwright chromium and writes screenshots to an
+ * ignored disposable directory by default. The app contains zero
+ * fixture-specific code paths: it connects to the fixture server exactly like a
+ * real kap-server (deep link with server URL + fixture token).
  *
  *   node scripts/visual-proof.mjs                         # disposable full walk
  *   node scripts/visual-proof.mjs --only=reconnect        # disposable subset
  *   node scripts/visual-proof.mjs --update-goldens        # replace tracked goldens
+ *
+ * `proof/runner.mjs` owns the build, the static server, the job queue and the
+ * per-job browser context + fixture server; this file owns the scenarios.
+ * Every scenario body here is written against one page and one fixture server
+ * and reaches them through the per-job accessors below, so the scenarios can
+ * run in parallel without sharing state.
  *
  * Locale: KIKI_PROOF_LOCALE=zh runs the same suite against the Chinese UI —
  * the runner seeds `kiki.locale` into localStorage before every app boot and
@@ -17,18 +22,13 @@
  * scenario additionally toggles the language through Settings → General.
  */
 
-import { spawn, execSync } from 'node:child_process';
-import { createServer } from 'node:net';
-import { mkdirSync, rmSync } from 'node:fs';
-import net from 'node:net';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium } from 'playwright';
-
-import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
-import { selectProofOutput } from './visual-proof-options.mjs';
-import { assertTimelineIntegrity, drainTimeline, installTimelineMonitor } from './timeline-integrity.mjs';
+import { FIXTURE_TOKEN } from './fixture-server.mjs';
+import { assertTimelineIntegrity, drainTimeline } from './timeline-integrity.mjs';
+import { runProof } from '../proof/runner.mjs';
 import { createContextCompactWalker } from './visual-proof-context-compact.mjs';
 import { createCapabilitiesWalker } from './visual-proof-capabilities.mjs';
 import { createProfileEditorWalker } from './visual-proof-profile-editor.mjs';
@@ -49,28 +49,6 @@ const TIMELINE_GATED = new Set([
 ]);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-// Ports are OS-assigned at run start unless pinned by env: Windows
-// Hyper-V/WSL keeps shifting its excluded port ranges (today 51695–51794),
-// and a hardcoded port inside one accepts the bind yet black-holes Chromium's
-// loopback connects. An OS-assigned port dodges the exclusions by
-// construction.
-let FIXTURE_PORT = Number(process.env.KIKI_PROOF_FIXTURE_PORT ?? 0);
-let WEB_PORT = Number(process.env.KIKI_PROOF_WEB_PORT ?? 0);
-let FIXTURE_URL = '';
-let WEB_URL = '';
-
-/** Ask the OS for a free loopback port (skipped by exclusion ranges). */
-async function freePort() {
-  const probe = createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
-  const { port } = probe.address();
-  await new Promise((resolve) => { probe.close(() => resolve()); });
-  return port;
-}
 
 /** UI language for the run; the app defaults to English when unset. */
 const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
@@ -480,191 +458,67 @@ const STRINGS = {
     removeAnnotation: '移除标注',
   },
 };
-const S = STRINGS[LOCALE];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function control(action) {
-  const response = await fetch(`${FIXTURE_URL}/__control`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(action),
-  });
-  return response.json();
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) return;
-    } catch {
-      // not up yet
-    }
-    if (Date.now() > deadline) throw new Error(`server never came up: ${url}`);
-    await sleep(300);
-  }
-}
-
 /**
- * Wait until a TCP port answers NO connection. A stale listener (orphaned
- * vite grandchild) must be gone before we spawn our own — otherwise
- * waitForServer can report "web up" against the zombie and strictPort then
- * kills our real dev server, hanging the suite mid-run.
+ * The job the calling walker runs in. Scenario bodies here are written against
+ * one page and one fixture server, but the runner gives every job its own pair
+ * — these accessors resolve to the caller's job, so the same bodies run in
+ * parallel contexts without sharing state.
  */
-async function waitForPortFree(port, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const taken = await new Promise((resolve) => {
-      const probe = net.createConnection({ port, host: '127.0.0.1' });
-      probe.once('connect', () => {
-        probe.destroy();
-        resolve(true);
-      });
-      probe.once('error', () => resolve(false));
-    });
-    if (!taken) return;
-    if (Date.now() > deadline) throw new Error(`port ${port} is still held by a stale process — kill it and rerun`);
-    await sleep(300);
-  }
+const jobs = new AsyncLocalStorage();
+
+function job() {
+  const current = jobs.getStore();
+  if (current === undefined) throw new Error('scenario code ran outside a proof job');
+  return current;
 }
 
-/**
- * Find PIDs LISTENING on a loopback TCP port (Windows; empty elsewhere).
- * The local-address column is compared exactly — a substring match on
- * "127.0.0.1:5173" would also match 51730-51739 and has killed unrelated
- * host processes in the past. Read-only: never kills anything.
- */
-function portHolderPids(port) {
-  if (process.platform !== 'win32') return new Set();
-  let out;
-  try {
-    out = execSync('netstat -ano -p tcp', { stdio: ['ignore', 'pipe', 'ignore'], shell: 'cmd.exe' }).toString();
-  } catch {
-    return new Set();
-  }
-  const pids = new Set();
-  for (const line of out.split(/\r?\n/)) {
-    if (!line.includes('LISTENING')) continue;
-    const parts = line.trim().split(/\s+/);
-    const local = parts[1];
-    const pid = parts[parts.length - 1];
-    if (local !== `127.0.0.1:${port}` && local !== `[::1]:${port}` && local !== `0.0.0.0:${port}`) continue;
-    if (pid !== undefined && /^\d+$/.test(pid) && pid !== '0') pids.add(Number(pid));
-  }
-  return pids;
-}
+/** The calling job's page; method calls bind to that page on access. */
+const page = new Proxy({}, {
+  get: (_target, property) => {
+    const target = job().page;
+    const value = Reflect.get(target, property);
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
 
-/**
- * True when `pid` is `rootPid` itself or one of its descendants (Windows,
- * via CIM parent walk). Used to ensure the proof runner only ever kills
- * processes it spawned itself.
- */
-function isDescendantOf(pid, rootPid) {
-  if (pid === rootPid) return true;
-  const parentByPid = new Map();
-  try {
-    const out = execSync(
-      'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"',
-      { stdio: ['ignore', 'pipe', 'ignore'], shell: 'cmd.exe' },
-    ).toString();
-    const rows = JSON.parse(out);
-    for (const row of Array.isArray(rows) ? rows : [rows]) {
-      parentByPid.set(Number(row.ProcessId), Number(row.ParentProcessId));
-    }
-  } catch {
-    return false;
-  }
-  let current = pid;
-  for (let depth = 0; depth < 64; depth += 1) {
-    const parent = parentByPid.get(current);
-    if (parent === undefined || parent === 0 || parent === current) return false;
-    if (parent === rootPid) return true;
-    current = parent;
-  }
-  return false;
-}
+/** UI chrome of the calling job's locale (fixture content stays English). */
+const S = new Proxy({}, {
+  get: (_target, key) => STRINGS[job().view.locale]?.[key],
+});
 
-/**
- * Kill a port holder only when it belongs to our own spawned tree
- * (the vite dev server we started). Foreign processes are never touched;
- * the caller must re-probe a different port or fail instead.
- */
-function killOwnPortHolder(port, rootPid) {
-  if (process.platform !== 'win32' || rootPid === undefined) return;
-  for (const pid of portHolderPids(port)) {
-    if (!isDescendantOf(pid, rootPid)) {
-      console.warn(`[proof] port ${port} held by foreign pid ${pid} — NOT killing it`);
-      continue;
-    }
-    try {
-      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'ignore' });
-      console.log(`[proof] freed port ${port} (own pid ${pid})`);
-    } catch {
-      // already gone
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-let page;
-const pageErrors = [];
-let pageErrorCursor = 0;
+const shot = (name) => job().shot(name);
+const control = (action) => job().control(action);
+/** The calling job's fixture origin; the app reaches it through the deep link. */
+const fixtureUrl = () => job().fixtureUrl;
+/** Static server origin; one build serves every job of the run. */
+let WEB_URL = '';
 
 function throwOnPageErrors(context) {
-  const pending = pageErrors.slice(pageErrorCursor);
-  pageErrorCursor = pageErrors.length;
+  const current = job();
+  const cursor = current.errorCursor ?? 0;
+  const pending = current.errors.slice(cursor);
+  current.errorCursor = current.errors.length;
   if (pending.length === 0) return;
-  const detail = pending.map((error) => error.stack ?? error.message ?? String(error)).join('\n\n');
+  const detail = pending.join('\n\n');
   throw new Error(`${context} emitted ${pending.length} pageerror event(s):\n${detail}`);
 }
-
-const shot = async (name) => {
-  // Settle finite animations (entrance fades, chevron turns) before capture:
-  // a frame taken mid-entrance shows rows at partial opacity and chevrons
-  // half-rotated, which reads as a design defect that is not there. Looping
-  // signatures (spinners, breathing dots) are infinite and are left running.
-  const inFlight = await page.evaluate(async () => {
-    const finite = () => document.getAnimations().filter((animation) => {
-      const iterations = animation.effect?.getComputedTiming().iterations;
-      return animation.playState === 'running' && iterations !== Infinity;
-    });
-    const count = finite().length;
-    await Promise.all(finite().map((animation) => animation.finished.catch(() => undefined)));
-    return count;
-  }).catch(() => 0);
-  await page.screenshot({ path: join(SHOTS, `${name}.png`) });
-  console.log(`[shot] ${name}.png${inFlight > 0 ? ` (settled ${inFlight} animations)` : ''}`);
-  // KIKI_PROOF_PROBE="sel1|sel2": log the effective opacity (the product of
-  // every ancestor's) and text colour of each match — a diagnostic for "is
-  // this faint by design or caught mid-transition".
-  if (process.env.KIKI_PROOF_PROBE !== undefined) {
-    const report = await page.evaluate((selectors) => selectors.map((selector) => {
-      const element = document.querySelector(selector);
-      if (element === null) return { selector, found: false };
-      let opacity = 1;
-      const chain = [];
-      for (let node = element; node !== null && node instanceof Element; node = node.parentElement) {
-        const own = Number(getComputedStyle(node).opacity);
-        if (own < 1) chain.push(`${node.tagName.toLowerCase()}.${String(node.className).slice(0, 40)}=${own}`);
-        opacity *= own;
-      }
-      const style = getComputedStyle(element);
-      return { selector, opacity: Number(opacity.toFixed(3)), color: style.color, background: style.backgroundColor, chain };
-    }), process.env.KIKI_PROOF_PROBE.split('|'));
-    console.log(`[probe] ${name} ${JSON.stringify(report)}`);
-  }
-};
 
 async function selectSession(titleFragment) {
   const row = page.locator('aside div.group', { hasText: titleFragment }).first();
   await row.waitFor({ timeout: 10_000 });
   await row.click();
-  await page.waitForTimeout(800);
+  // The session view fetches its transcript before the composer can take a
+  // prompt; a fixed sleep here raced that mount under load and sent the prompt
+  // into a composer that was not the session's yet.
+  await page.waitForURL(/\/s\//, { timeout: 15_000 });
+  await page.waitForSelector('[data-transcript-scroll]', { timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
+  await page.waitForTimeout(300); // first paint of the transcript rows
 }
 
 /** The inspector is closed by default; open it from the header toggle. */
@@ -1416,7 +1270,7 @@ async function scenarioNewNoWorkspace() {
   // Other scenarios may have selected a workspace that this empty fixture no
   // longer knows. A fresh /new draft must take the automatic workspace path.
   await page.evaluate(() => localStorage.removeItem('kiki.newSessionDraft'));
-  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
@@ -1443,7 +1297,7 @@ async function scenarioNewNoWorkspace() {
 }
 
 async function scenarioDraftFlow() {
-  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
@@ -1534,7 +1388,7 @@ async function scenarioComposerModes() {
     if (overflows) throw new Error(`composer overflows the 390 viewport (${theme})`);
   }
   // /new hero with the Goal objective field (dark), both widths.
-  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
   for (const width of [1440, 390]) {
     await resizeViewport(width);
@@ -1552,7 +1406,7 @@ async function scenarioComposerModes() {
   // Onboarding (dark): replayed from Settings › About; Auto is preselected.
   await resizeViewport(1440);
   await page.evaluate(() => { try { localStorage.removeItem('kiki.onboarding'); } catch { /* ignore */ } });
-  await page.goto(`${WEB_URL}/settings/about?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${WEB_URL}/settings/about?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   const replay = page.getByRole('button', { name: S.onboardingReenter, exact: true });
   await replay.waitFor({ timeout: 15_000 });
   await replay.click();
@@ -1576,7 +1430,7 @@ async function scenarioComposerModes() {
 
 async function scenarioHeroShell() {
   const deepLink = (path) =>
-    `${WEB_URL}${path}?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+    `${WEB_URL}${path}?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
 
   await page.goto(deepLink('/new'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
@@ -1675,7 +1529,7 @@ async function scenarioHeroShell() {
   if (seatBox === null) throw new Error('composer seat missing after the flip');
   const clipTop = Math.max(0, seatBox.y - 140);
   await page.screenshot({
-    path: join(SHOTS, 'hero-active-mask.png'),
+    path: join(job().out, 'hero-active-mask.png'),
     clip: { x: 0, y: clipTop, width: 1440, height: seatBox.y + seatBox.height - clipTop },
   });
   console.log('[shot] hero-active-mask.png');
@@ -1736,7 +1590,7 @@ async function scenarioHeroShell() {
 }
 
 async function scenarioSettings() {
-  await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.settings}`, { timeout: 10_000 });
@@ -1764,7 +1618,7 @@ async function scenarioSettings() {
   // Reload-proof + legacy-route proof: the pre-merge /settings/providers
   // bookmark redirects to /settings/ai?tab=providers and lands on the same
   // card, so a dev-server reload cannot strand the assertions on the wrong tab.
-  await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-providers [data-connection-row="fixture"]', { timeout: 10_000 });
@@ -1812,7 +1666,7 @@ async function scenarioSettings() {
   // the fixture server's mock upstream, pulls its model list in the browser.
   await page.click('[data-connection-choice="api"]');
   await page.click('[data-provider-protocol="anthropic"]');
-  await page.locator('#provider-field-base-url').fill(`${FIXTURE_URL}/provider-mock/v1`);
+  await page.locator('#provider-field-base-url').fill(`${fixtureUrl()}/provider-mock/v1`);
   await page.locator('#st-card-providers-add input[type="password"]').fill('fixture-key');
   await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
   // Fetched models stay unsaved suggestions: they surface inside the model
@@ -1881,7 +1735,7 @@ async function scenarioSettings() {
   // Legacy redirect proof (redesign §10.2 rule 3): the retired capabilities
   // section still resolves — a precise card hash follows the card across the
   // split, landing on the MCP leaf instead of skills.
-  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}#st-card-mcp`, {
+  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}#st-card-mcp`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-mcp', { timeout: 10_000 });
@@ -1901,7 +1755,7 @@ async function scenarioSettings() {
  */
 async function scenarioSettingsSearch() {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
@@ -1953,7 +1807,7 @@ async function scenarioSettingsSearch() {
 
   // Ctrl+K from a session reaches settings cards by name, under the session
   // and message groups.
-  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
@@ -1980,8 +1834,8 @@ async function scenarioSettingsSearch() {
 }
 
 async function scenarioSettingsWrite() {
-  const generalUrl = `${WEB_URL}/settings/permissions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
-  const tasksUrl = `${WEB_URL}/settings/sessions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const generalUrl = `${WEB_URL}/settings/permissions?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+  const tasksUrl = `${WEB_URL}/settings/sessions?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   await page.goto(generalUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-permission-defaults', { timeout: 10_000 });
   const permissionModeGroup = page.locator('#st-card-permission-defaults [role="group"]');
@@ -2047,7 +1901,7 @@ async function scenarioSettingsWrite() {
 }
 
 async function scenarioConnectionToken() {
-  await page.goto(`${WEB_URL}/settings/connection?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/connection?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   const card = page.locator('#st-card-conn-server');
@@ -2077,7 +1931,7 @@ async function scenarioSettingsInvalid() {
   // Client-side validation with no server round-trip: the plan-enter approval
   // timeout floor (5s) rejects an under-floor draft on Save, retains it for
   // correction, and Discard restores the server-known value.
-  await page.goto(`${WEB_URL}/settings/sessions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/sessions?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-defaults', { timeout: 10_000 });
@@ -2103,7 +1957,7 @@ async function scenarioSettingsInvalid() {
 }
 
 async function scenarioSettingsBrowserEditable() {
-  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   const mainAgents = page.locator('#st-card-main-agents');
@@ -2119,7 +1973,7 @@ async function scenarioSettingsBrowserEditable() {
 }
 
 async function scenarioSettingsCommunication() {
-  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   const card = page.locator('#st-card-append-timing');
@@ -2150,7 +2004,7 @@ async function scenarioSettingsCommunication() {
 
 async function scenarioWorkspaces() {
   // Workspace rename + unregister over the two `settings.scenario.mjs` rows.
-  await page.goto(`${WEB_URL}/settings/workspaces?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/workspaces?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-workspaces', { timeout: 10_000 });
@@ -2183,7 +2037,7 @@ async function scenarioWorkspaces() {
 }
 
 async function scenarioSettingsAgents() {
-  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   // Team table + editor sheet (the full walk lives in the profile-editor scenario).
@@ -2248,7 +2102,7 @@ async function scenarioSettingsAgents() {
   }
   await shot('settings-agents-subagent-rules');
 
-  await page.goto(`${WEB_URL}/settings/permissions?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/permissions?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#st-card-reviewer', { timeout: 10_000 });
@@ -2276,7 +2130,7 @@ async function scenarioSettingsAgents() {
  * flips restored entries back to clean and echoes config patches.
  */
 async function scenarioSettingsShipped() {
-  await page.goto(`${WEB_URL}/settings/subagents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/subagents?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   // Default subagent target: unset config resolves to the engine fallback
@@ -2365,7 +2219,7 @@ async function scenarioSettingsShipped() {
  * only on demand; empty + error scenarios cover fail-closed and check-failed.
  */
 async function scenarioSettingsNbSearch() {
-  const searchUrl = `${WEB_URL}/settings/search?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const searchUrl = `${WEB_URL}/settings/search?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   const openTab = async (tab) => {
     await page.locator(`#nb-search-tab-${tab}`).click();
   };
@@ -2732,7 +2586,7 @@ async function scenarioResponsive() {
       await page.waitForTimeout(200);
     }
 
-    await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
       waitUntil: 'domcontentloaded',
     });
     await page.waitForSelector(`text=${S.settings}`, { timeout: 10_000 });
@@ -2740,7 +2594,7 @@ async function scenarioResponsive() {
     await shot(`responsive-settings-${width}`);
 
     // Return to the session for the next width iteration.
-    await page.goto(`${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    await page.goto(`${WEB_URL}/?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
       waitUntil: 'domcontentloaded',
     });
   }
@@ -3146,7 +3000,7 @@ async function scenarioSubagentsBurst() {
   // The scoped per-agent channel captured the stream: open the agent page and
   // fire a second burst — the tool card materializes without a main resync.
   await page.goto(
-    `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`,
+    `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`,
     { waitUntil: 'domcontentloaded' },
   );
   // The subagent note is a header tooltip now; wait on the workspace itself.
@@ -4059,7 +3913,7 @@ async function scenarioSearch() {
  */
 async function scenarioUsageDashboard() {
   const usageUrl = (query) =>
-    `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+    `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
 
   // 1. A plain visit starts today; all-history remains an explicit choice.
   //    The partially-unknown cost chip comes from the seeded `mystery-9` model.
@@ -4188,7 +4042,7 @@ async function setProofTheme(theme) {
  * both themes. Switching the scope must land in the URL.
  */
 async function scenarioWorkspaceTools() {
-  const pageUrl = (path) => `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const pageUrl = (path) => `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
 
   await page.goto(pageUrl('/cron'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-cron-section="active"] [data-cron-task]', { timeout: 15_000 });
@@ -4355,7 +4209,7 @@ async function scenarioContextRing() {
 async function scenarioSettingsIa() {
   const walk = createSettingsIaWalker({
     page, shot, resizeViewport, setProofTheme,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
 }
@@ -4364,7 +4218,7 @@ async function scenarioSettingsIa() {
 async function scenarioProfileEditor() {
   const walk = createProfileEditorWalker({
     page, shot, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
 }
@@ -4372,7 +4226,7 @@ async function scenarioProfileEditor() {
 /** Settings › Models & providers (scripts/visual-proof-models-page.mjs). */
 const modelsPageWalker = () => createModelsPageWalker({
   page, shot, resizeViewport, setProofTheme,
-  webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+  webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
 });
 async function scenarioModelsPage() { await modelsPageWalker().populated(); }
 
@@ -4380,7 +4234,7 @@ async function scenarioModelsPage() { await modelsPageWalker().populated(); }
 async function scenarioWorktrees() {
   const walk = createWorktreesWalker({
     page, shot, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
   });
   await walk();
 }
@@ -4390,7 +4244,7 @@ async function scenarioModelsPageEmpty() { await modelsPageWalker().empty(); }
 async function scenarioNativeSsh() {
   const walk = createNativeSshWalker({
     page, shot, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
   });
   await walk();
 }
@@ -4399,7 +4253,7 @@ async function scenarioNativeSsh() {
 async function scenarioContextCompact() {
   const walk = createContextCompactWalker({
     page, shot, selectSession, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
 }
@@ -4412,7 +4266,7 @@ async function scenarioContextCompact() {
  * only exists at `approval: 'review'`. Both themes; 1440 and 390.
  */
 async function scenarioMemoryOff() {
-  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   // The nav entry is permanent — prove it is there while memory is off.
   if (await page.locator('[data-nav-memory]').count() !== 1) throw new Error('memory nav entry missing while memory is off');
   await page.locator('[data-nav-memory]').click();
@@ -4440,7 +4294,7 @@ async function scenarioMemoryOff() {
 }
 
 async function scenarioMemory() {
-  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   await page.goto(memoryUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-memory-list] [data-memory-row]', { timeout: 15_000 });
   const globalRows = await page.locator('[data-memory-row]').count();
@@ -4557,7 +4411,7 @@ async function scenarioMemoryReview() {
     await page.locator('[data-memory-tab="inbox"]').click();
     await page.waitForSelector('[data-memory-inbox-row]', { timeout: 10_000 });
   };
-  await page.goto(`${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${WEB_URL}/memory?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await openInbox();
   const pending = await page.locator('[data-memory-inbox-row]').count();
   if (pending !== 2) throw new Error(`memory inbox expected 2 pending entries, got ${pending}`);
@@ -4732,7 +4586,7 @@ async function scenarioI18n() {
   // locale probe; new-session defaults moved to Models & providers › Defaults.
   const otherTitle = STRINGS[other].composerCardTitle;
   const cardTitle = (text) => `#st-card-composer >> text=${text}`;
-  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(cardTitle(S.composerCardTitle), { timeout: 10_000 });
@@ -4760,7 +4614,7 @@ async function scenarioI18n() {
 async function scenarioCapabilities() {
   const walk = createCapabilitiesWalker({
     page, shot, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => FIXTURE_URL, fixtureToken: FIXTURE_TOKEN,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
 }
@@ -4883,7 +4737,7 @@ async function scenarioFirstRun() {
       headers: { authorization: `Bearer ${token}` },
     });
     return (await res.json()).data?.default_model;
-  }, [FIXTURE_URL, FIXTURE_TOKEN]);
+  }, [fixtureUrl(), FIXTURE_TOKEN]);
   const diagnostics = await page.locator('[data-selection-diagnostic]').allTextContents();
   console.log(`[first-run] server default_model=${JSON.stringify(serverDefault)} diagnostics=${JSON.stringify(diagnostics)}`);
   if (diagnostics.length !== 0) {
@@ -4919,7 +4773,7 @@ async function scenarioFirstRun() {
  */
 async function scenarioSkins() {
   const link = (path) =>
-    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   const SESSION = '/s/session_fixture_skins';
 
   const applySkin = async (source, id, theme) => {
@@ -5056,7 +4910,7 @@ async function scenarioSkins() {
  */
 async function scenarioSettingsAppearance() {
   const link = (path) =>
-    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
   const setLook = async (skin, theme) => {
     await page.evaluate(([skinId, mode]) => {
       localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: 'builtin', id: skinId }, tweaks: {} }));
@@ -5142,7 +4996,43 @@ async function scenarioSettingsAppearance() {
 
 // ---------------------------------------------------------------------------
 
-const SCENARIOS = [
+/**
+ * Scenario registry: one entry per GUI fixture scenario. `fixture` names the
+ * data module under ../fixtures; the runner gives every entry its own browser
+ * context, fixture server and screenshot budget.
+ */
+function scenario(name, run, extra = {}) {
+  return {
+    name,
+    fixture: name,
+    ...extra,
+    async run(context) {
+      return jobs.run(context, async () => {
+        await drainTimeline(page); // count only this scenario's frames
+        const shots = await run();
+        if (TIMELINE_GATED.has(name)) {
+          const integrity = await assertTimelineIntegrity(page, `scenario ${name}`);
+          console.log(`[check] timeline integrity: ${integrity.frames} frames, ${JSON.stringify(integrity.totals)}`);
+        }
+        return shots;
+      });
+    },
+  };
+}
+
+/**
+ * Registry fields a scenario needs beyond name and body.
+ *
+ * `onboarding`: the runner seeds a completed `kiki.onboarding` so the wizard
+ * does not auto-open over a fixture that has no provider; the first-run
+ * scenario is the one that must meet the wizard.
+ */
+const ENTRY_EXTRA = {
+  'first-run': { onboarding: false },
+};
+
+/** Walk order. `responsive` shrinks the viewport, so it stays last. */
+const BODIES = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
   ['queue', scenarioQueue],
@@ -5218,213 +5108,22 @@ const SCENARIOS = [
   ['responsive', scenarioResponsive],
 ];
 
-const proofOutput = selectProofOutput(
-  ROOT,
-  process.argv.slice(2),
-  SCENARIOS.map(([name]) => name),
-);
-const SHOTS = proofOutput.outputDir;
-const wanted = (name) => proofOutput.only === null || proofOutput.only.includes(name);
-console.log(`[proof] mode: ${proofOutput.mode}`);
-console.log(`[proof] output: ${SHOTS}`);
-// Validate all arguments before cleaning the selected output directory so a
-// typo or an unsafe golden subset cannot remove existing screenshots.
-rmSync(SHOTS, { recursive: true, force: true });
-mkdirSync(SHOTS, { recursive: true });
+export const scenarios = BODIES.map(([name, body]) => scenario(name, body, ENTRY_EXTRA[name] ?? {}));
 
 async function main() {
-  const fixturePinned = FIXTURE_PORT !== 0;
-  const webPinned = WEB_PORT !== 0;
-  if (!fixturePinned) FIXTURE_PORT = await freePort();
-  if (!webPinned) WEB_PORT = await freePort();
-  // Never kill foreign processes: an OS-assigned port that turns out held is
-  // re-probed; a pinned port that is held fails with instructions.
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const fixtureHolders = portHolderPids(FIXTURE_PORT);
-    const webHolders = portHolderPids(WEB_PORT);
-    if (fixtureHolders.size === 0 && webHolders.size === 0) break;
-    if (fixturePinned && fixtureHolders.size > 0) {
-      throw new Error(`fixture port ${FIXTURE_PORT} is held by pid(s) ${[...fixtureHolders].join(', ')} — free it yourself or unset KIKI_PROOF_FIXTURE_PORT`);
-    }
-    if (webPinned && webHolders.size > 0) {
-      throw new Error(`web port ${WEB_PORT} is held by pid(s) ${[...webHolders].join(', ')} — free it yourself or unset KIKI_PROOF_WEB_PORT`);
-    }
-    if (fixtureHolders.size > 0) FIXTURE_PORT = await freePort();
-    if (webHolders.size > 0) WEB_PORT = await freePort();
-  }
-  FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
-  WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
-  await waitForPortFree(FIXTURE_PORT);
-  await waitForPortFree(WEB_PORT);
-  const fixture = await startFixtureServer({ port: FIXTURE_PORT, scenario: 'basic-stream' });
-
-  // Always spawn our own vite on a dedicated port so a stray dev server can't
-  // shadow the run. Single-string command + shell: Windows refuses to spawn
-  // .cmd shims without one (spawn EINVAL), and a single string sidesteps arg
-  // escaping.
-  const vite = spawn(`pnpm --filter @kiki/gui dev`, {
-    cwd: join(ROOT, '..', '..'),
-    env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: true,
+  const { failed } = await runProof({
+    root: ROOT,
+    scenarios,
+    argv: process.argv.slice(2),
+    label: 'proof',
+    locale: LOCALE,
+    theme: THEME,
+    onWebUp: (url) => { WEB_URL = url; },
   });
-  vite.stdout.on('data', (d) => process.stdout.write(`[vite] ${d}`));
-  vite.stderr.on('data', (d) => process.stdout.write(`[vite:err] ${d}`));
-  vite.on('error', (error) => console.error('[vite:spawn-error]', error.message));
-  let viteExited = null;
-  vite.on('exit', (code) => {
-    viteExited = code;
-  });
-  const cleanup = async () => {
-    // Tree-kill: the shell wrapper dies but the vite grandchild holds the port.
-    if (process.platform === 'win32' && vite.pid !== undefined) {
-      try {
-        execSync(`taskkill /PID ${vite.pid} /F /T`, { stdio: 'ignore' });
-      } catch {
-        // already gone
-      }
-    }
-    vite.kill();
-    killOwnPortHolder(WEB_PORT, vite.pid);
-    await fixture.stop();
-  };
-  process.on('SIGINT', () => void cleanup().then(() => process.exit(130)));
-  process.on('exit', () => vite.kill());
-
-  try {
-    // Cold vite on this monorepo can take ~20s+ to open its listener after
-    // the "ready" banner (plugin/transform warmup) — give it real headroom.
-    await waitForServer(WEB_URL, 90_000);
-    if (viteExited !== null) {
-      throw new Error(`vite dev server exited early (code ${viteExited}) — refusing to run against a stale listener on ${WEB_URL}`);
-    }
-    console.log(`[proof] web up at ${WEB_URL}`);
-
-    // Bypass any system proxy: the proof only ever talks to loopback, and a
-    // machine-level proxy (or TUN-mode tool) can otherwise hijack Chromium's
-    // loopback navigation between runs.
-    const browser = await chromium.launch({ args: ['--no-proxy-server'] });
-    const bootPage = async () => {
-      const next = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-      next.on('pageerror', (error) => {
-        pageErrors.push(error);
-        console.error(`[pageerror] ${error}`);
-      });
-      next.on('console', (message) => {
-        if (message.type() === 'error') console.error(`[console:error] ${message.text()}`);
-      });
-      // Seed the UI locale before any app code runs — only when no choice
-      // exists yet, so the i18n walker's settings-toggle survives its reload
-      // (persistence check) while every other scenario still boots in LOCALE.
-      await next.addInitScript((locale) => {
-        try {
-          if (localStorage.getItem('kiki.locale') === null) {
-            localStorage.setItem('kiki.locale', locale);
-          }
-        } catch {
-          // storage unavailable — the app falls back to the navigator default
-        }
-      }, LOCALE);
-      if (THEME !== null) {
-        await next.addInitScript((theme) => {
-          try {
-            const raw = localStorage.getItem('kiki.settings');
-            const settings = raw === null ? {} : JSON.parse(raw);
-            if (settings.theme === undefined) {
-              localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme }));
-            }
-          } catch {
-            // storage unavailable — the app falls back to its default theme
-          }
-        }, THEME);
-      }
-      await installTimelineMonitor(next);
-      return next;
-    };
-    page = await bootPage();
-    console.log(`[proof] locale: ${LOCALE}`);
-
-    const deepLink = `${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
-    // Warm vite's transform pipeline before Chromium's first load: a cold dev
-    // server on a loaded machine can spend tens of seconds in dep
-    // re-optimization, and the 30s/45s navigation budgets wedge on it (the
-    // listener answers waitForServer long before the first document finishes
-    // transforming).
-    await fetch(WEB_URL).catch(() => undefined);
-    await fetch(`${WEB_URL}/src/main.tsx`).catch(() => undefined);
-    // domcontentloaded + an explicit app-ready selector: the app opens a WS
-    // and polls sessions on a 5s cadence, so 'networkidle' is never a
-    // reliable condition (30s startup flake under cold vite transforms).
-    // The FIRST navigation right after a previous run's teardown can wedge
-    // entirely (a half-recycled port answers waitForServer's plain fetch but
-    // never serves the document): retry once with a fresh page before failing.
-    // Budgets are generous because a heavily loaded shared machine stretches
-    // vite's cold transform of the entry graph far past a minute.
-    try {
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 240_000 });
-    } catch (error) {
-      console.log(`[proof] first navigation failed (${error.message}) — retrying on a fresh page`);
-      await page.close().catch(() => undefined);
-      page = await bootPage();
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 300_000 });
-    }
-    await page.waitForSelector(`text=${S.newSession}`, { timeout: 120_000 });
-    console.log('[proof] connected to fixture');
-    throwOnPageErrors('initial app boot');
-
-    for (const [name, run] of SCENARIOS) {
-      if (!wanted(name)) continue;
-      console.log(`[scenario] ${name}`);
-      let failure = null;
-      try {
-        // Leave /s/:id before the fixture wipes sessions, otherwise the still-
-        // mounted SessionView 404s and toasts "This session no longer exists".
-        await page.evaluate(() => {
-          try { localStorage.removeItem('kiki.lastSessionId'); } catch { /* ignore */ }
-          // Sidebar filters persist; a scenario must never inherit another's.
-          try {
-            const layout = JSON.parse(localStorage.getItem('kiki.layout') ?? '{}');
-            delete layout.filters;
-            localStorage.setItem('kiki.layout', JSON.stringify(layout));
-          } catch { /* ignore */ }
-        });
-        // A failed scenario may leave a narrow viewport behind.
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
-          waitUntil: 'domcontentloaded',
-          timeout: 30_000,
-        });
-        await control({ action: 'scenario', name });
-        await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
-        await page.waitForTimeout(900); // let the first sessions poll land
-        await drainTimeline(page); // count only this scenario's frames
-        await run();
-        if (TIMELINE_GATED.has(name)) {
-          const integrity = await assertTimelineIntegrity(page, `scenario ${name}`);
-          console.log(`[check] timeline integrity: ${integrity.frames} frames, ${JSON.stringify(integrity.totals)}`);
-        }
-      } catch (error) {
-        failure = error;
-      }
-      try {
-        throwOnPageErrors(`scenario ${name}`);
-      } catch (error) {
-        failure ??= error;
-      }
-      if (failure !== null) {
-        console.error(`[FAIL] scenario ${name}:`, failure.message);
-        process.exitCode = 1;
-        await shot(`${name}-FAIL`);
-      }
-    }
-
-    throwOnPageErrors('visual proof shutdown');
-    await browser.close();
-  } finally {
-    await cleanup();
-  }
-  console.log(process.exitCode ? 'PROOF FAILED' : 'PROOF DONE');
+  process.exitCode = failed.length > 0 ? 1 : 0;
 }
 
-await main();
+// Importing this module (the registry test) must not build or launch Chromium.
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  await main();
+}
