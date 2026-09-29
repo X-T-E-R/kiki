@@ -56,7 +56,7 @@ const NEW_LIFE_TONE = { done: 'border-success' } as const;
  * not only in marks. Waiting is the one word that takes weight and accent.
  */
 const LIFE_WORD_CLASS: Record<Exclude<LifeState, 'idle'>, string> = {
-  waiting: 'font-medium text-accent-ink',
+  waiting: 'font-medium text-attention',
   working: 'text-ink-soft',
   done: 'text-success',
   failed: 'text-danger',
