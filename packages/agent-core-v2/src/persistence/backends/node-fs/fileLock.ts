@@ -200,7 +200,9 @@ export async function acquireFileLock(
             ? `Session "${sessionId}" is active in another process${ownerDetails}${waitHint}`
             : ownerKind === 'session-index'
               ? `Session index is locked by another process${ownerDetails}${waitHint}`
-              : `Storage is locked by another process${ownerDetails}`,
+              : ownerKind === 'memory-write'
+                ? `Memory is being saved by another Kiki process${ownerDetails}; retried for ${waitForMs / 1_000}s. Retry once.`
+                : `Storage is locked by another process${ownerDetails}`,
           {
             details: {
               path: lockPath,

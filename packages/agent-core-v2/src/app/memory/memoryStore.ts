@@ -104,10 +104,33 @@ function decode(raw: string): MemoryEntry {
 
 export class MemoryStore implements IMemoryStore {
   declare readonly _serviceBrand: undefined;
+  private readonly writeQueues = new Map<string, Promise<void>>();
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IMemoryScopes private readonly scopes: IMemoryScopes,
   ) {}
+
+  private async serializedWrite<T>(base: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.writeQueues.get(base) ?? Promise.resolve();
+    let done!: () => void;
+    const current = new Promise<void>((resolve) => { done = resolve; });
+    this.writeQueues.set(base, current);
+    await previous;
+    try {
+      const lock = await this.storage.acquireLock(base, 'memory-write', {
+        leaseMs: 30_000, waitForMs: 5_000, owner: { kind: 'memory-write', scope: base, pid: process.pid },
+      });
+      try {
+        return await action();
+      } finally {
+        await lock.release();
+        await this.rebuildCatalog(base);
+      }
+    } finally {
+      done();
+      if (this.writeQueues.get(base) === current) this.writeQueues.delete(base);
+    }
+  }
 
   private async raw(scope: string, id: string): Promise<{ key: string; text: string } | undefined> {
     const active = entryKey(id, false);
@@ -127,7 +150,12 @@ export class MemoryStore implements IMemoryStore {
       for (const name of (await this.storage.list(`${base}/${folder}`)).slice(0, 1_000)) {
         if (!/^m_[a-zA-Z0-9_]+\.md$/.test(name)) continue;
         if ((await this.storage.size(base, `${folder}/${name}`) ?? 0) > 64 * 1024) continue;
-        const bytes = await this.storage.read(base, `${folder}/${name}`, { recoverMissing: false });
+        const key = `${folder}/${name}`;
+        let bytes = await this.storage.read(base, key, { recoverMissing: false });
+        if (bytes === undefined) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          bytes = await this.storage.read(base, key, { recoverMissing: false });
+        }
         if (bytes === undefined) continue;
         try {
           const entry = decode(decoder.decode(bytes));
@@ -148,8 +176,7 @@ export class MemoryStore implements IMemoryStore {
 
   async put(input: MemoryMutation): Promise<{ entry: MemoryEntry; operationId: string }> {
     const base = await this.scopes.resolve(input.scope);
-    const lock = await this.storage.acquireLock(base, 'memory-write', { leaseMs: 30_000 });
-    try {
+    return this.serializedWrite(base, async () => {
       if (!input.reason.trim()) throw new Error('Memory reason is required');
       if (!TYPES.includes(input.type)) throw new Error('Invalid memory type');
       if (!input.title.trim() || input.title.length > 200 || !input.body.trim() || input.body.length > 1_500) throw new Error('Memory title or body length is invalid');
@@ -195,29 +222,22 @@ export class MemoryStore implements IMemoryStore {
           const current = await this.raw(base, superseded.key.slice(superseded.key.lastIndexOf('/') + 1, -3));
           if (current !== undefined && decode(current.text).superseded_by === id) {
             await this.commit(base, superseded.key, current, superseded.text, 'supersede_rollback', decode(superseded.text).id, input.source.writer);
-            await this.rebuildCatalog(base);
           }
         }
         throw error;
       }
       if (!isCreate && target!.key !== key) await this.storage.delete(base, target!.key);
-      await this.rebuildCatalog(base);
       return { entry: decode(encode(entry)), operationId: op };
-    } finally {
-      await lock.release();
-    }
+    });
   }
 
   async delete(scope: MemoryScope, id: string, expectedRevision: string, writer: MemoryWriter = 'user'): Promise<string> {
     const base = await this.scopes.resolve(scope);
-    const lock = await this.storage.acquireLock(base, 'memory-write', { leaseMs: 30_000 });
-    try {
+    return this.serializedWrite(base, async () => {
       const target = await this.raw(base, id);
       if (target === undefined || revision(target.text) !== expectedRevision) throw new Error('Memory revision conflict');
-      const op = await this.commit(base, target.key, target, undefined, 'delete', id, writer);
-      await this.rebuildCatalog(base);
-      return op;
-    } finally { await lock.release(); }
+      return this.commit(base, target.key, target, undefined, 'delete', id, writer);
+    });
   }
 
   async journal(scope: MemoryScope, id?: string): Promise<readonly MemoryJournalRecord[]> {
@@ -234,8 +254,7 @@ export class MemoryStore implements IMemoryStore {
 
   async undo(scope: MemoryScope, operationId: string): Promise<MemoryEntry | undefined> {
     const base = await this.scopes.resolve(scope);
-    const lock = await this.storage.acquireLock(base, 'memory-write', { leaseMs: 30_000 });
-    try {
+    return this.serializedWrite(base, async () => {
       const events = (await this.journal(scope)).filter((item) => item.operationId === operationId);
       if (events.length === 0) throw new Error('Memory operation not found');
       const targets = await Promise.all(events.map((event) => this.raw(base, event.id)));
@@ -255,10 +274,9 @@ export class MemoryStore implements IMemoryStore {
         await this.commit(base, key, target, event.before ?? undefined, 'undo', event.id, 'user');
         if (target !== undefined && target.key !== key) await this.storage.delete(base, target.key);
       }
-      await this.rebuildCatalog(base);
       const primary = events.find((event) => event.action !== 'supersede_previous') ?? events[0]!;
       return primary.before === null ? undefined : decode(primary.before);
-    } finally { await lock.release(); }
+    });
   }
 
   async search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive = false): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]> {

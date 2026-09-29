@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createAppScope, registerScopedService, ScopeActivation, _clearScopedRegistryForTests, type Scope } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { MEMORY_SECTION, MemoryConfigSchema, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
 import { IMemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
 import { IMemoryStore, MemoryStore } from '#/app/memory/memoryStore';
@@ -14,7 +15,6 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import { IMemoryWriteTool, MemoryWriteTool, IMemorySearchTool, MemorySearchTool, IMemoryReadTool, MemoryReadTool } from '#/agent/tools/memory/memoryTools';
 import { systemPromptVars } from '@kiki/agent-profiles/profileShared';
 import { applySystemPromptFields } from '@kiki/agent-profiles/systemPromptFields';
@@ -41,6 +41,7 @@ function start(): { store: IMemoryStore; snapshot: IAgentMemorySnapshot; storage
     [IFileSystemStorageService, storage],
     [IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => scope.kind === 'global' ? 'memory/global' : `memory/workspaces/${scope.workspaceId}` }],
     [IConfigService, { _serviceBrand: undefined, get: () => settings }],
+    [ICapabilitySnapshotService, { _serviceBrand: undefined, ready: Promise.resolve(), memoryAvailable: () => memoryEnabled(settings, workspaceId), threadEnabled: () => true, toolAvailable: () => true, refresh: () => ({ memory: true, thread: true }) }],
   ] });
   const session = app.createChild(LifecycleScope.Session, 'memory-test', { seeds: [[ISessionContext, makeSessionContext({ sessionId: 'session_one', workspaceId, cwd: home, sessionDir: home, sessionScope: 'sessions/test' })]] });
   const agent = session.createChild(LifecycleScope.Agent, 'main', { seeds: [[IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: 'sessions/test/main' })]] });
@@ -111,6 +112,67 @@ describe('memory persistence and snapshot', () => {
     const read = readTool.resolveExecution({ id: pending.id });
     if (!('execute' in read)) throw new Error('Read was rejected');
     expect(JSON.parse((await read.execute(context)).output as string)).toEqual([{ id: pending.id, missing: true }]);
+  });
+
+  it('serializes parallel writes in one scope and keeps the catalog and journal complete', async () => {
+    const { store } = start();
+    const results = await Promise.all(Array.from({ length: 10 }, (_, i) => store.put({
+      action: 'create', scope: workspace, title: `Parallel ${i}`, body: `Instruction ${i}`,
+      type: 'feedback', reason: 'Concurrent writes', source,
+    })));
+    expect(new Set(results.map(({ entry }) => entry.id)).size).toBe(10);
+    expect(await store.journal(workspace)).toHaveLength(10);
+    expect((await store.list(workspace)).map(({ id }) => id)).toHaveLength(10);
+    const catalog = await fs.readFile(join(home, 'memory', 'workspaces', workspaceId, 'MEMORY.md'), 'utf8');
+    for (const { entry } of results) expect(catalog).toContain(entry.id);
+  });
+
+  it('accepts two MemoryWrite calls issued in the same step', async () => {
+    const { writeTool } = start();
+    const execute = (title: string) => {
+      const execution = writeTool.resolveExecution({ action: 'create', scope: 'workspace', type: 'feedback', title, body: title, reason: 'User instruction' });
+      if (!('execute' in execution)) throw new Error('Tool rejected');
+      return execution.execute({ turnId: 424, toolCallId: title, signal: new AbortController().signal });
+    };
+    const results = await Promise.all([execute('Directly pin Grok'), execute('Preserve user corrections')]);
+    expect(results.map((result) => result.isError)).toEqual([undefined, undefined]);
+    expect((await fs.readFile(join(home, 'memory', 'workspaces', workspaceId, 'journal.jsonl'), 'utf8')).trim().split('\n')).toHaveLength(2);
+  });
+
+  it('waits for a write held by another storage instance', async () => {
+    const { store, storage } = start();
+    const scopes = { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => scope.kind === 'global' ? 'memory/global' : `memory/workspaces/${scope.workspaceId}` };
+    const other = new MemoryStore(new FileStorageService(home), scopes);
+    const append = storage.append.bind(storage);
+    let release!: () => void;
+    let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    const writing = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(storage, 'append').mockImplementation(async (...args) => { entered(); await paused; return append(...args); });
+    const first = store.put({ action: 'create', scope: workspace, title: 'First process', body: 'First', type: 'feedback', reason: 'Test', source });
+    await writing;
+    const second = other.put({ action: 'create', scope: workspace, title: 'Second process', body: 'Second', type: 'feedback', reason: 'Test', source });
+    let finished = false;
+    void second.then(() => { finished = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(finished).toBe(false);
+    } finally { release(); }
+    await Promise.all([first, second]);
+    expect(await other.journal(workspace)).toHaveLength(2);
+  });
+
+  it('retries a listed entry once when an unlocked read catches a temporary missing file', async () => {
+    const { store, storage } = start();
+    const saved = await create(store);
+    const read = storage.read.bind(storage);
+    let missed = false;
+    vi.spyOn(storage, 'read').mockImplementation(async (scope, key, options) => {
+      if (!missed && key === `entries/${saved.entry.id}.md`) { missed = true; return undefined; }
+      return read(scope, key, options);
+    });
+    expect((await store.list(workspace)).map(({ id }) => id)).toContain(saved.entry.id);
+    expect(missed).toBe(true);
   });
 
   it('searches the requested scopes without matching only one of several terms', async () => {
@@ -273,14 +335,20 @@ describe('memory persistence and snapshot', () => {
     expect(await snapshot.get()).toBe('');
   });
 
-  it('does not expose tools or alter rendered prompt with enabled=false', async () => {
-    const { snapshot } = start();
+  it('refuses disabled memory operations and leaves the rendered prompt unchanged', async () => {
+    const { snapshot, writeTool, readTool, searchTool } = start();
     settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.get()).toBe('');
     expect(memoryEnabled(settings, workspaceId)).toBe(false);
-    const tools = getAgentToolContributions().filter((item) => ['MemoryWrite', 'MemoryRead', 'MemorySearch'].includes(item.options.name));
-    expect(tools).toHaveLength(3);
-    for (const tool of tools) expect(tool.options.when?.({ get: (id: unknown) => id === IConfigService ? { get: () => settings } : id === ISessionContext ? { workspaceId } : { agentId: 'main' } } as never)).toBe(false);
+    const context = { turnId: 3, toolCallId: 'disabled', signal: new AbortController().signal };
+    for (const execution of [
+      writeTool.resolveExecution({ action: 'create', scope: 'workspace', type: 'feedback', title: 'Disabled', body: 'None', reason: 'test' }),
+      readTool.resolveExecution({ id: 'm_20260929_1234' }),
+      searchTool.resolveExecution({ query: 'Disabled' }),
+    ]) {
+      if (!('execute' in execution)) throw new Error('Unexpected validation error');
+      expect(await execution.execute(context)).toMatchObject({ isError: true, output: 'Memory is disabled.' });
+    }
     const variables = systemPromptVars({ agentsMd: 'example instructions', memory: '' }, { skillActive: false });
     const template = applySystemPromptFields(undefined);
     expect(renderPrompt(template, variables)).toBe(renderPrompt(template.replace('${memory}', ''), variables));
