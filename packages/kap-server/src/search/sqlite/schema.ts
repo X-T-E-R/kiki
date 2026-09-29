@@ -9,7 +9,7 @@ export const SCHEMA_VERSION = 1;
 const DERIVED_TABLES = new Set([
   'sessions', 'files', 'turn_openers', 'docs', 'docs_terms', 'docs_terms_data',
   'docs_terms_idx', 'docs_terms_docsize', 'docs_terms_config', 'docs_tri',
-  'docs_tri_data', 'docs_tri_idx', 'docs_tri_docsize', 'docs_tri_config', 'meta',
+  'docs_tri_data', 'docs_tri_idx', 'docs_tri_docsize', 'docs_tri_config', 'meta', 'file_failures',
 ]);
 
 export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
@@ -38,13 +38,13 @@ export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
       const unknown = tables.filter((name) => !DERIVED_TABLES.has(name));
       if (unknown.length) throw new Error(`search database at "${actual}" has unrecognized user tables: ${unknown.join(', ')}`);
       if (version !== SCHEMA_VERSION) {
-        for (const name of ['docs_tri', 'docs_terms', 'turn_openers', 'docs', 'files', 'sessions', 'meta']) {
+        for (const name of ['docs_tri', 'docs_terms', 'turn_openers', 'docs', 'files', 'sessions', 'meta', 'file_failures']) {
           if (tables.includes(name)) db.exec(`DROP TABLE IF EXISTS "${name}"`);
         }
         db.exec('PRAGMA user_version = 0');
       }
     }
-    db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-32768; PRAGMA mmap_size=0; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000');
+    db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-32768; PRAGMA mmap_size=0; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000; PRAGMA wal_autocheckpoint=1000; PRAGMA journal_size_limit=67108864');
     db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL,
         dir TEXT NOT NULL, identity TEXT NOT NULL, updated_at INTEGER NOT NULL, source_mtime_ms REAL) STRICT;
@@ -63,6 +63,8 @@ export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
       CREATE VIRTUAL TABLE IF NOT EXISTS docs_terms USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
       CREATE VIRTUAL TABLE IF NOT EXISTS docs_tri USING fts5(text, content='docs', content_rowid='id', tokenize='trigram');
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS file_failures (path TEXT PRIMARY KEY, strikes INTEGER NOT NULL,
+        error TEXT NOT NULL) STRICT;
     `);
     db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}`);
     db.prepare("INSERT OR IGNORE INTO meta(k,v) VALUES('generation','0')").run();

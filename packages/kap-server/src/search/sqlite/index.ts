@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -56,6 +57,21 @@ export interface SqliteSearchResult {
   readonly incomplete?: GlobalSearchIncomplete;
 }
 
+export interface SqliteIndexOptions {
+  readonly indexSubagentToolOutput?: boolean;
+  readonly walPauseBytes?: number;
+  readonly walRetryMs?: number;
+  readonly idleCheckpointMs?: number;
+}
+
+export interface SqliteSyncStatus {
+  readonly state: 'ready' | 'wal_stuck';
+  readonly walBytes: number;
+  readonly peakWalBytes: number;
+  readonly wireBytesRead: number;
+  readonly wireFilesRead: number;
+}
+
 interface FileRow {
   id: number; ino: string | null; size: number; mtime_ms: number; offset: number;
   tail_hash: string | null; turn_next: number; turn_has: number; step_state: string; policy: string;
@@ -109,13 +125,103 @@ async function wireFiles(dir: string): Promise<{ path: string; agentId: string }
 
 export class SqliteSearchIndex {
   private readonly bootSalt = randomUUID();
-  private constructor(readonly db: DatabaseSync, readonly indexSubagentToolOutput: boolean) {}
+  private readonly pendingSessions = new Map<string, SqliteSessionInput>();
+  private syncQueue: Promise<void> = Promise.resolve();
+  private retryTimer?: NodeJS.Timeout;
+  private idleTimer?: NodeJS.Timeout;
+  private closed = false;
+  private walStuck = false;
+  private readBytes = 0;
+  private peakWal = 0;
+  private readFiles = new Set<string>();
 
-  static async open(path: string, options: { indexSubagentToolOutput?: boolean } = {}): Promise<SqliteSearchIndex> {
-    return new SqliteSearchIndex(await openSearchDatabase(path), options.indexSubagentToolOutput ?? false);
+  private constructor(readonly db: DatabaseSync, readonly indexSubagentToolOutput: boolean,
+    private readonly path: string, private readonly options: SqliteIndexOptions) {
+    const inflight = db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined;
+    if (inflight) {
+      db.exec('BEGIN');
+      try {
+        db.prepare("INSERT INTO file_failures(path,strikes,error) VALUES(?,1,'indexer exited while indexing') ON CONFLICT(path) DO UPDATE SET strikes=strikes+1,error=excluded.error")
+          .run(inflight.v);
+        const failure = db.prepare('SELECT strikes FROM file_failures WHERE path=?').get(inflight.v) as { strikes: number };
+        if (failure.strikes >= 2) db.prepare("UPDATE files SET policy='quarantined' WHERE path=?").run(inflight.v);
+        db.prepare("DELETE FROM meta WHERE k='inflight'").run();
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    }
   }
 
-  close(): void { this.db.close(); }
+  static async open(path: string, options: SqliteIndexOptions = {}): Promise<SqliteSearchIndex> {
+    const db = await openSearchDatabase(path);
+    try { return new SqliteSearchIndex(db, options.indexSubagentToolOutput ?? false, path, options); }
+    catch (error) { db.close(); throw error; }
+  }
+
+  get syncStatus(): SqliteSyncStatus {
+    const walBytes = this.walBytes;
+    this.peakWal = Math.max(this.peakWal, walBytes);
+    return { state: this.walStuck ? 'wal_stuck' : 'ready', walBytes,
+      peakWalBytes: this.peakWal, wireBytesRead: this.readBytes, wireFilesRead: this.readFiles.size };
+  }
+
+  resetReadCounters(): void { this.readBytes = 0; this.readFiles.clear(); }
+
+  private get walBytes(): number {
+    if (this.path === ':memory:') return 0;
+    try { return statSync(`${this.path}-wal`).size; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw error;
+    }
+  }
+
+  private checkpoint(mode: 'PASSIVE' | 'TRUNCATE'): boolean {
+    const result = this.db.prepare(`PRAGMA wal_checkpoint(${mode})`).get() as
+      { busy: number; log: number; checkpointed: number };
+    return result.busy === 0;
+  }
+
+  private scheduleRetry(): void {
+    if (this.closed || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      if (this.closed) return;
+      try {
+        if (this.checkpoint('TRUNCATE')) {
+          this.walStuck = false;
+          const pending = [...this.pendingSessions.values()];
+          this.pendingSessions.clear();
+          for (const session of pending) void this.syncSession(session).catch(() => {});
+        } else this.scheduleRetry();
+      } catch { this.scheduleRetry(); }
+    }, this.options.walRetryMs ?? 1000);
+    this.retryTimer.unref();
+  }
+
+  private afterCommit(): void {
+    if (this.path === ':memory:') return;
+    this.peakWal = Math.max(this.peakWal, this.walBytes);
+    this.checkpoint('PASSIVE');
+    const bytes = this.walBytes;
+    if (bytes >= Math.min(32 * 1048576, this.options.walPauseBytes ?? 256 * 1048576) &&
+      !this.checkpoint('TRUNCATE') && bytes >= (this.options.walPauseBytes ?? 256 * 1048576)) {
+      this.walStuck = true;
+      this.scheduleRetry();
+    }
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (!this.closed && !this.walStuck) this.checkpoint('TRUNCATE');
+    }, this.options.idleCheckpointMs ?? 30_000);
+    this.idleTimer.unref();
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.db.close();
+  }
 
   private get generation(): string {
     return `${this.bootSalt}:${(this.db.prepare("SELECT v FROM meta WHERE k='generation'").get() as { v: string }).v}`;
@@ -153,11 +259,21 @@ export class SqliteSearchIndex {
       const length = Math.min(4096, offset);
       const buf = Buffer.allocUnsafe(length);
       const { bytesRead } = await fd.read(buf, 0, length, offset - length);
+      this.readBytes += bytesRead;
+      if (bytesRead) this.readFiles.add(path);
       return createHash('sha1').update(buf.subarray(0, bytesRead)).digest('hex');
     } finally { await fd.close(); }
   }
 
-  async syncSession(session: SqliteSessionInput): Promise<void> {
+  syncSession(session: SqliteSessionInput): Promise<void> {
+    const task = this.syncQueue.catch(() => {}).then(() => this.syncSessionInner(session));
+    this.syncQueue = task;
+    return task;
+  }
+
+  private async syncSessionInner(session: SqliteSessionInput): Promise<void> {
+    if (this.closed) throw new Error('search index is closed');
+    if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
     const id = await identity(session.dir);
     if (id === undefined) return;
     const db = this.db;
@@ -189,7 +305,11 @@ export class SqliteSearchIndex {
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     const files = await wireFiles(session.dir);
-    for (const file of files) await this.syncFile(session, file.path, file.agentId);
+    for (const file of files) {
+      if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
+      await this.syncFile(session, file.path, file.agentId);
+    }
+    if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
     const paths = new Set(files.map((file) => file.path));
     const stored = db.prepare('SELECT id,path FROM files WHERE session_id=?').all(session.id) as { id: number; path: string }[];
     for (const file of stored) if (!paths.has(file.path)) this.removeFile(file.id);
@@ -210,9 +330,24 @@ export class SqliteSearchIndex {
     const db = this.db;
     const st = await stat(path);
     let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
+    const failure = db.prepare('SELECT strikes FROM file_failures WHERE path=?').get(path) as { strikes: number } | undefined;
+    if (failure && failure.strikes >= 2) {
+      if (!file) db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,'quarantined')")
+        .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP));
+      else if (file.policy !== 'quarantined') db.prepare("UPDATE files SET policy='quarantined' WHERE id=?").run(file.id);
+      return;
+    }
+    if (file?.policy === 'quarantined') return;
     const policy = agentId === 'main' || this.indexSubagentToolOutput ? 'full' : 'meta-only';
-    if (file && (st.size < file.offset || (file.offset > 0 &&
-      (file.ino !== String(st.ino) || file.tail_hash !== await this.tailHash(path, file.offset))) || file.policy !== policy)) {
+    const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
+    const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
+      (file.ino !== String(st.ino) || file.tail_hash !== await this.tailHash(path, file.offset))));
+    if (!replace && file?.offset === st.size) {
+      if (changed) db.prepare('UPDATE files SET size=?,mtime_ms=? WHERE id=?').run(st.size, st.mtimeMs, file.id);
+      return;
+    }
+    db.prepare("INSERT INTO meta(k,v) VALUES('inflight',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(path);
+    if (replace && file) {
       this.removeFile(file.id);
       file = undefined;
     }
@@ -221,7 +356,6 @@ export class SqliteSearchIndex {
         .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP), policy);
       file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as unknown as FileRow;
     }
-    if (file.offset === st.size) return;
     const fd = await open(path, 'r');
     let offset = file.offset;
     let position = offset;
@@ -242,14 +376,17 @@ export class SqliteSearchIndex {
       file!.offset = offset;
       docs = 0;
       textBytes = 0;
+      this.afterCommit();
       db.exec('BEGIN');
     };
     db.exec('BEGIN');
     try {
       const chunk = Buffer.allocUnsafe(CHUNK);
-      while (position < st.size) {
+      while (position < st.size && !this.walStuck) {
         const { bytesRead } = await fd.read(chunk, 0, Math.min(CHUNK, st.size - position), position);
         if (!bytesRead) break;
+        this.readBytes += bytesRead;
+        this.readFiles.add(path);
         position += bytesRead;
         let start = 0;
         while (start < bytesRead) {
@@ -318,6 +455,7 @@ export class SqliteSearchIndex {
           dropping = false;
           start = nl + 1;
           if (docs >= MAX_BATCH_DOCS || textBytes >= MAX_BATCH_CHARS) await commit();
+          if (this.walStuck) break;
         }
         if (pending.length > MAX_LINE) { dropping = true; pending = Buffer.alloc(0); skipped++; }
       }
@@ -325,8 +463,18 @@ export class SqliteSearchIndex {
         .run(String(skipped));
       await commit();
       db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
-    finally { await fd.close(); }
+      if (this.walStuck) this.pendingSessions.set(session.id, session);
+      db.exec('BEGIN');
+      try {
+        db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
+        if (!this.walStuck && file.offset === st.size) db.prepare('DELETE FROM file_failures WHERE path=?').run(path);
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    } catch (error) {
+      if (db.isTransaction) db.exec('ROLLBACK');
+      db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
+      throw error;
+    } finally { await fd.close(); }
   }
 
   async search(q: NormalizedQuery, pageToken?: string, budgets: SearchBudgets = {
@@ -358,7 +506,6 @@ export class SqliteSearchIndex {
           .all(quoteTerm(literal), budgets.literalCandidateCap + 1) as { rowid: number }[]
         : db.prepare('SELECT id AS rowid FROM docs LIMIT ?')
           .all(budgets.literalCandidateCap + 1) as { rowid: number }[];
-      if (!cjk) incomplete = 'deadline';
     }
     const cap = q.mode === 'terms' ? budgets.maxTextHits : budgets.literalCandidateCap;
     if (matchedIds.length > cap) { matchedIds.length = cap; incomplete = 'candidate_cap'; }

@@ -60,7 +60,7 @@ describe('SQLite derived search index', () => {
     expect((await hits('苹果', 'literal')).map((r) => r.role)).toEqual(['user', 'user']);
     const shortAscii = await index.search(q('ap', 'literal'));
     expect(shortAscii.rows[0]?.value.role).toBe('assistant');
-    expect(shortAscii.incomplete).toBe('deadline');
+    expect(shortAscii.incomplete).toBeUndefined();
     expect((await hits('main-tool', 'literal'))[0]).toMatchObject({ role: 'tool' });
     expect(await hits('hidden-sub-tool', 'literal')).toEqual([]);
     expect((await hits('sub dialogue')).map((r) => r.role)).toEqual(['user']);
