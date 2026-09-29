@@ -5,6 +5,7 @@ import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
+import { spaceStorage } from '../storage/spaceStorage';
 
 const KEY = 'kiki.drafts';
 const PERSISTED_COMPOSER_STATE_KEY = 'kiki.composerStates';
@@ -23,7 +24,7 @@ function draftsEnabled(): boolean {
 
 function readAllStored(): Record<string, string> {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = spaceStorage.getItem(KEY);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, string>) : {};
@@ -55,8 +56,8 @@ export function flushDrafts(): void {
   }
   pending.clear();
   try {
-    if (Object.keys(all).length === 0) localStorage.removeItem(KEY);
-    else localStorage.setItem(KEY, JSON.stringify(all));
+    if (Object.keys(all).length === 0) spaceStorage.removeItem(KEY);
+    else spaceStorage.setItem(KEY, JSON.stringify(all));
   } catch {
     // storage full / unavailable — drafts are a convenience, not a guarantee
   }
@@ -105,9 +106,9 @@ export function writeDraft(sessionId: string, text: string): void {
 export function clearStoredDrafts(): void {
   cancelDraftWrite();
   try {
-    localStorage.removeItem(KEY);
-    localStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
-    localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+    spaceStorage.removeItem(KEY);
+    spaceStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
+    spaceStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
   } catch {
     // ignore
   }
@@ -165,7 +166,7 @@ const composerMemory = new Map<string, ComposerSessionState>();
 
 function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars> {
   try {
-    const raw = localStorage.getItem(PERSISTED_COMPOSER_STATE_KEY);
+    const raw = spaceStorage.getItem(PERSISTED_COMPOSER_STATE_KEY);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
@@ -198,9 +199,9 @@ function persistComposerScalars(
   }
   try {
     if (Object.keys(all).length === 0) {
-      localStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
+      spaceStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
     } else {
-      localStorage.setItem(PERSISTED_COMPOSER_STATE_KEY, JSON.stringify(all));
+      spaceStorage.setItem(PERSISTED_COMPOSER_STATE_KEY, JSON.stringify(all));
     }
   } catch {
     // storage full / unavailable
@@ -210,7 +211,7 @@ function persistComposerScalars(
 export function readNewSessionDraft(): PersistedNewSessionDraft {
   if (!draftsEnabled()) return {};
   try {
-    const raw = localStorage.getItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+    const raw = spaceStorage.getItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null) return {};
@@ -240,9 +241,9 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
       (draft.modelOverride !== undefined && draft.modelOverride !== '') ||
       (draft.effortOverride !== undefined && draft.effortOverride !== '');
     if (!hasValues) {
-      localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+      spaceStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
     } else {
-      localStorage.setItem(PERSISTED_NEW_SESSION_DRAFT_KEY, JSON.stringify({
+      spaceStorage.setItem(PERSISTED_NEW_SESSION_DRAFT_KEY, JSON.stringify({
         workspaceId: draft.workspaceId,
         cwd: draft.cwd,
         profile: draft.profile,
@@ -260,7 +261,7 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
 
 export function clearNewSessionDraft(): void {
   try {
-    localStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
+    spaceStorage.removeItem(PERSISTED_NEW_SESSION_DRAFT_KEY);
   } catch {
     // ignore
   }

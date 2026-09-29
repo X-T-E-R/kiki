@@ -26,6 +26,8 @@
 
 import type { Locale } from '@kiki/session-core/i18n';
 
+import { spaceStorage } from './spaceStorage';
+
 // ---------------------------------------------------------------------------
 // Wire types (mirror of kap-server src/protocol/rest-usage.ts)
 // ---------------------------------------------------------------------------
@@ -320,7 +322,7 @@ export function usageFiltersToSearch(filters: UsageFilters, existing?: string): 
 /** Read a persisted selection; query-less `/usage` visits intentionally ignore it. */
 export function readStoredUsageFilters(): UsageFilters | undefined {
   try {
-    const raw = localStorage.getItem(USAGE_FILTERS_STORAGE_KEY);
+    const raw = spaceStorage.getItem(USAGE_FILTERS_STORAGE_KEY);
     if (raw === null) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
@@ -366,7 +368,7 @@ export function readStoredUsageFilters(): UsageFilters | undefined {
 
 export function writeStoredUsageFilters(filters: UsageFilters): void {
   try {
-    localStorage.setItem(USAGE_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+    spaceStorage.setItem(USAGE_FILTERS_STORAGE_KEY, JSON.stringify(filters));
   } catch {
     // Storage can be unavailable (private mode); the URL still carries state.
   }

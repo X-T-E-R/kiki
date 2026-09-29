@@ -17,6 +17,7 @@ import {
 } from '@kiki/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
+import { spaceStorage } from '../storage/spaceStorage';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
@@ -269,8 +270,10 @@ export interface ProviderDraft extends RequestIdentityLayerDraft, ImagePolicyDra
 }
 
 const STORAGE_KEY = 'kiki.settings';
+/** Space-scoped (§6.4): the session to reopen belongs to one space's list. */
 const LAST_SESSION_KEY = 'kiki.lastSessionId';
 const DESKTOP_PREFS_KEY = 'kiki.desktopPrefs';
+/** Space-scoped (§6.4): a restart reminder is about the connected space's server. */
 const RESTART_REQUIRED_KEY = 'kiki.restartRequired';
 
 const DEFAULTS: DesktopSettings = {
@@ -302,10 +305,12 @@ const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   },
 };
 
-function readObject(key: string): Record<string, unknown> {
-  windowMode: 'switch',
+function readObject(
+  key: string,
+  storage: Pick<Storage, 'getItem'> = localStorage,
+): Record<string, unknown> {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = storage.getItem(key);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
@@ -519,7 +524,7 @@ export function composerEnterAction(
 
 export function readLastSessionId(): string | undefined {
   try {
-    return localStorage.getItem(LAST_SESSION_KEY) ?? undefined;
+    return spaceStorage.getItem(LAST_SESSION_KEY) ?? undefined;
   } catch {
     return undefined;
   }
@@ -527,8 +532,8 @@ export function readLastSessionId(): string | undefined {
 
 export function writeLastSessionId(sessionId: string | undefined): void {
   try {
-    if (sessionId === undefined) localStorage.removeItem(LAST_SESSION_KEY);
-    else localStorage.setItem(LAST_SESSION_KEY, sessionId);
+    if (sessionId === undefined) spaceStorage.removeItem(LAST_SESSION_KEY);
+    else spaceStorage.setItem(LAST_SESSION_KEY, sessionId);
   } catch {
     // ignore
   }
@@ -589,7 +594,7 @@ function parseSpaceWindowMode(value: unknown): SpaceWindowMode {
 }
 
 export function readRestartRequirement(): RestartRequirement {
-  const stored = readObject(RESTART_REQUIRED_KEY);
+  const stored = readObject(RESTART_REQUIRED_KEY, spaceStorage);
   const fields = Array.isArray(stored['fields'])
     ? stored['fields'].filter((field): field is string => typeof field === 'string')
     : [];
@@ -630,7 +635,7 @@ export function markRestartRequired(fields: readonly string[]): RestartRequireme
     fields: [...new Set([...current.fields, ...fields])],
   };
   try {
-    localStorage.setItem(RESTART_REQUIRED_KEY, JSON.stringify(next));
+    spaceStorage.setItem(RESTART_REQUIRED_KEY, JSON.stringify(next));
   } catch {
     // The UI still keeps the returned in-memory state for this visit.
   }
@@ -640,7 +645,7 @@ export function markRestartRequired(fields: readonly string[]): RestartRequireme
 export function clearRestartRequirement(): RestartRequirement {
   const next: RestartRequirement = { required: false, changedAt: undefined, fields: [] };
   try {
-    localStorage.removeItem(RESTART_REQUIRED_KEY);
+    spaceStorage.removeItem(RESTART_REQUIRED_KEY);
   } catch {
     // ignore
   }

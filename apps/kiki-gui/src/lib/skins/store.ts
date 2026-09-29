@@ -23,6 +23,7 @@ import { parseSkinFile, type SkinFile } from '@kiki/protocol';
 
 import type { SkinTweaks } from './apply';
 import { DEFAULT_SKIN_ID, RETIRED_BUILTIN_SKIN_IDS, findBuiltinSkin } from './builtin';
+import { spaceStorage } from '../spaceStorage';
 
 /**
  * `user` covers everything the server's `/skins` route lists: skin files in
@@ -104,7 +105,7 @@ function migrateSelection(selection: SkinSelection): SkinSelection {
 
 export function readSkinPrefs(): SkinPrefs {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = spaceStorage.getItem(STORAGE_KEY);
     return raw === null ? DEFAULT_SKIN_PREFS : normalizeSkinPrefs(JSON.parse(raw));
   } catch {
     return DEFAULT_SKIN_PREFS;
@@ -154,7 +155,7 @@ function publishStored(next: SkinPrefs): void {
 export function writeSkinPrefs(patch: Partial<SkinPrefs>): void {
   const next = normalizeSkinPrefs({ ...skinPrefsSnapshot(), ...patch });
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    spaceStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     // Storage is a convenience; the in-memory selection still applies.
   }
@@ -203,7 +204,7 @@ const SELECTED_CACHE_KEY = 'kiki.skin.cache';
 
 function readSelectedCache(): SkinFile | null {
   try {
-    const raw = localStorage.getItem(SELECTED_CACHE_KEY);
+    const raw = spaceStorage.getItem(SELECTED_CACHE_KEY);
     if (raw === null) return null;
     const parsed = parseSkinFile(JSON.parse(raw));
     return parsed.skin;
@@ -214,8 +215,8 @@ function readSelectedCache(): SkinFile | null {
 
 function writeSelectedCache(skin: SkinFile | null): void {
   try {
-    if (skin === null) localStorage.removeItem(SELECTED_CACHE_KEY);
-    else localStorage.setItem(SELECTED_CACHE_KEY, JSON.stringify(skin));
+    if (skin === null) spaceStorage.removeItem(SELECTED_CACHE_KEY);
+    else spaceStorage.setItem(SELECTED_CACHE_KEY, JSON.stringify(skin));
   } catch {
     // Cache is optional; the catalog fetch still applies the skin.
   }
@@ -266,7 +267,7 @@ const PACK_SKIN_CACHE_KEY = 'kiki.skin.packCache';
 
 function readPackSkinCache(): readonly SkinFile[] {
   try {
-    const raw = localStorage.getItem('kiki.skin.packCache');
+    const raw = spaceStorage.getItem(PACK_SKIN_CACHE_KEY);
     if (raw === null) return [];
     const list = JSON.parse(raw) as unknown;
     return Array.isArray(list)
@@ -281,7 +282,7 @@ export function setPackSkins(skins: readonly SkinFile[]): void {
   if (JSON.stringify(skins) === JSON.stringify(packSkins)) return;
   packSkins = skins;
   try {
-    localStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(skins));
+    spaceStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(skins));
   } catch {
     // Cache is optional.
   }

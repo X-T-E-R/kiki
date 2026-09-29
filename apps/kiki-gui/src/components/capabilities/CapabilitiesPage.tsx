@@ -17,6 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
+import { readLastSessionId } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
@@ -237,14 +238,6 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       ) : null}
     </MediaPreviewProvider>
   );
-}
-
-function readLastSessionId(): string | undefined {
-  try {
-    return localStorage.getItem('kiki.lastSessionId') ?? undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** The tab bodies, shared verbatim by the page and the settings leaves. */

@@ -27,6 +27,7 @@ import {
 } from '@kiki/protocol';
 
 import type { ResolvedTheme } from '../theme';
+import { spaceStorage } from '../spaceStorage';
 
 /** A media file held in the local media store. */
 export interface BackgroundMediaRef {
@@ -164,7 +165,7 @@ let stored: BackgroundPrefs | undefined;
 
 function readStored(): BackgroundPrefs {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = spaceStorage.getItem(STORAGE_KEY);
     return raw === null ? DEFAULT_BACKGROUND_PREFS : normalizeBackgroundPrefs(JSON.parse(raw));
   } catch {
     return DEFAULT_BACKGROUND_PREFS;
@@ -193,8 +194,8 @@ export function backgroundPrefsServerSnapshot(): BackgroundPrefs {
 export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { readonly assist?: boolean }): void {
   const normalized = normalizeBackgroundPrefs({ ...next, assist: next.assist ?? backgroundPrefsSnapshot().assist });
   try {
-    if (normalized.light === null && normalized.dark === null && normalized.linked && normalized.assist) localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    if (normalized.light === null && normalized.dark === null && normalized.linked && normalized.assist) spaceStorage.removeItem(STORAGE_KEY);
+    else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   } catch {
     // Storage is a convenience; the in-memory prefs still apply.
   }

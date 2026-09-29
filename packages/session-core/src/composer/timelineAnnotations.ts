@@ -17,6 +17,7 @@
  */
 
 import { readSettings } from '../settings/settings';
+import { spaceStorage } from '../storage/spaceStorage';
 
 /** One derived timeline marker; `comment: null` is a plain quote (no comment). */
 export interface TimelineAnnotation {
@@ -259,7 +260,7 @@ function overridesEnabled(): boolean {
 
 function readAllStored(): Record<string, AnnotationOverride> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = spaceStorage.getItem(STORAGE_KEY);
     if (raw === null) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
@@ -285,8 +286,8 @@ function persistAll(): void {
   if (!overridesEnabled()) return;
   const all = Object.fromEntries(memory);
   try {
-    if (memory.size === 0) localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    if (memory.size === 0) spaceStorage.removeItem(STORAGE_KEY);
+    else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   } catch {
     // storage full / unavailable — overrides are a convenience
   }
@@ -341,7 +342,7 @@ export function resetAnnotationOverridesForTests(): void {
   hydratedFromDisk = false;
   snapshot = Object.freeze({});
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    spaceStorage.removeItem(STORAGE_KEY);
   } catch {
     // ignore
   }

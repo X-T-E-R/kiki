@@ -16,6 +16,8 @@
  * Entries for long-gone sessions are pruned on write.
  */
 
+import { spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
+
 const KEY = 'kiki.sessionSeen.v1';
 const MAX_ENTRIES = 300;
 
@@ -47,7 +49,7 @@ function parse(raw: string | null): SessionSeenMap {
 function read(): SessionSeenMap {
   if (cache !== undefined) return cache;
   try {
-    cache = parse(localStorage.getItem(KEY));
+    cache = parse(spaceStorage.getItem(KEY));
   } catch {
     cache = EMPTY;
   }
@@ -71,7 +73,7 @@ export function subscribeSessionSeen(listener: () => void): () => void {
     try {
       // Another window (or another tab of the desktop app) opened a session.
       window.addEventListener('storage', (event) => {
-        if (event.key !== null && event.key !== KEY) return;
+        if (event.key !== null && event.key !== spaceStorageKey(KEY)) return;
         cache = undefined;
         for (const each of listeners) each();
       });
@@ -100,7 +102,7 @@ export function markSessionSeen(sessionId: string, lastSeq: number): void {
   }
   publish(next);
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    spaceStorage.setItem(KEY, JSON.stringify(next));
   } catch {
     // storage full / unavailable — read state is a convenience
   }
@@ -114,7 +116,7 @@ export function forgetSessionSeen(sessionId: string): void {
   delete next[sessionId];
   publish(next);
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    spaceStorage.setItem(KEY, JSON.stringify(next));
   } catch {
     // ignore
   }
@@ -124,7 +126,7 @@ export function forgetSessionSeen(sessionId: string): void {
 export function resetSessionSeen(): void {
   publish(EMPTY);
   try {
-    localStorage.removeItem(KEY);
+    spaceStorage.removeItem(KEY);
   } catch {
     // ignore
   }

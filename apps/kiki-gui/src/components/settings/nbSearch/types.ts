@@ -2,6 +2,8 @@ import type { NbSearchCapabilities, NbSearchConfigPatch, NbSearchTestStatus } fr
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { NbSearchDraft } from '@kiki/session-core/settings';
 
+import { spaceStorage } from '../../../lib/spaceStorage';
+
 export type NbSearchTab = 'overview' | 'search' | 'fetch' | 'providers' | 'advanced';
 
 export const NB_SEARCH_TABS: readonly NbSearchTab[] = [
@@ -120,7 +122,7 @@ const PINNED_LANES_KEY = 'kiki.nb_search.pinned_lanes';
 
 export function loadPinnedLanes(): string[] {
   try {
-    const raw = localStorage.getItem(PINNED_LANES_KEY);
+    const raw = spaceStorage.getItem(PINNED_LANES_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
@@ -135,7 +137,7 @@ export function loadPinnedLanes(): string[] {
 
 export function savePinnedLanes(lanes: readonly string[]): void {
   try {
-    localStorage.setItem(PINNED_LANES_KEY, JSON.stringify(lanes));
+    spaceStorage.setItem(PINNED_LANES_KEY, JSON.stringify(lanes));
   } catch {
     // Storage unavailable
   }

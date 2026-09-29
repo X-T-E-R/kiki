@@ -229,6 +229,12 @@ export const tauriHost: TauriHostAdapter = {
   },
   onTrayNewSession,
   onFileDrop,
+  /**
+   * The desktop space this window belongs to. Older desktop builds have no
+   * such command yet, so the rejection is the storage boot's signal to keep the
+   * pre-space key names; it must not fail the launch.
+   */
+  activeSpace: () => invoke<unknown>('desktop_active_space'),
   async spaceStatuses() {
     try {
       return await invoke<DesktopSpaceStatus[]>('desktop_space_statuses');

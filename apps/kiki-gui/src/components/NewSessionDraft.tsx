@@ -53,6 +53,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
+import { spaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { useWorktreeAvailability } from '../lib/worktrees';
@@ -64,7 +65,7 @@ const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
 function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
   if (scopeId === 'local' || !readSettings().draftPersistence) return scopeId === 'local' ? readNewSessionDraft() : {};
   try {
-    const value = JSON.parse(localStorage.getItem(remoteDraftStorageKey(scopeId)) ?? '{}') as unknown;
+    const value = JSON.parse(spaceStorage.getItem(remoteDraftStorageKey(scopeId)) ?? '{}') as unknown;
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const record = value as Record<string, unknown>;
     return {
@@ -86,7 +87,7 @@ function writeScopedNewSessionDraft(scopeId: string, draft: PersistedNewSessionD
   if (scopeId === 'local') return writeNewSessionDraft(draft);
   if (!readSettings().draftPersistence) return;
   try {
-    localStorage.setItem(remoteDraftStorageKey(scopeId), JSON.stringify(draft));
+    spaceStorage.setItem(remoteDraftStorageKey(scopeId), JSON.stringify(draft));
   } catch {
     return;
   }
@@ -94,7 +95,7 @@ function writeScopedNewSessionDraft(scopeId: string, draft: PersistedNewSessionD
 
 function clearScopedNewSessionDraft(scopeId: string): void {
   if (scopeId === 'local') return clearNewSessionDraft();
-  try { localStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
+  try { spaceStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
 }
 
 export const AUTO_WORKSPACE_ID = '__auto__';

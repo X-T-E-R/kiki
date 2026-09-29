@@ -103,6 +103,13 @@ interface HostCapabilities {
   readDesktopPrefs?: () => Promise<DesktopNativePrefs | null>;
   writeDesktopPrefs?: (prefs: Partial<DesktopNativePrefs>) => Promise<void>;
   /**
+   * The desktop's active space, as the raw `desktop_active_space` payload
+   * (`{ homeId, name, color, isPrimary, … }`). The storage boot validates and
+   * consumes it (see `lib/spaceStorage.ts`); an older desktop build has no such
+   * command, which the storage boot reads as the main space.
+   */
+  activeSpace?: () => Promise<unknown>;
+  /**
    * Hot or visited space slots (`desktop_space_statuses`). A space missing from
    * the list is cold: its backend is not running.
    */

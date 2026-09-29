@@ -4,6 +4,7 @@ export * from './i18n';
 export * from './session';
 export * from './sessions';
 export * from './settings';
+export * from './storage';
 export * from './transport';
 export * from './util';
 export * from './wire';
