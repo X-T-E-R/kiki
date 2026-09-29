@@ -1428,6 +1428,9 @@ export function Composer({
     // test spies assert on exactly (text, attachments).
     const now = sendNowRef.current;
     sendNowRef.current = false;
+    // The caret the send leaves behind is not the user's choice to keep
+    // typing: a decision arriving after this send may take the card over.
+    setInputFocused(false);
     const deliver = (prepared: string) =>
       now && options === undefined && onSendNow !== undefined
         ? onSendNow(prepared, attachments)

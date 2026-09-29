@@ -139,6 +139,18 @@ describe('Composer needs-you takeover', () => {
     expect(container.querySelector('[data-composer-takeover]')).not.toBeNull();
   });
 
+  it('takes over when a decision arrives after a send that left the caret in the input', async () => {
+    const onSend = vi.fn(async () => {});
+    const { container, rerender } = await renderComposer({ value: 'go', onSend });
+    await act(async () => { textarea(container).focus(); });
+    await act(async () => {
+      textarea(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSend).toHaveBeenCalled();
+    await rerender({ value: '', onSend, needsYou: { count: 1, render: decision } });
+    expect(container.querySelector('[data-composer-takeover]')).not.toBeNull();
+  });
+
   it('offers the card again after a release when a new item arrives', async () => {
     const { container, rerender } = await renderComposer({ needsYou: { count: 1, render: decision } });
     await click(container.querySelector('[data-needs-you-back]')!);
