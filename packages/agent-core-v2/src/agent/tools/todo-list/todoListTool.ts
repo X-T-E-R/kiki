@@ -57,7 +57,7 @@ export class TodoListTool implements ITodoListTool {
         this.todo.setTodos(next, this.scope.agentId);
         const stored = this.todo.getTodos(this.scope.agentId);
         const output = stored.length === 0 ? 'Todo list cleared.' : `Todo list updated.\n${renderTodoList(stored)}`;
-        return { isError: false, output };
+        return { isError: false, output: args.notes === undefined ? output : `${output}\n\n## Working notes\n${renderTodoNotes(this.todo.getNotes(this.scope.agentId).notes) || '(empty)'}` };
       },
     };
   }

@@ -52,8 +52,8 @@ export class TodoListReminderTracker {
     const stale = assistantCount >= 10 && newTokens >= Math.max(8_000, threshold * 0.1);
     if (!near && (!stale || this.counts.turnsSinceLastReminder < 10) && !todoStale) return undefined;
     if (near && input.epoch !== undefined) input.onNearWindow?.(input.epoch);
-    const prefix = near ? `The context window will be renewed soon (about ${Math.max(0, Math.round(threshold - (input.currentTokens ?? 0)))} tokens left). Bring TodoList notes up to date: decisions, rejected options, evidence, and the exact next step. Do not mention this reminder to the user.`
-      : stale && this.counts.turnsSinceLastReminder >= 10 ? `Working notes were last updated at ${input.notesMeta?.writtenStep ?? 'none'} and ~${newTokens} tokens of new work followed. Update TodoList notes when convenient. Do not mention this reminder to the user.` : '';
+    const prefix = near ? `The context window will be renewed soon (about ${Math.max(0, Math.round(threshold - (input.currentTokens ?? 0)))} tokens left). Bring TodoList notes up to date: goal (the user's request and success criteria), decisions, rejected options, evidence, and the exact next step. Include earlier content you need to keep when replacing a section. Do not mention this reminder to the user.`
+      : stale && this.counts.turnsSinceLastReminder >= 10 ? `Working notes were last updated at ${input.notesMeta?.writtenStep ?? 'none'} and ~${newTokens} tokens of new work followed. Update TodoList notes when convenient, especially goal (the user's request and success criteria) and the next step. Include earlier content you need to keep when replacing a section. Do not mention this reminder to the user.` : '';
     return [prefix, todoStale ? renderTodoListReminder(input.todos).replace('clear or rewrite it if stale', 'rewrite items if stale') : ''].filter(Boolean).join('\n\n');
   }
 

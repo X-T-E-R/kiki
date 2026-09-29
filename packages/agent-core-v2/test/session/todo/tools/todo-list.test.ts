@@ -56,7 +56,8 @@ describe('TodoListTool', () => {
 
     expect(TODO_LIST_TOOL_NAME).toBe('TodoList');
     expect(tool.name).toBe(TODO_LIST_TOOL_NAME);
-    expect(tool.description.length).toBeGreaterThan(0);
+    expect(tool.description).toContain('success criteria in `goal`');
+    expect(tool.description).toContain('replaces that entire section');
     expect(TodoListInputSchema.safeParse({}).success).toBe(true);
     expect(
       TodoListInputSchema.safeParse({ todos: [{ title: 'x', status: 'wip' }] }).success,
@@ -68,6 +69,8 @@ describe('TodoListTool', () => {
         todos: { type: 'array' },
       },
     });
+    expect(JSON.stringify(tool.parameters)).toContain('Each supplied working-note section replaces that section entirely');
+    expect(JSON.stringify(tool.parameters)).toContain('original request and what success requires');
   });
 
   it('query mode renders the current list without mutating it', async () => {
@@ -146,7 +149,10 @@ describe('TodoListTool', () => {
     const invoke = (args: object) => executeTool(tool, { turnId: 2, step: 4, toolCallId: 'notes', args, signal });
     expect(TodoListInputSchema.safeParse({ notes: { next: 'continue' } }).success).toBe(true);
     await invoke({ notes: { goal: 'initial', next: 'continue' } });
-    await invoke({ notes: { next: '', evidence: 'proof' } });
+    const updated = await invoke({ todos: [{ title: 'new task', status: 'in_progress' }], notes: { next: '', evidence: 'proof' } });
+    expect(updated.output).toContain('[in_progress] new task');
+    expect(updated.output).toContain('## Working notes\ngoal: initial\nevidence: proof');
+    expect(updated.output).not.toContain('next: continue');
     expect(getNotes()).toEqual({ goal: 'initial', evidence: 'proof' });
     const read = await invoke({});
     expect(read.output).toContain('goal: initial');

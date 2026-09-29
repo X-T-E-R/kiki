@@ -136,7 +136,7 @@ describe('todoListStaleReminder', () => {
     const input = { active: true, history: [assistantMessage()], todos: [], notesEnabled: true,
       threshold: 100_000, currentTokens: 86_000, epoch: 2, estimateMessage: () => 1,
       onNearWindow: (epoch: number) => { remindedEpoch = epoch; } };
-    expect(tracker.reminder({ ...input, remindedEpoch })).toContain('renewed soon');
+    expect(tracker.reminder({ ...input, remindedEpoch })).toContain('goal (the user\'s request and success criteria)');
     expect(remindedEpoch).toBe(2);
     expect(tracker.reminder({ ...input, remindedEpoch })).toBeUndefined();
     expect(tracker.reminder({ ...input, epoch: 3, remindedEpoch })).toContain('renewed soon');
@@ -149,7 +149,7 @@ describe('todoListStaleReminder', () => {
     const original = todoListStaleReminder(base);
     expect(original).toContain('clear or rewrite it if stale');
     expect(todoListStaleReminder({ ...base, notesEnabled: true, threshold: 100_000,
-      estimateMessage: () => 1_000 })).toContain('Working notes were last updated');
+      estimateMessage: () => 1_000 })).toContain('goal (the user\'s request and success criteria)');
     expect(todoListStaleReminder({ ...base, notesEnabled: true, threshold: 100_000,
       estimateMessage: () => 1 })).not.toContain('Working notes were last updated');
   });
