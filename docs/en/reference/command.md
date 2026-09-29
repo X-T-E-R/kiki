@@ -23,6 +23,7 @@ All flags are optional — run `kiki` directly to enter an interactive session:
 | `--prompt <prompt>` | `-p` | Run a single prompt non-interactively and stream the Assistant output to stdout; pass `-` to read from stdin (the program's input stream) |
 | `--prompt-file <path>` | | Run one prompt read from a UTF-8 file; cannot be combined with `--prompt` |
 | `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with a prompt; defaults to `text` |
+| `--include-thinking` | | Include thinking deltas in `stream-json` output; off by default |
 | `--yolo` | `-y` | Auto-approve regular tool calls, skipping approval requests |
 | `--auto` | | Start in Auto permission mode; routine tool calls proceed automatically, while protected calls and agent questions may still prompt you |
 | `--plan` | | Start a new session in Plan mode — the AI will prioritize read-only tools for exploration and planning |
@@ -134,7 +135,7 @@ When you need to parse output programmatically, use the `stream-json` format —
 kiki -p "List changed files" --output-format stream-json
 ```
 
-In `stream-json` mode, regular replies produce an Assistant message; when the model calls a tool, an Assistant message with `tool_calls` is emitted first, followed by the corresponding Tool message, then subsequent Assistant messages. Thinking content is not written to JSONL; tool progress and "resuming session" notices are still written to stderr.
+In `stream-json` mode, regular replies produce an Assistant message; when the model calls a tool, an Assistant message with `tool_calls` is emitted first, followed by the corresponding Tool message, then subsequent Assistant messages. Thinking content is omitted by default; add `--include-thinking` to emit each thinking delta as `{"role":"assistant","type":"thinking.delta","content":"..."}` on stdout. Tool progress and "resuming session" notices are still written to stderr.
 
 ## Subcommands
 

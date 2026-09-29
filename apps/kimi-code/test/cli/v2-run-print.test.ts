@@ -133,6 +133,7 @@ function makeFakeHarness() {
     [IAgentPromptService, {
       submitAndWait: vi.fn(async () => {
         for (const listener of [...eventListeners]) {
+          listener({ type: 'thinking.delta', turnId: 1, delta: 'thought' } as unknown as Event2<any>);
           listener({ type: 'assistant.delta', turnId: 1, delta: 'hello world' } as unknown as Event2<any>);
         }
         return { promptId: 'print-example', turnId: 1, state: 'completed', result: { type: 'completed', steps: 1, truncated: false } };
@@ -306,6 +307,20 @@ describe('runV2Print', () => {
     expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
     expect(stdout.text()).toContain('hello world');
     expect(app.dispose).toHaveBeenCalled();
+  });
+
+  it('emits thinking deltas only when stream-json opts in', async () => {
+    const { app, agent } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+    const plain = writer();
+    await runV2Print(opts({ outputFormat: 'stream-json' }) as never, '1.2.3-test', { stdout: plain, stderr: writer() });
+    expect(plain.text()).not.toContain('thought');
+    const opted = writer();
+    await runV2Print(opts({ outputFormat: 'stream-json', includeThinking: true }) as never, '1.2.3-test', { stdout: opted, stderr: writer() });
+    const lines = opted.text().trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines).toContainEqual({ role: 'assistant', type: 'thinking.delta', content: 'thought' });
+    expect(lines).toContainEqual({ role: 'assistant', content: 'hello world' });
   });
 
   it('flushes every session agent wire journal before closing the session', async () => {

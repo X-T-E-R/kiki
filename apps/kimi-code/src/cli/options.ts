@@ -48,6 +48,7 @@ export interface CLIOptions {
   model: string | undefined;
   thinking?: string;
   outputFormat: PromptOutputFormat | undefined;
+  includeThinking?: boolean;
   prompt: string | undefined;
   promptFile?: string;
   skillsDirs: string[];
@@ -153,5 +154,8 @@ export function validateOptions(
   // Validate `KIKI_MODEL_OUTPUT_FORMAT` eagerly in prompt mode so a typo fails
   // fast through the friendly `error:` path instead of mid-run.
   if (promptMode) resolveOutputFormat(opts, env);
+  if (opts.includeThinking === true && (!promptMode || resolveOutputFormat(opts, env) !== 'stream-json')) {
+    throw new OptionConflictError('--include-thinking requires prompt mode with stream-json output.');
+  }
   return { options: opts, uiMode: promptMode ? 'print' : 'shell' };
 }

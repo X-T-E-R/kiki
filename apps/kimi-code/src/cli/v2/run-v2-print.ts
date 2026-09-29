@@ -134,9 +134,9 @@ export async function runV2Print(
 
     const goalCreate = parseHeadlessGoalCreate(opts.prompt!);
     if (goalCreate !== undefined) {
-      await runPrintGoal(klient, resolved.session, resolved.agent, goalCreate, resolved.goalModel, outputFormat, stdout, stderr);
+      await runPrintGoal(klient, resolved.session, resolved.agent, goalCreate, resolved.goalModel, outputFormat, opts.includeThinking === true, stdout, stderr);
     } else {
-      await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, stdout, stderr);
+      await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, opts.includeThinking === true, stdout, stderr);
     }
     if (opts.ephemeral !== true) writeResumeHint(resolved.sessionId, outputFormat, stdout, stderr);
   } finally {
@@ -236,11 +236,12 @@ async function runPrintTurn(
   agent: AgentHandle,
   prompt: string,
   outputFormat: PromptOutputFormat,
+  includeThinking: boolean,
   stdout: PromptOutput,
   stderr: PromptOutput,
 ): Promise<void> {
   const writer: PromptTurnWriter = outputFormat === 'stream-json'
-    ? new PromptJsonWriter(stdout) : new PromptTranscriptWriter(stdout, stderr);
+    ? new PromptJsonWriter(stdout, includeThinking) : new PromptTranscriptWriter(stdout, stderr);
   await klient.global.auth.ensureReady(await agent.getModel());
   const turnEndings = createPrintTurnEndings();
   const subscriptions: EventSubscription[] = [];
@@ -303,6 +304,7 @@ async function runPrintGoal(
   goal: HeadlessGoalCreate,
   model: string | undefined,
   outputFormat: PromptOutputFormat,
+  includeThinking: boolean,
   stdout: PromptOutput,
   stderr: PromptOutput,
 ): Promise<void> {
@@ -316,7 +318,7 @@ async function runPrintGoal(
     await subscription.ready;
     await agent.createGoal({ objective: goal.objective, replace: goal.replace });
     created = true;
-    await runPrintTurn(klient, session, agent, goal.objective, outputFormat, stdout, stderr);
+    await runPrintTurn(klient, session, agent, goal.objective, outputFormat, includeThinking, stdout, stderr);
   } finally {
     subscription.dispose();
     if (created) {

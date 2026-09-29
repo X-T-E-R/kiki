@@ -70,6 +70,7 @@ export function createProgram(
         'Output format for prompt mode. Defaults to text.',
       ).choices(['text', 'stream-json']),
     )
+    .option('--include-thinking', 'Include thinking delta events in stream-json output.', false)
     .addOption(
       new Option(
         '--skills-dir <dir>',
@@ -158,6 +159,7 @@ export function createProgram(
       model: raw['model'] as string | undefined,
       thinking: raw['thinking'] as string | undefined,
       outputFormat: raw['outputFormat'] as CLIOptions['outputFormat'],
+      includeThinking: raw['includeThinking'] === true,
       prompt: raw['prompt'] as string | undefined,
       promptFile: raw['promptFile'] as string | undefined,
       skillsDirs: raw['skillsDir'] as string[],

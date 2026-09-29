@@ -80,6 +80,12 @@ interface PromptJsonAssistantMessage {
   tool_calls?: PromptJsonToolCall[];
 }
 
+interface PromptJsonThinkingMessage {
+  role: 'assistant';
+  type: 'thinking.delta';
+  content: string;
+}
+
 interface PromptJsonToolMessage {
   role: 'tool';
   tool_call_id: string;
@@ -150,7 +156,7 @@ export class PromptJsonWriter implements PromptTurnWriter {
   private assistantText = '';
   private readonly toolCalls: PromptJsonToolCall[] = [];
 
-  constructor(private readonly stdout: PromptOutput) {}
+  constructor(private readonly stdout: PromptOutput, private readonly includeThinking = false) {}
 
   writeAssistantDelta(delta: string): void {
     this.assistantText += delta;
@@ -164,7 +170,10 @@ export class PromptJsonWriter implements PromptTurnWriter {
     });
   }
 
-  writeThinkingDelta(): void {}
+  writeThinkingDelta(delta: string): void {
+    if (!this.includeThinking || delta.length === 0) return;
+    this.writeJsonLine({ role: 'assistant', type: 'thinking.delta', content: delta });
+  }
 
   writeToolCall(toolCallId: string, name: string, args: unknown): void {
     const existing = this.toolCalls.find((toolCall) => toolCall.id === toolCallId);
@@ -260,7 +269,7 @@ export class PromptJsonWriter implements PromptTurnWriter {
   }
 
   private writeJsonLine(
-    message: PromptJsonAssistantMessage | PromptJsonToolMessage | PromptJsonRetryMetaMessage,
+    message: PromptJsonAssistantMessage | PromptJsonThinkingMessage | PromptJsonToolMessage | PromptJsonRetryMetaMessage,
   ): void {
     this.stdout.write(`${JSON.stringify(message)}\n`);
   }

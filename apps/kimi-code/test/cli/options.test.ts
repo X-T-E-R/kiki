@@ -369,6 +369,13 @@ describe('CLI options parsing', () => {
       expect(opts.outputFormat).toBe('text');
     });
 
+    it('accepts --include-thinking only in stream-json prompt mode', () => {
+      expect(validateOptions(parse(['-p', 'hello', '--output-format=stream-json', '--include-thinking'])).uiMode).toBe('print');
+      expect(() => validateOptions(parse(['--include-thinking']))).toThrow('--include-thinking requires prompt mode with stream-json output.');
+      expect(() => validateOptions(parse(['-p', 'hello', '--include-thinking']))).toThrow('--include-thinking requires prompt mode with stream-json output.');
+      expect(validateOptions(parse(['--prompt-file', 'prompt.txt', '--include-thinking']), { [OUTPUT_FORMAT_ENV]: 'stream-json' }).uiMode).toBe('print');
+    });
+
     it('rejects --output-format outside prompt mode', () => {
       const opts = parse(['--output-format=stream-json']);
       expect(() => validateOptions(opts)).toThrow(OptionConflictError);
