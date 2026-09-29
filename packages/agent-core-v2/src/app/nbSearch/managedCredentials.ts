@@ -27,6 +27,9 @@ export class NbSearchManagedCredentials {
     return (await this.readDocument()).slots;
   }
 
+  /** Writes one slot under the credential lock, waiting for a contended lock (including the
+   *  transient access denial Windows reports while another writer releases it) within a bounded
+   *  attempt budget instead of failing the save. */
   async set(slotId: string, entry: RecordEntry | undefined, expectedVersion: string, verifyBinding: () => Promise<boolean>): Promise<string> {
     let lock: IStorageLock | undefined;
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -83,13 +86,6 @@ export class ManagedCredentialError extends Error {
   }
 }
 
-/**
- * A concurrent release of the credential lock sidecars can surface as an
- * access denial on Windows (`EPERM`/`EACCES`/`EBUSY`), which is lock
- * contention rather than a permission problem with the storage directory.
- * Waiting keeps a concurrent save from failing while the other writer is
- * still finishing; the bounded attempt budget above still applies.
- */
 function isRetryableLockContention(error: unknown): boolean {
   if (isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) return true;
   if (!isStorageError(error, StorageErrors.codes.STORAGE_PERMISSION_DENIED)) return false;

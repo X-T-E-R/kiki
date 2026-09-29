@@ -110,14 +110,6 @@ function isPayload(value: unknown): value is FileLockPayload {
   );
 }
 
-/**
- * Reports whether an acquisition attempt failed for a reason that is a race
- * rather than a real permission problem: Windows surfaces a concurrent delete
- * or replace of a lock sidecar as `EPERM`/`EACCES`/`EBUSY` instead of `ENOENT`,
- * so a writer that arrives while another one releases the lock would otherwise
- * read a transient access denial. Retrying keeps that contention inside the
- * lock's own arbitration; a persistent denial is still reported as-is.
- */
 function isTransientAccessDenial(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false;
   if (TRANSIENT_DENIAL_CODES.has((error as NodeJS.ErrnoException).code ?? '')) return true;
@@ -170,7 +162,10 @@ export async function isSessionLockActive(homeDir: string, scope: string): Promi
 }
 
 /** Acquires a renewable local-filesystem lock with atomic create and process-live watch arbitration
- *  for stale takeover. Reclaims expired dead owners and releases only this instance's token. */
+ *  for stale takeover. Reclaims expired dead owners and releases only this instance's token.
+ *  Retries an acquisition attempt when the filesystem reports a transient access denial
+ *  (`EPERM`/`EACCES`/`EBUSY`), which is how Windows surfaces a concurrent release of the lock
+ *  sidecars; a persistent denial is still reported as a permission failure. */
 export async function acquireFileLock(
   lockPath: string,
   options: StorageLockOptions = {},
