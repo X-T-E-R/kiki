@@ -620,6 +620,43 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('recovers an edited message appended before its managed resend turn', () => {
+    const message = (text: string) => ({
+      id: 'message-1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }],
+    });
+    const records: TranscriptWireRecord[] = [
+      { type: 'prompt.enqueued', promptId: 'message-1', userMessageId: 'message-1', message: message('first'), time: 1_000 },
+      { type: 'prompt.launch_committed', promptId: 'message-1', time: 1_100 },
+      { type: 'turn.prompt', turnId: 0, promptId: 'message-1', input: [{ type: 'text', text: 'first' }], origin: { kind: 'user' }, managed: true, time: 1_200 },
+      { type: 'context.append_message', message: message('first'), delivery: { messageId: 'message-1', turnId: 0, stepId: 'step-0', step: 1, origin: 'user' }, time: 1_300 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-0' }, time: 1_400 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 0, stepUuid: 'step-0', uuid: 'part-0', part: { type: 'text', text: 'first reply' } }, time: 1_500 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-0' }, time: 1_600 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_700 },
+      { type: 'prompt.completed', promptId: 'message-1', time: 1_800 },
+      { type: 'context.undo', count: 1, time: 2_000 },
+      { type: 'context.append_message', message: message('edited'), time: 2_100 },
+      { type: 'prompt.enqueued', promptId: 'message-1', userMessageId: 'message-1', message: message('edited'), alreadyMaterialized: true, time: 2_200 },
+      { type: 'prompt.launch_committed', promptId: 'message-1', time: 2_300 },
+      { type: 'turn.prompt', turnId: 1, promptId: 'message-1', revision: 1, lineage: { replacesMessageId: 'message-1' }, input: [{ type: 'text', text: 'edited' }], origin: { kind: 'user' }, managed: true, time: 2_400 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-1' }, time: 2_500 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 1, stepUuid: 'step-1', uuid: 'part-1', part: { type: 'text', text: 'edited reply' } }, time: 2_600 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 1, step: 1, uuid: 'step-1' }, time: 2_700 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 2_800 },
+      { type: 'prompt.completed', promptId: 'message-1', time: 2_900 },
+    ];
+    const cold = replay(records);
+    expect(cold.getItems().filter((item) => item.kind === 'turn')).toHaveLength(1);
+    expect(cold.getTurn('t0')).toBeUndefined();
+    expect(cold.getTurn('t1')).toMatchObject({
+      prompt: 'edited', state: 'completed', startedAt: new Date(2_100).toISOString(),
+      message: { messageId: 'message-1', revision: 1, lineage: { replacesMessageId: 'message-1' } },
+    });
+    expect(cold.getTurn('t1')?.steps.flatMap((step) => step.frames)).toEqual([
+      expect.objectContaining({ kind: 'text', role: 'assistant', text: 'edited reply' }),
+    ]);
+  });
+
   it('classifies unfinished turns after a restart without a user stop', () => {
     const transcript = replay([records[0]!]);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });

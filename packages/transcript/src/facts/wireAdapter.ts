@@ -1003,8 +1003,12 @@ export class TranscriptWireAdapter {
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
+    const previous = this.#turnHeaders.get(turnId);
     const alreadyDelivered = promptId !== undefined && this.#deliveries.has(promptId);
-    if (alreadyDelivered && this.#turnHeaders.get(turnId)?.message?.messageId === promptId) return [];
+    if (alreadyDelivered && previous?.message?.messageId === promptId) return [];
+    const materialized = record['managed'] === true && promptId !== undefined && previous?.message?.messageId === promptId
+      ? previous
+      : undefined;
     const headerOnly = record['managed'] === true || alreadyDelivered;
     if (isUndoAnchorOrigin(record['origin']) && !headerOnly) this.#undoAnchors.add(turnId);
     const input = headerOnly ? [] : arrayOf(record['input']);
@@ -1067,9 +1071,9 @@ export class TranscriptWireAdapter {
         },
         lineage: lineageOf(record['lineage']),
       },
-      prompt: record['managed'] === true || alreadyDelivered ? undefined : prompt.length > 0 ? prompt : undefined,
-      attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-      startedAt: isoOf(record.time),
+      prompt: materialized?.prompt ?? (headerOnly ? undefined : prompt.length > 0 ? prompt : undefined),
+      attachmentIds: materialized?.attachmentIds ?? (attachmentIds.length > 0 ? attachmentIds : undefined),
+      startedAt: materialized?.startedAt ?? isoOf(record.time),
     };
     this.#turnHeaders.set(turnId, turn);
     operations.push(
