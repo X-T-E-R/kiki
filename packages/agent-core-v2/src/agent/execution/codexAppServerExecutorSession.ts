@@ -129,7 +129,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         {
           id: context.descriptor.id,
           command: requiredCommand(context),
-          args: context.descriptor.args,
+          args: [...context.descriptor.launchArgs ?? [], ...context.descriptor.args],
           env: context.descriptor.env === undefined ? undefined : { ...context.descriptor.env },
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,

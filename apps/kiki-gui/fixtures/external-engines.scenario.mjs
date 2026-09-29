@@ -52,12 +52,13 @@ const CODEX_FIELDS = {
 const executors = [
   { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
   {
-    id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready', version: '2.1.220',
+    id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready', version: '0.84.0',
     model_binding: 'mapped', thinking_binding: 'unavailable', default_profile: true,
     capabilities: { prompt_deliveries: ['preamble'], steer: 'next_turn_preamble', permission: { via: 'session_mode', trust_engine_settings: true }, thinking_binding: false },
     connection: {
-      command: 'C:/Users/fixture/AppData/Roaming/npm/claude-agent-acp.cmd', source: 'path',
-      install_hint: 'npm i -g @agentclientprotocol/claude-agent-acp', login_command: ['claude'],
+      command: 'C:/Users/fixture/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', source: 'kiki-managed',
+      install_hint: 'npm install --prefix "C:/Users/fixture/.kiki/tools/claude-agent-acp" --save-exact @agentclientprotocol/claude-agent-acp@0.84.0',
+      login_command: ['claude', 'auth', 'login'],
       login_status: 'logged_out', default_args: [],
     },
   },
@@ -89,11 +90,17 @@ const executors = [
 ];
 const executorChecks = {
   'claude-acp': {
-    status: 'warning', version: '2.1.220', command: 'C:/Users/fixture/AppData/Roaming/npm/claude-agent-acp.cmd',
-    selected_source: 'path', resolved_args: [], login_status: 'logged_out',
+    status: 'ready', version: '0.84.0', command: 'C:/Program Files/nodejs/node.exe',
+    selected_source: 'kiki-managed', resolved_args: [], login_status: 'logged_out',
     diagnostics: [
-      { severity: 'warning', message: 'claude auth status reports loggedIn: false. Run claude and sign in.' },
-      { severity: 'info', message: 'Adapter 0.81.2 speaks ACP v1.' },
+      { severity: 'info', message: 'Selected source kiki-managed: C:/Users/fixture/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js.' },
+    ],
+    requirements: [
+      { id: 'claude', label: 'Claude Code CLI', role: 'dependency', status: 'ok', path: 'C:/Users/fixture/.local/bin/claude.EXE',
+        version: '2.1.220 (Claude Code)', install_hint: 'npm install -g @anthropic-ai/claude-code' },
+      { id: 'claude-acp', label: 'claude-agent-acp', role: 'program', status: 'ok', version: '0.84.0',
+        path: 'C:/Users/fixture/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js',
+        install_hint: 'npm install --prefix "C:/Users/fixture/.kiki/tools/claude-agent-acp" --save-exact @agentclientprotocol/claude-agent-acp@0.84.0' },
     ],
   },
   'codex-app-server': {

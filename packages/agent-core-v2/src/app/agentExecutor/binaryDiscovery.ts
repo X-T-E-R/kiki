@@ -94,6 +94,7 @@ async function probeSource(
   bootstrap: IBootstrapService,
   exhaustive: boolean,
 ): Promise<AgentExecutorSourceProbe> {
+  if (source.kind === 'node-script') return probeNodeScript(source, descriptor, processService, fs, bootstrap);
   const commands = await sourceCommands(source, fs, bootstrap);
   if (commands.length === 0) {
     return {
@@ -144,6 +145,58 @@ async function probeSource(
   };
 }
 
+async function probeNodeScript(
+  source: Extract<AgentExecutorBinarySource, { kind: 'node-script' }>,
+  descriptor: AgentExecutorDescriptor,
+  processService: IHostProcessService,
+  fs: IHostFileSystem,
+  bootstrap: IBootstrapService,
+): Promise<AgentExecutorSourceProbe> {
+  const script = expandPath(source.path, bootstrap);
+  const base = { id: source.id, kind: source.kind, launchArgs: [script] } as const;
+  if (!await isFile(fs, script)) return { ...base, available: false, diagnostic: `${script} does not exist` };
+  const node = await nodeRuntime(fs, bootstrap);
+  if (node === undefined) return { ...base, available: false, diagnostic: 'node was not found on PATH' };
+  const probe = await probeCommand(
+    processService,
+    node,
+    [script, ...descriptor.versionProbe?.args ?? ['--version']],
+    descriptor.env,
+  );
+  const version = firstLine(probe.output);
+  if (!probe.available || probe.code !== 0) {
+    return {
+      ...base,
+      available: false,
+      command: node,
+      version,
+      diagnostic: probe.available ? `version probe exited with code ${String(probe.code)}` : 'node is not executable',
+    };
+  }
+  return { ...base, available: true, command: node, version };
+}
+
+async function nodeRuntime(fs: IHostFileSystem, bootstrap: IBootstrapService): Promise<string | undefined> {
+  if (stripExecutableExtension(basename(process.execPath)).toLowerCase() === 'node') return normalize(process.execPath);
+  return lookupPath('node', fs, bootstrap);
+}
+
+/** Resolves a bare command name the way the host PATH would, for display and for probes that need a path. */
+export async function locateCommand(
+  command: string,
+  fs: IHostFileSystem,
+  bootstrap: IBootstrapService,
+): Promise<string | undefined> {
+  if (/[\\/]/.test(command)) return await isFile(fs, command) ? normalize(command) : undefined;
+  return lookupPath(command, fs, bootstrap);
+}
+
+/** Expands `${NAME}` in display text such as an install command; `${KIKI_HOME}` is the resolved Kiki home. */
+export function expandExecutorText(value: string, bootstrap: IBootstrapService): string {
+  return value.replaceAll(/\$\{([^}]+)\}/g, (_match, name: string) =>
+    (name === 'KIKI_HOME' ? bootstrap.homeDir : bootstrap.getEnv(name)) ?? `\${${name}}`);
+}
+
 async function sourceCommands(
   source: AgentExecutorBinarySource,
   fs: IHostFileSystem,
@@ -168,6 +221,7 @@ async function sourceCommands(
     }
     return [path];
   }
+  if (source.kind === 'node-script') return [];
   return expandGlob(expandPath(source.pattern, bootstrap), fs, source.maxDepth ?? 8);
 }
 
@@ -231,7 +285,7 @@ async function expandGlob(
 
 function expandPath(value: string, bootstrap: IBootstrapService): string {
   let result = value.replace(/^~(?=$|[\\/])/, bootstrap.osHomeDir);
-  result = result.replaceAll(/\$\{([^}]+)\}/g, (_match, name: string) => bootstrap.getEnv(name) ?? `\${${name}}`);
+  result = expandExecutorText(result, bootstrap);
   result = result.replaceAll(/%([^%]+)%/g, (_match, name: string) => bootstrap.getEnv(name) ?? `%${name}%`);
   return normalize(result);
 }
@@ -432,6 +486,6 @@ function unavailableDiagnostic(
 ): string {
   if (source.kind === 'env') return `${source.name} is unset`;
   if (source.kind === 'path-lookup') return `${source.command} was not found on PATH`;
-  if (source.kind === 'explicit-path') return `${expandPath(source.path, bootstrap)} does not exist`;
+  if (source.kind === 'explicit-path' || source.kind === 'node-script') return `${expandPath(source.path, bootstrap)} does not exist`;
   return `no files matched ${expandPath(source.pattern, bootstrap)}`;
 }

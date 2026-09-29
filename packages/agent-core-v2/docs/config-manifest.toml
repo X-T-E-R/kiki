@@ -67,7 +67,7 @@
   # protocol: string
   # label: string
   # command: string
-  # sources: object | object | object | object[]
+  # sources: object | object | object | object | object[]
   # source: string
   # version_probe: object
     # args: string[]
@@ -102,6 +102,7 @@
   # prompt_deliveries: "append" | "replace" | "preamble"[]
   # default_profile: boolean
   # install_hint: string
+  # program_label: string
   # login_command: string[]
   # steer_delivery: "native" | "next_turn_preamble"
   # profile_delivery: "system_prompt_override"

@@ -26,7 +26,7 @@ type LoginStatus = ExecutorCheckResult['login_status'];
 export function engineHealth(item: ExecutorCatalogItem, check: ExecutorCheckResult | undefined): EngineHealth {
   const login: LoginStatus = check?.login_status ?? item.connection?.login_status ?? 'unknown';
   const status = check?.status ?? item.status;
-  if (status === 'unavailable') return 'missing';
+  if (status === 'unavailable' || check?.requirements?.some((requirement) => requirement.status !== 'ok') === true) return 'missing';
   if (status === 'unknown') return 'unknown';
   if (status === 'warning' || login === 'logged_out') return 'warning';
   return 'ready';
@@ -78,12 +78,13 @@ export function ExternalEnginesList() {
   );
 }
 
-function CopyCommand({ command }: { command: string }) {
+/** `wrap` keeps a long command fully readable (a pinned version at its end); one-liners truncate. */
+function CopyCommand({ command, wrap = false }: { command: string; wrap?: boolean }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   return (
     <span className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-hairline bg-paper pl-2">
-      <code className="min-w-0 truncate font-mono text-[11.5px] text-ink" title={command}>{command}</code>
+      <code className={`min-w-0 font-mono text-[11.5px] text-ink ${wrap ? 'break-all py-1 leading-4' : 'truncate'}`} title={command}>{command}</code>
       <button type="button" data-engine-copy aria-label={t('st.engines.copyCommand', { command })}
         onClick={() => { void copyTextToClipboard(command).then(() => { setCopied(true); setTimeout(() => { setCopied(false); }, 1500); }); }}
         className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-r-md px-1.5 text-[11.5px] text-ink-faint hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent">
@@ -103,6 +104,102 @@ function Fact({ label, children, dataFact }: { label: string; children: React.Re
   );
 }
 
+type Requirement = NonNullable<ExecutorCheckResult['requirements']>[number];
+
+/** Where setup stands: the first requirement that is not installed, else sign-in, else ready. */
+export type EngineSetupStage =
+  | { readonly kind: 'install'; readonly requirement: Requirement }
+  | { readonly kind: 'signin' }
+  | { readonly kind: 'ready' };
+
+export function engineSetupStage(check: ExecutorCheckResult): EngineSetupStage {
+  const blocked = check.requirements?.find((requirement) => requirement.status !== 'ok');
+  if (blocked !== undefined) return { kind: 'install', requirement: blocked };
+  return check.login_status === 'logged_out' ? { kind: 'signin' } : { kind: 'ready' };
+}
+
+type StepState = 'done' | 'current' | 'pending' | 'unknown';
+
+function StepMarker({ state, index }: { state: StepState; index: number }) {
+  if (state === 'done') {
+    return <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success/15 text-success"><Icon name="check" size={12} /></span>;
+  }
+  return (
+    <span aria-hidden className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums ${
+      state === 'current' ? 'border-amber-rule bg-amber-rule/10 text-amber-ink' : 'border-hairline-strong text-ink-faint'}`}>
+      {index}
+    </span>
+  );
+}
+
+/**
+ * Setup as ordered steps from the check: each declared dependency, the
+ * launched program, then sign-in. Every step shows what was found (version,
+ * path); the first unmet step carries the one command that moves it forward.
+ * Driven only by `requirements` + `login_status`, so any engine whose
+ * descriptor declares dependencies gets the same guide.
+ */
+function EngineSetup({ check, loginCommand }: { check: ExecutorCheckResult; loginCommand?: string }) {
+  const { t } = useI18n();
+  const requirements = check.requirements ?? [];
+  const stage = engineSetupStage(check);
+  const blockedIndex = stage.kind === 'install' ? requirements.indexOf(stage.requirement) : -1;
+  const stateOf = (index: number): StepState =>
+    blockedIndex === -1 || index < blockedIndex ? 'done' : index === blockedIndex ? 'current' : 'pending';
+  const signInState: StepState = blockedIndex !== -1 ? 'pending'
+    : check.login_status === 'logged_in' ? 'done' : check.login_status === 'logged_out' ? 'current' : 'unknown';
+  return (
+    <div data-engine-setup={stage.kind} className="space-y-2">
+      <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
+      <ol className="space-y-2.5">
+        {requirements.map((requirement, index) => {
+          const state = stateOf(index);
+          return (
+            <li key={`${requirement.role}:${requirement.id}`} data-engine-step={requirement.role === 'program' ? 'program' : requirement.id}
+              data-step-state={state} className="flex min-w-0 gap-2.5">
+              <StepMarker state={state} index={index + 1} />
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="text-[12.5px] leading-5 text-ink">
+                  <span className="font-medium">{requirement.label}</span>
+                  <span className="text-ink-faint"> · {state === 'done' ? requirement.version ?? t('st.engines.stepFound')
+                    : state === 'pending' ? t('st.engines.stepWaiting')
+                      : requirement.status === 'failed' ? t('st.engines.stepFailed') : t('st.engines.stepMissing')}</span>
+                </p>
+                {requirement.path !== undefined ? (
+                  <p className="break-all font-mono text-[11px] leading-4 text-ink-faint" data-step-path>{requirement.path}</p>
+                ) : null}
+                {state === 'current' ? (
+                  <div className="space-y-1">
+                    <p className="text-[12px] leading-4 text-ink-soft">
+                      {t(requirement.status === 'failed' ? 'st.engines.stepFailedBody' : 'st.engines.stepMissingBody', { program: requirement.label })}
+                    </p>
+                    {requirement.install_hint !== undefined ? <CopyCommand command={requirement.install_hint} wrap /> : null}
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+        <li data-engine-step="signin" data-step-state={signInState} className="flex min-w-0 gap-2.5">
+          <StepMarker state={signInState} index={requirements.length + 1} />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-[12.5px] leading-5 text-ink">
+              <span className="font-medium">{t('st.engines.login')}</span>
+              <span className="text-ink-faint"> · {signInState === 'pending' ? t('st.engines.stepWaiting') : t(`st.engines.login.${check.login_status}`)}</span>
+            </p>
+            {signInState === 'current' || signInState === 'unknown' ? (
+              <div className="space-y-1">
+                <p className="text-[12px] leading-4 text-ink-soft">{t(signInState === 'current' ? 'st.engines.loginOut' : 'st.engines.loginUnknownBody')}</p>
+                {loginCommand !== undefined ? <CopyCommand command={loginCommand} /> : null}
+              </div>
+            ) : null}
+          </div>
+        </li>
+      </ol>
+    </div>
+  );
+}
+
 function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const { client } = useConnection();
   const { t, time, locale } = useI18n();
@@ -115,12 +212,15 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const health = engineHealth(item, check);
   const healthText = t(HEALTH_KEY[health]);
   const login: LoginStatus = check?.login_status ?? connection?.login_status ?? 'unknown';
-  const version = check?.version ?? item.version;
-  const program = check?.command ?? connection?.command;
-  const source = check?.selected_source ?? connection?.source;
+  // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
+  const version = check === undefined ? item.version : check.version;
+  const programPath = check?.requirements?.find((requirement) => requirement.role === 'program')?.path;
+  const program = check === undefined ? connection?.command : programPath ?? (check.command || undefined);
+  const source = check === undefined ? connection?.source : check.selected_source;
   const args = check?.resolved_args ?? connection?.default_args ?? [];
   const loginCommand = connection?.login_command?.join(' ');
   const caps = item.capabilities;
+  const setup = check?.requirements !== undefined && check.requirements.length > 0;
 
   const runCheck = async () => {
     if (checking) return;
@@ -172,7 +272,8 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/engine:rotate-90" />
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
-        {health === 'missing' ? (
+        {setup ? <EngineSetup check={check!} loginCommand={loginCommand} /> : null}
+        {health === 'missing' && !setup ? (
           <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
             <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
             {connection?.install_hint !== undefined ? (
@@ -187,7 +288,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           <button type="button" data-engine-check-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
             disabled={checking} aria-busy={checking} onClick={() => void runCheck()}>
             {checking ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
-            {checking ? t('st.engines.checking') : t('st.engines.check')}
+            {checking ? t('st.engines.checking') : check === undefined ? t('st.engines.check') : t('st.engines.recheck')}
           </button>
           <p data-engine-last-check={check?.status ?? 'none'} aria-live="polite" className="min-w-0 text-[12px] leading-4 text-ink-faint">
             {checking ? t('st.engines.checkingHint')
@@ -209,7 +310,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
             {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
             <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
           </Fact>
-          {health === 'missing' ? null : <Fact label={t('st.engines.login')} dataFact="login">
+          {health === 'missing' || setup ? null : <Fact label={t('st.engines.login')} dataFact="login">
             <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
             {login === 'unknown' && check === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
             {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOut')}</span> : null}

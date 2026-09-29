@@ -72,6 +72,45 @@ describe('external engines connection kind', () => {
     expect(row.querySelector('[data-engine-diagnostic="warning"]')?.textContent).toContain('auth state was not found');
   });
 
+  it('guides setup step by step from the check requirements', async () => {
+    const claude: ExecutorCatalogItem = {
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable',
+      connection: { command: 'claude-agent-acp', login_command: ['claude', 'auth', 'login'], login_status: 'unknown', default_args: [] },
+    };
+    const cli = { id: 'claude', label: 'Claude Code CLI', role: 'dependency' as const, install_hint: 'npm install -g @anthropic-ai/claude-code' };
+    const adapter = { id: 'claude-acp', label: 'claude-agent-acp', role: 'program' as const, install_hint: 'npm install --prefix X adapter@0.84.0' };
+    const base = { id: 'claude-acp', command: '', resolved_args: [], diagnostics: [] };
+    client.listExecutors.mockResolvedValue({ items: [claude] });
+    client.checkExecutor
+      .mockResolvedValueOnce({ ...base, status: 'unavailable', login_status: 'unknown',
+        requirements: [{ ...cli, status: 'ok', version: '2.1.220', path: 'C:/bin/claude.exe' }, { ...adapter, status: 'missing' }] })
+      .mockResolvedValueOnce({ ...base, status: 'ready', version: '0.84.0', login_status: 'logged_out',
+        requirements: [{ ...cli, status: 'ok', version: '2.1.220' }, { ...adapter, status: 'ok', version: '0.84.0', path: 'C:/kiki/tools/index.js' }] });
+    await render();
+    const row = container.querySelector<HTMLElement>('[data-engine-row="claude-acp"]')!;
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    expect(row.querySelector('[data-engine-setup]')?.getAttribute('data-engine-setup')).toBe('install');
+    expect(row.querySelector('[data-engine-step="claude"]')?.getAttribute('data-step-state')).toBe('done');
+    expect(row.querySelector('[data-engine-step="claude"] [data-step-path]')?.textContent).toBe('C:/bin/claude.exe');
+    const program = row.querySelector('[data-engine-step="program"]')!;
+    expect(program.getAttribute('data-step-state')).toBe('current');
+    expect(program.textContent).toContain('npm install --prefix X adapter@0.84.0');
+    expect(row.querySelector('[data-engine-step="signin"]')?.getAttribute('data-step-state')).toBe('pending');
+    expect(row.querySelector('[data-engine-missing]')).toBeNull();
+    expect(row.querySelector('[data-engine-check-button]')?.textContent).toBe('Check again');
+
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    expect(row.querySelector('[data-engine-setup]')?.getAttribute('data-engine-setup')).toBe('signin');
+    expect(row.querySelector('[data-engine-step="program"]')?.getAttribute('data-step-state')).toBe('done');
+    expect(row.querySelector('[data-engine-fact="program"]')?.textContent).toContain('C:/kiki/tools/index.js');
+    const signIn = row.querySelector('[data-engine-step="signin"]')!;
+    expect(signIn.getAttribute('data-step-state')).toBe('current');
+    expect(signIn.textContent).toContain('claude auth login');
+    expect(row.getAttribute('data-engine-health')).toBe('warning');
+  });
+
   it('never reads a ready binary as signed in', () => {
     expect(engineHealth(codex, undefined)).toBe('ready');
     expect(engineHealth({ ...codex, connection: { ...codex.connection!, login_status: 'logged_out' } }, undefined)).toBe('warning');

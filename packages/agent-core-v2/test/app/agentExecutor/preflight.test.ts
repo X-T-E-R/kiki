@@ -1,5 +1,6 @@
 import { PassThrough, Readable } from 'node:stream';
 
+import { normalize } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexAppServerClient } from '@kiki/codex-client';
 
@@ -92,6 +93,9 @@ function bootstrap(): IBootstrapService {
   };
 }
 
+const CLAUDE_MANAGED = 'C:/Users/test/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js';
+const CLAUDE_PROBE = `${normalize(process.execPath)} ${CLAUDE_MANAGED} --version`;
+
 function fsWith(paths: readonly string[]): IHostFileSystem {
   const present = new Set(paths);
   return {
@@ -117,6 +121,9 @@ describe('AgentExecutorPreflightService', () => {
       'C:/Users/test/.local/bin/cursor-agent',
       'C:/Users/test/.claude',
       'C:/Users/test/.gemini',
+      'C:/tools/node.EXE',
+      'C:/tools/claude.EXE',
+      CLAUDE_MANAGED,
     ]));
     services.set(IBootstrapService, bootstrap());
     services.set(IConfigService, {
@@ -138,7 +145,8 @@ describe('AgentExecutorPreflightService', () => {
     processService.outputs.set('codex --version', { output: 'codex 0.1.0' });
     processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0-alpha.7.1' });
     processService.outputs.set('C:/Users/test/.local/bin/cursor-agent --version', { output: 'cursor-agent 1.0.0' });
-    processService.outputs.set('claude-agent-acp --version', { output: 'claude-agent-acp 0.69.0' });
+    processService.outputs.set(CLAUDE_PROBE, { output: '0.84.0' });
+    processService.outputs.set('claude --version', { output: '2.1.220 (Claude Code)' });
     processService.outputs.set('gemini --version', { output: '0.55.1' });
     processService.outputs.set('gemini --help', { output: '  --experimental-acp  Start ACP mode' });
     processService.outputs.set('kimi --version', { output: '0.37.1' });
@@ -169,7 +177,8 @@ describe('AgentExecutorPreflightService', () => {
   });
 
   it('reports a confirmed login only from the declared command probe and caches its check', async () => {
-    processService.outputs.set('claude-agent-acp --version', { output: '0.81.2' });
+    processService.outputs.set(CLAUDE_PROBE, { output: '0.84.0' });
+    processService.outputs.set('claude --version', { output: '2.1.220 (Claude Code)' });
     processService.outputs.set('claude auth status --json', { output: '{"loggedIn":true}' });
     const preflight = services.get(IAgentExecutorPreflightService);
     const [loggedIn] = await preflight.run(['claude-acp']);
@@ -409,5 +418,46 @@ describe('AgentExecutorPreflightService', () => {
       expect.objectContaining({ severity: 'error', message: expect.stringContaining('Vendor codex') }),
       expect.objectContaining({ severity: 'warning', message: expect.stringContaining('auth state was not found') }),
     ]));
+  });
+
+  it('launches the Kiki-managed Claude adapter through node and lists setup requirements in order', async () => {
+    processService.outputs.set(CLAUDE_PROBE, { output: '0.84.0' });
+    processService.outputs.set('claude --version', { output: '2.1.220 (Claude Code)' });
+    processService.outputs.set('claude auth status --json', { output: '{"loggedIn":false}', code: 1 });
+
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['claude-acp']);
+    const resolved = await services.get(IAgentExecutorRegistry).resolveExecutable('claude-acp');
+
+    expect(result).toMatchObject({
+      status: 'ready',
+      selectedSource: 'kiki-managed',
+      command: normalize(process.execPath),
+      resolvedArgs: [],
+      version: '0.84.0',
+      loginStatus: 'logged_out',
+    });
+    expect(result?.requirements).toEqual([
+      expect.objectContaining({ id: 'claude', role: 'dependency', status: 'ok',
+        path: 'C:/tools/claude.EXE', version: '2.1.220 (Claude Code)' }),
+      expect.objectContaining({ id: 'claude-acp', role: 'program', label: 'claude-agent-acp', status: 'ok',
+        path: CLAUDE_MANAGED,
+        installHint: expect.stringContaining('C:/Users/test/.kiki/tools/claude-agent-acp') }),
+    ]);
+    expect(resolved.descriptor).toMatchObject({ command: normalize(process.execPath), launchArgs: [CLAUDE_MANAGED] });
+  });
+
+  it('marks the missing Claude CLI and adapter as the first setup steps', async () => {
+    services.set(IHostFileSystem, fsWith(['C:/tools/node.EXE']));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['claude-acp']);
+
+    expect(result?.status).toBe('unavailable');
+    expect(result?.requirements?.map((requirement) => [requirement.id, requirement.status])).toEqual([
+      ['claude', 'missing'],
+      ['claude-acp', 'missing'],
+    ]);
+    expect(result?.requirements?.[0]?.installHint).toBe('npm install -g @anthropic-ai/claude-code');
   });
 });

@@ -9,8 +9,8 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 
-import { IAgentExecutorRegistry, type AgentExecutorDescriptor } from './agentExecutor';
-import { selectExecutorSource } from './binaryDiscovery';
+import { IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
+import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
@@ -18,6 +18,20 @@ export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
 export interface AgentExecutorPreflightDiagnostic {
   readonly severity: AgentExecutorPreflightSeverity;
   readonly message: string;
+}
+
+/**
+ * One thing that must be installed before the engine can run, in setup order:
+ * declared `dependency` rules first, then the launched program itself.
+ */
+export interface AgentExecutorRequirement {
+  readonly id: string;
+  readonly label: string;
+  readonly role: 'dependency' | 'program';
+  readonly status: 'ok' | 'missing' | 'failed';
+  readonly path?: string;
+  readonly version?: string;
+  readonly installHint?: string;
 }
 
 export interface AgentExecutorPreflightResult {
@@ -30,6 +44,7 @@ export interface AgentExecutorPreflightResult {
   readonly resolvedArgs: readonly string[];
   readonly diagnostics: readonly AgentExecutorPreflightDiagnostic[];
   readonly loginStatus: 'logged_in' | 'logged_out' | 'unknown';
+  readonly requirements: readonly AgentExecutorRequirement[];
 }
 
 export interface IAgentExecutorPreflightService {
@@ -86,7 +101,10 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const rules = await this.#diagnostics(descriptor, version, probe.available);
     diagnostics.push(...rules.diagnostics);
     const loginStatus = probe.available && probe.code === 0 ? await this.#auth(descriptor) : 'unknown';
-    return resultOf(id, command, rules.resolvedArgs, version, diagnostics, undefined, undefined, loginStatus);
+    const program = programRequirement(descriptor, probe.available ? probe.code === 0 ? 'ok' : 'failed' : 'missing',
+      probe.available ? await locateCommand(command, this.fs, this.bootstrap) ?? command : undefined, version, this.bootstrap);
+    return resultOf(id, command, rules.resolvedArgs, version, diagnostics, undefined, undefined, loginStatus,
+      [...rules.requirements, program]);
   }
 
   async #discovered(id: string): Promise<AgentExecutorPreflightResult> {
@@ -95,17 +113,21 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const selected = selectExecutorSource(descriptor, sources);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = sources.map((source) =>
       source.available
-        ? info(`Source ${source.id}: ${source.command ?? ''}${source.version === undefined ? '' : ` (${source.version})`}`)
-        : warning(`Source ${source.id}: ${source.diagnostic ?? 'unavailable'}`));
+        ? info(`Source ${source.id}: ${sourceLocation(source)}${source.version === undefined ? '' : ` (${source.version})`}`)
+        : (selected === undefined ? warning : info)(`Source ${source.id}: ${source.diagnostic ?? 'unavailable'}`));
     if (descriptor.source !== undefined && selected === undefined) {
       diagnostics.unshift(error(`Configured source "${descriptor.source}" is unavailable.`));
     } else if (selected === undefined) {
       diagnostics.unshift(error('No configured executable source is available.'));
     } else {
-      diagnostics.unshift(info(`Selected source ${selected.id}: ${selected.command}.`));
+      diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
     const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined);
     diagnostics.push(...rules.diagnostics);
+    const failed = selected === undefined
+      ? sources.find((source) => !source.available && source.command !== undefined) : undefined;
+    const program = programRequirement(descriptor, selected !== undefined ? 'ok' : failed !== undefined ? 'failed' : 'missing',
+      selected === undefined ? undefined : sourceLocation(selected), selected?.version, this.bootstrap);
     return resultOf(
       id,
       selected?.command ?? '',
@@ -115,14 +137,17 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       selected?.id,
       sources,
       selected === undefined ? 'unknown' : await this.#auth(descriptor, selected.command),
+      [...rules.requirements, program],
     );
   }
 
   async #diagnostics(descriptor: AgentExecutorDescriptor, version?: string, available = true): Promise<{
     readonly diagnostics: AgentExecutorPreflightDiagnostic[];
     readonly resolvedArgs: readonly string[];
+    readonly requirements: AgentExecutorRequirement[];
   }> {
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
+    const requirements: AgentExecutorRequirement[] = [];
     let resolvedArgs = descriptor.args;
     for (const rule of descriptor.diagnostics ?? []) {
       if (rule.kind === 'message') diagnostics.push({ severity: rule.severity, message: rule.message });
@@ -139,6 +164,15 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         const probe = await this.#probe(rule.command, rule.args);
         if (!probe.available) diagnostics.push(error(rule.unavailable));
         else if (probe.code !== 0) diagnostics.push(warning(rule.failed.replaceAll('{code}', String(probe.code))));
+        requirements.push({
+          id: rule.command,
+          label: rule.label ?? rule.command,
+          role: 'dependency',
+          status: !probe.available ? 'missing' : probe.code === 0 ? 'ok' : 'failed',
+          path: probe.available ? await locateCommand(rule.command, this.fs, this.bootstrap) ?? rule.command : undefined,
+          version: probe.available ? firstLine(probe.output) : undefined,
+          installHint: rule.installHint === undefined ? undefined : expandExecutorText(rule.installHint, this.bootstrap),
+        });
       }
       if (rule.kind === 'flag' && descriptor.command !== undefined) {
         const probe = await this.#probe(descriptor.command, rule.args);
@@ -154,7 +188,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         diagnostics.push(parsed !== null && gte(parsed, rule.min) ? warning(rule.warning) : info(rule.normal));
       }
     }
-    return { diagnostics, resolvedArgs };
+    return { diagnostics, resolvedArgs, requirements };
   }
 
   async #auth(descriptor: AgentExecutorDescriptor, command = descriptor.command): Promise<AgentExecutorPreflightResult['loginStatus']> {
@@ -181,7 +215,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     }
     if (auth?.kind !== 'command-json') return 'unknown';
     const probe = await this.#probe(auth.command, auth.args);
-    if (!probe.available || probe.code !== 0) return 'unknown';
+    if (!probe.available || probe.code === -1) return 'unknown';
     try {
       const data: unknown = JSON.parse(probe.output);
       if (typeof data !== 'object' || data === null || Array.isArray(data)) return 'unknown';
@@ -245,13 +279,36 @@ function resultOf(
   selectedSource?: string,
   sources?: readonly import('./agentExecutor').AgentExecutorSourceProbe[],
   loginStatus: AgentExecutorPreflightResult['loginStatus'] = 'unknown',
+  requirements: readonly AgentExecutorRequirement[] = [],
 ): AgentExecutorPreflightResult {
   const status = diagnostics.some((diagnostic) => diagnostic.severity === 'error')
     ? 'unavailable'
     : diagnostics.some((diagnostic) => diagnostic.severity === 'warning')
       ? 'warning'
       : 'ready';
-  return { id, status, command, version, selectedSource, sources, resolvedArgs, diagnostics, loginStatus };
+  return { id, status, command, version, selectedSource, sources, resolvedArgs, diagnostics, loginStatus, requirements };
+}
+
+function programRequirement(
+  descriptor: AgentExecutorDescriptor,
+  status: AgentExecutorRequirement['status'],
+  path: string | undefined,
+  version: string | undefined,
+  bootstrap: IBootstrapService,
+): AgentExecutorRequirement {
+  return {
+    id: descriptor.id,
+    label: descriptor.programLabel ?? descriptor.label ?? descriptor.id,
+    role: 'program',
+    status,
+    path,
+    version,
+    installHint: descriptor.installHint === undefined ? undefined : expandExecutorText(descriptor.installHint, bootstrap),
+  };
+}
+
+function sourceLocation(source: AgentExecutorSourceProbe): string {
+  return source.launchArgs?.[0] ?? source.command ?? '';
 }
 
 function firstLine(value: string): string | undefined {

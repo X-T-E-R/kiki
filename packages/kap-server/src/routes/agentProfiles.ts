@@ -8,7 +8,9 @@ import {
   IAgentProfileRegistry,
   IAgentExecutorRegistry,
   IAgentExecutorPreflightService,
+  IBootstrapService,
   executorCapabilities,
+  expandExecutorText,
   IConfigService,
   ISessionAgentProfileCatalog,
   ISessionContext,
@@ -122,7 +124,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const preflight = core.accessor.get(IAgentExecutorPreflightService);
     const items = await Promise.all(registry.list().map((descriptor) =>
-      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id))));
+      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id), core.accessor.get(IBootstrapService))));
 
     reply.send(okEnvelope({ items }, req.id));
   });
@@ -144,7 +146,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       return;
     }
     const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
-    reply.send(okEnvelope(await projectExecutor(descriptor, registry, check), req.id));
+    reply.send(okEnvelope(await projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
   });
   app.get(executorDetailRoute.path, executorDetailRoute.options,
     executorDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
@@ -164,7 +166,11 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     reply.send(okEnvelope({ id: result!.id, status: result!.status, version: result!.version,
       command: result!.command, selected_source: result!.selectedSource,
       resolved_args: result!.resolvedArgs, diagnostics: result!.diagnostics,
-      login_status: result!.loginStatus }, req.id));
+      login_status: result!.loginStatus,
+      requirements: result!.requirements.map((requirement) => ({
+        id: requirement.id, label: requirement.label, role: requirement.role, status: requirement.status,
+        path: requirement.path, version: requirement.version, install_hint: requirement.installHint,
+      })) }, req.id));
   });
   app.post(executorCheckRoute.path, executorCheckRoute.options,
     executorCheckRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
@@ -871,7 +877,7 @@ function scopedBindingDiagnosticCode(
 }
 
 async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
-  check?: ReturnType<IAgentExecutorPreflightService['lastCheck']>) {
+  check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
   const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id).catch(() => undefined);
   const selected = probes?.find((probe) => probe.available);
   const capabilities = executorCapabilities(descriptor);
@@ -901,9 +907,9 @@ async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IA
       })(),
     },
     connection: {
-      command: selected?.command ?? descriptor.command,
+      command: selected?.launchArgs?.[0] ?? selected?.command ?? descriptor.command,
       source: selected?.id,
-      install_hint: descriptor.installHint,
+      install_hint: descriptor.installHint === undefined ? undefined : expandExecutorText(descriptor.installHint, bootstrap),
       login_command: descriptor.loginCommand,
       login_status: check?.loginStatus ?? 'unknown' as const,
       default_args: [...descriptor.args],

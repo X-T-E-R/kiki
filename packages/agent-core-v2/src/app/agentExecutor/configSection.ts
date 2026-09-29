@@ -63,6 +63,11 @@ const AgentExecutorSourceSchema = z.discriminatedUnion('kind', [
     command: z.string().trim().min(1),
     requiredBasename: z.string().trim().min(1).optional(),
   }).strict(),
+  z.object({
+    id: sourceId,
+    kind: z.literal('node-script'),
+    path: z.string().trim().min(1),
+  }).strict(),
 ]);
 
 export const AgentExecutorConfigSchema = z
@@ -79,7 +84,8 @@ export const AgentExecutorConfigSchema = z
       z.object({ kind: z.literal('path'), path: sourceId, envHome: sourceId.optional(),
         present: z.string(), absent: z.string(), absentSeverity: z.enum(['info', 'warning']) }).strict(),
       z.object({ kind: z.literal('dependency'), command: sourceId, args: z.array(z.string()),
-        unavailable: z.string(), failed: z.string() }).strict(),
+        unavailable: z.string(), failed: z.string(), label: sourceId.optional(),
+        installHint: z.string().optional() }).strict(),
       z.object({ kind: z.literal('flag'), args: z.array(z.string()), stable: sourceId,
         fallback: sourceId, stableMessage: z.string(), fallbackMessage: z.string(), missingMessage: z.string() }).strict(),
       z.object({ kind: z.literal('version'), min: sourceId, warning: z.string(), normal: z.string() }).strict(),
@@ -104,6 +110,7 @@ export const AgentExecutorConfigSchema = z
     promptDeliveries: z.array(z.enum(['append', 'replace', 'preamble'])).optional(),
     defaultProfile: z.boolean().optional(),
     installHint: z.string().optional(),
+    programLabel: z.string().trim().min(1).optional(),
     loginCommand: z.array(z.string()).optional(),
     steerDelivery: z.enum(['native', 'next_turn_preamble']).optional(),
     profileDelivery: z.literal('system_prompt_override').optional(),
@@ -147,6 +154,7 @@ const TOML_TO_RUNTIME = {
   prompt_deliveries: 'promptDeliveries',
   default_profile: 'defaultProfile',
   install_hint: 'installHint',
+  program_label: 'programLabel',
   login_command: 'loginCommand',
   steer_delivery: 'steerDelivery',
   profile_delivery: 'profileDelivery',
@@ -166,6 +174,7 @@ const RUNTIME_TO_TOML = {
   promptDeliveries: 'prompt_deliveries',
   defaultProfile: 'default_profile',
   installHint: 'install_hint',
+  programLabel: 'program_label',
   loginCommand: 'login_command',
   steerDelivery: 'steer_delivery',
   profileDelivery: 'profile_delivery',
@@ -216,6 +225,10 @@ export function agentExecutorsFromToml(value: unknown): unknown {
       const auth: Record<string, unknown> = { ...descriptor['auth'], loggedInKey: descriptor['auth']['logged_in_key'] };
       delete auth['logged_in_key'];
       descriptor['auth'] = auth;
+    }
+    if (Array.isArray(descriptor['diagnostics'])) {
+      descriptor['diagnostics'] = descriptor['diagnostics'].map((rule) =>
+        isPlainObject(rule) ? renameKey(rule, 'install_hint', 'installHint') : rule);
     }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {
@@ -282,6 +295,10 @@ export function agentExecutorsToToml(value: unknown): unknown {
       delete auth['loggedInKey'];
       descriptor['auth'] = auth;
     }
+    if (Array.isArray(descriptor['diagnostics'])) {
+      descriptor['diagnostics'] = descriptor['diagnostics'].map((rule) =>
+        isPlainObject(rule) ? renameKey(rule, 'installHint', 'install_hint') : rule);
+    }
     if (Array.isArray(descriptor['sources'])) {
       descriptor['sources'] = descriptor['sources'].map((source) => {
         if (!isPlainObject(source)) return source;
@@ -300,6 +317,13 @@ export function agentExecutorsToToml(value: unknown): unknown {
     result[id] = descriptor;
   }
   return result;
+}
+
+function renameKey(value: Record<string, unknown>, from: string, to: string): Record<string, unknown> {
+  if (!Object.hasOwn(value, from)) return value;
+  const mapped: Record<string, unknown> = { ...value, [to]: value[from] };
+  delete mapped[from];
+  return mapped;
 }
 
 registerConfigSection(AGENT_EXECUTORS_SECTION, AgentExecutorsConfigSchema, {

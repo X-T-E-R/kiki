@@ -676,8 +676,9 @@ export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly s
   const declared = context.descriptor.permission;
   const mode = declared?.via === 'argv'
     ? context.agent.accessor.get(IAgentPermissionModeService).mode : undefined;
-  const permissionArgs = mode === undefined || declared?.flag === undefined ? []
-    : [declared.flag, declared[mode === 'review' ? 'review' : mode] ?? declared.manual];
+  const permissionArgs = [...context.descriptor.launchArgs ?? [],
+    ...mode === undefined || declared?.flag === undefined ? []
+      : [declared.flag, declared[mode === 'review' ? 'review' : mode] ?? declared.manual]];
   if (context.descriptor.modelBinding !== 'argv') return [...permissionArgs, ...context.descriptor.args];
   const model = context.binding.modelAlias;
   if (model === undefined) return [...permissionArgs, ...context.descriptor.args];

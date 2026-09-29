@@ -40,6 +40,17 @@ export const executorCatalogItemSchema = z.object({
   default_profile: z.boolean().optional(),
 });
 
+export const executorRequirementSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  role: z.enum(['dependency', 'program']),
+  status: z.enum(['ok', 'missing', 'failed']),
+  path: z.string().optional(),
+  version: z.string().optional(),
+  install_hint: z.string().optional(),
+});
+export type ExecutorRequirement = z.infer<typeof executorRequirementSchema>;
+
 export const executorDetailResponseSchema = executorCatalogItemSchema;
 export const executorCheckResponseSchema = z.object({
   id: z.string(),
@@ -50,6 +61,8 @@ export const executorCheckResponseSchema = z.object({
   resolved_args: z.array(z.string()),
   login_status: z.enum(['logged_in', 'logged_out', 'unknown']),
   diagnostics: z.array(z.object({ severity: z.enum(['info', 'warning', 'error']), message: z.string() })),
+  /** Setup order: declared dependencies first, then the launched program. */
+  requirements: z.array(executorRequirementSchema).optional(),
 });
 export type ExecutorCatalogItem = z.infer<typeof executorCatalogItemSchema>;
 

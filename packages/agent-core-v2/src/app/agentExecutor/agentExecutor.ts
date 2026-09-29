@@ -40,7 +40,8 @@ export type AgentExecutorBinarySource =
       readonly kind: 'path-lookup';
       readonly command: string;
       readonly requiredBasename?: string;
-    };
+    }
+  | { readonly id: string; readonly kind: 'node-script'; readonly path: string };
 
 export interface AgentExecutorVersionProbe {
   readonly args: readonly string[];
@@ -51,6 +52,8 @@ export interface AgentExecutorSourceProbe {
   readonly kind: AgentExecutorBinarySource['kind'];
   readonly available: boolean;
   readonly command?: string;
+  /** Arguments placed before every other argument, e.g. the script a `node-script` source runs. */
+  readonly launchArgs?: readonly string[];
   readonly version?: string;
   readonly diagnostic?: string;
 }
@@ -88,7 +91,8 @@ export type AgentExecutorDiagnosticRule =
   | { readonly kind: 'path'; readonly path: string; readonly envHome?: string;
       readonly present: string; readonly absent: string; readonly absentSeverity: 'info' | 'warning' }
   | { readonly kind: 'dependency'; readonly command: string; readonly args: readonly string[];
-      readonly unavailable: string; readonly failed: string }
+      readonly unavailable: string; readonly failed: string; readonly label?: string;
+      readonly installHint?: string }
   | { readonly kind: 'flag'; readonly args: readonly string[]; readonly stable: string;
       readonly fallback: string; readonly stableMessage: string; readonly fallbackMessage: string;
       readonly missingMessage: string }
@@ -103,6 +107,10 @@ export interface AgentExecutorDescriptor {
   readonly source?: string;
   readonly selectedSource?: string;
   readonly sourceProbes?: readonly AgentExecutorSourceProbe[];
+  /** Resolved launch prefix of the selected source; spawners place it before every other argument. */
+  readonly launchArgs?: readonly string[];
+  /** Name of the program Kiki launches when it differs from the engine label, e.g. an ACP adapter package. */
+  readonly programLabel?: string;
   readonly version?: string;
   readonly versionProbe?: AgentExecutorVersionProbe;
   readonly diagnostics?: readonly AgentExecutorDiagnosticRule[];

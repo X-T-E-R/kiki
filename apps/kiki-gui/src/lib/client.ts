@@ -412,6 +412,8 @@ export interface ExecutorCheckResult {
   readonly resolved_args: readonly string[];
   readonly login_status: 'logged_in' | 'logged_out' | 'unknown';
   readonly diagnostics: readonly { readonly severity: 'info' | 'warning' | 'error'; readonly message: string }[];
+  /** Setup order: declared dependencies, then the launched program. Absent from servers that predate it. */
+  readonly requirements?: readonly import('@kiki/protocol').ExecutorRequirement[];
 }
 
 /**

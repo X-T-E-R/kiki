@@ -226,6 +226,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       descriptor: {
         ...resolved.descriptor,
         command: selected.command,
+        launchArgs: selected.launchArgs,
         selectedSource: selected.id,
         sourceProbes: probes,
         version: selected.version,
@@ -233,6 +234,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
           baseRevision: resolved.descriptor.revision,
           selectedSource: selected.id,
           command: selected.command,
+          launchArgs: selected.launchArgs,
           version: selected.version,
         }),
       },
@@ -286,6 +288,7 @@ function descriptorFromConfig(
     promptDeliveries: config.promptDeliveries,
     defaultProfile: config.defaultProfile,
     installHint: config.installHint,
+    programLabel: config.programLabel,
     loginCommand: config.loginCommand,
     steerDelivery: config.steerDelivery,
     profileDelivery: config.profileDelivery,
@@ -297,6 +300,7 @@ export function resolvedExecutableRevision(input: {
   readonly baseRevision: string;
   readonly selectedSource: string;
   readonly command: string;
+  readonly launchArgs?: readonly string[];
   readonly version?: string;
 }): string {
   return createHash('sha256')
@@ -304,6 +308,7 @@ export function resolvedExecutableRevision(input: {
       baseRevision: input.baseRevision,
       selectedSource: input.selectedSource,
       command: normalize(input.command),
+      launchArgs: input.launchArgs?.map((arg) => normalize(arg)),
       version: input.version,
     }))
     .digest('hex');
