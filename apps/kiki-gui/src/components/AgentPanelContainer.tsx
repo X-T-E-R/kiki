@@ -27,6 +27,7 @@ import { agentUsageCacheHitRate } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
 import { AgentTodoSection } from './agent-panel/AgentTodoSection';
+import { AgentNotesSection } from './agent-panel/AgentNotesSection';
 import { AgentPlanSection } from './agent-panel/AgentPlanSection';
 import { AgentCapabilitiesSection, capabilityCounts } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
@@ -198,9 +199,15 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     resyncing={agentState.resyncing}
     planMode={planMode}
   /> : null;
+  // The agent's own working notes sit under its checklist: the same writer
+  // (TodoList), read-only here, from this agent's state only.
+  const notesSection = agentState !== undefined && loaded
+    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} />
+    : null;
   if (part === 'work') {
     return <div data-agent-panel-container data-agent-panel-part="work" className="space-y-4 empty:hidden">
       {todoSection}
+      {notesSection}
       {planSection}
     </div>;
   }
@@ -330,6 +337,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       <button type="button" className="ml-2 font-medium text-ink underline underline-offset-2" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
     </div> : null}
     {todoSection}
+    {notesSection}
     {agentState !== undefined ? <AgentPlanSection
       key={`${state.sessionId}:${agentId}`}
       sessionId={state.sessionId}
