@@ -294,7 +294,7 @@ import {
   parseInlineMcpServer,
   parseReconnectMcpServerConfig,
 } from '#/v2/global-mcp';
-import { normalizeWorkDir, v2SummaryToSessionSummary } from '#/v2/session-mapper';
+import { normalizeWorkDir, sameWorkDir, v2SummaryToSessionSummary } from '#/v2/session-mapper';
 import { SessionEventWiring } from '#/v2/session-wiring';
 
 export interface SDKRpcClientOptions {
@@ -1155,7 +1155,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
    */
   private async workspaceIdsFor(workDir: string): Promise<readonly string[]> {
     const workspaces = await this.klient.global.workspaces.list();
-    const match = workspaces.find((workspace) => normalizeWorkDir(workspace.root) === workDir);
+    const match = workspaces.find((workspace) => sameWorkDir(workspace.root, workDir));
     if (match === undefined) return [encodeWorkDirKey(workDir)];
     return this.engineAccessor.get(IWorkspaceAliases).resolveAliasIds(match.id);
   }

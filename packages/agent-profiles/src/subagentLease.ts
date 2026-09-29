@@ -1,3 +1,4 @@
+import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import type {
   AgentModelProfile,
   AgentModelProfilePromptMode,
@@ -62,8 +63,6 @@ export interface ParsedSubagentField {
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
 }
-
-const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
 const LEASE_KEYS = new Set([
   'name',

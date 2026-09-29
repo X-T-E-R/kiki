@@ -452,6 +452,16 @@ describe('new profile', () => {
     expect(buttonIn(sheet(), 'Create agent').disabled).toBe(false);
   });
 
+  it('accepts an underscore-separated profile name', async () => {
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());
+    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-new-start="blank"]')!.click());
+    await typeIn(sheet().querySelector<HTMLInputElement>('#new-profile-name')!, 'helper_agent');
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#new-profile-description')!, 'Helps');
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#new-profile-prompt')!, 'Help here');
+    expect(buttonIn(sheet(), 'Create agent').disabled).toBe(false);
+  });
+
   it('keeps shipped tombstones restorable below the table', async () => {
     client.listShippedAgentProfiles.mockResolvedValue({ items: [{
       template_id: 'plan', status: 'removed', managed: true, main: false,

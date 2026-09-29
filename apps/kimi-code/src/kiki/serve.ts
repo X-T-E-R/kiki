@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import { open, mkdir, realpath, stat, unlink } from 'node:fs/promises';
-import { platform } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { sameWorkDir } from '@kiki/node-sdk';
 import {
   listLiveServerInstances,
   readServerToken,
@@ -109,10 +109,9 @@ export async function findReachableServer(
   if (token === undefined) return undefined;
   const instances = [...await listLiveServerInstances(homeDir)];
   if (workspace !== undefined) {
-    const target = pathKey(workspace);
     instances.sort((a, b) => {
-      const aMatch = a.workspaces.some((item) => pathKey(item) === target);
-      const bMatch = b.workspaces.some((item) => pathKey(item) === target);
+      const aMatch = a.workspaces.some((item) => sameWorkDir(item, workspace));
+      const bMatch = b.workspaces.some((item) => sameWorkDir(item, workspace));
       return Number(bMatch) - Number(aMatch) || a.startedAt - b.startedAt;
     });
   }
@@ -287,11 +286,6 @@ export function parseDuration(value: string): number {
   const amount = Number(match[1]);
   const scale = match[2] === 'ms' ? 1 : match[2] === 's' ? 1_000 : match[2] === 'm' ? 60_000 : 3_600_000;
   return amount * scale;
-}
-
-function pathKey(value: string): string {
-  const normalized = normalize(value);
-  return platform() === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized;
 }
 
 function writeConnection(connection: ServerConnection, json: boolean): void {

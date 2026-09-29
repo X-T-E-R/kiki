@@ -11,7 +11,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
-import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
@@ -646,16 +646,47 @@ describe('WorkspaceService (file-backed)', () => {
     expect((await registry.list()).map((w) => w.root).toSorted()).toEqual(['/tmp/Foo', '/tmp/foo']);
   });
 
+  it('hashes one Windows path identity across case, separators, trailing slashes, and dot segments', () => {
+    const typed = encodeWorkDirKey('C:/Programs/AI/EasyAgent');
+    const equivalent = encodeWorkDirKey('c:\\programs\\ai\\easyagent\\.\\nested\\..\\');
 
+    expect(typed).toBe(equivalent);
+    expect(typed).toBe('wd_easyagent_3c8e4457f2bf');
+    expect(workspaceRootKey('C:/Programs/AI/EasyAgent/./nested/../')).toBe('c:/programs/ai/easyagent');
+  });
 
+  it('keeps an existing legacy workspace bucket when rebuilding from its session index', async () => {
+    const root = 'C:/Programs/AI/EasyAgent';
+    const legacyId = 'wd_easyagent_8e4e4acd13e0';
+    await seedSessionIndex([{
+      sessionId: 'legacy-session',
+      sessionDir: join(homeDir, 'sessions', legacyId, 'legacy-session'),
+      workDir: root,
+    }]);
+
+    const list = await build(allDirsHostFs()).list();
+
+    expect(list).toHaveLength(1);
+    expect(list[0]?.id).toBe(legacyId);
+  });
+
+  it('reuses a legacy workspace bucket found on disk when the catalog is missing', async () => {
+    const root = 'C:/Programs/AI/EasyAgent';
+    const legacyId = 'wd_easyagent_8e4e4acd13e0';
+    await fsp.mkdir(join(homeDir, 'sessions', legacyId, 'legacy-session'), { recursive: true });
+
+    const workspace = await build(allDirsHostFs()).createOrTouch(root);
+
+    expect(workspace.id).toBe(legacyId);
+  });
 
   it('delete tombstones every folded alias so a legacy split cannot resurface', async () => {
     const typedRoot = 'C:\\Users\\Foo\\Proj';
     const typedId = encodeWorkDirKey(typedRoot);
     const aliasRoot = 'c:\\Users\\Foo\\Proj';
-    const aliasId = encodeWorkDirKey(aliasRoot);
+    const aliasId = encodeLegacyWorkDirKey(aliasRoot);
     const indexOnlyRoot = 'C:/users/foo/proj';
-    const indexOnlyId = encodeWorkDirKey(indexOnlyRoot);
+    const indexOnlyId = encodeLegacyWorkDirKey(indexOnlyRoot);
     await writeWorkspacesJson({
       [typedId]: {
         root: typedRoot,
@@ -687,7 +718,7 @@ describe('WorkspaceService (file-backed)', () => {
     const saved = await readWorkspacesJson();
     expect(Object.keys(saved.workspaces)).toEqual([unrelatedId]);
     expect([...(saved.deleted_workspace_ids as string[])].toSorted()).toEqual(
-      [typedId, aliasId, indexOnlyId].toSorted(),
+      [typedId, encodeLegacyWorkDirKey(typedRoot), aliasId, indexOnlyId].toSorted(),
     );
 
     const reopened = restart();

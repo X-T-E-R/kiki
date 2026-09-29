@@ -9,7 +9,7 @@
 import type { Component } from '@kiki/pi-tui';
 import { truncateToWidth, visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
-import { effectiveModelAlias } from '@kiki/node-sdk';
+import { effectiveModelAlias, sameWorkDir } from '@kiki/node-sdk';
 
 import { ALL_TIPS, type ToolbarTip } from '#/tui/constant/tips';
 import { isRainbowDancing, renderDanceFooterModel } from '#/tui/easter-eggs/dance';
@@ -220,7 +220,7 @@ export class FooterComponent implements Component {
   }
 
   setState(state: AppState): void {
-    if (state.workDir !== this.gitCacheWorkDir) {
+    if (!sameWorkDir(state.workDir, this.gitCacheWorkDir)) {
       this.gitCacheWorkDir = state.workDir;
       this.gitCache = createGitStatusCache(state.workDir, { onChange: this.onRefresh });
     }

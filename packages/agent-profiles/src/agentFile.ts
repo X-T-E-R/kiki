@@ -1,4 +1,5 @@
 import { dirname } from 'pathe';
+import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
 import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema } from './agentProfile';
 import { executorPromptSchema } from './executorPrompt';
@@ -32,7 +33,7 @@ export interface ParseAgentFileOptions {
   readonly forceOverride?: boolean;
 }
 
-const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+export { AGENT_NAME_PATTERN };
 
 const AGENT_FILE_KEYS = new Set([
   'name',

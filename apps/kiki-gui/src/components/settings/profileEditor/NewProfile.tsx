@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import type { CreateNamedAgentProfileRequest, NamedAgentProfile, ShippedAgentProfile } from '../../../lib/client';
@@ -12,7 +13,6 @@ import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../
 
 type Start = 'copy' | 'template' | 'blank';
 type Template = 'implementer' | 'reviewer';
-const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
  * New profile in three starts. Copying is first: most real profiles are a
@@ -44,7 +44,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const taken = profiles.some((profile) => profile.name === name);
-  const validName = NAME_PATTERN.test(name) && !taken;
+  const validName = AGENT_NAME_PATTERN.test(name) && !taken;
   const sourceProfile = profiles.find((profile) => profile.name === source);
   const effectiveMain = main ?? (start === 'copy' ? sourceProfile?.main === true : false);
   const blankOk = start !== 'blank' || (description.trim() !== '' && prompt.trim() !== '');

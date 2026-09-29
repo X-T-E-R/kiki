@@ -2,7 +2,11 @@ import { LifecycleScope } from '#/app/scopes';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import {
+  workspaceIdFromSessionDir,
+  workspaceRootKey,
+  workDirKeyAliases,
+} from '#/_base/utils/workdir-slug';
 import { IWorkspaceService, type Workspace } from '#/app/workspace/workspace';
 import {
   readSessionIndexEntries,
@@ -151,11 +155,19 @@ export class WorkspaceAliasesService extends Disposable implements IWorkspaceAli
     try {
       const generation = this.invalidationGeneration;
       const entries = await readSessionIndexEntries(this.storage);
-      const snapshot: SessionIndexSnapshot = {
-        idsByRootKey: rootKeyIndex(entries, (entry) => entry.workDir, (entry) =>
-          encodeWorkDirKey(entry.workDir),
-        ),
-      };
+      const idsByRootKey = new Map<string, string[]>();
+      for (const entry of entries) {
+        const root = entry.sourceRoot ?? entry.workDir;
+        const key = workspaceRootKey(root);
+        const ids = idsByRootKey.get(key) ?? [];
+        for (const alias of workDirKeyAliases(root)) {
+          if (!ids.includes(alias)) ids.push(alias);
+        }
+        const storageId = workspaceIdFromSessionDir(entry.sessionDir);
+        if (storageId !== undefined && !ids.includes(storageId)) ids.push(storageId);
+        idsByRootKey.set(key, ids);
+      }
+      const snapshot: SessionIndexSnapshot = { idsByRootKey };
       if (generation === this.invalidationGeneration) {
         this.sessionIndexCache = {
           snapshot,

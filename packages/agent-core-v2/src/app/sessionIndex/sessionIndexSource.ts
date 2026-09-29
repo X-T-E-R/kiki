@@ -1,3 +1,4 @@
+import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
@@ -149,7 +150,9 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
   return (
     a.id === b.id &&
     a.workspaceId === b.workspaceId &&
-    a.cwd === b.cwd &&
+    (a.cwd === undefined || b.cwd === undefined
+      ? a.cwd === b.cwd
+      : workspaceRootKey(a.cwd) === workspaceRootKey(b.cwd)) &&
     JSON.stringify(a.worktree) === JSON.stringify(b.worktree) &&
     a.title === b.title &&
     a.lastPrompt === b.lastPrompt &&

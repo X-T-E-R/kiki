@@ -9,6 +9,7 @@ import { pickDisclosureBaseline } from './disclosureBaseline';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IHostClock } from '#/os/interface/hostClock';
+import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { type DateInjectionDisclosure, IAgentDateChangeService } from './dateChange';
@@ -48,7 +49,7 @@ export class AgentDateChangeService extends Disposable implements IAgentDateChan
     if (
       environment !== undefined &&
       environment.cwd !== '' &&
-      environment.cwd !== this.sessionContext.cwd
+      workspaceRootKey(environment.cwd) !== workspaceRootKey(this.sessionContext.cwd)
     ) {
       return undefined;
     }
@@ -81,7 +82,7 @@ export class AgentDateChangeService extends Disposable implements IAgentDateChan
     if (
       environment !== undefined &&
       environment.cwd !== '' &&
-      environment.cwd !== this.sessionContext.cwd
+      workspaceRootKey(environment.cwd) !== workspaceRootKey(this.sessionContext.cwd)
     ) {
       return undefined;
     }

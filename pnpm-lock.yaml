@@ -541,6 +541,9 @@ importers:
 
   packages/agent-profiles:
     dependencies:
+      '@kiki/protocol':
+        specifier: workspace:^
+        version: link:../protocol
       zod:
         specifier: 'catalog:'
         version: 4.3.6

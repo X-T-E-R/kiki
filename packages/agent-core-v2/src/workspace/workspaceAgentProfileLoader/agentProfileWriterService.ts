@@ -1,3 +1,4 @@
+import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 import { join } from 'pathe';
@@ -432,15 +433,16 @@ function profileExistsError(name: string): Error2 {
 function validateCreateRequest(request: AgentProfileCreateRequest): void {
   const issues: ValidationIssue[] = [];
   if (!isRecord(request)) throw validationError([{ path: '', message: 'request must be an object' }]);
-  if (typeof request.name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(request.name)) {
-    issues.push({ path: 'name', message: 'name must be kebab-case' });
+  if (typeof request.name !== 'string' || !AGENT_NAME_PATTERN.test(request.name)) {
+    issues.push({ path: 'name', message: 'name must use lowercase letters and digits separated by hyphens or underscores' });
   }
   if (request.scope !== 'user' && request.scope !== 'project') {
     issues.push({ path: 'scope', message: 'scope must be user or project' });
   }
   if (request.template !== undefined && request.template !== 'blank'
     && request.template !== 'implementer' && request.template !== 'reviewer'
-    && (typeof request.template !== 'string' || !/^duplicate:[a-z0-9]+(?:-[a-z0-9]+)*$/.test(request.template))) {
+    && (typeof request.template !== 'string' || !request.template.startsWith('duplicate:')
+      || !AGENT_NAME_PATTERN.test(request.template.slice('duplicate:'.length)))) {
     issues.push({ path: 'template', message: 'unknown profile template' });
   }
   if (request.main !== undefined && typeof request.main !== 'boolean') {

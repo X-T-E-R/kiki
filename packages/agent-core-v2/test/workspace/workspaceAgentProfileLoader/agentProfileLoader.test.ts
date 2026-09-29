@@ -775,6 +775,11 @@ describe('agent profile loaders + session catalog', () => {
         expect(created.profile).toMatchObject({ name: 'new-reviewer', description: 'New reviewer', tools: ['Read'] });
         expect(created.profile.fileDefinition?.prompt).toBe('Inspect changes carefully.');
         expect(stack.catalog.get('new-reviewer')?.name).toBe('new-reviewer');
+        const underscore = await stack.writer.create({
+          name: 'new_reviewer', scope: 'user', description: 'Underscore reviewer', main: false,
+          prompt: 'Inspect with an underscore name.',
+        });
+        expect(underscore.profile.name).toBe('new_reviewer');
         const path = join(fixture.homeDir, 'agents', 'new-reviewer.md');
         expect(await readFile(path, 'utf8')).toContain('main: false');
         await expect(stack.writer.create({

@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
 import { Text, TuiAltScreen } from '@kiki/pi-tui';
-import type { PermissionMode } from '@kiki/node-sdk';
+import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
 import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
@@ -2357,13 +2357,8 @@ function splitFirst(value: string): readonly [string, string] {
     : [trimmed.slice(0, boundary), trimmed.slice(boundary).trim()];
 }
 
-function normalizedPath(value: string): string {
-  const normalized = resolve(value).replaceAll('\\', '/').replace(/\/$/u, '');
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
 function samePath(left: string, right: string): boolean {
-  return normalizedPath(left) === normalizedPath(right);
+  return sameWorkDir(left, right);
 }
 
 const SENSITIVE_CONFIG_KEY = /(?:api[-_]?key|token|secret|password|authorization|headers|env)/iu;

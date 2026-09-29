@@ -7,6 +7,7 @@ import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
 import { resolveModelId } from '@kiki/agent-core-v2/kosong/model/resolveModelId';
 import {
   createKimiConfigRpc,
+  sameWorkDir,
   type KimiConfigRpc,
   type KimiConfigValidationIssue,
 } from '@kiki/node-sdk';
@@ -377,7 +378,7 @@ async function checkAgentProfiles(
   }
 
   const uniqueRoots = roots.filter(
-    (root, index) => roots.findIndex((candidate) => candidate.path === root.path) === index,
+    (root, index) => roots.findIndex((candidate) => sameWorkDir(candidate.path, root.path)) === index,
   );
   const parsedFiles: ParsedAgentFile[] = [];
   const results: CheckResult[] = [];

@@ -11,7 +11,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { Event } from '#/_base/event';
-import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '#/_base/utils/workdir-slug';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -155,7 +155,8 @@ describe('WorkspaceAliasesService (file-backed)', () => {
   it('resolveAliasIds folds in session-index-only spellings of the same root', async () => {
     const typedRoot = 'C:\\Users\\Foo\\Proj';
     const typedId = encodeWorkDirKey(typedRoot);
-    const indexOnlyId = encodeWorkDirKey('c:\\Users\\Foo\\Proj');
+    const typedLegacyId = encodeLegacyWorkDirKey(typedRoot);
+    const indexOnlyId = encodeLegacyWorkDirKey('c:\\Users\\Foo\\Proj');
     await writeWorkspacesJson({
       [typedId]: {
         root: typedRoot,
@@ -173,7 +174,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
 
     const aliases = build();
     expect((await aliases.resolveAliasIds(typedId)).toSorted()).toEqual(
-      [typedId, indexOnlyId].toSorted(),
+      [typedId, typedLegacyId, indexOnlyId].toSorted(),
     );
   });
 
@@ -424,7 +425,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
       workDir: 'c:\\Users\\Foo\\Proj',
     });
     await appendLogs.flush();
-    const indexOnlyId = encodeWorkDirKey('c:\\Users\\Foo\\Proj');
+    const indexOnlyId = encodeLegacyWorkDirKey('c:\\Users\\Foo\\Proj');
     expect((await aliases.resolveAliasIds(typedId)).toSorted()).toEqual(
       [indexOnlyId, typedId].toSorted(),
     );
@@ -457,7 +458,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
       { timeout: 5000 },
     );
 
-    const indexOnlyId = encodeWorkDirKey('c:\\Users\\Foo\\Proj');
+    const indexOnlyId = encodeLegacyWorkDirKey('c:\\Users\\Foo\\Proj');
     await seedSessionIndex([
       { sessionId: 's1', sessionDir: 'sessions/a/s1', workDir: 'c:\\Users\\Foo\\Proj' },
     ]);

@@ -87,6 +87,7 @@ export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleS
 // config without spinning up a full engine.
 export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '#/config';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
+export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
 export { parseAgentFileText } from '@kiki/agent-core-v2';
 export { resolveAgentPath } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
 

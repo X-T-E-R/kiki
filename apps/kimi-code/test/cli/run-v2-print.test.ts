@@ -1,10 +1,12 @@
 import { PRINT_WAIT_CEILING_S_DEFAULT } from '@kiki/agent-core-v2';
+import { sameWorkDir } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   applyPrintBackgroundPolicy,
   createPrintTurnEndings,
   PrintSteeredTurnFailedError,
+  selectPrintContinuationSession,
   type PrintTurnEnding,
   type PrintTurnEndings,
 } from '#/cli/v2/run-v2-print';
@@ -40,6 +42,17 @@ function scriptedTurnEndings(entries: ScriptedEntry[]): PrintTurnEndings {
     },
   };
 }
+
+describe('print session continuation identity', () => {
+  it('matches Windows cwd spelling variants and selects the most recently updated session', () => {
+    expect(sameWorkDir('C:/Programs/AI/EasyAgent', 'c:\\programs\\ai\\easyagent\\.\\nested\\..\\')).toBe(true);
+    const selected = selectPrintContinuationSession([
+      { id: 'old', cwd: 'C:/Programs/AI/EasyAgent', updatedAt: 10 },
+      { id: 'new', cwd: 'c:/programs/ai/easyagent', updatedAt: 20 },
+    ], 'C:\\Programs\\AI\\EasyAgent');
+    expect(selected?.id).toBe('new');
+  });
+});
 
 describe('applyPrintBackgroundPolicy', () => {
   it('awaits remote resource reads in goal, cron, then background order', async () => {

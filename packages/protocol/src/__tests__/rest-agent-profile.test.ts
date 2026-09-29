@@ -10,6 +10,7 @@ import {
   executorDetailResponseSchema,
   executorPromptPreviewRequestSchema,
   executorPromptPreviewResponseSchema,
+  createNamedAgentProfileRequestSchema,
   updateNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
@@ -18,6 +19,13 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('accepts underscore-separated profile names in create requests and duplicate templates', () => {
+    expect(createNamedAgentProfileRequestSchema.parse({
+      workspace_id: 'wd_a', name: 'code_reviewer', scope: 'user',
+      description: 'Review code', prompt: 'Review it.', template: 'duplicate:code_reviewer',
+    }).name).toBe('code_reviewer');
+  });
+
   it('accepts rendered executor prompt blocks and rejects malformed preview input', () => {
     expect(executorPromptPreviewRequestSchema.parse({ executor: 'codex-app-server', workspace: 'wd-a' }))
       .toEqual({ executor: 'codex-app-server', workspace: 'wd-a' });

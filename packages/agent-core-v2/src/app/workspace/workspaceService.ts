@@ -1,7 +1,13 @@
 import { basename, isAbsolute } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import {
+  encodeWorkDirKey,
+  isWorkDirKeyForRoot,
+  workspaceIdFromSessionDir,
+  workspaceRootKey,
+  workDirKeyAliases,
+} from '#/_base/utils/workdir-slug';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -12,7 +18,6 @@ import {
   collectAliasIds,
   dedupeByRoot,
   readSessionIndexEntries,
-  readSessionIndexWorkDirs,
 } from './workspaceAlias';
 import { IWorkspacePersistence, type WorkspaceCatalog } from './workspacePersistence';
 
@@ -71,7 +76,7 @@ export class WorkspaceService implements IWorkspaceService {
       const catalog = await this.loadCatalog();
       const byId = new Map(catalog.workspaces.map((ws) => [ws.id, ws]));
       const deletedIds = new Set(catalog.deletedIds);
-      const id = encodeWorkDirKey(root);
+      let id = encodeWorkDirKey(root);
       let existing = byId.get(id);
       if (existing === undefined) {
         const rootKey = workspaceRootKey(root);
@@ -80,6 +85,13 @@ export class WorkspaceService implements IWorkspaceService {
             existing = entry;
             break;
           }
+        }
+      }
+      if (existing === undefined) {
+        const storedId = await this.findStoredWorkspaceId(root);
+        if (storedId !== undefined) {
+          id = storedId;
+          existing = byId.get(storedId);
         }
       }
       const now = Date.now();
@@ -127,7 +139,7 @@ export class WorkspaceService implements IWorkspaceService {
       let root = catalog.workspaces.find((ws) => ws.id === id)?.root;
       if (root === undefined) {
         const entry = (await readSessionIndexEntries(this.storage)).find(
-          (line) => encodeWorkDirKey(line.sourceRoot ?? line.workDir) === id,
+          (line) => isWorkDirKeyForRoot(id, line.sourceRoot ?? line.workDir),
         );
         root = entry?.sourceRoot ?? entry?.workDir;
       }
@@ -183,13 +195,19 @@ export class WorkspaceService implements IWorkspaceService {
   ): Promise<boolean> {
     let changed = false;
     const now = Date.now();
-    for (const workDir of await readSessionIndexWorkDirs(this.storage)) {
-      const id = encodeWorkDirKey(workDir);
-      if (byId.has(id) || deletedIds.has(id)) continue;
+    const seenRootKeys = new Set([...byId.values()].map((workspace) => workspaceRootKey(workspace.root)));
+    for (const entry of await readSessionIndexEntries(this.storage)) {
+      const root = entry.sourceRoot ?? entry.workDir;
+      if (!isAbsolute(root)) continue;
+      const rootKey = workspaceRootKey(root);
+      if (seenRootKeys.has(rootKey)) continue;
+      const id = workspaceIdForRoot(root, workspaceIdFromSessionDir(entry.sessionDir));
+      if (workDirKeyAliases(root).some((alias) => deletedIds.has(alias))) continue;
+      seenRootKeys.add(rootKey);
       byId.set(id, {
         id,
-        root: workDir,
-        name: basename(workDir),
+        root,
+        name: basename(root),
         createdAt: now,
         lastOpenedAt: now,
         pinned: false,
@@ -209,7 +227,7 @@ export class WorkspaceService implements IWorkspaceService {
       const rootKey = workspaceRootKey(root);
       if (seenRootKeys.has(rootKey)) continue;
       seenRootKeys.add(rootKey);
-      const id = encodeWorkDirKey(root);
+      const id = workspaceIdForRoot(root, workspaceIdFromSessionDir(entry.sessionDir));
       result.set(id, {
         id,
         root,
@@ -241,11 +259,11 @@ export class WorkspaceService implements IWorkspaceService {
       for (const session of page.items) {
         const root = session.worktree?.sourceRoot ?? session.cwd;
         if (root === undefined || !isAbsolute(root)) continue;
-        const id = encodeWorkDirKey(root);
+        const id = workspaceIdForRoot(root, session.workspaceId);
         const rootKey = workspaceRootKey(root);
         if (
           byId.has(id) ||
-          deletedIds.has(id) ||
+          workDirKeyAliases(root).some((alias) => deletedIds.has(alias)) ||
           deletedIds.has(session.workspaceId) ||
           seenRootKeys.has(rootKey)
         ) {
@@ -268,6 +286,18 @@ export class WorkspaceService implements IWorkspaceService {
     return changed;
   }
 
+  private async findStoredWorkspaceId(root: string): Promise<string | undefined> {
+    const aliases = workDirKeyAliases(root).slice(1);
+    if (aliases.length === 0) return undefined;
+    let stored: readonly string[];
+    try {
+      stored = await this.storage.list('sessions');
+    } catch {
+      return undefined;
+    }
+    return aliases.find((id) => stored.includes(id));
+  }
+
   private runExclusive<T>(op: () => Promise<T>): Promise<T> {
     const next = this.opQueue.then(op, op);
     this.opQueue = next.then(
@@ -276,6 +306,12 @@ export class WorkspaceService implements IWorkspaceService {
     );
     return next;
   }
+}
+
+function workspaceIdForRoot(root: string, storedId: string | undefined): string {
+  return storedId !== undefined && isWorkDirKeyForRoot(storedId, root)
+    ? storedId
+    : encodeWorkDirKey(root);
 }
 
 registerScopedService(

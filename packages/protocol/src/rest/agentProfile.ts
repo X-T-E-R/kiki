@@ -1,3 +1,4 @@
+import { AGENT_NAME_PATTERN } from '../agentName';
 import { z } from 'zod';
 import { executorPromptSchema } from '../executorPrompt';
 
@@ -409,9 +410,15 @@ export const updateNamedAgentRouteSchema = z.object({
 
 export const createNamedAgentProfileRequestSchema = z.object({
   workspace_id: z.string().min(1),
-  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'name must be kebab-case'),
+  name: z.string().regex(AGENT_NAME_PATTERN, 'name must use lowercase letters and digits separated by hyphens or underscores'),
   scope: z.enum(['user', 'project']),
-  template: z.union([z.enum(['blank', 'implementer', 'reviewer']), z.string().regex(/^duplicate:[a-z0-9]+(?:-[a-z0-9]+)*$/)]).optional(),
+  template: z.union([
+    z.enum(['blank', 'implementer', 'reviewer']),
+    z.string().refine(
+      (value) => value.startsWith('duplicate:') && AGENT_NAME_PATTERN.test(value.slice('duplicate:'.length)),
+      'template must duplicate a valid profile name',
+    ),
+  ]).optional(),
   main: z.boolean().optional(),
   description: z.string().trim().min(1).optional(),
   when_to_use: z.string().trim().min(1).optional(),

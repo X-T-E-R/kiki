@@ -3,13 +3,14 @@ import path from 'node:path';
 import { z } from 'zod';
 import * as ownWork from 'own-work/tasks';
 import { IBootstrapService, IConfigService, IWorkspaceService, IAtomicDocumentStore, type Scope } from '@kiki/agent-core-v2';
+import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { createOwnWorkBoardService, type OwnWorkTaskApi } from '@kiki/agent-core-v2/app/taskBoard/ownWorkAdapter';
 import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import type { BoardOverviewEntry, BoardReadInput, BoardResult, BoardWriteInput, ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { withTaskBoardSurveyCache } from './taskBoardSurveyCache';
 
 const bindingsSchema = z.array(z.object({ root: z.string(), canonical: z.string(), workspaceRoot: z.string() }));
-const normalize = (root: string): string => process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root);
+const normalize = (root: string): string => workspaceRootKey(path.resolve(root));
 const OVERVIEW_CONCURRENCY = 8;
 const OVERVIEW_PAGE_LIMIT = 100;
 type RegisteredWorkspace = { readonly id: string; readonly root: string };
@@ -94,7 +95,7 @@ export function createTaskBoardHost(getCore: () => Scope, api: OwnWorkTaskApi = 
       for (const binding of touched) {
         await docs.update('task-board-authorizations', binding.workspaceId, (raw: unknown) => {
           const previous = bindingsSchema.parse(raw ?? []);
-          if (previous.some((entry) => entry.root === binding.root && entry.workspaceRoot === binding.workspaceRoot)) return previous;
+          if (previous.some((entry) => normalize(entry.root) === binding.root && normalize(entry.workspaceRoot) === binding.workspaceRoot)) return previous;
           return [...previous, { root: binding.root, canonical: binding.canonical, workspaceRoot: binding.workspaceRoot }];
         });
       }

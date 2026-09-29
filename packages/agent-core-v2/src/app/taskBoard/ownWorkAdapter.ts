@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
+
+import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { BoardReadSchema, BoardWriteSchema, type BoardCard, type BoardIssue, type BoardPage, type BoardPatch, type BoardReadInput, type BoardReadValue, type BoardResult, type BoardStatus, type BoardStorageRef, type BoardSummary, type BoardWriteInput, type ITaskBoardService } from './taskBoard';
 import type { BoardStorageConfig } from './configSection';
 import { openBoardStorage, prepareBoardStorage, previewBoardStorage, type BoardStorageApi, type BoardStorageContext, type BoardStoragePreview } from './storage';
@@ -60,7 +62,8 @@ function failure<T>(error: unknown): BoardResult<T> {
   return fail('BOARD_UNAVAILABLE', 'Own Work storage is unavailable or incompatible. No fallback store was selected.');
 }
 function owns(context: BoardStorageContext, storage: BoardStorageRef, item: OwnWorkItemSummary | undefined): boolean {
-  return item ? item.workspaceId === context.workspaceId : storage.kind === 'workspace' && path.resolve(storage.root) === path.resolve(context.workspaceRoot);
+  return item ? item.workspaceId === context.workspaceId : storage.kind === 'workspace'
+    && workspaceRootKey(storage.root) === workspaceRootKey(context.workspaceRoot);
 }
 function summary(context: BoardStorageContext, storage: BoardStorageRef, entry: OwnWorkListEntry): BoardResult<BoardSummary> {
   if (!owns(context, storage, entry.workItem)) return fail('BOARD_WORKSPACE_MISMATCH', 'The record belongs to another workspace or has no ownership in a shared store.');

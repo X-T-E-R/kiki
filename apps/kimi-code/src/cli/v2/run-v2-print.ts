@@ -8,14 +8,13 @@ import {
   parseAgentFileText,
   resolveAgentPath,
   resolveKikiHome,
+  sameWorkDir,
   setClampedTimeout,
   type AgentTaskConfig,
   type PrintBackgroundMode,
 } from '@kiki/node-sdk';
 import type { AgentEventPayloads, AgentHandle, EventSubscription, Klient, SessionHandle } from '@kiki/klient';
 import { createKimiDefaultHeaders } from '@kiki/oauth';
-
-import { resolve } from 'pathe';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
 
@@ -153,6 +152,16 @@ interface ResolvedPrintSession {
   readonly goalModel: string | undefined;
 }
 
+export function selectPrintContinuationSession<T extends {
+  readonly id: string;
+  readonly cwd?: string;
+  readonly updatedAt: number;
+}>(summaries: readonly T[], workDir: string): T | undefined {
+  return summaries
+    .filter((summary) => summary.cwd !== undefined && sameWorkDir(summary.cwd, workDir))
+    .toSorted((left, right) => right.updatedAt - left.updatedAt || (left.id < right.id ? 1 : left.id > right.id ? -1 : 0))[0];
+}
+
 async function resolvePrintSession(
   klient: Klient,
   osHomeDir: string,
@@ -207,7 +216,7 @@ async function resolvePrintSession(
   if (opts.session !== undefined) {
     const target = await klient.global.sessions.get(opts.session);
     if (target === undefined) throw new Error(`Session "${opts.session}" not found.`);
-    if (target.cwd !== undefined && resolve(target.cwd) !== resolve(workDir)) {
+    if (target.cwd !== undefined && !sameWorkDir(target.cwd, workDir)) {
       stderr.write(
         `Session "${opts.session}" was created under a different directory.\n` +
           `  cd "${target.cwd}" && kiki -r ${opts.session}\n\n`,
@@ -219,7 +228,7 @@ async function resolvePrintSession(
 
   if (opts.continue) {
     const page = await klient.global.sessions.list({});
-    const previous = page.items.find((summary) => summary.cwd === workDir);
+    const previous = selectPrintContinuationSession(page.items, workDir);
     if (previous !== undefined) return resumeById(previous.id);
     stderr.write(`No sessions to continue under "${workDir}"; starting a fresh session.\n`);
   }

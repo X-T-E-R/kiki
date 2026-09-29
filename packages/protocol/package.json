@@ -22,6 +22,11 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./agentName": {
+      "types": "./src/agentName.ts",
+      "import": "./src/agentName.ts",
+      "default": "./src/agentName.ts"
     }
   },
   "scripts": {

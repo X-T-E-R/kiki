@@ -53,6 +53,7 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
+import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
@@ -230,7 +231,7 @@ async function removeUnusedAutoWorkspace(
     const current = await registry.get(registered.id);
     if (
       current === undefined
-      || current.root !== root
+      || workspaceRootKey(current.root) !== workspaceRootKey(root)
       || current.createdAt !== registered.createdAt
       || current.lastOpenedAt !== registered.lastOpenedAt
       || current.name !== registered.name

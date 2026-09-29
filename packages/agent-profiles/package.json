@@ -35,6 +35,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@kiki/protocol": "workspace:^",
     "zod": "catalog:"
   },
   "devDependencies": {

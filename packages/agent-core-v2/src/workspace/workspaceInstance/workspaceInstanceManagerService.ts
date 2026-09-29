@@ -112,8 +112,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   }
 
   findByRoot(root: string): WorkspaceInstance | undefined {
-    const normalized = root.replace(/[\\/]$/, '');
-    return [...this.instances.values()].find((instance) => instance.root.replace(/[\\/]$/, '') === normalized);
+    const normalized = canonicalWorkspaceRoot(root);
+    return [...this.instances.values()].find((instance) => canonicalWorkspaceRoot(instance.root) === normalized);
   }
 
   findContaining(cwd: string): WorkspaceInstance | undefined {

@@ -1,3 +1,4 @@
+export * from './agentName';
 export * from './envelope';
 export * from './error-codes';
 export * from './pagination';

@@ -1,6 +1,9 @@
-import { isAbsolute } from 'pathe';
-
-import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import {
+  encodeWorkDirKey,
+  workspaceIdFromSessionDir,
+  workspaceRootKey,
+  workDirKeyAliases,
+} from '#/_base/utils/workdir-slug';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import type { Workspace } from './workspace';
@@ -35,7 +38,10 @@ export function collectAliasIds(
   }
   for (const line of sessionIndexEntries) {
     const source = line.sourceRoot ?? line.workDir;
-    if (workspaceRootKey(source) === rootKey) add(encodeWorkDirKey(source));
+    if (workspaceRootKey(source) !== rootKey) continue;
+    for (const alias of workDirKeyAliases(source)) add(alias);
+    const storageId = workspaceIdFromSessionDir(line.sessionDir);
+    if (storageId !== undefined) add(storageId);
   }
   return ids;
 }
@@ -71,17 +77,6 @@ export async function readSessionIndexEntries(
     entries.push(entry);
   }
   return entries;
-}
-
-export async function readSessionIndexWorkDirs(
-  storage: IFileSystemStorageService,
-): Promise<readonly string[]> {
-  const workDirs: string[] = [];
-  for (const entry of await readSessionIndexEntries(storage)) {
-    if (!isAbsolute(entry.sourceRoot ?? entry.workDir)) continue;
-    workDirs.push(entry.sourceRoot ?? entry.workDir);
-  }
-  return workDirs;
 }
 
 export function parseSessionIndexLine(line: string): SessionIndexLine | undefined {

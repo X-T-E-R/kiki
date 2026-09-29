@@ -7,6 +7,7 @@
  * is a field rename (`custom` ↔ `metadata`).
  */
 import type { SessionSummary as V2SessionSummary } from '@kiki/agent-core-v2';
+import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
 import { resolve, win32 } from 'node:path';
 
@@ -22,6 +23,10 @@ export function normalizeWorkDir(workDir: string): string {
     return win32.resolve(workDir).replaceAll('\\', '/');
   }
   return resolve(workDir);
+}
+
+export function sameWorkDir(left: string, right: string): boolean {
+  return workspaceRootKey(normalizeWorkDir(left)) === workspaceRootKey(normalizeWorkDir(right));
 }
 
 /** v1 summary fields the v2 index summary does not carry, resolved by the caller. */
