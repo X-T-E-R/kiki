@@ -2046,6 +2046,22 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('restores running activity and phase when a new prompt follows an ended turn', () => {
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    for (const record of [
+      { type: 'turn.prompt', turnId: 0, input: [], origin: { kind: 'user' }, time: 1_000 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 },
+      { type: 'turn.prompt', turnId: 1, input: [], origin: { kind: 'task', taskId: 'task-1' }, time: 3_000 },
+    ]) reducer.apply(adapter.add(record));
+    expect(transcript.getTurn('t1')?.state).toBe('running');
+    expect(transcript.snapshot().meta).toMatchObject({
+      activity: 'turn',
+      agent: { phase: { kind: 'running', turnId: 1, since: 3_000 } },
+    });
+  });
+
   it.each(['interrupted', 'error'] as const)(
     'keeps durable step.end finishReason=%s aligned with the live interrupted state',
     (finishReason) => {

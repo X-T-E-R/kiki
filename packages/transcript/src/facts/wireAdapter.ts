@@ -1072,7 +1072,16 @@ export class TranscriptWireAdapter {
       startedAt: isoOf(record.time),
     };
     this.#turnHeaders.set(turnId, turn);
-    operations.push({ op: 'turn.upsert', turn });
+    operations.push(
+      { op: 'turn.upsert', turn },
+      {
+        op: 'meta.merge',
+        meta: {
+          activity: 'turn',
+          agent: { phase: { kind: 'running', turnId: turnOrdinal, step: 0, stepId: '', since: numberOf(record.time) ?? 0 } },
+        },
+      },
+    );
     return operations;
   }
 
