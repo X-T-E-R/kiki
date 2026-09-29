@@ -84,6 +84,7 @@ import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
+import { SpaceSwitcher } from './SpaceSwitcher';
 import { Wordmark } from './Wordmark';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
@@ -716,6 +717,8 @@ export function Sidebar({
         </button>
       </div>
 
+      {/* Space identity + switcher (§6.4): renders nothing for a single-home user. */}
+      <div className="px-2 pb-1 empty:hidden" data-sidebar-space><SpaceSwitcher /></div>
       <div className="space-y-1 px-2 pb-3">
         {/* The surface's one primary action, set as a raised paper chip — the
             same lift as the content sheet — so it reads as the first thing to

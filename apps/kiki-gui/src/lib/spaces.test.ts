@@ -1,0 +1,74 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { configureSpaceStorage } from '@kiki/session-core/storage';
+
+import {
+  enterSpace,
+  originOf,
+  otherSpacesPending,
+  spaceOverrides,
+  spaceRunState,
+  suggestSpacePath,
+  type ConfigOrigins,
+} from './spaces';
+
+afterEach(() => { configureSpaceStorage(null); });
+
+const ORIGINS: ConfigOrigins = {
+  default_model: { '': 'home' },
+  fast_model: { '': 'base' },
+  session_title: { model: 'home', enabled: 'base' },
+  subagent: { timeoutMs: 'env' },
+};
+
+describe('config origins', () => {
+  it('reads a scalar, a leaf and a table', () => {
+    expect(originOf(ORIGINS, 'default_model')).toBe('home');
+    expect(originOf(ORIGINS, 'fast_model')).toBe('base');
+    expect(originOf(ORIGINS, 'session_title', 'model')).toBe('home');
+    // A table asked for whole reads local when any leaf is local.
+    expect(originOf(ORIGINS, 'session_title')).toBe('home');
+    expect(originOf(ORIGINS, 'subagent', 'defaultModel')).toBeUndefined();
+    expect(originOf(undefined, 'default_model')).toBeUndefined();
+  });
+
+  it('lists only this space’s own keys, as removeOverride paths', () => {
+    expect(spaceOverrides(ORIGINS)).toEqual([
+      { domain: 'default_model', keyPath: [], label: 'default_model' },
+      { domain: 'session_title', keyPath: ['model'], label: 'session_title.model' },
+    ]);
+  });
+});
+
+describe('space run state', () => {
+  const statuses = [
+    { homeId: 'main', active: false, hot: true, pendingCount: 1, busyCount: 0 },
+    { homeId: 'h-a', active: true, hot: true, pendingCount: 4, busyCount: 1 },
+    { homeId: 'h-b', active: false, hot: true, pendingCount: 2, busyCount: 0 },
+  ];
+
+  it('treats unlisted slots as cold and sums other spaces’ pending', () => {
+    configureSpaceStorage({ homeId: 'h-a', name: 'A' });
+    expect(spaceRunState('h-a', statuses)).toBe('current');
+    expect(spaceRunState('h-b', statuses)).toBe('hot');
+    expect(spaceRunState('h-c', statuses)).toBe('cold');
+    expect(otherSpacesPending(statuses)).toBe(3);
+  });
+});
+
+describe('enterSpace', () => {
+  it('prefers open_space and falls back to switch_space only in switch mode', async () => {
+    const openSpace = vi.fn(async () => undefined);
+    const switchSpace = vi.fn(async () => undefined);
+    await enterSpace({ kind: 'tauri', openSpace, switchSpace } as never, 'h-a', 'windows');
+    expect(openSpace).toHaveBeenCalledWith('h-a');
+    await enterSpace({ kind: 'tauri', switchSpace } as never, 'h-b', 'switch');
+    expect(switchSpace).toHaveBeenCalledWith('h-b');
+    await expect(enterSpace({ kind: 'browser' } as never, 'h-a', 'windows')).rejects.toThrow();
+  });
+});
+
+it('suggests ~/.kiki-spaces/<slug> beside the main home', () => {
+  expect(suggestSpacePath('C:\\Users\\me\\.kiki', 'ACME 机密')).toBe('C:\\Users\\me\\.kiki-spaces\\acme-机密');
+  expect(suggestSpacePath('/home/me/.kiki/', '  ')).toBe('/home/me/.kiki-spaces/space');
+});

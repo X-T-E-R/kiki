@@ -8,6 +8,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 
 import type {
+  DesktopSpaceStatus,
   DesktopUpdate,
   TauriHostAdapter,
   HostFileDrop,
@@ -228,6 +229,20 @@ export const tauriHost: TauriHostAdapter = {
   },
   onTrayNewSession,
   onFileDrop,
+  async spaceStatuses() {
+    try {
+      return await invoke<DesktopSpaceStatus[]>('desktop_space_statuses');
+    } catch {
+      // A desktop build without spaces: every space reads as cold.
+      return [];
+    }
+  },
+  async switchSpace(homeId) {
+    await invoke('switch_space', { homeId });
+  },
+  async openSpace(homeId) {
+    await invoke('open_space', { homeId });
+  },
   async setTheme(resolved) {
     try {
       await getCurrentWindow().setTheme(resolved);

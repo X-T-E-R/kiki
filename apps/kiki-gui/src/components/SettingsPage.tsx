@@ -35,6 +35,9 @@ import { SettingsFlashContext, SettingsPageScopeContext } from './settings/Secti
 import { SessionsSection } from './settings/SessionsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
+import { SpacesSection } from './settings/SpacesSection';
+import { SpaceDot } from './settings/spaces/SpaceDot';
+import { currentSpace } from '../lib/spaces';
 import { SubagentsSection } from './settings/SubagentsSection';
 import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
 import { TasksSection } from './settings/TasksSection';
@@ -103,6 +106,25 @@ function SectionIntro({ section, workspaceName, remoteAddress, dirty }: {
       ) : null}
     </p> : null}
   </div>;
+}
+
+/**
+ * §6.4: inside an independent space every settings page opens with one thin
+ * line in the space's color, so an edit is never made in the wrong space.
+ * The main space shows nothing new.
+ */
+function SpaceBand() {
+  const { t } = useI18n();
+  const space = currentSpace();
+  if (space === null) return null;
+  const name = space.name ?? space.homeId;
+  return (
+    <p data-settings-space-band className="mb-5 flex items-center gap-2 border-l-2 py-0.5 pl-2.5 text-[12px] text-ink-soft"
+      style={{ borderColor: space.color ?? 'var(--color-hairline-strong)' }}>
+      <SpaceDot color={space.color} size={7} />
+      <span className="min-w-0 truncate">{t('st.spaces.band', { name })}</span>
+    </p>
+  );
 }
 
 /**
@@ -254,6 +276,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'plugins' ? <PluginsSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
+    : active === 'spaces' ? <SpacesSection />
     : active === 'workspaces' ? <WorkspacesSection />
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
@@ -323,6 +346,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           ) : (
             <div data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
+                <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} />
                 <SettingsPageScopeContext.Provider value={settingsSectionIsDeviceOnly(active) ? 'app' : 'server'}>
                   <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>

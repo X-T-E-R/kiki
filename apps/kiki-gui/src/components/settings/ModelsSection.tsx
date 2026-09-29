@@ -57,6 +57,8 @@ import {
 } from './ModelEngineFields';
 import { useSavedTick } from './useSavedTick';
 import { DisclosureChevron, Icon } from '../icons';
+import { isInSubspace } from '../../lib/spaces';
+import { OriginBadge } from './spaces/OriginBadge';
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -388,6 +390,9 @@ export function GlobalDefaultsCard() {
       const echoed = await client.setDefaultModel(item.id);
       queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({ ...current, default_model: echoed.default_model }));
       writeSettings({ defaultModel: echoed.default_model });
+      // Inside a space the write lands in the space's own config; re-read so
+      // the row's origin mark reads "This space".
+      if (isInSubspace()) void queryClient.invalidateQueries({ queryKey: ['config'] });
       if (item.provider_id !== defaultProvider) {
         queryClient.setQueryData(['config'], await client.patchConfig({ default_provider: item.provider_id }));
       }
@@ -416,6 +421,7 @@ export function GlobalDefaultsCard() {
   const rows = [
     {
       id: 'new-session',
+      origin: { domain: 'default_model', keyPath: [] },
       label: t('st.defaults.row.newSession'),
       help: t('st.defaults.row.newSessionHelp'),
       picker: (
@@ -434,6 +440,7 @@ export function GlobalDefaultsCard() {
     },
     {
       id: 'session-title',
+      origin: { domain: 'session_title', keyPath: ['model'] },
       label: t('st.defaults.row.title'),
       help: titleModel === '' && fastModel !== ''
         ? t('st.defaults.row.titleFallsBack', { model: fastModel })
@@ -455,6 +462,7 @@ export function GlobalDefaultsCard() {
     },
     {
       id: 'fast',
+      origin: { domain: 'fast_model', keyPath: [] },
       label: t('st.defaults.row.fast'),
       help: t('st.defaults.row.fastHelp'),
       picker: (
@@ -474,6 +482,7 @@ export function GlobalDefaultsCard() {
     },
     {
       id: 'subagent',
+      origin: { domain: 'subagent', keyPath: ['defaultModel'] },
       label: t('st.defaults.row.subagent'),
       help: t('st.defaults.row.subagentHelp'),
       picker: (
@@ -511,6 +520,10 @@ export function GlobalDefaultsCard() {
               <div className="min-w-0">
                 <label htmlFor={pickerId[row.id]} className="text-[13px] text-ink">{row.label}</label>
                 <p className="text-[12px] leading-4 text-ink-faint">{row.help}</p>
+                {/* Only inside an independent space: where this value comes from. */}
+                <div className="pt-1 empty:hidden" data-default-origin={row.id}>
+                  <OriginBadge config={configQuery.data} domain={row.origin.domain} keyPath={row.origin.keyPath} label={row.label} />
+                </div>
               </div>
               <div className="min-w-0">{row.picker}</div>
             </div>

@@ -425,6 +425,8 @@ const AGENT_PROFILE_SOURCE_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
   extra: 'agentPanel.sourceId.extra',
   plugin: 'agentPanel.sourceId.plugin',
   explicit: 'agentPanel.sourceId.explicit',
+  // A profile a space picks up from the main space's agent folders.
+  inherited: 'agentPanel.sourceId.inherited',
 };
 
 /** i18n label key for a profile source id, or `undefined` when the id is not

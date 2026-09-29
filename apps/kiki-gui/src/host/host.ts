@@ -30,6 +30,17 @@ export interface HostFileDrop {
   readonly position?: { readonly x: number; readonly y: number };
 }
 
+/** One entry of `desktop_space_statuses`. */
+export interface DesktopSpaceStatus {
+  readonly homeId: string;
+  readonly active: boolean;
+  /** The backend is running (switch mode keeps others alive in the background). */
+  readonly hot: boolean;
+  /** Sessions waiting on an approval or a question. */
+  readonly pendingCount: number;
+  readonly busyCount: number;
+}
+
 export interface DesktopUpdate {
   readonly currentVersion: string;
   readonly version: string;
@@ -91,6 +102,19 @@ interface HostCapabilities {
   writeFileText?: (path: string, text: string) => Promise<void>;
   readDesktopPrefs?: () => Promise<DesktopNativePrefs | null>;
   writeDesktopPrefs?: (prefs: Partial<DesktopNativePrefs>) => Promise<void>;
+  /**
+   * Hot or visited space slots (`desktop_space_statuses`). A space missing from
+   * the list is cold: its backend is not running.
+   */
+  spaceStatuses?: () => Promise<readonly DesktopSpaceStatus[]>;
+  /**
+   * Switch mode: make `homeId` the active space (`switch_space`). The native
+   * side starts a cold backend first, then reloads the window; a failure
+   * leaves the current space in place.
+   */
+  switchSpace?: (homeId: string) => Promise<void>;
+  /** Windows mode: open (or focus) the space's own window (`open_space`). */
+  openSpace?: (homeId: string) => Promise<void>;
   restartServer?: () => Promise<void>;
   supportsDesktopUpdates?: () => Promise<boolean>;
   checkDesktopUpdate?: () => Promise<DesktopUpdate | null>;

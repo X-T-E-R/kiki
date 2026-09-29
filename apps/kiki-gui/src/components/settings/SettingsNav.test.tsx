@@ -84,7 +84,7 @@ describe('SettingsNav grouped tree', () => {
     expect(leaves(1)).toEqual(['ai', 'agents', 'subagents']);
     expect(leaves(2)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
-    expect(leaves(4)).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
+    expect(leaves(4)).toEqual(['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {

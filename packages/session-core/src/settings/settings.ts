@@ -85,8 +85,17 @@ export interface DesktopNativePrefs {
   autoUpdate: AutoUpdateMode;
   compatibility: CompatibilitySettings;
 }
+  /**
+   * How spaces open: one window that switches between them, or one window per
+   * space. App-level (the main space's `desktop.json`), read at launch, so a
+   * change applies the next time Kiki starts. The native side reads it as
+   * `window_mode` and accepts either spelling on write.
+   */
+  windowMode: SpaceWindowMode;
 
 export type CompatibilityHomeKind = 'kimi' | 'custom';
+export type SpaceWindowMode = 'switch' | 'windows';
+
 
 export interface CompatibilitySettings {
   homeKind: CompatibilityHomeKind;
@@ -294,6 +303,7 @@ const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
 };
 
 function readObject(key: string): Record<string, unknown> {
+  windowMode: 'switch',
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) return {};
@@ -558,11 +568,23 @@ export function readDesktopPrefs(): DesktopNativePrefs {
 }
 
 export function writeDesktopPrefs(prefs: Partial<DesktopNativePrefs>): void {
-  const next = { ...readDesktopPrefs(), ...prefs };
+  const incoming = prefs as Partial<DesktopNativePrefs> & { window_mode?: unknown };
+  const { window_mode: nativeWindowMode, ...rest } = incoming;
+  const next: DesktopNativePrefs = {
+    ...readDesktopPrefs(),
+    ...rest,
+    ...(rest.windowMode === undefined && nativeWindowMode !== undefined ? { windowMode: parseSpaceWindowMode(nativeWindowMode) } : {}),
+  };
   try {
+    windowMode: parseSpaceWindowMode(stored.windowMode ?? (stored as { window_mode?: unknown }).window_mode),
     localStorage.setItem(DESKTOP_PREFS_KEY, JSON.stringify(next));
   } catch {
     // ignore
+/** `read_desktop_prefs` returns the native `window_mode` spelling; the GUI stores `windowMode`. */
+function parseSpaceWindowMode(value: unknown): SpaceWindowMode {
+  return value === 'windows' || value === 'switch' ? value : DESKTOP_PREFS_DEFAULTS.windowMode;
+}
+
   }
 }
 
@@ -1820,6 +1842,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'labs', labelKey: 'st.section.labs' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
+  { id: 'spaces', labelKey: 'st.section.spaces' },
 
 // ---- grouped navigation (settings IA v2) ----
 
@@ -1849,7 +1872,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'hooks'] },
-  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'ssh', 'developer', 'labs', 'about'] },
+  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about'] },
 ];
 
 /** Whether a section writes only to this device (its primary scope is the app). */
@@ -1900,6 +1923,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   labs: { scopes: ['server'], purposeKey: 'st.purpose.labs' },
   about: { scopes: ['server', 'app'], purposeKey: 'st.purpose.about' },
 };
+  spaces: { scopes: ['server', 'app'], purposeKey: 'st.purpose.spaces' },
 
 // ---- experimental flags, homed with the feature they change ----
 
@@ -2065,6 +2089,10 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ssh', cardId: 'st-card-ssh-connection', titleKey: 'st.ssh.connectionTitle', keywordKeys: ['st.ssh.syncToggle', 'st.ssh.approvalToggle', 'st.ssh.approvalHint'], synonyms: ['connection approval', '连接审批', 'host key', '主机密钥', 'known_hosts'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];
+  { section: 'spaces', cardId: 'st-card-space-window', titleKey: 'st.spaces.windowTitle', keywordKeys: ['st.spaces.windowSwitch', 'st.spaces.windowWindows', 'st.spaces.windowNextLaunch'], synonyms: ['window mode', '窗口模式', 'multi window', '多窗口'] },
+  { section: 'spaces', cardId: 'st-card-spaces', titleKey: 'st.spaces.listTitle', keywordKeys: ['st.spaces.new', 'st.spaces.attach', 'st.spaces.removeFromList', 'st.spaces.delete', 'st.spaces.credentials'], synonyms: ['space', 'spaces', '空间', 'home', 'kiki home', 'profile', '多开', '独立空间', 'isolated'] },
+  { section: 'spaces', cardId: 'st-card-space-credentials', titleKey: 'st.spaces.credTitle', keywordKeys: ['st.spaces.credShared', 'st.spaces.credIsolated', 'st.spaces.copySsh'], synonyms: ['credentials', '凭据', '账号与密钥', 'ssh password', 'oauth'] },
+  { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.overridesTitle', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
 
 export interface SettingsSearchEntry {
   readonly section: string;

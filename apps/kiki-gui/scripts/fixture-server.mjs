@@ -80,6 +80,7 @@ import { handleContextStrategy, resetContextStrategy } from './fixture-context-s
 import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
+import { handleSpaces, spaceConfig, spaceConfigWrite, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
 
 import {
@@ -1575,6 +1576,8 @@ class FixtureServer {
   route(res, path, query, body, method) {
     // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
     if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
+    // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
+    if ((path.startsWith('/homes') || path === '/config/overrides:remove') && handleSpaces(this, res, path, method, body)) return;
     const sessions = [...this.sessions.values()];
     // Action suffixes bind tighter than the tail: `/sessions/{id}:undo`,
     // mirroring kap-server's parseActionSuffix (session ids never contain
@@ -1603,6 +1606,9 @@ class FixtureServer {
           ...(this.scenario?.data.experimentalFlags ?? {}),
         },
       });
+    }
+    if (path === '/config' && method === 'POST' && spaceConfigWrite(this, body)) {
+      return this.envelope(res, spaceConfig(this));
     }
     if (path === '/config' && method === 'POST') {
       const patch = { ...(body ?? {}) };
@@ -1635,7 +1641,7 @@ class FixtureServer {
       return this.envelope(res, this.config);
     }
     if (path === '/config') {
-      return this.envelope(res, this.config);
+      return this.envelope(res, spaceConfig(this));
     }
     // Scheduled tasks (the GlobalCronPanel's aggregate surface). Scenario-seeded
     // via `cronTasks`; the wire shape is kap-server's `GET /api/cron` row, and
@@ -1871,7 +1877,8 @@ class FixtureServer {
         display_name: modelId,
         max_context_size: 262144,
       };
-      this.config.default_model = modelId;
+      // Inside a space the default lands in the space's own layer.
+      if (!spaceConfigWrite(this, { default_model: modelId })) this.config.default_model = modelId;
       if (this.auth !== null) this.auth.default_model = modelId;
       return this.envelope(res, { default_model: modelId, model });
     }
@@ -3112,7 +3119,11 @@ class FixtureServer {
       case 'scenario':
         await this.loadScenario(body.name);
         this.ssh = undefined; // fixture-ssh.mjs reseeds from the scenario
+        this.spaces = undefined; // fixture-spaces.mjs reseeds too
         return this.envelope(res, { active: body.name });
+      case 'space':
+      case 'space_state':
+        return this.envelope(res, spacesControl(this, body));
       case 'ssh-submissions':
         // Redacted shapes only (secret lengths, never values).
         return this.envelope(res, { submissions: this.sshSubmissions ?? [] });

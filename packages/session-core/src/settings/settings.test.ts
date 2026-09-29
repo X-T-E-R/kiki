@@ -166,6 +166,7 @@ describe('settings persistence and validation', () => {
         homeKind: 'kimi',
         customHome: undefined,
       },
+      windowMode: 'switch',
     });
 
     localStorage.setItem('kiki.desktopPrefs', '{not-json');
@@ -212,6 +213,19 @@ describe('settings persistence and validation', () => {
     }));
     expect(readDesktopPrefs().notifications).toBe(false);
     expect(readDesktopPrefs().autoUpdate).toBe('notify');
+  });
+
+  it('maps the native window_mode spelling onto windowMode and validates it', () => {
+    expect(readDesktopPrefs().windowMode).toBe('switch');
+    writeDesktopPrefs({ window_mode: 'windows' } as Parameters<typeof writeDesktopPrefs>[0]);
+    expect(readDesktopPrefs().windowMode).toBe('windows');
+    expect(JSON.parse(localStorage.getItem('kiki.desktopPrefs') ?? '{}')).not.toHaveProperty('window_mode');
+    writeDesktopPrefs({ windowMode: 'switch' });
+    expect(readDesktopPrefs().windowMode).toBe('switch');
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ window_mode: 'windows' }));
+    expect(readDesktopPrefs().windowMode).toBe('windows');
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ windowMode: 'tabs' }));
+    expect(readDesktopPrefs().windowMode).toBe('switch');
   });
 
   it('defaults and validates the persisted Kimi Home selection', () => {
@@ -1029,7 +1043,7 @@ describe('settings nav groups (IA v2)', () => {
     expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents']);
     expect(sectionsOf('work')).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
-    expect(sectionsOf('system')).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
+    expect(sectionsOf('system')).toEqual(['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about']);
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
