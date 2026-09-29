@@ -95,6 +95,10 @@ const client = {
   listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
+  getMemorySettings: vi.fn(async () => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {} as Record<string, boolean> })),
+  patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
+  getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: true })),
+  patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
   patchConfig: vi.fn(async () => ({})),
 };
 
@@ -151,6 +155,10 @@ beforeEach(() => {
   klient.global.mcp.test.mockResolvedValue({ success: true, output: '' });
   klient.global.mcp.listStoredOAuthCredentials.mockResolvedValue([]);
   client.listNamedAgentProfiles.mockClear();
+  client.getMemorySettings.mockClear();
+  client.patchMemorySettings.mockClear();
+  client.getWorkspaceMemorySettings.mockClear();
+  client.patchWorkspaceMemorySettings.mockClear();
 });
 
 afterEach(() => {
@@ -271,6 +279,44 @@ describe('SettingsPage panel scopes', () => {
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain('Add models from your connections');
     expect(card!.textContent).toContain('fetched only when you click Get models');
+  });
+
+  it('shows memory beside sessions and edits global and workspace settings independently', async () => {
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory');
+    expect(container.querySelector('#st-card-memory')).not.toBeNull();
+    expect(container.querySelector('#st-card-memory-workspaces')).not.toBeNull();
+    expect(container.querySelector<HTMLSelectElement>('[data-memory-workspace-select]')?.value).toBe('ws-beta');
+    expect(client.getWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta');
+
+    const approval = container.querySelector<HTMLSelectElement>('[data-memory-approval]')!;
+    await act(async () => {
+      approval.value = 'review';
+      approval.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
+
+    const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
+    await setInput(budget, '1735');
+    await click(container.querySelector('[data-memory-budget-save]')!);
+    expect(client.patchMemorySettings).toHaveBeenCalledWith({ budget: 1735 });
+
+    const override = container.querySelector<HTMLSelectElement>('[data-memory-workspace-override]')!;
+    await act(async () => {
+      override.value = 'false';
+      override.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta', false);
+  });
+
+  it('shows other workspace overrides and refuses an out-of-range budget', async () => {
+    client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    expect(container.querySelector('[data-memory-other-overrides]')?.textContent).toContain('Alpha: Off');
+    const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
+    await setInput(budget, '4001');
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-budget-save]')?.disabled).toBe(true);
+    expect(container.textContent).toContain('Enter a whole number from 0 to 4,000.');
   });
 });
 

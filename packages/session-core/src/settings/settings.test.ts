@@ -1026,7 +1026,7 @@ describe('settings nav groups (IA v2)', () => {
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'connection']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents']);
-    expect(sectionsOf('work')).toEqual(['sessions', 'permissions', 'tasks']);
+    expect(sectionsOf('work')).toEqual(['sessions', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
     expect(sectionsOf('system')).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {

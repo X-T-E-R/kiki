@@ -45,7 +45,6 @@ import { SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
 import { AdvancedDetails, SettingField } from './fields';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
-import { MemorySettingsCard } from './MemorySettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
@@ -737,7 +736,6 @@ export function AgentsSection() {
     <div className="space-y-4">
       <SubagentDispatchPoliciesCard />
       <AgentRuntimeCard />
-      <MemorySettingsCard />
       <PromptConfigCard />
     </div>
   );

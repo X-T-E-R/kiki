@@ -139,6 +139,17 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
   return (
     <div data-memory-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('memory.title')} onToggleSidebar={onToggleSidebar} />
+      <div data-memory-status className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-hairline px-4 py-2 text-[12px] text-ink-soft lg:px-6" role="status">
+        <span>{settingsQuery.isPending ? t('memory.loading') : settingsQuery.isError
+          ? t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })
+          : t(globalEnabled ? 'st.memory.enabled' : 'st.memory.disabled')}</span>
+        {globalEnabled && scope !== undefined && workspaceOverride === false ? (
+          <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
+        ) : null}
+        <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="ml-auto font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent">
+          {t('st.memory.settingsLink')}
+        </button>
+      </div>
       {!globalEnabled ? (
         <MemoryIntro
           loading={settingsQuery.isPending}
@@ -248,6 +259,7 @@ function MemoryScopeView({
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<MemoryTab>('entries');
+  useEffect(() => { if (!review) setTab('entries'); }, [review]);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<MemoryType | 'all'>('all');
   const [showInactive, setShowInactive] = useState(false);
@@ -347,7 +359,7 @@ function MemoryScopeView({
           </div>
         ) : null}
 
-        {tab === 'inbox' ? (
+        {review && tab === 'inbox' ? (
           <MemoryInbox target={target} entries={inbox} loading={inboxQuery.isPending} onChanged={refresh} />
         ) : (
           <>
