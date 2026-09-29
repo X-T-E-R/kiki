@@ -49,10 +49,10 @@ import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
 import type { ModeProps } from './shell';
 import { ModeSwitch } from './shell';
-import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
 
 /** Sections sit over hairlines; no cards. */
-const SECTION = 'border-t border-hairline py-4 first:border-t-0 first:pt-1';
+const SECTION = 'border-t border-hairline py-4 first:border-t-0 first:pt-3';
 /** The context meter stays neutral until the overview itself calls it near (warn / danger). */
 const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-attention [&_[data-overview-context=danger]_[role=meter]>div]:!bg-attention [&_[data-overview-context]_span.text-danger]:!text-attention [&_[data-overview-context]_span.text-amber-ink]:!text-attention';
 /** Cost, tokens and cache as mono figures. */
@@ -479,6 +479,9 @@ export function DefaultRail({
         }}
       >
       <div data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+      {/* Pinned head: crumbs, who this agent is, and what it is doing. Opaque,
+          with a hairline where the scrolling page passes under it. */}
+      <div data-rail-pinned className="sticky top-0 z-20 -mx-4 border-b border-hairline bg-panel px-4 pb-3">
       <RailCrumbs
         forest={forest}
         focusedAgentId={focusedAgentId}
@@ -496,10 +499,7 @@ export function DefaultRail({
           </span>
         )}
       />
-      {/* One page per agent: switching agents raises the new page into place. */}
-      <div key={focusedAgentId} className="rail-page pt-1">
-      {/* 1 · Who this agent is, and straight under it what it is doing. */}
-      <div data-rail-now-block className={`${SECTION} space-y-3`}>
+      <div key={focusedAgentId} data-rail-now-block className="rail-page space-y-3 pt-1">
       <ProfileHead
         sessionId={state.sessionId}
         agentId={focusedAgentId}
@@ -537,9 +537,13 @@ export function DefaultRail({
         )}
       />
       </div>
+      </div>
 
-      {/* 2 · The agent's own checklist and notes. */}
-      <div id="rail-todos" className={`scroll-mt-14 empty:hidden ${SECTION}`}>
+      {/* One page per agent: switching agents raises the new page into place. */}
+      <div key={focusedAgentId} className="rail-page">
+      {/* 2 · The agent's own checklist (finished items folded), then its notes and plan. */}
+      <div id="rail-todos" className={`space-y-3 empty:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden`}>
+        <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} />
         <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
       </div>
 

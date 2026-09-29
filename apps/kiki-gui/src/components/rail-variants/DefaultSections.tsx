@@ -5,12 +5,12 @@
  * inspector's parts unchanged.
  */
 
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { MAIN_AGENT_ID, type AgentForest, type Block } from '@kiki/session-core/session';
+import { MAIN_AGENT_ID, type AgentForest, type Block, type SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
-import { useConnection } from '../../state/connection';
+import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
@@ -29,6 +29,106 @@ const REJECT = 'h-7 shrink-0 rounded-md px-1.5 text-[12px] text-ink-faint transi
 const SECTION_BUTTON = `group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`;
 
 const SHOWN_ROWS = 4;
+
+const noopSubscribe = (): (() => void) => () => {};
+
+/**
+ * The focused agent's own view state from the session's controller registry
+ * (the same source the agent panel reads), never the routed agent's.
+ */
+function useAgentState(sessionId: string, agentId: string): SessionViewState | undefined {
+  const registry = useOptionalControllerRegistry();
+  const subscribeRegistry = useCallback(
+    (listener: () => void) => (registry === null ? noopSubscribe() : registry.subscribe(listener)),
+    [registry],
+  );
+  const generation = useSyncExternalStore(subscribeRegistry, () => registry?.snapshot() ?? 0, () => 0);
+  const controller = useMemo(() => {
+    if (registry === null) return undefined;
+    for (const candidate of registry) if (candidate.sessionId === sessionId) return candidate;
+    return undefined;
+  }, [registry, generation, sessionId]);
+  const subscribe = useCallback(
+    (listener: () => void) => controller === undefined
+      ? noopSubscribe()
+      : agentId === MAIN_AGENT_ID ? controller.subscribe(listener) : controller.subscribeAgent(agentId, listener),
+    [controller, agentId],
+  );
+  const read = useCallback(
+    () => controller === undefined ? undefined : agentId === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(agentId),
+    [controller, agentId],
+  );
+  return useSyncExternalStore(subscribe, read);
+}
+
+/** Done items fold to one line once there are at least this many. */
+const FOLD_DONE_AT = 2;
+
+/**
+ * 待办: the agent's checklist. Open items always show; finished ones fold to
+ * a single 已完成 N 项 line (when there are two or more) that opens them in
+ * place. Read-only: the agent writes its list.
+ */
+export function RailTodos({ sessionId, agentId }: { sessionId: string; agentId: string }) {
+  const { t } = useI18n();
+  const todos = (useAgentState(sessionId, agentId)?.todos ?? []).filter((todo) =>
+    todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
+  const [open, setOpen] = useState(true);
+  const [showDone, setShowDone] = useState(false);
+  if (todos.length === 0) return null;
+  const doneCount = todos.filter((todo) => todo.status === 'done').length;
+  const foldDone = doneCount >= FOLD_DONE_AT && !showDone;
+  const rows = foldDone ? todos.filter((todo) => todo.status !== 'done') : todos;
+  return (
+    <section data-rail-todos="">
+      <button type="button" aria-expanded={open} onClick={() => { setOpen((v) => !v); }} className={SECTION_BUTTON}>
+        <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('inspector.todos')}</span>
+        <span className="text-[12px] text-ink-faint tabular-nums">{doneCount}/{todos.length}</span>
+        <span className="flex-1" />
+        <InspectorChevron open={open} />
+      </button>
+      {open ? (
+        <ul className="max-h-44 space-y-1 overflow-y-auto pt-1 pr-0.5">
+          {doneCount >= FOLD_DONE_AT ? (
+            <li>
+              <button
+                type="button"
+                data-rail-todos-done-toggle=""
+                aria-expanded={showDone}
+                onClick={() => { setShowDone((v) => !v); }}
+                className={`-ml-1.5 flex h-7 w-[calc(100%+0.375rem)] items-center gap-2 rounded-md pl-1.5 text-left text-[12.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+              >
+                <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] bg-ink/[0.08] text-ink-soft"><Icon name="check" size={12} /></span>
+                <span className="flex-1">{showDone ? '收起已完成' : `已完成 ${doneCount} 项`}</span>
+                <InspectorChevron open={showDone} />
+              </button>
+            </li>
+          ) : null}
+          {rows.map((todo, index) => (
+            <li key={`${index}:${todo.title}`} data-rail-todo={todo.status} className="flex items-start gap-2 py-0.5">
+              <span
+                aria-hidden
+                className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border ${
+                  todo.status === 'done'
+                    ? 'border-transparent bg-ink/[0.08] text-ink-soft'
+                    : todo.status === 'in_progress' ? 'border-ink-soft text-ink-soft' : 'border-hairline-strong bg-panel'
+                }`}
+              >
+                {todo.status === 'done' ? <Icon name="check" size={12} /> : todo.status === 'in_progress' ? <Icon name="dot" size={12} /> : null}
+              </span>
+              <span className={`text-[13px] leading-snug break-words ${
+                todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
+              }`}>
+                <span className="sr-only">{todo.status === 'done' ? '已完成：' : todo.status === 'in_progress' ? '进行中：' : '未开始：'}</span>
+                {todo.title}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
 
 /**
  * Needs you as plain rows, oldest first: a dot, who asked and when, the
