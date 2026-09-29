@@ -1,3 +1,4 @@
+delete process.env['KIKI_DESKTOP_BUNDLED'];
 delete process.env['KIKI_EXPERIMENTAL_FLAG'];
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('KIKI_EXPERIMENTAL_')) {
