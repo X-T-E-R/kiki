@@ -42,6 +42,7 @@ import {
   unwrapOrigin,
   type PromptOriginLike,
 } from './classify';
+import { compactionMarkerFates } from './compactionMarkers';
 import {
   bump,
   createViewState,
@@ -1966,8 +1967,22 @@ export function agentTranscriptToBlocks(
     attachments.length === 0
       ? undefined
       : new Map(attachments.map((attachment) => [attachment.attachmentId, attachment]));
+  const compactionFates = compactionMarkerFates(response.items);
   for (const item of response.items) {
     if (item.kind === 'marker') {
+      const compactionFate = compactionFates.get(item.markerId);
+      if (compactionFate === 'hidden') continue;
+      if (compactionFate === 'pending') {
+        blocks.push({
+          kind: 'notice',
+          id: `agent-marker-${item.markerId}`,
+          text: item.marker,
+          tone: 'neutral',
+          createdAt: item.at,
+          i18n: { key: 'notice.compacting' },
+        });
+        continue;
+      }
       if (
         item.marker === 'message.delivery' &&
         typeof (item as { payload?: unknown }).payload === 'object' &&

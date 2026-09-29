@@ -1575,6 +1575,38 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it('renders each compaction once, at the durable record, across live and replayed markers', () => {
+    const marker = (markerId: string, at: string, payload: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: 'compaction', payload, at });
+    const turn = (turnId: string) => ({ kind: 'turn' as const, turnId, ordinal: Number(turnId.slice(1)), steps: [], state: 'completed' as const });
+    const durable = (summary: string, time: number) => ({ type: 'context.apply_compaction', summary, strategy: 'summarize', fallbackFrom: 'relay', time });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          turn('t1'),
+          marker('wire:v2:r10:compaction', '2026-01-01T00:01:00.000Z', durable('first', 1)),
+          turn('t2'),
+          marker('live-m1', '2026-01-01T00:02:00.000Z', { phase: 'started', trigger: 'auto' }),
+          marker('live-m2', '2026-01-01T00:02:00.001Z', { phase: 'blocked', turnId: 2 }),
+          marker('wire:v2:r603:compaction', '2026-01-01T00:02:30.000Z', durable('second', 2)),
+          marker('live-m3', '2026-01-01T00:02:30.100Z', { phase: 'completed', result: { summary: 'second' } }),
+          marker('wire:v2:r13241:compaction', '2026-01-01T00:02:30.000Z', durable('second', 2)),
+          turn('t3'),
+          marker('live-m4', '2026-01-01T00:03:00.000Z', { phase: 'started', trigger: 'manual' }),
+        ] as never,
+      }),
+    );
+    const notices = projected.blocks
+      .filter((block) => block.kind === 'notice')
+      .map((block) => [block.id, block.kind === 'notice' ? block.i18n?.key : undefined]);
+    expect(notices).toEqual([
+      ['agent-marker-wire:v2:r10:compaction', 'transcript.marker.compactionFallback'],
+      ['agent-marker-wire:v2:r603:compaction', 'transcript.marker.compactionFallback'],
+      ['agent-marker-live-m4', 'notice.compacting'],
+    ]);
+  });
+
   it('carries external-engine records as executor notes on their turn', () => {
     const marker = (markerId: string, name: string, payload: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: name, payload, at: FIXED_AT });
     const projected = projectAgentTranscriptView(

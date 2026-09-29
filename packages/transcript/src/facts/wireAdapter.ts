@@ -346,7 +346,9 @@ export class TranscriptWireAdapter {
           op: 'marker.upsert',
           item: {
             kind: 'marker',
-            markerId: stringOf(record['id']) ?? `wire:v2:r${ordinal}:compaction`,
+            markerId:
+              stringOf(record['id']) ??
+              (record.time === undefined ? `wire:v2:r${ordinal}:compaction` : `wire:v2:compaction:t${record.time}`),
             marker: 'compaction',
             payload: record,
             at: isoOf(record.time),
