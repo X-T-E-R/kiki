@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import type { ExecutorCatalogItem } from '@kiki/protocol';
+import type { ExecutorCatalogItem, ExecutorPromptPreviewResponse } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
+import { useConnection } from '../../../state/connection';
 import { Icon } from '../../icons';
 import { INPUT, SMALL_INPUT } from '../../ui';
 import { SettingsSegmented } from '../SettingsPrimitives';
@@ -25,7 +26,8 @@ const WILDCARD_KEY: Record<(typeof FIELD_WILDCARDS)[number], I18nKey> = {
  * `prompt_deliveries`; an unsupported request stays selectable (it is what
  * the file says) and the preview names the fallback the server will use.
  */
-export function ExecutorPromptField({ value, onChange, engineId, engineLabel, catalog, profileBody, disabled }: {
+export function ExecutorPromptField({ value, onChange, engineId, engineLabel, catalog, profileBody, disabled,
+  profileName, workspaceId, previewEnabled }: {
   value: ExecutorPromptDraft | null;
   onChange: (next: ExecutorPromptDraft | null) => void;
   /** The engine the profile runs on ('' = native). */
@@ -34,6 +36,9 @@ export function ExecutorPromptField({ value, onChange, engineId, engineLabel, ca
   catalog: readonly ExecutorCatalogItem[];
   profileBody: string;
   disabled: boolean;
+  profileName: string;
+  workspaceId?: string;
+  previewEnabled: boolean;
 }) {
   const { t } = useI18n();
   const external = engineId !== '';
@@ -89,7 +94,8 @@ export function ExecutorPromptField({ value, onChange, engineId, engineLabel, ca
     </div> : <SectionControls section={section} editingOverride={editingOverride} supported={supported} scopeLabel={scopeLabel}
       disabled={disabled} include={include} onToggle={toggle} onPatch={writeSection} onRemove={removeOverride} />}
     {external ? <PromptPreview value={value} engineId={engineId} engineLabel={engineLabel} supported={supportOf(engineId)}
-      steer={catalog.find((item) => item.id === engineId)?.capabilities?.steer} profileBody={profileBody} />
+      steer={catalog.find((item) => item.id === engineId)?.capabilities?.steer} profileBody={profileBody}
+      profileName={profileName} workspaceId={workspaceId} previewEnabled={previewEnabled} />
       : <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.executorPrompt.pickEngine')}</p>}
   </div>;
 }
@@ -119,7 +125,9 @@ function SectionControls({ section, editingOverride, supported, scopeLabel, disa
   const { t } = useI18n();
   const [fieldId, setFieldId] = useState('');
   const delivery = section.delivery;
-  const shownDelivery: '' | ExecutorPromptDelivery = delivery ?? (editingOverride ? '' : 'append');
+  const shownDelivery: '' | ExecutorPromptDelivery = delivery ?? (editingOverride ? ''
+    : supported?.includes('replace') && !supported.includes('append') ? 'replace'
+      : supported?.includes('append') ? 'append' : 'preamble');
   const specific = include.filter((id) => !(CONTEXT_BLOCKS as readonly string[]).includes(id) && !(FIELD_WILDCARDS as readonly string[]).includes(id));
   const fieldValid = FIELD_ID_PATTERN.test(fieldId.trim());
   const addField = () => {
@@ -195,43 +203,66 @@ function excerpt(text: string): string {
   return lines.length > 4 || head.length > 360 ? `${head.slice(0, 360)}…` : head;
 }
 
-/**
- * What the selected engine receives, in the server's order
- * (externalPrompt.ts): instructions, extra section, then each context block
- * and prompt field as its own `## id` section. Text Kiki fills in at session
- * start (AGENTS.md, memory, skill catalog, field values) is named, not
- * invented — the server has no rendered-prompt preview route.
- */
-function PromptPreview({ value, engineId, engineLabel, supported, steer, profileBody }: {
+function PromptPreview({ value, engineId, engineLabel, supported, steer, profileBody,
+  profileName, workspaceId, previewEnabled }: {
   value: ExecutorPromptDraft | null;
   engineId: string;
   engineLabel: string;
   supported: readonly ExecutorPromptDelivery[] | undefined;
   steer: 'native' | 'next_turn_preamble' | undefined;
   profileBody: string;
+  profileName: string;
+  workspaceId?: string;
+  previewEnabled: boolean;
 }) {
   const { t } = useI18n();
+  const { client } = useConnection();
+  const [loaded, setLoaded] = useState<{ engine: string; data: ExecutorPromptPreviewResponse } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(null);
+    if (!previewEnabled || workspaceId === undefined || typeof client.previewExecutorPrompt !== 'function') return;
+    void (async () => {
+      try {
+        const data = await client.previewExecutorPrompt(profileName, workspaceId, engineId);
+        if (!cancelled) setLoaded({ engine: engineId, data });
+      } catch {
+        if (!cancelled) setLoaded(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [client, profileName, workspaceId, engineId, previewEnabled]);
+  const preview = previewEnabled && loaded?.engine === engineId ? loaded.data : null;
   const resolved = resolvedSection(value, engineId);
-  const actual = actualDelivery(resolved.delivery, supported);
+  const requested = value?.per_engine?.[engineId]?.delivery ?? value?.delivery ??
+    (supported?.includes('replace') && !supported.includes('append') ? 'replace'
+      : supported?.includes('append') ? 'append' : 'preamble');
+  const actual = preview?.delivery.actual ?? actualDelivery(requested, supported);
+  const downgraded = preview?.delivery.downgraded ?? requested !== actual;
   const blocks = deliveredBlocks(resolved.include);
   const bodyText = resolved.body ?? profileBody;
-  const parts: { key: string; title: string; mono?: boolean; text?: string; pending?: boolean; empty?: boolean }[] = [
-    { key: 'body', title: resolved.body !== undefined ? t('st.executorPrompt.previewOverride') : t('st.executorPrompt.previewBody'),
-      text: bodyText.trim() === '' ? undefined : excerpt(bodyText), empty: bodyText.trim() === '' },
-    ...(resolved.append !== undefined ? [{ key: 'append', title: t('st.executorPrompt.previewAppend'), text: excerpt(resolved.append) }] : []),
-    ...blocks.context.map((id) => ({ key: id, title: `## ${id}`, mono: true, pending: true })),
-    ...blocks.fields.map((id) => ({ key: id, title: `## ${id}`, mono: true, pending: true })),
-  ];
+  const parts: { key: string; title: string; mono?: boolean; text?: string; pending?: boolean; empty?: boolean }[] = preview !== null
+    ? preview.blocks.map((block) => ({ key: block.id, title: block.id === 'body'
+      ? t('st.executorPrompt.previewBody') : block.id === 'append'
+        ? t('st.executorPrompt.previewAppend') : `## ${block.id}`, text: block.text, mono: block.id !== 'body' && block.id !== 'append' }))
+    : [
+      { key: 'body', title: resolved.body !== undefined ? t('st.executorPrompt.previewOverride') : t('st.executorPrompt.previewBody'),
+        text: bodyText.trim() === '' ? undefined : excerpt(bodyText), empty: bodyText.trim() === '' },
+      ...(resolved.append !== undefined ? [{ key: 'append', title: t('st.executorPrompt.previewAppend'), text: excerpt(resolved.append) }] : []),
+      ...blocks.context.map((id) => ({ key: id, title: `## ${id}`, mono: true, pending: true })),
+      ...blocks.fields.map((id) => ({ key: id, title: `## ${id}`, mono: true, pending: true })),
+    ];
   return <div data-executor-prompt-preview data-preview-engine={engineId} data-preview-delivery={actual}
+    data-preview-source={preview === null ? 'plan' : 'server'}
     className="space-y-2 rounded-lg border border-hairline bg-paper px-3 py-3">
     <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
       <p className="text-[12px] font-medium text-ink">{t('st.executorPrompt.preview', { engine: engineLabel })}</p>
       <p className="text-[11.5px] text-ink-faint">{t('st.executorPrompt.previewAs', { delivery: t(`st.executorPrompt.delivery.${actual}`) })}</p>
     </div>
-    {actual !== resolved.delivery ? <p data-executor-prompt-downgrade className="flex gap-1.5 text-[11.5px] leading-snug text-amber-ink">
+    {downgraded ? <p data-executor-prompt-downgrade className="flex gap-1.5 text-[11.5px] leading-snug text-amber-ink">
       <Icon name="warning" size={12} className="mt-px shrink-0" />
       {t('st.executorPrompt.downgrade', {
-        engine: engineLabel, requested: t(`st.executorPrompt.delivery.${resolved.delivery}`), actual: t(`st.executorPrompt.delivery.${actual}`),
+        engine: engineLabel, requested: t(`st.executorPrompt.delivery.${preview?.delivery.requested ?? requested}`), actual: t(`st.executorPrompt.delivery.${actual}`),
       })}
     </p> : null}
     <ol className="space-y-1.5">
@@ -241,11 +272,11 @@ function PromptPreview({ value, engineId, engineLabel, supported, steer, profile
           <span className={`min-w-0 break-all text-ink-soft ${part.mono === true ? 'font-mono' : 'font-medium'}`}>{part.title}</span>
           {part.pending === true ? <span className="shrink-0 text-ink-faint">· {t('st.executorPrompt.previewResolved')}</span> : null}
         </p>
-        {part.text !== undefined ? <pre className="mt-0.5 line-clamp-4 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.55] text-ink-faint">{part.text}</pre> : null}
+        {part.text !== undefined ? <pre className={`mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.55] text-ink-faint ${preview === null ? 'line-clamp-4' : 'max-h-64 overflow-auto'}`}>{part.text}</pre> : null}
         {part.empty === true ? <p className="mt-0.5 text-[11.5px] text-ink-faint">{t('st.executorPrompt.previewEmptyBody')}</p> : null}
       </li>)}
     </ol>
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.executorPrompt.previewNoText')}</p>
+    {preview === null ? <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.executorPrompt.previewNoText')}</p> : null}
     {steer !== undefined ? <p data-executor-prompt-steer className="border-t border-hairline pt-2 text-[11.5px] leading-snug text-ink-faint">
       {t('st.executorPrompt.steer', { mode: t(`st.executorPrompt.steerMode.${steer}`) })} {t('st.executorPrompt.steerLimit')}
     </p> : null}

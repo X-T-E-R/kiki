@@ -1557,6 +1557,11 @@ export class KikiClient {
     return this.memoryRequest('POST', `/executors/${encodeURIComponent(id)}/check`);
   }
 
+  previewExecutorPrompt(name: string, workspace: string, executor: string): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse> {
+    return this.memoryRequest('POST', `/agents/${encodeURIComponent(name)}/executor-prompt:preview`,
+      { body: { workspace, executor } });
+  }
+
   /** `[subagent].default_model`; an empty value clears the key. */
   async setSubagentDefaultModel(model: string): Promise<void> {
     const trimmed = model.trim();

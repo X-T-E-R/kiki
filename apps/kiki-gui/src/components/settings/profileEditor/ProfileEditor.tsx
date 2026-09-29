@@ -19,7 +19,7 @@ import { DiagnosticsList } from './DiagnosticsList';
 import type { ProfileDiagnostic } from './diagnostics';
 import { engineChoices, engineLabel, useExecutorCatalog } from './engines';
 import { ExecutorPromptField } from './ExecutorPromptField';
-import { resolvedSection, type ExecutorPromptDraft } from './executorPromptDraft';
+import type { ExecutorPromptDraft } from './executorPromptDraft';
 import { AliasChips, EffortPicker, Field, ModelPicker, Section } from './fields';
 import { ModelProfilesField } from './ModelProfilesField';
 import {
@@ -143,6 +143,10 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const problemText = problems.length === 0 ? null : t(`st.profiles.problem.${problems[0]}` as I18nKey);
   const engines = useMemo(() => engineChoices(profiles, catalog), [profiles, catalog]);
   const engineStatus = (id: string) => catalog.find((item) => item.id === id)?.status;
+  const promptDeliveries = catalog.find((item) => item.id === draft.executor)?.capabilities?.prompt_deliveries;
+  const promptDelivery = draft.executorPrompt?.per_engine?.[draft.executor]?.delivery ?? draft.executorPrompt?.delivery
+    ?? (promptDeliveries?.includes('replace') && !promptDeliveries.includes('append') ? 'replace'
+      : promptDeliveries?.includes('append') ? 'append' : 'preamble');
   const spawn = draft.spawnConstraints;
   const setSpawn = (patch: Partial<SpawnConstraintsDraft>) => set('spawnConstraints', { ...spawn, ...patch });
   const subagentSummary = draft.subagentsMode === 'unrestricted' ? t('st.profiles.subagentsAny')
@@ -213,9 +217,10 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     <div>
       <Section title={t('st.executorPrompt.title')} dataSection="executor-prompt" defaultOpen={external}
         count={executorPromptCount(draft.executorPrompt)}
-        summary={external ? t(`st.executorPrompt.delivery.${resolvedSection(draft.executorPrompt, draft.executor).delivery}`) : undefined}>
+        summary={external ? t(`st.executorPrompt.delivery.${promptDelivery}`) : undefined}>
         <ExecutorPromptField value={draft.executorPrompt} onChange={(next) => set('executorPrompt', next)} engineId={draft.executor}
-          engineLabel={engine} catalog={catalog} profileBody={draft.prompt} disabled={disabled} />
+          engineLabel={engine} catalog={catalog} profileBody={draft.prompt} disabled={disabled}
+          profileName={profile.name} workspaceId={profile.workspace_id} previewEnabled={!dirty} />
       </Section>
       {external && ignoredFields.length > 0 ? <Section title={t('st.profiles.ignoredTitle', { engine })} dataSection="ignored-fields"
         count={ignoredFields.length}>

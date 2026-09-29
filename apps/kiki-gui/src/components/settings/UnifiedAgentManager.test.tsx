@@ -13,6 +13,7 @@ const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
+    previewExecutorPrompt: vi.fn(),
   },
 }));
 vi.mock('../../state/connection', () => ({
@@ -78,6 +79,7 @@ beforeEach(() => {
   client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture' }] });
   client.getConfig.mockResolvedValue({});
   client.listExecutors.mockResolvedValue({ items: [] });
+  client.previewExecutorPrompt.mockRejectedValue(new Error('preview unavailable'));
   client.patchConfig.mockResolvedValue({});
   client.readHostFile.mockResolvedValue('---\nname: reviewer\ndescription: Review work\n---\n\nCheck changes\n');
   client.listModels.mockResolvedValue({ items: [
@@ -345,11 +347,17 @@ describe('profile editor sheet', () => {
         capabilities: { prompt_deliveries: ['preamble'], steer: 'next_turn_preamble', permission: { trust_engine_settings: false }, thinking_binding: false } },
     ] });
     client.updateNamedAgentProfile.mockImplementation(async (_name: string, body: Record<string, unknown>) => ({ ...claude, ...body }));
+    client.previewExecutorPrompt.mockResolvedValue({ executor: 'claude-acp',
+      delivery: { requested: 'append', actual: 'preamble', downgraded: true },
+      blocks: [{ id: 'body', text: 'Check changes' }, { id: 'agents_md', text: 'Rendered workspace policy' }],
+      text: 'Check changes\n\nRendered workspace policy' });
     await render();
     await open('claude-helper');
     const section = sheet().querySelector<HTMLElement>('[data-profile-section="executor-prompt"]')!;
-    // Append is requested; Claude Code only takes a first-message preamble, and the preview says so.
     const preview = section.querySelector<HTMLElement>('[data-executor-prompt-preview]')!;
+    expect(client.previewExecutorPrompt).toHaveBeenCalledWith('claude-helper', 'ws-one', 'claude-acp');
+    expect(preview.getAttribute('data-preview-source')).toBe('server');
+    expect(preview.textContent).toContain('Rendered workspace policy');
     expect(preview.getAttribute('data-preview-delivery')).toBe('preamble');
     expect(preview.querySelector('[data-executor-prompt-downgrade]')?.textContent).toContain('can’t use Append');
     expect([...preview.querySelectorAll('[data-preview-part]')].map((part) => part.getAttribute('data-preview-part'))).toEqual(['body', 'agents_md']);
@@ -359,6 +367,8 @@ describe('profile editor sheet', () => {
     await act(async () => section.querySelector<HTMLButtonElement>('[data-executor-prompt-add-override]')!.click());
     await act(async () => section.querySelector<HTMLInputElement>('[data-executor-prompt-block="memory_snapshot"] input')!.click());
     await act(async () => section.querySelector<HTMLButtonElement>('[data-executor-prompt-delivery="preamble"]')!.click());
+    expect(preview.getAttribute('data-preview-source')).toBe('plan');
+    expect(preview.textContent).not.toContain('Rendered workspace policy');
     expect([...section.querySelectorAll('[data-preview-part]')].map((part) => part.getAttribute('data-preview-part'))).toEqual(['body', 'agents_md', 'memory_snapshot']);
     expect(section.querySelector('[data-executor-prompt-downgrade]')).toBeNull();
     // The not-used fold names each ignored field with the server's reason and marks values the file sets.
