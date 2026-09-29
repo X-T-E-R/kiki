@@ -1,0 +1,150 @@
+/**
+ * Away notifications and the unread badge, mounted once in the App shell.
+ *
+ * - Watches the session list the app already polls and turns transitions
+ *   (turn finished or failed, approval or question waiting) into system
+ *   notifications through `awayNotifier`, which only delivers while the
+ *   window is hidden or unfocused and rate-limits per session.
+ * - The app's own list poll stops while the document is hidden (a window
+ *   closed to the tray), so this hook keeps a slower poll of its own running
+ *   only in that state; otherwise it would never see the run finish.
+ * - Mirrors the activity inbox count onto the taskbar / dock badge.
+ * - Routes notification clicks back to the session (or the inbox for a
+ *   merged notification).
+ */
+
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+
+import type { Session } from '@kiki/protocol';
+import {
+  buildInboxModel,
+  detectAttentionEvents,
+  type AttentionBaseline,
+  type AttentionNotification,
+} from '@kiki/session-core/sessions';
+import { sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
+
+import type { HostAdapter, HostNotification } from '../host';
+import { useI18n } from '../i18n';
+import { awayNotifier, notificationRoute } from './awayNotify';
+
+/** Poll cadence while the document is hidden (the visible app polls on its own). */
+export const HIDDEN_POLL_INTERVAL_MS = 20_000;
+
+export interface AwayNotificationsOptions {
+  readonly host: HostAdapter;
+  readonly sessions: readonly Session[];
+  /** Fetches the newest sessions while hidden; the app's list query is paused then. */
+  readonly listSessions: () => Promise<readonly Session[]>;
+  readonly navigate: (route: string) => void;
+}
+
+function useFormatter(): (notification: AttentionNotification) => HostNotification {
+  const { t, tp } = useI18n();
+  return useMemo(() => (notification: AttentionNotification): HostNotification => {
+    const route = notificationRoute(notification);
+    if (notification.type === 'merged') {
+      const parts = [
+        notification.needsYou > 0 ? tp('away.merged.needsYou', notification.needsYou) : undefined,
+        notification.finished > 0 ? tp('away.merged.finished', notification.finished) : undefined,
+      ].filter((part): part is string => part !== undefined);
+      return {
+        title: t('away.merged.title', { count: notification.events.length }),
+        body: parts.join(' · '),
+        route,
+        tag: 'kiki-activity',
+      };
+    }
+    const { event } = notification;
+    const title = event.title.trim() === '' ? t('sidebar.untitled') : event.title;
+    return {
+      title: t(`away.${event.kind}.title`, { title }),
+      body: t(`away.${event.kind}.body`),
+      route,
+      tag: `kiki-session-${event.sessionId}`,
+    };
+  }, [t, tp]);
+}
+
+export function useAwayNotifications({ host, sessions, listSessions, navigate }: AwayNotificationsOptions): void {
+  const format = useFormatter();
+  const sinceRef = useRef(Date.now());
+  const baselineRef = useRef<AttentionBaseline | undefined>(undefined);
+
+  // Wire the shared notifier to this host and locale.
+  useEffect(() => {
+    const notify = host.notify;
+    const probe = host.isWindowVisibleAndFocused;
+    if (notify === undefined) {
+      awayNotifier.configure(undefined);
+      return;
+    }
+    awayNotifier.configure({
+      isAway: async () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+        if (probe !== undefined) return !(await probe());
+        return typeof document !== 'undefined' && !document.hasFocus();
+      },
+      notify,
+      format,
+    });
+    return () => { awayNotifier.configure(undefined); };
+  }, [host, format]);
+
+  // Diff every list the app (or the hidden poll) observes.
+  const observe = useRef((list: readonly Session[]) => {
+    const previous = baselineRef.current;
+    const { events, baseline } = detectAttentionEvents(previous ?? new Map(), list, sinceRef.current);
+    baselineRef.current = baseline;
+    // The very first list is the baseline: what was already true at launch is not news.
+    if (previous === undefined) return;
+    void awayNotifier.report(events);
+  });
+  useEffect(() => {
+    if (sessions.length === 0 && baselineRef.current === undefined) return;
+    observe.current(sessions);
+  }, [sessions]);
+
+  // Hidden-window poll: the app's own poll pauses while the document is hidden.
+  const listRef = useRef(listSessions);
+  listRef.current = listSessions;
+  useEffect(() => {
+    if (host.notify === undefined || typeof document === 'undefined') return;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const tick = () => {
+      if (document.visibilityState !== 'hidden') return;
+      void listRef.current().then((list) => { observe.current(list); }, () => undefined);
+    };
+    const sync = () => {
+      if (document.visibilityState === 'hidden') {
+        timer ??= setInterval(tick, HIDDEN_POLL_INTERVAL_MS);
+      } else if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      if (timer !== undefined) clearInterval(timer);
+    };
+  }, [host]);
+
+  // Taskbar / dock badge: the same count as the activity entry.
+  const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
+  const total = useMemo(() => buildInboxModel(sessions, seen).total, [sessions, seen]);
+  useEffect(() => {
+    void host.setUnreadBadge?.(total);
+  }, [host, total]);
+
+  // Clicks come back with the route the notification carried.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  useEffect(() => {
+    if (host.onNotificationClick === undefined) return;
+    return host.onNotificationClick((route) => {
+      if (route.startsWith('/')) navigateRef.current(route);
+    });
+  }, [host]);
+}

@@ -86,6 +86,7 @@ import { pushToast } from './lib/toasts';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
+import { useAwayNotifications } from './lib/useAwayNotifications';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
@@ -384,6 +385,19 @@ export function App() {
       },
     );
   }, [sessions, listFilters, workspaceOptions, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
+
+  // System notifications while the window is in the background, the taskbar
+  // badge, and notification clicks back to their session.
+  const listNewestSessions = useCallback(
+    () => client.listSessions({ page_size: 100 }).then((page) => page.items),
+    [client],
+  );
+  useAwayNotifications({
+    host,
+    sessions,
+    listSessions: listNewestSessions,
+    navigate: (route) => { navigate(route); },
+  });
 
   // document.title follows the route: session title, page name, or bare Kiki.
   useEffect(() => {

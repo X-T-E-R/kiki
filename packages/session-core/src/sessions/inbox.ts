@@ -39,6 +39,10 @@ export interface InboxItem {
   readonly at: string;
   /** Still holding a turn (a blocked session can also have work in flight). */
   readonly busy: boolean;
+  /** The session's event high-water mark; "mark as read" records it. */
+  readonly lastSeq: number;
+  /** The last thing the user asked, for context under the outcome. */
+  readonly preview?: string;
 }
 
 export interface InboxModel {
@@ -98,6 +102,10 @@ export function buildInboxModel(
       workspaceId: session.workspace_id,
       at: session.updated_at,
       busy: session.busy,
+      lastSeq: session.last_seq,
+      ...(session.last_prompt !== undefined && session.last_prompt.trim() !== ''
+        ? { preview: session.last_prompt.replace(/\s+/gu, ' ').trim() }
+        : {}),
     };
     const pending = pendingKindOf(session);
     if (pending !== 'none') {

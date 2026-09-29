@@ -9,12 +9,15 @@
  * finished row lands on the session (and clears itself, because opening a
  * session records its seen-mark).
  *
+ * "Mark all as read" clears the finished drain in one write; blocked rows
+ * stay until they are answered.
+ *
  * Order inside each group is deliberate and stated in the group header:
  * blocked rows oldest-wait-first (the longest-stuck run is the most expensive
  * to leave), finished rows newest-first (an inbox reads down).
  */
 
-import { useMemo, useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore, type ReactNode } from 'react';
 
 import type { Session } from '@kiki/protocol';
 import {
@@ -23,6 +26,7 @@ import {
   type InboxReason,
 } from '@kiki/session-core/sessions';
 import {
+  markSessionsSeen,
   sessionSeenSnapshot,
   subscribeSessionSeen,
 } from '@kiki/session-core/settings';
@@ -33,6 +37,7 @@ import { Icon } from './icons';
 import { LifeMark } from './LifeMark';
 import { PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
+import { pushToast } from '../lib/toasts';
 
 /** Live seen-marks: the list repaints the moment a session is opened. */
 export function useSessionSeen() {
@@ -92,7 +97,7 @@ function InboxRow({
         <ReasonMark item={item} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink">{item.title}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink">{item.title.trim() === '' ? t('sidebar.untitled') : item.title}</span>
             <RelativeTime at={item.at} className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums" />
           </span>
           <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
@@ -100,9 +105,14 @@ function InboxRow({
               {t(REASON_LABEL[item.reason] as 'activity.reason.approval')}
             </span>
             {workspaceName !== undefined && workspaceName !== '' ? (
-              <span className="min-w-0 truncate">· {workspaceName}</span>
+              <span data-activity-workspace className="min-w-0 truncate">· {workspaceName}</span>
             ) : null}
           </span>
+          {item.preview !== undefined ? (
+            <span data-activity-preview className="mt-px block truncate text-[12px] leading-4 text-ink-soft">
+              {item.preview}
+            </span>
+          ) : null}
         </span>
         <Icon
           name="arrowRight"
@@ -121,6 +131,7 @@ function InboxGroup({
   workspaceNames,
   onOpen,
   hook,
+  action,
 }: {
   title: string;
   hint: string;
@@ -128,6 +139,8 @@ function InboxGroup({
   workspaceNames: ReadonlyMap<string, string>;
   onOpen: (href: string) => void;
   hook: Record<string, string>;
+  /** One quiet control at the end of the header (e.g. mark all as read). */
+  action?: ReactNode;
 }) {
   if (items.length === 0) return null;
   return (
@@ -138,7 +151,8 @@ function InboxGroup({
         <h2 className="shrink-0 font-medium text-ink-soft">{title}</h2>
         <span className="shrink-0 text-ink-faint tabular-nums">{items.length}</span>
         <span aria-hidden className="text-ink-faint">·</span>
-        <span className="min-w-0 truncate text-ink-faint">{hint}</span>
+        <span className="min-w-0 flex-1 truncate text-ink-faint">{hint}</span>
+        {action}
       </div>
       <ul className="flex flex-col gap-0.5">
         {items.map((item) => (
@@ -170,6 +184,12 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
     [workspaceOptions],
   );
   const open = (href: string) => { void navigate(href); };
+  // Only the finished drain can be cleared: a blocked session stays until it
+  // is answered, so "read" would be a lie there.
+  const markAllRead = () => {
+    markSessionsSeen(model.unread.map((item) => ({ sessionId: item.sessionId, lastSeq: item.lastSeq })));
+    pushToast({ tone: 'success', text: t('activity.markAllReadDone') });
+  };
   return (
     <div data-activity-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} />
@@ -192,6 +212,16 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
             items={model.unread}
             workspaceNames={workspaceNames}
             onOpen={open}
+            action={(
+              <button
+                type="button"
+                data-activity-mark-all-read
+                onClick={markAllRead}
+                className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:py-2.5"
+              >
+                {t('activity.markAllRead')}
+              </button>
+            )}
           />
           {model.total === 0 ? (
             <div data-activity-empty className="px-3 pt-10">

@@ -42,6 +42,29 @@ async function ensureNotificationPermission(): Promise<boolean> {
   return granted;
 }
 
+/**
+ * Native notification clicks. The desktop notification plugin reports no
+ * click on Windows, macOS or Linux; the shell emits
+ * `kiki://notification-click` with `{ route }` when it can, and until it
+ * does this subscription simply never fires (the notification still shows,
+ * and the activity inbox and badge carry the item).
+ */
+function onNotificationClick(callback: (route: string) => void): () => void {
+  let unsubscribed = false;
+  let unlisten: (() => void) | undefined;
+  void listen<unknown>('kiki://notification-click', (event) => {
+    const payload = event.payload as { route?: unknown } | null;
+    if (!unsubscribed && typeof payload?.route === 'string') callback(payload.route);
+  }).then((fn) => {
+    if (unsubscribed) fn();
+    else unlisten = fn;
+  }, () => undefined);
+  return () => {
+    unsubscribed = true;
+    unlisten?.();
+  };
+}
+
 function onTrayNewSession(callback: () => void): () => void {
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
@@ -119,7 +142,19 @@ export const tauriHost: TauriHostAdapter = {
   },
   async notify(options) {
     if (!(await ensureNotificationPermission())) return;
-    sendNotification(options);
+    const { route, tag: _tag, ...rest } = options;
+    sendNotification(route === undefined ? rest : { ...rest, extra: { route } });
+  },
+  onNotificationClick,
+  async setUnreadBadge(count) {
+    // macOS and Linux draw the count on the dock / launcher icon. Windows has
+    // no count badge; its taskbar overlay is owned by the native space
+    // identity (`set_space_identity`), so the page leaves it alone.
+    try {
+      await getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
+    } catch {
+      return;
+    }
   },
   async isWindowVisibleAndFocused() {
     try {

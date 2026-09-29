@@ -481,9 +481,24 @@ describe('Sidebar header controls', () => {
       sessions: [blocked],
       sessionGroups: [{ key: 'today', label: 'Today', items: [blocked] }],
     });
-    expect(container.querySelector('[data-activity-badge]')).not.toBeNull();
+    expect(container.querySelector('[data-activity-badge]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-activity-badge]')?.getAttribute('data-activity-badge-tone')).toBe('needs-you');
     expect(container.querySelector('[data-nav-activity]')?.getAttribute('aria-label'))
       .toBe('1 item needs you');
+  });
+
+  it('counts finished-unread runs on the badge in the quieter tone', async () => {
+    const done = { ...session('s-done'), last_turn_reason: 'completed' as const, last_seq: 6 };
+    const failed = { ...session('s-failed'), last_turn_reason: 'failed' as const, last_seq: 3 };
+    const { container } = await mount({
+      sessions: [done, failed],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [done, failed] }],
+    });
+    const badge = container.querySelector('[data-activity-badge]');
+    expect(badge?.textContent).toBe('2');
+    expect(badge?.getAttribute('data-activity-badge-tone')).toBe('unread');
+    expect(container.querySelector('[data-nav-activity]')?.getAttribute('aria-label'))
+      .toBe('2 new items in Activity');
   });
 });
 

@@ -72,6 +72,34 @@ export interface DesktopSettings {
   railOpenByDefault: boolean;
   motion: MotionPreference;
   proseFont: ProseFontPreference;
+  /**
+   * Which kinds of away notifications this device shows. The master switch
+   * is the desktop `notifications` preference (the native side reads it too);
+   * these narrow it per kind.
+   */
+  awayNotifications: AwayNotificationKinds;
+}
+
+/** Per-kind switches for notifications while the window is in the background. */
+export interface AwayNotificationKinds {
+  completed: boolean;
+  failed: boolean;
+  question: boolean;
+  approval: boolean;
+}
+
+export const DEFAULT_AWAY_NOTIFICATION_KINDS: AwayNotificationKinds = {
+  completed: true,
+  failed: true,
+  question: true,
+  approval: true,
+};
+
+function readAwayNotificationKinds(value: unknown): AwayNotificationKinds {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const pick = (key: keyof AwayNotificationKinds) =>
+    typeof record[key] === 'boolean' ? record[key] as boolean : DEFAULT_AWAY_NOTIFICATION_KINDS[key];
+  return { completed: pick('completed'), failed: pick('failed'), question: pick('question'), approval: pick('approval') };
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -292,6 +320,7 @@ const DEFAULTS: DesktopSettings = {
   railOpenByDefault: true,
   motion: 'system',
   proseFont: 'serif',
+  awayNotifications: DEFAULT_AWAY_NOTIFICATION_KINDS,
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -375,6 +404,7 @@ export function readSettings(): DesktopSettings {
       typeof stored.railOpenByDefault === 'boolean' ? stored.railOpenByDefault : DEFAULTS.railOpenByDefault,
     motion: isMotionPreference(stored.motion) ? stored.motion : DEFAULTS.motion,
     proseFont: stored.proseFont === 'sans' ? 'sans' : DEFAULTS.proseFont,
+    awayNotifications: readAwayNotificationKinds(stored.awayNotifications),
   };
 }
 
@@ -2035,7 +2065,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
   { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps', 'st.layout.railOpenByDefault'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏'] },
-  { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
+  { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.tray', 'st.desktop.quit'] },
+  { section: 'notifications', cardId: 'st-card-notify-away', titleKey: 'st.away.title', keywordKeys: ['st.away.enabled', 'st.away.completed', 'st.away.failed', 'st.away.question', 'st.away.approval'], synonyms: ['system notification', '系统通知', 'desktop notification', '桌面通知', 'unread', '未读', 'badge', '角标', 'activity', '活动'] },
   { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },

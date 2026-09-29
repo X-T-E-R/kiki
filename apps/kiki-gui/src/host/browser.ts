@@ -1,4 +1,32 @@
-import type { BrowserHostAdapter } from './host';
+import type { BrowserHostAdapter, HostNotification } from './host';
+
+const clickListeners = new Set<(route: string) => void>();
+
+function notificationsAvailable(): boolean {
+  return typeof window !== 'undefined' && typeof window.Notification === 'function';
+}
+
+/**
+ * Web Notifications for `kiki web`. Permission is asked on the first send; a
+ * denied or unsupported browser simply shows nothing (the activity inbox
+ * still holds the item). A click focuses the tab and routes the page.
+ */
+async function browserNotify(options: HostNotification): Promise<void> {
+  if (!notificationsAvailable()) return;
+  let permission = window.Notification.permission;
+  if (permission === 'default') permission = await window.Notification.requestPermission();
+  if (permission !== 'granted') return;
+  const notification = new window.Notification(options.title, {
+    ...(options.body === undefined ? {} : { body: options.body }),
+    ...(options.tag === undefined ? {} : { tag: options.tag }),
+  });
+  const route = options.route;
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+    if (route !== undefined) for (const listener of clickListeners) listener(route);
+  };
+}
 
 interface ViteLocalServerPayload {
   readonly url?: string;
@@ -8,6 +36,15 @@ interface ViteLocalServerPayload {
 
 export const browserHost: BrowserHostAdapter = {
   kind: 'browser',
+  ...(notificationsAvailable()
+    ? {
+      notify: browserNotify,
+      onNotificationClick: (callback: (route: string) => void) => {
+        clickListeners.add(callback);
+        return () => { clickListeners.delete(callback); };
+      },
+    }
+    : {}),
   connection: {
     async discover() {
       const response = await fetch('/__kiki/local-server');

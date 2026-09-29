@@ -108,6 +108,37 @@ export function markSessionSeen(sessionId: string, lastSeq: number): void {
   }
 }
 
+/**
+ * Mark several sessions seen in one write ("Mark all as read"). Same rules as
+ * `markSessionSeen`: marks never move backwards, and an all-current batch
+ * writes nothing.
+ */
+export function markSessionsSeen(entries: readonly { readonly sessionId: string; readonly lastSeq: number }[]): void {
+  const current = read();
+  const next: Record<string, number> = { ...current };
+  let changed = false;
+  for (const { sessionId, lastSeq } of entries) {
+    if (sessionId === '' || !Number.isFinite(lastSeq)) continue;
+    const seq = Math.max(0, Math.trunc(lastSeq));
+    if ((next[sessionId] ?? -1) >= seq) continue;
+    // Re-insert so a refreshed mark counts as the newest for pruning.
+    delete next[sessionId];
+    next[sessionId] = seq;
+    changed = true;
+  }
+  if (!changed) return;
+  const keys = Object.keys(next);
+  if (keys.length > MAX_ENTRIES) {
+    for (const stale of keys.slice(0, keys.length - MAX_ENTRIES)) delete next[stale];
+  }
+  publish(next);
+  try {
+    spaceStorage.setItem(KEY, JSON.stringify(next));
+  } catch {
+    // storage full / unavailable — read state is a convenience
+  }
+}
+
 /** Drop one session's mark (it was deleted, or the user asked to re-flag it). */
 export function forgetSessionSeen(sessionId: string): void {
   const current = read();

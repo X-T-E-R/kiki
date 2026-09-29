@@ -122,12 +122,7 @@ export function GeneralSection() {
       <SectionCard id="st-card-desktop" title={t('st.desktop.title')} effect="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>
         {isDesktop ? (
           <fieldset className="space-y-4">
-            <Toggle
-              layout="row"
-              label={t('st.desktop.notifications')}
-              checked={desktopPrefs.notifications}
-              onChange={(checked) => { updateDesktop({ notifications: checked }); }}
-            />
+            {/* System notifications live on Notifications & messages. */}
             <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t('st.desktop.title')}>
               {([
                 { closeToTray: true, titleKey: 'st.desktop.tray', descriptionKey: 'st.desktop.trayDesc' },

@@ -352,9 +352,13 @@ export function Sidebar({
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
   const inbox = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
-  const activityLabel = inbox.total > 0
-    ? tp('sidebar.activityCount', inbox.total)
-    : t('sidebar.activityAria');
+  // Blocked-only keeps the "needs you" wording; once finished runs are in the
+  // count too, the label says "new items" instead of overstating urgency.
+  const activityLabel = inbox.total === 0
+    ? t('sidebar.activityAria')
+    : inbox.needsYou.length === inbox.total
+      ? tp('sidebar.activityCount', inbox.total)
+      : tp('activity.badgeCount', inbox.total);
   const activeWorkspaceId = sessions.find((session) => session.id === activeSessionId)?.workspace_id;
 
   // Local panel-layout prefs: the sidebar owns its own width. Local live
@@ -709,10 +713,18 @@ export function Sidebar({
         >
           <Icon name="bell" size={16} />
           {inbox.total > 0 ? (
+            // The count itself; attention tone while anything is blocked on
+            // the user, the accent when it is only finished runs to read.
             <span
-              data-activity-badge
-              className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-accent"
-            />
+              data-activity-badge={inbox.total}
+              data-activity-badge-tone={inbox.needsYou.length > 0 ? 'needs-you' : 'unread'}
+              aria-hidden
+              className={`pointer-events-none absolute -top-1 -right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-canvas ${
+                inbox.needsYou.length > 0 ? 'bg-attention' : 'bg-accent'
+              }`}
+            >
+              {inbox.total > 99 ? '99+' : inbox.total}
+            </span>
           ) : null}
         </button>
       </div>

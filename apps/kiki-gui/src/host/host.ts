@@ -5,6 +5,13 @@ import type { ResolvedTheme } from '../lib/theme';
 export interface HostNotification {
   readonly title: string;
   readonly body?: string;
+  /**
+   * What a click should open (`/s/<id>`, `/activity`). Carried to the shell so
+   * a native click can be routed back through `onNotificationClick`.
+   */
+  readonly route?: string;
+  /** Same tag replaces the previous notification where the platform supports it. */
+  readonly tag?: string;
 }
 
 export interface HostSelectedFile {
@@ -80,6 +87,17 @@ export interface HostConnectionAdapter {
 interface HostCapabilities {
   readonly connection: HostConnectionAdapter;
   notify?: (options: HostNotification) => Promise<void>;
+  /**
+   * Clicks on notifications this app raised, with the `route` they carried.
+   * Present where the shell reports clicks back to the page; the returned
+   * function unsubscribes.
+   */
+  onNotificationClick?: (callback: (route: string) => void) => () => void;
+  /**
+   * The unread count for the taskbar / dock icon (0 clears it). Best effort:
+   * a platform without badges ignores it.
+   */
+  setUnreadBadge?: (count: number) => Promise<void>;
   /**
    * Open an http(s) URL in the system browser. Present where `window.open`
    * cannot be trusted (desktop webviews reject pop-ups, VS Code webviews have

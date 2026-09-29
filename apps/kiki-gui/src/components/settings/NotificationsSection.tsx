@@ -8,6 +8,7 @@ import { FeedbackLine } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddChannelForm } from './notifications/AddChannelForm';
+import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
 import { ChannelRow } from './notifications/ChannelRow';
 import { isAddable, sortedChannels } from './notifications/model';
 import { NotificationRulesCard } from './notifications/NotificationRulesCard';
@@ -17,9 +18,10 @@ import { SectionCard, SettingsFlashContext } from './SectionCard';
 const ADD_CARD = 'st-card-notify-add';
 
 /**
- * Settings → Notifications & messages (nb-IM). Rules every channel shares on
- * top, then the channel list rendered from the provider registry, then the
- * add form for built-in channels. Receiving replies is not part of this
+ * Settings → Notifications & messages. This device's system notifications
+ * first (they need no server), then nb-IM: rules every channel shares, the
+ * channel list rendered from the provider registry, and the add form for
+ * built-in channels. Receiving replies is not part of this
  * release, so nothing here offers it.
  */
 export function NotificationsSection() {
@@ -34,9 +36,9 @@ export function NotificationsSection() {
   useEffect(() => { if (target) setAdding(true); }, [target]);
 
   if (settings.isError || providers.isError) {
-    return <FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} />;
+    return <><AwayNotificationsCard /><FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} /></>;
   }
-  if (settings.data === undefined || providers.data === undefined) return <div data-notify-loading aria-busy="true" className="min-h-40" />;
+  if (settings.data === undefined || providers.data === undefined) return <><AwayNotificationsCard /><div data-notify-loading aria-busy="true" className="min-h-40" /></>;
 
   const data = settings.data;
   const registry = providers.data;
@@ -47,6 +49,7 @@ export function NotificationsSection() {
 
   return (
     <>
+      <AwayNotificationsCard />
       <NotificationRulesCard global={data.global} />
       <SectionCard id="st-card-notify-channels" title={t('st.notify.channelsTitle')}>
         <div className="space-y-3">

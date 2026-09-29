@@ -83,7 +83,6 @@ import {
 import { shortCwd } from '@kiki/session-core/sessions';
 import {
   composerDefaultsForProfile,
-  readDesktopPrefs,
   readLastSessionId,
   readSettings,
   readTerminalPanelPrefs,
@@ -111,6 +110,7 @@ import { AnnotationTray } from './AnnotationTray';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
+import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -2596,25 +2596,32 @@ export function SessionView({
     updateAttachments,
   ]);
 
-  // Desktop approval notification: if the window is hidden or blurred, nudge
-  // the user once per approval request.
+  // Away notifications from the live stream: the open session reports a new
+  // approval / question or a turn that just ended without waiting for the
+  // list poll. The shared notifier only delivers while the window is in the
+  // background, applies the per-kind switches and rate-limits per session,
+  // so the list watcher reporting the same transition later stays quiet.
   const lastNotifiedInteractionRef = useRef<string | undefined>(undefined);
+  const sessionTitle = state.session?.title ?? '';
   useEffect(() => {
-    if (state.pendingInteraction !== 'approval') {
-      lastNotifiedInteractionRef.current = state.pendingInteraction;
-      return;
-    }
-    if (lastNotifiedInteractionRef.current === 'approval') return;
-    lastNotifiedInteractionRef.current = 'approval';
-    if (!readDesktopPrefs().notifications || host.isWindowVisibleAndFocused === undefined) return;
-    void host.isWindowVisibleAndFocused().then((visibleAndFocused) => {
-      if (visibleAndFocused) return;
-      void host.notify?.({
-        title: 'Kiki',
-        body: t('sv.notificationBody'),
-      });
-    });
-  }, [host, state.pendingInteraction, t]);
+    const pending = state.pendingInteraction;
+    const previous = lastNotifiedInteractionRef.current;
+    lastNotifiedInteractionRef.current = pending;
+    if (pending === 'none' || pending === previous) return;
+    reportAttention([{ sessionId, kind: pending, title: sessionTitle }]);
+  }, [sessionId, sessionTitle, state.pendingInteraction]);
+  // The first tail seen on open is history, not news.
+  const lastTurnTailRef = useRef<string | null | undefined>(undefined);
+  const turnTail = state.transcriptReady ? state.turnTail : undefined;
+  useEffect(() => {
+    if (!state.transcriptReady) return;
+    const key = turnTail === undefined ? null : `${turnTail.turnId}:${turnTail.state ?? ''}`;
+    const previous = lastTurnTailRef.current;
+    lastTurnTailRef.current = key;
+    if (previous === undefined || key === null || key === previous) return;
+    if (turnTail?.state !== 'completed' && turnTail?.state !== 'failed') return;
+    reportAttention([{ sessionId, kind: turnTail.state, title: sessionTitle }]);
+  }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
   const composerDisabled =
     controller === null ||

@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
-import { markSessionSeen, resetSessionSeen } from '@kiki/session-core/settings';
+import { markSessionSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
 import { ActivityPage } from './ActivityPage';
@@ -104,5 +104,24 @@ describe('ActivityPage', () => {
     await act(async () => { markSessionSeen('blocked', 10); });
     // Reading a session does not answer its approval.
     expect(page.querySelector('[data-activity-item="blocked"]')).not.toBeNull();
+  });
+  it('shows the last prompt under each row and clears only the finished drain on mark all read', async () => {
+    const page = await render([
+      session({ id: 'done', last_seq: 12, last_turn_reason: 'completed', last_prompt: 'Refactor   the\nparser' }),
+      session({ id: 'broke', last_seq: 7, last_turn_reason: 'failed' }),
+      session({ id: 'ask', last_seq: 9, pending_interaction: 'question' }),
+    ]);
+    expect(page.querySelector('[data-activity-item="done"] [data-activity-preview]')?.textContent).toBe('Refactor the parser');
+    expect(page.querySelector('[data-activity-item="broke"] [data-activity-reason]')).toBeNull();
+    expect(page.querySelector('[data-activity-item="broke"]')?.getAttribute('data-activity-reason')).toBe('failed');
+    // Only the finished group offers it: an approval is not "read" by looking.
+    expect(page.querySelector('[data-activity-group="needs-you"] [data-activity-mark-all-read]')).toBeNull();
+    const button = page.querySelector<HTMLButtonElement>('[data-activity-group="unread"] [data-activity-mark-all-read]');
+    expect(button?.textContent).toBe('Mark all as read');
+    await act(async () => { button?.click(); });
+    expect(sessionSeenSnapshot()).toMatchObject({ done: 12, broke: 7 });
+    expect(sessionSeenSnapshot()['ask']).toBeUndefined();
+    expect(page.querySelector('[data-activity-group="unread"]')).toBeNull();
+    expect(page.querySelector('[data-activity-item="ask"]')).not.toBeNull();
   });
 });

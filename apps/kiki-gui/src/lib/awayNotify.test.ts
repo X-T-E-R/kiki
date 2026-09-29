@@ -1,0 +1,83 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { AttentionEvent, AwayNotificationPrefs } from '@kiki/session-core/sessions';
+
+import { ACTIVITY_ROUTE, AwayNotifier, notificationRoute } from './awayNotify';
+
+const ALL_ON: AwayNotificationPrefs = {
+  enabled: true,
+  kinds: { completed: true, failed: true, question: true, approval: true },
+};
+
+const event = (sessionId: string, kind: AttentionEvent['kind']): AttentionEvent => ({ sessionId, kind, title: `T ${sessionId}` });
+
+describe('AwayNotifier', () => {
+  let notifier: AwayNotifier;
+  let away: boolean;
+  let prefs: AwayNotificationPrefs;
+  let now: number;
+  const notify = vi.fn(async () => undefined);
+  const isAway = vi.fn(async () => away);
+
+  beforeEach(() => {
+    notifier = new AwayNotifier();
+    away = true;
+    prefs = ALL_ON;
+    now = 1_000_000;
+    notify.mockClear();
+    isAway.mockClear();
+    notifier.configure({
+      isAway,
+      notify,
+      format: (plan) => ({ title: plan.type, route: notificationRoute(plan) }),
+      prefs: () => prefs,
+      now: () => now,
+    });
+  });
+  afterEach(() => { notifier.reset(); });
+
+  it('notifies only while the window is away, and routes the click to the session', async () => {
+    away = false;
+    expect(await notifier.report([event('a', 'completed')])).toBeUndefined();
+    expect(notify).not.toHaveBeenCalled();
+    away = true;
+    await notifier.report([event('a', 'completed')]);
+    expect(notify).toHaveBeenCalledWith({ title: 'single', route: '/s/a' });
+  });
+
+  it('does not spend the rate limit while the user is looking', async () => {
+    away = false;
+    await notifier.report([event('a', 'completed')]);
+    away = true;
+    await notifier.report([event('a', 'completed')]);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours the master switch and per-kind switches without probing the window', async () => {
+    prefs = { ...ALL_ON, enabled: false };
+    await notifier.report([event('a', 'approval')]);
+    prefs = { enabled: true, kinds: { ...ALL_ON.kinds, completed: false } };
+    await notifier.report([event('a', 'completed')]);
+    expect(isAway).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('shares one rate limit between the live stream and the list watcher', async () => {
+    await notifier.report([event('a', 'completed')]);
+    now += 5_000;
+    // The list poll sees the same finish a few seconds later.
+    await notifier.report([event('a', 'completed')]);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a burst across sessions as one notification that opens the inbox', async () => {
+    await notifier.report([event('a', 'completed'), event('b', 'question')]);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({ title: 'merged', route: ACTIVITY_ROUTE });
+  });
+
+  it('survives a host that rejects the notification', async () => {
+    notify.mockRejectedValueOnce(new Error('denied'));
+    await expect(notifier.report([event('a', 'failed')])).resolves.toMatchObject({ type: 'single' });
+  });
+});
