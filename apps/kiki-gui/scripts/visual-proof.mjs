@@ -541,9 +541,15 @@ async function resizeViewport(width) {
   await page.waitForTimeout(300);
 }
 
-async function sendPrompt(text) {
+async function sendPrompt(text, mode = 'send-now') {
   await page.fill('textarea', text);
-  await page.press('textarea', 'Control+Enter');
+  if (mode === 'queue') {
+    // This button is the ordinary send path when idle and the queue path while
+    // busy; unlike Ctrl+Enter it never steers into the running turn.
+    await page.locator('button[data-send-ready]').click();
+  } else {
+    await page.press('textarea', 'Control+Enter');
+  }
   console.log(`[flow] sent: ${text}`);
 }
 
@@ -2667,9 +2673,9 @@ async function scenarioQueue() {
   await shot('queue-promoted');
   // Removing a parked prompt leaves no transcript trace at all: it never
   // started, so there is no user block and no aborted marker.
-  await sendPrompt('A: hold the floor.');
+  await sendPrompt('A: hold the floor.', 'queue');
   await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
-  await sendPrompt('B: cancel me.');
+  await sendPrompt('B: cancel me.', 'queue');
   await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   const cancelRow = page.locator('[data-queue-strip] li', { hasText: 'B: cancel me.' });
   await (await queueRowAction(cancelRow, S.removeQueued)).click();
@@ -2690,14 +2696,14 @@ async function scenarioQueue() {
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 
   // Queue strip: two parked prompts render as ordered rows above the composer.
-  await sendPrompt('A: hold the floor.');
+  await sendPrompt('A: hold the floor.', 'queue');
   await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
-  await sendPrompt('B: steer me in.');
+  await sendPrompt('B: steer me in.', 'queue');
   // Back-to-back queueing must wait out the previous send's draft clear,
   // otherwise the next fill is wiped before Enter fires.
   await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
-  await sendPrompt('C: clear me out.');
+  await sendPrompt('C: clear me out.', 'queue');
   await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
   await openQueueStrip();
   const strip = page.locator('[data-queue-strip]');
@@ -2831,10 +2837,10 @@ async function scenarioQueue() {
 
   // Two-step remove: the first click only arms the row's Remove ("Remove?"),
   // the second actually drops the parked prompt.
-  await sendPrompt('B: remove me.');
+  await sendPrompt('B: remove me.', 'queue');
   await page.waitForSelector('[data-composer-header] [data-header-toggle="queue"]', { state: 'attached', timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
-  await sendPrompt('C: remove me too.');
+  await sendPrompt('C: remove me too.', 'queue');
   await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
   const removeRow = strip.locator('li', { hasText: 'B: remove me.' });
   await (await queueRowAction(removeRow, S.removeQueued)).click();
