@@ -176,17 +176,22 @@ function useActiveController(
       setController(null);
       return;
     }
-    const next = new SessionController(client.sessions, client.sessionView(sessionId), sessionId);
+    // The registry keeps a recently left view parked (bounded LRU), so coming
+    // back reuses its window instead of waiting for a fresh reset.
+    const lease = registry.acquire(
+      sessionId,
+      client,
+      () => new SessionController(client.sessions, client.sessionView(sessionId), sessionId),
+    );
+    const next = lease.controller;
     next.setFocusedAgent(focusedAgentId);
-    registry.add(next);
     setController(next);
-    void next.open().catch(() => {
+    void lease.ready.catch(() => {
       // snapshot failure leaves the controller unloaded; the transcript shows
       // "Opening session…" until a resync succeeds
     });
     return () => {
-      registry.delete(next);
-      next.close();
+      lease.release();
       setController(null);
     };
   }, [client, sessionId, registry]);

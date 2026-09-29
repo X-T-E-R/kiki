@@ -23,7 +23,14 @@ vi.mock('../state/connection', () => {
     getConfig: () => Promise.resolve({}),
     listModels: () => Promise.resolve({ items: [] }),
   };
-  const registry = { add: () => {}, delete: () => {} };
+  const registry = {
+    add: () => {},
+    delete: () => {},
+    acquire: (_sessionId: string, _scope: object, create: () => { open: () => Promise<void>; close: () => void }) => {
+      const controller = create();
+      return { controller, ready: controller.open(), release: () => { controller.close(); } };
+    },
+  };
   return {
     useConnection: () => ({ client, meta: { capabilities: {} }, socket: null, wsStatus: 'closed' }),
     useControllerRegistry: () => registry,

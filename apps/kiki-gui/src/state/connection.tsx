@@ -137,15 +137,89 @@ export interface ControllerRegistry {
 
 interface RetainedController {
   readonly controller: SessionController;
-  readonly ready: Promise<void>;
+  ready: Promise<void>;
   references: number;
+  readonly sessions: Map<string, RetainedController>;
+  readonly sessionId: string;
+  /** Set while no consumer holds a lease and the view is kept for a quick return. */
+  parked?: ParkedView;
+}
+
+interface ParkedView {
+  readonly at: number;
+  readonly bytes: number;
+  readonly unsubscribe: () => void;
+}
+
+/**
+ * Session view cache bounds. After the windowed reset (20 turns, 64 of each
+ * global entity, truncated bodies) the largest fixture's reset is ~0.95 MB of
+ * JSON; its retained store with a couple of older pages is a few MB. Three
+ * parked views inside 64 MiB leaves room for older-history pages without
+ * letting a background tab grow the renderer heap unbounded, and matches the
+ * budget in the session-switch analysis.
+ */
+export const VIEW_CACHE_MAX_PARKED = 3;
+export const VIEW_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+/** A single view larger than this is never parked: it would evict everything else. */
+export const VIEW_CACHE_MAX_ENTRY_BYTES = VIEW_CACHE_MAX_BYTES / 2;
+export const VIEW_CACHE_TTL_MS = 5 * 60_000;
+/**
+ * Parked views that are running or waiting on the user keep their live
+ * subscription so the work stays observable; past this many, the oldest is
+ * suspended (kept, not evicted) so subscriptions stay bounded.
+ */
+export const VIEW_CACHE_MAX_LIVE_PARKED = 4;
+
+export interface ViewCacheOptions {
+  readonly maxParked?: number;
+  readonly maxBytes?: number;
+  readonly maxEntryBytes?: number;
+  readonly ttlMs?: number;
+  readonly maxLiveParked?: number;
+  readonly now?: () => number;
+  readonly setTimer?: (callback: () => void, ms: number) => unknown;
+  readonly clearTimer?: (handle: unknown) => void;
+}
+
+/** A parked view that must not be evicted: work is running or waiting on the user. */
+export function isProtectedView(controller: SessionController): boolean {
+  const state = controller.getState();
+  return state.busy || state.pendingInteraction !== 'none' ||
+    state.tasks.some((task) => task.status === 'running');
+}
+
+function isParkable(controller: SessionController): boolean {
+  const state = controller.getState();
+  return state.loaded && state.loadError === undefined &&
+    !(state.resyncFailed && state.resyncError?.retryable === false);
 }
 
 export class LiveControllerRegistry implements ControllerRegistry {
   private readonly controllers = new Set<SessionController>();
   private readonly retained = new WeakMap<object, Map<string, RetainedController>>();
+  /** Parked entries in park order (oldest first); strong refs across scopes. */
+  private readonly parked = new Map<RetainedController, object>();
   private readonly listeners = new Set<() => void>();
   private generation = 0;
+  private readonly limits: Required<Pick<ViewCacheOptions, 'maxParked' | 'maxBytes' | 'maxEntryBytes' | 'ttlMs' | 'maxLiveParked'>>;
+  private readonly now: () => number;
+  private readonly setTimer: (callback: () => void, ms: number) => unknown;
+  private readonly clearTimer: (handle: unknown) => void;
+  private ttlTimer: unknown = null;
+
+  constructor(options: ViewCacheOptions = {}) {
+    this.limits = {
+      maxParked: options.maxParked ?? VIEW_CACHE_MAX_PARKED,
+      maxBytes: options.maxBytes ?? VIEW_CACHE_MAX_BYTES,
+      maxEntryBytes: options.maxEntryBytes ?? VIEW_CACHE_MAX_ENTRY_BYTES,
+      ttlMs: options.ttlMs ?? VIEW_CACHE_TTL_MS,
+      maxLiveParked: options.maxLiveParked ?? VIEW_CACHE_MAX_LIVE_PARKED,
+    };
+    this.now = options.now ?? Date.now;
+    this.setTimer = options.setTimer ?? ((callback, ms) => setTimeout(callback, ms));
+    this.clearTimer = options.clearTimer ?? ((handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); });
+  }
 
   acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease {
     let sessions = this.retained.get(connectionScope);
@@ -159,26 +233,138 @@ export class LiveControllerRegistry implements ControllerRegistry {
       if (controller.sessionId !== sessionId || this.controllers.has(controller)) {
         throw new Error('Controller factory must return a fresh controller for the requested session');
       }
-      entry = { controller, ready: controller.open(), references: 1 };
+      entry = { controller, ready: controller.open(), references: 1, sessions, sessionId };
       sessions.set(sessionId, entry);
       this.add(controller);
+    } else if (entry.parked !== undefined) {
+      // Cache hit: the retained view repaints now and catches up behind it.
+      this.unpark(entry);
+      entry.references = 1;
+      entry.ready = Promise.resolve();
+      entry.controller.resume();
+      this.add(entry.controller);
     } else {
       entry.references += 1;
     }
+    const acquired = entry;
     let released = false;
     return {
-      controller: entry.controller,
-      ready: entry.ready,
+      controller: acquired.controller,
+      ready: acquired.ready,
       release: () => {
         if (released) return;
         released = true;
-        entry.references -= 1;
-        if (entry.references > 0) return;
-        sessions.delete(sessionId);
-        entry.controller.close();
-        this.delete(entry.controller);
+        acquired.references -= 1;
+        if (acquired.references > 0) return;
+        if (this.park(acquired, connectionScope)) return;
+        this.dispose(acquired);
       },
     };
+  }
+
+  /** Number of parked views (for diagnostics and tests). */
+  get parkedCount(): number {
+    return this.parked.size;
+  }
+
+  /** Close every parked view that belongs to a connection that is going away. */
+  evictScope(connectionScope: object): void {
+    for (const [entry, scope] of [...this.parked]) {
+      if (scope === connectionScope) this.dispose(entry);
+    }
+  }
+
+  /** Close every parked view. */
+  clearParked(): void {
+    for (const entry of [...this.parked.keys()]) this.dispose(entry);
+  }
+
+  private park(entry: RetainedController, connectionScope: object): boolean {
+    const { controller } = entry;
+    if (typeof controller.getState !== 'function' || typeof controller.suspend !== 'function') return false;
+    if (!isParkable(controller)) return false;
+    const bytes = controller.residentBytes();
+    if (bytes > this.limits.maxEntryBytes) return false;
+    const unsubscribe = controller.subscribe(() => { this.onParkedChange(entry); });
+    entry.parked = { at: this.now(), bytes, unsubscribe };
+    this.parked.set(entry, connectionScope);
+    if (!isProtectedView(controller)) controller.suspend();
+    this.delete(controller);
+    this.enforceLimits();
+    return true;
+  }
+
+  private unpark(entry: RetainedController): void {
+    entry.parked?.unsubscribe();
+    entry.parked = undefined;
+    this.parked.delete(entry);
+    this.scheduleTtl();
+  }
+
+  private dispose(entry: RetainedController): void {
+    if (entry.parked !== undefined) this.unpark(entry);
+    if (entry.sessions.get(entry.sessionId) === entry) entry.sessions.delete(entry.sessionId);
+    entry.controller.close();
+    this.delete(entry.controller);
+  }
+
+  /** A live parked view settled (turn ended, approval answered): it may now be suspended. */
+  private onParkedChange(entry: RetainedController): void {
+    const parked = entry.parked;
+    if (parked === undefined || entry.controller.suspended || isProtectedView(entry.controller)) return;
+    // The eviction clock starts when the view stops needing to stay live.
+    const scope = this.parked.get(entry) ?? {};
+    entry.parked = { ...parked, at: this.now() };
+    this.parked.delete(entry);
+    this.parked.set(entry, scope);
+    entry.controller.suspend();
+    this.enforceLimits();
+  }
+
+  private isLiveProtected(entry: RetainedController): boolean {
+    return !entry.controller.suspended && isProtectedView(entry.controller);
+  }
+
+  private enforceLimits(): void {
+    const now = this.now();
+    // Bound live subscriptions: suspend the oldest protected views past the ceiling.
+    const live = [...this.parked.keys()].filter((entry) => this.isLiveProtected(entry));
+    for (const entry of live.slice(0, Math.max(0, live.length - this.limits.maxLiveParked))) {
+      entry.controller.suspend();
+    }
+    // Evict expired, then least-recently-used suspended views until within budget.
+    for (const entry of [...this.parked.keys()]) {
+      if (!this.isLiveProtected(entry) && now - (entry.parked?.at ?? now) >= this.limits.ttlMs) this.dispose(entry);
+    }
+    const evictable = (): RetainedController[] =>
+      [...this.parked.keys()].filter((entry) => !this.isLiveProtected(entry));
+    let candidates = evictable();
+    let bytes = candidates.reduce((sum, entry) => sum + (entry.parked?.bytes ?? 0), 0);
+    while (candidates.length > 0 &&
+      (candidates.length > this.limits.maxParked || bytes > this.limits.maxBytes)) {
+      const oldest = candidates[0]!;
+      bytes -= oldest.parked?.bytes ?? 0;
+      this.dispose(oldest);
+      candidates = evictable();
+    }
+    this.scheduleTtl();
+  }
+
+  private scheduleTtl(): void {
+    if (this.ttlTimer !== null) {
+      this.clearTimer(this.ttlTimer);
+      this.ttlTimer = null;
+    }
+    let earliest = Infinity;
+    for (const entry of this.parked.keys()) {
+      if (this.isLiveProtected(entry)) continue;
+      earliest = Math.min(earliest, (entry.parked?.at ?? 0) + this.limits.ttlMs);
+    }
+    if (earliest === Infinity) return;
+    this.ttlTimer = this.setTimer(() => {
+      this.ttlTimer = null;
+      this.enforceLimits();
+    }, Math.max(0, earliest - this.now()));
   }
 
   add(controller: SessionController): void {
@@ -435,7 +621,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     if (endpoint === null || token === null) return;
     const instance = new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs });
     setClients({ endpoint, token, scopeId, client: instance });
+    const controllers = controllersRef.current;
     return () => {
+      // Parked views are bound to this client's socket; they cannot outlive it.
+      controllers.evictScope(instance);
       void instance.klient.close();
     };
   }, [endpoint, token, scopeId, requestTimeoutMs]);

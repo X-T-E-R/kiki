@@ -152,6 +152,15 @@ function browserVisibilityDocument(): VisibilityDocument | undefined {
   return browserGlobal.document;
 }
 
+/** UTF-16 size of a JSON-serializable value; an unserializable value counts as zero. */
+function estimateJsonBytes(value: unknown): number {
+  try {
+    return (JSON.stringify(value)?.length ?? 0) * 2;
+  } catch {
+    return 0;
+  }
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError
     ? error.message
@@ -393,12 +402,12 @@ export class SessionController {
   async open(): Promise<void> {
     try {
       const snapshot = await this.readSnapshot();
-      if (this.closed) return;
+      if (this.closed || this.isSuspended) return;
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
       this.transcriptGrades = this.requestedTranscriptGrades();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
     } catch (error) {
-      if (this.closed) return;
+      if (this.closed || this.isSuspended) return;
       this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
     }
   }
@@ -420,6 +429,98 @@ export class SessionController {
 
   nudge(): void {
     this.viewHandle?.nudge();
+  }
+
+  /** True while the controller holds no live view subscription but keeps its store. */
+  get suspended(): boolean {
+    return this.isSuspended;
+  }
+
+  private isSuspended = false;
+
+  /**
+   * Park a loaded view: detach the live subscription and cancel in-flight
+   * reads, but keep the canonical per-agent stores and cursors so `resume()`
+   * can repaint instantly and catch up from where it stopped.
+   */
+  suspend(): void {
+    if (this.closed || this.isSuspended) return;
+    this.isSuspended = true;
+    for (const controller of this.snapshotControllers) controller.abort();
+    this.snapshotControllers.clear();
+    this.clearResyncTimer();
+    this.clearRosterLeaseTimer();
+    this.clearRewriteHold();
+    this.cancelVisibleFrameFlush();
+    this.clearHiddenFrameTimer();
+    // Batches that have not been applied yet are dropped together with their
+    // cursors: resume re-requests everything after the last applied cursor.
+    this.pendingTranscriptBatches.clear();
+    this.catchupReplay.clear();
+    this.flushFrames();
+    for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
+    this.inFlightOlder.clear();
+    if (this.state.loadingOlder || this.state.olderError !== undefined) {
+      this.setState({ ...this.state, loadingOlder: false, olderError: undefined }, false);
+    }
+    this.viewAttachment += 1;
+    this.viewHandle?.close();
+    this.viewHandle = undefined;
+  }
+
+  /**
+   * Re-attach a suspended view. The retained window renders immediately; the
+   * subscription resumes from the last applied session and transcript
+   * cursors, and a fresh snapshot shell refreshes session-level fields.
+   */
+  resume(): void {
+    if (this.closed || !this.isSuspended) return;
+    this.isSuspended = false;
+    if (!this.state.loaded) {
+      void this.open();
+      return;
+    }
+    if (this.state.resyncFailed) {
+      void this.resync();
+      return;
+    }
+    this.transcriptGrades = this.requestedTranscriptGrades();
+    this.attachView(this.state.cursor);
+    void this.refreshShell();
+  }
+
+  private async refreshShell(): Promise<void> {
+    const attachment = this.viewAttachment;
+    try {
+      const snapshot = await this.readSnapshot();
+      if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
+      if (this.state.cursor.epoch !== undefined && snapshot.epoch !== this.state.cursor.epoch) {
+        void this.resync();
+        return;
+      }
+      this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state), false);
+      this.publishForest();
+      this.notifyMain();
+    } catch (error) {
+      if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
+      const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      // A session deleted while its view was parked surfaces the same way a
+      // fresh open does; any other failure leaves the live subscription in charge.
+      if (code === API_CODES.SESSION_NOT_FOUND) {
+        this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
+      }
+    }
+  }
+
+  /**
+   * Rough resident size of the retained view (canonical stores plus loaded
+   * older pages), used by the view cache to bound what it keeps.
+   */
+  residentBytes(): number {
+    let bytes = 0;
+    for (const store of this.agentTranscripts.values()) bytes += store.residentReport().estimatedBytes;
+    for (const older of this.olderPages.values()) bytes += estimateJsonBytes(older);
+    return bytes;
   }
 
   async retryOpen(): Promise<void> {
@@ -692,7 +793,7 @@ export class SessionController {
   }
 
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
-    if (this.closed || this.resyncInFlight) return;
+    if (this.closed || this.isSuspended || this.resyncInFlight) return;
     if (this.rosterRefreshInFlight) {
       const queued = this.rosterRefreshQueuedCursor;
       if (queued === undefined || cursor.epoch !== queued.epoch || cursor.seq > queued.seq) {
@@ -768,7 +869,7 @@ export class SessionController {
   private hardResyncQueued = false;
 
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.isSuspended) return;
     const rewrite = options.rewrite === true;
     if (rewrite) this.beginRewriteHold();
     const rewriteHoldToken = rewrite ? this.rewriteHold?.token : undefined;
@@ -805,7 +906,7 @@ export class SessionController {
       if (rewriteHoldToken !== undefined) this.armRewriteSubscription(rewriteHoldToken);
     } catch (error) {
       if (rewriteHoldToken !== undefined) this.clearRewriteHold(rewriteHoldToken);
-      if (!this.closed && (attachment === this.viewAttachment || this.state.resyncError?.retryable !== false)) {
+      if (!this.closed && !this.isSuspended && (attachment === this.viewAttachment || this.state.resyncError?.retryable !== false)) {
         const attempt = this.state.resyncAttempt + 1;
         const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
         const retryable = code === undefined || code === -1 || code === API_CODES.TIMEOUT ||
@@ -843,7 +944,7 @@ export class SessionController {
   }
 
   private scheduleResyncRetry(): void {
-    if (this.closed || this.resyncTimer !== null) return;
+    if (this.closed || this.isSuspended || this.resyncTimer !== null) return;
     const step = Math.min(this.state.resyncAttempt, RESYNC_BACKOFF_MS.length) - 1;
     const delay = RESYNC_BACKOFF_MS[Math.max(0, step)] ?? 4000;
     this.resyncTimer = setTimeout(() => {
