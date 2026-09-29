@@ -73,6 +73,7 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   }
 
   private async start(): Promise<void> {
+    if (this.bootstrap.interactive === false) return;
     await this.config.ready;
     if (this.disposed) return;
     const cfg = this.getCronConfig();

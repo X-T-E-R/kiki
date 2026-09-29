@@ -23,6 +23,7 @@ All flags are optional — run `kiki` directly to enter an interactive session:
 | `--prompt <prompt>` | `-p` | Run a single prompt non-interactively and stream the Assistant output to stdout; pass `-` to read from stdin (the program's input stream) |
 | `--prompt-file <path>` | | Run one prompt read from a UTF-8 file; cannot be combined with `--prompt` |
 | `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with a prompt; defaults to `text` |
+| `--wait-for-session <seconds>` | | Wait for a session lock in non-interactive mode before failing |
 | `--include-thinking` | | Include thinking deltas in `stream-json` output; off by default |
 | `--yolo` | `-y` | Auto-approve regular tool calls, skipping approval requests |
 | `--auto` | | Start in Auto permission mode; routine tool calls proceed automatically, while protected calls and agent questions may still prompt you |
@@ -136,6 +137,12 @@ kiki -p "List changed files" --output-format stream-json
 ```
 
 In `stream-json` mode, regular replies produce an Assistant message; when the model calls a tool, an Assistant message with `tool_calls` is emitted first, followed by the corresponding Tool message, then subsequent Assistant messages. Thinking content is omitted by default; add `--include-thinking` to emit each thinking delta as `{"role":"assistant","type":"thinking.delta","content":"..."}` on stdout. Tool progress and "resuming session" notices are still written to stderr.
+
+### Concurrent print runs with one KIKI_HOME
+
+Multiple `kiki -p` processes may share one `KIKI_HOME` when each process uses a different session. Kiki serializes the shared runtime-owner record and session index writes, while each session still has one active writer. Do not run two prompts against the same session at the same time; use `--wait-for-session <seconds>` when a previous process is expected to release that session shortly.
+
+Thread communication is disabled by default. A print run that does not use thread tools does not initialize the mailbox. When thread communication is enabled, set `KIKI_THREAD_MAILBOX_TIMEOUT_MS` to change its bounded mailbox call timeout. Print mode does not start the home-wide cron scheduler; run scheduled work through the interactive daemon or server. For maximum isolation or when a workload needs independent caches and configuration, use a separate `KIKI_HOME` per worker.
 
 ## Subcommands
 

@@ -54,6 +54,7 @@
     "produce:native:manifest": "node scripts/native/produce-manifest.mjs",
     "release:native:resolve": "node scripts/native/resolve-release.mjs",
     "test:native:smoke": "node scripts/native/smoke.mjs",
+    "stress:shared-home": "node scripts/stress-shared-home.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:cli-only": "tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
     "dev:server": "KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts web --no-open --debug-endpoints",

@@ -51,6 +51,7 @@ interface HandleWire {
  */
 export interface SessionRestoreOptions {
   readonly additionalDirs?: readonly string[];
+  readonly waitForSessionMs?: number;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
 }
 

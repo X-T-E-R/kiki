@@ -122,7 +122,11 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   }
 
   runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.exclusiveTail.then(operation, operation);
+    const guarded = (): Promise<T> =>
+      this.queryStore.withExclusive === undefined
+        ? operation()
+        : this.queryStore.withExclusive(operation);
+    const result = this.exclusiveTail.then(guarded, guarded);
     this.exclusiveTail = result.then(
       () => undefined,
       () => undefined,
@@ -175,17 +179,22 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   private flush(): Promise<void> {
     if (this.flushing !== undefined) return this.flushing;
     if (!this.observeReadModelFlag() || this.isDirty()) return Promise.resolve();
-    this.flushing = this.runExclusive(() => this.flushChunk()).finally(() => {
-      this.flushing = undefined;
-      if (
-        this.observeReadModelFlag() &&
-        !this.isDirty() &&
-        this.pendingMap.size > 0 &&
-        this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES
-      ) {
-        this.timer.cancelAndSet(() => void this.flush(), FLUSH_INTERVAL_MS);
-      }
-    });
+    this.flushing = this.runExclusive(() => this.flushChunk())
+      .catch((error: unknown) => {
+        this.registerFlushFailure();
+        this.log.warn('failed to acquire session index mirror lock', { error: String(error) });
+      })
+      .finally(() => {
+        this.flushing = undefined;
+        if (
+          this.observeReadModelFlag() &&
+          !this.isDirty() &&
+          this.pendingMap.size > 0 &&
+          this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES
+        ) {
+          this.timer.cancelAndSet(() => void this.flush(), FLUSH_INTERVAL_MS);
+        }
+      });
     return this.flushing;
   }
 

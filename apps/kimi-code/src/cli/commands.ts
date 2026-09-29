@@ -66,6 +66,12 @@ export function createProgram(
     .addOption(new Option('--prompt-file <path>', 'Read the non-interactive prompt from a UTF-8 file.'))
     .addOption(
       new Option(
+        '--wait-for-session <seconds>',
+        'Wait this many seconds for a session lock before failing in prompt mode.',
+      ),
+    )
+    .addOption(
+      new Option(
         '--output-format <format>',
         'Output format for prompt mode. Defaults to text.',
       ).choices(['text', 'stream-json']),
@@ -162,6 +168,7 @@ export function createProgram(
       includeThinking: raw['includeThinking'] === true,
       prompt: raw['prompt'] as string | undefined,
       promptFile: raw['promptFile'] as string | undefined,
+      waitForSession: raw['waitForSession'] as string | undefined,
       skillsDirs: raw['skillsDir'] as string[],
       agent: raw['agent'] as string | undefined,
       agentFiles: raw['agentFile'] as string[],

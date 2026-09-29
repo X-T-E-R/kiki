@@ -125,6 +125,7 @@ export interface IQueryStore {
   dropCollection(collection: string): Promise<void>;
   getCheckpoint(source: string): Promise<Checkpoint | undefined>;
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void>;
+  withExclusive?<T>(operation: () => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 

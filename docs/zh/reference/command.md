@@ -23,6 +23,7 @@ kiki <subcommand> [options]
 | `--prompt <prompt>` | `-p` | 非交互执行单次 prompt，并把 Assistant 输出流式写到 stdout；传入 `-` 时从 stdin（程序的输入流）读取 |
 | `--prompt-file <path>` | | 从 UTF-8 文件读取并执行一次 prompt，不能与 `--prompt` 同时使用 |
 | `--output-format <format>` | | 设置非交互输出格式，支持 `text` 与 `stream-json`。仅在提供 prompt 时可用，默认 `text` |
+| `--wait-for-session <seconds>` | | 在非交互模式中等待会话锁释放，超时后再失败 |
 | `--include-thinking` | | 在 `stream-json` 输出中包含 thinking 增量事件，默认关闭 |
 | `--yolo` | `-y` | 自动批准普通工具调用，跳过审批请求 |
 | `--auto` | | 以 Auto 权限模式启动；普通工具调用自动放行，受保护的操作和 Agent 提问仍可能询问你 |
@@ -136,6 +137,12 @@ kiki -p "List changed files" --output-format stream-json
 ```
 
 `stream-json` 模式下，普通回复输出 Assistant 消息；模型调用工具时，先输出带 `tool_calls` 的 Assistant 消息，再输出对应的 Tool 消息，最后继续输出后续 Assistant 消息。thinking 内容默认省略；传入 `--include-thinking` 后，每个 thinking 增量会作为 `{"role":"assistant","type":"thinking.delta","content":"..."}` 写到 stdout。工具进度和恢复会话提示仍写到 stderr。
+
+### 多个 print 进程共享一个 KIKI_HOME
+
+多个 `kiki -p` 进程可以共享一个 `KIKI_HOME`，前提是每个进程使用不同的会话。Kiki 会串行化共享的 runtime owner 记录和会话索引写入，但每个会话仍然只允许一个活动写入者。不要同时对同一个会话运行两个 prompt；如果上一个进程应当很快释放会话，可以使用 `--wait-for-session <seconds>`。
+
+Thread communication 默认关闭。不使用 thread 工具的 print 运行不会初始化 mailbox。启用 thread communication 时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式不会启动 home 级 cron 调度器；需要定时任务时，请通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
 
 ## 子命令
 

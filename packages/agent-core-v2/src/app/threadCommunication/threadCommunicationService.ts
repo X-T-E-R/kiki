@@ -40,6 +40,7 @@ import {
   type SendThreadMessageInput,
   type SendThreadMessageResult,
   type ThreadActivity,
+  type ThreadActivityKind,
   type ThreadRef,
   type ThreadSummary,
   type ThreadTurn,
@@ -144,7 +145,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       this.observedSessions.clear();
     }));
     this._register(this.followLifecycle(this.sessionManager));
-    void this.ensureRecovery().catch(() => {});
   }
 
   shutdown(): Promise<void> {
@@ -638,8 +638,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private async recoverPendingDeliveries(): Promise<void> {
+    if (this.bootstrap.interactive === false) return;
     await this.config.ready;
-    if (this.closing) return;
+    if (this.closing || !(await this.globalEnabled())) return;
     const targets = await this.mailbox.listPendingTargets({
       signal: this.mailboxController.signal,
     });
@@ -781,22 +782,18 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       activity.onDidChange((event) => {
         if (this.closing) return;
         if (event.cause === 'turn_ended') {
-          this.detach(this.mailbox.appendActivity({
-            target: ref,
-            kind: 'terminal',
-            reason: event.state.lastTurnReason ?? 'failed',
-          }, {
-            signal: this.mailboxController.signal,
-          }));
+          this.detach(this.appendActivityIfEnabled(
+            ref,
+            'terminal',
+            event.state.lastTurnReason ?? 'failed',
+          ));
         }
         if (event.cause === 'interaction' && event.state.pendingInteraction !== 'none') {
-          this.detach(this.mailbox.appendActivity({
-            target: ref,
-            kind: 'attention',
-            reason: event.state.pendingInteraction,
-          }, {
-            signal: this.mailboxController.signal,
-          }));
+          this.detach(this.appendActivityIfEnabled(
+            ref,
+            'attention',
+            event.state.pendingInteraction,
+          ));
         }
       }),
     );
@@ -828,8 +825,19 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private appendLifecycle(ref: ThreadRef, reason: string): Promise<unknown> {
-    return this.mailbox.appendActivity({ target: ref, kind: 'lifecycle', reason }, {
-      signal: this.mailboxController.signal,
+    return this.appendActivityIfEnabled(ref, 'lifecycle', reason);
+  }
+
+  private appendActivityIfEnabled(
+    target: ThreadRef,
+    kind: ThreadActivityKind,
+    reason: string,
+  ): Promise<unknown> {
+    return this.globalEnabled().then((enabled) => {
+      if (!enabled || this.closing || this.bootstrap.interactive === false) return undefined;
+      return this.mailbox.appendActivity({ target, kind, reason }, {
+        signal: this.mailboxController.signal,
+      });
     });
   }
 

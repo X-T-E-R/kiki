@@ -151,7 +151,10 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
     if (this.readyState) return;
     if (this.bootstrapError !== undefined) throw ensureError(this.bootstrapError);
     if (this.closing) throw new HomeRuntimeError('runtime.connection_failed', 'runtime service closed during election');
-    throw new HomeRuntimeError('runtime.timeout', 'runtime election timed out');
+    throw new HomeRuntimeError(
+      'runtime.timeout',
+      `runtime election timed out for shared KIKI_HOME runtime; another kiki process may still own ${this.homeDir}; retry after it exits or use a separate KIKI_HOME`,
+    );
   }
 
   private async doClose(): Promise<void> {

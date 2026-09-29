@@ -1,6 +1,6 @@
 import { join } from 'pathe';
 
-import { classifyStorageError, type QueryOptions } from '@kiki/minidb';
+import { classifyStorageError, LockError, type QueryOptions } from '@kiki/minidb';
 import { ClusterDb, wipeCluster } from '@kiki/minidb/cluster';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
@@ -8,6 +8,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
 import { SESSION_INDEX_STORAGE_VERSION } from '#/app/sessionIndex/sessionIndexModel';
 import {
   IQueryStore,
@@ -30,6 +31,8 @@ export const MINIDB_QUERY_STORE_SUBDIR = `query-store-v${SESSION_INDEX_STORAGE_V
 const SHARD_COUNT = 16;
 const LOCK_HOLD_MS = 5_000;
 const LOCK_ACQUIRE_TIMEOUT_MS = 7_000;
+const LOCK_RETRY_TIMEOUT_MS = 30_000;
+const SESSION_INDEX_LOCK_WAIT_MS = 30_000;
 export const QUERY_STORE_COMPACT_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const DROP_BATCH_SIZE = 500;
 
@@ -39,6 +42,13 @@ function physicalKey(collection: string, key: string): string {
 
 function indexName(collection: string, name: string): string {
   return `${collection}:${name}`;
+}
+
+function isLockContention(error: unknown): boolean {
+  if (error instanceof LockError) return true;
+  if (error instanceof AggregateError) return error.errors.some(isLockContention);
+  const value = error as { readonly code?: unknown; readonly message?: unknown } | null;
+  return value?.code === 'ELOCKED' || typeof value?.message === 'string' && value.message.includes('locked');
 }
 
 const pendingDisposals = new Set<Promise<void>>();
@@ -128,12 +138,29 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
   }
 
   private async withDb<T>(op: (db: ClusterDb) => Promise<T>): Promise<T> {
-    try {
-      return await op(await this.openDb());
-    } catch (error) {
-      if (classifyStorageError(error) !== 'rebuild') throw error;
-      await this.rebuild(error);
-      return op(await this.openDb());
+    const deadline = Date.now() + LOCK_RETRY_TIMEOUT_MS;
+    let delayMs = 25;
+    for (;;) {
+      const dbPromise = this.openDb();
+      let opened = false;
+      try {
+        const db = await dbPromise;
+        opened = true;
+        return await op(db);
+      } catch (error) {
+        if (isLockContention(error)) {
+          if (Date.now() + delayMs > deadline) throw error;
+          if (!opened && this.dbPromise === dbPromise) this.dbPromise = undefined;
+          await new Promise((resolve) => setTimeout(resolve, delayMs + Math.floor(Math.random() * delayMs)));
+          delayMs = Math.min(500, delayMs * 2);
+          continue;
+        }
+        if (classifyStorageError(error) === 'rebuild') {
+          await this.rebuild(error);
+          return op(await this.openDb());
+        }
+        throw error;
+      }
     }
   }
 
@@ -249,6 +276,18 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
 
   async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
     await this.put(CHECKPOINT_COLLECTION, source, checkpoint);
+  }
+
+  async withExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const lock = await acquireFileLock(join(this.dir, 'session-index.lock'), {
+      waitForMs: SESSION_INDEX_LOCK_WAIT_MS,
+      owner: { kind: 'session-index' },
+    });
+    try {
+      return await operation();
+    } finally {
+      await lock.release();
+    }
   }
 
   async close(): Promise<void> {

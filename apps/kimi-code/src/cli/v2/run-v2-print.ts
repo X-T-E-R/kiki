@@ -35,7 +35,7 @@ import {
 } from '../run-prompt';
 import { createKimiCodeHostIdentity } from '../version';
 
-import { resolveOutputFormat } from '../options';
+import { resolveOutputFormat, resolveWaitForSessionMs } from '../options';
 import type { CLIOptions, PromptOutputFormat } from '../options';
 import {
   type PromptOutput,
@@ -160,6 +160,7 @@ async function resolvePrintSession(
   stderr: PromptOutput,
 ): Promise<ResolvedPrintSession> {
   let agentProfileName = opts.agent;
+  const waitForSessionMs = resolveWaitForSessionMs(opts.waitForSession);
   const agentFile = opts.agentFiles[0];
   if (agentProfileName === undefined && agentFile !== undefined) {
     const agentFilePath = resolveAgentPath(agentFile, workDir, osHomeDir);
@@ -184,7 +185,9 @@ async function resolvePrintSession(
 
   const resumeById = async (sessionId: string): Promise<ResolvedPrintSession> => {
     const session = klient.session(sessionId);
-    if (!await session.resume()) throw new Error(`Session "${sessionId}" not found.`);
+    if (!await session.resume(waitForSessionMs === undefined ? undefined : { waitForSessionMs })) {
+      throw new Error(`Session "${sessionId}" not found.`);
+    }
     const agent = session.agent('main');
     if (opts.model !== undefined) await agent.setModel(opts.model);
     if (opts.thinking !== undefined) await agent.setThinking(opts.thinking);
@@ -222,6 +225,7 @@ async function resolvePrintSession(
     workDir,
     ephemeral: opts.ephemeral,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
+    waitForSessionMs,
     mainAgentBinding: { profile: agentProfileName ?? 'agent', model: opts.model, thinking: opts.thinking },
   });
   const session = klient.session(created.id);

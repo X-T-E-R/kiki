@@ -16,6 +16,7 @@ export const createSessionOptionsSchema = z.object({
   workDir: z.string(),
   ephemeral: z.boolean().optional(),
   additionalDirs: z.array(z.string()).optional(),
+  waitForSessionMs: z.number().nonnegative().finite().optional(),
   mainAgentBinding: z.object({
     profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),
   }).optional(),
@@ -29,6 +30,7 @@ export const createSessionOptionsSchema = z.object({
 /** Same fields as `ResumeSessionOptions` in the engine — keep in sync. */
 export const resumeSessionOptionsSchema = z.object({
   additionalDirs: z.array(z.string()).optional(),
+  waitForSessionMs: z.number().nonnegative().finite().optional(),
   /**
    * Ephemeral per-session MCP servers, applied when resume re-materializes a
    * cold session (ignored when the session is already live).

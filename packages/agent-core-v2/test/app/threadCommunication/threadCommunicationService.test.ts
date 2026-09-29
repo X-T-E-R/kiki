@@ -278,6 +278,7 @@ describe('ThreadCommunicationService', () => {
       return [];
     });
     const service = ix.get(IThreadCommunicationService);
+    void service.listThreads().catch(() => {});
     await recoveryStarted;
 
     let shutdownSettled = false;
@@ -292,6 +293,14 @@ describe('ThreadCommunicationService', () => {
     expect(shutdownSettled).toBe(true);
     await expect(service.shutdown()).resolves.toBeUndefined();
     expect(mailboxClose).not.toHaveBeenCalled();
+  });
+
+  it('does not initialize the mailbox when thread communication is disabled', async () => {
+    globalEnabled = false;
+    const service = ix.get(IThreadCommunicationService);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(listPendingTargets).not.toHaveBeenCalled();
+    await service.shutdown();
   });
 
   it('retries transient startup recovery without poisoning public readiness', async () => {
@@ -338,6 +347,7 @@ describe('ThreadCommunicationService', () => {
       close: mailboxClose,
     });
     const service = ix.get(IThreadCommunicationService);
+    void service.listThreads().catch(() => {});
 
     await vi.waitFor(() => expect(listPendingTargets).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 25));

@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { renameSync } from 'node:fs';
 import { chmod, lstat, link, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
 
 import { HomeRuntimeError } from './errors';
 
@@ -47,6 +48,9 @@ const MODE_PRIVATE_FILE = 0o600;
 const TOKEN_BYTES = 32;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 const STALE_PROBE_TIMEOUT_MS = 500;
+const OWNER_LOCK_FILENAME = 'owner.lock';
+const OWNER_RENAME_RETRIES = 8;
+const OWNER_RENAME_DELAY_MS = 25;
 
 export function runtimeDirFor(canonicalHomeDir: string): string {
   return join(canonicalHomeDir, ...RUNTIME_HOST_REL_PARTS);
@@ -254,15 +258,37 @@ export async function writePersistedOwner(
   const path = runtimeOwnerPath(canonicalHomeDir);
   const pending = `${path}${STAGING_PREFIX}${process.pid}-${randomUUID()}`;
   const payload = `${JSON.stringify(record)}\n`;
+  let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined;
   try {
+    lock = await acquireFileLock(join(runtimeDirFor(canonicalHomeDir), OWNER_LOCK_FILENAME), {
+      waitForMs: 5_000,
+      owner: { kind: 'runtime-owner', ownerHostId: record.ownerHostId, epoch: record.epoch },
+    });
     await writeFile(pending, payload, { mode: MODE_PRIVATE_FILE, flag: 'wx' });
     await chmodIfSupported(pending, MODE_PRIVATE_FILE);
-    throwIfOwnerCommitAborted(guard.signal);
-    renameSync(pending, path);
+    await renameWithRetry(pending, path, guard.signal);
   } catch (error) {
     await unlinkQuietly(pending);
     if (error instanceof HomeRuntimeError) throw error;
     throw mapRuntimeIoError(error, path, 'write-owner');
+  } finally {
+    await lock?.release().catch(() => undefined);
+  }
+}
+
+async function renameWithRetry(source: string, target: string, signal: AbortSignal): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    throwIfOwnerCommitAborted(signal);
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!['EACCES', 'EBUSY', 'EPERM'].includes(code ?? '') || attempt >= OWNER_RENAME_RETRIES) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, OWNER_RENAME_DELAY_MS * (attempt + 1)));
+    }
   }
 }
 

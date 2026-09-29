@@ -128,6 +128,7 @@ export interface StorageAppendOptions {
 export interface StorageLockOptions {
   readonly leaseMs?: number;
   readonly renewIntervalMs?: number;
+  readonly waitForMs?: number;
   readonly owner?: Readonly<Record<string, unknown>>;
 }
 

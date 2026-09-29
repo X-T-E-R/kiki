@@ -14,10 +14,12 @@
 // (acquire/renew/release) are serialized through a per-instance promise
 // chain, so no interleaving can re-publish the lock after it was released.
 
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import { renameReplace } from './rename-replace.js';
 import { createSerializer } from './serialize.js';
 
@@ -29,6 +31,10 @@ export class LockError extends Error {
   }
 }
 
+const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
+const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000;
+const execFileAsync = promisify(execFile);
+
 function pidAlive(pid: unknown): boolean {
   if (!pid || typeof pid !== 'number') return false;
   try {
@@ -36,6 +42,27 @@ function pidAlive(pid: unknown): boolean {
     return true;
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function ownerAlive(pid: unknown, processStartedAt: unknown): Promise<boolean> {
+  if (!pidAlive(pid)) return false;
+  if (pid === process.pid) {
+    return typeof processStartedAt !== 'number' || Math.abs(processStartedAt - PROCESS_STARTED_AT) <= 2_000;
+  }
+  if (process.platform !== 'win32' || typeof processStartedAt !== 'number') return true;
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
+    ], { timeout: 5_000, windowsHide: true, maxBuffer: 4_096 });
+    const startedAt = Number(stdout.trim()) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
+    if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
+    return Math.abs(startedAt - processStartedAt) <= 2_000;
+  } catch {
+    return pidAlive(pid);
   }
 }
 
@@ -66,9 +93,11 @@ const TAKEOVER_SETTLE_MAX_MS = 2_000;
 function hookExit(): void {
   if (exitHooked) return;
   exitHooked = true;
-  process.on('beforeExit', () => {
+  const releaseHeld = (): void => {
     for (const lock of HELD) lock.releaseSync();
-  });
+  };
+  process.on('beforeExit', releaseHeld);
+  process.on('exit', releaseHeld);
 }
 
 export class LockFile {
@@ -98,7 +127,12 @@ export class LockFile {
 
   /** File body for every file this instance publishes (lock, bid, watch). */
   private payload(): string {
-    return JSON.stringify({ pid: process.pid, ts: Date.now(), token: this.token });
+    return JSON.stringify({
+      pid: process.pid,
+      processStartedAt: PROCESS_STARTED_AT,
+      ts: Date.now(),
+      token: this.token,
+    });
   }
 
   /** Try to acquire the lock exactly once. Returns true when this call created
@@ -236,13 +270,19 @@ export class LockFile {
       const pid = Number(f.slice(prefix.length).split('-')[0]);
       if (!Number.isInteger(pid)) continue;
       let token: string | undefined;
+      let processStartedAt: number | undefined;
       try {
-        token = (JSON.parse(await fs.readFile(path.join(dir, f), 'utf8')) as { token?: string }).token;
+        const parsed = JSON.parse(await fs.readFile(path.join(dir, f), 'utf8')) as {
+          token?: string;
+          processStartedAt?: number;
+        };
+        token = parsed.token;
+        processStartedAt = parsed.processStartedAt;
       } catch {
-        token = undefined; // unreadable/partial line: fall back to the pid in the name
+        token = undefined;
       }
       if (token !== undefined ? token === this.token : pid === process.pid) continue;
-      if (pidAlive(pid)) return true;
+      if (await ownerAlive(pid, processStartedAt)) return true;
       await fs.unlink(path.join(dir, f)).catch(() => {});
     }
     return false;
@@ -278,14 +318,20 @@ export class LockFile {
     }
     let pid: number | undefined;
     let token: string | undefined;
+    let processStartedAt: number | undefined;
     try {
-      const parsed = JSON.parse(raw) as { pid?: number; token?: string };
+      const parsed = JSON.parse(raw) as { pid?: number; token?: string; processStartedAt?: number };
       pid = parsed.pid;
       token = parsed.token;
+      processStartedAt = parsed.processStartedAt;
     } catch {
-      pid = undefined; // unparsable content looks abandoned, same as a dead PID
+      pid = undefined;
     }
-    return { ino: st.ino, alive: pidAlive(pid), mine: this.token !== null && token === this.token };
+    return {
+      ino: st.ino,
+      alive: await ownerAlive(pid, processStartedAt),
+      mine: this.token !== null && token === this.token,
+    };
   }
 
   private inspectSync(): { ino: number | bigint; alive: boolean; mine: boolean } | null {

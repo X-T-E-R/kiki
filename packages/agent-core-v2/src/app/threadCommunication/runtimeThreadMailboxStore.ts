@@ -40,6 +40,8 @@ const DELIVERY_HEAD_REPAIR_STEP_LIMIT = 32;
 const RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const CALL_TIMEOUT_MS = 10_000;
 const STARTUP_CALL_TIMEOUT_MS = 20_000;
+const THREAD_MAILBOX_TIMEOUT_ENV = 'KIKI_THREAD_MAILBOX_TIMEOUT_MS';
+const MAX_CONFIGURED_TIMEOUT_MS = 10 * 60_000;
 const CALL_RETRY_BACKOFF_MS = 25;
 const CALL_TOTAL_TIMEOUT_MULTIPLIER = 2;
 const LEGACY_THREAD_DIR = 'thread-mailbox-v1';
@@ -49,6 +51,14 @@ const MIGRATION_MARKER_KEY = `${SYSTEM_PARTITION}/migration`;
 const ACTIVE_BACKEND_KEY = `${SYSTEM_PARTITION}/active-backend`;
 const METHOD_PREFIX = 'threadMailbox.v3';
 const ACCEPT_MICROBATCH_LIMIT = 32;
+
+function resolveTimeoutMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_CONFIGURED_TIMEOUT_MS
+    ? parsed
+    : fallback;
+}
 
 export const THREAD_MAILBOX_RUNTIME_METHODS = {
   accept: `${METHOD_PREFIX}.accept`,
@@ -257,6 +267,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private readonly ownerOperations = new Map<Promise<unknown>, number>();
   private readonly quarantine: MiniDb<Record<string, unknown>>[] = [];
   private readonly closeController = new AbortController();
+  private readonly callTimeoutMs: number;
+  private readonly startupCallTimeoutMs: number;
   private db: ClusterDb<StoredDoc> | undefined;
   private ownerEpoch = 0;
   private observedRuntimeRole: RuntimeRole = 'idle';
@@ -272,6 +284,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     @IHomeRuntimeService private readonly runtime: IHomeRuntimeService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
   ) {
+    this.callTimeoutMs = resolveTimeoutMs(bootstrap.getEnv(THREAD_MAILBOX_TIMEOUT_ENV), CALL_TIMEOUT_MS);
+    this.startupCallTimeoutMs = resolveTimeoutMs(bootstrap.getEnv(THREAD_MAILBOX_TIMEOUT_ENV), STARTUP_CALL_TIMEOUT_MS);
     this.storeDir = join(bootstrap.storeDir, STORE_DIR);
     this.legacyDirs = [
       join(bootstrap.storeDir, LEGACY_THREAD_DIR),
@@ -374,7 +388,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets,
       null,
       options,
-      STARTUP_CALL_TIMEOUT_MS,
+      this.startupCallTimeoutMs,
     ) as Promise<readonly ThreadRef[]>;
   }
 
@@ -457,7 +471,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     method: RuntimeMethodName,
     payload: unknown,
     options?: ThreadMailboxMutationOptions,
-    timeoutMs = CALL_TIMEOUT_MS,
+    timeoutMs = this.callTimeoutMs,
   ): Promise<unknown> {
     if (this.closing) throw new Error('Thread mailbox store is closed.');
     const requestId = options?.requestId ?? randomUUID();

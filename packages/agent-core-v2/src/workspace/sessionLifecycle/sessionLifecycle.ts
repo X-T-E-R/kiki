@@ -16,6 +16,7 @@ export interface CreateSessionOptions {
   readonly ephemeral?: boolean;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
+  readonly waitForSessionMs?: number;
   /**
    * Ephemeral per-session MCP servers: connected only for this session,
    * visible only to this session (an entry shadows a workspace server of the
@@ -40,6 +41,7 @@ export interface ForkSessionOptions {
 
 export interface ResumeSessionOptions {
   readonly additionalDirs?: readonly string[];
+  readonly waitForSessionMs?: number;
   /**
    * Ephemeral per-session MCP servers — the same semantics as
    * `CreateSessionOptions.mcpServers`: a session-owned overlay connected for

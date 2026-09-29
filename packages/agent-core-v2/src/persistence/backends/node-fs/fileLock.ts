@@ -48,6 +48,8 @@ const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000;
 const TRANSIENT_DENIAL_RETRIES = 4;
 const TRANSIENT_DENIAL_DELAY_MS = 10;
+const LOCK_WAIT_BASE_MS = 25;
+const LOCK_WAIT_MAX_MS = 250;
 const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
@@ -120,9 +122,11 @@ function isTransientAccessDenial(error: unknown): boolean {
 function hookExit(): void {
   if (exitHooked) return;
   exitHooked = true;
-  process.on('beforeExit', () => {
+  const releaseHeld = (): void => {
     for (const lock of HELD) lock.releaseSync();
-  });
+  };
+  process.on('beforeExit', releaseHeld);
+  process.on('exit', releaseHeld);
 }
 
 /** Removes expired session locks whose recorded process is no longer their owner. */
@@ -172,27 +176,57 @@ export async function acquireFileLock(
   modes: { readonly dirMode?: number; readonly fileMode?: number } = {},
 ): Promise<IStorageLock> {
   const lock = new FileLock(lockPath, options, modes);
+  const waitForMs = Math.max(0, options.waitForMs ?? 0);
+  const deadline = Date.now() + waitForMs;
+  let delayMs = LOCK_WAIT_BASE_MS;
   try {
-    if (await lock.acquire()) return lock;
-    const inspected = await lock.inspectOwner();
-    throw new StorageError(
-      StorageErrors.codes.STORAGE_LOCKED,
-      typeof inspected?.owner?.['sessionId'] === 'string'
-        ? `Session "${inspected.owner['sessionId']}" is active in another process`
-        : 'Storage is locked by another process',
-      {
-        details: {
-          path: lockPath,
-          owner: inspected?.owner,
-          pid: inspected?.pid,
-          acquiredAt: inspected?.acquiredAt,
-        },
-      },
-    );
+    for (;;) {
+      if (await lock.acquire()) return lock;
+      if (Date.now() >= deadline) {
+        const inspected = await lock.inspectOwner();
+        const sessionId = inspected?.owner?.['sessionId'];
+        const ownerKind = inspected?.owner?.['kind'];
+        const ownerDetails = inspected?.pid === undefined
+          ? ''
+          : ` (pid ${inspected.pid}, started ${formatProcessStart(inspected.processStartedAt)}, lock ${lockPath})`;
+        const waitHint = typeof sessionId === 'string'
+          ? '; retry with --wait-for-session <seconds>'
+          : ownerKind === 'session-index'
+            ? '; another kiki process is updating this KIKI_HOME; retry or use a separate KIKI_HOME'
+            : '';
+        throw new StorageError(
+          StorageErrors.codes.STORAGE_LOCKED,
+          typeof sessionId === 'string'
+            ? `Session "${sessionId}" is active in another process${ownerDetails}${waitHint}`
+            : ownerKind === 'session-index'
+              ? `Session index is locked by another process${ownerDetails}${waitHint}`
+              : `Storage is locked by another process${ownerDetails}`,
+          {
+            details: {
+              path: lockPath,
+              owner: inspected?.owner,
+              pid: inspected?.pid,
+              processStartedAt: inspected?.processStartedAt,
+              acquiredAt: inspected?.acquiredAt,
+              waitHint,
+            },
+          },
+        );
+      }
+      const remainingMs = Math.max(1, deadline - Date.now());
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remainingMs)));
+      delayMs = Math.min(LOCK_WAIT_MAX_MS, delayMs * 2);
+    }
   } catch (error) {
     if (error instanceof StorageError) throw error;
     throw toStorageIoError(error, { path: lockPath, op: 'lock' });
   }
+}
+
+function formatProcessStart(value: number | undefined): string {
+  return value === undefined || !Number.isFinite(value)
+    ? 'unknown'
+    : new Date(value).toISOString();
 }
 
 class FileLock implements IStorageLock {
@@ -388,13 +422,10 @@ class FileLock implements IStorageLock {
 
   private async inspect(): Promise<InspectedLock | null> {
     let raw: string;
-    let modifiedAt: number;
     try {
       const handle = await open(this.lockPath, 'r');
       try {
-        const [content, fileStat] = await Promise.all([handle.readFile('utf8'), handle.stat()]);
-        raw = content;
-        modifiedAt = fileStat.mtimeMs;
+        raw = await handle.readFile('utf8');
       } finally {
         await handle.close();
       }
@@ -409,10 +440,9 @@ class FileLock implements IStorageLock {
     } catch {
     }
     if (payload === undefined) return { active: true, mine: false };
-    const expired = modifiedAt + payload.leaseMs <= Date.now();
     return {
       payload,
-      active: !expired || await ownerProcessAlive(payload),
+      active: await ownerProcessAlive(payload),
       mine: payload.token === this.token,
     };
   }

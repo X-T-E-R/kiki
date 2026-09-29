@@ -51,6 +51,7 @@ export interface CLIOptions {
   includeThinking?: boolean;
   prompt: string | undefined;
   promptFile?: string;
+  waitForSession?: string;
   skillsDirs: string[];
   agent: string | undefined;
   agentFiles: string[];
@@ -67,6 +68,19 @@ export class OptionConflictError extends Error {
     super(message);
     this.name = 'OptionConflictError';
   }
+}
+
+export function resolveWaitForSessionMs(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new OptionConflictError('--wait-for-session must be a non-negative number of seconds.');
+  }
+  const milliseconds = seconds * 1_000;
+  if (!Number.isSafeInteger(Math.round(milliseconds))) {
+    throw new OptionConflictError('--wait-for-session is too large.');
+  }
+  return milliseconds;
 }
 
 export async function resolvePromptInput(
@@ -95,6 +109,7 @@ export function validateOptions(
   if (opts.promptFile !== undefined && prompt !== undefined) {
     throw new OptionConflictError('Cannot combine --prompt with --prompt-file.');
   }
+  if (opts.waitForSession !== undefined) resolveWaitForSessionMs(opts.waitForSession);
   if (prompt !== undefined && prompt.trim().length === 0) {
     throw new OptionConflictError('Prompt cannot be empty.');
   }
@@ -109,6 +124,9 @@ export function validateOptions(
   }
   if (!promptMode && opts.outputFormat !== undefined) {
     throw new OptionConflictError('Output format is only supported in prompt mode.');
+  }
+  if (!promptMode && opts.waitForSession !== undefined) {
+    throw new OptionConflictError('--wait-for-session is only supported in prompt mode.');
   }
   if (promptMode && opts.yolo) {
     throw new OptionConflictError('Cannot combine --prompt with --yolo.');

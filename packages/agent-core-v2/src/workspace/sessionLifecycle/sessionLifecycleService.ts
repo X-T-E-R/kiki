@@ -261,7 +261,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return sessionScopeOf(root, sessionId);
   }
 
-  private async acquireSessionLock(sessionId: string): Promise<void> {
+  private async acquireSessionLock(sessionId: string, waitForSessionMs = 0): Promise<void> {
     if (this.sessionLocks.has(sessionId)) return;
     const releasing = this.lockReleases.get(sessionId);
     if (releasing !== undefined) await releasing;
@@ -269,6 +269,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       .update(this.sessionScope(sessionId))
       .digest('hex')}.lock`;
     const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, lockKey, {
+      waitForMs: Math.max(0, waitForSessionMs),
       owner: {
         sessionId,
         workspaceId: this.workspaceId,
@@ -355,7 +356,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let workspaceReference: IDisposable | undefined;
     let handle: ISessionScopeHandle;
     try {
-      await this.acquireSessionLock(opts.sessionId);
+      await this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs);
       workspaceReference = this.acquireWorkspaceReference();
       handle = createScopedChildHandle(
         this.instantiation,
@@ -518,6 +519,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionId,
       workDir,
       additionalDirs: opts?.additionalDirs,
+      waitForSessionMs: opts?.waitForSessionMs,
       mcpServers: opts?.mcpServers,
     });
     try {

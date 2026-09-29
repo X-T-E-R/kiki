@@ -151,6 +151,35 @@ describe('FileStorageService — exclusive locks', () => {
     expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(payload);
   });
 
+  it('reclaims a dead owner before its lease expires', async () => {
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath, JSON.stringify({
+      version: 1,
+      pid: 2_147_483_647,
+      processStartedAt: Date.now(),
+      token: 'dead-owner',
+      acquiredAt: Date.now(),
+      leaseMs: 120_000,
+      owner: { sessionId: 'session-dead' },
+    }));
+
+    const lock = await new FileStorageService(dir).acquireLock('session-locks', 'session.lock');
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+    await lock.release();
+  });
+
+  it('waits for a held session lock when requested', async () => {
+    const first = new FileStorageService(dir);
+    const second = new FileStorageService(dir);
+    const held = await first.acquireLock('session-locks', 'session.lock');
+    const pending = second.acquireLock('session-locks', 'session.lock', { waitForMs: 1_000 });
+    setTimeout(() => void held.release(), 50);
+    const replacement = await pending;
+    await replacement.release();
+  });
+
   it('allows exactly one contender to win a stale-lock takeover', async () => {
     const lockDir = join(dir, 'session-locks');
     const lockPath = join(lockDir, 'session.lock');
@@ -298,7 +327,7 @@ describe('FileStorageService — exclusive locks', () => {
     }
   }, 30_000);
 
-  it('cleans up only expired dead locks and leaves live, fresh, and malformed locks alone', async () => {
+  it('cleans up dead locks immediately and leaves live and malformed locks alone', async () => {
     const lockDir = join(dir, 'session-locks');
     await mkdir(lockDir, { recursive: true });
     const payload = {
@@ -324,13 +353,13 @@ describe('FileStorageService — exclusive locks', () => {
     const expiredAt = new Date(Date.now() - 5_000);
     await Promise.all([utimes(dead, expiredAt, expiredAt), utimes(live, expiredAt, expiredAt)]);
 
-    expect(await cleanupExpiredSessionLocks(dir)).toBe(1);
+    expect(await cleanupExpiredSessionLocks(dir)).toBe(2);
     await expect(readFile(dead)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(live)).resolves.toBeDefined();
-    await expect(readFile(fresh)).resolves.toBeDefined();
+    await expect(readFile(fresh)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(malformed)).resolves.toBeDefined();
-    await expect(new FileStorageService(dir).acquireLock('session-locks', 'fresh-dead.lock'))
-      .rejects.toMatchObject({ code: 'storage.locked' });
+    const replacement = await new FileStorageService(dir).acquireLock('session-locks', 'fresh-dead.lock');
+    await replacement.release();
   });
 });
 
