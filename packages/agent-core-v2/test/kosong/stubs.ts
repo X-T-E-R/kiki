@@ -43,6 +43,9 @@ export class StubConfigService implements IConfigService {
     return Object.fromEntries(this._values) as ResolvedConfig;
   }
 
+  origins(_domain: string) { return {}; }
+  async removeOverride(domain: string, _keyPath: readonly string[]) { await this.replace(domain, null); }
+
   set(domain: string, patch: unknown): Promise<void> {
     const previousValue = this._values.get(domain);
     const value =

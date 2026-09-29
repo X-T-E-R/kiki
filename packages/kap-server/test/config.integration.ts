@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -910,5 +910,31 @@ describe('server-v2 /api/config', () => {
     expect(body.data.models['example-model']).toEqual({ provider: 'example', model: 'example-model' });
     expect(await readCredentialsFile()).toContain('model-private-key');
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('model-private-key');
+  });
+
+  it('serves layered config origins and follows an external base rewrite', async () => {
+    const root = home as string;
+    const space = join(root, 'space');
+    await mkdir(space);
+    await writeFile(join(root, 'config.toml'), 'default_model = "base-first"\n');
+    await writeFile(join(space, 'home.toml'), `schema = 1\nid = "h-test"\nname = "Test"\nbase = "${root.replaceAll('\\', '/')}"\n`);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: space, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    expect((await getConfig()).origins?.['default_model']?.['']).toBe('base');
+    await writeFile(join(root, 'config.toml'), 'default_model = "base-second"\n');
+    await expect.poll(async () => (await getConfig()).default_model).toBe('base-second');
+    await patchConfig({ default_model: 'home-model' });
+    expect((await getConfig()).origins?.['default_model']?.['']).toBe('home');
+    expect(await readFile(join(root, 'config.toml'), 'utf8')).toContain('base-second');
+    expect(await readFile(join(space, 'config.toml'), 'utf8')).toContain('home-model');
+  });
+
+  it('returns the last acknowledged rapid config write on GET and disk', async () => {
+    await boot();
+    let last: boolean | undefined;
+    await Promise.all(Array.from({ length: 12 }, (_, index) => patchConfig({ merge_all_available_skills: index % 2 === 0 })
+      .then((response) => { last = response.merge_all_available_skills; })));
+    expect((await getConfig()).merge_all_available_skills).toBe(last);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toContain(`merge_all_available_skills = ${last}`);
   });
 });

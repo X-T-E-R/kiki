@@ -8,6 +8,7 @@ export type ExtraAgentDirsConfig = z.infer<typeof ExtraAgentDirsConfigSchema>;
 
 registerConfigSection(EXTRA_AGENT_DIRS_SECTION, ExtraAgentDirsConfigSchema, {
   defaultValue: [],
+  layerMerge: 'union',
 });
 
 export const SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION = 'skipBuiltinProfileInstallation';

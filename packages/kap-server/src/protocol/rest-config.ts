@@ -202,6 +202,7 @@ export const configResponseSchema = z.object({
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
+  origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'base', 'home', 'env', 'memory']))).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 

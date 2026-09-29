@@ -83,6 +83,7 @@ export interface ConfigSection<T = unknown> {
   readonly toToml?: ConfigToToml;
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
+  readonly layerMerge?: 'union';
 }
 
 export interface RegisterSectionOptions<T> {
@@ -95,6 +96,7 @@ export interface RegisterSectionOptions<T> {
   readonly toToml?: ConfigToToml;
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
+  readonly layerMerge?: 'union';
 }
 
 export interface ConfigEffectiveOverlay {
@@ -161,6 +163,7 @@ export interface ConfigDiagnostic {
 }
 
 export type ResolvedConfig = Record<string, unknown>;
+export type ConfigOrigin = 'default' | 'base' | 'home' | 'env' | 'memory';
 
 export enum ConfigScope {
   Core = 'core',
@@ -195,6 +198,8 @@ export interface IConfigService {
   get<T = unknown>(domain: string): T;
   inspect<T = unknown>(domain: string): ConfigInspectValue<T>;
   getAll(): ResolvedConfig;
+  origins(domain: string): Record<string, ConfigOrigin>;
+  removeOverride(domain: string, keyPath: readonly string[]): Promise<void>;
   set(domain: string, patch: unknown, target?: ConfigTarget): Promise<void>;
   replace(domain: string, value: unknown, target?: ConfigTarget): Promise<void>;
   replaceSections(

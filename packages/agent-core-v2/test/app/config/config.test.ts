@@ -3933,3 +3933,145 @@ describe('explicit model generation migration', () => {
     expect(() => prepareModelGenerationMigration('[models."broken"\n')).toThrow();
   });
 });
+
+
+describe('space config layers', () => {
+  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const homeStorage = new InMemoryStorageService();
+    const baseStorage = new InMemoryStorageService();
+    const homeStore = new TomlAtomicDocumentStore(homeStorage);
+    const baseStore = new TomlAtomicDocumentStore(baseStorage);
+    await homeStore.setText('', 'config.toml', homeText);
+    await baseStore.setText('', 'config.toml', baseText);
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, {
+      ...stubBootstrap('/tmp/kiki-space-test', env),
+      baseHomeDir: '/tmp/kiki-base-test',
+      credentialsHomeDir: '/tmp/kiki-base-test',
+      spaceId: 'h-test',
+      space: { id: 'h-test', name: 'Test', baseHomeDir: '/tmp/kiki-base-test', inherit: { config: true, credentials: 'shared', agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } },
+      baseConfigDocumentStore: baseStore,
+    });
+    ix.stub(IFileSystemStorageService, homeStorage);
+    ix.stub(IAtomicTomlDocumentStore, homeStore);
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    return { config, disposables, homeStore, baseStore };
+  }
+
+  it('merges scalar, table and named entries; replaces ordered arrays and keeps disabled entries', async () => {
+    const f = await fixture('default_model = "base"\n[raw]\nhooks = ["base", "old"]\n[raw.flags]\na = 1\nb = 2\n[raw.items.alpha]\nenabled = true\nlabel = "base"\n[raw.items.beta]\nenabled = true\n', 'default_model = "home"\n[raw]\nhooks = ["home"]\n[raw.flags]\nb = 3\n[raw.items.alpha]\nenabled = false\n');
+    try {
+      expect(f.config.get('defaultModel')).toBe('home');
+      expect(f.config.get('raw')).toMatchObject({ flags: { a: 1, b: 3 }, items: { alpha: { enabled: false, label: 'base' }, beta: { enabled: true } }, hooks: ['home'] });
+      expect(f.config.origins('raw')).toMatchObject({ 'flags.a': 'base', 'flags.b': 'home', 'items.alpha.enabled': 'home', 'items.alpha.label': 'base', hooks: 'home' });
+      expect(f.config.origins('defaultModel')).toEqual({ '': 'home' });
+      expect(await f.homeStore.getText('', 'config.toml')).not.toContain('label = "base"');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('masks inherited named providers and models with enabled=false without modifying base', async () => {
+    const f = await fixture('[providers.acme]\ntype = "openai"\n[models."acme/fast"]\nprovider = "acme"\nmodel = "fast"\n', '[providers.acme]\nenabled = false\n[models."acme/fast"]\nenabled = false\n');
+    try {
+      expect(f.config.get('providers')).toEqual({});
+      expect(f.config.get('models')).toEqual({});
+      expect(f.config.inspect('providers').userValue).toMatchObject({ acme: { enabled: false } });
+      await f.config.removeOverride('providers', ['acme']);
+      await f.config.removeOverride('models', ['acme/fast']);
+      expect(f.config.get<Record<string, unknown>>('providers')).toHaveProperty('acme');
+      expect(f.config.get<Record<string, unknown>>('models')).toHaveProperty('acme/fast');
+      expect(await f.baseStore.getText('', 'config.toml')).toContain('type = "openai"');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('merges named providers and model aliases without requiring complete home records', async () => {
+    const f = await fixture('[providers.acme]\ntype = "openai"\nbase_url = "https://example.com/v1"\n[models."acme/fast"]\nprovider = "acme"\nmodel = "fast"\n', '[providers.acme]\napi_key = "sk-home"\n[models."acme/fast"]\nmax_context_size = 2048\n');
+    try {
+      expect(f.config.get<Record<string, unknown>>('providers')).toMatchObject({ acme: { type: 'openai', baseUrl: 'https://example.com/v1', apiKey: 'sk-home' } });
+      expect(f.config.get<Record<string, unknown>>('models')).toMatchObject({ 'acme/fast': { provider: 'acme', model: 'fast', maxContextSize: 2048 } });
+      expect(f.config.origins('providers')).toMatchObject({ 'acme.type': 'base', 'acme.apiKey': 'home' });
+      await f.config.set('providers', { acme: { defaultModel: 'fast' } });
+      expect(f.config.get<Record<string, unknown>>('providers')).toMatchObject({ acme: { type: 'openai', defaultModel: 'fast' } });
+      expect(await f.baseStore.getText('', 'config.toml')).toContain('base_url = "https://example.com/v1"');
+      expect(await f.homeStore.getText('', 'config.toml')).not.toContain('base_url');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('inherits shared credentials and restores a credential override without changing base', async () => {
+    const f = await fixture('[providers.acme]\ntype = "openai"\n', '');
+    try {
+      await f.baseStore.setText('', 'credentials/credentials.toml', '[providers.acme]\napi_key = "sk-base"\n');
+      await f.homeStore.setText('', 'credentials/credentials.toml', '[providers.acme]\napi_key = "sk-local"\n');
+      await f.config.reload();
+      expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-local');
+      expect(f.config.origins('providers')['acme.apiKey']).toBe('home');
+      await f.config.removeOverride('providers', ['acme', 'apiKey']);
+      expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-base');
+      expect(f.config.origins('providers')['acme.apiKey']).toBe('base');
+      expect(await f.baseStore.getText('', 'credentials/credentials.toml')).toContain('sk-base');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('unions only opted-in path sets and replaces other arrays', async () => {
+    const f = await fixture('extra_skill_dirs = ["/base", "/same"]\n[raw]\nhooks = ["base"]\n', 'extra_skill_dirs = ["/same", "/home"]\n[raw]\nhooks = ["home"]\n');
+    try {
+      expect(f.config.get('extraSkillDirs')).toEqual(['/base', '/same', '/home']);
+      expect(f.config.get<Record<string, unknown>>('raw')['hooks']).toEqual(['home']);
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('writes home-only partial tables and restores inheritance by removing one key', async () => {
+    const f = await fixture('[raw.flags]\na = 1\nb = 2\n', '[raw.flags]\nb = 3\n');
+    try {
+      await f.config.removeOverride('raw', ['flags', 'b']);
+      expect(f.config.get('raw')).toMatchObject({ flags: { a: 1, b: 2 } });
+      expect(f.config.origins('raw')['flags.b']).toBe('base');
+      expect(await f.homeStore.getText('', 'config.toml')).not.toContain('b = 3');
+      await f.config.set('raw', { flags: { b: 4 } });
+      expect(f.config.get('raw')).toMatchObject({ flags: { a: 1, b: 4 } });
+      expect(await f.baseStore.getText('', 'config.toml')).toContain('b = 2');
+      expect(await f.homeStore.getText('', 'config.toml')).toContain('b = 4');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('gives environment precedence and tracks changing env origins', async () => {
+    const env: Record<string, string> = {};
+    const f = await fixture('builtin_product_skills = true\n', 'builtin_product_skills = false\n', env);
+    try {
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'home' });
+      env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
+      expect(f.config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'env' });
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('retains the previous base on parse failure without blocking home writes, then reloads external changes', async () => {
+    const f = await fixture('default_model = "first"\n', '');
+    try {
+      await f.baseStore.setText('', 'config.toml', '[broken\n');
+      await f.config.reload();
+      expect(f.config.get('defaultModel')).toBe('first');
+      expect(f.config.diagnostics().some((item) => item.message.includes('Base configuration unavailable'))).toBe(true);
+      await f.config.replace('defaultModel', 'local');
+      await f.config.removeOverride('defaultModel', []);
+      await f.baseStore.setText('', 'config.toml', 'default_model = "second"\n');
+      await expect.poll(() => f.config.get('defaultModel')).toBe('second');
+      expect(f.config.diagnostics().some((item) => item.message.includes('Base configuration unavailable'))).toBe(false);
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('serializes rapid writes with watcher reloads so acknowledged values remain current', async () => {
+    const f = await fixture('default_model = "base"\n', '');
+    try {
+      await Promise.all(Array.from({ length: 12 }, (_, i) => f.config.replace('defaultModel', `local-${i}`)));
+      expect(f.config.get('defaultModel')).toBe('local-11');
+      await f.config.reload();
+      expect(f.config.get('defaultModel')).toBe('local-11');
+      expect(await f.homeStore.getText('', 'config.toml')).toContain('local-11');
+    } finally { f.disposables.dispose(); }
+  });
+});

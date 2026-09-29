@@ -3,10 +3,12 @@ import { basename, join, relative } from 'pathe';
 import type { KimiHostIdentity } from '@kiki/oauth';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import type { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import {
   IBootstrapOptions,
   IBootstrapService,
+  createBaseConfigDocumentStore,
   type HostArgs,
   type PersistenceScopeName,
 } from './bootstrap';
@@ -23,6 +25,12 @@ export class BootstrapService implements IBootstrapService {
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
   readonly modelAccountHomeDir: string;
+  readonly baseHomeDir?: string;
+  readonly credentialsHomeDir: string;
+  readonly spaceId?: string;
+  readonly space: IBootstrapOptions['space'];
+  readonly homeDiagnostic?: string;
+  readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -46,6 +54,12 @@ export class BootstrapService implements IBootstrapService {
     this.configReadOnly = options.configReadOnly;
     this.userAgentProfileHomeDir = options.userAgentProfileHomeDir;
     this.modelAccountHomeDir = options.modelAccountHomeDir;
+    this.baseHomeDir = options.baseHomeDir;
+    this.credentialsHomeDir = options.credentialsHomeDir;
+    this.spaceId = options.spaceId;
+    this.space = options.space;
+    this.homeDiagnostic = options.homeDiagnostic;
+    this.baseConfigDocumentStore = options.baseHomeDir === undefined ? undefined : createBaseConfigDocumentStore(options.baseHomeDir);
     this.clientIdentity = options.clientIdentity;
     this.args = options.args;
     this.sessionsDir = join(options.homeDir, 'sessions');

@@ -72,6 +72,7 @@ function bootstrap(): IBootstrapService {
     configReadOnly: true,
     userAgentProfileHomeDir: 'C:/Users/test/.kiki',
     modelAccountHomeDir: 'C:/Users/test/.kiki',
+    credentialsHomeDir: 'C:/Users/test/.kiki',
     clientIdentity: { productName: 'test', version: '0', platform: 'test' },
     args: { requestHeaders: {} },
     sessionsDir: 'sessions',

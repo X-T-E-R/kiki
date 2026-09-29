@@ -11,6 +11,7 @@ import {
   IBootstrapService,
   bootstrap,
   bootstrapSeed,
+  createBaseConfigDocumentStore,
   resolveBootstrapOptions,
 } from '#/app/bootstrap/bootstrap';
 import { BootstrapService } from '#/app/bootstrap/bootstrapService';
@@ -190,5 +191,51 @@ describe('bootstrap() storage seeding', () => {
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+});
+
+
+describe('space home bootstrap', () => {
+  it('reads the base config through a write-denying document store', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'kiki-base-store-'));
+    try {
+      await writeFile(join(base, 'config.toml'), 'default_model = "original"\n');
+      const store = createBaseConfigDocumentStore(base);
+      expect(await store.getText('', 'config.toml')).toContain('original');
+      await expect(store.setText('', 'config.toml', 'default_model = "changed"\n')).rejects.toMatchObject({ code: 'storage.permission_denied' });
+      expect(await readFile(join(base, 'config.toml'), 'utf8')).toContain('original');
+    } finally { await rm(base, { recursive: true, force: true }); }
+  });
+
+  it('keeps legacy homes without home.toml unchanged', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-legacy-home-'));
+    try {
+      const options = resolveBootstrapOptions({ homeDir, clientIdentity: stubClientIdentity });
+      expect(options).toMatchObject({ homeDir: resolve(homeDir), credentialsHomeDir: resolve(homeDir), modelAccountHomeDir: resolve(homeDir) });
+      expect(options.spaceId).toBeUndefined();
+      expect(options.baseHomeDir).toBeUndefined();
+    } finally { await rm(homeDir, { recursive: true, force: true }); }
+  });
+
+  it('parses identity, defaults, stacking, and the shared credential source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-space-home-'));
+    const base = join(root, 'base');
+    const home = join(root, 'space');
+    await mkdir(base); await mkdir(home);
+    try {
+      await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\ncolor = "#C2410C"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ninstructions = "stack"\n`);
+      const options = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
+      expect(options).toMatchObject({ baseHomeDir: base, spaceId: 'h-abc123', credentialsHomeDir: base, modelAccountHomeDir: base, space: { inherit: { instructions: 'stack', config: true, credentials: 'shared', plugins: false } } });
+      await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ncredentials = "isolated"\n`);
+      expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).credentialsHomeDir).toBe(resolve(home));
+      await writeFile(join(base, 'home.toml'), 'schema = 1\nid = "h-base"\nname = "Base"\n');
+      const nested = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
+      expect(nested.baseHomeDir).toBeUndefined();
+      expect(nested.homeDiagnostic).toContain('multi-level inheritance');
+      await writeFile(join(home, 'home.toml'), 'schema = 2\nid = "h-abc123"\nname = "Demo"\n');
+      const invalid = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
+      expect(invalid.spaceId).toBeUndefined();
+      expect(invalid.homeDiagnostic).toContain('schema = 1');
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

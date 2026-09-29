@@ -15,6 +15,7 @@ export type ExtraSkillDirsConfig = z.infer<typeof ExtraSkillDirsConfigSchema>;
 
 registerConfigSection(EXTRA_SKILL_DIRS_SECTION, ExtraSkillDirsConfigSchema, {
   defaultValue: [],
+  layerMerge: 'union',
 });
 
 export const MERGE_ALL_AVAILABLE_SKILLS_SECTION = 'mergeAllAvailableSkills';

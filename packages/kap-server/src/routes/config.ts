@@ -1,6 +1,7 @@
 import {
   ConfigChanged,
   ConfigTarget,
+  IBootstrapService,
   FAST_MODEL_SECTION,
   IConfigService,
   IEventService,
@@ -73,7 +74,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll()), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -170,7 +171,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll());
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config);
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -273,8 +274,12 @@ async function clearSubagentDefaultModel(config: IConfigService, patch: Record<s
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService): ConfigResponse {
   const wire: Record<string, unknown> = {};
+  if (config !== undefined) {
+    wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
+      .map((domain) => [camelToSnake(domain), config.origins(domain)]));
+  }
   for (const [domain, value] of Object.entries(resolved)) {
     if (domain === 'telemetry' || domain === 'services') {
       continue;

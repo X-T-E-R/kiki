@@ -43,6 +43,8 @@ function configWith(value: unknown): IConfigService {
       memoryValue: undefined,
     }),
     getAll: () => ({}),
+    origins: () => ({}),
+    removeOverride: async () => {},
     set: async () => {},
     replace: async () => {},
     replaceSections: async () => {},

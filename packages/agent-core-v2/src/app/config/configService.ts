@@ -14,6 +14,7 @@ import {
   type ConfigSectionChangedEvent,
   type ConfigEffectiveOverlay,
   type ConfigInspectValue,
+  type ConfigOrigin,
   type ConfigMerge,
   type ConfigOverlayRegisteredEvent,
   type ConfigSchema,
@@ -30,6 +31,7 @@ import {
 } from './config';
 import { deepEqual, deepMerge, describeUnknownError, isPlainObject } from './configPure';
 import { readConfigDocumentSnapshot, writeConfigDocument } from './configDocument';
+import { leafOrigins, mergeConfigLayers } from './configLayers';
 import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import {
   ConfigSectionContribution,
@@ -135,7 +137,8 @@ function isSameSection(
     existing.toToml === options.toToml &&
     deepEqual(existing.defaultValue, options.defaultValue) &&
     existing.collectDiagnostics === options.collectDiagnostics &&
-    existing.entryKeyed === options.entryKeyed
+    existing.entryKeyed === options.entryKeyed &&
+    existing.layerMerge === options.layerMerge
   );
 }
 
@@ -234,6 +237,7 @@ export class ConfigRegistry extends Disposable implements IConfigRegistry {
       toToml: options.toToml,
       collectDiagnostics: options.collectDiagnostics,
       entryKeyed: options.entryKeyed,
+      layerMerge: options.layerMerge,
     });
     this._onDidRegisterSection.fire({ domain });
   }
@@ -292,6 +296,10 @@ export class ConfigService extends Disposable implements IConfigService {
 
   private rawSnake: ResolvedConfig = {};
   private raw: ResolvedConfig = {};
+  private baseSnake: ResolvedConfig = {};
+  private homeSnake: ResolvedConfig = {};
+  private baseRaw: ResolvedConfig = {};
+  private homeRaw: ResolvedConfig = {};
   private validated: ResolvedConfig = {};
   private effective: ResolvedConfig = {};
   private memory: ResolvedConfig = {};
@@ -335,6 +343,14 @@ export class ConfigService extends Disposable implements IConfigService {
         void this.reload();
       }));
     }
+    const baseStore = this.bootstrap.baseConfigDocumentStore;
+    if (baseStore !== undefined) {
+      for (const key of ['config.toml', CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
+        this._register(baseStore.watch(CONFIG_SCOPE, key)(() => {
+          void this.reload();
+        }));
+      }
+    }
   }
 
   get<T = unknown>(domain: string): T {
@@ -347,13 +363,29 @@ export class ConfigService extends Disposable implements IConfigService {
     return {
       value: this.get<T>(domain),
       defaultValue: this.registry.defaultValue<T>(domain),
-      userValue: this.raw[domain] as T | undefined,
+      userValue: this.homeRaw[domain] as T | undefined,
       memoryValue,
     };
   }
 
   getAll(): ResolvedConfig {
     return { ...this.freshEffective(), ...this.memory };
+  }
+
+  origins(domain: string): Record<string, ConfigOrigin> {
+    const envFields = new Set<string>();
+    const walk = (bindings: AnyEnvBindings, path: string[]): void => {
+      if (isEnvBinding(bindings)) {
+        const name = typeof bindings === 'string' ? bindings : bindings.env;
+        const raw = this.bootstrap.getEnv(name);
+        if (raw !== undefined && (typeof bindings === 'string' || parseBoundRaw(bindings, raw) !== undefined)) envFields.add(path.join('.'));
+        return;
+      }
+      for (const [key, entry] of Object.entries(bindings)) if (entry !== undefined) walk(entry, [...path, key]);
+    };
+    const sectionEnv = this.registry.getSection(domain)?.env;
+    if (sectionEnv !== undefined) walk(sectionEnv, []);
+    return leafOrigins(this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], envFields);
   }
 
   private freshEffective(): ResolvedConfig {
@@ -408,6 +440,43 @@ export class ConfigService extends Disposable implements IConfigService {
     this._onDidChangeDiagnostics.fire(this.diagnostics());
   }
 
+  async removeOverride(domain: string, keyPath: readonly string[]): Promise<void> {
+    await this.ready;
+    await this.enqueueStateTransition(async () => {
+      this.assertPersistable();
+      await this.persist(domain, (stagedRaw, stagedRawSnake) => {
+        const snake = camelToSnake(domain);
+        const root = stagedRawSnake[snake];
+        if (keyPath.length === 0) {
+          delete stagedRawSnake[snake];
+          delete stagedRaw[domain];
+          return;
+        }
+        if (!isPlainObject(root)) return;
+        const parents: { parent: Record<string, unknown>; key: string }[] = [];
+        let current: Record<string, unknown> = root;
+        for (let index = 0; index < keyPath.length; index += 1) {
+          const part = keyPath[index]!;
+          const key = Object.hasOwn(current, part) ? part : camelToSnake(part);
+          parents.push({ parent: current, key });
+          const child = current[key];
+          if (index < keyPath.length - 1 && !isPlainObject(child)) return;
+          if (isPlainObject(child)) current = child;
+        }
+        const last = parents.pop();
+        if (last === undefined) return;
+        delete last.parent[last.key];
+        for (const { parent, key } of parents.reverse()) {
+          if (isPlainObject(parent[key]) && Object.keys(parent[key]).length === 0) delete parent[key];
+        }
+        if (Object.keys(root).length === 0) delete stagedRawSnake[snake];
+        const transformed = transformTomlData({ [snake]: stagedRawSnake[snake] }, this.registry);
+        stagedRaw[domain] = transformed[domain];
+      }, true);
+      this.rebuildEffective('set', [domain]);
+    });
+  }
+
   async set(
     domain: string,
     patch: unknown,
@@ -429,12 +498,13 @@ export class ConfigService extends Disposable implements IConfigService {
       this.assertPersistable();
       await this.persist(domain, (stagedRaw, stagedRawSnake) => {
         const next = this.registry.merge(domain, stagedRaw[domain], patch);
-        const validated = this.registry.validate(domain, next);
-        const stripped = this.stripEnv(domain, validated, stagedRaw, stagedRawSnake);
+        const writing = this.bootstrap.baseConfigDocumentStore === undefined ? this.registry.validate(domain, next) : next;
+        this.validateLayeredWrite(domain, writing);
+        const stripped = this.stripEnv(domain, writing, stagedRaw, stagedRawSnake);
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          this.validateWrite(domain, this.registry.validate(domain, stripped));
+          this.validateWrite(domain, this.validateLayeredWrite(domain, stripped));
           stagedRaw[domain] = stripped;
         }
       });
@@ -465,7 +535,7 @@ export class ConfigService extends Disposable implements IConfigService {
         if (stripped === undefined) {
           delete stagedRaw[domain];
         } else {
-          this.validateWrite(domain, this.registry.validate(domain, stripped));
+          this.validateWrite(domain, this.validateLayeredWrite(domain, stripped));
           stagedRaw[domain] = stripped;
         }
       }, true);
@@ -506,13 +576,38 @@ export class ConfigService extends Disposable implements IConfigService {
           if (stripped === undefined) {
             delete stagedRaw[domain];
           } else {
-            this.validateWrite(domain, this.registry.validate(domain, stripped));
+            this.validateWrite(domain, this.validateLayeredWrite(domain, stripped));
             stagedRaw[domain] = stripped;
           }
         }
       }, true);
       this.rebuildEffective('set', domains);
     });
+  }
+
+  private mergeLayers(base: ResolvedConfig, home: ResolvedConfig): ResolvedConfig {
+    const merged = mergeConfigLayers(base, home);
+    for (const section of this.registry.listSections()) {
+      const key = camelToSnake(section.domain);
+      if (section.layerMerge === 'union' && Array.isArray(base[key]) && Array.isArray(home[key])) {
+        merged[key] = [...new Set([...base[key], ...home[key]])];
+      }
+    }
+    for (const key of ['providers', 'models']) {
+      if (!isPlainObject(home[key]) || !isPlainObject(merged[key])) continue;
+      const entries = { ...merged[key] };
+      for (const [name, value] of Object.entries(home[key])) {
+        if (isPlainObject(value) && value['enabled'] === false) delete entries[name];
+      }
+      merged[key] = entries;
+    }
+    return merged;
+  }
+
+  private validateLayeredWrite(domain: string, value: unknown): unknown {
+    const candidate = this.bootstrap.baseConfigDocumentStore === undefined
+      ? value : this.mergeLayers({ [camelToSnake(domain)]: this.baseSnake[camelToSnake(domain)] }, { [camelToSnake(domain)]: value })[camelToSnake(domain)];
+    return this.registry.validate(domain, candidate);
   }
 
   private validateWrite<T>(domain: string, value: T): T {
@@ -610,6 +705,7 @@ export class ConfigService extends Disposable implements IConfigService {
 
   private async load(source: ConfigChangeSource, skipCredentialMigration = false): Promise<void> {
     this.diagnosticsList.length = 0;
+    if (this.bootstrap.homeDiagnostic !== undefined) this.pushDiagnostic({ severity: 'error', message: this.bootstrap.homeDiagnostic });
     let fileData: ResolvedConfig = {};
     let failed = false;
     try {
@@ -640,7 +736,48 @@ export class ConfigService extends Disposable implements IConfigService {
       }
     }
     this.tainted = failed;
-    const nextRawSnake = cloneRecord(fileData);
+    let baseData = this.baseSnake;
+    const baseStore = this.bootstrap.baseConfigDocumentStore;
+    if (baseStore !== undefined) {
+      try {
+        const inheritConfig = this.bootstrap.space?.inherit.config !== false;
+        const baseConfig = inheritConfig
+          ? await readConfigDocumentSnapshot(baseStore, 'config.toml', { recoverMissing: false })
+          : { data: {}, text: undefined };
+        const shared = this.bootstrap.space?.inherit.credentials !== 'isolated';
+        const baseCredentials = shared
+          ? await readConfigDocumentSnapshot(baseStore, CREDENTIALS_KEY, { recoverMissing: false })
+          : { data: {}, text: undefined };
+        const baseLegacy = shared
+          ? await readConfigDocumentSnapshot(baseStore, LEGACY_CREDENTIALS_KEY, { recoverMissing: false })
+          : { data: {}, text: undefined };
+        if (baseLegacy.text !== undefined && baseCredentials.text !== undefined && baseLegacy.text !== baseCredentials.text) {
+          throw new Error('Base credentials.toml files differ');
+        }
+        if (inheritConfig && baseConfig.text === undefined && (!shared || (baseCredentials.text === undefined && baseLegacy.text === undefined))) {
+          this.pushDiagnostic({ severity: 'warning', message: `Base configuration unavailable: ${this.bootstrap.baseHomeDir}` });
+        }
+        const publicBase = shared ? baseConfig.data : splitConfigCredentials(baseConfig.data).config;
+        baseData = mergeConfigCredentials(publicBase, baseCredentials.text === undefined ? baseLegacy.data : baseCredentials.data);
+        if (baseConfig.text !== undefined) {
+          try {
+            if (prepareGeneration(baseConfig.text).preview.changes.length > 0) {
+              this.pushDiagnostic({ severity: 'warning', message: `Base config requires model-generation migration in the main space: ${this.bootstrap.baseHomeDir}` });
+            }
+          } catch {
+            this.pushDiagnostic({ severity: 'warning', message: `Base model-generation migration preview unavailable: ${this.bootstrap.baseHomeDir}` });
+          }
+        }
+      } catch (error) {
+        this.pushDiagnostic({ severity: 'warning', message: `Base configuration unavailable (${this.bootstrap.baseHomeDir}); retaining previous values: ${error instanceof TomlError ? describeTomlSyntaxError(error) : describeUnknownError(error)}` });
+        this.log.warn('base config load failed', { error: describeUnknownError(error) });
+      }
+    }
+    this.baseSnake = cloneRecord(baseData);
+    this.homeSnake = cloneRecord(fileData);
+    this.baseRaw = transformTomlData(this.baseSnake, this.registry);
+    this.homeRaw = transformTomlData(this.homeSnake, this.registry);
+    const nextRawSnake = cloneRecord(baseStore === undefined ? fileData : this.mergeLayers(baseData, fileData));
     for (const section of this.registry.listSections()) {
       if (section.collectDiagnostics === undefined) continue;
       const rawSection = nextRawSnake[camelToSnake(section.domain)];
@@ -659,7 +796,7 @@ export class ConfigService extends Disposable implements IConfigService {
       return;
     }
     this.rawSnake = nextRawSnake;
-    this.raw = transformTomlData(fileData, this.registry);
+    this.raw = transformTomlData(nextRawSnake, this.registry);
     this.rebuildEffective(source);
   }
 
@@ -713,7 +850,7 @@ export class ConfigService extends Disposable implements IConfigService {
         this.pushDiagnostic({
           domain,
           severity: 'warning',
-          message: `Ignored invalid config section '${domain}': ${describeUnknownError(error)}`,
+          message: `Ignored invalid config section '${domain}'${this.bootstrap.baseHomeDir === undefined ? '' : ` (base/home conflict; home override: ${Object.hasOwn(this.homeRaw, domain)})`}: ${describeUnknownError(error)}`,
         });
         if (Object.prototype.hasOwnProperty.call(previous, domain)) {
           validated[domain] = previous[domain];
@@ -958,12 +1095,7 @@ export class ConfigService extends Disposable implements IConfigService {
     for (const domain of domains) {
       if (replaceSecrets) {
         const snakeKey = camelToSnake(domain);
-        const withoutSecrets = splitConfigCredentials({ [snakeKey]: stagedRawSnake[snakeKey] }).config;
-        if (withoutSecrets[snakeKey] === undefined) {
-          delete stagedRawSnake[snakeKey];
-        } else {
-          stagedRawSnake[snakeKey] = withoutSecrets[snakeKey];
-        }
+        delete stagedRawSnake[snakeKey];
       }
       applySectionToToml(stagedRawSnake, domain, stagedRaw[domain], this.registry);
     }
@@ -991,8 +1123,13 @@ export class ConfigService extends Disposable implements IConfigService {
       }
       throw error;
     }
-    this.rawSnake = stagedRawSnake;
-    this.raw = stagedRaw;
+    this.homeSnake = cloneRecord(stagedRawSnake);
+    this.homeRaw = this.bootstrap.baseConfigDocumentStore === undefined
+      ? stagedRaw : transformTomlData(this.homeSnake, this.registry);
+    this.rawSnake = this.bootstrap.baseConfigDocumentStore === undefined
+      ? stagedRawSnake : this.mergeLayers(this.baseSnake, stagedRawSnake);
+    this.raw = this.bootstrap.baseConfigDocumentStore === undefined
+      ? stagedRaw : transformTomlData(this.rawSnake, this.registry);
   }
 }
 

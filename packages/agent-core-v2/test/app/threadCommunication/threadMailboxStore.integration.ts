@@ -60,6 +60,7 @@ function bootstrap(homeDir: string): IBootstrapService {
     configReadOnly: false,
     userAgentProfileHomeDir: homeDir,
     modelAccountHomeDir: homeDir,
+    credentialsHomeDir: homeDir,
     configKey: 'config.toml',
     clientIdentity: { productName: 'test', version: '0', platform: 'test' },
     args: { requestHeaders: {} },

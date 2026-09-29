@@ -1,13 +1,16 @@
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-import { dirname, join } from 'pathe';
+import { dirname, join, normalize } from 'pathe';
+import { FSWatcher } from 'chokidar';
 
 import { resolveKikiHome, type KimiHostIdentity } from '@kiki/oauth';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { createAppScope, type Scope, type ScopeSeed } from '#/_base/di/scope';
+import { DisposableStore, combinedDisposable, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter, type Event } from '#/_base/event';
 import {
   IFileSystemStorageService,
   StorageError,
@@ -55,6 +58,11 @@ export interface IBootstrapOptions {
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
   readonly modelAccountHomeDir: string;
+  readonly baseHomeDir?: string;
+  readonly credentialsHomeDir: string;
+  readonly spaceId?: string;
+  readonly space?: SpaceHome;
+  readonly homeDiagnostic?: string;
   readonly osHomeDir: string;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
@@ -89,6 +97,12 @@ export interface IBootstrapService {
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
   readonly modelAccountHomeDir: string;
+  readonly baseHomeDir?: string;
+  readonly credentialsHomeDir: string;
+  readonly spaceId?: string;
+  readonly space?: SpaceHome;
+  readonly homeDiagnostic?: string;
+  readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -123,13 +137,21 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
   const env = input.env ?? process.env;
   const osHomeDir = input.osHomeDir ?? homedir();
   const homeDir = resolveKikiHome(input.homeDir, env, osHomeDir);
+  const { space, diagnostic } = readSpaceHome(homeDir);
+  const baseHomeDir = space?.baseHomeDir;
+  const credentialsHomeDir = baseHomeDir !== undefined && space?.inherit.credentials === 'shared' ? baseHomeDir : homeDir;
   const configPath = input.configPath ?? join(homeDir, 'config.toml');
   return {
     homeDir,
     configPath,
     configReadOnly: input.configReadOnly ?? false,
+    baseHomeDir,
+    credentialsHomeDir,
+    spaceId: space?.id,
+    space,
+    homeDiagnostic: diagnostic,
     userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
-    modelAccountHomeDir: input.modelAccountHomeDir ?? homeDir,
+    modelAccountHomeDir: input.modelAccountHomeDir ?? credentialsHomeDir,
     osHomeDir,
     platform: input.platform ?? process.platform,
     arch: input.arch ?? process.arch,
@@ -156,7 +178,7 @@ export interface BootstrapResult {
 export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): BootstrapResult {
   const options = resolveBootstrapOptions(input);
   const app = createAppScope({
-    seeds: [...bootstrapSeed(input), ...storageSeed(options), ...skillSeed(), ...extraSeeds],
+    seeds: [[IBootstrapOptions as ServiceIdentifier<unknown>, options], ...storageSeed(options), ...skillSeed(), ...extraSeeds],
   });
   void cleanupExpiredSessionLocks(options.homeDir).catch(() => undefined);
   return { app };
@@ -178,10 +200,15 @@ function storageSeed(options: IBootstrapOptions): ScopeSeed {
   ];
 }
 
+export function createBaseConfigDocumentStore(baseHomeDir: string): IAtomicTomlDocumentStore {
+  const storage = new FileStorageService(baseHomeDir, 0o700, 0o600, false);
+  return new ReadOnlyAtomicDocumentStore(new TomlAtomicDocumentStore(storage), baseHomeDir);
+}
+
 class ReadOnlyAtomicDocumentStore implements IAtomicTomlDocumentStore {
   declare readonly _serviceBrand: undefined;
 
-  constructor(private readonly delegate: IAtomicTomlDocumentStore) {}
+  constructor(private readonly delegate: IAtomicTomlDocumentStore, private readonly watchRoot?: string) {}
 
   get<T>(scope: string, key: string): Promise<T | undefined> {
     return this.delegate.get<T>(scope, key);
@@ -219,8 +246,26 @@ class ReadOnlyAtomicDocumentStore implements IAtomicTomlDocumentStore {
     return this.delegate.list(scope, prefix);
   }
 
-  watch(scope: string, key: string) {
-    return this.delegate.watch(scope, key);
+  watch(scope: string, key: string): Event<void> {
+    const root = this.watchRoot;
+    if (root === undefined) return this.delegate.watch(scope, key);
+    const target = normalize(join(root, scope, key));
+    return (listener, thisArg, disposables) => {
+      const emitter = new Emitter<void>();
+      const watcher = new FSWatcher({ ignoreInitial: true, depth: 1 });
+      watcher.on('all', (_event, changedPath) => {
+        if (normalize(changedPath).toLowerCase() === target.toLowerCase()) emitter.fire();
+      });
+      watcher.add(root);
+      const subscription = emitter.event(listener, thisArg);
+      const combined = combinedDisposable(subscription, toDisposable(() => {
+        void watcher.close().catch(() => undefined);
+        emitter.dispose();
+      }));
+      if (disposables instanceof DisposableStore) disposables.add(combined);
+      else if (disposables !== undefined) disposables.push(combined);
+      return combined;
+    };
   }
 
   acquire(scope: string, key: string) {
