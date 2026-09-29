@@ -15,7 +15,7 @@ import {
   type RuntimeConfigDraft,
   type TokenCountingStrategy,
 } from '@kiki/session-core/settings';
-import type { KikiConfigPatch } from '@kiki/session-core/transport';
+import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
@@ -43,7 +43,10 @@ const APPEND_TIMING_HINT_KEY = {
  * optimistic local state, a narrow patch, the echoed value as the truth, and
  * a rollback plus inline error when the write fails.
  */
-function useServerChoice<T>(project: (draft: RuntimeConfigDraft) => T, patch: (value: T) => KikiConfigPatch) {
+function useServerChoice<T>(
+  project: (draft: RuntimeConfigDraft, config: KikiConfigResponse) => T,
+  patch: (value: T) => KikiConfigPatch,
+) {
   const { client } = useConnection();
   const { locale } = useI18n();
   const queryClient = useQueryClient();
@@ -54,7 +57,7 @@ function useServerChoice<T>(project: (draft: RuntimeConfigDraft) => T, patch: (v
   const [saved, ping] = useSavedTick();
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !saving) setValue(project(runtimeConfigDraftFromConfig(configQuery.data)));
+    if (configQuery.data !== undefined && !saving) setValue(project(runtimeConfigDraftFromConfig(configQuery.data), configQuery.data));
   // eslint-disable-next-line react-hooks/exhaustive-deps -- project is a stable pure selector
   }, [configQuery.data, saving]);
 
@@ -66,7 +69,7 @@ function useServerChoice<T>(project: (draft: RuntimeConfigDraft) => T, patch: (v
     try {
       const echoed = await client.patchConfig(patch(next));
       queryClient.setQueryData(['config'], echoed);
-      setValue(project(runtimeConfigDraftFromConfig(echoed)));
+      setValue(project(runtimeConfigDraftFromConfig(echoed), echoed));
       ping();
     } catch (cause) {
       setValue(previous);
@@ -86,6 +89,11 @@ export function AgentMessagingCard() {
   const { t } = useI18n();
   const thread = useServerChoice((draft) => draft.threadCommunicationEnabled, threadCommunicationPatch);
   const notify = useServerChoice((draft) => draft.agentsNotifyParent, agentNotifyParentPatch);
+  // [agents.delegation]: an absent slot means the notice is on.
+  const delegateSub = useServerChoice((_draft, config) => config.agents?.delegation?.sub !== false,
+    (sub): KikiConfigPatch => ({ agents: { delegation: { sub } } }));
+  const delegateIndependent = useServerChoice((_draft, config) => config.agents?.delegation?.independent !== false,
+    (independent): KikiConfigPatch => ({ agents: { delegation: { independent } } }));
   const loading = thread.value === null || notify.value === null;
 
   return (
@@ -106,7 +114,19 @@ export function AgentMessagingCard() {
             <Hint>{t('st.sessions.notifyHint')}</Hint>
             <FeedbackLine feedback={notify.error} />
           </div>
-          <SavedTick show={thread.saved || notify.saved} />
+          <div data-settings-field data-agent-messaging="delegation-sub" className="space-y-0.5 py-1">
+            <Toggle layout="row" label={t('st.sessions.delegationSub')} checked={delegateSub.value === true}
+              disabled={delegateSub.saving} onChange={(checked) => { void delegateSub.apply(checked); }} />
+            <Hint>{t('st.sessions.delegationSubHint')}</Hint>
+            <FeedbackLine feedback={delegateSub.error} />
+          </div>
+          <div data-settings-field data-agent-messaging="delegation-independent" className="space-y-0.5 py-1">
+            <Toggle layout="row" label={t('st.sessions.delegationIndependent')} checked={delegateIndependent.value === true}
+              disabled={delegateIndependent.saving} onChange={(checked) => { void delegateIndependent.apply(checked); }} />
+            <Hint>{t('st.sessions.delegationIndependentHint')}</Hint>
+            <FeedbackLine feedback={delegateIndependent.error} />
+          </div>
+          <SavedTick show={thread.saved || notify.saved || delegateSub.saved || delegateIndependent.saved} />
         </div>
       )}
     </SectionCard>

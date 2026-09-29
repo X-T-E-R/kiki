@@ -26,6 +26,7 @@ type AgentIdentityDraft = Pick<
   | 'advertiseAsKimiCode'
   | 'extraAgentDirs'
   | 'disabledNamedProfiles'
+  | 'skipBuiltinProfileInstallation'
 >;
 
 /**
@@ -144,6 +145,7 @@ export function AgentRuntimeCard() {
       advertiseAsKimiCode: projected.advertiseAsKimiCode,
       extraAgentDirs: projected.extraAgentDirs,
       disabledNamedProfiles: projected.disabledNamedProfiles,
+      skipBuiltinProfileInstallation: projected.skipBuiltinProfileInstallation,
     };
     setDraft(draft === null || saved === null ? next : {
       identityName: draft.identityName === saved.identityName ? next.identityName : draft.identityName,
@@ -151,6 +153,7 @@ export function AgentRuntimeCard() {
       advertiseAsKimiCode: draft.advertiseAsKimiCode === saved.advertiseAsKimiCode ? next.advertiseAsKimiCode : draft.advertiseAsKimiCode,
       extraAgentDirs: stringListsEqual(draft.extraAgentDirs, saved.extraAgentDirs) ? next.extraAgentDirs : draft.extraAgentDirs,
       disabledNamedProfiles: stringListsEqual(draft.disabledNamedProfiles, saved.disabledNamedProfiles) ? next.disabledNamedProfiles : draft.disabledNamedProfiles,
+      skipBuiltinProfileInstallation: stringListsEqual(draft.skipBuiltinProfileInstallation, saved.skipBuiltinProfileInstallation) ? next.skipBuiltinProfileInstallation : draft.skipBuiltinProfileInstallation,
     });
     setSaved(next);
   }, [configQuery.data, draft, saved, saving]);
@@ -173,6 +176,7 @@ export function AgentRuntimeCard() {
     advertiseAsKimiCode: draft.advertiseAsKimiCode !== saved.advertiseAsKimiCode,
     extraAgentDirs: !stringListsEqual(draft.extraAgentDirs, saved.extraAgentDirs),
     disabledNamedProfiles: !stringListsEqual(draft.disabledNamedProfiles, saved.disabledNamedProfiles),
+    skipBuiltinProfileInstallation: !stringListsEqual(draft.skipBuiltinProfileInstallation, saved.skipBuiltinProfileInstallation),
   };
   const dirty = Object.values(touched).some(Boolean);
 
@@ -191,6 +195,7 @@ export function AgentRuntimeCard() {
         advertiseAsKimiCode: projected.advertiseAsKimiCode,
         extraAgentDirs: projected.extraAgentDirs,
         disabledNamedProfiles: projected.disabledNamedProfiles,
+        skipBuiltinProfileInstallation: projected.skipBuiltinProfileInstallation,
       };
       setDraft(next);
       setSaved(next);
@@ -226,6 +231,10 @@ export function AgentRuntimeCard() {
           </SettingField>
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
           <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
+          <div className="space-y-1">
+            <StringListEditor label={t('st.agentIdentity.skipBuiltin')} values={draft.skipBuiltinProfileInstallation} placeholder="builtin-name" onChange={(skipBuiltinProfileInstallation) => { updateDraft({ ...draft, skipBuiltinProfileInstallation }); }} />
+            <Hint>{t('st.agentIdentity.skipBuiltinHint')}</Hint>
+          </div>
         </fieldset>
         <SettingsDraftFooter saved={justSaved} id="agent-identity" dirty={dirty} saving={saving} onSave={() => void save()}
           onDiscard={() => { setDraft(saved); setFeedback(null); }} />

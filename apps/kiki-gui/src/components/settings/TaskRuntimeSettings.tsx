@@ -111,6 +111,9 @@ export function TaskPolicyCard() {
             <SettingField label={t('st.taskPolicy.autoBackground')}>
               <Toggle layout="bare" label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
             </SettingField>
+            <SettingField label={t('st.taskPolicy.fileToolHints')} help={t('st.taskPolicy.fileToolHintsHelp')}>
+              <Toggle layout="bare" label={t('st.taskPolicy.fileToolHints')} checked={draft.bashFileToolHints} onChange={(bashFileToolHints) => { updateTask({ bashFileToolHints }); }} />
+            </SettingField>
           </div>
         </fieldset>
         <SettingsDraftFooter saved={justSaved} id="task-policy" dirty={dirty} saving={saving}

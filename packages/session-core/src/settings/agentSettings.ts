@@ -154,6 +154,7 @@ export interface AgentIdentitySparsePatch {
   readonly advertiseAsKimiCode?: boolean;
   readonly extraAgentDirs?: boolean;
   readonly disabledNamedProfiles?: boolean;
+  readonly skipBuiltinProfileInstallation?: boolean;
 }
 
 /**
@@ -164,13 +165,14 @@ export function agentIdentitySparsePatch(
   draft: Pick<
     RuntimeConfigDraft,
     'identityName' | 'identitySlug' | 'advertiseAsKimiCode' | 'extraAgentDirs' | 'disabledNamedProfiles'
-  >,
+  > & Partial<Pick<RuntimeConfigDraft, 'skipBuiltinProfileInstallation'>>,
   touched: AgentIdentitySparsePatch,
 ): KikiConfigPatch {
   const patch: {
     identity?: NonNullable<KikiConfigPatch['identity']>;
     extra_agent_dirs?: string[];
     disabled_named_profiles?: string[];
+    skip_builtin_profile_installation?: string[];
     replace_domains: string[];
   } = { replace_domains: [] };
   if (touched.identityName || touched.identitySlug || touched.advertiseAsKimiCode) {
@@ -188,6 +190,10 @@ export function agentIdentitySparsePatch(
   if (touched.disabledNamedProfiles) {
     patch.disabled_named_profiles = normalizeTags(draft.disabledNamedProfiles);
     patch.replace_domains.push('disabled_named_profiles');
+  }
+  if (touched.skipBuiltinProfileInstallation) {
+    patch.skip_builtin_profile_installation = normalizeTags(draft.skipBuiltinProfileInstallation ?? []);
+    patch.replace_domains.push('skip_builtin_profile_installation');
   }
   return patch;
 }

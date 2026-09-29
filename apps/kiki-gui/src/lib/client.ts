@@ -252,6 +252,7 @@ export interface RuntimeConfigProjection {
     readonly printWaitCeilingS?: number;
     readonly printBackgroundMode?: 'exit' | 'drain' | 'steer';
     readonly printMaxTurns?: number;
+    readonly bashFileToolHints?: boolean;
   };
   readonly identity?: {
     readonly name?: string;
@@ -264,7 +265,26 @@ export interface RuntimeConfigProjection {
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
   readonly plugins?: { readonly marketplaceUrl?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
-  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
+  readonly agents?: {
+    readonly enabled?: boolean;
+    readonly notify_parent?: boolean;
+    readonly delegation?: { readonly sub?: boolean; readonly independent?: boolean };
+  };
+  readonly loop_control?: {
+    readonly maxStepsPerTurn?: number;
+    readonly maxAttemptsPerStep?: number;
+    readonly subagentContextStrategy?: 'summarize' | 'auto' | 'fresh';
+  };
+  readonly retry?: {
+    readonly maxAttempts?: number;
+    readonly policies?: ReadonlyArray<{
+      readonly match: string;
+      readonly maxAttempts?: number;
+      readonly backoff?: number;
+      readonly retry?: boolean;
+    }>;
+  };
+  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string; readonly keep?: string };
 }
 
 export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfigProjection & {
@@ -360,6 +380,7 @@ export interface RuntimeConfigPatch {
     readonly print_wait_ceiling_s?: number;
     readonly print_background_mode?: 'exit' | 'drain' | 'steer';
     readonly print_max_turns?: number;
+    readonly bash_file_tool_hints?: boolean;
   };
   readonly identity?: {
     readonly name?: string;
@@ -372,7 +393,21 @@ export interface RuntimeConfigPatch {
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
   readonly plugins?: { readonly marketplace_url?: string };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
-  readonly agents?: { readonly enabled?: boolean; readonly notify_parent?: boolean };
+  readonly agents?: {
+    readonly enabled?: boolean;
+    readonly notify_parent?: boolean;
+    readonly delegation?: { readonly sub?: boolean; readonly independent?: boolean };
+  };
+  readonly retry?: {
+    readonly max_attempts?: number;
+    readonly policies?: ReadonlyArray<{
+      readonly match: string;
+      readonly max_attempts?: number;
+      readonly backoff?: number;
+      readonly retry?: boolean;
+    }>;
+  };
+  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string; readonly keep?: string };
 }
 
 export type KikiConfigPatch = Omit<

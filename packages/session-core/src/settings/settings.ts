@@ -827,6 +827,7 @@ export interface RuntimeConfigDraft {
     maxRunningTasks: string;
     keepAliveOnExit: boolean;
     bashAutoBackgroundOnTimeout: boolean;
+    bashFileToolHints: boolean;
     bashTaskTimeoutS: string;
     killGracePeriodMs: string;
     printWaitCeilingS: string;
@@ -838,6 +839,7 @@ export interface RuntimeConfigDraft {
   advertiseAsKimiCode: boolean;
   extraAgentDirs: string[];
   disabledNamedProfiles: string[];
+  skipBuiltinProfileInstallation: string[];
   sessionTitleModel: string;
 }
 
@@ -875,6 +877,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
       maxRunningTasks: optionalNumberDraft(task?.maxRunningTasks),
       keepAliveOnExit: task?.keepAliveOnExit ?? false,
       bashAutoBackgroundOnTimeout: task?.bashAutoBackgroundOnTimeout ?? false,
+      bashFileToolHints: task?.bashFileToolHints ?? true,
       bashTaskTimeoutS: optionalNumberDraft(task?.bashTaskTimeoutS),
       killGracePeriodMs: optionalNumberDraft(task?.killGracePeriodMs),
       printWaitCeilingS: optionalNumberDraft(task?.printWaitCeilingS),
@@ -886,6 +889,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     advertiseAsKimiCode: config.identity?.advertiseAsKimiCode ?? false,
     extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
     disabledNamedProfiles: normalizeConfigStringList(config.disabled_named_profiles),
+    skipBuiltinProfileInstallation: normalizeConfigStringList(config.skip_builtin_profile_installation),
     sessionTitleModel: config.session_title?.model ?? '',
   };
 }
@@ -925,6 +929,7 @@ export function taskRuntimePatch(draft: RuntimeConfigDraft['task']): KikiConfigP
       max_running_tasks: parseOptionalInteger(draft.maxRunningTasks, 'task.max_running_tasks', 1),
       keep_alive_on_exit: draft.keepAliveOnExit,
       bash_auto_background_on_timeout: draft.bashAutoBackgroundOnTimeout,
+      bash_file_tool_hints: draft.bashFileToolHints,
       bash_task_timeout_s: parseOptionalInteger(draft.bashTaskTimeoutS, 'task.bash_task_timeout_s', 0),
       kill_grace_period_ms: parseOptionalInteger(draft.killGracePeriodMs, 'task.kill_grace_period_ms', 0),
       print_wait_ceiling_s: parseOptionalInteger(draft.printWaitCeilingS, 'task.print_wait_ceiling_s', 1),
@@ -2017,13 +2022,13 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'providers', cardId: 'st-card-engines', titleKey: 'st.engines.title', keywordKeys: ['st.engines.intro', 'st.engines.check'], synonyms: ['外部引擎', 'executor', 'harness', 'Codex', 'Claude Code', 'Grok Build', 'ACP'] },
   { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
-  { section: 'tasks', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
+  { section: 'tasks', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
   { section: 'developer', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
-  { section: 'sessions', cardId: 'st-card-agent-messaging', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
+  { section: 'sessions', cardId: 'st-card-agent-messaging', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent', 'st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
   { section: 'developer', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'developer', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
-  { section: 'agents', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
+  { section: 'agents', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles', 'st.agentIdentity.skipBuiltin'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
   { section: 'labs', cardId: 'st-card-labs', titleKey: 'st.labs.indexTitle', keywordKeys: ['st.exp.tag'], synonyms: ['experimental features', '实验特性', '实验功能', 'flags', 'beta', 'labs'] },
   ...EXPERIMENTAL_SEARCH_ENTRIES,
   { section: 'developer', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'], synonyms: ['json', 'config', '配置文件', 'loop_control', 'background'] },
