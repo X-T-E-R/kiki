@@ -150,7 +150,7 @@ disallowedTools:
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `name` | 否 | kebab-case 唯一标识。缺省时取文件名（去掉扩展名，如 `review.md` → `review`）；解析后名字缺失或不是 kebab-case 的文件会被跳过并告警 |
+| `name` | 否 | 由小写字母和数字组成，以单个连字符或下划线分隔的唯一标识（如 `code-reviewer`、`code_reviewer`）。缺省时取去掉扩展名的文件名（如 `review.md` → `review`）；无效文件会被跳过并告警，选择同名的跳过文件时会显示路径和原因 |
 | `description` | 是 | Agent 的用途。main agent 挑选 subagent 时会看到，请围绕委派决策来写 |
 | `whenToUse` | 否 | 补充说明何时应使用该 Agent |
 | `override` | 否 | 遗留覆盖元数据，默认 `false`。胜出者由文件优先级决定；同名用户文件替换已安装的内置副本无需设置此字段 |
@@ -230,7 +230,7 @@ Frontmatter 字段是封闭的：出现 Kiki 不认识的字段时，该文件�
 
 具名 route 在现有 Agent 上增加专用运行方式，但不会创建新的权限身份。启动时在 `config.toml` 中设置 `[experimental] agent-profile-routes = true`，或设置 `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`。
 
-基础 profile 仍放在 `agents/<role>.md`。Route 放在 `agents/.routes/<role>/<route>.md`，规范 ID 为 `<role>.<route>`，每一段都必须是小写 kebab-case。例如 `agents/.routes/reviewer/ui-k3.md` 定义 `reviewer.ui-k3`：
+基础 profile 仍放在 `agents/<role>.md`。Route 放在 `agents/.routes/<role>/<route>.md`，规范 ID 为 `<role>.<route>`，基础 profile 段可用小写连字符或下划线分隔，route 段仍为小写 kebab-case。例如 `agents/.routes/reviewer/ui-k3.md` 定义 `reviewer.ui-k3`：
 
 ```markdown
 ---

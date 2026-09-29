@@ -150,7 +150,7 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `name` | no | Unique identifier in kebab-case. Defaults to the file name without its extension (`review.md` → `review`); a file whose resolved name is missing or not kebab-case is skipped with a warning |
+| `name` | no | Unique identifier with lowercase letters and digits separated by single hyphens or underscores (`code-reviewer`, `code_reviewer`). Defaults to the file name without its extension (`review.md` → `review`); invalid names are skipped with a warning, and selecting a matching skipped file reports its path and reason |
 | `description` | yes | What the agent does. Shown to the main Agent when it picks a sub-agent, so write it to guide delegation decisions |
 | `whenToUse` | no | Extra hint describing when the agent should be used |
 | `override` | no | Legacy override metadata, default `false`. File precedence determines the winner; replacing an installed built-in copy with a same-name user file does not require this field |
@@ -230,7 +230,7 @@ Frontmatter keys are closed: a field Kiki does not recognize makes that file fai
 
 A named route specializes an existing Agent without creating a new permission identity. Enable discovery at startup with `[experimental] agent-profile-routes = true` in `config.toml`, or set `KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`.
 
-Keep the base profile at `agents/<role>.md`. Put routes under `agents/.routes/<role>/<route>.md`; the canonical ID is `<role>.<route>`, with every segment in lowercase kebab-case. For example, `agents/.routes/reviewer/ui-k3.md` defines `reviewer.ui-k3`:
+Keep the base profile at `agents/<role>.md`. Put routes under `agents/.routes/<role>/<route>.md`; the canonical ID is `<role>.<route>`, with a lowercase hyphen/underscore-separated base profile and lowercase kebab-case route segments. For example, `agents/.routes/reviewer/ui-k3.md` defines `reviewer.ui-k3`:
 
 ```markdown
 ---

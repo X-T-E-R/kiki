@@ -52,7 +52,7 @@ The Markdown body is the prompt and must be non-empty.
 
 | Key | Value |
 | --- | --- |
-| `name` | kebab-case profile name |
+| `name` | lowercase profile name; hyphens and underscores separate alphanumeric segments |
 | `source` | relative `.md` path confined to the contribution root |
 | `description` | non-empty string |
 | `whenToUse` | non-empty string |
@@ -98,7 +98,7 @@ Route sidecars are stored under `.routes/<profile>/<route>.md`.
 | Key | Value |
 | --- | --- |
 | `id` | lowercase dotted id whose first segment matches `profile` |
-| `profile` | kebab-case base profile |
+| `profile` | lowercase base profile name; hyphens and underscores separate alphanumeric segments |
 | `description` | non-empty string |
 | `whenToUse` | non-empty string |
 | `prompt_mode` | `inherit`, `prepend`, `append`, or `wrap` |
