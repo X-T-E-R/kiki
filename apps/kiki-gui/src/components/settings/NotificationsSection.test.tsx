@@ -74,7 +74,7 @@ afterEach(async () => {
   for (const container of containers.splice(0)) container.remove();
 });
 
-async function render(settings = SETTINGS): Promise<HTMLDivElement> {
+async function render(settings = SETTINGS, entry = '/settings/notifications'): Promise<HTMLDivElement> {
   api.getSettings.mockResolvedValue(structuredClone(settings));
   const container = document.createElement('div');
   document.body.append(container);
@@ -83,7 +83,7 @@ async function render(settings = SETTINGS): Promise<HTMLDivElement> {
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root.render(<QueryClientProvider client={client}><I18nProvider><MemoryRouter><NotificationsSection /></MemoryRouter></I18nProvider></QueryClientProvider>);
+    root.render(<QueryClientProvider client={client}><I18nProvider><MemoryRouter initialEntries={[entry]}><NotificationsSection /></MemoryRouter></I18nProvider></QueryClientProvider>);
   });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
@@ -146,6 +146,11 @@ describe('NotificationsSection', () => {
     const unavailable = [...container.querySelectorAll('[data-notify-unavailable-provider]')].map((row) => row.getAttribute('data-notify-unavailable-provider'));
     expect(unavailable).toEqual(['windows_toast', 'smtp']);
     expect(container.textContent).not.toContain('Script');
+  });
+
+  it('opens the add form when a search hit or link targets its card', async () => {
+    const container = await render(SETTINGS, '/settings/notifications#st-card-notify-add');
+    expect(container.querySelector('#st-card-notify-add [data-notify-add]')).not.toBeNull();
   });
 
   it('creates the instance and slot first, then the channel', async () => {

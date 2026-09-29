@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import type { NotificationDelivery } from '@kiki/klient';
 import { errorText } from '@kiki/session-core/i18n';
 
@@ -11,7 +12,9 @@ import { ChannelRow } from './notifications/ChannelRow';
 import { isAddable, sortedChannels } from './notifications/model';
 import { NotificationRulesCard } from './notifications/NotificationRulesCard';
 import { useNotificationData } from './notifications/useNotifications';
-import { SectionCard } from './SectionCard';
+import { SectionCard, SettingsFlashContext } from './SectionCard';
+
+const ADD_CARD = 'st-card-notify-add';
 
 /**
  * Settings → Notifications & messages (nb-IM). Rules every channel shares on
@@ -22,8 +25,13 @@ import { SectionCard } from './SectionCard';
 export function NotificationsSection() {
   const { t, locale } = useI18n();
   const { settings, providers, deliveries } = useNotificationData();
-  const [adding, setAdding] = useState(false);
+  const { hash } = useLocation();
+  const flashId = useContext(SettingsFlashContext);
+  const target = hash === `#${ADD_CARD}` || flashId === ADD_CARD;
+  const [adding, setAdding] = useState(target);
   const [opened, setOpened] = useState<string | null>(null);
+  // A search hit or deep link to the add card opens the form it points at.
+  useEffect(() => { if (target) setAdding(true); }, [target]);
 
   if (settings.isError || providers.isError) {
     return <FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} />;
