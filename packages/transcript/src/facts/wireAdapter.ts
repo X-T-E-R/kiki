@@ -34,6 +34,7 @@ interface PendingSteerMedia {
   readonly kind: 'image' | 'video' | 'audio';
   readonly source?: AttachmentSource;
   readonly name?: string;
+  readonly size?: number;
 }
 
 export interface PendingSteer {
@@ -1050,6 +1051,7 @@ export class TranscriptWireAdapter {
           attachmentId,
           mediaType: `${media.kind}/*`,
           name: media.name,
+          size: media.size,
           source: media.source,
           owner: { kind: 'turn', turnId },
         },
@@ -1144,6 +1146,7 @@ export class TranscriptWireAdapter {
             attachmentId,
             mediaType: `${media.kind}/*`,
             name: media.name,
+            size: media.size,
             source: media.source,
             owner: { kind: 'frame', turnId, stepId, frameId: steer.promptId },
           },
@@ -1254,6 +1257,7 @@ export class TranscriptWireAdapter {
             attachmentId,
             mediaType: `${media.kind}/*`,
             name: media.name,
+            size: media.size,
             source: media.source,
             owner: { kind: 'turn', turnId },
           },
@@ -1361,7 +1365,7 @@ export class TranscriptWireAdapter {
       operations.push({
         op: 'attachment.upsert',
         attachment: {
-          attachmentId, mediaType: `${media.kind}/*`, name: media.name, source: media.source,
+          attachmentId, mediaType: `${media.kind}/*`, name: media.name, size: media.size, source: media.source,
           owner: turn?.message?.messageId === messageId ? { kind: 'turn', turnId: turn.turnId }
             : turnId === undefined || stepId === undefined ? undefined : { kind: 'frame', turnId, stepId, frameId: messageId },
         },
@@ -2201,6 +2205,7 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
       readonly kind: 'image' | 'video' | 'audio';
       readonly source?: AttachmentSource;
       readonly name?: string;
+      readonly size?: number;
     }
   | undefined {
   const type = stringOf(value?.['type']);
@@ -2223,10 +2228,11 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
   const key = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : 'audioUrl';
   const ref = type.endsWith('_url') ? objectOf(value?.[key]) : objectOf(value?.['source']);
   const name = stringOf(ref?.['name']) ?? stringOf(value?.['name']);
+  const size = numberOf(ref?.['size']) ?? numberOf(value?.['size']);
   const fileId = stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
-  if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId }, name };
+  if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId }, name, size };
   const url = stringOf(ref?.['url']);
-  if (url === undefined) return { kind, source: undefined, name };
+  if (url === undefined) return { kind, source: undefined, name, size };
   const daemonRef = /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
   return {
     kind,
@@ -2235,7 +2241,27 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
         ? { kind: 'url', url }
         : { kind: 'session_media', fileId: daemonRef },
     name,
+    size: size ?? dataUrlSize(url),
   };
+}
+
+function dataUrlSize(url: string): number | undefined {
+  if (!url.startsWith('data:')) return undefined;
+  const comma = url.indexOf(',');
+  if (comma < 0) return undefined;
+  const metadata = url.slice(5, comma).toLowerCase();
+  const payload = url.slice(comma + 1);
+  if (metadata.includes(';base64')) {
+    const normalized = payload.replaceAll(/\s/g, '');
+    if (!/^[a-z0-9+/]*={0,2}$/iu.test(normalized)) return undefined;
+    const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0;
+    return Math.max(0, Math.floor(normalized.length * 3 / 4) - padding);
+  }
+  try {
+    return new TextEncoder().encode(decodeURIComponent(payload)).byteLength;
+  } catch {
+    return undefined;
+  }
 }
 
 function mediaPartsOf(values: readonly unknown[]): PendingSteerMedia[] {

@@ -511,7 +511,7 @@ describe('AgentTranscript', () => {
       {
         op: 'attachment.upsert',
         attachment: {
-          attachmentId: 'a1', mediaType: 'image/png',
+          attachmentId: 'a1', mediaType: 'image/png', name: 'large.png', size: 4096,
           source: { kind: 'url', url: `data:image/png;base64,${'A'.repeat(32)}` },
         },
       },
@@ -539,7 +539,8 @@ describe('AgentTranscript', () => {
     });
     expect(snapshot.taskRefs).toEqual([{ kind: 'task', taskId: 'task-2' }]);
     expect(snapshot.attachments[0]).toMatchObject({
-      attachmentId: 'a1', detailRef: { kind: 'attachment', attachmentId: 'a1' },
+      attachmentId: 'a1', name: 'large.png', size: 4096,
+      detailRef: { kind: 'attachment', attachmentId: 'a1' },
     });
     expect(snapshot.attachments[0]?.source).toBeUndefined();
     expect(snapshot.prompts[0]).toMatchObject({ detailRef: { kind: 'prompt', promptId: 'p1' } });

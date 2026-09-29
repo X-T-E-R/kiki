@@ -952,6 +952,27 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getAttachment('t0.att3')?.name).toBeUndefined();
   });
 
+  it('derives inline media size while preserving explicit media metadata', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-inline-size',
+        input: [
+          { type: 'text', text: 'look' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AQIDBA==', name: 'tiny.png' } },
+        ],
+        origin: { kind: 'user' },
+      },
+    ]);
+
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({
+      name: 'tiny.png',
+      size: 4,
+      source: { kind: 'url', url: 'data:image/png;base64,AQIDBA==' },
+    });
+  });
+
   it('keeps legacy mailbox deliveries inside the proven active turn without consuming turn ids', () => {
     const mailbox = (id: string, time: number): TranscriptWireRecord => ({
       type: 'context.append_message', time,

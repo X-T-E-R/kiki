@@ -878,6 +878,53 @@ export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+export const transcriptDetailListQuerySchema = z
+  .object({
+    agent_id: agentIdSchema,
+    kind: z.enum(['task', 'attachment', 'prompt']),
+    cursor: z.string().min(1).max(4096).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .superRefine((value, ctx) => {
+    if (!isPlainAgentId(value.agent_id)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'agent_id must be a plain agent id (no path separators)',
+        path: ['agent_id'],
+      });
+    }
+  });
+
+export const transcriptDetailListResponseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('task'),
+    items: z.array(transcriptTaskSchema),
+    has_more: z.boolean(),
+    next_cursor: z.string().min(1).optional(),
+  }),
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('attachment'),
+    items: z.array(attachmentSchema),
+    has_more: z.boolean(),
+    next_cursor: z.string().min(1).optional(),
+  }),
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('prompt'),
+    items: z.array(transcriptPromptSchema),
+    has_more: z.boolean(),
+    next_cursor: z.string().min(1).optional(),
+  }),
+]);
+
+export type TranscriptDetailListQuery = z.infer<typeof transcriptDetailListQuerySchema>;
+export type TranscriptDetailListResponse = z.infer<typeof transcriptDetailListResponseSchema>;
+
 export const transcriptResetPayloadSchema = z.object({
   session_id: z.string().min(1),
   agent_id: agentIdSchema,
