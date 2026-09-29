@@ -23,7 +23,7 @@ export interface DirectChildAgent {
 export function agentNameIssue(value: string): string | undefined {
   if (value === RESERVED_AGENT_NAME) return `"${RESERVED_AGENT_NAME}" is reserved`;
   if (!AGENT_NAME_PATTERN.test(value)) {
-    return 'must match ^[a-z0-9_]+$';
+    return 'must match ^[a-z0-9_]+$; profile names may contain hyphens, but running agent names cannot';
   }
   return undefined;
 }

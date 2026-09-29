@@ -5,8 +5,15 @@ import {
   COLLABORATION_TASK_NAME_LABEL,
 } from '#/session/agentCollaboration/registry';
 import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { agentNameIssue } from '#/session/agentCollaboration/directChildren';
 
 describe('AgentCollaborationRegistry', () => {
+  it('explains why a hyphenated profile name is not a running agent name', () => {
+    expect(agentNameIssue('code-reviewer')).toMatch(/profile names may contain hyphens.*running agent names cannot/u);
+    expect(agentNameIssue('code_reviewer')).toBeUndefined();
+    expect(agentNameIssue('root')).toContain('reserved');
+  });
+
   it('reserves against both the canonical and migration task-name labels', async () => {
     const agents: Record<string, AgentMeta> = {
       canonical: {
