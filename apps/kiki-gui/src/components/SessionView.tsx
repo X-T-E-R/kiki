@@ -106,6 +106,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
 import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
+import { AnnotationTray } from './AnnotationTray';
 import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { pushToast } from '../lib/toasts';
@@ -1250,6 +1251,9 @@ export function SessionView({
   const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
   const handleRemoveAnnotation = useCallback((id: string) => {
     setAnnotations((current) => removeAnnotation(current, id));
+  }, []);
+  const handleUpdateAnnotation = useCallback((id: string, comment: string) => {
+    setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
   const controller = useActiveController(sessionId, selectedAgentId);
@@ -3019,6 +3023,13 @@ export function SessionView({
               <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
                 onConfirm={handleRecoveryConfirm} />
             ) : null}
+            <AnnotationTray
+              sessionId={sessionId}
+              blocks={mainTranscriptBlocks}
+              pending={queueEdit === null ? annotations : []}
+              onUpdatePending={handleUpdateAnnotation}
+              onRemovePending={handleRemoveAnnotation}
+            />
             <NeedsYouTray
               ref={trayRef}
               items={trayItems}
