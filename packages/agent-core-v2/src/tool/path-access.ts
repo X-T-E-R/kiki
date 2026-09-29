@@ -116,7 +116,8 @@ function isWin32DriveRelative(path: string): boolean {
 }
 
 export function normalizeUserPath(path: string, pathClass: PathClass = DEFAULT_PATH_CLASS): string {
-  return pathClass === 'win32' ? translateShellDrivePath(path) : path;
+  if (pathClass !== 'win32' || !/^\/(?:[A-Za-z]:\/|cygdrive\/[A-Za-z](?:\/|$))/.test(path)) return path;
+  return translateShellDrivePath(path);
 }
 
 function expandUserPath(path: string, homeDir: string | undefined, pathClass: PathClass): string {

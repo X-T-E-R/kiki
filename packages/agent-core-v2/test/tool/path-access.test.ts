@@ -127,6 +127,20 @@ describe('resolvePathAccess shell path bridge', () => {
     expect(result).toBe('/tmp/scratch.txt');
   });
 
+  it('does not reinterpret a POSIX root under non-bash shells as a Windows drive', () => {
+    const result = resolvePathAccessPath('/a/project/file.txt', {
+      env: { ...WIN_ENV, shellName: 'sh' as const },
+      workspace: { workspaceDir: 'C:\\workspace', additionalDirs: [] },
+      operation: 'read',
+    });
+    expect(result).toBe('/a/project/file.txt');
+    expect(resolvePathAccessPath('/cygdrive/c/workspace/file.txt', {
+      env: { ...WIN_ENV, shellName: 'sh' as const },
+      workspace: { workspaceDir: 'C:\\workspace', additionalDirs: [] },
+      operation: 'read',
+    })).toBe('C:/workspace/file.txt');
+  });
+
   it('normalizes through an explicitly injected shell path bridge', () => {
     const bridge: ShellPathBridge = {
       toShellPath: (p) => p,
