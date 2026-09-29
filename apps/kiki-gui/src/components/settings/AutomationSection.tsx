@@ -208,9 +208,6 @@ function HooksCard() {
         <Hint>{t('st.hooks.hint')}</Hint>
         {configQuery.isLoading ? <Hint>{t('st.runtime.loading')}</Hint> : null}
         <fieldset disabled={saving || configQuery.data === undefined} className="min-w-0 space-y-3">
-          <div className="flex justify-end">
-            <button type="button" className="text-[12px] font-medium text-accent-ink hover:underline" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
-          </div>
           {advanced ? (
             <textarea className={`${INPUT} min-h-48 font-mono`} value={draft} onChange={(event) => { setDraft(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.hooks.aria')} />
           ) : (
@@ -245,9 +242,13 @@ function HooksCard() {
                   <button type="button" className={DANGER_GHOST_BUTTON} aria-label={t('st.hooks.removeRule', { rule: index + 1 })} onClick={() => edit(rules.filter((_, i) => i !== index))}>{t('st.hooks.remove')}</button>
                 </fieldset>
               ))}
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button>
             </>
           )}
+          {/* The editor switch shares the Add rule row, so it reads as a second way to edit the same list. */}
+          <div className="flex flex-wrap items-center gap-3">
+            {!advanced ? <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button> : null}
+            <button type="button" data-hooks-editor-switch className="ml-auto text-[12px] font-medium text-accent-ink hover:underline" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
+          </div>
           <SettingsDraftFooter saved={justSaved} id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
             onDiscard={() => { const json = JSON.stringify(configQuery.data?.hooks ?? [], null, 2); setDraft(json); try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); } setDirty(false); setFeedback(null); }} />
         </fieldset>
