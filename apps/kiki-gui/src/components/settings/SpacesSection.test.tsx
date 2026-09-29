@@ -9,6 +9,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureSpaceStorage } from '@kiki/session-core/storage';
@@ -78,7 +79,7 @@ async function flush() {
   await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-async function render(node: React.ReactNode) {
+async function render(node: React.ReactNode, entries: string[] = ['/settings/spaces']) {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -86,7 +87,7 @@ async function render(node: React.ReactNode) {
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root.render(<QueryClientProvider client={client}><I18nProvider>{node}</I18nProvider></QueryClientProvider>);
+    root.render(<MemoryRouter initialEntries={entries}><QueryClientProvider client={client}><I18nProvider>{node}</I18nProvider></QueryClientProvider></MemoryRouter>);
   });
   await flush();
   return container;
@@ -106,6 +107,11 @@ async function type(selector: string, value: string) {
 }
 
 describe('SpacesSection in the main space', () => {
+  it('opens create when arriving from the sidebar with ?new=1', async () => {
+    await render(<SpacesSection />, ['/settings/spaces?new=1']);
+    expect(document.querySelector('[data-space-create]')).not.toBeNull();
+  });
+
   it('lists spaces with current, running, not-started and pending marks', async () => {
     await render(<SpacesSection />);
     expect(document.querySelector('[data-space-row="main"]')?.getAttribute('data-space-state')).toBe('current');

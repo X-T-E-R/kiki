@@ -5449,4 +5449,6 @@ export const en = {
   'sidebar.space.otherPending.other': '{count} sessions in other spaces need you',
   'sidebar.space.openWindow': 'Open window',
   'sidebar.space.starting': 'Starting {name}…',
+  'sidebar.space.new': 'New space…',
+  'sidebar.space.singleHint': 'Keep a project’s conversations, memory and workspaces apart.',
 } as const;

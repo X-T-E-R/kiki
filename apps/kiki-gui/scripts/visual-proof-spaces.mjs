@@ -33,8 +33,8 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function boot({ page, webUrl, fixtureUrl }, windowMode = 'switch') {
-  await page.context().addInitScript(spaceDesktopMock, { fixtureUrl, token: FIXTURE_TOKEN, spaces: SPACES, windowMode });
+async function boot({ page, webUrl, fixtureUrl }, windowMode = 'switch', spaces = SPACES) {
+  await page.context().addInitScript(spaceDesktopMock, { fixtureUrl, token: FIXTURE_TOKEN, spaces, windowMode });
   await page.goto(`${webUrl}/new`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-session-sidebar]', { timeout: 30_000 });
 }
@@ -50,6 +50,42 @@ async function waitReload(page, selector) {
   await page.waitForEvent('load', { timeout: 20_000 }).catch(() => undefined);
   await page.waitForSelector(selector, { timeout: 30_000 });
   await page.waitForTimeout(400);
+}
+
+/**
+ * Layout checks for the wordmark trigger: it stays inside the header row, the
+ * search and activity icons stay fully visible, a long space name truncates
+ * instead of pushing them out, and an open menu fits the viewport.
+ */
+async function checkTrigger(page, label) {
+  const report = await page.evaluate(() => {
+    const box = (element) => element?.getBoundingClientRect() ?? null;
+    const trigger = document.querySelector('[data-space-switcher]');
+    const row = trigger?.closest('.h-12');
+    const search = box(document.querySelector('[data-search-toggle]'));
+    const bell = box(document.querySelector('[data-nav-activity]'));
+    const name = document.querySelector('[data-space-switcher-name]');
+    const menu = box(document.querySelector('[data-space-switcher-menu]'));
+    return {
+      trigger: box(trigger), row: box(row), search, bell,
+      nameClipped: name === null ? null : name.scrollWidth > name.clientWidth,
+      nameWidth: name?.clientWidth ?? null,
+      menu, viewport: { width: window.innerWidth, height: window.innerHeight },
+      focusOutline: document.activeElement === trigger ? getComputedStyle(trigger).outlineStyle : null,
+      chevron: getComputedStyle(trigger.querySelector('svg:last-of-type')).color,
+      nameColor: name === null ? null : getComputedStyle(name).color,
+      surface: getComputedStyle(trigger.closest('[data-session-sidebar]') ?? document.body).backgroundColor,
+    };
+  });
+  const { trigger, row, search, bell, menu, viewport } = report;
+  expect(trigger !== null && row !== null, `${label}: trigger missing`);
+  expect(trigger.left >= row.left - 0.5 && trigger.right <= search.left + 0.5, `${label}: trigger overlaps search (${trigger.right} > ${search.left})`);
+  expect(bell.right <= row.right + 0.5 && search.width >= 28, `${label}: header icons pushed out`);
+  if (menu !== null) {
+    expect(menu.left >= 0 && menu.right <= viewport.width && menu.bottom <= viewport.height, `${label}: menu leaves the viewport`);
+  }
+  console.log(`[trigger] ${label} ${JSON.stringify({ w: Math.round(trigger.width), name: report.nameWidth, clipped: report.nameClipped, focus: report.focusOutline, chevron: report.chevron, text: report.nameColor, surface: report.surface })}`);
+  return report;
 }
 
 async function openSidebar(page, width) {
@@ -104,6 +140,17 @@ async function walk(context) {
   await openSettings(page, webUrl, '[data-space-overrides]');
   await shot('spaces-sub');
 
+  // The wordmark menu from inside a space: no New space…, manage only.
+  await openSidebar(page, view.width);
+  await page.click('[data-space-switcher]');
+  await page.waitForSelector('[data-space-switcher-menu]');
+  expect(await page.locator('[data-space-new-entry]').count() === 0, 'a space must not offer New space…');
+  await checkTrigger(page, `sub-open ${view.width}`);
+  await shot('spaces-switcher-sub');
+  await page.keyboard.press('Escape');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`[data-space-switcher="${SPACE_ACME}"]`, { timeout: 30_000 });
+
   // Back to the main space.
   await openSidebar(page, view.width);
   await page.click('[data-space-switcher]');
@@ -119,6 +166,7 @@ async function dialogs(context) {
   await openSidebar(page, view.width);
   await page.click('[data-space-switcher]');
   await page.waitForSelector('[data-space-switcher-menu]');
+  await checkTrigger(page, `multi-open ${view.width}`);
   await shot('spaces-switcher');
   await page.keyboard.press('Escape');
 
@@ -164,9 +212,35 @@ async function windowsMode(context) {
   await shot('spaces-switcher-windows');
 }
 
+/** A single-home user: the wordmark is the only space UI, and it leads to create. */
+async function single(context) {
+  const { page, view, shot } = context;
+  await boot(context, 'switch', [SPACES[0]]);
+  await openSidebar(page, view.width);
+  await page.waitForTimeout(300);
+  expect(await page.locator('[data-space-switcher-name]').count() === 0, 'single home must not name a space');
+  await checkTrigger(page, `single-closed ${view.width}`);
+  await shot('spaces-single-closed');
+  await page.focus('[data-space-switcher]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('[data-space-switcher-menu] [data-space-new-entry]');
+  await checkTrigger(page, `single-menu ${view.width}`);
+  await shot('spaces-single-menu');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => document.activeElement?.hasAttribute('data-space-switcher')) === true, 'focus must return to the wordmark');
+  expect((await checkTrigger(page, `single-focus ${view.width}`)).focusOutline === 'solid', 'focus ring missing');
+  await shot('spaces-single-focus');
+  await page.keyboard.press('Enter');
+  await page.click('[data-space-new-entry]');
+  await page.waitForSelector('[data-space-create]', { timeout: 20_000 });
+  expect(!page.url().includes('new=1'), `create flag should be dropped: ${page.url()}`);
+}
+
 const scenarios = [
   { name: 'spaces-walk', fixture: 'spaces', matrix: ['theme', 'width'], run: walk },
   { name: 'spaces-dialogs', fixture: 'spaces', matrix: ['theme', 'width'], run: dialogs },
+  { name: 'spaces-single', fixture: 'spaces-single', matrix: ['theme', 'width'], run: single },
   { name: 'spaces-windows', fixture: 'spaces', matrix: ['theme'], run: windowsMode },
 ];
 

@@ -5401,4 +5401,6 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'sidebar.space.otherPending.other': '其他空间有 {count} 个会话需要你处理',
   'sidebar.space.openWindow': '在新窗口打开',
   'sidebar.space.starting': '正在启动 {name}…',
+  'sidebar.space.new': '新建空间…',
+  'sidebar.space.singleHint': '把某个项目的对话、记忆和工作区分开存放。',
 };

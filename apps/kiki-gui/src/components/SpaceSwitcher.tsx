@@ -25,15 +25,17 @@ import { useConnection } from '../state/connection';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { SpaceDot } from './settings/spaces/SpaceDot';
+import { Wordmark } from './Wordmark';
 
 const MENU_WIDTH = 296;
 
 /**
- * §6.4 / §9.4: the sidebar's space identity and switcher. Hidden while the
- * main space is the only one (existing users see nothing new). Inside a space
- * the chip is always there, in the space's color. The ▾ count is the other
- * spaces' approvals and questions (this space's own are already in Activity).
- * Ctrl+Alt+1…9 opens the Nth space.
+ * §6.4 / §9.4: the sidebar wordmark is the one space entry. It is always a
+ * menu button, so a single-home user can discover "New space…" without an
+ * extra row; the quiet chevron stays visible because touch has no hover.
+ * Inside a space the wordmark is followed by the space's color and name. The
+ * count is the other spaces' approvals and questions (this space's own are
+ * already in Activity). Ctrl+Alt+1…9 opens the Nth space once there are two.
  */
 export function SpaceSwitcher() {
   const { client } = useConnection();
@@ -49,8 +51,10 @@ export function SpaceSwitcher() {
   const here = currentSpace();
   const items = spaces.data ?? [];
   const others = items.filter((item) => item.id !== MAIN_SPACE_ID);
-  const visible = here !== null || others.length > 0;
-  const ordered = [...items.filter((item) => item.id === MAIN_SPACE_ID), ...others];
+  // An old server (or no REST) still gets the menu: main space, new, manage.
+  const mainItem = items.find((item) => item.id === MAIN_SPACE_ID) ?? ({ id: MAIN_SPACE_ID, name: MAIN_SPACE_ID } as SpaceListItem);
+  const ordered = [mainItem, ...others];
+  const multi = ordered.length > 1;
   // Windows mode: each space window carries its own taskbar badge, and the
   // desktop cannot read other processes' counts (§9.4).
   const pending = mode === 'switch' ? otherSpacesPending(statuses.data) : 0;
@@ -75,7 +79,7 @@ export function SpaceSwitcher() {
 
   // Window-level shortcut, never a global hotkey: Ctrl+Alt+1…9 → Nth space.
   useEffect(() => {
-    if (!visible) return undefined;
+    if (!multi) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey) return;
       const digit = /^Digit([1-9])$/.exec(event.code)?.[1];
@@ -87,31 +91,35 @@ export function SpaceSwitcher() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [visible, ordered]);
+  }, [multi, ordered]);
 
-  if (!visible) return null;
-  const color = here?.color;
   const title = pending > 0 ? `${t('sidebar.space.switcherAria')} · ${tp('sidebar.space.otherPending', pending)}` : t('sidebar.space.switcherAria');
+  const enteringName = entering === null ? null : label(items.find((item) => item.id === entering) ?? { id: entering, name: entering } as SpaceListItem);
+  const shownName = enteringName !== null ? t('sidebar.space.starting', { name: enteringName }) : here === null ? null : currentName;
 
   return (
     <>
       <button ref={triggerRef} type="button" data-space-switcher={currentSpaceId()} aria-haspopup="menu" aria-expanded={open}
-        aria-label={`${currentName} · ${title}`} title={title}
+        aria-label={`kiki · ${currentName} · ${title}`} title={title}
         onClick={() => { setOpen((value) => !value); }}
-        className="group flex h-9 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-        style={color === undefined ? undefined : { boxShadow: `inset 2px 0 0 ${color}` }}>
-        <SpaceDot color={here === null ? 'var(--color-ink-faint)' : color} />
-        <span className={`min-w-0 flex-1 truncate ${here === null ? 'text-ink-soft' : 'font-medium'}`}>
-          {entering !== null ? t('sidebar.space.starting', { name: label(items.find((item) => item.id === entering) ?? { id: entering, name: entering } as SpaceListItem) }) : currentName}
-        </span>
+        className="group -ml-2 flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+        <span aria-hidden className="shrink-0"><Wordmark /></span>
+        {shownName !== null ? (
+          <>
+            {/* The space's dot doubles as the separator from the wordmark. */}
+            {here !== null ? <SpaceDot color={here.color} className="ml-1" /> : null}
+            <span data-space-switcher-name title={shownName} className="min-w-0 truncate text-[13px] font-medium">{shownName}</span>
+          </>
+        ) : null}
         {pending > 0 ? (
           <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums leading-[18px] text-on-accent">{pending}</span>
         ) : null}
-        <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-aria-expanded:-rotate-90" />
+        <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-hover:text-ink-soft group-aria-expanded:-rotate-90" />
       </button>
       {open ? (
         <SpaceMenu anchor={triggerRef.current} onClose={() => { setOpen(false); }}>
           <p className="px-2.5 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('sidebar.space.menuTitle')}</p>
+          {multi ? null : <p data-space-single-hint className="px-2.5 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.singleHint')}</p>}
           {ordered.map((space, index) => {
             const run = spaceRunState(space.id, statuses.data);
             const count = spaceStatus(space.id, statuses.data)?.pendingCount ?? 0;
@@ -136,11 +144,19 @@ export function SpaceSwitcher() {
                 {count > 0 && !current && mode === 'switch' ? (
                   <span className="shrink-0 rounded-full bg-attention-soft px-1.5 text-[11px] font-medium tabular-nums text-attention" aria-label={tp('st.spaces.pending', count)}>{count}</span>
                 ) : null}
-                {index < 9 ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline">⌃⌥{index + 1}</kbd> : null}
+                {index < 9 && multi ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline">⌃⌥{index + 1}</kbd> : null}
               </button>
             );
           })}
           <div className="mx-1 my-1 border-t border-hairline" />
+          {here === null ? (
+            <button type="button" role="menuitem" data-space-new-entry
+              onClick={() => { setOpen(false); navigate('/settings/spaces?new=1'); }}
+              className="flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
+              <Icon name="plus" size={14} className="shrink-0 text-ink-soft" />
+              {t('sidebar.space.new')}
+            </button>
+          ) : null}
           <button type="button" role="menuitem" data-space-manage
             onClick={() => { setOpen(false); navigate('/settings/spaces'); }}
             className="flex h-9 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink-soft outline-none transition-colors hover:bg-paper hover:text-ink focus-visible:bg-paper">

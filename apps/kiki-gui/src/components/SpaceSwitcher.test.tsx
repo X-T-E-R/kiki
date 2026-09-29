@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 /**
- * Sidebar space switcher (§6.4, §9.4): hidden for a single-home user, lists
+ * Sidebar space switcher (§6.4, §9.4): the wordmark is always the menu
+ * button (single-home users find New space… there), it lists
  * current / running / not started with other spaces' pending counts, enters a
  * space through the desktop, and Ctrl+Alt+N picks the Nth space.
  */
@@ -62,10 +63,27 @@ const TWO = { items: [
 ] };
 
 describe('SpaceSwitcher', () => {
-  it('renders nothing while the main space is the only one', async () => {
+  it('keeps the wordmark a menu button with New space… for a single-home user', async () => {
     list.mockResolvedValue({ items: [TWO.items[0]] });
-    const container = await render();
-    expect(container.innerHTML).toBe('');
+    await render();
+    const trigger = document.querySelector<HTMLButtonElement>('[data-space-switcher="main"]');
+    expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger?.querySelector('[data-space-switcher-name]')).toBeNull();
+    await act(async () => { trigger!.click(); });
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('[data-space-single-hint]')).not.toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-new-entry]')!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/settings/spaces?new=1');
+  });
+
+  it('still offers the menu when the server cannot list spaces', async () => {
+    list.mockRejectedValue(new Error('404'));
+    await render();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+    expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(1);
+    expect(document.querySelector('[data-space-new-entry]')).not.toBeNull();
+    expect(document.querySelector('[data-space-manage]')).not.toBeNull();
   });
 
   it('shows other spaces’ pending count and per-space state', async () => {
@@ -84,7 +102,14 @@ describe('SpaceSwitcher', () => {
     configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#0f766e' });
     list.mockResolvedValue(TWO);
     await render();
-    expect(document.querySelector('[data-space-switcher]')?.textContent).toContain('ACME');
+    const trigger = document.querySelector<HTMLButtonElement>('[data-space-switcher="h-a"]')!;
+    expect(trigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('ACME');
+    expect(trigger.querySelector('[data-space-dot]')).not.toBeNull();
+    expect(trigger.getAttribute('aria-label')).toContain('kiki · ACME');
+    await act(async () => { trigger.click(); });
+    expect(document.querySelector('[data-space-new-entry]')).toBeNull();
+    expect(document.querySelector('[data-space-manage]')).not.toBeNull();
+    await act(async () => { trigger.click(); });
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit1', ctrlKey: true, altKey: true })); });
     expect(host.openSpace).toHaveBeenCalledWith('main');
   });

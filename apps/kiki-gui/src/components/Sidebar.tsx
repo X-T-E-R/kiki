@@ -85,7 +85,6 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
-import { Wordmark } from './Wordmark';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
 
@@ -679,9 +678,10 @@ export function Sidebar({
       />
       {/* Wordmark row doubles as the utility row: search and activity are two
           quiet icons, so the vertical space a permanent search field used to
-          take belongs to the session list. */}
+          take belongs to the session list. The wordmark itself is the space
+          menu (§6.4) and carries the current space's color and name. */}
       <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
-        <div className="min-w-0 flex-1"><Wordmark /></div>
+        <div className="min-w-0 flex-1"><SpaceSwitcher /></div>
         <button
           type="button"
           data-search-toggle
@@ -717,8 +717,6 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Space identity + switcher (§6.4): renders nothing for a single-home user. */}
-      <div className="px-2 pb-1 empty:hidden" data-sidebar-space><SpaceSwitcher /></div>
       <div className="space-y-1 px-2 pb-3">
         {/* The surface's one primary action, set as a raised paper chip — the
             same lift as the content sheet — so it reads as the first thing to

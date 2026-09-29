@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import type { UpdateSpaceResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -133,6 +134,17 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const [entering, setEntering] = useState<string | null>(null);
   const desktop = host.kind === 'tauri';
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // The sidebar's "New space…" lands here with ?new=1: open create once, then
+  // drop the flag so back/refresh does not reopen it.
+  const wantsCreate = !sub && new URLSearchParams(location.search).get('new') === '1';
+  useEffect(() => {
+    if (!wantsCreate) return;
+    setDialog({ kind: 'create' });
+    void navigate(location.pathname, { replace: true });
+  }, [wantsCreate, navigate, location.pathname]);
 
   const items = spaces.data ?? [];
   const main = items.find((item) => item.id === MAIN_SPACE_ID);
