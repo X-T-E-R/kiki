@@ -311,10 +311,21 @@ export async function agentCapabilities(
   const workspace = await acquireWorkspaceProfileCatalog(core, query);
   if (workspace === undefined) return 'workspace-not-found';
   try {
-    const defaultProfile = workspace.catalog.snapshot().defaultProfile;
-    const profile = workspace.catalog.get(query.profile)
-      ?? (defaultProfile?.name === query.profile ? defaultProfile : undefined);
-    if (profile === undefined || profile.main !== true) return 'profile-not-found';
+    const snapshot = workspace.catalog.snapshot();
+    const defaultProfile = snapshot.defaultProfile;
+    const caller = query.caller_profile === undefined ? undefined
+      : workspace.catalog.get(query.caller_profile)
+        ?? (defaultProfile?.name === query.caller_profile ? defaultProfile : undefined);
+    if (query.caller_profile !== undefined && caller === undefined) return 'profile-not-found';
+    const scoped = caller?.definitionId === undefined ? undefined
+      : snapshot.scopedBindings.get(caller.definitionId)?.get(query.profile);
+    const profile = scoped === undefined
+      ? workspace.catalog.get(query.profile)
+        ?? (defaultProfile?.name === query.profile ? defaultProfile : undefined)
+      : scoped.status === 'ready' && scoped.profile !== undefined
+        ? { ...scoped.profile, name: scoped.alias }
+        : undefined;
+    if (profile === undefined) return 'profile-not-found';
     const policy = { profile, global: core.accessor.get(IConfigService).get<GlobalToolsPolicy>('tools') };
     const available = isToolActiveComposed(policy, 'AgentRun');
     const unavailable_reason = available ? undefined : 'AgentRun is disabled by the draft profile or global tool policy';
@@ -327,18 +338,19 @@ export async function agentCapabilities(
         spawnPolicy: profile.spawnConstraints },
       profiles: workspace.catalog.list().filter((candidate) => candidate.main !== true),
       routes: workspace.catalog.listRoutes(),
-      snapshot: workspace.catalog.snapshot(),
+      snapshot,
     };
+    const position = profile.main === true ? 'main' : 'sub';
     return {
       context: 'draft', owner: { profile: profile.name }, available, unavailable_reason, unavailable_reason_code,
-      targets: project(core, input, 'main').map((target) => ({ ...target,
+      targets: project(core, input, position).map((target) => ({ ...target,
         launch_allowed: target.launch_allowed === false || !available ? false : undefined,
         launch_unavailable_reason: target.launch_unavailable_reason ?? unavailable_reason,
         launch_unavailable_reason_code: target.launch_unavailable_reason_code
           ?? unavailable_reason_code })),
       profile: {
         name: profile.name, description: profile.description,
-        source: workspace.catalog.inspect(profile.name)?.sourceId,
+        source: workspace.catalog.inspect(profile.name)?.sourceId ?? profile.fileDefinition?.source,
         source_file: profile.sourcePath, definition_id: profile.definitionId,
         model: profile.modelAlias, model_source: profile.modelAlias === undefined ? undefined : 'profile',
         thinking_effort: profile.thinkingEffort,
@@ -348,7 +360,7 @@ export async function agentCapabilities(
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
         subagent_policy: profile.subagentPolicy ?? withDispatchPolicyDefaults(
-          core.accessor.get(IConfigService), profile, 'main').defaultPolicy,
+          core.accessor.get(IConfigService), profile, position).defaultPolicy,
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);
@@ -397,18 +409,28 @@ function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog
     models: core.accessor.get(IModelService), modelCatalog: core.accessor.get(IModelCatalog),
     config: core.accessor.get(IConfigService), executors: core.accessor.get(IAgentExecutorRegistry),
     protocols: core.accessor.get(IProtocolAdapterRegistry),
-  }).map((target) => ({
-    profile: target.profile, route: target.route, description: target.description, executor: target.executor,
-    model_alias: target.modelAlias, model_source: target.modelSource,
-    thinking_effort: target.thinkingEffort, effort_source: target.effortSource,
-    dispatch_policy: target.dispatchPolicy, recommendation_status: target.recommendationStatus,
-    advisory_deviation: target.advisoryDeviation,
-    defaults_available: target.defaultsAvailable,
-    binding_advisories: projectBindingAdvisories(target.bindingAdvisories),
-    unavailable_reason: target.unavailableReason,
-    unavailable_reason_code: target.unavailableReasonCode,
-    launch_allowed: target.dispatchAllowed,
-    launch_unavailable_reason: target.dispatchAllowed ? undefined : 'Blocked by strict subagent policy',
-    launch_unavailable_reason_code: target.dispatchAllowed ? undefined : 'strict_subagent_policy_blocked',
-  }));
+  }).map((target) => {
+    const catalog = input.catalog as ISessionAgentProfileCatalog;
+    const scoped = input.snapshot?.scopedBindings.get(input.caller.profileDefinitionId ?? '')?.get(target.profile);
+    const profile = scoped?.profile ?? catalog.get(target.profile);
+    return {
+      profile: target.profile,
+      caller_profile: input.caller.profileName,
+      source: catalog.inspect(target.profile)?.sourceId ?? profile?.fileDefinition?.source,
+      source_root: profile?.fileDefinition?.contributionRoot,
+      source_file: profile?.sourcePath,
+      route: target.route, description: target.description, executor: target.executor,
+      model_alias: target.modelAlias, model_source: target.modelSource,
+      thinking_effort: target.thinkingEffort, effort_source: target.effortSource,
+      dispatch_policy: target.dispatchPolicy, recommendation_status: target.recommendationStatus,
+      advisory_deviation: target.advisoryDeviation,
+      defaults_available: target.defaultsAvailable,
+      binding_advisories: projectBindingAdvisories(target.bindingAdvisories),
+      unavailable_reason: target.unavailableReason,
+      unavailable_reason_code: target.unavailableReasonCode,
+      launch_allowed: target.dispatchAllowed,
+      launch_unavailable_reason: target.dispatchAllowed ? undefined : 'Blocked by strict subagent policy',
+      launch_unavailable_reason_code: target.dispatchAllowed ? undefined : 'strict_subagent_policy_blocked',
+    };
+  });
 }

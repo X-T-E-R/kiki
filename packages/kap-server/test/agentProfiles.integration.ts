@@ -50,11 +50,15 @@ describe('GET /api/agents', () => {
     const skills = panelSkills([
       { ...shared, source: 'project', metadata: { disableModelInvocation: true } },
       { ...shared, name: 'global-example', source: 'user', metadata: {} },
+      { ...shared, name: 'global-extra', source: 'extra', sourceRoot: '/configured/skills', metadata: {} },
+      { ...shared, name: 'plugin-example', source: 'extra', plugin: { id: 'example-plugin' }, metadata: {} },
     ], true);
     expect(skills).toMatchObject([
-      { scope: 'workspace', source: 'project', state: 'disabled', disable_model_invocation: true,
+      { scope: 'workspace', source: 'project', source_kind: 'project', state: 'disabled', disable_model_invocation: true,
         unavailable_reason_code: 'skill_model_invocation_disabled' },
-      { scope: 'global', source: 'user', state: 'enabled' },
+      { scope: 'global', source: 'user', source_kind: 'user', state: 'enabled' },
+      { scope: 'global', source: 'extra', source_kind: 'extra', source_root: '/configured/skills' },
+      { scope: 'global', source: 'extra', source_kind: 'plugin' },
     ]);
     expect(JSON.stringify(skills)).not.toContain('PRIVATE SKILL BODY');
     expect(panelSkills([{ ...shared, source: 'builtin', metadata: { argumentHint: 'arg1' } }], false)[0]).toMatchObject({
@@ -1111,6 +1115,61 @@ describe('GET /api/agents', () => {
     expect(((await mixedResponse.json()) as Envelope<null>).code).toBe(40001);
   });
 
+  it('keeps configured global extras in scope and resolves listed targets with their caller', async () => {
+    const workspaceA = join(home!, 'workspace-a');
+    const workspaceB = join(home!, 'workspace-b');
+    const extraAgents = join(home!, 'configured-agents');
+    const extraSkills = join(home!, 'configured-skills');
+    const skillText = '---\nname: global-example\ndescription: Global example\n---\nGlobal skill body.\n';
+    for (const workspace of [workspaceA, workspaceB]) {
+      await mkdir(join(workspace, '.git'), { recursive: true });
+      await mkdir(join(workspace, '.kiki', 'agents'), { recursive: true });
+      await mkdir(join(workspace, '.kiki', 'skills'), { recursive: true });
+    }
+    await mkdir(extraAgents);
+    await mkdir(join(extraSkills, 'global-example'), { recursive: true });
+    await writeFile(join(extraAgents, 'paper-architect.md'),
+      '---\nname: paper-architect\ndescription: Configured global helper\n---\nHelp with papers.\n');
+    await writeFile(join(extraSkills, 'global-example', 'SKILL.md'), skillText);
+    await writeFile(join(workspaceB, '.kiki', 'agents', 'other-helper.md'),
+      '---\nname: other-helper\ndescription: Only workspace B\n---\nB.\n');
+    await mkdir(join(workspaceB, '.kiki', 'skills', 'other-skill'), { recursive: true });
+    await writeFile(join(workspaceB, '.kiki', 'skills', 'other-skill', 'SKILL.md'), skillText.replaceAll('global-example', 'other-skill'));
+    await writeFile(join(home!, 'config.toml'), [
+      `extra_agent_dirs = [${JSON.stringify(extraAgents.replaceAll('\\', '/'))}]`,
+      `extra_skill_dirs = [${JSON.stringify(extraSkills.replaceAll('\\', '/'))}]`,
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const cwd = `cwd=${encodeURIComponent(workspaceA)}`;
+    const listed = await (await authedFetch(server, base, `/api/agents?${cwd}&effective=true`)).json() as Envelope<unknown>;
+    expect(listed.code).toBe(0);
+    const items = listNamedAgentProfilesResponseSchema.parse(listed.data).items;
+    expect(items.find((item) => item.name === 'paper-architect')).toMatchObject({ source: 'extra', main: false });
+    expect(items.some((item) => item.name === 'other-helper')).toBe(false);
+    const main = await (await authedFetch(server, base, `/api/agents/capabilities?${cwd}&profile=agent`)).json() as Envelope<unknown>;
+    expect(main.code).toBe(0);
+    const capabilities = agentCapabilitiesResponseSchema.parse(main.data);
+    expect(capabilities.targets.find((target) => target.profile === 'paper-architect')).toMatchObject({
+      caller_profile: 'agent', source: 'extra', source_root: extraAgents.replaceAll('\\', '/'),
+      source_file: join(extraAgents, 'paper-architect.md').replaceAll('\\', '/'),
+    });
+    expect(capabilities.targets.some((target) => target.profile === 'other-helper')).toBe(false);
+    expect(capabilities.skills?.find((skill) => skill.name === 'global-example')).toMatchObject({
+      source: 'extra', source_kind: 'extra', source_root: extraSkills.replaceAll('\\', '/'), scope: 'global',
+    });
+    expect(capabilities.skills?.some((skill) => skill.name === 'other-skill')).toBe(false);
+    const detail = await (await authedFetch(server, base,
+      `/api/agents/capabilities?${cwd}&profile=paper-architect&caller_profile=agent`)).json() as Envelope<unknown>;
+    expect(detail.code).toBe(0);
+    expect(agentCapabilitiesResponseSchema.parse(detail.data)).toMatchObject({
+      context: 'draft', owner: { profile: 'paper-architect' }, profile: { source: 'extra' },
+    });
+    const missing = await (await authedFetch(server, base,
+      `/api/agents/capabilities?${cwd}&profile=other-helper&caller_profile=agent`)).json() as Envelope<unknown>;
+    expect(missing.code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+  });
+
   it('isolates workspace dispatch targets for drafts and live sessions', async () => {
     const workspaceA = join(home as string, 'workspace-a');
     const workspaceB = join(home as string, 'workspace-b');
@@ -1330,6 +1389,24 @@ describe('GET /api/agents', () => {
     expect(projectedLeases).not.toContain(childPath.replaceAll('\\', '/'));
     expect(projectedLeases).not.toContain((home as string).replaceAll('\\', '/'));
     expect(projectedLeases).not.toContain('sourceDefinitionId');
+    const caller = `cwd=${encodeURIComponent(home!)}&profile=research-lead`;
+    const targets = await (await authedFetch(server, base, `/api/agents/capabilities?${caller}`)).json() as Envelope<unknown>;
+    expect(targets.code).toBe(0);
+    expect(agentCapabilitiesResponseSchema.parse(targets.data).targets.find((target) =>
+      target.profile === 'research-writer')).toMatchObject({
+      caller_profile: 'research-lead', source: 'user', source_root: agentsDir.replaceAll('\\', '/'),
+    });
+    const detail = await (await authedFetch(server, base,
+      `/api/agents/capabilities?cwd=${encodeURIComponent(home!)}&profile=research-writer&caller_profile=research-lead`))
+      .json() as Envelope<unknown>;
+    expect(detail.code).toBe(0);
+    expect(agentCapabilitiesResponseSchema.parse(detail.data).profile).toMatchObject({
+      name: 'research-writer', description: 'Internal research writer', source: 'user',
+    });
+    const unavailable = await (await authedFetch(server, base,
+      `/api/agents/capabilities?cwd=${encodeURIComponent(home!)}&profile=missing-writer&caller_profile=research-lead`))
+      .json() as Envelope<unknown>;
+    expect(unavailable.code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
   });
 
   it('projects scoped source status from a loaded workspace without a live session', async () => {

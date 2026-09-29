@@ -53,7 +53,7 @@ async function discoverRuntimeSkills(
             name: qualifySubSkillName(input.subSkillParentName, parsed.name),
             metadata: { ...parsed.metadata, isSubSkill: true },
           };
-      const discovered = input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
+      const discovered = { ...skill, sourceRoot: input.root.path, plugin: input.root.plugin };
       const scopeKey = input.root.plugin === undefined
         ? normalizeSkillName(discovered.name)
         : `${input.root.plugin.id}\0${normalizeSkillName(discovered.name)}`;

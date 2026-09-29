@@ -205,7 +205,7 @@ async function parseSkill(input: {
             },
           }
         : parsed;
-    return input.root.plugin === undefined ? skill : { ...skill, plugin: input.root.plugin };
+    return { ...skill, sourceRoot: input.root.path, plugin: input.root.plugin };
   } catch (error) {
     if (error instanceof UnsupportedSkillTypeError) {
       input.skipped.push({

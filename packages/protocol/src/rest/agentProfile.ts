@@ -165,10 +165,12 @@ export const agentCapabilitiesQuerySchema = z.union([
   z.object({
     workspace_id: z.string().trim().min(1),
     profile: z.string().trim().min(1),
+    caller_profile: z.string().trim().min(1).optional(),
   }).strict(),
   z.object({
     cwd: absoluteCwdSchema,
     profile: z.string().trim().min(1),
+    caller_profile: z.string().trim().min(1).optional(),
   }).strict(),
 ]);
 export type AgentCapabilitiesQuery = z.infer<typeof agentCapabilitiesQuerySchema>;
@@ -243,6 +245,10 @@ export type AgentBindingAdvisory = z.infer<typeof agentBindingAdvisorySchema>;
 
 export const agentCapabilityTargetSchema = z.object({
   profile: z.string(),
+  caller_profile: z.string().optional(),
+  source: z.string().optional(),
+  source_root: z.string().optional(),
+  source_file: z.string().optional(),
   route: z.string().optional(),
   description: z.string().optional(),
   executor: z.string(),
@@ -285,6 +291,8 @@ export const agentPanelSkillSchema = z.object({
   name: z.string(),
   description: z.string(),
   source: z.string(),
+  source_kind: z.string().optional(),
+  source_root: z.string().optional(),
   scope: z.enum(['workspace', 'global']),
   path: z.string(),
   state: agentPanelCapabilityStateSchema,

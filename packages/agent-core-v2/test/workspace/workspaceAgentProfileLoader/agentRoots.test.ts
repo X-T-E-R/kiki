@@ -68,6 +68,27 @@ describe('agentRoots', () => {
       expect(roots.some((r) => r.path.endsWith('.kiki/agents'))).toBe(true);
     });
 
+    it('isolates sibling workspace roots while keeping absolute extras available', async () => {
+      const left = join(root, 'left');
+      const right = join(root, 'right');
+      const global = join(root, 'global-agents');
+      for (const workspace of [left, right]) {
+        await markGitRoot(workspace);
+        await mkdir(join(workspace, '.kiki/agents'), { recursive: true });
+      }
+      await mkdir(global);
+
+      expect(await projectAgentRoots(hostFs, left)).toEqual([
+        { path: await normalizedRealpath(join(left, '.kiki/agents')), source: 'project' },
+      ]);
+      expect(await configuredAgentRoots(hostFs, [global], left, root, 'extra')).toEqual([
+        { path: await normalizedRealpath(global), source: 'extra' },
+      ]);
+      expect(await projectAgentRoots(hostFs, right)).toEqual([
+        { path: await normalizedRealpath(join(right, '.kiki/agents')), source: 'project' },
+      ]);
+    });
+
     it('orders the brand directory before the generic directory', async () => {
       await markGitRoot();
       await mkdir(join(root, '.kiki/agents'), { recursive: true });
