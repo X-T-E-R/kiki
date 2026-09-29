@@ -224,8 +224,17 @@ function startStatic(dir) {
     if (!file.startsWith(dir + sep) || !existsSync(file) || statSync(file).isDirectory()) {
       file = join(dir, 'index.html');
     }
-    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-    createReadStream(file).pipe(res);
+    // The build directory is disposable and this worktree is shared: a build
+    // that disappears under a running proof must 404, not kill the run.
+    const stream = createReadStream(file);
+    stream.once('open', () => {
+      res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
+      stream.pipe(res);
+    });
+    stream.once('error', () => {
+      if (!res.headersSent) res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('not found');
+    });
   });
   return new Promise((ready) => server.listen(0, '127.0.0.1', () => ready(server)));
 }
