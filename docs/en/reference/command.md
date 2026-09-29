@@ -20,8 +20,9 @@ All flags are optional — run `kiki` directly to enter an interactive session:
 | `--session [id]` | `-S` | Resume a session. With an ID, opens that session directly; without an ID, enters an interactive selector |
 | `--continue` | `-c` | Continue the most recent session in the current working directory, without specifying an ID manually |
 | `--model <model>` | `-m` | Specify a model alias for this launch. When omitted, new sessions use `default_model` from the config file |
-| `--prompt <prompt>` | `-p` | Run a single prompt non-interactively and stream the Assistant output to stdout. This mode does not open the TUI |
-| `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with `--prompt`; defaults to `text` |
+| `--prompt <prompt>` | `-p` | Run a single prompt non-interactively and stream the Assistant output to stdout; pass `-` to read from stdin (the program's input stream) |
+| `--prompt-file <path>` | | Run one prompt read from a UTF-8 file; cannot be combined with `--prompt` |
+| `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with a prompt; defaults to `text` |
 | `--yolo` | `-y` | Auto-approve regular tool calls, skipping approval requests |
 | `--auto` | | Start in Auto permission mode; routine tool calls proceed automatically, while protected calls and agent questions may still prompt you |
 | `--plan` | | Start a new session in Plan mode — the AI will prioritize read-only tools for exploration and planning |
@@ -42,8 +43,8 @@ The following combinations are rejected at startup:
 
 - `--continue` and `--session` are mutually exclusive — both mean "resume a previous session"
 - `--yolo` and `--auto` are mutually exclusive — the two permission modes cannot be combined
-- `--prompt` cannot be used with `--yolo`, `--auto`, or `--plan` — non-interactive mode uses `auto` permission by default
-- `--output-format` can only be used together with `--prompt`
+- `--prompt` and `--prompt-file` cannot be combined; neither works with `--yolo`, `--auto`, or `--plan` — non-interactive mode uses `auto` permission by default
+- `--output-format` requires `--prompt` or `--prompt-file`
 
 When resuming a session, you can override its saved permission or plan mode by adding `--auto`, `--yolo`, or `--plan`. For example, `kiki --continue --auto` resumes the latest session and switches it to auto permission mode.
 
@@ -124,6 +125,8 @@ Switch models temporarily:
 ```sh
 kiki -m kimi-code/kimi-for-coding -p "Explain the latest diff"
 ```
+
+For a multiline prompt, pass a UTF-8 file with `--prompt-file <path>` or pipe its contents into `kiki -p -`. In Windows scripts, launch the installed `kiki.exe` directly when passing a multiline command-line argument: the auto-generated `kiki.cmd` forwarder uses `%*`, which truncates arguments at a newline. `--prompt-file` and `-p -` avoid the command-line newline entirely.
 
 When you need to parse output programmatically, use the `stream-json` format — each line on stdout is a JSON object:
 

@@ -22,7 +22,7 @@ import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
 import { startupTrace } from './utils/startup-trace';
 import type { CLIOptions } from './cli/options';
-import { OptionConflictError, validateOptions } from './cli/options';
+import { OptionConflictError, resolvePromptInput, validateOptions } from './cli/options';
 import { runPrompt } from './cli/run-prompt';
 import { runShell } from './cli/run-shell';
 import { formatStartupError } from './cli/startup-error';
@@ -57,6 +57,9 @@ export async function handleMainCommand(
   startupTrace('main:enter');
   try {
     validated = validateOptions(opts);
+    if (validated.uiMode === 'print') {
+      validated = { ...validated, options: await resolvePromptInput(validated.options) };
+    }
   } catch (error) {
     if (error instanceof OptionConflictError) {
       process.stderr.write(`error: ${error.message}\n`);
@@ -182,7 +185,7 @@ function bootstrap(): void {
           // would then exit 0 nondeterministically. Setting `process.exitCode`
           // up front makes that drain-exit report failure too.
           process.exitCode = 1;
-          const operation = opts.prompt !== undefined ? 'run prompt' : 'start shell';
+          const operation = opts.prompt !== undefined || opts.promptFile !== undefined ? 'run prompt' : 'start shell';
           await logStartupFailure(operation, error);
           process.stderr.write(
             formatStartupError(error, {

@@ -1,3 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
+import { text } from 'node:stream/consumers';
+
 export type UIMode = 'shell' | 'print';
 export type PromptOutputFormat = 'text' | 'stream-json';
 
@@ -19,11 +23,11 @@ function isOutputFormat(value: string): value is PromptOutputFormat {
  * fast via `OptionConflictError`.
  */
 export function resolveOutputFormat(
-  opts: Pick<CLIOptions, 'prompt' | 'outputFormat'>,
+  opts: Pick<CLIOptions, 'prompt' | 'promptFile' | 'outputFormat'>,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): PromptOutputFormat {
   if (opts.outputFormat !== undefined) return opts.outputFormat;
-  if (opts.prompt === undefined) return 'text';
+  if (opts.prompt === undefined && opts.promptFile === undefined) return 'text';
   const raw = (env[OUTPUT_FORMAT_ENV] ?? '').trim();
   if (raw.length === 0) return 'text';
   if (!isOutputFormat(raw)) {
@@ -45,6 +49,7 @@ export interface CLIOptions {
   thinking?: string;
   outputFormat: PromptOutputFormat | undefined;
   prompt: string | undefined;
+  promptFile?: string;
   skillsDirs: string[];
   agent: string | undefined;
   agentFiles: string[];
@@ -63,14 +68,37 @@ export class OptionConflictError extends Error {
   }
 }
 
+export async function resolvePromptInput(
+  opts: CLIOptions,
+  stdin: Readable = process.stdin,
+): Promise<CLIOptions> {
+  if (opts.prompt !== '-' && opts.promptFile === undefined) return opts;
+  let prompt: string;
+  try {
+    prompt = opts.promptFile === undefined ? await text(stdin) : await readFile(opts.promptFile, 'utf8');
+  } catch (error) {
+    throw new OptionConflictError(
+      `Failed to read prompt ${opts.promptFile === undefined ? 'from stdin' : `file "${opts.promptFile}"`}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (prompt.trim().length === 0) throw new OptionConflictError('Prompt cannot be empty.');
+  return { ...opts, prompt };
+}
+
 export function validateOptions(
   opts: CLIOptions,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): ValidatedOptions {
   const prompt = opts.prompt;
-  const promptMode = prompt !== undefined;
-  if (promptMode && prompt.trim().length === 0) {
+  const promptMode = prompt !== undefined || opts.promptFile !== undefined;
+  if (opts.promptFile !== undefined && prompt !== undefined) {
+    throw new OptionConflictError('Cannot combine --prompt with --prompt-file.');
+  }
+  if (prompt !== undefined && prompt.trim().length === 0) {
     throw new OptionConflictError('Prompt cannot be empty.');
+  }
+  if (opts.promptFile !== undefined && opts.promptFile.trim().length === 0) {
+    throw new OptionConflictError('Prompt file path cannot be empty.');
   }
   if (opts.model !== undefined && opts.model.trim().length === 0) {
     throw new OptionConflictError('Model cannot be empty.');

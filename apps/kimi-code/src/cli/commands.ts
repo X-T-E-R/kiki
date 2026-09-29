@@ -60,9 +60,10 @@ export function createProgram(
     .addOption(
       new Option(
         '-p, --prompt <prompt>',
-        'Run one prompt non-interactively and print the response.',
+        'Run one prompt non-interactively and print the response. Pass - to read from stdin.',
       ),
     )
+    .addOption(new Option('--prompt-file <path>', 'Read the non-interactive prompt from a UTF-8 file.'))
     .addOption(
       new Option(
         '--output-format <format>',
@@ -158,6 +159,7 @@ export function createProgram(
       thinking: raw['thinking'] as string | undefined,
       outputFormat: raw['outputFormat'] as CLIOptions['outputFormat'],
       prompt: raw['prompt'] as string | undefined,
+      promptFile: raw['promptFile'] as string | undefined,
       skillsDirs: raw['skillsDir'] as string[],
       agent: raw['agent'] as string | undefined,
       agentFiles: raw['agentFile'] as string[],

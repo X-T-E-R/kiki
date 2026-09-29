@@ -20,8 +20,9 @@ kiki <subcommand> [options]
 | `--session [id]` | `-S` | 恢复一个会话。带 ID 时直接打开指定会话；不带 ID 时进入交互式选择器 |
 | `--continue` | `-c` | 继续当前工作目录下最近一次的会话，无需手动指定 ID |
 | `--model <model>` | `-m` | 为本次启动指定模型别名。省略时新会话使用配置文件中的 `default_model` |
-| `--prompt <prompt>` | `-p` | 非交互执行单次 prompt，并把 Assistant 输出流式写到 stdout。该模式不会打开 TUI |
-| `--output-format <format>` | | 设置非交互输出格式，支持 `text` 与 `stream-json`。仅可与 `--prompt` 一起使用，默认 `text` |
+| `--prompt <prompt>` | `-p` | 非交互执行单次 prompt，并把 Assistant 输出流式写到 stdout；传入 `-` 时从 stdin（程序的输入流）读取 |
+| `--prompt-file <path>` | | 从 UTF-8 文件读取并执行一次 prompt，不能与 `--prompt` 同时使用 |
+| `--output-format <format>` | | 设置非交互输出格式，支持 `text` 与 `stream-json`。仅在提供 prompt 时可用，默认 `text` |
 | `--yolo` | `-y` | 自动批准普通工具调用，跳过审批请求 |
 | `--auto` | | 以 Auto 权限模式启动；普通工具调用自动放行，受保护的操作和 Agent 提问仍可能询问你 |
 | `--plan` | | 以 Plan 模式启动新会话，AI 会优先使用只读工具进行探索和规划 |
@@ -42,8 +43,8 @@ kiki <subcommand> [options]
 
 - `--continue` 与 `--session` 互斥——两者都表示"恢复历史会话"
 - `--yolo` 和 `--auto` 互斥——两种权限模式互斥
-- `--prompt` 不能与 `--yolo`、`--auto` 或 `--plan` 同时使用——非交互模式固定使用 `auto` 权限
-- `--output-format` 只能与 `--prompt` 一起使用
+- `--prompt` 与 `--prompt-file` 互斥，两者都不能与 `--yolo`、`--auto` 或 `--plan` 同时使用——非交互模式固定使用 `auto` 权限
+- `--output-format` 需要同时提供 `--prompt` 或 `--prompt-file`
 
 恢复会话时，可以通过 `--auto`、`--yolo` 或 `--plan` 覆盖原会话保存的权限或计划模式。例如，`kiki --continue --auto` 会恢复最近会话并切换到 auto 权限模式。
 
@@ -124,6 +125,8 @@ kiki -p "Summarize the current repository status"
 ```sh
 kiki -m kimi-code/kimi-for-coding -p "Explain the latest diff"
 ```
+
+多行提示词可以存入 UTF-8 文件，再用 `--prompt-file <path>` 读取；也可以将文件内容通过管道传给 `kiki -p -`。Windows 脚本若必须把多行内容作为命令行参数传入，请直接调用已安装的 `kiki.exe`：自动生成的 `kiki.cmd` 使用 `%*` 转发参数，在换行处会截断。`--prompt-file` 和 `-p -` 可以避开这个问题。
 
 需要结构化读取输出时，使用 `stream-json` 格式——stdout 每行都是一个 JSON 对象：
 

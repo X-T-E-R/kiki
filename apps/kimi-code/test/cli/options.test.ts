@@ -6,10 +6,14 @@
  */
 
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { Readable } from 'node:stream';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createProgram } from '#/cli/commands';
 import type { CLIOptions } from '#/cli/options';
-import { OptionConflictError, OUTPUT_FORMAT_ENV, resolveOutputFormat, validateOptions } from '#/cli/options';
+import { OptionConflictError, OUTPUT_FORMAT_ENV, resolveOutputFormat, resolvePromptInput, validateOptions } from '#/cli/options';
 
 function parse(argv: string[]): CLIOptions {
   let captured: CLIOptions | undefined;
@@ -280,6 +284,30 @@ describe('CLI options parsing', () => {
   });
 
   describe('--prompt / -p', () => {
+    it('reads a multiline stdin prompt for -p - without modifying other options', async () => {
+      const opts = parse(['-p', '-', '--agent', 'reviewer']);
+      expect(validateOptions(opts).uiMode).toBe('print');
+      const resolved = await resolvePromptInput(opts, Readable.from(['你好\n', '世界']));
+      expect(resolved).toMatchObject({ prompt: '你好\n世界', agent: 'reviewer' });
+    });
+
+    it('reads UTF-8 from --prompt-file, rejecting missing and empty files', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kiki-prompt-'));
+      onTestFinished(() => rm(dir, { recursive: true, force: true }));
+      const path = join(dir, 'prompt.txt');
+      const opts = parse(['--prompt-file', path, '--agent', 'reviewer']);
+      expect(validateOptions(opts).uiMode).toBe('print');
+      await writeFile(path, '你好\n世界');
+      expect((await resolvePromptInput(opts)).prompt).toBe('你好\n世界');
+      await writeFile(path, ' \n ');
+      await expect(resolvePromptInput(opts)).rejects.toThrow('Prompt cannot be empty.');
+      await expect(resolvePromptInput({ ...opts, promptFile: join(dir, 'missing') })).rejects.toThrow('Failed to read prompt file');
+    });
+
+    it('rejects combining --prompt and --prompt-file', () => {
+      const opts = parse(['-p', 'hello', '--prompt-file', 'prompt.txt']);
+      expect(() => validateOptions(opts)).toThrow('Cannot combine --prompt with --prompt-file.');
+    });
     it('parses -p as prompt mode', () => {
       const opts = parse(['-p', 'explain this repo']);
       expect(opts.prompt).toBe('explain this repo');

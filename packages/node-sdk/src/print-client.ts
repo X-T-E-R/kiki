@@ -3,6 +3,7 @@ import {
   IBootstrapService,
   IConfigService,
   IEventDispatcher,
+  IHistoryArchive,
   ISessionIndex,
   ISessionManager,
   applyPrintModeConfigDefaults,
@@ -65,6 +66,16 @@ export async function createPrintClient(input: BootstrapInput & { homeDir: strin
   const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),
     [ITaskBoardService, createPrintTaskBoardService(() => app!)],
+    [IHistoryArchive, {
+      _serviceBrand: undefined,
+      search: async () => ({
+        items: [], hasMore: false, source: 'index', incomplete: 'index_unavailable',
+        indexState: { state: 'unavailable', degraded: 'Print mode has no history index' },
+        coverage: { complete: false, domain: 'full_text', gaps: ['print_mode_history_unavailable'] },
+        warning: 'History search is unavailable in print mode; use the interactive session or Kiki server.',
+      }),
+      readTurn: async () => undefined,
+    }],
   ]);
   app = result.app;
   try {
