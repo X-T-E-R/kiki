@@ -22,7 +22,7 @@
 import { parseSkinFile, type SkinFile } from '@kiki/protocol';
 
 import type { SkinTweaks } from './apply';
-import { DEFAULT_SKIN_ID, findBuiltinSkin } from './builtin';
+import { DEFAULT_SKIN_ID, RETIRED_BUILTIN_SKIN_IDS, findBuiltinSkin } from './builtin';
 
 /**
  * `user` covers everything the server's `/skins` route lists: skin files in
@@ -89,7 +89,17 @@ export function normalizeSkinPrefs(raw: unknown): SkinPrefs {
       : {}),
   };
 
-  return { selection, tweaks };
+  return { selection: migrateSelection(selection), tweaks };
+}
+
+/**
+ * A built-in that was retired (Sand, Slate) becomes the default. The user's
+ * tweaks are kept: they chose an accent or a radius, not the retired palette.
+ */
+function migrateSelection(selection: SkinSelection): SkinSelection {
+  return selection.source === 'builtin' && RETIRED_BUILTIN_SKIN_IDS.has(selection.id)
+    ? DEFAULT_SKIN_PREFS.selection
+    : selection;
 }
 
 export function readSkinPrefs(): SkinPrefs {

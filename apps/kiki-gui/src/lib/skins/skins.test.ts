@@ -84,8 +84,9 @@ describe('built-in skins', () => {
   });
 
   it('declares the variants it actually carries', () => {
-    expect(declaredVariants(findBuiltinSkin('slate')!)).toEqual(['light', 'dark']);
-    expect(declaredVariants(findBuiltinSkin('contrast')!)).toEqual(['light', 'dark']);
+    for (const id of ['linen', 'graphite', 'forest', 'claret', 'heather', 'contrast']) {
+      expect(declaredVariants(findBuiltinSkin(id)!), id).toEqual(['light', 'dark']);
+    }
     // Nocturne is dark-only on purpose, and says so.
     expect(declaredVariants(findBuiltinSkin('nocturne')!)).toEqual(['dark']);
   });
@@ -119,6 +120,39 @@ describe('built-in skins', () => {
           .toBeGreaterThanOrEqual(4.5);
         expect(contrast(colors.shellInk!, colors.shell!), `${skin.id}/${theme} shellInk`)
           .toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it('holds High contrast to its promise: AAA text, borders you can see, no hue-only signal', () => {
+    const skin = findBuiltinSkin('contrast')!;
+    for (const theme of ['light', 'dark'] as const) {
+      const c = skin.variants[theme]!.colors!;
+      for (const surface of ['canvas', 'paper', 'panel'] as const) {
+        for (const text of ['ink', 'inkSoft', 'inkFaint'] as const) {
+          expect(contrast(c[text]!, c[surface]!), `contrast/${theme}: ${text} on ${surface}`).toBeGreaterThanOrEqual(7);
+        }
+        // WCAG 1.4.11: a border is a component boundary and needs 3:1.
+        expect(contrast(c.hairline!, c[surface]!), `contrast/${theme}: hairline on ${surface}`).toBeGreaterThanOrEqual(3);
+      }
+      expect(contrast(c.selectedInk!, c.selected!), `contrast/${theme}: selected row`).toBeGreaterThanOrEqual(7);
+    }
+  });
+
+  it('gives every new skin its own hue, not a near copy of another', () => {
+    const hue = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
+      const max = Math.max(r, g, b); const min = Math.min(r, g, b); const d = max - min;
+      if (d === 0) return 0;
+      const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return (h * 60 + 360) % 360;
+    };
+    const accents = BUILTIN_SKINS.filter((s) => s.id !== 'contrast' && s.id !== DEFAULT_SKIN_ID)
+      .map((s) => ({ id: s.id, h: hue((s.variants.dark ?? s.variants.light)!.colors!.accent!) }));
+    for (const [i, a] of accents.entries()) {
+      for (const b of accents.slice(i + 1)) {
+        const gap = Math.min(Math.abs(a.h - b.h), 360 - Math.abs(a.h - b.h));
+        expect(gap, `${a.id} vs ${b.id} accent hue`).toBeGreaterThanOrEqual(20);
       }
     }
   });
@@ -204,19 +238,19 @@ describe('applySkinVariables', () => {
 
 describe('skinVariablesFor', () => {
   it('follows the resolved theme for a dual-variant skin', () => {
-    const prefs = { selection: { source: 'builtin' as const, id: 'slate' }, tweaks: {} };
+    const prefs = { selection: { source: 'builtin' as const, id: 'graphite' }, tweaks: {} };
     const light = skinVariablesFor(prefs, 'light');
     const dark = skinVariablesFor(prefs, 'dark');
-    expect(light['--color-paper']).toBe('#f3f5f7');
-    expect(dark['--color-paper']).toBe('#14181e');
+    expect(light['--color-paper']).toBe('#f1f3f6');
+    expect(dark['--color-paper']).toBe('#14181d');
   });
 
   it('applies a dark-only skin in light mode rather than inventing a light variant', () => {
     const prefs = { selection: { source: 'builtin' as const, id: 'nocturne' }, tweaks: {} };
     // Its single variant is the only thing the author approved, so it is what
     // both themes get; the settings UI says the skin is dark-only.
-    expect(skinVariablesFor(prefs, 'light')['--color-paper']).toBe('#12111f');
-    expect(skinVariablesFor(prefs, 'dark')['--color-paper']).toBe('#12111f');
+    expect(skinVariablesFor(prefs, 'light')['--color-paper']).toBe('#0c1222');
+    expect(skinVariablesFor(prefs, 'dark')['--color-paper']).toBe('#0c1222');
   });
 
   it('falls back to the base palette for a selection that cannot be resolved', () => {
@@ -257,6 +291,34 @@ describe('skin prefs storage', () => {
     localStorage.setItem('kiki.skin', 'not json');
     expect(readSkinPrefs().selection.id).toBe(DEFAULT_SKIN_ID);
   });
+
+  it('moves a stored retired built-in (Sand, Slate) to Paper and keeps the tweaks', () => {
+    for (const id of ['sand', 'slate']) {
+      expect(findBuiltinSkin(id), id).toBeUndefined();
+      localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: 'builtin', id }, tweaks: { accent: '#0b6e87', radius: 6 } }));
+      clearSelectedSkinCache();
+      expect(readSkinPrefs(), id).toEqual({
+        selection: { source: 'builtin', id: DEFAULT_SKIN_ID },
+        tweaks: { accent: '#0b6e87', radius: 6 },
+      });
+    }
+  });
+
+  it('paints a migrated selection as Paper, with no leftover skin attribute', () => {
+    writeSettings({ theme: 'light' });
+    // A write goes through the same normalizer the boot read does.
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'slate' }, tweaks: {} });
+    applyCurrentSkin();
+    expect(readSkinPrefs().selection.id).toBe(DEFAULT_SKIN_ID);
+    expect(document.documentElement.dataset['skin']).toBe(DEFAULT_SKIN_ID);
+    // Paper is the stylesheet palette: nothing is written inline.
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('');
+  });
+
+  it('only retires built-ins: a user or pack skin that happens to be named slate is kept', () => {
+    expect(normalizeSkinPrefs({ selection: { source: 'user', id: 'slate' } }).selection).toEqual({ source: 'user', id: 'slate' });
+    expect(normalizeSkinPrefs({ selection: { source: 'pack', id: 'sand' } }).selection).toEqual({ source: 'pack', id: 'sand' });
+  });
 });
 
 describe('user skin catalog', () => {
@@ -276,8 +338,8 @@ describe('user skin catalog', () => {
 
   it('never resolves a user id to a same-named built-in', () => {
     setUserSkins([], null);
-    expect(resolveSkin({ source: 'user', id: 'slate' })).toBeNull();
-    expect(resolveSkin({ source: 'builtin', id: 'slate' })?.name).toBe('Slate');
+    expect(resolveSkin({ source: 'user', id: 'graphite' })).toBeNull();
+    expect(resolveSkin({ source: 'builtin', id: 'graphite' })?.name).toBe('Graphite');
   });
 
   it('writes the selected user skin to the paint cache', () => {
@@ -329,15 +391,15 @@ describe('user skin catalog', () => {
 describe('startSkinSync', () => {
   it('applies the stored skin and follows a theme flip', () => {
     writeSettings({ theme: 'light' });
-    writeSkinPrefs({ selection: { source: 'builtin', id: 'slate' }, tweaks: {} });
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'graphite' }, tweaks: {} });
 
     const stop = startSkinSync();
-    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#f3f5f7');
-    expect(document.documentElement.dataset['skin']).toBe('slate');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#f1f3f6');
+    expect(document.documentElement.dataset['skin']).toBe('graphite');
 
     writeSettings({ theme: 'dark' });
     applyTheme('dark');
-    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#14181e');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#14181d');
     stop();
   });
 
@@ -360,7 +422,7 @@ describe('startSkinSync', () => {
 
   it('never leaves a preview in storage', () => {
     setSkinPreview({
-      selection: { source: 'builtin', id: 'slate' },
+      selection: { source: 'builtin', id: 'graphite' },
       tweaks: { accent: '#ff0000' },
     });
     expect(readSkinPrefs().tweaks).toEqual({});
@@ -371,7 +433,7 @@ describe('startSkinSync', () => {
     const stop = startSkinSync();
     stop();
     applySkinVariables(document.documentElement, {});
-    writeSkinPrefs({ selection: { source: 'builtin', id: 'slate' }, tweaks: {} });
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'graphite' }, tweaks: {} });
     expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('');
   });
 
@@ -385,17 +447,17 @@ describe('startSkinSync', () => {
 describe('buildSkinExport', () => {
   it('writes a resolved file, not a diff against the built-in', () => {
     const exported = buildSkinExport(
-      { selection: { source: 'builtin', id: 'slate' }, tweaks: { accent: '#ff0000', radius: 4 } },
-      'My Slate',
+      { selection: { source: 'builtin', id: 'graphite' }, tweaks: { accent: '#ff0000', radius: 4 } },
+      'My Graphite',
     );
-    expect(exported.filename).toBe('my-slate.json');
+    expect(exported.filename).toBe('my-graphite.json');
     const file = JSON.parse(exported.json);
     expect(file.kind).toBe('kiki-skin');
-    expect(file.id).toBe('my-slate');
-    expect(file.name).toBe('My Slate');
-    // The tweak is baked in, and the rest of Slate's tokens travel with it.
+    expect(file.id).toBe('my-graphite');
+    expect(file.name).toBe('My Graphite');
+    // The tweak is baked in, and the rest of Graphite's tokens travel with it.
     expect(file.variants.light.colors.accent).toBe('#ff0000');
-    expect(file.variants.light.colors.paper).toBe('#f3f5f7');
+    expect(file.variants.light.colors.paper).toBe('#f1f3f6');
     expect(file.variants.dark.colors.accent).toBe('#ff0000');
     expect(file.variants.light.shape.radius).toBe(4);
   });

@@ -1,6 +1,6 @@
 # GUI Skins
 
-A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships four skins, and you can add your own as a JSON file. You can also put a picture or video behind the window, or install an appearance pack that bundles colors with art.
+A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships eight skins, and you can add your own as a JSON file. You can also put a picture or video behind the window, or install an appearance pack that bundles colors with art.
 
 Skins are declarative only. A skin sets design tokens — it cannot add CSS rules or scripts, so it cannot hide an approval prompt, break a layout on upgrade, or run code.
 
@@ -10,10 +10,16 @@ Light and dark stay a separate choice. A skin supplies a light variant, a dark v
 
 | Skin | Variants | What it is |
 | --- | --- | --- |
-| **Paper** (default) | light, dark | Warm paper and ink with a rust accent. Kiki's own voice. |
-| **Slate** | light, dark | Cool neutral greys with an ink-blue accent. The chrome recedes; code is the only warm thing on screen. |
-| **High contrast** | light, dark | Pure white or pure black ground, visible borders instead of implied ones, text at AAA on every surface. |
-| **Nocturne** | dark only | Deep indigo paper with a mint accent. In light mode it keeps showing its dark palette, and the settings page says so. |
+| **Paper** (default) | light, dark | Warm paper, brown ink, a rust mark. Kiki's own voice. |
+| **Linen** | light, dark | Unbleached cloth and ink-blue thread. Plain, calm, cool. |
+| **Graphite** | light, dark | Brushed steel and a cyan signal. Cool, exact, quiet. |
+| **Forest** | light, dark | Pine shade and moss, with a lantern for what needs you. |
+| **Claret** | light, dark | Wine and cocoa after dark, blush paper by day. |
+| **Heather** | light, dark | Lavender haze, dusty mauve, a sage mark. Colour without shouting. |
+| **Nocturne** | dark only | A clear-night navy lit by starlight gold. In light mode it keeps showing its dark palette, and the settings page says so. |
+| **High contrast** | light, dark | Solid borders, text at AAA on every surface, one bold signal per role. |
+
+Sand and Slate were retired. If you had one of them selected, Kiki switches you to Paper and keeps your accent, font, radius and density overrides.
 
 ## Pick and adjust a skin
 

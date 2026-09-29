@@ -117,10 +117,10 @@ describe('AppearanceSection', () => {
   });
 
   it('switches skin instantly and marks the selection without an accent fill', async () => {
-    await act(async () => { button('[data-skin-choice="slate"]').click(); });
-    expect(readSkinPrefs().selection.id).toBe('slate');
-    expect(document.documentElement.dataset['skin']).toBe('slate');
-    const selected = button('[data-skin-choice="slate"]');
+    await act(async () => { button('[data-skin-choice="graphite"]').click(); });
+    expect(readSkinPrefs().selection.id).toBe('graphite');
+    expect(document.documentElement.dataset['skin']).toBe('graphite');
+    const selected = button('[data-skin-choice="graphite"]');
     expect(selected.getAttribute('aria-pressed')).toBe('true');
     expect(selected.className).not.toContain('accent');
   });
@@ -140,7 +140,7 @@ describe('AppearanceSection', () => {
 
   it('restores every customization, keeps the theme choice, and can undo it', async () => {
     await act(async () => { button('[data-theme-choice="dark"]').click(); });
-    await act(async () => { button('[data-skin-choice="slate"]').click(); });
+    await act(async () => { button('[data-skin-choice="graphite"]').click(); });
     await act(async () => { button('[data-motion-choice="full"]').click(); });
 
     await act(async () => { button('[data-appearance-restore]').click(); });
@@ -153,7 +153,7 @@ describe('AppearanceSection', () => {
     await act(async () => { undo.click(); });
     expect(readSettings().theme).toBe('dark');
     expect(readSettings().motion).toBe('full');
-    expect(readSkinPrefs().selection.id).toBe('slate');
+    expect(readSkinPrefs().selection.id).toBe('graphite');
   });
 
   it('lists pack colors in the skin picker and applies a pack as colors plus background', async () => {

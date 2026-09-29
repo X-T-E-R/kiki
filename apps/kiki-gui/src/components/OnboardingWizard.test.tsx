@@ -285,9 +285,9 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).not.toMatch(/token|skin/i);
     await click(dialog().querySelector('[data-onboarding-appearance] [data-theme-choice="dark"]')!);
     expect(readSettings().theme).toBe('dark');
-    await click(dialog().querySelector('[data-onboarding-palette="slate"]')!);
-    expect(readSkinPrefs().selection).toEqual({ source: 'builtin', id: 'slate' });
-    expect(dialog().querySelector('[data-onboarding-palette="slate"]')?.getAttribute('aria-checked')).toBe('true');
+    await click(dialog().querySelector('[data-onboarding-palette="graphite"]')!);
+    expect(readSkinPrefs().selection).toEqual({ source: 'builtin', id: 'graphite' });
+    expect(dialog().querySelector('[data-onboarding-palette="graphite"]')?.getAttribute('aria-checked')).toBe('true');
     // The picture is optional and folded away until asked for.
     expect(dialog().querySelector('[data-bg-choose]')).toBeNull();
     await click(dialog().querySelector('[data-onboarding-bg-open]')!);
