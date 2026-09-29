@@ -136,6 +136,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   private folded: FoldedEventStateRegistry;
 
   private restorePhase: RestorePhase = 'new';
+  private checkpointSave: Promise<boolean> | undefined;
   private dispatching = false;
   private queue: QueuedEvent[] = [];
   private drainDepth = 0;
@@ -376,6 +377,18 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   }
 
   async saveReplayCheckpoint(): Promise<boolean> {
+    const ongoing = this.checkpointSave;
+    if (ongoing !== undefined) return ongoing;
+    const save = this.writeReplayCheckpoint();
+    this.checkpointSave = save;
+    try {
+      return await save;
+    } finally {
+      if (this.checkpointSave === save) this.checkpointSave = undefined;
+    }
+  }
+
+  private async writeReplayCheckpoint(): Promise<boolean> {
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {

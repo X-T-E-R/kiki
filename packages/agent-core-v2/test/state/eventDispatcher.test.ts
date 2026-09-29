@@ -373,10 +373,12 @@ describe('EventDispatcherService', () => {
       journalIdentity: async () => identity,
     };
     const documents = new Map<string, unknown>();
+    let failSet = false;
     const docs = {
       _serviceBrand: undefined,
       get: async <T>(scope: string, key: string) => documents.get(`${scope}/${key}`) as T | undefined,
       set: async <T>(scope: string, key: string, value: T) => {
+        if (failSet) throw new Error('checkpoint write interrupted');
         documents.set(`${scope}/${key}`, structuredClone(value));
       },
       update: async () => undefined,
@@ -414,6 +416,11 @@ describe('EventDispatcherService', () => {
     await first.dispatcher.restore();
     expect(reads).toBe(1);
     await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const persisted = structuredClone(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1'));
+    failSet = true;
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
+    expect(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1')).toEqual(persisted);
+    failSet = false;
 
     const second = create();
     await second.dispatcher.restore();

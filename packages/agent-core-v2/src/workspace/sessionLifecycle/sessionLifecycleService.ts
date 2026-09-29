@@ -120,6 +120,7 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 
 const NO_ABORT = new AbortController().signal;
 const SESSION_LOCK_SCOPE = 'session-locks';
+const CHECKPOINT_IDLE_DELAY_MS = 1_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -192,6 +193,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly deferredSessionLockReleases = new Set<string>();
   private readonly resumeFailures = new Map<string, Error>();
   private readonly ephemeralSessions = new Set<string>();
+  private readonly checkpointTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly checkpointSaves = new Map<string, Promise<boolean>>();
+  private readonly checkpointSubscriptions = new Map<string, IDisposable>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -239,6 +243,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   override dispose(): void {
+    for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
+    this.checkpointTimers.clear();
+    for (const subscription of this.checkpointSubscriptions.values()) subscription.dispose();
+    this.checkpointSubscriptions.clear();
+    this.checkpointSaves.clear();
     for (const [sessionId, handle] of [...this.sessions].reverse()) {
       this.sessions.delete(sessionId);
       handle.dispose();
@@ -451,6 +460,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       throw error;
     }
     this.sessions.set(opts.sessionId, handle);
+    this.installCheckpointScheduling(opts.sessionId, handle);
     return handle;
   }
 
@@ -544,10 +554,78 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return ready;
   }
 
+  private installCheckpointScheduling(sessionId: string, handle: ISessionScopeHandle): void {
+    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    try {
+      const activity = handle.accessor.get(ISessionActivityView);
+      this.checkpointSubscriptions.set(
+        sessionId,
+        activity.onDidChange((event) => {
+          if (event.cause !== 'turn_ended' && event.cause !== 'background') return;
+          if (event.state.busy || event.state.pendingInteraction !== 'none') return;
+          this.scheduleCheckpoint(sessionId, handle);
+        }),
+      );
+    } catch {
+      this.checkpointSubscriptions.delete(sessionId);
+    }
+  }
+
+  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle): void {
+    const previous = this.checkpointTimers.get(sessionId);
+    if (previous !== undefined) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.checkpointTimers.delete(sessionId);
+      void this.saveReplayCheckpoints(sessionId, handle).catch(() => undefined);
+    }, CHECKPOINT_IDLE_DELAY_MS);
+    timer.unref?.();
+    this.checkpointTimers.set(sessionId, timer);
+  }
+
+  private async saveReplayCheckpoints(
+    sessionId: string,
+    handle: ISessionScopeHandle,
+  ): Promise<boolean> {
+    const current = this.sessions.get(sessionId);
+    if (current !== handle) return false;
+    const ongoing = this.checkpointSaves.get(sessionId);
+    if (ongoing !== undefined) return ongoing;
+    const activity = handle.accessor.get(ISessionActivityView).state();
+    if (activity.busy || activity.pendingInteraction !== 'none') return false;
+    const save = this.writeReplayCheckpoints(handle);
+    this.checkpointSaves.set(sessionId, save);
+    try {
+      return await save;
+    } finally {
+      if (this.checkpointSaves.get(sessionId) === save) this.checkpointSaves.delete(sessionId);
+    }
+  }
+
+  private async writeReplayCheckpoints(handle: ISessionScopeHandle): Promise<boolean> {
+    let saved = true;
+    for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
+      const dispatcher = agent.accessor.get(IEventDispatcher);
+      if (dispatcher.saveReplayCheckpoint === undefined || !(await dispatcher.saveReplayCheckpoint())) {
+        saved = false;
+      }
+    }
+    return saved;
+  }
+
+  private disposeCheckpointScheduling(sessionId: string): void {
+    const timer = this.checkpointTimers.get(sessionId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.checkpointTimers.delete(sessionId);
+    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    this.checkpointSubscriptions.delete(sessionId);
+  }
+
   async close(sessionId: string): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     await this.announceWillClose({ sessionId, handle, reason: 'exit' });
+    await this.saveReplayCheckpoints(sessionId, handle);
+    this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     this.sessions.delete(sessionId);
     await this.drainAgents(handle);
@@ -574,12 +652,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       'root',
     );
     if (externalRoot !== undefined) return false;
-    for (const agent of agents.list()) {
-      const dispatcher = agent.accessor.get(IEventDispatcher);
-      await dispatcher.flush();
-      if (dispatcher.saveReplayCheckpoint === undefined) return false;
-      if (!(await dispatcher.saveReplayCheckpoint())) return false;
-    }
+    if (!(await this.saveReplayCheckpoints(sessionId, handle))) return false;
+    this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
@@ -604,6 +678,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
     await meta.setArchived(true);
+    await this.saveReplayCheckpoints(sessionId, handle);
+    this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
