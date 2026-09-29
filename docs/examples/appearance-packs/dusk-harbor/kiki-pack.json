@@ -1,0 +1,69 @@
+{
+  "kind": "kiki-appearance-pack",
+  "version": 1,
+  "id": "dusk-harbor",
+  "name": "Dusk Harbor",
+  "description": "Still water under hills: a pale morning in light, a moonlit night with a slow drift in dark.",
+  "author": "Kiki",
+  "license": "CC0-1.0",
+  "preview": "preview.webp",
+  "variants": {
+    "light": {
+      "colors": {
+        "canvas": "#e9eef1",
+        "paper": "#f2f5f7",
+        "panel": "#f9fbfc",
+        "hairline": "#d6dee4",
+        "hairlineStrong": "#b9c6cf",
+        "ink": "#15212b",
+        "inkSoft": "#43525e",
+        "inkFaint": "#55636f",
+        "accent": "#2e6784",
+        "accentDeep": "#234f66",
+        "accentSoft": "#dce8ee",
+        "accentInk": "#23566f",
+        "onAccent": "#ffffff",
+        "bubbleUser": "#e3ebf0"
+      },
+      "background": {
+        "media": ["tide.webp"],
+        "fit": "cover",
+        "alignment": "bottom",
+        "opacity": 0.9,
+        "scrim": 0.15,
+        "scope": "window",
+        "surfaceOpacity": 0.74,
+        "surfaceBlur": 16
+      }
+    },
+    "dark": {
+      "colors": {
+        "canvas": "#0b101b",
+        "paper": "#111725",
+        "panel": "#172031",
+        "hairline": "#222c3f",
+        "hairlineStrong": "#34405a",
+        "ink": "#e9e7f0",
+        "inkSoft": "#b3b5c6",
+        "inkFaint": "#9094aa",
+        "accent": "#e5c68c",
+        "accentDeep": "#c9a86c",
+        "accentSoft": "#2a2a33",
+        "accentInk": "#ebd3a3",
+        "onAccent": "#1b1409",
+        "bubbleUser": "#1d2638"
+      },
+      "background": {
+        "media": ["lantern.mp4"],
+        "poster": "lantern.webp",
+        "fit": "cover",
+        "alignment": "center",
+        "opacity": 1,
+        "scrim": 0.2,
+        "scope": "window",
+        "surfaceOpacity": 0.72,
+        "surfaceBlur": 18
+      }
+    }
+  }
+}

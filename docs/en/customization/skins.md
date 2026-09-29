@@ -1,6 +1,6 @@
 # GUI Skins
 
-A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships four skins, and you can add your own as a JSON file.
+A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships four skins, and you can add your own as a JSON file. You can also put a picture or video behind the window, or install an appearance pack that bundles colors with art.
 
 Skins are declarative only. A skin sets design tokens — it cannot add CSS rules or scripts, so it cannot hide an approval prompt, break a layout on upgrade, or run code.
 
@@ -17,11 +17,28 @@ Light and dark stay a separate choice. A skin supplies a light variant, a dark v
 
 ## Pick and adjust a skin
 
-Settings → General → Appearance:
+Settings → Appearance:
 
-- **Skin** — pick any built-in skin or one from your themes folder. Applies immediately.
-- **Adjustments** — override the accent color, interface font, code font, corner radius and density on top of the skin you picked. These preview live as you change them; press Save to keep them.
-- **Export as skin file** — writes everything you currently see as a `.json` skin file. Put it in your themes folder or share it.
+- **Skin**: pick a built-in skin, one from your themes folder, one contributed by an enabled plugin (marked "From plugin …"), or the colors of an installed appearance pack. It applies immediately.
+- **Accent, fonts, radius, density**: override these on top of the skin you picked. Every change applies as you make it, and **Restore defaults** undoes all of them at once, with an undo.
+- **Export as skin file**: writes everything you currently see as a `.json` skin file. Put it in your themes folder or share it.
+
+The first-run setup has a **Make it yours** step with the same light / dark choice, the built-in palettes, and an optional background picture.
+
+## Background picture or video
+
+Settings → Appearance → Background puts a picture or a short video behind the window.
+
+- **Choose picture or video**: PNG, JPEG, WebP, AVIF, GIF, MP4 or WebM, up to 25 MB for a picture or 100 MB for a video. The file stays on this device (in the browser's storage) and is never uploaded, so it works for a browser tab connected to a remote server too.
+- **Or paste a link**: an `https` link to a picture or video. The server fetches it once, following the media policy below, and the copy is kept on this device. The link is not loaded again, so it cannot track you and still works offline.
+- **Show behind**: the whole window, only the conversation, or only the sidebar (tablet width and up).
+- **Fit** (fill, fit, tile, center), **Anchor** (nine points), **Picture strength**, **Blur**, **Brightness** and **Soften** (a wash of the window color over the picture).
+- **Panel opacity** and **Panel blur**: how much the sidebar and the conversation let the picture through.
+- **Separate for light and dark**: off by default. Turn it on to pick a different background for each theme.
+
+Text stays readable whatever you pick. Kiki measures the picture and raises **Panel opacity** just enough that the faintest text keeps WCAG AA (4.5:1) against the darkest and lightest parts of the picture. The setting says when it did. Menus, dialogs, approval prompts and the composer card always keep a solid background.
+
+Video always plays muted and looped. It pauses on its first frame, or on the pack's poster, while the window is hidden or not focused, when reduced motion is on, and when the battery is low and unplugged. Kiki warns about videos larger than 1440p or 40 MB, which use a lot of memory for no visible gain behind the panels.
 
 ## The themes folder
 
@@ -41,7 +58,7 @@ Kiki reads this folder **on the machine running kap-server**, because that is th
 - **Browser connected to a remote server** — the folder belongs to that server, not to the device you are browsing from. The built-in skins still work everywhere, since they ship in the app itself.
 :::
 
-Kiki only ever **reads** this folder. Exporting a skin hands you a file to place yourself.
+Kiki never writes skin files here: exporting a skin hands you a file to place yourself. The one exception is appearance packs. **Import pack** and **Delete** create and remove pack folders in this directory, and nothing else.
 
 ## Write a skin
 
@@ -145,6 +162,57 @@ Skins are designed to never lock you out of your own interface:
 - **Malformed JSON, or a TUI theme file**: skipped, listed with a reason, and the other files still load.
 - **A selected skin file that disappears**: the GUI falls back to the default palette and says the skin is missing, rather than silently applying a different one.
 
+## Appearance packs
+
+An appearance pack bundles colors with background pictures or video, one set per theme, plus a preview for the pack list. It is a folder in the themes folder, `<themes>/<id>/`, holding `kiki-pack.json` and the files it names. A complete example lives in the repository at `docs/examples/appearance-packs/dusk-harbor/`.
+
+Settings → Appearance → Appearance packs lists installed packs with their preview, and offers:
+
+- **Use pack**: sets the pack's colors as the skin and its media as the background. Both are ordinary settings afterwards, so you can still move the sliders.
+- **Import pack**: installs a `.zip`. The archive is checked completely before anything is written.
+- **Export**: downloads the pack as a `.zip`.
+- **Delete**: removes the pack folder from the server, after a confirmation.
+
+```json
+{
+  "kind": "kiki-appearance-pack",
+  "version": 1,
+  "id": "dusk-harbor",
+  "name": "Dusk Harbor",
+  "license": "CC0-1.0",
+  "preview": "preview.webp",
+  "variants": {
+    "light": {
+      "colors": { "accent": "#2e6784", "accentInk": "#23566f" },
+      "background": { "media": ["tide.webp"], "opacity": 0.9, "surfaceOpacity": 0.74 }
+    },
+    "dark": {
+      "colors": { "accent": "#e5c68c", "onAccent": "#1b1409" },
+      "background": { "media": ["lantern.mp4"], "poster": "lantern.webp" }
+    }
+  }
+}
+```
+
+- `id` must match the folder name (lowercase letters, digits, hyphens).
+- Each variant takes the skin fields (`colors`, `fonts`, `shape`, `base`) and an optional `background`.
+- `background.media` names 1–12 files; with more than one, `interval` (seconds) turns them into a carousel. `poster` is the still shown while a video is paused.
+- The background dials are `fit` (`cover` `contain` `tile` `center`), `alignment` (`center` `top` `bottom` `left` `right` `topLeft` `topRight` `bottomLeft` `bottomRight`), `opacity` (0–1), `blur` (0–40), `brightness` (0.4–1.4), `scrim` (0–0.9), `scope` (`window` `main` `sidebar`), `surfaceOpacity` (0.3–1) and `surfaceBlur` (0–32). The names follow Windows Terminal's background settings.
+
+The built-in `kiki-appearance` skill walks an agent through making a pack: the format, the contrast rules for each color, media sizes and encoding, packaging, and the usual mistakes.
+
+### What a pack can and cannot contain
+
+- **Only** the manifest and picture or video files it names: PNG, JPEG, WebP, AVIF, GIF, MP4, WebM. Anything else in the archive, whether a script, a stylesheet, SVG, HTML, a font, or a file the manifest does not name, refuses the whole pack.
+- Every file's first bytes must match its extension, so a renamed page cannot pass as a picture. Files are served with their true type, `nosniff`, and a sandboxing content policy.
+- Limits: 25 MB per picture, 100 MB per video, 100 MB and 64 files per pack. Archive entries are checked against these before anything is decompressed.
+- **No custom CSS.** Tokens already reach every color, face and shape the app exposes. A stylesheet could also hide or restyle approval prompts, draw fake controls, or load tracking URLs, and a "safe subset" would be a permanent attack surface for little visual gain. A later format version can add a declarative slot without breaking version 1 packs.
+- Any unknown key fails the whole pack, unlike a skin file, which drops a bad token and keeps the rest. A pack is installed as a unit, and a half-accepted pack would pair media with colors the author never tested together.
+
+### Linked pictures
+
+**Or paste a link** fetches through the server with a fixed policy: `https` only, no credentials in the URL, every redirect hop resolved and refused unless it points to a public internet address (no loopback, private, link-local or carrier-grade NAT ranges), at most three redirects, the same size limits, and the type checked from the bytes rather than the headers.
+
 ## Distribution
 
-The skin format is deliberately shaped so a skin can ship inside a plugin as a declarative contribution: the server lists an enabled plugin's `x-kiki.themes` entries beside your own skin files, marked with the plugin that contributed them. Share a standalone skin as a `.json` file, or bundle it with a plugin.
+The skin format is deliberately shaped so a skin can ship inside a plugin as a declarative contribution: the server lists an enabled plugin's `x-kiki.themes` entries beside your own skin files, marked with the plugin that contributed them. Share a standalone skin as a `.json` file, bundle it with a plugin, or ship colors with art as an appearance pack.
