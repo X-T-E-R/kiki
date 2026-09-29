@@ -15,6 +15,12 @@ import {
   type ProseFontPreference,
 } from '@kiki/session-core/settings';
 
+import {
+  DEFAULT_BACKGROUND_PREFS,
+  backgroundPrefsSnapshot,
+  writeBackgroundPrefs,
+  type BackgroundPrefs,
+} from './background';
 import { DEFAULT_SKIN_PREFS, skinPrefsSnapshot, writeSkinPrefs, type SkinPrefs } from './store';
 
 export function applyAppearanceAttributes(prefs: {
@@ -33,6 +39,7 @@ export interface AppearanceSnapshot {
   readonly motion: MotionPreference;
   readonly proseFont: ProseFontPreference;
   readonly skin: SkinPrefs;
+  readonly background: BackgroundPrefs;
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSnapshot = {
@@ -40,6 +47,7 @@ export const DEFAULT_APPEARANCE: AppearanceSnapshot = {
   motion: 'system',
   proseFont: 'serif',
   skin: DEFAULT_SKIN_PREFS,
+  background: DEFAULT_BACKGROUND_PREFS,
 };
 
 export function readAppearance(): AppearanceSnapshot {
@@ -49,6 +57,7 @@ export function readAppearance(): AppearanceSnapshot {
     motion: settings.motion,
     proseFont: settings.proseFont,
     skin: skinPrefsSnapshot(),
+    background: backgroundPrefsSnapshot(),
   };
 }
 
@@ -60,7 +69,8 @@ export function readAppearance(): AppearanceSnapshot {
 export function isDefaultAppearance(snapshot: AppearanceSnapshot): boolean {
   return snapshot.motion === DEFAULT_APPEARANCE.motion
     && snapshot.proseFont === DEFAULT_APPEARANCE.proseFont
-    && JSON.stringify(snapshot.skin) === JSON.stringify(DEFAULT_APPEARANCE.skin);
+    && JSON.stringify(snapshot.skin) === JSON.stringify(DEFAULT_APPEARANCE.skin)
+    && snapshot.background.light === null && snapshot.background.dark === null;
 }
 
 /**
@@ -75,4 +85,7 @@ export function defaultAppearanceFor(current: AppearanceSnapshot): AppearanceSna
 export function writeAppearance(snapshot: AppearanceSnapshot): void {
   writeSettings({ theme: snapshot.theme, motion: snapshot.motion, proseFont: snapshot.proseFont });
   writeSkinPrefs(snapshot.skin);
+  // Media bytes are kept until the next background pick prunes them, so
+  // "Undo" after "Restore defaults" brings the same picture back.
+  writeBackgroundPrefs(snapshot.background);
 }

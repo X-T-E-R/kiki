@@ -21,8 +21,11 @@ import {
   type SkinTweaks,
 } from '../../lib/skins';
 import { prefersDark, resolveTheme } from '../../lib/theme';
+import { Hint } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
+import { AppearancePacks } from './AppearancePacks';
 import { AppearancePreview } from './AppearancePreview';
+import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
@@ -88,11 +91,13 @@ export function AppearanceSection() {
     setUndo(null);
   };
 
+  const background = useBackgroundPrefs();
   const current: AppearanceSnapshot = {
     theme: settings.theme,
     motion: settings.motion,
     proseFont: settings.proseFont,
     skin: skinPrefs,
+    background,
   };
   const atDefaults = isDefaultAppearance(current);
 
@@ -164,6 +169,13 @@ export function AppearanceSection() {
               </button>
             ) : null}
           </SettingField>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope="app">
+        <div className="space-y-2">
+          <Hint>{t('st.bg.hint')}</Hint>
+          <BackgroundSettings theme={theme} />
         </div>
       </SectionCard>
 
@@ -244,6 +256,10 @@ export function AppearanceSection() {
             />
           </SettingField>
         </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance-packs" title={t('st.pack.title')}>
+        <AppearancePacks />
       </SectionCard>
 
       <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')}>

@@ -12,7 +12,7 @@ import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'tool-workflows'];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-appearance', 'tool-workflows'];
 const KIKI_OPS_TRIGGERS = [
   'first-run',
   'provider',
@@ -73,6 +73,16 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
     expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
     expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it('keeps kiki-appearance narrow and grounded in the pack contract', () => {
+    const appearance = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-appearance');
+    expect(appearance?.metadata.isSubSkill).not.toBe(true);
+    expect(appearance?.description).toContain('appearance pack');
+    expect(appearance?.description).toContain('Do not use merely to switch light/dark');
+    for (const needle of ['"kind": "kiki-appearance-pack"', '4.5:1', 'surfaceOpacity', 'Custom CSS', 'poster']) {
+      expect(appearance?.content).toContain(needle);
+    }
   });
 
   it('provides detailed built-in tool workflows on demand without triggering for ordinary calls', () => {

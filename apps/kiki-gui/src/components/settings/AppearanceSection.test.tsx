@@ -14,11 +14,18 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { readSettings, writeSettings } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
-import { readSkinPrefs, startSkinSync, writeSkinPrefs } from '../../lib/skins';
+import {
+  readSkinPrefs,
+  resetBackgroundPrefsCache,
+  startSkinSync,
+  writeBackgroundPrefs,
+  writeSkinPrefs,
+} from '../../lib/skins';
 import { AppearanceSection } from './AppearanceSection';
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
+    config: { url: 'http://127.0.0.1:1', token: 'test-token' },
     client: {
       listSkins: vi.fn().mockResolvedValue({ items: [], directory: '/home/fixture/.kiki/themes', skipped: [] }),
       getSkin: vi.fn(),
@@ -37,8 +44,32 @@ beforeAll(() => {
   reactAct.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
+const PACKS = {
+  items: [{ id: 'dusk-harbor', name: 'Dusk Harbor', variants: ['light', 'dark'], hasSkin: true, hasVideo: false, bytes: 2048 }],
+  directory: '/home/fixture/.kiki/themes',
+  skipped: [],
+};
+const PACK = {
+  kind: 'kiki-appearance-pack',
+  version: 1,
+  id: 'dusk-harbor',
+  name: 'Dusk Harbor',
+  variants: {
+    light: { colors: { accent: '#9a3f1c' }, background: { media: ['day.webp'], opacity: 0.8, scope: 'main' } },
+  },
+};
+
 beforeEach(async () => {
   localStorage.clear();
+  resetBackgroundPrefsCache();
+  writeBackgroundPrefs({ light: null, dark: null, linked: true });
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const body = url.endsWith('/appearance/packs') ? PACKS : url.endsWith('/appearance/packs/dusk-harbor') ? { pack: PACK, bytes: 2048 } : null;
+    return new Response(JSON.stringify(body === null ? { code: 40409, msg: 'not found', data: null } : { code: 0, msg: 'ok', data: body }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }));
   writeSettings({ theme: 'system', motion: 'system', proseFont: 'serif' });
   writeSkinPrefs({ selection: { source: 'builtin', id: 'paper' }, tweaks: {} });
   stopSync = startSkinSync();
@@ -64,8 +95,8 @@ afterEach(async () => {
 const button = (selector: string) => container.querySelector<HTMLButtonElement>(selector)!;
 
 describe('AppearanceSection', () => {
-  it('renders the four cards, the preview, and no draft bar', () => {
-    for (const id of ['st-card-appearance', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-skin-files']) {
+  it('renders every card, the preview, and no draft bar', () => {
+    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-appearance-packs', 'st-card-skin-files']) {
       expect(container.querySelector(`#${id}`), id).not.toBeNull();
     }
     expect(container.querySelector('[data-appearance-preview] .kiki-prose')).not.toBeNull();
@@ -122,5 +153,18 @@ describe('AppearanceSection', () => {
     expect(readSettings().theme).toBe('dark');
     expect(readSettings().motion).toBe('full');
     expect(readSkinPrefs().selection.id).toBe('slate');
+  });
+
+  it('lists pack colors in the skin picker and applies a pack as colors plus background', async () => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const packSkin = button('[data-skin-choice="dusk-harbor"]');
+    expect(packSkin.textContent).toContain('From an appearance pack');
+    await act(async () => { button('[data-pack-use="dusk-harbor"]').click(); });
+    expect(readSkinPrefs().selection).toEqual({ source: 'pack', id: 'dusk-harbor' });
+    expect(document.documentElement.dataset['kikiBg']).toBe('main');
+    expect(button('[data-pack-use="dusk-harbor"]').getAttribute('aria-pressed')).toBe('true');
+    // The background half is an ordinary edit afterwards, and Restore drops it.
+    await act(async () => { button('[data-appearance-restore]').click(); });
+    expect(document.documentElement.dataset['kikiBg']).toBeUndefined();
   });
 });

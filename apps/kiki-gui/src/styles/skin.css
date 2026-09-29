@@ -47,3 +47,331 @@
 :root[data-kiki-prose='sans'] :is(.kiki-prose, .thinking-row) {
   --kiki-prose-font: var(--font-sans);
 }
+
+/* ---- window background ----
+ * Only active while `<html data-kiki-bg>` is set (lib/skins/backdrop.ts); with
+ * no background nothing below matches, so the default window is unchanged.
+ *
+ * The media lives in one fixed layer at z-index -1, under every block in
+ * #root; the body paints the theme's canvas as the ground beneath it. The
+ * reading surfaces (sidebar, conversation sheet, page sheet, inspector,
+ * preview) become a wash of their own color at --kiki-surface-alpha with a
+ * backdrop blur. That alpha is floored in JS so the faintest text token keeps
+ * WCAG AA over the darkest and lightest pixel the media can show. Popovers,
+ * dialogs, the composer card and dock sheets keep their solid fills: they
+ * carry the controls a user must never misread. */
+[data-kiki-backdrop] {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+[data-kiki-backdrop][data-scope='main'] {
+  left: var(--kiki-backdrop-sidebar, 0px);
+}
+[data-kiki-backdrop][data-scope='sidebar'] {
+  right: auto;
+  width: var(--kiki-backdrop-sidebar, 264px);
+}
+[data-kiki-backdrop-media] {
+  position: absolute;
+  inset: 0;
+}
+[data-kiki-backdrop-item] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Its own compositor layer: scrolling the transcript never repaints it. */
+  transform: translateZ(0);
+}
+[data-kiki-backdrop-item][style*='inset: -'] {
+  width: auto;
+  height: auto;
+}
+[data-kiki-backdrop-scrim] {
+  position: absolute;
+  inset: 0;
+  background: var(--color-canvas);
+  opacity: var(--kiki-backdrop-scrim, 0);
+}
+
+:root[data-kiki-bg] body {
+  background: var(--color-canvas);
+}
+:root[data-kiki-bg] #root > .bg-canvas {
+  background-color: transparent;
+}
+
+:root[data-kiki-bg] {
+  --kiki-surface-paper: color-mix(in srgb, var(--color-paper) var(--kiki-surface-alpha, 100%), transparent);
+  --kiki-surface-panel: color-mix(in srgb, var(--color-panel) var(--kiki-surface-alpha, 100%), transparent);
+  --kiki-surface-canvas: color-mix(in srgb, var(--color-canvas) var(--kiki-surface-alpha, 100%), transparent);
+  --kiki-surface-filter: blur(var(--kiki-surface-blur, 0px)) saturate(1.1);
+}
+
+/* Sidebar: translucent in window and sidebar scope. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar {
+  background-color: var(--kiki-surface-canvas);
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
+}
+/* Sticky group headers would otherwise be opaque bands; they get the same
+ * wash, and their blur hides the rows scrolling beneath them. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar .sticky.bg-canvas {
+  background-color: var(--kiki-surface-canvas);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+/* Sidebar scope: the media sits only under the sidebar; the stage beside it
+ * keeps the solid canvas ground. (Repainting the whole root would cover the
+ * media under the sidebar as well.) */
+:root[data-kiki-bg='sidebar'] .app-stage {
+  background-color: var(--color-canvas);
+}
+:root[data-kiki-bg='sidebar'] .app-sidebar {
+  position: relative;
+}
+
+/* Main area: translucent in window and main scope. The conversation column is
+ * named through the same chain index.css uses for its paper sheet, so this
+ * rule (which must win) is the more specific one on every route. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:not(:has(> .conversation-shell)),
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell .conversation-center {
+  background: var(--kiki-surface-paper);
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
+}
+/* The session header sits on the sheet's own ground; over a picture that
+ * ground is the translucent sheet, not a second opaque band. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > header.bg-paper,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > * > header.bg-paper {
+  background-color: transparent;
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell {
+  background: transparent;
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, .preview-workspace) {
+  background-color: var(--kiki-surface-panel);
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
+}
+/* The composer seat's fade band keeps scrolled text out from under the card.
+ * Over a picture it covers only the reading column (where text scrolls), so
+ * the sheet's canvas stays one layer edge to edge with no seam across it;
+ * its side edges fade like the reading band's. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='active'] .conversation-seat,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='settling'] .conversation-seat {
+  background: none;
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='active'] .conversation-seat::before,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='settling'] .conversation-seat::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 50%;
+  z-index: -1;
+  width: calc(min(var(--kiki-chat-content-width, 760px), 100%) + 120px);
+  translate: -50% 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0px, var(--kiki-seat-paper, var(--kiki-surface-paper)) 36px);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
+}
+:root[data-kiki-bg-assist] {
+  --kiki-seat-paper: var(--kiki-text-paper);
+}
+
+/* ---- text layer (readability assist) ----
+ * The canvas above is exactly the requested panel opacity, so most of the
+ * window shows the picture. Readability is carried only where text sits: a
+ * layer of the same paper at --kiki-text-alpha on top of the canvas, which
+ * backdrop.ts solves so canvas + layer hold 4.5:1 for the faintest ink over
+ * the media's darkest and lightest pixel. With the assist off
+ * (no data-kiki-bg-assist) the layer is 0% and every surface is the canvas. */
+:root[data-kiki-bg] {
+  --kiki-text-paper: color-mix(in srgb, var(--color-paper) var(--kiki-text-alpha, 0%), transparent);
+  --kiki-text-canvas: color-mix(in srgb, var(--color-canvas) var(--kiki-text-alpha, 0%), transparent);
+  /* Surfaces that stand on the picture directly (no canvas under them). */
+  --kiki-solid-paper: color-mix(in srgb, var(--color-paper) var(--kiki-solid-alpha, 100%), transparent);
+  --kiki-solid-panel: color-mix(in srgb, var(--color-panel) var(--kiki-solid-alpha, 100%), transparent);
+}
+
+/* Reading band: the transcript's reading column, the full height of the
+ * viewport (not the content, which would end in a hard line on a short
+ * conversation). Soft edges from a mask, not
+ * a hard rectangle. It has no blur of its own: a backdrop-filter inside the
+ * canvas sheet only sees the sheet (the sheet is its backdrop root), so the
+ * picture under the words is softened by the canvas blur. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center div:has(> [data-transcript-scroll])::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: calc(min(var(--kiki-chat-content-width, 760px), 100%) + 120px);
+  translate: -50% 0;
+  pointer-events: none;
+  background: var(--kiki-text-paper);
+  /* Soft sides; the bottom hands over to the composer seat's own fade. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent), linear-gradient(180deg, #000 calc(100% - 36px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent), linear-gradient(180deg, #000 calc(100% - 36px), transparent);
+  mask-composite: intersect;
+}
+/* The composer card, the session header and the settings reading column. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > header.bg-paper,
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > * > header.bg-paper {
+  background: var(--kiki-text-paper);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-scroll] > .mx-auto {
+  position: relative;
+  isolation: isolate;
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-scroll] > .mx-auto::before {
+  content: '';
+  position: absolute;
+  inset: -12px -12px;
+  z-index: -1;
+  border-radius: 20px;
+  pointer-events: none;
+  background: var(--kiki-text-paper);
+}
+@media (min-width: 1024px) {
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-scroll] > .mx-auto::before {
+    inset: -20px -32px;
+    border-radius: 24px;
+  }
+}
+/* Settings: the nav column is rows of text on the canvas. The layer is an
+ * outset pseudo so its rounded corners clear the first and last row. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-nav-tree] {
+  position: relative;
+  isolation: isolate;
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-nav-tree]::before {
+  content: '';
+  position: absolute;
+  inset: -8px -6px;
+  z-index: -1;
+  border-radius: 14px;
+  pointer-events: none;
+  background: var(--kiki-text-paper);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-search] {
+  background: var(--kiki-text-paper);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:has([data-settings-scroll]) > header {
+  background: var(--kiki-text-paper);
+}
+/* Pages without their own text layer yet (tasks, memory, usage, …): the
+ * whole sheet is text, so it takes the solved floor, as before the split. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:not(:has(> .conversation-shell)):not(:has([data-settings-scroll])) {
+  background: var(--kiki-solid-paper);
+}
+/* The inspector and preview are dense text panels. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, .preview-workspace) {
+  background-color: var(--kiki-solid-panel);
+}
+/* Sidebar: rows of text sit on blocks that share one geometry: an 8px inset
+ * from both sidebar edges (the rows' own px-2 gutter), a 10px radius, and an
+ * 8px gap between blocks. The ground between blocks, and below the sessions,
+ * stays canvas so the picture shows through there. Blocks, top to bottom:
+ *   wordmark row · primary nav · sessions (header + filters + list, one
+ *   block) · Settings. "New session" is a raised chip of its own already.
+ * Geometry only changes while the layer is on; with no background (or the
+ * assist off) the sidebar is untouched. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar {
+  --kiki-block-inset: 8px;
+  --kiki-block-radius: 10px;
+}
+/* Wordmark row: flush to the edges by default; inset to the shared column. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> [data-search-toggle]) {
+  margin: var(--kiki-block-inset) var(--kiki-block-inset) var(--kiki-block-inset);
+  padding-left: 8px;
+  padding-right: 0;
+  border-radius: var(--kiki-block-radius);
+  background: var(--kiki-text-canvas);
+}
+/* Primary nav: its list is the block (the nav's px-2 is the inset). */
+/* The "New session" chip row: one shared gap below it (was pb-3). */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> [data-new-session]) {
+  padding-bottom: var(--kiki-block-inset);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-primary-nav] {
+  padding-bottom: var(--kiki-block-inset);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-primary-nav] > ul {
+  border-radius: var(--kiki-block-radius);
+  background: var(--kiki-text-canvas);
+}
+/* Sessions: the header row, any filter chips and the list are one block. The
+ * header row is flush by default, so it is inset to the column and rounded
+ * on top; the list continues it and is rounded at the bottom of its rows. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> h2) {
+  margin: 0 var(--kiki-block-inset);
+  padding-left: 8px;
+  padding-right: 0;
+  border-radius: var(--kiki-block-radius) var(--kiki-block-radius) 0 0;
+  background: var(--kiki-text-canvas);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-filters] {
+  margin: 0 var(--kiki-block-inset);
+  padding-left: 4px;
+  padding-right: 4px;
+  background: var(--kiki-text-canvas);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] {
+  padding-bottom: var(--kiki-block-inset);
+}
+/* The list body: one surface under all groups, sized to its rows (not the
+ * scroller), so empty space below the last session stays canvas. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > :is([data-session-group-block], [data-sidebar-empty]) {
+  background: var(--kiki-text-canvas);
+}
+/* Groups are spaced by a top margin (mt-3/mt-4); inside the block that gap
+ * moves into padding, so the surface runs unbroken from group to group. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > [data-session-group-block] + [data-session-group-block] {
+  margin-top: 0;
+  padding-top: 12px;
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > :is([data-session-group-block], [data-sidebar-empty]):last-of-type {
+  border-radius: 0 0 var(--kiki-block-radius) var(--kiki-block-radius);
+}
+/* Footer: the whole row (Settings + connection dot) is the block, so it has
+ * the column's full width rather than the button's. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> [data-nav-settings]) {
+  height: 40px;
+  margin: 0 var(--kiki-block-inset) var(--kiki-block-inset);
+  padding: 0 4px;
+  border-radius: var(--kiki-block-radius);
+  background: var(--kiki-text-canvas);
+}
+/* Sticky group headers sit inside their block: no fill or blur of their own
+ * (a blur over the translucent sidebar repaints its canvas a second time and
+ * shows as a denser band). They read as a plain row of the block. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar .sticky.bg-canvas {
+  background-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Performance and reduced-transparency: the same layers, no live blur. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-kiki-bg] {
+    --kiki-surface-filter: none;
+  }
+}
+/* Phone widths: the sidebar is a drawer over the sheet, not over the media,
+ * so it stays solid (a translucent drawer would show the transcript through
+ * it). Sidebar-only backgrounds therefore apply from tablet width up; the
+ * settings page says so. */
+@media (max-width: 767px) {
+  :root[data-kiki-bg] .app-sidebar {
+    background-color: var(--color-canvas);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  :root[data-kiki-bg] [data-kiki-backdrop][data-scope='main'] {
+    left: 0;
+  }
+}

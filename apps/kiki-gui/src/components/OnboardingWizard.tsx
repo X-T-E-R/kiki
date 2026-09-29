@@ -1,6 +1,7 @@
 /**
- * OnboardingWizard — the first-run setup dialog, four steps that each say
- * one thing: welcome (language + theme), connect a model (OAuth sign-in or a
+ * OnboardingWizard — the first-run setup dialog, five steps that each say
+ * one thing: welcome (language), make it yours (theme, palette, an optional
+ * background picture), connect a model (OAuth sign-in or a
  * streamlined API-key form), where Kiki works (workspace), and how much it
  * may do on its own (default permission mode).
 
@@ -22,7 +23,7 @@
  * (`kiki.onboarding` in localStorage), so the auto-popup fires at most once.
  */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
@@ -34,14 +35,10 @@ import {
   markOnboardingCompleted,
   providerCreateBody,
   readSettings,
-  settingsServerSnapshot,
-  settingsSnapshot,
-  subscribeSettings,
   validateNewProviderDraft,
   writeSettings,
   type ProviderDraft,
   type ProviderModelDraft,
-  type ThemePreference,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 
@@ -50,10 +47,10 @@ import { useI18n } from '../i18n';
 import { Icon } from './icons';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
 import { useConnection } from '../state/connection';
-import { AccountSignIn } from './AccountSignIn';
+import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import { Dialog } from './Dialog';
+import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
 import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, needsProviderSetup } from './NewSessionDraft';
-import { PresetGrid } from './PresetGrid';
 import {
   API_PROTOCOLS,
   baseUrlRequired,
@@ -77,11 +74,12 @@ import { Wordmark } from './Wordmark';
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'model', 'workspace', 'permissions'] as const;
+const STEPS = ['welcome', 'appearance', 'model', 'workspace', 'permissions'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
+  appearance: 'onboarding.step.appearance',
   model: 'onboarding.step.model',
   workspace: 'onboarding.step.workspace',
   permissions: 'onboarding.step.permissions',
@@ -474,8 +472,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const workspaceFolderInvalid = workspaceChoice === 'folder' && !isAbsoluteCwdPath(workspaceFolder.trim());
   const [permissionFeedback, setPermissionFeedback] = useState<Feedback>(null);
 
-  const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
-
   const authQuery = useQuery({ queryKey: ['auth'], queryFn: () => client.getAuth(), staleTime: 10_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
@@ -647,6 +643,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
 
   const goNext = async () => {
     if (step === 'welcome') {
+      setStep('appearance');
+      return;
+    }
+    if (step === 'appearance') {
       setStep('model');
       return;
     }
@@ -744,18 +744,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                 choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
               />
             </PreferenceRow>
-            <PreferenceRow label={t('st.appearance.theme')} labelId="onboarding-theme-label">
-              <SettingsSegmented<ThemePreference>
-                ariaLabelledBy="onboarding-theme-label"
-                value={settings.theme}
-                onChange={(choice) => { writeSettings({ theme: choice }); }}
-                choices={(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => ({
-                  value: choice, label: t(`st.appearance.theme.${choice}`),
-                }))}
-              />
-            </PreferenceRow>
           </div>
         ) : null}
+
+        {step === 'appearance' ? <OnboardingAppearanceStep /> : null}
 
         {step === 'model' ? (
           <div className="mt-3 space-y-4">
@@ -765,10 +757,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                 {t('onboarding.model.ready')}
               </p>
             ) : null}
-            {showTemplateGrid || showProviderForm ? (
+            {showTemplateGrid ? (
+              <ConnectionMethodPicker dense onPickApi={chooseTemplate} onAccountChanged={refreshProviderData} />
+            ) : null}
+            {showProviderForm ? (
               <section aria-label={t('onboarding.model.orApiKey')} className="space-y-2" data-connection-lane="api">
-                <p className="text-[12px] font-medium text-ink-soft">{t('onboarding.model.orApiKey')}</p>
-                {showTemplateGrid ? <PresetGrid dense onPick={chooseTemplate} /> : null}
                 {showProviderForm ? (
                   <OnboardingProviderForm
                     draft={providerDraft}
@@ -800,12 +793,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               </button>
             ) : null}
             <FeedbackLine feedback={providerFeedback} />
-            {showConnectionOptions ? (
-              <section className="space-y-2 border-t border-hairline pt-3" aria-label={t('st.account.title')}>
-                <p className="text-[12px] font-semibold text-ink">{t('st.account.title')}</p>
-                <AccountSignIn compact onChanged={refreshProviderData} />
-              </section>
-            ) : null}
           </div>
         ) : null}
 

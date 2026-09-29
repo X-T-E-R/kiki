@@ -10,13 +10,15 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import type { SkinFile } from '@kiki/protocol';
+import type { SkinFile, SkinPluginOrigin } from '@kiki/protocol';
 
 import { useConnection } from '../../state/connection';
 import { setUserSkins } from './store';
 
 export interface UserSkinCatalog {
   readonly skins: readonly SkinFile[];
+  /** Skin id → contributing plugin, for skins served from enabled plugins. */
+  readonly plugins: Readonly<Record<string, SkinPluginOrigin>>;
   readonly directory: string | null;
   readonly skipped: readonly { file: string; reason: string }[];
   /** True when the connected server is too old to expose the skin routes. */
@@ -25,6 +27,7 @@ export interface UserSkinCatalog {
 
 const EMPTY: UserSkinCatalog = {
   skins: [],
+  plugins: {},
   directory: null,
   skipped: [],
   unsupported: false,
@@ -55,8 +58,11 @@ export function useUserSkins(): {
           }
         }),
       );
+      const plugins: Record<string, SkinPluginOrigin> = {};
+      for (const summary of listing.items) if (summary.plugin !== undefined) plugins[summary.id] = summary.plugin;
       return {
         skins: files.filter((file): file is SkinFile => file !== null),
+        plugins,
         directory: listing.directory,
         skipped: listing.skipped,
         unsupported: false,

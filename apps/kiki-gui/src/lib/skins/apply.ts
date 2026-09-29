@@ -36,6 +36,7 @@ export const COLOR_TOKEN_VARIABLES: Readonly<Record<SkinColorToken, readonly str
   accent: ['--color-accent', '--color-primary'],
   accentDeep: ['--color-accent-deep'],
   accentSoft: ['--color-accent-soft'],
+  accentInk: ['--color-accent-ink'],
   onAccent: ['--color-on-accent', '--color-primary-foreground'],
   amberInk: ['--color-amber-ink'],
   amberCard: ['--color-amber-card'],
@@ -131,12 +132,12 @@ export function variantToCssVariables(
     }
   }
 
-  // `--color-accent-ink` (the accent used as text) has no slot in the skin
-  // file format yet, so a skin that moves the accent derives it: the skin's
-  // accent pulled a quarter of the way toward its own ink. That darkens it on
-  // a light ground and lifts it on a dark one, so the words keep the skin's
-  // hue and gain the contrast the bare accent lacks on canvas.
-  if (variant?.colors?.accent !== undefined) {
+  // `--color-accent-ink` (the accent used as text) is an optional slot. A skin
+  // that moves the accent without setting it derives it: the skin's accent
+  // pulled a quarter of the way toward its own ink. That darkens it on a light
+  // ground and lifts it on a dark one, so the words keep the skin's hue and
+  // gain the contrast the bare accent lacks on canvas.
+  if (variant?.colors?.accent !== undefined && variant.colors.accentInk === undefined) {
     out['--color-accent-ink'] = ACCENT_INK_MIX;
   }
 

@@ -24,7 +24,15 @@ import { parseSkinFile, type SkinFile } from '@kiki/protocol';
 import type { SkinTweaks } from './apply';
 import { DEFAULT_SKIN_ID, findBuiltinSkin } from './builtin';
 
-export type SkinSource = 'builtin' | 'user';
+/**
+ * `user` covers everything the server's `/skins` route lists: skin files in
+ * the themes folder and themes contributed by enabled plugins (id
+ * `<plugin>:<theme>`). `pack` is the colors of an installed appearance pack.
+ */
+export type SkinSource = 'builtin' | 'user' | 'pack';
+
+/** Ids a selection may carry: a file stem, or a plugin skin's `<plugin>:<theme>`. */
+const SELECTION_ID = /^[a-z0-9][a-z0-9-]{0,63}$|^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9-]{0,63}$/;
 
 export interface SkinSelection {
   readonly source: SkinSource;
@@ -53,8 +61,8 @@ export function normalizeSkinPrefs(raw: unknown): SkinPrefs {
   const rawSelection = source.selection as { source?: unknown; id?: unknown } | undefined;
   const selection: SkinSelection =
     typeof rawSelection?.id === 'string'
-    && /^[a-z0-9][a-z0-9-]{0,63}$/.test(rawSelection.id)
-    && (rawSelection.source === 'builtin' || rawSelection.source === 'user')
+    && SELECTION_ID.test(rawSelection.id)
+    && (rawSelection.source === 'builtin' || rawSelection.source === 'user' || rawSelection.source === 'pack')
       ? { source: rawSelection.source, id: rawSelection.id }
       : DEFAULT_SKIN_PREFS.selection;
 
@@ -238,6 +246,38 @@ export function getUserSkinsDirectory(): string | null {
   return userSkinsDirectory;
 }
 
+/**
+ * Colors of installed appearance packs, as skins. A pack selection is applied
+ * by the pack controller, which also sets the pack's background; this list
+ * only lets the palette resolve on the first frame and after a theme flip.
+ */
+let packSkins: readonly SkinFile[] = readPackSkinCache();
+const PACK_SKIN_CACHE_KEY = 'kiki.skin.packCache';
+
+function readPackSkinCache(): readonly SkinFile[] {
+  try {
+    const raw = localStorage.getItem('kiki.skin.packCache');
+    if (raw === null) return [];
+    const list = JSON.parse(raw) as unknown;
+    return Array.isArray(list)
+      ? list.map((entry) => parseSkinFile(entry).skin).filter((skin): skin is SkinFile => skin !== null)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setPackSkins(skins: readonly SkinFile[]): void {
+  if (JSON.stringify(skins) === JSON.stringify(packSkins)) return;
+  packSkins = skins;
+  try {
+    localStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(skins));
+  } catch {
+    // Cache is optional.
+  }
+  notify();
+}
+
 /** Drop the cached copy of the selected user skin (test teardown). */
 export function clearSelectedSkinCache(): void {
   selectedCache = null;
@@ -255,6 +295,7 @@ export function clearSelectedSkinCache(): void {
  */
 export function resolveSkin(selection: SkinSelection): SkinFile | null {
   if (selection.source === 'builtin') return findBuiltinSkin(selection.id) ?? null;
+  if (selection.source === 'pack') return packSkins.find((skin) => skin.id === selection.id) ?? null;
   const live = userSkins.find((skin) => skin.id === selection.id);
   if (live !== undefined) return live;
   if (!selectedCacheLoaded) {

@@ -15,7 +15,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { AuthSummary } from '@kiki/protocol';
 import { clearStoredDrafts, readDraft, readNewSessionDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
+import { readSettings } from '@kiki/session-core/settings';
+
 import { I18nProvider } from '../i18n';
+import { readSkinPrefs } from '../lib/skins';
 import { PERMISSION_MODES } from '../lib/permissionModes';
 import {
   OnboardingWizard,
@@ -40,6 +43,7 @@ const navigate = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
+    config: { url: 'http://127.0.0.1:1', token: 'test-token' },
     client: {
       getAuth,
       listProviders,
@@ -205,8 +209,9 @@ async function typeInto(input: HTMLInputElement, value: string): Promise<void> {
   });
 }
 
-/** Walk from the welcome step onto the model step. */
+/** Walk from the welcome step, through appearance, onto the model step. */
 async function toModelStep(): Promise<void> {
+  await click(buttonByText('Next'));
   await click(buttonByText('Next'));
   await flush();
 }
@@ -257,7 +262,7 @@ describe('manual re-entry channel', () => {
   });
 });
 
-/** Welcome → model → (skip) → workspace → (next) → approvals. */
+/** Welcome → appearance → model → (skip) → workspace → (next) → approvals. */
 async function toPermissionsStep(): Promise<void> {
   await toModelStep();
   await click(buttonByText('Skip for now'));
@@ -265,38 +270,62 @@ async function toPermissionsStep(): Promise<void> {
 }
 
 describe('OnboardingWizard', () => {
-  it('opens on the welcome step with language and theme picks', async () => {
+  it('opens on the welcome step with the language pick', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
-    expect(dialog().textContent).toContain('Step 1 of 4');
+    expect(dialog().textContent).toContain('Step 1 of 5');
     expect(dialog().textContent).toContain('Language');
-    expect(dialog().textContent).toContain('Theme');
   });
 
-  it('walks forward and back through all four steps', async () => {
+  it('makes it yours: theme, palette and an optional picture, all applied at once', async () => {
+    await mount();
+    await click(buttonByText('Next'));
+    expect(dialog().textContent).toContain('Step 2 of 5');
+    expect(dialog().textContent).toContain('Make it yours');
+    expect(dialog().textContent).not.toMatch(/token|skin/i);
+    await click(dialog().querySelector('[data-onboarding-appearance] [data-theme-choice="dark"]')!);
+    expect(readSettings().theme).toBe('dark');
+    await click(dialog().querySelector('[data-onboarding-palette="slate"]')!);
+    expect(readSkinPrefs().selection).toEqual({ source: 'builtin', id: 'slate' });
+    expect(dialog().querySelector('[data-onboarding-palette="slate"]')?.getAttribute('aria-checked')).toBe('true');
+    // The picture is optional and folded away until asked for.
+    expect(dialog().querySelector('[data-bg-choose]')).toBeNull();
+    await click(dialog().querySelector('[data-onboarding-bg-open]')!);
+    expect(dialog().querySelector('[data-bg-settings="compact"] [data-bg-choose]')).not.toBeNull();
+    expect(dialog().querySelector('[data-bg-settings="compact"] #bg-url')).toBeNull();
+    expect(dialog().textContent).toContain('Settings › Appearance');
+  });
+
+  it('walks forward and back through all five steps', async () => {
     await mount();
     await toModelStep();
-    expect(dialog().textContent).toContain('Step 2 of 4');
-    expect(dialog().textContent).toContain('Connect with an API key');
-    expect(dialog().querySelectorAll('[data-oauth-method]')).toHaveLength(3);
+    expect(dialog().textContent).toContain('Step 3 of 5');
+    // One entry: choose API key or account first, then protocol or method.
+    expect(dialog().querySelectorAll('[data-connection-choice]')).toHaveLength(2);
     expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
     expect(dialog().querySelector('[data-provider-template="anthropic"]')).toBeNull();
+    await click(dialog().querySelector('[data-connection-choice="account"]')!);
+    await flush();
+    expect(dialog().querySelectorAll('[data-oauth-method]')).toHaveLength(3);
+    expect(dialog().querySelector('[data-provider-protocol]')).toBeNull();
 
     await click(buttonByText('Skip for now'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
     expect(dialog().textContent).toContain('Where should Kiki work?');
 
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 4 of 4');
+    expect(dialog().textContent).toContain('Step 5 of 5');
     expect(dialog().textContent).toContain('How much should Kiki do on its own?');
 
     await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
   });
 
   it('uses the selected account method rather than implicitly signing in with Kimi', async () => {
     await mount();
     await toModelStep();
+    await click(dialog().querySelector('[data-connection-choice="account"]')!);
+    await flush();
     await click(dialog().querySelector('[data-oauth-method="github-copilot"] button')!);
     expect(startOAuthLogin).toHaveBeenCalledWith({ provider: 'github-copilot' });
   });
@@ -306,7 +335,7 @@ describe('OnboardingWizard', () => {
     await toModelStep();
     await click(buttonByText('Skip for now'));
     expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
   });
 
   it('keeps the advance as Next while adding another provider to an existing connection', async () => {
@@ -319,9 +348,10 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Change or add another connection'));
     expect(dialog().textContent).not.toContain('A model provider is connected');
     expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
+    await click(dialog().querySelector('[data-connection-choice="account"]')!);
     expect(dialog().querySelector('[data-account-sign-in]')).not.toBeNull();
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
     expect(createProvider).not.toHaveBeenCalled();
   });
 
@@ -340,7 +370,7 @@ describe('OnboardingWizard', () => {
     expect(body['models']).toEqual([
       expect.objectContaining({ remote_id: 'kimi-for-coding' }),
     ]);
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
   });
 
   it('Test connection probes the unsaved form values and fills suggestions', async () => {
@@ -385,7 +415,7 @@ describe('OnboardingWizard', () => {
     await flush();
     expect(createProvider).not.toHaveBeenCalled();
     expect(dialog().textContent).toContain('Model IDs cannot be empty.');
-    expect(dialog().textContent).toContain('Step 2 of 4');
+    expect(dialog().textContent).toContain('Step 3 of 5');
   });
 
   it('a protocol card derives the connection name from the Base URL, and keeps it editable', async () => {
@@ -494,7 +524,7 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('A model provider is connected');
     await click(buttonByText('Next'));
     expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 4 of 5');
   });
 
   it('offers every permission mode, recommends auto, and finish writes it to the server config', async () => {

@@ -10,6 +10,8 @@
 import { readSettings, subscribeSettings } from '@kiki/session-core/settings';
 
 import { applyAppearanceAttributes } from './appearance';
+import { effectiveBackgroundPrefs, slotForTheme, subscribeBackgroundPrefs } from './background';
+import { applyBackdrop, refreshBackdropPlayback, watchBackdropPlayback } from './backdrop';
 import { onThemeChange, prefersDark, resolveTheme, type ResolvedTheme } from '../theme';
 import {
   applySkinVariables,
@@ -57,18 +59,26 @@ export function applyCurrentSkin(): void {
   // specific skin (nothing in-app does today — tokens are the contract).
   if (skin === null) delete document.documentElement.dataset['skin'];
   else document.documentElement.dataset['skin'] = skin.id;
+  // The backdrop last: its readability floor reads the palette just written.
+  const background = effectiveBackgroundPrefs();
+  applyBackdrop(slotForTheme(background, theme), background.assist);
+  refreshBackdropPlayback();
 }
 
 /** Start the sync. Returns a teardown for tests. */
 export function startSkinSync(): () => void {
   applyCurrentSkin();
   const stopPrefs = subscribeSkinPrefs(applyCurrentSkin);
+  const stopBackground = subscribeBackgroundPrefs(applyCurrentSkin);
   const stopSettings = subscribeSettings(applyCurrentSkin);
   const stopTheme = onThemeChange(applyCurrentSkin);
+  const stopPlayback = watchBackdropPlayback();
   return () => {
     stopPrefs();
+    stopBackground();
     stopSettings();
     stopTheme();
+    stopPlayback();
   };
 }
 

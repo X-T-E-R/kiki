@@ -561,16 +561,41 @@ body[data-pane-resizing='true'] {
 }
 
 /* Inspector peek: hovering an agent surface (card, pane, tree row) marks its
- * tree row — a soft wash and an accent tick — without retargeting the rail.
- * Pinning (click / keyboard focus) is what switches the inspector. */
+ * tree row — the neutral hover wash and an ink tick — without retargeting the
+ * rail. Pinning (click / keyboard focus) is what switches the inspector. */
 .agent-tree-row[data-agent-peek] {
-  background-color: color-mix(in srgb, var(--color-accent-soft) 55%, transparent);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  background-color: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-ink-faint);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .agent-tree-row[data-agent-peek] {
     transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
+  }
+}
+
+/* ---- inspector page turn ----
+ * Switching the inspector to another agent: the body page rises into place
+ * once. The motion tokens collapse under reduced motion, so it is instant. */
+@keyframes kiki-rail-page {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--kiki-motion-distance) * 1.5));
+  }
+}
+.rail-page {
+  animation: kiki-rail-page var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+
+/* Background-task Stop: shown while the row is hovered or holds focus, so
+ * the list reads as work, not as a column of buttons. Touch keeps it. */
+@media (hover: hover) {
+  .rail-task-row .rail-task-stop {
+    opacity: 0;
+  }
+  .rail-task-row:hover .rail-task-stop,
+  .rail-task-row:focus-within .rail-task-stop {
+    opacity: 1;
   }
 }
 
@@ -806,10 +831,250 @@ body[data-pane-resizing='true'] {
   flex-direction: column;
 }
 
+/* The composer card: volume from a layered shadow and a faint ink ring, not a
+ * hard border. Focus deepens the ring; dark swaps the drop for a near-black
+ * shadow plus a light hairline ring so the card still lifts off the paper. */
+.composer-card {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent),
+    0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
+    0 12px 32px -16px rgb(var(--kiki-shadow-ink) / 0.24);
+}
+.composer-card:has(textarea:focus-visible) {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-ink) 18%, transparent),
+    0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
+    0 14px 36px -16px rgb(var(--kiki-shadow-ink) / 0.28);
+}
+[data-theme='dark'] .composer-card {
+  box-shadow:
+    0 0 0 1px rgb(239 232 220 / 0.075),
+    inset 0 1px 0 rgb(239 232 220 / 0.035),
+    0 16px 40px -18px rgb(0 0 0 / 0.75);
+}
+[data-theme='dark'] .composer-card:has(textarea:focus-visible) {
+  box-shadow:
+    0 0 0 1px rgb(239 232 220 / 0.16),
+    inset 0 1px 0 rgb(239 232 220 / 0.035),
+    0 16px 40px -18px rgb(0 0 0 / 0.75);
+}
+
+/* Composer header (ComposerHeader.tsx): the goal and the queue as floating
+ * pills inside the composer card's top edge — no full-width row, no rule.
+ * The goal pill carries a faint warm tint and is the primary one; the queue
+ * pill is a quieter neutral. Each pill discloses its detail, which grows
+ * INSIDE the card above the pills as an inset rounded panel (the card gets
+ * taller upward; pills and input stay put). */
+.composer-header {
+  container-type: inline-size;
+}
+.composer-header-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 0;
+  font-size: 12px;
+  line-height: 1.3;
+}
+.composer-header-half {
+  display: flex;
+  height: 26px;
+  min-width: 0;
+  align-items: center;
+  padding: 0 11px;
+  border-radius: 999px;
+  color: var(--color-ink-soft);
+  text-align: left;
+  cursor: pointer;
+  animation: kiki-pill-in var(--kiki-motion-base) var(--kiki-ease-out);
+  transition:
+    background-color var(--kiki-motion-quick) var(--kiki-ease-out),
+    box-shadow var(--kiki-motion-quick) var(--kiki-ease-out),
+    color var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+@keyframes kiki-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+.composer-header-half:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+/* The open pill: a soft inner ring and ink text, never a lighter block. */
+.composer-header-half[data-open] {
+  color: var(--color-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 14%, transparent);
+}
+/* Goal: the primary pill, warm tint from the accent-soft token (brown on dark,
+ * never grey); it takes the room, up to the width the queue leaves. */
+.composer-header-goal {
+  flex: 0 1 auto;
+  max-width: 64%;
+  overflow: hidden;
+  font-size: 12.5px;
+  background-color: color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
+}
+.composer-header-goal:hover {
+  background-color: var(--color-accent-soft);
+}
+/* Queue: a quieter neutral pill; its count stays whole, the preview gives way. */
+.composer-header-queue {
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  background-color: color-mix(in srgb, var(--color-ink) 4.5%, transparent);
+}
+.composer-header-queue:hover {
+  background-color: color-mix(in srgb, var(--color-ink) 8%, transparent);
+}
+/* No goal: the queue pill may take more of the row. */
+.composer-header-queue:only-child {
+  max-width: 72%;
+}
+.composer-header-label {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+/* Narrow cards keep the goal pill and fold the queue to a count pill. */
+@container (max-width: 34rem) {
+  .composer-header-goal + .composer-header-queue .composer-header-preview {
+    display: none;
+  }
+  .composer-header-goal {
+    max-width: none;
+  }
+  .composer-header-goal + .composer-header-queue {
+    max-width: none;
+    flex-shrink: 0;
+  }
+}
+
+/* The detail: an inset rounded panel that grows from the pills upward (grid
+ * rows + a short rise), content a beat later; capped at 40vh with its own
+ * scroll. A faint ink wash on the card's own surface, no border. */
+.composer-header-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--kiki-motion-base) var(--kiki-ease-out),
+    visibility 0s linear var(--kiki-motion-base);
+}
+.composer-header-panel[data-open] {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows var(--kiki-motion-settle) var(--kiki-ease-out),
+    visibility 0s;
+}
+.composer-header-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+.composer-header-scroll {
+  max-height: 40vh;
+  margin: 8px 8px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 6px 4px;
+  border-radius: 12px;
+  background-color: color-mix(in srgb, var(--color-ink) 3.5%, transparent);
+  opacity: 0;
+  transform: translateY(var(--kiki-motion-distance));
+  transition:
+    opacity var(--kiki-motion-quick) var(--kiki-ease-out),
+    transform var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+.composer-header-panel[data-open] .composer-header-scroll {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--kiki-motion-base) var(--kiki-ease-out) var(--kiki-motion-instant),
+    transform var(--kiki-motion-slow) var(--kiki-ease-out) var(--kiki-motion-instant);
+}
+
+/* A new queued prompt: the queue text fades in once (two identical keyframes
+ * so the next growth replays). Opacity only; reduced motion collapses it. */
+.composer-header-queue[data-bump='a'] .composer-header-label {
+  animation: kiki-header-bump-a var(--kiki-motion-slow) var(--kiki-ease-out);
+}
+.composer-header-queue[data-bump='b'] .composer-header-label {
+  animation: kiki-header-bump-b var(--kiki-motion-slow) var(--kiki-ease-out);
+}
+@keyframes kiki-header-bump-a {
+  from { opacity: 0.2; }
+  to { opacity: 1; }
+}
+@keyframes kiki-header-bump-b {
+  from { opacity: 0.2; }
+  to { opacity: 1; }
+}
+
+/* Context chips (ContextChips.tsx): the quote / annotation / image tiles of
+ * the composer tray and the sent bubble. Soft 10px tiles on a faint ink or
+ * warm wash, no borders — the same language as the header pills. */
+.context-chip-quote-mark {
+  font-family: var(--font-display);
+  font-size: 18px;
+  line-height: 1;
+  transform: translateY(3px);
+  color: var(--color-accent);
+}
+.context-image {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 9%, transparent);
+  transition:
+    box-shadow var(--kiki-motion-quick) var(--kiki-ease-out),
+    transform var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+button.context-image:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-ink) 18%, transparent),
+    0 6px 16px -8px rgb(var(--kiki-shadow-ink) / 0.4);
+  transform: translateY(-1px);
+}
+
+/* Row-end actions on a queue row: out of the layout at rest so the preview
+ * gets the width, back on hover / keyboard focus / an armed confirm. Touch
+ * screens have no hover, so a ⋯ toggle opens them instead. */
+.dock-reveal {
+  transition: opacity var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+.dock-more {
+  display: none;
+}
+@media (hover: none) {
+  .dock-more {
+    display: inline-flex;
+  }
+  .dock-reveal:not([data-shown]) {
+    display: none;
+  }
+}
+@media (hover: hover) {
+  .dock-reveal:not([data-shown]) {
+    width: 0;
+    overflow: hidden;
+    opacity: 0;
+  }
+  li:hover > .dock-reveal,
+  li:focus-within > .dock-reveal {
+    width: auto;
+    overflow: visible;
+    opacity: 1;
+  }
+}
+
 /* The composer card's border carries the input's focus state; the global
  * :focus-visible outline would draw a second box inside the card. */
 .conversation-seat textarea[data-composer]:focus-visible,
 [data-composer-variant] textarea[data-composer]:focus-visible {
+  outline: none;
+}
+/* The ＋ menu's search field: its rounded well carries the focus ring. */
+input[data-add-search]:focus-visible {
   outline: none;
 }
 
@@ -884,7 +1149,11 @@ body[data-pane-resizing='true'] {
 /* Wordmark hover: the dot drifts inside a stationary hitbox (dsh's fish
  * pattern — hover detection never moves with the mark). The dot's resting
  * -1px lift rides Tailwind's `translate` property, so the keyframes animate
- * `transform` only (the two compose). */
+ * `transform` only (the two compose). The drift lands on the dot itself, not
+ * on the echo wrapper around it, so the typing nod (wrapper) and the drift
+ * (dot) stack instead of one replacing the other. A working dot keeps its
+ * breath in the first slot so hovering never restarts it. Reduced motion
+ * stops both through the `.kiki-wordmark-dot` / `.kiki-wordmark-echo` rules. */
 @keyframes kiki-hero-dot-drift {
   0%,
   100% {
@@ -899,8 +1168,13 @@ body[data-pane-resizing='true'] {
 }
 
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
-  .hero-wordmark:hover > span > span:last-child {
+  .hero-wordmark:hover .kiki-wordmark-dot {
     animation: kiki-hero-dot-drift 900ms ease-in-out;
+  }
+  .hero-wordmark:hover .kiki-wordmark-dot[data-life='working'] {
+    animation:
+      kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite,
+      kiki-hero-dot-drift 900ms ease-in-out;
   }
 }
 

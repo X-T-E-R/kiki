@@ -18,12 +18,14 @@ import {
   builtinSkinDescriptionKey,
   declaredVariants,
   getUserSkinsDirectory,
+  packSkinOf,
   resolveSkin,
   skinPrefsServerSnapshot,
   skinPrefsSnapshot,
   subscribeSkinPrefs,
   writeSkinPrefs,
 } from '../../lib/skins';
+import { useAppearancePacks } from '../../lib/skins/useAppearancePacks';
 import { useUserSkins } from '../../lib/skins/useUserSkins';
 import type { ResolvedTheme } from '../../lib/theme';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
@@ -33,14 +35,21 @@ export function useSkinPrefs() {
   return useSyncExternalStore(subscribeSkinPrefs, skinPrefsSnapshot, skinPrefsServerSnapshot);
 }
 
+/**
+ * Paper (the default skin) carries no colors: it is the stylesheet palette in
+ * src/index.css. Its own values live here, because the live tokens belong to
+ * whichever skin is selected and would make Paper's swatch mirror that one.
+ */
+export const PAPER_SWATCH: Record<ResolvedTheme, { canvas: string; paper: string; panel: string; ink: string; accent: string }> = {
+  light: { canvas: '#f0eadf', paper: '#f6f1e7', panel: '#fbf8f2', ink: '#1f1b16', accent: '#c2410c' },
+  dark: { canvas: '#110e0a', paper: '#17140f', panel: '#1d1914', ink: '#efe8dc', accent: '#f08a4b' },
+};
+
 /** A swatch row rendered from the skin's own tokens, so it cannot lie. */
 function SkinSwatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
   const variant = skin.variants[theme] ?? skin.variants[declaredVariants(skin)[0] ?? 'light'];
-  const colors = variant?.colors ?? {};
-  // Paper (the default skin) carries no colors: show the live tokens instead.
-  const cells = skin.id === DEFAULT_SKIN_ID
-    ? ['var(--color-canvas)', 'var(--color-paper)', 'var(--color-panel)', 'var(--color-accent)']
-    : [colors.canvas, colors.paper, colors.panel, colors.accent].map((value) => value ?? 'transparent');
+  const colors = skin.id === DEFAULT_SKIN_ID ? PAPER_SWATCH[theme] : variant?.colors ?? {};
+  const cells = [colors.canvas, colors.paper, colors.panel, colors.accent].map((value) => value ?? 'transparent');
   return (
     <span aria-hidden className="flex h-5 shrink-0 overflow-hidden rounded-[4px] ring-1 ring-hairline">
       {cells.map((color, index) => (
@@ -54,10 +63,24 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
   const { t } = useI18n();
   const userSkins = useUserSkins();
   const stored = useSkinPrefs();
+  const packs = useAppearancePacks();
+  // Built-ins first, then the themes folder, plugin themes, and pack colors.
+  // A pack is only listed here for its colors; "Use pack" on the packs card
+  // is what also sets its background.
   const options = useMemo(() => [
     ...BUILTIN_SKINS.map((skin) => ({ skin, source: 'builtin' as const })),
     ...userSkins.data.skins.map((skin) => ({ skin, source: 'user' as const })),
-  ], [userSkins.data.skins]);
+    ...packs.data.packs
+      .map((entry) => packSkinOf(entry.pack))
+      .filter((skin): skin is SkinFile => skin !== null)
+      .map((skin) => ({ skin, source: 'pack' as const })),
+  ], [userSkins.data.skins, packs.data.packs]);
+  const originLabel = (source: 'builtin' | 'user' | 'pack', id: string | undefined) => {
+    if (source === 'builtin') return t('st.skin.builtin');
+    if (source === 'pack') return t('st.skin.pack');
+    const plugin = id === undefined ? undefined : userSkins.data.plugins[id];
+    return plugin !== undefined ? t('st.skin.plugin', { plugin: plugin.id }) : t('st.skin.user');
+  };
 
   const activeSkin = resolveSkin(stored.selection);
   const activeVariants = activeSkin === null ? [] : declaredVariants(activeSkin);
@@ -95,7 +118,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                   <span className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{skin.name}</span>
                     <span className="text-[12px] text-ink-faint">
-                      {source === 'builtin' ? t('st.skin.builtin') : t('st.skin.user')}
+                      {originLabel(source, skin.id)}
                       {only !== null ? ` · ${only}` : ''}
                     </span>
                   </span>
@@ -111,7 +134,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
         })}
       </ul>
       {singleVariantNotice !== null ? <p role="status" className="text-[12px] text-ink-soft">{singleVariantNotice}</p> : null}
-      {stored.selection.source === 'user' && activeSkin === null && !userSkins.isLoading ? (
+      {stored.selection.source !== 'builtin' && activeSkin === null && !userSkins.isLoading && !packs.isLoading ? (
         <p role="status" className="text-[12px] text-amber-ink">{t('st.skin.missing')}</p>
       ) : null}
     </div>
