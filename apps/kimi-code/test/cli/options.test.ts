@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import { createProgram } from '#/cli/commands';
 import type { CLIOptions } from '#/cli/options';
-import { OptionConflictError, OUTPUT_FORMAT_ENV, resolveOutputFormat, resolvePromptInput, validateOptions } from '#/cli/options';
+import { OptionConflictError, PromptInputError, OUTPUT_FORMAT_ENV, resolveOutputFormat, resolvePromptInput, validateOptions } from '#/cli/options';
 
 function parse(argv: string[]): CLIOptions {
   let captured: CLIOptions | undefined;
@@ -321,7 +321,17 @@ describe('CLI options parsing', () => {
       expect((await resolvePromptInput(opts)).prompt).toBe('你好\n世界');
       await writeFile(path, ' \n ');
       await expect(resolvePromptInput(opts)).rejects.toThrow('Prompt cannot be empty.');
-      await expect(resolvePromptInput({ ...opts, promptFile: join(dir, 'missing') })).rejects.toThrow('Failed to read prompt file');
+      await expect(resolvePromptInput({ ...opts, promptFile: join(dir, 'missing') })).rejects.toMatchObject({
+        name: 'PromptInputError', code: 'ENOENT', exitCode: 2,
+        cause: expect.objectContaining({ code: 'ENOENT' }),
+      } satisfies Partial<PromptInputError>);
+    });
+
+    it('classifies stdin stream failures as IO errors rather than option conflicts', async () => {
+      const stream = new Readable({ read() { this.destroy(Object.assign(new Error('input failed'), { code: 'EIO' })); } });
+      await expect(resolvePromptInput(parse(['-p', '-']), stream)).rejects.toMatchObject({
+        name: 'PromptInputError', code: 'EIO', exitCode: 2,
+      } satisfies Partial<PromptInputError>);
     });
 
     it('rejects combining --prompt and --prompt-file', () => {

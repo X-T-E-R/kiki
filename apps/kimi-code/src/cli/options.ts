@@ -72,6 +72,18 @@ export class OptionConflictError extends Error {
   }
 }
 
+export class PromptInputError extends Error {
+  readonly exitCode = 2;
+  readonly code: string | undefined;
+
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'PromptInputError';
+    this.code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code : undefined;
+  }
+}
+
 export function resolveWaitForSessionMs(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const seconds = Number(value);
@@ -94,8 +106,9 @@ export async function resolvePromptInput(
   try {
     prompt = opts.promptFile === undefined ? await text(stdin) : await readFile(opts.promptFile, 'utf8');
   } catch (error) {
-    throw new OptionConflictError(
+    throw new PromptInputError(
       `Failed to read prompt ${opts.promptFile === undefined ? 'from stdin' : `file "${opts.promptFile}"`}: ${error instanceof Error ? error.message : String(error)}`,
+      error,
     );
   }
   if (prompt.trim().length === 0) throw new OptionConflictError('Prompt cannot be empty.');

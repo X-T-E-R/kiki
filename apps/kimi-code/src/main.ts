@@ -24,7 +24,7 @@ import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
 import { startupTrace } from './utils/startup-trace';
 import type { CLIOptions } from './cli/options';
-import { OptionConflictError, resolvePromptInput, validateOptions } from './cli/options';
+import { OptionConflictError, PromptInputError, resolvePromptInput, validateOptions } from './cli/options';
 import { runPrompt } from './cli/run-prompt';
 import { runShell } from './cli/run-shell';
 import { formatStartupError } from './cli/startup-error';
@@ -63,9 +63,9 @@ export async function handleMainCommand(
       validated = { ...validated, options: await resolvePromptInput(validated.options) };
     }
   } catch (error) {
-    if (error instanceof OptionConflictError) {
-      process.stderr.write(`error: ${error.message}\n`);
-      process.exit(1);
+    if (error instanceof OptionConflictError || error instanceof PromptInputError) {
+      process.stderr.write(`error${error instanceof PromptInputError && error.code ? ` [${error.code}]` : ''}: ${error.message}\n`);
+      process.exit(error instanceof PromptInputError ? error.exitCode : 1);
     }
     throw error;
   }
