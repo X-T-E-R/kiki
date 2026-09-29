@@ -1,23 +1,30 @@
 /**
- * The default rail's own sections (prototype): Needs you as plain rows, the
- * todo pointer under Now, the activity feed, and capabilities as a folded
+ * The default rail's own sections (prototype): the profile head over Now,
+ * Needs you as plain rows, the activity feed, and capabilities as a folded
  * block of its own. Everything else on the default rail reuses the current
- * inspector's parts unchanged. Every section takes the variant's tone.
+ * inspector's parts unchanged.
  */
 
 import { memo, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { MAIN_AGENT_ID, type AgentForest, type Block, type TodoItem } from '@kiki/session-core/session';
+import { MAIN_AGENT_ID, type AgentForest, type Block } from '@kiki/session-core/session';
+import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
+import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
 import { mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
+import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
+import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
 import { Icon } from '../icons';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
-import type { RailTone } from './tone';
+
+const SECTION_HEAD = 'text-[11.5px] font-medium tracking-[0.02em]';
+const APPROVE = 'h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-attention ring-1 ring-attention/45 ring-inset transition-colors hover:bg-attention-soft';
+const REJECT = 'h-7 shrink-0 rounded-md px-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink';
 
 const SECTION_BUTTON = `group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`;
 
@@ -31,14 +38,12 @@ const SHOWN_ROWS = 4;
 export const NeedsYouList = memo(function NeedsYouList({
   items,
   forest,
-  tone,
   onResolveApproval,
   onReview,
   onInspect,
 }: {
   items: readonly PendingItem[];
   forest: AgentForest;
-  tone: RailTone;
   onResolveApproval?: (approvalId: string, decision: 'approved' | 'rejected') => Promise<void>;
   onReview?: (kind: 'approval' | 'question', id: string) => void;
   onInspect: (agentId: string) => void;
@@ -56,10 +61,10 @@ export const NeedsYouList = memo(function NeedsYouList({
   return (
     <section data-inspector-needs-you="" aria-label="等你处理">
       <h3 className="flex h-7 items-center gap-1.5">
-        <span className={tone.head.replace(/text-(ink-soft|section-ink)/, 'text-attention')}>等你处理</span>
-        <span className={tone.needsCount}>{ordered.length}</span>
+        <span className={`${SECTION_HEAD} text-attention`}>等你处理</span>
+        <span className="text-[12px] font-medium text-attention tabular-nums">{ordered.length}</span>
       </h3>
-      <ul className={tone.needsList}>
+      <ul className="border-l-2 border-attention pl-2.5">
         {shown.map((item) => {
           const id = pendingId(item);
           const origin = item.originUnknown === true ? undefined : item.originAgentId;
@@ -67,7 +72,7 @@ export const NeedsYouList = memo(function NeedsYouList({
           const trail = node !== undefined ? [...agentTrail(forest, node.agentId), node.label].join(' › ') : '主智能体';
           const busy = sending.has(id);
           return (
-            <li key={id} data-needs-you-item={id} className={`flex min-w-0 items-center gap-2 py-1 ${tone.needsRow}`}>
+            <li key={id} data-needs-you-item={id} className="flex min-w-0 items-center gap-2 py-1.5">
               <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-attention" />
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-baseline gap-1.5 leading-5">
@@ -82,11 +87,11 @@ export const NeedsYouList = memo(function NeedsYouList({
               </span>
               {decidable(item) && canDecide ? (
                 <span className="flex shrink-0 items-center gap-0.5">
-                  <button type="button" data-needs-you-approve={id} disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`${tone.approve} disabled:opacity-50 ${FOCUS_RING}`}>批准</button>
-                  <button type="button" data-needs-you-reject={id} disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`${tone.reject} disabled:opacity-50 ${FOCUS_RING}`}>拒绝</button>
+                  <button type="button" data-needs-you-approve={id} disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`${APPROVE} disabled:opacity-50 ${FOCUS_RING}`}>批准</button>
+                  <button type="button" data-needs-you-reject={id} disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`${REJECT} disabled:opacity-50 ${FOCUS_RING}`}>拒绝</button>
                 </span>
               ) : (
-                <button type="button" data-inspector-review={id} onClick={() => { onReview?.(item.kind, id); }} className={`${tone.approve} ${FOCUS_RING}`}>{item.kind === 'question' ? '去回答' : '查看'}</button>
+                <button type="button" data-inspector-review={id} onClick={() => { onReview?.(item.kind, id); }} className={`${APPROVE} ${FOCUS_RING}`}>{item.kind === 'question' ? '去回答' : '查看'}</button>
               )}
             </li>
           );
@@ -100,24 +105,76 @@ export const NeedsYouList = memo(function NeedsYouList({
 });
 
 /**
- * One line under Now: which checklist item is in progress and how far along
- * the list is, with a thin progress bar. The full list lives in 待办 below.
+ * The page's head: who this agent is, one fact per line (profile name and
+ * source, then model · effort). No card; Now follows directly under it. The
+ * name opens the profile drawer. Capabilities live in their own block below.
+ * Reads the same agent-panel answer as the other slices (same query key).
  */
-export function TodoPointer({ todos, tone }: { todos: readonly TodoItem[]; tone: RailTone }) {
-  if (todos.length === 0) return null;
-  const done = todos.filter((todo) => todo.status === 'done').length;
-  const current = todos.find((todo) => todo.status === 'in_progress') ?? todos.find((todo) => todo.status === 'pending');
+export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd }: {
+  sessionId: string;
+  agentId: string;
+  label: string;
+  fallbackModel?: string;
+  workspaceId?: string;
+  cwd?: string;
+}) {
+  const { t } = useI18n();
+  const { klient } = useConnection();
+  const [drawer, setDrawer] = useState<DetailDrawerTarget | null>(null);
+  const query = { session_id: sessionId, agent_id: agentId };
+  const read = useQuery({
+    queryKey: ['agentCapabilities', query],
+    queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
+    staleTime: 5_000,
+    retry: false,
+  });
+  const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
+  const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
+  const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
+  const profile = read.data?.profile;
+  const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
+  const model = profile?.model ?? fallbackModel;
+  const modelLine = [model, profile?.thinking_effort !== undefined ? t('subagent.effort', { effort: String(profile.thinking_effort) }) : undefined]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join(' · ');
+  const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
+  const identity: AgentIdentity = {
+    id: agentId, profile: profileName ?? '', label, model,
+    thinkingEffort: profile?.thinking_effort, status: 'unknown',
+    summary: profile?.description, description: profile?.description,
+    source: profile?.source, sourceFile: profile?.source_file,
+    context: read.data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID, rawProfile: profile,
+  };
   return (
-    <a href="#rail-todos" data-rail-todo-pointer className={`-mx-1.5 mt-2 block rounded-md px-1.5 py-1 hover:bg-ink/[0.04] ${FOCUS_RING}`}>
-      <span className="flex min-w-0 items-baseline gap-2 text-[12px]">
-        <span className="shrink-0 text-ink-faint">待办</span>
-        <span className="min-w-0 flex-1 truncate text-ink" title={current?.title}>{current?.title ?? '全部完成'}</span>
-        <span className="shrink-0 text-ink-faint tabular-nums">{done}/{todos.length}</span>
-      </span>
-      <span className="mt-1 block h-[3px] overflow-hidden rounded-full bg-ink/[0.07]">
-        <span className={`block h-full rounded-full ${tone.pointerFill}`} style={{ width: `${Math.round((done / todos.length) * 100)}%` }} />
-      </span>
-    </a>
+    <div data-rail-profile-head className="min-w-0">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          data-rail-profile-name
+          title={profile?.description ?? t('inspector.details')}
+          onClick={() => { setDrawer({ kind: 'profile', identity }); }}
+          className={`-ml-1 min-w-0 truncate rounded px-1 text-left font-display text-[16px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
+        >
+          {profileName ?? label}
+        </button>
+        {source !== undefined ? (
+          <span title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>{source.text}</span>
+        ) : null}
+      </div>
+      {modelLine !== '' ? (
+        <p data-rail-profile-model className="truncate text-[12.5px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
+      ) : null}
+      <AgentDetailDrawer
+        target={drawer}
+        onClose={() => { setDrawer(null); }}
+        subagentTargets={targets}
+        toolCapabilities={tools}
+        skills={skills}
+        dispatchTargets={read.data?.targets}
+        draftScope={{ workspace_id: workspaceId, cwd }}
+        callerProfile={profileName}
+      />
+    </div>
   );
 }
 
