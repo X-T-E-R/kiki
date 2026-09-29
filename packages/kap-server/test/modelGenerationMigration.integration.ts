@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { IConfigService, type Scope } from '@kiki/agent-core-v2';
 import { modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema } from '@kiki/protocol';
 
 import { ErrorCode } from '../src/protocol/error-codes';
+import { registerConfigRoutes } from '../src/routes/config';
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -138,5 +140,30 @@ describe('explicit model generation migration REST', () => {
     expect((await post('restore', { revision: applied.revision, backup_key: applied.backup_key, confirmed: true })).code).toBe(ErrorCode.CONFIG_REVISION_CONFLICT);
     expect(await readFile(configPath, 'utf-8')).toBe(concurrent);
     expect(await readFile(join(home, applied.backup_key), 'utf-8')).toBe(original);
+  });
+});
+
+describe('model migration preview failure classification', () => {
+  it('distinguishes an unavailable preview capability from an unreadable config', async () => {
+    type RouteHost = Parameters<typeof registerConfigRoutes>[0];
+    type GetHandler = Parameters<RouteHost['get']>[2];
+    const invoke = async (config: object): Promise<Envelope<unknown>> => {
+      const routes = new Map<string, GetHandler>();
+      const host = {
+        get: (path: string, _options: unknown, handler: GetHandler) => { routes.set(path, handler); },
+        post: () => {},
+      } as RouteHost;
+      const core = { accessor: { get: (key: unknown) => {
+        if (key === IConfigService) return config;
+        throw new Error('unexpected service');
+      } } } as unknown as Scope;
+      registerConfigRoutes(host, core);
+      let result: unknown;
+      await routes.get('/config/model-generation-migration')!({ id: 'preview-id' }, { send: (payload) => { result = payload; } });
+      return result as Envelope<unknown>;
+    };
+    expect(await invoke({})).toMatchObject({ code: ErrorCode.INTERNAL_ERROR, msg: expect.stringContaining('unavailable') });
+    expect(await invoke({ previewModelGenerationMigration: async () => { throw new Error('invalid config'); } }))
+      .toMatchObject({ code: ErrorCode.VALIDATION_FAILED, msg: expect.stringContaining('could not read the configuration') });
   });
 });

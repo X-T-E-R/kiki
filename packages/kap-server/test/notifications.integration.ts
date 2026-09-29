@@ -2,10 +2,13 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import Fastify from 'fastify';
 import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, type Scope } from '@kiki/agent-core-v2';
 import type { NotificationChannel, NotificationSettings } from '@kiki/klient';
 import { startServer, type RunningServer } from '../src/start';
 import { NotificationService } from '../src/services/notifications/notificationService';
+import { registerNotificationRoutes } from '../src/routes/notifications';
+import { ErrorCode } from '../src/protocol/error-codes';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -174,6 +177,25 @@ describe('notification REST and secret boundary', () => {
     const files = await readdir(join(home, 'logs')).catch(() => []);
     for (const file of files.filter((name) => name.endsWith('.log'))) {
       expect(await readFile(join(home, 'logs', file), 'utf8')).not.toContain(secret);
+    }
+  });
+});
+
+describe('notification route failures', () => {
+  it('reports invalid request fields separately from storage failures', async () => {
+    const app = Fastify();
+    registerNotificationRoutes(app, { getSettings: () => { throw Object.assign(new Error('disk is full'), { code: 'ENOSPC' }); } } as unknown as NotificationService);
+    try {
+      const bad = await app.inject({ method: 'PUT', url: '/notifications/settings', payload: {} });
+      const invalid = bad.json() as Envelope<null> & { msg: string };
+      expect(invalid.code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(invalid.msg).toContain('enabled');
+      const failed = await app.inject({ method: 'GET', url: '/notifications/settings' });
+      const internal = failed.json() as Envelope<null> & { msg: string };
+      expect(internal.code).toBe(ErrorCode.INTERNAL_ERROR);
+      expect(internal.msg).toBe('ENOSPC: disk is full');
+    } finally {
+      await app.close();
     }
   });
 });

@@ -227,9 +227,12 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     description: 'Read-only, secret-free preview of legacy model parameter copies and available backup identifiers',
     tags: ['config'],
   }, async (req, reply) => {
+    const config = core.accessor.get(IConfigService);
+    if (config.previewModelGenerationMigration === undefined) {
+      reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, 'Model generation migration previews are unavailable in this version.', req.id));
+      return;
+    }
     try {
-      const config = core.accessor.get(IConfigService);
-      if (config.previewModelGenerationMigration === undefined) throw new Error('Migration previews are unavailable');
       const preview = await config.previewModelGenerationMigration();
       reply.send(okEnvelope({
         revision: preview.revision,
@@ -237,8 +240,9 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         needs_review: preview.needsReview.map(({ modelId, code, field }) => ({ model_id: modelId, code, ...(field === undefined ? {} : { field }) })),
         backups: preview.backups,
       }, req.id));
-    } catch {
-      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Could not preview model generation migration; inspect the configuration and retry.', req.id));
+    } catch (error) {
+      requestLog(req)?.warn({ operation: 'model_generation_preview', error: String(error) }, 'config migration preview failed');
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Model generation migration preview could not read the configuration; inspect its format and permissions.', req.id));
     }
   });
   app.get(previewRoute.path, previewRoute.options, previewRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
