@@ -209,7 +209,7 @@ describe('Sync/Async dependency loop', () => {
     b(): boolean;
   }
 
-  it('sync re-entrant cycle (via createInstance in ctor) explodes with RECURSIVELY', () => {
+  it('sync re-entrant cycle (via createInstance in ctor) reports the full dependency chain', () => {
     const IA = createDecorator<IA>('loop-sync-A');
     const IB = createDecorator<IB>('loop-sync-B');
 
@@ -253,8 +253,13 @@ describe('Sync/Async dependency loop', () => {
     } catch (e) {
       captured = e;
     }
-    expect(captured).toBeInstanceOf(Error);
-    expect((captured as Error).message).toContain('RECURSIVELY');
+    expect(captured).toBeInstanceOf(CyclicDependencyError);
+    expect((captured as CyclicDependencyError).path).toEqual([
+      'loop-sync-A',
+      'loop-sync-B',
+      'loop-sync-A',
+    ]);
+    expect((captured as Error).message).toContain('loop-sync-A → loop-sync-B → loop-sync-A');
   });
 
 });

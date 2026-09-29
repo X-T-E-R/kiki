@@ -788,7 +788,7 @@ export class InstantiationService implements IInstantiationService {
     _trace: Trace,
   ): T {
     if (this._activeInstantiations.has(id)) {
-      throw new Error(`illegal state - RECURSIVELY instantiating service '${String(id)}'`);
+      throw new CyclicDependencyError(this._reentrantChain(id));
     }
     this._activeInstantiations.add(id);
     try {
@@ -796,6 +796,18 @@ export class InstantiationService implements IInstantiationService {
     } finally {
       this._activeInstantiations.delete(id);
     }
+  }
+
+  private _reentrantChain(id: ServiceIdentifier<any>): string[] {
+    const chain: string[] = [];
+    for (const active of this._root()._inProgress) {
+      const name = String(active);
+      if (chain.at(-1) !== name) chain.push(name);
+    }
+    const requested = String(id);
+    if (chain.length === 0) return [requested, requested];
+    if (chain.at(-1) === requested) return [...chain, requested];
+    return [...chain, requested, chain.at(-1)!];
   }
 
   private _createAndCacheServiceInstance<T>(
