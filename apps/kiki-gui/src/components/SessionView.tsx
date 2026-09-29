@@ -778,6 +778,16 @@ export function withOptimisticUserBlock(
   } satisfies UserBlock];
 }
 
+/** Put a failed prompt's notes back in front of any the user added since. */
+export function restoreSentAnnotations(
+  current: readonly SelectionAnnotation[],
+  sent: readonly SelectionAnnotation[],
+): readonly SelectionAnnotation[] {
+  const present = new Set(current.map((annotation) => annotation.id));
+  const missing = sent.filter((annotation) => !present.has(annotation.id));
+  return missing.length === 0 ? current : [...missing, ...current];
+}
+
 export function recoverFailedSubmission(
   currentText: string,
   currentAttachments: readonly ComposerAttachment[],
@@ -1729,6 +1739,11 @@ export function SessionView({
         setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
         updateDraft('');
         updateAttachments([]);
+        // The notes riding this prompt leave the composer with its text; a
+        // failed submit hands them back (next to any added meanwhile).
+        const sentAnnotations = annotations;
+        const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
+        setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -1749,7 +1764,6 @@ export function SessionView({
           })
           .then((result) => {
             setQuote(null);
-            setAnnotations([]);
             setGoalMode(false);
             // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
             // running turn joins it right away through the queue's steer route.
@@ -1772,6 +1786,7 @@ export function SessionView({
             }
           })
           .catch((error: unknown) => {
+            setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
             const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, text, composerAttachments);
             if (recovery !== undefined) {
               updateDraft(recovery.text);

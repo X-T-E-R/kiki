@@ -10,7 +10,15 @@ import { readComposerState, resetComposerMemoryForTests, type SelectionAnnotatio
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
 
-const { seat } = vi.hoisted(() => ({ seat: { composer: null as unknown } }));
+const { seat, submit } = vi.hoisted(() => ({
+  seat: { composer: null as unknown },
+  submit: {
+    // Each send hands the test a deferred result so it can inspect the
+    // composer mid-flight, then settle it (accepted / queued / rejected).
+    calls: [] as { text: string; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    steered: [] as string[],
+  },
+}));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
@@ -39,6 +47,11 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     }
 
     setFocusedAgent() {}
+    sendPrompt(input: { text: string }) {
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, resolve, reject }); });
+    }
+    steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
+    refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
     getForest() { return undefined; }
@@ -87,10 +100,20 @@ function ActiveSession() {
   return <SessionRouteView sessionId={id} sessions={[]} onToggleSidebar={() => {}} />;
 }
 
-function currentAnnotations(): readonly SelectionAnnotation[] {
+type ComposerProps = {
+  annotations: readonly SelectionAnnotation[];
+  onSend: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+  onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+};
+
+function composerProps(): ComposerProps {
   expect(isValidElement(seat.composer)).toBe(true);
-  const context = seat.composer as ReactElement<{ children: ReactElement<{ annotations: readonly SelectionAnnotation[] }> }>;
-  return context.props.children.props.annotations;
+  const context = seat.composer as ReactElement<{ children: ReactElement<ComposerProps> }>;
+  return context.props.children.props;
+}
+
+function currentAnnotations(): readonly SelectionAnnotation[] {
+  return composerProps().annotations;
 }
 
 beforeAll(() => {
@@ -138,5 +161,75 @@ describe('session selection annotations', () => {
       container.remove();
       resetComposerMemoryForTests();
     }
+  });
+
+  const accepted = (status: 'running' | 'queued') => ({
+    prompt_id: 'prompt-1', user_message_id: 'msg-1', status, created_at: '2026-01-01T00:00:00.000Z', content: [],
+  });
+
+  async function withSession(run: (container: HTMLElement) => Promise<void>): Promise<void> {
+    resetComposerMemoryForTests();
+    submit.calls.length = 0;
+    submit.steered.length = 0;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <I18nProvider>
+              <MemoryRouter initialEntries={['/s/session-a']}>
+                <RoutesWithNavigation />
+              </MemoryRouter>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-annotate]')!.click(); });
+      expect(currentAnnotations()).toHaveLength(1);
+      await run(container);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+      resetComposerMemoryForTests();
+    }
+  }
+
+  it.each([
+    ['a plain send', 'running', false],
+    ['a send that parks in the queue', 'queued', false],
+    ['send now (queued, then steered in)', 'queued', true],
+  ] as const)('takes the notes off the composer the moment %s goes out', async (_label, status, now) => {
+    await withSession(async () => {
+      let sent: Promise<unknown> | undefined;
+      await act(async () => {
+        sent = now ? composerProps().onSendNow('go on', []) : composerProps().onSend('go on', []);
+      });
+      expect(submit.calls).toHaveLength(1);
+      expect(submit.calls[0]!.text).toContain('keep this');
+      // In flight: the notes already ride the prompt, not the composer.
+      expect(currentAnnotations()).toEqual([]);
+      await act(async () => { submit.calls[0]!.resolve(accepted(status)); await sent; });
+      expect(currentAnnotations()).toEqual([]);
+      expect(readComposerState('session-a').annotations).toEqual([]);
+      expect(submit.steered).toEqual(now ? ['prompt-1'] : []);
+    });
+  });
+
+  it('hands the notes back when the send fails, ahead of any added meanwhile', async () => {
+    await withSession(async (container) => {
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('go on', []); });
+      expect(currentAnnotations()).toEqual([]);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-annotate]')!.click(); });
+      const added = currentAnnotations();
+      expect(added).toHaveLength(1);
+      await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
+      const back = currentAnnotations();
+      expect(back).toHaveLength(2);
+      expect(back[1]).toBe(added[0]);
+      expect(back[0]!.id).not.toBe(added[0]!.id);
+    });
   });
 });

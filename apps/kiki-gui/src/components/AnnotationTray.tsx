@@ -1,15 +1,17 @@
 /**
- * AnnotationTray — every note in this conversation, one card above the
- * composer: the ones riding the next prompt ("Not sent yet") and the ones
- * already in the timeline. A single quiet header row while closed; opened,
- * each note can be edited in place, removed, or located in the timeline.
+ * AnnotationTray — the notes riding the next prompt, one card above the
+ * composer. It exists only while something is unsent: once a prompt carries
+ * its notes they live in the timeline (the marks and the note under the
+ * message), and the tray leaves with them. While it is open, the notes
+ * already in the conversation sit behind one collapsed line for editing or
+ * locating, so the tray never reads as a list of things still to send.
  *
  * Sent notes derive from the transcript exactly like the in-line marks
  * (collectTimelineAnnotations + the local override overlay), so an edit here
  * and an edit in the timeline popover are the same write.
  */
 
-import { useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   applyAnnotationOverrides,
@@ -53,8 +55,9 @@ export function AnnotationTray({
   readonly onUpdatePending: (id: string, comment: string) => void;
   readonly onRemovePending: (id: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const [open, setOpen] = useState(false);
+  const [sentOpen, setSentOpen] = useState(false);
   const overrides = useSyncExternalStore(
     subscribeAnnotationOverrides,
     getAnnotationOverridesSnapshot,
@@ -74,8 +77,7 @@ export function AnnotationTray({
     () => pending.map((annotation) => ({ key: `p:${annotation.id}`, id: annotation.id, quote: annotation.quote, comment: annotation.comment })),
     [pending],
   );
-  const total = sent.length + drafts.length;
-  if (total === 0) return null;
+  if (drafts.length === 0) return null;
 
   const saveSent = (id: string, comment: string) => {
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], comment });
@@ -83,7 +85,7 @@ export function AnnotationTray({
   const removeSent = (id: string) => {
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], deleted: true });
   };
-  const latest = drafts.at(-1) ?? sent.at(-1);
+  const latest = drafts.at(-1);
 
   return (
     <div className="px-6 pb-2">
@@ -103,7 +105,7 @@ export function AnnotationTray({
         >
           <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
           <span className="shrink-0 text-[13px] font-medium text-ink">{t('annotationTray.title')}</span>
-          <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] font-medium tabular-nums text-ink-soft">{total}</span>
+          <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] font-medium tabular-nums text-ink-soft">{drafts.length}</span>
           {!open && latest !== undefined ? (
             <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">
               {latest.comment === null || latest.comment === '' ? `“${oneLine(latest.quote)}”` : latest.comment}
@@ -113,43 +115,46 @@ export function AnnotationTray({
         </button>
         {open ? (
           <div className="max-h-[min(40vh,320px)] overflow-y-auto px-2 pb-2">
-            {drafts.length > 0 ? (
-              <TrayGroup label={t('annotationTray.pending')}>
-                {drafts.map((note) => (
-                  <TrayRow key={note.key} note={note} onSave={onUpdatePending} onRemove={onRemovePending} />
-                ))}
-              </TrayGroup>
-            ) : null}
+            <ul className="flex flex-col pt-1">
+              {drafts.map((note) => (
+                <TrayRow key={note.key} note={note} onSave={onUpdatePending} onRemove={onRemovePending} />
+              ))}
+            </ul>
             {sent.length > 0 ? (
-              <TrayGroup label={t('annotationTray.sent')}>
-                {sent.map((note) => (
-                  <TrayRow
-                    key={note.key}
-                    note={note}
-                    onSave={saveSent}
-                    onRemove={removeSent}
-                    onShow={() => {
-                      void locateInTimeline(
-                        { kind: 'annotation', annotationId: note.id, blockId: note.blockId! },
-                        { sessionId, agentId },
-                      );
-                    }}
-                  />
-                ))}
-              </TrayGroup>
+              <div data-annotation-tray-sent className="mt-1 border-t border-hairline pt-1">
+                <button
+                  type="button"
+                  data-annotation-tray-sent-toggle
+                  aria-expanded={sentOpen}
+                  onClick={() => { setSentOpen((value) => !value); }}
+                  className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[11.5px] font-medium text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                >
+                  <DisclosureChevron open={sentOpen} className="shrink-0" />
+                  <span>{tp('annotationTray.sentCount', sent.length)}</span>
+                </button>
+                {sentOpen ? (
+                  <ul className="flex flex-col">
+                  {sent.map((note) => (
+                    <TrayRow
+                      key={note.key}
+                      note={note}
+                      onSave={saveSent}
+                      onRemove={removeSent}
+                      onShow={() => {
+                        void locateInTimeline(
+                          { kind: 'annotation', annotationId: note.id, blockId: note.blockId! },
+                          { sessionId, agentId },
+                        );
+                      }}
+                    />
+                  ))}
+                  </ul>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
       </section>
-    </div>
-  );
-}
-
-function TrayGroup({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="pt-1">
-      <p className="px-1.5 pt-1 pb-0.5 text-[11px] font-medium text-ink-faint">{label}</p>
-      <ul className="flex flex-col">{children}</ul>
     </div>
   );
 }
