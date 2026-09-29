@@ -26,7 +26,7 @@ import {
   SEMANTIC_STATE_TONE,
   SemanticBody,
   SemanticDetailLine,
-  SemanticJump,
+  SemanticJumpSlot,
   useSemanticContext,
 } from './timeline/ToolSemanticParts';
 import { describeTool } from './toolSemantics';
@@ -484,14 +484,26 @@ export const ToolCard = memo(function ToolCard({
     // outcome in the trailing column; failure, stop and progress read exactly
     // as they do on any other step.
     const settled = block.status === 'done';
-    const semanticDetail = errorSummary !== undefined || block.status === 'stopped'
+    const semanticDetail = errorSummary !== undefined ? (
+      // The failure itself, in the row's own type: danger colour only.
+      <span title={errorTitle}>{errorSummary}</span>
+    ) : block.status === 'stopped'
       ? target
       : semantics.object === undefined && semantics.note === undefined && block.status === 'running' && block.progressText !== undefined
         ? <span className="text-ink-faint">{block.progressText}</span>
         : <SemanticDetailLine semantics={semantics} />;
-    const stateMeta = settled && semantics.state !== undefined ? (
-      <span data-tool-state className={SEMANTIC_STATE_TONE[semantics.state.tone]}>{semantics.state.text}</span>
-    ) : undefined;
+    // One trailing fact column: the count, the outcome word, or (when the
+    // tool states neither) the duration. Every semantic row keeps the same
+    // mark, chevron and jump slots after it, so the column has one right edge.
+    const count = settled ? semantics.count : undefined;
+    const state = settled ? semantics.state : undefined;
+    const fact = count === undefined && state === undefined ? durationMeta : (
+      <span data-tool-fact className="font-sans tabular-nums">
+        {count === undefined ? null : <span data-tool-count>{count}</span>}
+        {count !== undefined && state !== undefined ? <span aria-hidden className="text-ink-faint">{' · '}</span> : null}
+        {state === undefined ? null : <span data-tool-state className={SEMANTIC_STATE_TONE[state.tone]}>{state.text}</span>}
+      </span>
+    );
     return (
       <ActivityRow
         nested={nested}
@@ -502,11 +514,10 @@ export const ToolCard = memo(function ToolCard({
         detail={semanticDetail}
         expanded={expanded}
         onToggle={() => { setExpanded((value) => !value); }}
-        stats={settled && semantics.count !== undefined ? <span data-tool-count>{semantics.count}</span> : undefined}
-        meta={stateMeta ?? durationMeta}
-        metaWidth={stateMeta === undefined ? 'fixed' : 'auto'}
+        meta={fact}
+        metaWidth="auto"
         status={<StatusIcon block={block} />}
-        aside={semantics.link === undefined ? undefined : <SemanticJump link={semantics.link} onOpenAgent={onOpenAgent} />}
+        aside={<SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
       >
         {expanded ? (
           <SemanticBody

@@ -3989,6 +3989,9 @@ describe('semantic tool cards', () => {
     expect(row.querySelector('[data-tool-semantic-detail]')?.textContent).toMatch(/Please rebase onto main.*…$/);
     expect(row.querySelector('[data-tool-state]')?.textContent).toBe('Pending delivery');
     expect(row.textContent).not.toContain('"idempotency_key"');
+    await expand(container);
+    const threadField = [...container.querySelectorAll('[data-tool-semantic-fields] dd')][0]!;
+    expect(threadField.getAttribute('title')).toBe('session_peer');
     await act(async () => { click(row.querySelector('[data-tool-jump="session"]')!); });
     expect(path()).toBe('/s/session_peer');
   });
@@ -4030,7 +4033,7 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-tool-state]')?.textContent).toBe('1 update');
     await expand(container);
     const item = container.querySelector('[data-tool-semantic-items] [data-tool-semantic-link="session"]')!;
-    expect(item.textContent).toContain('turn ended · completed');
+    expect(item.textContent).toContain('turn ended · Completed');
     await act(async () => { click(item); });
     expect(path()).toBe('/s/session_peer?turn=3');
   });
@@ -4045,7 +4048,7 @@ describe('semantic tool cards', () => {
     expect(container.textContent).toContain('Run agent');
     expect(container.textContent).toContain('Map auth flow');
     expect(container.textContent).toContain('explore');
-    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('completed');
+    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('Completed');
     await act(async () => { click(container.querySelector('[data-tool-jump="agent"]')!); });
     expect(opened).toEqual(['agent-7']);
     await expand(container);
@@ -4069,7 +4072,7 @@ describe('semantic tool cards', () => {
     expect(container.textContent).toContain('Task output');
     expect(container.textContent).toContain('pnpm test');
     const state = container.querySelector('[data-tool-state]');
-    expect(state?.textContent).toBe('failed');
+    expect(state?.textContent).toBe('Failed');
     expect(state?.className).toContain('text-danger');
     await expand(container);
     const fields = container.querySelector('[data-tool-semantic-fields]')!;
@@ -4143,7 +4146,7 @@ describe('semantic tool cards', () => {
     expect(container.textContent).toContain('New card');
     expect(container.textContent).toContain('Ship thread cards');
     await expand(container);
-    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('workspace');
+    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Workspace');
     await act(async () => { click(container.querySelector('[data-tool-jump="route"]')!); });
     expect(path()).toBe('/board');
   });
@@ -4230,5 +4233,55 @@ describe('semantic tool cards', () => {
     expect(mergeSubagentRows([call, sent] as DisplayNode[])).toEqual([sent]);
     const failedCall = { ...call, status: 'error' as const, isError: true };
     expect(mergeSubagentRows([failedCall, sent] as DisplayNode[])).toEqual([failedCall, sent]);
+  });
+  it('keeps one right edge: every semantic row reserves the mark and jump slots, and the fact is proportional', async () => {
+    const withJump = await renderCard(semanticTool(
+      'ThreadSend',
+      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      JSON.stringify({ messageId: 'm', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery: 'delivered' }),
+    ));
+    const withoutJump = await renderCard(semanticTool('ThreadList', {}, JSON.stringify({ threads: [] })));
+    expect(withJump.container.querySelector('[data-tool-jump="session"]')).not.toBeNull();
+    const slot = withoutJump.container.querySelector('[data-tool-jump-slot]');
+    expect(slot?.className).toContain('w-7');
+    for (const { container } of [withJump, withoutJump]) {
+      const fact = container.querySelector('[data-tool-fact]')!;
+      expect(fact.className).toContain('font-sans');
+      expect(fact.className).toContain('tabular-nums');
+      expect(fact.closest('[class*="font-mono"]')).toBeNull();
+    }
+    expect(withoutJump.container.querySelector('[data-tool-count]')?.textContent).toBe('0 threads');
+  });
+
+  it('writes a failure’s first line in the row’s own type, coloured only', async () => {
+    const { container } = await renderCard(semanticTool(
+      'ThreadSend',
+      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      'Thread communication is disabled for this session.',
+      { status: 'error', isError: true },
+    ));
+    const detail = [...container.querySelectorAll('[data-activity-toggle] span')].find((node) => node.textContent === 'Thread communication is disabled for this session.')!;
+    expect(detail.closest('[class*="font-mono"]')).toBeNull();
+    expect(detail.closest('.text-danger')).not.toBeNull();
+  });
+
+  it('translates wire states in Chinese instead of showing the engine words', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    try {
+      const run = await renderCard(semanticTool(
+        'AgentRun',
+        { prompt: 'x', description: 'Map auth flow' },
+        'agent_id: agent-7\nactual_profile: explore\nstatus: completed',
+      ));
+      expect(run.container.querySelector('[data-tool-state]')?.textContent).toBe('已完成');
+      const stop = await renderCard(semanticTool('TaskStop', { task_id: 'bash-k2' }, 'task_id: bash-k2\nstatus: killed\nreason: done'));
+      expect(stop.container.querySelector('[data-tool-state]')?.textContent).toBe('已停止');
+      const list = await renderCard(semanticTool('AgentList', {}, JSON.stringify({ agents: [{ agent_id: 'a1', name: 'deps', status: 'running' }] })));
+      await expand(list.container);
+      expect(list.container.querySelector('[data-tool-semantic-items]')?.textContent).toContain('运行中');
+      expect(list.container.querySelector('[data-tool-semantic-items]')?.textContent).not.toContain('running');
+    } finally {
+      localStorage.removeItem('kiki.locale');
+    }
   });
 });

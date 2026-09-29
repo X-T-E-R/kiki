@@ -30,6 +30,8 @@ export interface SemanticField {
   readonly label: string;
   readonly value: string;
   readonly mono?: boolean;
+  /** Hover text when the value is a shortened form (a thread title for an id). */
+  readonly valueTitle?: string;
 }
 
 export interface SemanticItem {
@@ -151,6 +153,53 @@ function section(text: string, name: string): string | undefined {
   return body === '' ? undefined : body;
 }
 
+/**
+ * Wire enum values the engine reports (task, agent, thread, board, goal and
+ * history states, roles, scopes) in the reader's language. An unknown value
+ * from a newer server reads as itself with underscores opened up.
+ */
+const WIRE_WORDS: Record<string, I18nKey> = {
+  running: 'tc.sem.wire.running',
+  completed: 'tc.sem.wire.completed',
+  complete: 'tc.sem.wire.completed',
+  failed: 'tc.sem.wire.failed',
+  errored: 'tc.sem.wire.failed',
+  timed_out: 'tc.sem.wire.timed_out',
+  killed: 'tc.sem.wire.killed',
+  lost: 'tc.sem.wire.lost',
+  interrupted: 'tc.sem.wire.interrupted',
+  cancelled: 'tc.sem.wire.cancelled',
+  blocked: 'tc.sem.wire.blocked',
+  unknown: 'tc.sem.wire.unknown',
+  untracked: 'tc.sem.wire.untracked',
+  cold: 'tc.sem.wire.cold',
+  idle: 'tc.sem.wire.idle',
+  active: 'tc.sem.wire.active',
+  in_progress: 'tc.sem.wire.in_progress',
+  paused: 'tc.sem.wire.paused',
+  done: 'tc.sem.wire.done',
+  superseded: 'tc.sem.wire.superseded',
+  user: 'tc.sem.wire.user',
+  assistant: 'tc.sem.wire.assistant',
+  tool: 'tc.sem.wire.tool',
+  session: 'tc.sem.wire.session',
+  this_session: 'tc.sem.wire.session',
+  workspace: 'tc.sem.wire.workspace',
+  embedded: 'tc.sem.wire.embedded',
+  global: 'tc.sem.wire.global',
+  process: 'tc.sem.wire.process',
+  agent: 'tc.sem.wire.agent',
+  question: 'tc.sem.wire.question',
+  auto: 'tc.sem.wire.auto',
+  fixed: 'tc.sem.wire.fixed',
+};
+
+export function wireWord(value: string | undefined, ctx: Pick<SemanticContext, 't'>): string | undefined {
+  if (value === undefined) return undefined;
+  const key = WIRE_WORDS[value];
+  return key === undefined ? value.replaceAll('_', ' ') : ctx.t(key);
+}
+
 function previewOf(text: string | undefined, lines = 6, chars = 600): string | undefined {
   if (text === undefined || text.trim() === '') return undefined;
   const head = text.split(/\r?\n/).slice(0, lines).join('\n');
@@ -173,6 +222,14 @@ function threadSessionId(ref: unknown): string | undefined {
 function threadName(sessionId: string | undefined, ctx: SemanticContext, known?: string): string | undefined {
   if (sessionId === undefined) return known;
   return known ?? ctx.threadTitle(sessionId) ?? shortId(sessionId);
+}
+
+/** The thread fact: its title when the client knows it, else a shortened id; the full id on hover. */
+function threadField(sessionId: string, ctx: SemanticContext): SemanticField {
+  const title = ctx.threadTitle(sessionId);
+  return title === undefined
+    ? { label: ctx.t('tc.sem.field.thread'), value: shortId(sessionId), mono: true, valueTitle: sessionId }
+    : { label: ctx.t('tc.sem.field.thread'), value: title, valueTitle: sessionId };
 }
 
 function threadLink(sessionId: string | undefined, ctx: SemanticContext, turn?: number): SemanticLink | undefined {
@@ -202,7 +259,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         note: result?.['prompt_started'] === true ? t('tc.sem.thread.started') : undefined,
         link: threadLink(id, ctx),
         fields: [
-          ...(id === undefined ? [] : [{ label: t('tc.sem.field.thread'), value: id, mono: true }]),
+          ...(id === undefined ? [] : [threadField(id, ctx)]),
           ...(str(result?.['profile']) === undefined ? [] : [{ label: t('tc.sem.field.profile'), value: str(result?.['profile'])! }]),
           ...(str(result?.['cwd'] ?? args['cwd']) === undefined ? [] : [{ label: t('tc.sem.field.cwd'), value: str(result?.['cwd'] ?? args['cwd'])!, mono: true }]),
         ],
@@ -220,7 +277,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           return {
             key: id ?? String(index),
             primary: threadName(id, ctx, str(thread['title'])) ?? t('tc.sem.untitled'),
-            secondary: str(thread['state']),
+            secondary: wireWord(str(thread['state']), ctx),
             link: threadLink(id, ctx),
           };
         }),
@@ -243,7 +300,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           return {
             key: String(turnId ?? index),
             primary: input === undefined ? t('tc.sem.noText') : clipLine(input, 120),
-            secondary: [turnId === undefined ? undefined : t('tc.sem.turnN', { n: turnId }), str(turn['reason']), output === undefined ? undefined : clipLine(output, 80)]
+            secondary: [turnId === undefined ? undefined : t('tc.sem.turnN', { n: turnId }), wireWord(str(turn['reason']), ctx), output === undefined ? undefined : clipLine(output, 80)]
               .filter((part): part is string => part !== undefined).join(' · '),
             link: turnId === undefined ? undefined : threadLink(id, ctx, turnId),
           };
@@ -270,7 +327,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
               : undefined,
         link: threadLink(id, ctx),
         fields: [
-          ...(id === undefined ? [] : [{ label: t('tc.sem.field.thread'), value: id, mono: true }]),
+          ...(id === undefined ? [] : [threadField(id, ctx)]),
           ...(result?.['deduplicated'] === true ? [{ label: t('tc.sem.field.delivery'), value: t('agentMessage.deduplicated') }] : []),
         ],
         preview: content === undefined ? undefined : previewOf(content, 12, 1200),
@@ -289,7 +346,7 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           items.push({
             key: `${id ?? '?'}-${String(num(activity['seq']) ?? items.length)}`,
             primary: threadName(id, ctx) ?? t('tc.sem.untitled'),
-            secondary: [THREAD_ACTIVITY_KEYS[kind] === undefined ? kind : t(THREAD_ACTIVITY_KEYS[kind]), str(activity['reason'])]
+            secondary: [THREAD_ACTIVITY_KEYS[kind] === undefined ? kind : t(THREAD_ACTIVITY_KEYS[kind]), wireWord(str(activity['reason']), ctx)]
               .filter((part): part is string => part !== undefined && part !== '').join(' · '),
             link: threadLink(id, ctx, turnId),
           });
@@ -341,7 +398,7 @@ function describeAgent(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         verb: t(resume === undefined ? 'tc.sem.agent.run' : 'tc.sem.agent.resume'),
         object: str(args['description']) ?? str(args['name']) ?? resume,
         note: fields.get('actual_profile') ?? str(args['profile']),
-        state: status === undefined ? undefined : { text: status, tone: AGENT_STATUS_TONE[status] ?? 'plain' },
+        state: status === undefined ? undefined : { text: wireWord(status, ctx)!, tone: AGENT_STATUS_TONE[status] ?? 'plain' },
         link: agentId === undefined ? undefined : { kind: 'agent', agentId, label: t('tc.sem.openAgent') },
         fields: [
           ...(agentId === undefined ? [] : [{ label: t('tc.sem.field.agent'), value: agentId, mono: true }]),
@@ -363,7 +420,7 @@ function describeAgent(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
           return {
             key: agentId ?? String(index),
             primary: str(agent['name']) ?? agentId ?? '?',
-            secondary: [str(agent['profile']), str(agent['status'])].filter((part): part is string => part !== undefined).join(' · '),
+            secondary: [str(agent['profile']), wireWord(str(agent['status']), ctx)].filter((part): part is string => part !== undefined).join(' · '),
             link: agentId === undefined ? undefined : { kind: 'agent', agentId, label: t('tc.sem.openAgent') },
           };
         }),
@@ -406,19 +463,19 @@ const TASK_STATUS_TONE: Record<string, SemanticTone> = {
   cancelled: 'warn',
 };
 
-function taskState(status: string | undefined): ToolSemantics['state'] {
-  return status === undefined ? undefined : { text: status.replaceAll('_', ' '), tone: TASK_STATUS_TONE[status] ?? 'plain' };
+function taskState(status: string | undefined, ctx: SemanticContext): ToolSemantics['state'] {
+  return status === undefined ? undefined : { text: wireWord(status, ctx)!, tone: TASK_STATUS_TONE[status] ?? 'plain' };
 }
 
 function taskFields(fields: Map<string, string>, ctx: SemanticContext): SemanticField[] {
   const { t } = ctx;
   const out: SemanticField[] = [];
-  const push = (key: string, label: I18nKey, mono = false) => {
+  const push = (key: string, label: I18nKey, mono = false, wire = false) => {
     const value = fields.get(key);
-    if (value !== undefined && value !== '') out.push({ label: t(label), value, mono });
+    if (value !== undefined && value !== '') out.push({ label: t(label), value: wire ? wireWord(value, ctx)! : value, mono });
   };
   push('task_id', 'tc.sem.field.task', true);
-  push('kind', 'tc.sem.field.kind');
+  push('kind', 'tc.sem.field.kind', false, true);
   push('exit_code', 'tc.sem.field.exitCode', true);
   push('terminal_reason', 'tc.sem.field.reason');
   push('reason', 'tc.sem.field.reason');
@@ -430,7 +487,7 @@ function taskItems(text: string, ctx: SemanticContext): SemanticItem[] {
   return plainRecords(text).map((fields, index) => ({
     key: fields.get('task_id') ?? String(index),
     primary: fields.get('description') ?? fields.get('task_id') ?? '?',
-    secondary: [fields.get('task_id'), fields.get('status')?.replaceAll('_', ' ')].filter((part): part is string => part !== undefined).join(' · '),
+    secondary: [fields.get('task_id'), wireWord(fields.get('status'), ctx)].filter((part): part is string => part !== undefined).join(' · '),
     link: fields.get('agent_id') === undefined ? undefined : { kind: 'agent' as const, agentId: fields.get('agent_id')!, label: ctx.t('tc.sem.openAgent') },
   }));
 }
@@ -459,7 +516,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         verb: t('tc.sem.task.output'),
         object: fields.get('description') ?? taskId,
         note: fields.get('description') === undefined ? undefined : taskId,
-        state: taskState(fields.get('status')),
+        state: taskState(fields.get('status'), ctx),
         fields: taskFields(fields, ctx),
         preview: previewOf(text === undefined ? undefined : section(text, 'output'), 10, 1200),
       };
@@ -469,7 +526,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         verb: t('tc.sem.task.stop'),
         object: taskId,
         note: str(args['reason']),
-        state: taskState(fields.get('status')),
+        state: taskState(fields.get('status'), ctx),
         fields: taskFields(fields, ctx),
       };
     case 'TaskWait': {
@@ -483,7 +540,7 @@ function describeTask(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         object: finishedFields.get('description') ?? taskId ?? (timeout === undefined ? undefined : t('tc.sem.task.anyTask')),
         note: finishedFields.get('description') === undefined ? undefined : fields.get('task_id'),
         state: waitStatus === 'completed'
-          ? taskState(finishedFields.get('status') ?? 'completed')
+          ? taskState(finishedFields.get('status') ?? 'completed', ctx)
           : waitStatus === 'timed_out'
             ? { text: t('tc.sem.timedOut'), tone: 'warn' }
             : waitStatus === 'interrupted'
@@ -537,7 +594,7 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
         icon: 'search',
         verb: t('tc.sem.history.search'),
         object: str(args['query']),
-        note: scope,
+        note: wireWord(scope, ctx),
         count: result === undefined || result['error'] !== undefined ? undefined : tp('tc.sem.hits', hits.length),
         state: historyState(result, ctx),
         items: hits.map((hit, index) => ({
@@ -545,7 +602,7 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
           primary: clipLine(str(hit['snippet']) ?? '', 140),
           secondary: [
             num(hit['turn']) === undefined ? undefined : t('tc.sem.turnN', { n: num(hit['turn'])! }),
-            str(hit['role']),
+            wireWord(str(hit['role']), ctx),
             str(hit['session_id']) === undefined ? undefined : threadName(str(hit['session_id']), ctx),
           ].filter((part): part is string => part !== undefined).join(' · '),
           link: historyLink(hit, ctx),
@@ -608,11 +665,11 @@ function describeHistory(block: ToolBlock, ctx: SemanticContext): ToolSemantics 
   return { icon: 'search', verb: block.name };
 }
 
-function boardCardItem(card: Rec, index: number): SemanticItem {
+function boardCardItem(card: Rec, index: number, ctx: SemanticContext): SemanticItem {
   return {
     key: str(card['id']) ?? String(index),
     primary: str(card['title']) ?? str(card['id']) ?? '?',
-    secondary: [str(card['priority']), str(card['status'])?.replaceAll('_', ' '), str(card['category'])]
+    secondary: [str(card['priority']), wireWord(str(card['status']), ctx), str(card['category'])]
       .filter((part): part is string => part !== undefined).join(' · '),
   };
 }
@@ -634,13 +691,13 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       icon: 'board',
       verb: t(action === 'update' ? 'tc.sem.board.update' : 'tc.sem.board.create'),
       object: title,
-      note: str(card?.['status'])?.replaceAll('_', ' ') ?? str(patch?.['status'])?.replaceAll('_', ' '),
+      note: wireWord(str(card?.['status']) ?? str(patch?.['status']), ctx),
       state: errorState,
       link,
       fields: [
         ...(str(card?.['id']) === undefined ? [] : [{ label: t('tc.sem.field.card'), value: str(card?.['id'])!, mono: true }]),
         ...(str(card?.['priority'] ?? args['priority']) === undefined ? [] : [{ label: t('tc.sem.field.priority'), value: str(card?.['priority'] ?? args['priority'])! }]),
-        ...(str(rec(card?.['storage'])?.['kind']) === undefined ? [] : [{ label: t('tc.sem.field.scope'), value: str(rec(card?.['storage'])?.['kind'])! }]),
+        ...(str(rec(card?.['storage'])?.['kind']) === undefined ? [] : [{ label: t('tc.sem.field.scope'), value: wireWord(str(rec(card?.['storage'])?.['kind']), ctx)! }]),
         ...(num(card?.['revision']) === undefined ? [] : [{ label: t('tc.sem.field.revision'), value: String(num(card?.['revision'])) }]),
       ],
       preview: previewOf(str(args['description']) ?? str(patch?.['description'])),
@@ -653,7 +710,7 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       icon: 'board',
       verb: t('tc.sem.board.show'),
       object: str(page?.['title']) ?? str(args['id']),
-      note: str(page?.['status'])?.replaceAll('_', ' '),
+      note: wireWord(str(page?.['status']), ctx),
       state: errorState,
       link,
       preview: previewOf(str(page?.['description'])),
@@ -664,7 +721,7 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       icon: 'board',
       verb: t('tc.sem.board.preview'),
       object: str(page?.['tasksDirectory']) ?? str(page?.['root']),
-      note: str(page?.['mode']),
+      note: wireWord(str(page?.['mode']), ctx),
       state: errorState,
       link,
     };
@@ -675,11 +732,11 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   return {
     icon: 'board',
     verb: t(action === 'overview' ? 'tc.sem.board.overview' : 'tc.sem.board.list'),
-    object: str(args['status'])?.replaceAll('_', ' '),
+    object: wireWord(str(args['status']), ctx),
     count: result === undefined || error !== undefined ? undefined : tp('tc.sem.cards', all.length),
     state: errorState,
     link,
-    items: all.map(boardCardItem),
+    items: all.map((card, index) => boardCardItem(card, index, ctx)),
     itemsMore: str(page?.['nextCursor']) !== undefined,
   };
 }
@@ -751,7 +808,7 @@ function describeGoal(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const goal = rec(rec(outputJson(block.output))?.['goal']);
   const firstLine = text === undefined ? undefined : clipLine(text.split(/\r?\n/, 1)[0] ?? '', 90);
   const fields: SemanticField[] = goal === undefined ? [] : [
-    ...(str(goal['status']) === undefined ? [] : [{ label: t('tc.sem.field.status'), value: str(goal['status'])! }]),
+    ...(str(goal['status']) === undefined ? [] : [{ label: t('tc.sem.field.status'), value: wireWord(str(goal['status']), ctx)! }]),
     ...(num(goal['turnsUsed']) === undefined ? [] : [{ label: t('tc.sem.field.turnsUsed'), value: String(num(goal['turnsUsed'])) }]),
     ...(str(goal['completionCriterion']) === undefined ? [] : [{ label: t('tc.sem.field.criterion'), value: str(goal['completionCriterion'])! }]),
   ];
@@ -776,7 +833,7 @@ function describeGoal(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       return {
         icon: 'goal',
         verb: t('tc.sem.goal.update'),
-        object: str(args['status']),
+        object: wireWord(str(args['status']), ctx),
         note: firstLine,
         noteTitle: text,
       };
@@ -785,7 +842,7 @@ function describeGoal(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
         icon: 'goal',
         verb: t('tc.sem.goal.get'),
         object: str(goal?.['objective']) ?? (goal === undefined && text !== undefined && /"goal":\s*null/.test(text) ? t('tc.sem.goal.none') : undefined),
-        note: str(goal?.['status']),
+        note: wireWord(str(goal?.['status']), ctx),
         fields,
       };
   }
@@ -880,6 +937,12 @@ function describeWebSearch(block: ToolBlock, ctx: SemanticContext): ToolSemantic
   };
 }
 
+const FETCH_FAILURE_KEYS: Record<string, I18nKey> = {
+  failed: 'tc.sem.web.fetchFailed',
+  'timed out': 'tc.sem.timedOut',
+  cancelled: 'tc.sem.wire.cancelled',
+};
+
 function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const { t } = ctx;
   const args = rec(block.args) ?? {};
@@ -892,7 +955,7 @@ function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     icon: 'web',
     verb: t('tc.sem.web.fetch'),
     object: url,
-    state: failure === null || failure === undefined ? undefined : { text: failure[1]!, tone: 'warn' },
+    state: failure === null || failure === undefined ? undefined : { text: t(FETCH_FAILURE_KEYS[failure[1]!]!), tone: 'warn' },
     preview: previewOf(body, 8, 900),
   };
 }

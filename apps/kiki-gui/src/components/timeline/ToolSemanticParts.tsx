@@ -84,8 +84,18 @@ export function useFollowLink(onOpenAgent?: (agentId: string) => void): (link: S
   }, [currentSession, host, navigate, onOpenAgent, t]);
 }
 
-/** The row's trailing jump: a quiet arrow outside the disclosure button. */
-export function SemanticJump({ link, onOpenAgent }: { link: SemanticLink; onOpenAgent?: (agentId: string) => void }) {
+const JUMP_SLOT = 'flex h-7 w-7 shrink-0 items-center justify-center';
+
+/**
+ * The row's trailing jump slot: a quiet arrow outside the disclosure button,
+ * or the same width left empty, so every semantic row shares one right edge.
+ */
+export function SemanticJumpSlot({ link, onOpenAgent }: { link?: SemanticLink; onOpenAgent?: (agentId: string) => void }) {
+  if (link === undefined) return <span aria-hidden data-tool-jump-slot className={JUMP_SLOT} />;
+  return <SemanticJump link={link} onOpenAgent={onOpenAgent} />;
+}
+
+function SemanticJump({ link, onOpenAgent }: { link: SemanticLink; onOpenAgent?: (agentId: string) => void }) {
   const follow = useFollowLink(onOpenAgent);
   return (
     <button
@@ -94,7 +104,7 @@ export function SemanticJump({ link, onOpenAgent }: { link: SemanticLink; onOpen
       title={link.label}
       aria-label={link.label}
       onClick={() => { follow(link); }}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+      className={`${JUMP_SLOT} rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent`}
     >
       <Icon name="arrowUpRight" size={12} />
     </button>
@@ -150,7 +160,7 @@ export function SemanticBody({
           {fields.map((field) => (
             <div key={field.label} className="contents">
               <dt className="text-ink-faint">{field.label}</dt>
-              <dd className={`min-w-0 break-words text-ink-soft ${field.mono === true ? 'font-mono' : ''}`}>{field.value}</dd>
+              <dd title={field.valueTitle} className={`min-w-0 break-words text-ink-soft ${field.mono === true ? 'font-mono' : ''}`}>{field.value}</dd>
             </div>
           ))}
         </dl>
