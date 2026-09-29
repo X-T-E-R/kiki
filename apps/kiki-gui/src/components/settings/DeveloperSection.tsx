@@ -1,6 +1,8 @@
 import { AdvancedSection } from './AdvancedSection';
 import { TokenCountingCard } from './CommunicationSection';
 import { ResourceLimitsCard } from './EngineLimitSettings';
+import { RetryPolicyCard } from './RetryPolicyCard';
+import { SessionResidencyCard } from './SessionResidencyCard';
 import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
@@ -12,6 +14,8 @@ export function DeveloperSection() {
   return (
     <>
       <ResourceLimitsCard />
+      <RetryPolicyCard />
+      <SessionResidencyCard />
       <TokenCountingCard />
       <AdvancedSection />
       <CronRuntimeCard />

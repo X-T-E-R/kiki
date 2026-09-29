@@ -565,7 +565,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('the server validates each domain');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
   });
 
   it('saves advanced settings without the retired services domain', async () => {
