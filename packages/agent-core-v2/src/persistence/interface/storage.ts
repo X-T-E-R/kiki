@@ -166,6 +166,7 @@ export interface IFileSystemStorageService {
   acquireLock(scope: string, key: string, options?: StorageLockOptions): Promise<IStorageLock>;
   list(scope: string, prefix?: string): Promise<readonly string[]>;
   delete(scope: string, key: string): Promise<void>;
+  moveDirectory(sourceScope: string, targetScope: string): Promise<void>;
   size(scope: string, key: string): Promise<number | undefined>;
   mtime(scope: string, key: string): Promise<number | undefined>;
   pathFor(scope: string, key: string): string | undefined;

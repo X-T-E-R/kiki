@@ -46,7 +46,7 @@ export class MemoryWriteTool implements IMemoryWriteTool {
     const parsed = writeSchema.safeParse(args);
     if (!parsed.success) return { isError: true, output: parsed.error.message };
     return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${parsed.data.title.slice(0, 70)}`, execute: async ({ turnId }) => {
-      if (!available(this.config, this.session)) return { isError: true, output: 'Memory is disabled.' };
+      if (this.session.ephemeral === true || !available(this.config, this.session)) return { isError: true, output: 'Memory is disabled.' };
       try {
         const result = await this.store.put({
           action: parsed.data.action, scope: resolveScope(parsed.data.scope, this.session), type: parsed.data.type,
@@ -112,6 +112,6 @@ export class MemoryReadTool implements IMemoryReadTool {
 
 const when = (accessor: ServicesAccessor): boolean =>
   accessor.get(IAgentScopeContext).agentId === 'main' && available(accessor.get(IConfigService), accessor.get(ISessionContext));
-registerAgentToolService(IMemoryWriteTool, MemoryWriteTool, { name: 'MemoryWrite', domain: 'memory', when });
+registerAgentToolService(IMemoryWriteTool, MemoryWriteTool, { name: 'MemoryWrite', domain: 'memory', when: (accessor) => !accessor.get(ISessionContext).ephemeral && when(accessor) });
 registerAgentToolService(IMemorySearchTool, MemorySearchTool, { name: 'MemorySearch', domain: 'memory', when });
 registerAgentToolService(IMemoryReadTool, MemoryReadTool, { name: 'MemoryRead', domain: 'memory', when });

@@ -61,6 +61,9 @@ export interface ISessionManager {
     work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
   ): Promise<T>;
   list(): readonly ISessionScopeHandle[];
+  listEphemeral(): readonly ISessionScopeHandle[];
+  isEphemeral(sessionId: string): boolean;
+  saveEphemeral(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
   closeWorkspace?(workspaceId: string): Promise<void>;
   archive(sessionId: string): Promise<void>;

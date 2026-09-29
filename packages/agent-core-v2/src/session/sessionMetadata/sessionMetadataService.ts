@@ -185,6 +185,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   private mirrorToReadModel(): void {
+    if (this.ctx.ephemeral === true) return;
     try {
       this.mirror.record(
         buildSessionSummary({

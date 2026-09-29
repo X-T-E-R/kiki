@@ -8,6 +8,7 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   type CreateChildSessionOptions,
   type ForkSessionOptions,
@@ -56,6 +57,7 @@ interface SessionControllerEntry {
 export class SessionManager implements ISessionManager {
   declare readonly _serviceBrand: undefined;
   private readonly sessions = new Map<string, ISessionScopeHandle>();
+  private readonly ephemeral = new Map<string, { workspaceId: string; controller: SessionLifecycleService }>();
   private readonly owners = new Map<string, SessionLifecycleService>();
   private readonly pendingResumes = new Map<string, Promise<ISessionScopeHandle | undefined>>();
   private readonly resumeFailures = new Map<string, Error>();
@@ -208,7 +210,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async evictIfIdle(sessionId: string): Promise<boolean> {
-    if (!this.evictionEnabled()) return false;
+    if (!this.evictionEnabled() || this.isEphemeral(sessionId)) return false;
     return this.serializeLifecycle(sessionId, async () => {
       const entry = this.residency.get(sessionId);
       const controller = this.owners.get(sessionId);
@@ -290,7 +292,30 @@ export class SessionManager implements ISessionManager {
     return [...this.sessions.values()];
   }
 
+  listEphemeral(): readonly ISessionScopeHandle[] {
+    return [...this.ephemeral.keys()].flatMap((id) => {
+      const handle = this.sessions.get(id);
+      return handle === undefined ? [] : [handle];
+    });
+  }
+
+  isEphemeral(sessionId: string): boolean {
+    return this.ephemeral.has(sessionId);
+  }
+
+  async saveEphemeral(sessionId: string): Promise<void> {
+    await this.serializeLifecycle(sessionId, async () => {
+      const target = this.ephemeral.get(sessionId);
+      if (target === undefined) {
+        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} does not exist`);
+      }
+      await this.runWorkspaceOperation(target.workspaceId, () => target.controller.saveEphemeral(sessionId));
+      this.ephemeral.delete(sessionId);
+    });
+  }
+
   async close(sessionId: string): Promise<void> {
+    if (this.isEphemeral(sessionId)) return this.delete(sessionId);
     await this.serializeLifecycle(sessionId, async () => {
       const controller = this.owners.get(sessionId);
       if (controller === undefined) return;
@@ -308,7 +333,16 @@ export class SessionManager implements ISessionManager {
         (entry) => entry.workspaceId === workspaceId,
       );
       for (const entry of entries) {
-        for (const handle of entry.controller.list()) await entry.controller.close(handle.id);
+        for (const handle of entry.controller.list()) {
+          if (this.isEphemeral(handle.id)) {
+            await entry.controller.delete(handle.id, () => {
+              this.ephemeral.delete(handle.id);
+              this.didDeleteEmitter.fire({ sessionId: handle.id });
+            });
+          } else {
+            await entry.controller.close(handle.id);
+          }
+        }
       }
       for (const entry of entries) this.retireEntryIfIdle(workspaceId, entry);
     } finally {
@@ -317,6 +351,9 @@ export class SessionManager implements ISessionManager {
   }
 
   private async archiveInner(sessionId: string): Promise<void> {
+    if (this.isEphemeral(sessionId)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'temporary sessions cannot be archived');
+    }
     const target = await this.controllerForSession(sessionId);
     if (target === undefined) return;
     await this.runWorkspaceOperation(
@@ -355,7 +392,10 @@ export class SessionManager implements ISessionManager {
       }
       await this.runWorkspaceOperation(
         target.workspaceId,
-        () => target.controller.delete(sessionId, () => this.didDeleteEmitter.fire({ sessionId })),
+        () => target.controller.delete(sessionId, () => {
+          this.ephemeral.delete(sessionId);
+          this.didDeleteEmitter.fire({ sessionId });
+        }),
         target.release,
       );
     });
@@ -416,6 +456,7 @@ export class SessionManager implements ISessionManager {
     this.workspaceOperations.clear();
     this.closingWorkspaces.clear();
     this.sessions.clear();
+    this.ephemeral.clear();
     this.owners.clear();
     this.pendingResumes.clear();
     this.resumeFailures.clear();
@@ -559,6 +600,9 @@ export class SessionManager implements ISessionManager {
       entry.sessionCount += 1;
       this.sessions.set(event.sessionId, event.handle);
       this.owners.set(event.sessionId, controller);
+      if (event.handle.accessor?.get(ISessionContext).ephemeral === true) {
+        this.ephemeral.set(event.sessionId, { workspaceId, controller });
+      }
       this.registerResidency(event.sessionId, event.handle);
       this.didCreateEmitter.fire(event);
     }));

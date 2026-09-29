@@ -83,7 +83,7 @@ export class BoardWriteTool implements IBoardWriteTool {
       description: 'Updating Own Work requirements',
       accesses: ToolAccesses.all(),
       execute: async () => {
-        if (!enabledAgent(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
+        if (this.session.ephemeral === true || !enabledAgent(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
           return denied('BoardWrite is disabled by the board feature or active tool policy. Subagents require an explicit profile tools entry or subagent.allowed_tools opt-in.');
         }
         if (await this.plan.status() !== null) {
@@ -104,5 +104,5 @@ const available = (accessor: ServicesAccessor, name: string): boolean =>
 
 export const BOARD_TOOL_CONTRIBUTIONS = [
   { id: IBoardReadTool, ctor: BoardReadTool, options: { name: 'BoardRead', domain: 'taskBoard', when: (accessor: ServicesAccessor) => available(accessor, 'BoardRead') } },
-  { id: IBoardWriteTool, ctor: BoardWriteTool, options: { name: 'BoardWrite', domain: 'taskBoard', when: (accessor: ServicesAccessor) => available(accessor, 'BoardWrite') } },
+  { id: IBoardWriteTool, ctor: BoardWriteTool, options: { name: 'BoardWrite', domain: 'taskBoard', when: (accessor: ServicesAccessor) => !accessor.get(ISessionContext).ephemeral && available(accessor, 'BoardWrite') } },
 ] as const;

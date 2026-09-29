@@ -198,6 +198,25 @@ describe('RetainedUsageService', () => {
     ]);
   });
 
+  it('retains temporary usage without session identifiers, titles, or prompts', async () => {
+    const first = build();
+    const sessionScope = 'ephemeral/workspace-1/private-session';
+    first.appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record', time: 150, model: 'model-a', usage,
+      agentId: 'main', profileName: 'secret title', turnId: 3,
+    });
+    await first.appendLog.flush();
+    await first.service.retainEphemeralUsage!(sessionScope, 'workspace-1');
+    await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
+    const ledger = await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8');
+    expect(ledger).not.toMatch(/private-session|secret title|turnId|agentId/);
+    const restarted = build();
+    expect((await restarted.service.listEphemeralUsage!(listQuery())).items).toEqual([
+      { workspaceId: 'workspace-1', time: 150, model: 'model-a', usage },
+    ]);
+    expect(await listItems(restarted.service)).toEqual([]);
+  });
+
   it('preserves known, unknown, and absent usage provenance across retention restart', async () => {
     const first = build();
     const sessionScope = 'sessions/workspace-1/session-1';

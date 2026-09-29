@@ -146,6 +146,20 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     this.notifyWatchers(scope, key);
   }
 
+  async moveDirectory(sourceScope: string, targetScope: string): Promise<void> {
+    const entries = [...this.scopes.entries()].filter(([scope]) => scope === sourceScope || scope.startsWith(`${sourceScope}/`));
+    if (entries.length === 0) throw new Error('source session directory does not exist');
+    for (const [scope] of entries) {
+      if (this.scopes.has(`${targetScope}${scope.slice(sourceScope.length)}`)) {
+        throw new Error('target session directory already exists');
+      }
+    }
+    for (const [scope, bucket] of entries) {
+      this.scopes.delete(scope);
+      this.scopes.set(`${targetScope}${scope.slice(sourceScope.length)}`, bucket);
+    }
+  }
+
   async size(scope: string, key: string): Promise<number | undefined> {
     return this.scopes.get(scope)?.get(key)?.byteLength;
   }

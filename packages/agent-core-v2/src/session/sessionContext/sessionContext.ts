@@ -13,6 +13,7 @@ export interface ISessionContext {
   readonly sessionId: string;
   readonly workspaceId: string;
   readonly sessionDir: string;
+  readonly ephemeral?: boolean;
   readonly metaScope: string;
   readonly cwd: string;
   scope(subKey?: string): string;
@@ -41,6 +42,7 @@ export function makeSessionContext(input: {
   readonly sessionDir: string;
   readonly sessionScope: string;
   readonly cwd: string;
+  readonly ephemeral?: boolean;
   readonly metaScope?: string;
 }): ISessionContext {
   const { sessionScope } = input;
@@ -49,6 +51,7 @@ export function makeSessionContext(input: {
     sessionId: input.sessionId,
     workspaceId: input.workspaceId,
     sessionDir: input.sessionDir,
+    ephemeral: input.ephemeral,
     metaScope: input.metaScope ?? sessionScope,
     cwd: input.cwd,
     scope: (subKey?: string): string =>

@@ -18,6 +18,7 @@ import {
 } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
+import { cleanupOrphanedEphemeralSessions } from '#/persistence/backends/node-fs/ephemeralCleanup';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
@@ -79,6 +80,7 @@ export const IBootstrapOptions: ServiceIdentifier<IBootstrapOptions> =
 export type PersistenceScopeName =
   | 'config'
   | 'sessions'
+  | 'ephemeral'
   | 'blobs'
   | 'store'
   | 'logs'
@@ -181,6 +183,7 @@ export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): Bo
   const app = createAppScope({
     seeds: [[IBootstrapOptions as ServiceIdentifier<unknown>, options], ...storageSeed(options), ...skillSeed(), ...extraSeeds],
   });
+  void cleanupOrphanedEphemeralSessions(options.homeDir).catch(() => undefined);
   void cleanupExpiredSessionLocks(options.homeDir).catch(() => undefined);
   return { app };
 }

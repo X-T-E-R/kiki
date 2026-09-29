@@ -191,6 +191,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly lockReleases = new Map<string, Promise<void>>();
   private readonly deferredSessionLockReleases = new Set<string>();
   private readonly resumeFailures = new Map<string, Error>();
+  private readonly ephemeralSessions = new Set<string>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -253,18 +254,25 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return this.workspaceContext.persistenceScope;
   }
 
+  private sessionScope(sessionId: string): string {
+    const root = this.ephemeralSessions.has(sessionId)
+      ? `${this.bootstrap.scope('ephemeral')}/${this.workspaceId}`
+      : this.handlerScope;
+    return sessionScopeOf(root, sessionId);
+  }
+
   private async acquireSessionLock(sessionId: string): Promise<void> {
     if (this.sessionLocks.has(sessionId)) return;
     const releasing = this.lockReleases.get(sessionId);
     if (releasing !== undefined) await releasing;
     const lockKey = `${createHash('sha256')
-      .update(sessionScopeOf(this.handlerScope, sessionId))
+      .update(this.sessionScope(sessionId))
       .digest('hex')}.lock`;
     const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, lockKey, {
       owner: {
         sessionId,
         workspaceId: this.workspaceId,
-        scope: sessionScopeOf(this.handlerScope, sessionId),
+        scope: this.sessionScope(sessionId),
       },
     });
     this.sessionLocks.set(sessionId, lock);
@@ -284,14 +292,21 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
     const sessionId = opts.sessionId ?? createSessionId();
+    if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
     await this.workspaceSkillCatalog
       .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
       .catch(() => undefined);
-    const handle = await this.materializeSession({
-      ...opts,
-      sessionId,
-      rollbackOnMaterializationFailure: true,
-    });
+    let handle: ISessionScopeHandle;
+    try {
+      handle = await this.materializeSession({
+        ...opts,
+        sessionId,
+        rollbackOnMaterializationFailure: true,
+      });
+    } catch (error) {
+      this.ephemeralSessions.delete(sessionId);
+      throw error;
+    }
     try {
       const main =
         opts.mainAgentBinding === undefined
@@ -307,7 +322,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (opts.worktree !== undefined) {
         await handle.accessor.get(ISessionMetadata).update({ worktree: opts.worktree }, { touchUpdatedAt: false });
       }
-      await this.appendSessionIndexEntry(sessionId, opts.workDir, opts.worktree?.sourceRoot);
+      if (opts.ephemeral !== true) {
+        await this.appendSessionIndexEntry(sessionId, opts.workDir, opts.worktree?.sourceRoot);
+      }
     } catch (error) {
       const sessionDir = handle.accessor.get(ISessionContext).sessionDir;
       return this.rollbackSession(sessionId, handle, sessionDir, error);
@@ -318,8 +335,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async materializeSession(opts: MaterializeSessionOptions): Promise<ISessionScopeHandle> {
     const workspaceId = this.workspaceId;
-    const sessionScope = sessionScopeOf(this.handlerScope, opts.sessionId);
-    const sessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
+    const sessionScope = this.sessionScope(opts.sessionId);
+    const sessionDir = join(this.bootstrap.homeDir, sessionScope);
     const metaScope = sessionScope;
     await Promise.all([this.config.ready, this.models.ready, this.providers.ready]);
     await this.workspaceDirs.ready;
@@ -329,6 +346,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionId: opts.sessionId,
       workspaceId,
       sessionDir,
+      ephemeral: this.ephemeralSessions.has(opts.sessionId),
       metaScope,
       cwd: opts.workDir,
       scope: (subKey?: string): string =>
@@ -609,33 +627,71 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return handle;
   }
 
+  async saveEphemeral(sessionId: string): Promise<void> {
+    if (!this.ephemeralSessions.has(sessionId)) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} does not exist`);
+    }
+    const handle = this.sessions.get(sessionId);
+    if (handle === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} is closed`);
+    }
+    const activity = handle.accessor.get(ISessionActivityView).state();
+    if (activity.busy || activity.pendingInteraction !== 'none') {
+      throw new Error2(ErrorCodes.SESSION_BUSY, 'temporary session must be idle before saving');
+    }
+    const context = handle.accessor.get(ISessionContext);
+    await this.close(sessionId);
+    const meta = await this.docs.get<SessionMeta>(this.sessionScope(sessionId), 'state.json');
+    if (meta === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `temporary session ${sessionId} metadata is missing`);
+    await this.storage.moveDirectory(this.sessionScope(sessionId), sessionScopeOf(this.handlerScope, sessionId));
+    this.ephemeralSessions.delete(sessionId);
+    await this.appendSessionIndexEntry(sessionId, context.cwd, meta.worktree?.sourceRoot);
+    this.indexMirror.record({
+      id: sessionId,
+      workspaceId: this.workspaceId,
+      cwd: context.cwd,
+      title: meta.title,
+      lastPrompt: meta.lastPrompt,
+      createdAt: meta.createdAt,
+      updatedAt: meta.updatedAt,
+      archived: meta.archived,
+      archivedAt: meta.archivedAt,
+      custom: meta.custom,
+      lastTurnReason: meta.lastTurnReason,
+      usage: meta.usage,
+      worktree: meta.worktree,
+    });
+  }
+
   async delete(sessionId: string, onRemoved?: () => void): Promise<void> {
     const inflight = this.resuming.get(sessionId);
     if (inflight !== undefined) {
       await inflight.catch(() => undefined);
     }
+    const ephemeral = this.ephemeralSessions.has(sessionId);
     const handle = this.sessions.get(sessionId);
-    const summary = await this.index.get(sessionId);
+    const summary = ephemeral ? undefined : await this.index.get(sessionId);
     const persistedHere = summary !== undefined && summary.workspaceId === this.workspaceId;
-    if (handle === undefined && !persistedHere) {
+    if (handle === undefined && !persistedHere && !ephemeral) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     }
-    if (handle !== undefined) {
-      await this.close(sessionId);
-    }
-    await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
-    await this.hostFs.remove(sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId));
+    if (handle !== undefined) await this.close(sessionId);
+    if (ephemeral) await this.retainedUsage.retainEphemeralUsage?.(this.sessionScope(sessionId), this.workspaceId);
+    else await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
+    await this.hostFs.remove(join(this.bootstrap.homeDir, this.sessionScope(sessionId)));
+    this.ephemeralSessions.delete(sessionId);
     try {
-      await this.index.remove(sessionId);
-      this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
-      await this.appendLogStore.flush();
+      if (!ephemeral) {
+        await this.index.remove(sessionId);
+        this.appendLogStore.append('', 'session_index.jsonl', { sessionId, deleted: true });
+        await this.appendLogStore.flush();
+      }
     } finally {
       try {
         onRemoved?.();
-      } catch (error) {
+      } catch {
         this.log.error('session removal callback failed after the session directory was deleted', {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
+          sessionId, eventType: 'session.removalCallbackFailed',
         });
       }
     }
@@ -698,11 +754,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         cleanupErrors.push(cleanupError);
       }
     }
-    try {
-      await this.index.remove(sessionId);
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
+    if (!this.ephemeralSessions.has(sessionId)) {
+      try {
+        await this.index.remove(sessionId);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
     }
+    this.ephemeralSessions.delete(sessionId);
     this.deferredSessionLockReleases.delete(sessionId);
     try {
       await this.releaseSessionLock(sessionId);

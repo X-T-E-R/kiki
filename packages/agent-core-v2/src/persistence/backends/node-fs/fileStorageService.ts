@@ -237,6 +237,23 @@ export class FileStorageService implements IFileSystemStorageService {
     }
   }
 
+  async moveDirectory(sourceScope: string, targetScope: string): Promise<void> {
+    const source = this.scopePath(sourceScope);
+    const target = this.scopePath(targetScope);
+    try {
+      await mkdir(dirname(target), { recursive: true, mode: this.dirMode });
+      try {
+        await stat(target);
+        throw new Error('target session directory already exists');
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+      await rename(source, target);
+    } catch (error) {
+      throw toStorageIoError(error, { path: source, op: 'moveDirectory' });
+    }
+  }
+
   async size(scope: string, key: string): Promise<number | undefined> {
     const filePath = this.pathFor(scope, key);
     try {

@@ -13,6 +13,7 @@ export interface CreateSessionOptions {
   readonly sessionId?: string;
   readonly workDir: string;
   readonly worktree?: SessionWorktree;
+  readonly ephemeral?: boolean;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
   /**

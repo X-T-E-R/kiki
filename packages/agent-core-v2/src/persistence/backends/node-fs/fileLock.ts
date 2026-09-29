@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import {
   link,
@@ -137,6 +137,18 @@ export async function cleanupExpiredSessionLocks(homeDir: string): Promise<numbe
     }
   }
   return removed;
+}
+
+export async function isSessionLockActive(homeDir: string, scope: string): Promise<boolean> {
+  const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
+  const path = join(homeDir, 'session-locks', key);
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    return !isPayload(parsed) || await ownerProcessAlive(parsed);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    return true;
+  }
 }
 
 /** Acquires a renewable local-filesystem lock with atomic create and process-live watch arbitration

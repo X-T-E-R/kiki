@@ -71,6 +71,7 @@ export class BootstrapService implements IBootstrapService {
     this.scopes = {
       config: '',
       sessions: relative(options.homeDir, join(options.homeDir, 'sessions')),
+      ephemeral: 'ephemeral',
       blobs: relative(options.homeDir, this.blobsDir),
       store: relative(options.homeDir, this.storeDir),
       logs: relative(options.homeDir, this.logsDir),

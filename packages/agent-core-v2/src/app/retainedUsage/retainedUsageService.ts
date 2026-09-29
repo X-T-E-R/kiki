@@ -11,6 +11,7 @@ import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
+  type EphemeralUsageTotal,
   type RetainedDeletedSessionUsage,
   type RetainedUsageIncompleteReason,
   type RetainedUsageListQuery,
@@ -19,6 +20,7 @@ import {
 } from './retainedUsage';
 
 const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
+const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
 
 const tokenUsageSchema = z.object({
   inputOther: z.number().finite().nonnegative(),
@@ -45,6 +47,14 @@ const retainedUsageRecordSchema = z.object({
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
   executorId: z.string().optional(),
+  usageKnown: z.boolean().optional(),
+});
+
+const ephemeralUsageSchema = z.object({
+  workspaceId: z.string(),
+  time: z.number().finite().nonnegative(),
+  model: z.string(),
+  usage: tokenUsageSchema,
   usageKnown: z.boolean().optional(),
 });
 
@@ -103,6 +113,41 @@ export class RetainedUsageService implements IRetainedUsageService {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
   ) {}
+
+  async retainEphemeralUsage(sessionScope: string, workspaceId: string): Promise<void> {
+    const { records } = await this.readSessionRecords(sessionScope);
+    for (const { time, model, usage, usageKnown } of records) {
+      this.appendLog.append(this.storeScope, EPHEMERAL_USAGE_KEY, {
+        workspaceId, time, model, usage, usageKnown,
+      } satisfies EphemeralUsageTotal);
+    }
+    await this.appendLog.flush();
+  }
+
+  async listEphemeralUsage(query: RetainedUsageListQuery): Promise<{
+    readonly items: readonly EphemeralUsageTotal[];
+    readonly complete: boolean;
+    readonly scannedRecords: number;
+    readonly incompleteReason?: RetainedUsageIncompleteReason;
+  }> {
+    const items: EphemeralUsageTotal[] = [];
+    let complete = true;
+    const workspaceIds = query.workspaceIds === undefined ? undefined : new Set(query.workspaceIds);
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, EPHEMERAL_USAGE_KEY, {
+      onTruncate: () => { complete = false; }, signal: query.signal,
+    })) {
+      if (Date.now() >= query.deadlineAt) return { items, complete: false, scannedRecords: items.length, incompleteReason: 'deadline' };
+      const parsed = ephemeralUsageSchema.safeParse(raw);
+      if (!parsed.success) {
+        complete = false;
+        continue;
+      }
+      if (workspaceIds !== undefined && !workspaceIds.has(parsed.data.workspaceId)) continue;
+      if (items.length >= query.recordLimit) return { items, complete: false, scannedRecords: items.length, incompleteReason: 'record_budget' };
+      items.push(parsed.data);
+    }
+    return { items, complete, scannedRecords: items.length };
+  }
 
   async retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage> {
     const sessionScope = `${this.bootstrap.scope('sessions')}/${summary.workspaceId}/${summary.id}`;

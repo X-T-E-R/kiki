@@ -44,10 +44,25 @@ export interface RetainedUsageListResult {
   readonly scannedRecords: number;
 }
 
+export interface EphemeralUsageTotal {
+  readonly workspaceId: string;
+  readonly time: number;
+  readonly model: string;
+  readonly usage: TokenUsage;
+  readonly usageKnown?: boolean;
+}
+
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;
+  retainEphemeralUsage?(sessionScope: string, workspaceId: string): Promise<void>;
+  listEphemeralUsage?(query: RetainedUsageListQuery): Promise<{
+    readonly items: readonly EphemeralUsageTotal[];
+    readonly complete: boolean;
+    readonly scannedRecords: number;
+    readonly incompleteReason?: RetainedUsageIncompleteReason;
+  }>;
 }
 
 export const IRetainedUsageService: ServiceIdentifier<IRetainedUsageService> =

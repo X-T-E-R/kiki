@@ -159,10 +159,9 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   private registerCronTools(handle: IAgentScopeHandle): void {
     const registry = handle.accessor.get(IAgentToolRegistryService);
     const tools = [
-      handle.accessor.get(ICronTool),
-      handle.accessor.get(ICronCreateTool),
+      ...(this.ctx.ephemeral === true ? [] : [handle.accessor.get(ICronTool), handle.accessor.get(ICronCreateTool)]),
       handle.accessor.get(ICronListTool),
-      handle.accessor.get(ICronDeleteTool),
+      ...(this.ctx.ephemeral === true ? [] : [handle.accessor.get(ICronDeleteTool)]),
     ];
     for (const tool of tools) {
       this._register(registry.register(tool, { source: 'builtin' }));
@@ -187,6 +186,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   addTask(init: CronTaskInit): CronTask {
+    if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot schedule cron tasks');
     const task: CronTask = {
       ...init,
       id: this.generateUniqueId(),
@@ -202,6 +202,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   removeTasks(ids: readonly string[]): readonly string[] {
+    if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
     const removed = this.removeByIds(ids);
     if (removed.length === 0) return removed;
 
@@ -215,6 +216,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
   async setTaskPaused(id: string, paused: boolean): Promise<CronTask | undefined> {
+    if (this.ctx.ephemeral === true) throw new Error('temporary sessions cannot modify cron tasks');
     const existing = this.tasks.get(id);
     if (existing === undefined) return undefined;
     const updated: CronTask = { ...existing, paused };

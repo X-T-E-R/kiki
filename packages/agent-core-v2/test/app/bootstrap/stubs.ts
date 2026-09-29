@@ -20,6 +20,7 @@ export function stubBootstrap(
   const scopes: Record<PersistenceScopeName, string> = {
     config: '',
     sessions: 'sessions',
+    ephemeral: 'ephemeral',
     blobs: 'blobs',
     store: 'store',
     logs: 'logs',

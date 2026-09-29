@@ -27,6 +27,7 @@ interface FixtureOptions {
   agentId?: string;
   parentAgentId?: string;
   plan?: boolean;
+  ephemeral?: boolean;
   active?: boolean;
   enabled?: boolean;
   tools?: readonly string[];
@@ -48,7 +49,7 @@ function fixture(options: FixtureOptions = {}) {
   const write = vi.fn<ITaskBoardService['write']>().mockResolvedValue({ ok: false, error: { code: 'TASK_REVISION_CONFLICT', message: 'Refresh the task.' } });
   const targetProfile = normalizeAgentProfile({ name: 'example', tools: options.tools, disallowedTools: options.disallowedTools, systemPrompt: () => '' });
   ix.stub(IAgentScopeContext, { agentId: options.agentId ?? 'main', parentAgentId: options.parentAgentId });
-  ix.stub(ISessionContext, { workspaceId: 'session-workspace' });
+  ix.stub(ISessionContext, { workspaceId: 'session-workspace', ephemeral: options.ephemeral });
   ix.stub(IAgentProfileService, { data: (): ProfileData => ({
     modelCapabilities: { image_in: false, video_in: false, audio_in: false, thinking: false, tool_use: true, max_context_tokens: 128_000 },
     thinkingLevel: 'off',
@@ -90,6 +91,17 @@ async function execute(input: ToolExecution | Promise<ToolExecution>) {
 }
 
 describe('Board tools and subagent policy (real DI services)', () => {
+  it('keeps reading available but never registers or executes BoardWrite in temporary sessions', async () => {
+    const { ix, reader, writer, read, write } = fixture({ ephemeral: true });
+    expect(BOARD_TOOL_CONTRIBUTIONS[0].options.when(ix)).toBe(true);
+    expect(BOARD_TOOL_CONTRIBUTIONS[1].options.when(ix)).toBe(false);
+    await execute(reader.resolveExecution({ action: 'list' }));
+    expect(read).toHaveBeenCalledOnce();
+    const denied = await execute(writer.resolveExecution({ action: 'create', title: 'Example', requestKey: 'temporary' }));
+    expect(denied.isError).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it.each([
     { tools: ['BoardRead', 'BoardWrite'] },
     { allowedTools: ['BoardRead', 'BoardWrite'] },

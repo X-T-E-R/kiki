@@ -54,8 +54,8 @@ export class RestGateway implements IRestGateway {
       { kind: 'prompt', prompt: input, origin: { kind: 'user' } },
       { signal: new AbortController().signal },
     );
-    void run.completion.catch((error) => {
-      this.log.debug('Gateway prompt execution failed', { sessionId, agentId, error });
+    void run.completion.catch(() => {
+      this.log.debug('Gateway prompt execution failed', { sessionId, agentId, eventType: 'prompt.failed' });
     });
     return { turn_id: run.turn.id };
   }
