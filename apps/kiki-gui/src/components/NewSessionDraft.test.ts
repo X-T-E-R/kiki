@@ -203,6 +203,16 @@ describe('buildNewSessionCreate', () => {
     expect(body.metadata).toBeUndefined();
     expect(body.agent_config).toMatchObject({ profile: 'agent' });
   });
+
+  it('adds worktree isolation only when explicitly requested', () => {
+    const base = { profile: 'agent', permissionMode: 'manual' as const, planMode: false };
+    expect(buildNewSessionCreate({ ...base, cwd: '', workspaceId: 'wd_fixture_0123456789ab' }).isolation).toBeUndefined();
+    expect(buildNewSessionCreate({ ...base, cwd: '', workspaceId: 'wd_fixture_0123456789ab', worktree: false }).isolation).toBeUndefined();
+    expect(buildNewSessionCreate({ ...base, cwd: '', workspaceId: 'wd_fixture_0123456789ab', worktree: true }))
+      .toMatchObject({ workspace_id: 'wd_fixture_0123456789ab', isolation: { kind: 'worktree' } });
+    expect(buildNewSessionCreate({ ...base, cwd: 'C:/repo', worktree: true }))
+      .toMatchObject({ metadata: { cwd: 'C:/repo' }, isolation: { kind: 'worktree' } });
+  });
 });
 
 describe('useNewSessionDraft agent profile scope', () => {

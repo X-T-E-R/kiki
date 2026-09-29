@@ -304,7 +304,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         const planAgent = main ?? (await ensureMainAgent(handle));
         await planAgent.accessor.get(IAgentPlanService).enter();
       }
-      await this.appendSessionIndexEntry(sessionId, opts.workDir);
+      if (opts.worktree !== undefined) {
+        await handle.accessor.get(ISessionMetadata).update({ worktree: opts.worktree }, { touchUpdatedAt: false });
+      }
+      await this.appendSessionIndexEntry(sessionId, opts.workDir, opts.worktree?.sourceRoot);
     } catch (error) {
       const sessionDir = handle.accessor.get(ISessionContext).sessionDir;
       return this.rollbackSession(sessionId, handle, sessionDir, error);
@@ -432,12 +435,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return handle;
   }
 
-  private async appendSessionIndexEntry(sessionId: string, workDir: string): Promise<void> {
+  private async appendSessionIndexEntry(sessionId: string, workDir: string, sourceRoot?: string): Promise<void> {
     const sessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sessionId);
     this.appendLogStore.append('', 'session_index.jsonl', {
       sessionId,
       sessionDir,
       workDir,
+      ...(sourceRoot === undefined ? {} : { sourceRoot }),
     });
     await this.appendLogStore.flush();
   }

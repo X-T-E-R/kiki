@@ -69,6 +69,7 @@ describe('Event public types', () => {
       switch (event.type) {
         case 'agent.status.updated':
         case 'session.meta.updated':
+        case 'session.worktree.changed':
         case 'event.session.created':
         case 'event.session.status_changed':
         case 'event.session.work_changed':

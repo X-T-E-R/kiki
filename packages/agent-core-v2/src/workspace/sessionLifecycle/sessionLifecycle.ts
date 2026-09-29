@@ -2,6 +2,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { type Event, type IWaitUntil } from '#/_base/event';
 import type { BindAgentInput } from '#/agent/profile/profile';
+import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 export type SessionCreateSource = 'startup' | 'resume' | 'fork';
@@ -11,6 +12,7 @@ export type SessionCloseReason = 'exit' | 'archive';
 export interface CreateSessionOptions {
   readonly sessionId?: string;
   readonly workDir: string;
+  readonly worktree?: SessionWorktree;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
   /**

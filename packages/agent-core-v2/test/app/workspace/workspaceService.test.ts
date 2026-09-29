@@ -43,6 +43,7 @@ interface SessionIndexLine {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly workDir: string;
+  readonly sourceRoot?: string;
 }
 
 describe('WorkspaceService (file-backed)', () => {
@@ -187,6 +188,30 @@ describe('WorkspaceService (file-backed)', () => {
     expect((await restart().list()).map((w) => w.id).toSorted()).toEqual(
       list.map((w) => w.id).toSorted(),
     );
+  });
+
+  it('does not synthesize a workspace at a managed worktree session cwd', async () => {
+    const sourceRoot = join(homeDir, 'source');
+    const checkout = join(homeDir, 'worktrees', 'bucket');
+    await seedSessionIndex([{
+      sessionId: 'isolated',
+      sessionDir: join(homeDir, 'sessions', encodeWorkDirKey(sourceRoot), 'isolated'),
+      workDir: checkout,
+      sourceRoot,
+    }]);
+    const list = await build().list();
+    expect(list.map((workspace) => workspace.root)).toEqual([sourceRoot]);
+  });
+
+  it('uses the source workspace when rebuilding from only an isolated session state', async () => {
+    const sourceRoot = join(homeDir, 'source');
+    await seedSessionState(encodeWorkDirKey(sourceRoot), 'isolated', {
+      cwd: join(homeDir, 'worktrees', 'bucket'),
+      worktree: { sourceRoot, worktreeId: 'wt_test', branch: 'kiki/test', baseRef: 'HEAD' },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect((await build().list()).map((workspace) => workspace.root)).toEqual([sourceRoot]);
   });
 
   it('rebuilds from paged authoritative session states when both indexes are absent', async () => {

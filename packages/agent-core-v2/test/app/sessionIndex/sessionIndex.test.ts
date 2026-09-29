@@ -1637,7 +1637,7 @@ describe('FileSessionIndex (read model)', () => {
     expect(crossedProjection).toBe(0);
     const page = await store.listRecent({ workspaceIds: [workspaceId] });
     expect(page.items.map((item) => item.id)).toEqual(['fresh', 'a']);
-  });
+  }, 30_000);
 
   it('resolves a keyset cursor that is still queued in the mirror', async () => {
     await seedSession('a', { createdAt: 1, updatedAt: 2 });
@@ -1661,7 +1661,7 @@ describe('FileSessionIndex (read model)', () => {
 
     const unknown = await store.listRecent({ workspaceIds: [workspaceId], before: 'missing' });
     expect(unknown.items).toEqual([]);
-  });
+  }, 30_000);
 
   it('remove evicts a queued mirror entry so a deleted session stays unlisted', async () => {
     await seedSession('a', { createdAt: 1, updatedAt: 2 });

@@ -35,6 +35,7 @@ import {
   IWorkspaceAliases,
   ISessionManager,
   IWorkspaceInstanceManager,
+  IWorktreeService,
   IWorkspaceService,
   MAIN_AGENT_ID,
   ProfileError,
@@ -194,6 +195,7 @@ const sessionActionRequestSchema = z.preprocess(
     title: z.string().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     instruction: z.string().optional(),
+    strategy: z.enum(['summarize', 'relay']).optional(),
     count: z.number().int().positive().optional(),
     page_size: z.number().int().min(1).max(100).optional(),
     through_message_id: z.string().min(1).optional(),
@@ -323,6 +325,8 @@ export function registerSessionsRoutes(
       let autoRoot: string | undefined;
       let registeredAutoWorkspace: Workspace | undefined;
       let sessionCreated = false;
+      let worktreeId: string | undefined;
+      let createdSessionId: string | undefined;
       try {
         let autoWorkspaceName: string | undefined;
         if (workDir === undefined) {
@@ -339,9 +343,27 @@ export function registerSessionsRoutes(
         const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
         if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
         else registeredAutoWorkspace = touched;
+        let worktree: Awaited<ReturnType<IWorktreeService['create']>> | undefined;
+        if (body.isolation !== undefined) {
+          const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: touched.id });
+          try {
+            createdSessionId = `session_${randomUUID()}`;
+            worktree = await core.accessor.get(IWorktreeService).create({
+              sessionId: createdSessionId, workspaceId: touched.id, sourceRoot: touched.root,
+              title: body.title, isolation: body.isolation,
+            });
+            worktreeId = worktree.id;
+            workDir = worktree.path;
+          } finally { lease.dispose(); }
+        }
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,
           workDir,
+          sessionId: createdSessionId,
+          worktree: worktree === undefined ? undefined : {
+            worktreeId: worktree.id, branch: worktree.branch,
+            sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
+          },
           mainAgentBinding:
             body.agent_config?.model === undefined
               && body.agent_config?.profile === undefined
@@ -376,7 +398,7 @@ export function registerSessionsRoutes(
         const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(
           { ...meta, workspaceId: touched.id },
-          touched.root,
+          workDir,
           resolveSessionFacts(core, meta.id),
         );
         core.accessor.get(IEventService).publish(
@@ -384,6 +406,15 @@ export function registerSessionsRoutes(
         );
         reply.send(okEnvelope(session, req.id));
       } catch (error) {
+        if (worktreeId !== undefined) {
+          if (sessionCreated && createdSessionId !== undefined) {
+            await core.accessor.get(ISessionManager).delete(createdSessionId).catch((cleanupError: unknown) => {
+              requestLog(req)?.warn({ err: cleanupError, session_id: createdSessionId }, 'worktree session rollback failed');
+            });
+          }
+          const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
+          if (result?.outcome !== 'removed') requestLog(req)?.warn({ worktree_id: worktreeId, outcome: result?.outcome }, 'worktree rollback retained its checkout');
+        }
         if (autoRoot !== undefined && !sessionCreated) {
           try {
             await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
@@ -861,7 +892,7 @@ export function registerSessionsRoutes(
           await withMainAgent(core, parsed.id, async (agent) => {
             agent.accessor
               .get(IAgentFullCompactionService)
-              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction) });
+              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
             requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
             reply.send(okEnvelope({}, req.id));
           });
@@ -1279,6 +1310,7 @@ export interface SessionWireFields {
   readonly updatedAt: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
+  readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
 }
@@ -1305,6 +1337,12 @@ export function toWireSession(
     archived: fields.archived,
     last_prompt: fields.lastPrompt,
     metadata: buildWireMetadata(fields.custom, cwd),
+    worktree: fields.worktree === undefined ? undefined : {
+      worktree_id: fields.worktree.worktreeId,
+      branch: fields.worktree.branch,
+      source_root: fields.worktree.sourceRoot,
+      base_ref: fields.worktree.baseRef,
+    },
     agent_config: facts.agentConfig ?? { model: '' },
     usage: facts.usage ?? emptySessionUsage(),
     permission_rules: [],

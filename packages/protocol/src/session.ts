@@ -112,6 +112,19 @@ export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 export const sessionPendingInteractionSchema = z.enum(['none', 'approval', 'question']);
 export type SessionPendingInteraction = z.infer<typeof sessionPendingInteractionSchema>;
 
+export const sessionWorktreeSchema = z.object({
+  worktree_id: z.string(),
+  branch: z.string(),
+  source_root: z.string(),
+  base_ref: z.string(),
+});
+
+export const worktreeIsolationSchema = z.object({
+  kind: z.literal('worktree'),
+  branch: z.string().optional(),
+  base: z.union([z.enum(['head', 'fresh']), z.object({ ref: z.string().min(1) })]).optional(),
+});
+
 export const sessionSchema = z.object({
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
@@ -143,6 +156,7 @@ export const sessionSchema = z.object({
   /** Text of the most recent user prompt, for search/preview. Absent for empty sessions. */
   last_prompt: z.string().optional(),
   metadata: sessionMetadataSchema,
+  worktree: sessionWorktreeSchema.optional(),
   agent_config: sessionAgentConfigSchema,
   usage: sessionUsageSchema,
   permission_rules: z.array(permissionRuleSchema),
@@ -157,6 +171,7 @@ export const sessionCreateSchema = z.object({
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
+  isolation: worktreeIsolationSchema.optional(),
 });
 
 export type SessionCreate = z.infer<typeof sessionCreateSchema>;

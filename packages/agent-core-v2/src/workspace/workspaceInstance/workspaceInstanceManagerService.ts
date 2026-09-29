@@ -33,6 +33,8 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { Error2, ErrorCodes } from '#/errors';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
+import { SshRuntimeProviderFactory } from '#/runtime/sshRuntime';
+import { NATIVE_SSH_FLAG_ID } from '#/app/ssh/flag';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
 import { RuntimeError, RuntimeRegistry } from '#/runtime/runtimeRegistry';
@@ -102,6 +104,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     private readonly idleTtlMsOverride: number | undefined = undefined,
   ) {
     this.providers.set('local', new LocalRuntimeProviderFactory());
+    if (this.flags.enabled(NATIVE_SSH_FLAG_ID)) this.providers.set('ssh', new SshRuntimeProviderFactory());
   }
 
   get(workspaceId: string): WorkspaceInstance | undefined {

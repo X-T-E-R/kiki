@@ -1,6 +1,7 @@
 import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { SessionUsageSummary } from '#/app/sessionIndex/sessionIndex';
+import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export interface AgentMeta {
@@ -45,6 +46,7 @@ export interface SessionMeta {
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;
+  readonly worktree?: SessionWorktree;
   readonly forkedFrom?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly custom?: Record<string, unknown>;

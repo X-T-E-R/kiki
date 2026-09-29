@@ -1,6 +1,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { Page } from '#/persistence/interface/queryStore';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
@@ -22,6 +23,7 @@ export interface SessionSummary {
   readonly id: string;
   readonly workspaceId: string;
   readonly cwd?: string;
+  readonly worktree?: SessionWorktree;
   readonly title?: string;
   readonly lastPrompt?: string;
   readonly createdAt: number;

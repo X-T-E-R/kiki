@@ -126,9 +126,10 @@ export class WorkspaceService implements IWorkspaceService {
       const catalog = await this.loadCatalog();
       let root = catalog.workspaces.find((ws) => ws.id === id)?.root;
       if (root === undefined) {
-        root = (await readSessionIndexEntries(this.storage)).find(
-          (line) => encodeWorkDirKey(line.workDir) === id,
-        )?.workDir;
+        const entry = (await readSessionIndexEntries(this.storage)).find(
+          (line) => encodeWorkDirKey(line.sourceRoot ?? line.workDir) === id,
+        );
+        root = entry?.sourceRoot ?? entry?.workDir;
       }
       if (root === undefined) {
         await this.store.save({
@@ -203,15 +204,16 @@ export class WorkspaceService implements IWorkspaceService {
     const now = Date.now();
     const seenRootKeys = new Set<string>();
     for (const entry of await readSessionIndexEntries(this.storage)) {
-      if (!isAbsolute(entry.workDir)) continue;
-      const rootKey = workspaceRootKey(entry.workDir);
+      const root = entry.sourceRoot ?? entry.workDir;
+      if (!isAbsolute(root)) continue;
+      const rootKey = workspaceRootKey(root);
       if (seenRootKeys.has(rootKey)) continue;
       seenRootKeys.add(rootKey);
-      const id = encodeWorkDirKey(entry.workDir);
+      const id = encodeWorkDirKey(root);
       result.set(id, {
         id,
-        root: entry.workDir,
-        name: basename(entry.workDir),
+        root,
+        name: basename(root),
         createdAt: now,
         lastOpenedAt: now,
         pinned: false,
@@ -237,7 +239,7 @@ export class WorkspaceService implements IWorkspaceService {
         before,
       });
       for (const session of page.items) {
-        const root = session.cwd;
+        const root = session.worktree?.sourceRoot ?? session.cwd;
         if (root === undefined || !isAbsolute(root)) continue;
         const id = encodeWorkDirKey(root);
         const rootKey = workspaceRootKey(root);

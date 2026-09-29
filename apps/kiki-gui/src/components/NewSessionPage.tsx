@@ -30,6 +30,7 @@ import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, WorkspacePickerFields, useNewSess
 import { RelativeTime } from './RelativeTime';
 import { LifeMark } from './LifeMark';
 import { Wordmark } from './Wordmark';
+import { WorktreeOption } from './WorktreeOption';
 import { useI18n } from '../i18n';
 import { agentProfileCatalogQueryKey, loadAgentProfileCatalog } from '../lib/agentProfileCatalog';
 import { aggregateLife, lifeOf, staggerStyle, type LifeState } from '../lib/motion';
@@ -647,6 +648,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
               <span className="truncate">{pulse.text}</span>
             </span>
           </div>
+          <WorktreeOption state={state} />
           {showTargetHint ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}

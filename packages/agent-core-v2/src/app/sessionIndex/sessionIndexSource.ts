@@ -1,5 +1,6 @@
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { SessionWorktree } from '#/app/git/worktreeModel';
 import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE } from '#/app/workspace/workspaceAlias';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
@@ -101,6 +102,7 @@ export function buildSessionSummary(fields: {
   id: string;
   workspaceId: string;
   cwd?: string;
+  worktree?: SessionWorktree;
   title?: string;
   lastPrompt?: string;
   createdAt: number;
@@ -115,6 +117,7 @@ export function buildSessionSummary(fields: {
     id: fields.id,
     workspaceId: fields.workspaceId,
     cwd: fields.cwd,
+    worktree: fields.worktree,
     title: fields.title,
     lastPrompt: fields.lastPrompt,
     createdAt: fields.createdAt,
@@ -147,6 +150,7 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.id === b.id &&
     a.workspaceId === b.workspaceId &&
     a.cwd === b.cwd &&
+    JSON.stringify(a.worktree) === JSON.stringify(b.worktree) &&
     a.title === b.title &&
     a.lastPrompt === b.lastPrompt &&
     a.createdAt === b.createdAt &&
@@ -252,6 +256,15 @@ export async function readSessionSummaryResult(
   }
 }
 
+function parseSessionWorktree(value: unknown): SessionWorktree | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return typeof record['worktreeId'] === 'string' && typeof record['branch'] === 'string' &&
+    typeof record['sourceRoot'] === 'string' && typeof record['baseRef'] === 'string'
+    ? { worktreeId: record['worktreeId'], branch: record['branch'], sourceRoot: record['sourceRoot'], baseRef: record['baseRef'] }
+    : undefined;
+}
+
 function summaryFromMetadata(
   meta: Record<string, unknown>,
   workspaceId: string,
@@ -266,6 +279,7 @@ function summaryFromMetadata(
     id: sessionId,
     workspaceId,
     cwd: recoverCwd(meta),
+    worktree: parseSessionWorktree(meta['worktree']),
     title: typeof meta['title'] === 'string' ? meta['title'] : undefined,
     lastPrompt: typeof meta['lastPrompt'] === 'string' ? meta['lastPrompt'] : undefined,
     createdAt: parseTime(meta['createdAt']),

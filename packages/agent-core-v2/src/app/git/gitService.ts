@@ -8,6 +8,7 @@ import { IRuntimeResolver, IWorkspaceInstanceManager } from '#/workspace/workspa
 import { IGitService } from './git';
 import { parseNumstat, parsePorcelain, parsePullRequest } from './gitParsers';
 import { findGitWorkTree, type GitWorkTree } from './workTree';
+import { IWorktreeService } from './worktreeModel';
 
 const DIFF_MAX_BYTES = 1_048_576;
 
@@ -26,6 +27,7 @@ export class GitService implements IGitService {
     @IRuntimeResolver private readonly resolver: IRuntimeResolver,
     @IWorkspaceInstanceManager private readonly workspaces: IWorkspaceInstanceManager,
     @IHostFileSystem private readonly fs: IHostFileSystem,
+    @IWorktreeService private readonly worktrees: IWorktreeService,
   ) {}
 
   async status(cwd: string, pathFilter?: ReadonlySet<string>): Promise<FsGitStatusResponse> {
@@ -77,7 +79,7 @@ export class GitService implements IGitService {
 
     let diffStdout: string;
     if (untracked || !hasHead) {
-      const workspaceId = this.resolveWorkspaceId(cwd);
+      const workspaceId = await this.resolveWorkspaceId(cwd);
       const nullDevice =
         this.resolver.inspect({ workspaceId, runtimeId: 'local' }).environment.pathClass === 'win32'
           ? 'NUL'
@@ -149,7 +151,7 @@ export class GitService implements IGitService {
     cwd: string,
     options: RunOptions = {},
   ): Promise<RunResult> {
-    const workspaceId = this.resolveWorkspaceId(cwd);
+    const workspaceId = await this.resolveWorkspaceId(cwd);
     const lease = this.resolver.acquire({ workspaceId, runtimeId: 'local' }, ['process']);
     const spawned = await lease.runtime.process!
       .spawn(cmd, args, { cwd, env: options.env })
@@ -201,12 +203,12 @@ export class GitService implements IGitService {
     }
   }
 
-  private resolveWorkspaceId(cwd: string): string {
-    const workspace = this.workspaces.findByRoot(cwd);
-    if (workspace === undefined) {
-      throw new Error(`workspace for root ${cwd} is not materialized`);
-    }
-    return workspace.id;
+  private async resolveWorkspaceId(cwd: string): Promise<string> {
+    const workspace = this.workspaces.findContaining(cwd);
+    if (workspace !== undefined) return workspace.id;
+    const record = await this.worktrees.forPath(cwd);
+    if (record !== undefined && this.workspaces.get(record.repo.workspaceId) !== undefined) return record.repo.workspaceId;
+    throw new Error(`workspace for path ${cwd} is not materialized`);
   }
 
   private gitUnavailable(cwd: string, detail: string): Error2 {

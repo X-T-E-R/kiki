@@ -9,6 +9,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { IGitService } from '#/app/git/git';
 import { GitService } from '#/app/git/gitService';
+import { IWorktreeService } from '#/app/git/worktreeModel';
 import { findGitWorkTree } from '#/app/git/workTree';
 import { ErrorCodes } from '#/errors';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -35,8 +36,10 @@ describe('GitService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let service: IGitService;
+  let managedWorktreePath: string | undefined;
 
   beforeEach(() => {
+    managedWorktreePath = undefined;
     repo = mkdtempSync(join(tmpdir(), 'git-service-'));
     git(repo, 'init');
     git(repo, 'config', 'user.email', 'test@example.com');
@@ -59,7 +62,12 @@ describe('GitService', () => {
         });
         reg.definePartialInstance(IWorkspaceInstanceManager, {
           findByRoot: () => ({ id: 'workspace-1' } as never),
+          findContaining: (cwd: string) => cwd === managedWorktreePath ? undefined : ({ id: 'workspace-1' } as never),
+          get: (id: string) => id === 'workspace-1' ? ({ id } as never) : undefined,
           onDidChange: Event.None as Event<WorkspaceInstanceChange>,
+        });
+        reg.definePartialInstance(IWorktreeService, {
+          forPath: async (path: string) => path === managedWorktreePath ? ({ repo: { workspaceId: 'workspace-1' } } as never) : undefined,
         });
         reg.define(IGitService, GitService);
       },
@@ -76,6 +84,12 @@ describe('GitService', () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-m', message);
   }
+
+  it('maps a managed worktree cwd to its source workspace runtime', async () => {
+    managedWorktreePath = join(repo, 'isolated');
+    const resolver = service as unknown as { resolveWorkspaceId(cwd: string): Promise<string> };
+    await expect(resolver.resolveWorkspaceId(managedWorktreePath)).resolves.toBe('workspace-1');
+  });
 
   describe('status', () => {
     it('reports a clean tree', async () => {

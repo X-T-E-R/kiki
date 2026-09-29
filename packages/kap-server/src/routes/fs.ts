@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 
+import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import {
   ErrorCodes,
   IRuntimeResolver,
@@ -30,6 +31,7 @@ import {
   fsSuggestResponseSchema,
 } from '@kiki/agent-core-v2/workspace/workspaceFs/fs';
 import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
+import type { IWorktreeService } from '@kiki/agent-core-v2/app/git/worktreeModel';
 import type { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
@@ -55,6 +57,10 @@ import {
   fsOpenRequestSchema,
   fsRevealRequestSchema,
 } from '../protocol/rest-fs';
+
+const noRuntimeWorktrees = {
+  forPath: async () => undefined,
+} as unknown as IWorktreeService;
 
 interface FsRouteHost {
   post(
@@ -177,13 +183,18 @@ function createRuntimeFs(
         };
       },
     };
+    const mappedRoot = canonicalWorkspaceRoot(mapped.workDir);
+    const mappedPrefix = mappedRoot.endsWith('/') ? mappedRoot : `${mappedRoot}/`;
     const instances = {
-      findByRoot: (root: string) => root === mapped.workDir ? { id: workspaceId } : undefined,
+      findContaining: (cwd: string) => {
+        const path = canonicalWorkspaceRoot(cwd);
+        return path === mappedRoot || path.startsWith(mappedPrefix) ? { id: workspaceId } : undefined;
+      },
     } as unknown as IWorkspaceInstanceManager;
     const git = new WorkspaceGitService(
       workspace,
       {
-        current: new GitService(resolver, instances, lease.runtime.fs!),
+        current: new GitService(resolver, instances, lease.runtime.fs!, noRuntimeWorktrees),
         onDidChange: () => ({ dispose: () => {} }),
       },
     );

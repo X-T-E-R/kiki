@@ -14,6 +14,7 @@ export interface SessionIndexLine {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly workDir: string;
+  readonly sourceRoot?: string;
 }
 
 export function collectAliasIds(
@@ -33,7 +34,8 @@ export function collectAliasIds(
     if (workspaceRootKey(ws.root) === rootKey) add(ws.id);
   }
   for (const line of sessionIndexEntries) {
-    if (workspaceRootKey(line.workDir) === rootKey) add(encodeWorkDirKey(line.workDir));
+    const source = line.sourceRoot ?? line.workDir;
+    if (workspaceRootKey(source) === rootKey) add(encodeWorkDirKey(source));
   }
   return ids;
 }
@@ -76,8 +78,8 @@ export async function readSessionIndexWorkDirs(
 ): Promise<readonly string[]> {
   const workDirs: string[] = [];
   for (const entry of await readSessionIndexEntries(storage)) {
-    if (!isAbsolute(entry.workDir)) continue;
-    workDirs.push(entry.workDir);
+    if (!isAbsolute(entry.sourceRoot ?? entry.workDir)) continue;
+    workDirs.push(entry.sourceRoot ?? entry.workDir);
   }
   return workDirs;
 }
@@ -98,6 +100,7 @@ export function parseSessionIndexLine(line: string): SessionIndexLine | undefine
       sessionId: entry.sessionId,
       sessionDir: entry.sessionDir,
       workDir: entry.workDir,
+      sourceRoot: typeof entry.sourceRoot === 'string' ? entry.sourceRoot : undefined,
     };
   } catch {
     return undefined;

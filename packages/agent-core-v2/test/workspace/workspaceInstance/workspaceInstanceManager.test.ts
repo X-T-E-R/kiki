@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
+import { stubFlag } from '../../app/flag/stubs';
 import type { Workspace, IWorkspaceService } from '#/app/workspace/workspace';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import type { Runtime } from '#/runtime/runtime';
@@ -145,7 +146,7 @@ function manager(
     config: undefined,
     cronStore: undefined,
     event: undefined,
-    flags: undefined,
+    flags: stubFlag(false),
     git: { current: undefined },
     identity: undefined,
     index: undefined,

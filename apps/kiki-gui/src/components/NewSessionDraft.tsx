@@ -54,6 +54,7 @@ import {
 import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
+import { useWorktreeAvailability } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
@@ -113,6 +114,8 @@ export function buildNewSessionCreate(input: {
   readonly thinking?: string;
   readonly permissionMode: PermissionMode;
   readonly planMode: boolean;
+  /** Opt-in only: run in a fresh Kiki-managed worktree of the target repository. */
+  readonly worktree?: boolean;
 }): SessionCreate {
   const agent_config = {
     profile: input.profile,
@@ -121,9 +124,10 @@ export function buildNewSessionCreate(input: {
     permission_mode: input.permissionMode,
     plan_mode: input.planMode,
   };
+  const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
   return input.cwd !== ''
-    ? { metadata: { cwd: input.cwd }, agent_config }
-    : { workspace_id: input.workspaceId, agent_config };
+    ? { metadata: { cwd: input.cwd }, agent_config, ...isolation }
+    : { workspace_id: input.workspaceId, agent_config, ...isolation };
 }
 
 /**
@@ -197,6 +201,8 @@ export function useNewSessionDraft({
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [goalObjective, setGoalObjective] = useState('');
+  // Never persisted: every new draft starts in the current checkout.
+  const [worktreeRequested, setWorktreeRequested] = useState(false);
   const [modelOverride, setModelOverrideState] = useState(() =>
     resolveSessionModelOverride(initialRestoredDraft.modelOverride),
   );
@@ -232,6 +238,11 @@ export function useNewSessionDraft({
   );
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
     && (workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID);
+  const worktreeRoot = cwd.trim() !== ''
+    ? (isAbsoluteCwdPath(cwd.trim()) ? cwd.trim() : undefined)
+    : effectiveWorkspace?.root;
+  const worktreeAvailability = useWorktreeAvailability(client, { root: worktreeRoot, remote: sshLabel !== null });
+  const worktree = worktreeRequested && worktreeAvailability.kind === 'ready';
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -379,6 +390,7 @@ export function useNewSessionDraft({
     permissionMode,
     planMode,
     goalObjective,
+    worktree,
   });
   sendContextRef.current = {
     busy: busy || selectionBlocked,
@@ -391,6 +403,7 @@ export function useNewSessionDraft({
     permissionMode,
     planMode,
     goalObjective,
+    worktree,
   };
 
   const createThenNavigate = useCallback((handoff: {
@@ -426,6 +439,7 @@ export function useNewSessionDraft({
       thinking: context.effectiveEffort,
       permissionMode: context.permissionMode,
       planMode: context.planMode,
+      worktree: context.worktree,
     });
 
     // Returned so the composer's send latch rides the create round trip: a
@@ -540,6 +554,9 @@ export function useNewSessionDraft({
     workspacesLoading,
     effectiveWorkspace,
     autoWorkspace,
+    worktreeAvailability,
+    worktreeRequested,
+    setWorktreeRequested,
     agentProfileCatalogMode,
     agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,
