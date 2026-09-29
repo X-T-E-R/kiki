@@ -15,7 +15,6 @@
 import { sessionRecord, ts } from './helpers.mjs';
 import railScale from './rail-scale.scenario.mjs';
 
-const SID = 'session_fixture_rail_command';
 
 const MODEL = {
   opus: 'anthropic/claude-opus-5-5',
@@ -86,11 +85,77 @@ const ROWS = [
   ['agent-227', 'fold_refs_codex_claude', 'Fold rules in Codex + Claude desktop', 'ds', 'explore', 'running', 'agent-203', 2, null],
 ];
 
-// Parked on the user: two approvals and one question.
+// A second, fully loaded session: more agents (long names, three levels),
+// five items waiting, a long checklist with notes, and a busy activity feed.
+const FULL_TITLE = '统筹：右栏第二轮、设置页视觉统一、搜索 S4 接入与构建发布前的整批回归检查';
+const EXTRA_ROWS = [
+  ['agent-230', 'settings_visual_unify_every_section_card_and_dropdown', 'Unify every settings section card, dropdown and save-feedback row to the new visual system', 'opus', 'frontend', 'running', 'main', 20, null],
+  ['agent-231', 'search_s4_reindex_probe', 'Probe reindex timing on the 1.1 GB session store', 'ds', 'explore', 'running', 'agent-219', 12, null],
+  ['agent-232', 'search_s4_wal_checkpoint_probe', 'Check WAL checkpoint cadence under concurrent writers', 'ds', 'explore', 'running', 'agent-219', 11, null],
+  ['agent-233', 'composer_states_queue_preview_reference_scan', 'Scan six donors for queued-message previews', 'ds', 'explore', 'running', 'agent-223', 9, null],
+  ['agent-234', 'build_promote_windows_nsis_bundle_and_cold_start_smoke', 'Clean-worktree build, NSIS bundle and cold-start smoke on Windows', 'sol', 'general', 'suspended', 'main', 8, null],
+  ['agent-235', 'i18n_glossary_audit', 'Audit the zh glossary against the new rail strings', 'luna', 'worker', 'running', 'main', 7, null],
+  ['agent-236', 'timeline_fold_rules_unify_with_read_media', 'Unify fold rules with Read media', 'opus', 'frontend', 'suspended', 'main', 6, null],
+  ['agent-237', 'preview_fix_blur_probe', 'Find where the preview downsamples images', 'ds', 'explore', 'completed', 'agent-225', 5, 3, '缩放发生在 MediaLightbox 的 srcset 选择，不在解码。'],
+  ['agent-238', 'ops_nightly_visual_smoke', 'Nightly visual smoke on the 11 scenarios', 'luna', 'worker', 'failed', 'main', 30, 14, undefined, 'Visual smoke failed: 2 of 11 scenarios differ beyond threshold (settings-ia, rail-scale).'],
+  ...Array.from({ length: 24 }, (_, i) => [`agent-3${String(i).padStart(2, '0')}`, `batch_probe_${i + 1}`, `Batch probe ${i + 1}: grep call sites and report counts`, i % 3 === 0 ? 'ds' : i % 3 === 1 ? 'luna' : 'sol', 'explore', i % 5 === 0 ? 'running' : 'completed', i < 12 ? 'agent-230' : 'agent-203', 50 + i * 3, i % 5 === 0 ? null : 40 + i * 2, `Probe ${i + 1}: ${3 + (i % 7)} call sites.`]),
+];
+const REGULAR_IDS = new Set(['agent-202', 'agent-203', 'agent-206', 'agent-211', 'agent-212', 'agent-213', 'agent-185', 'agent-217', 'agent-222', 'agent-214', 'agent-215', 'agent-216', 'agent-219', 'agent-223', 'agent-225', 'agent-226', 'agent-227']);
+
+const TODOS_REGULAR = [
+  ['读 rail_v6 与 rail_open_fix 的现状', 'done'],
+  ['按第一屏重新排默认右栏的区块', 'in_progress'],
+  ['驾驶舱跟随主题配色', 'pending'],
+  ['两种主题各截一张给用户确认', 'pending'],
+];
+const TODOS_FULL = [
+  ['读 rail_v6 与 rail_open_fix 的现状，确认 AgentRelations 的紧凑 chip 不回退', 'done'],
+  ['整理真实会话的数据形状：224 个智能体、6 次压缩、324 轮', 'done'],
+  ['默认模式：profile 默认折叠，等你处理置顶，第一屏放下「现在 · 上下文 · 智能体」', 'done'],
+  ['默认模式：等你处理的第一件事做成完整卡片，其余压成一行，超过五件折叠', 'in_progress'],
+  ['默认模式：动态改成按时间排的一条流，文件、命令、派单、回报、压缩放在一起', 'pending'],
+  ['驾驶舱：跟随主题配色，浅色主题下不再是一块深色异物', 'pending'],
+  ['驾驶舱：「运行中」可以在列表和泳道之间切换', 'pending'],
+  ['设置：右栏默认显示「默认 / 驾驶舱」，放在常规 › 输入与时间线', 'pending'],
+  ['满载 mock：智能体很多、todo 很长、动态很多、名字很长', 'pending'],
+  ['1440 与 1280，浅色与深色各截图，自己看过再交', 'pending'],
+  ['删除 A、C、D 原型与 ?rail= 切换', 'pending'],
+  ['临时 GIT_INDEX_FILE 提交，确认 HEAD 未被推进', 'pending'],
+];
+const NOTES_FULL = {
+  goal: '在现有右栏上调整，而不是整体推翻；驾驶舱作为可切换的第二种模式保留。',
+  decided: '第一屏：等你处理 → 现在 → 上下文与费用 → 智能体。profile、动态、能力默认折叠。',
+  next: '做满载截图，交给主控确认后再落地 i18n 与设置项。',
+};
+
+// Tool activity for the main agent, newest last: files, commands, dispatches.
+const ACTIVITY_REGULAR = [
+  ['Read', { kind: 'file_io', operation: 'read', path: 'apps/kiki-gui/src/components/RightRail.tsx' }, 26],
+  ['Bash', { kind: 'command', command: 'git log --oneline -8' }, 22],
+  ['Edit', { kind: 'diff', path: 'apps/kiki-gui/src/components/agent-panel/InspectorNow.tsx', diff: '' }, 9],
+  ['Bash', { kind: 'command', command: 'pnpm --filter @kiki/gui typecheck' }, 4],
+];
+const ACTIVITY_FULL = [
+  ...ACTIVITY_REGULAR,
+  ['Read', { kind: 'file_io', operation: 'read', path: 'apps/kiki-gui/src/components/settings/GeneralSection.tsx' }, 18],
+  ['Write', { kind: 'file_io', operation: 'write', path: 'apps/kiki-gui/src/components/rail-variants/DefaultRail.tsx' }, 15],
+  ['Edit', { kind: 'diff', path: 'apps/kiki-gui/src/components/rail-variants/CockpitRail.tsx', diff: '' }, 12],
+  ['Edit', { kind: 'diff', path: 'packages/session-core/src/settings/settings.ts', diff: '' }, 11],
+  ['Bash', { kind: 'command', command: 'node .tmp/rail_variants/shots.mjs x --locales=zh --widths=1440,1280 --themes=light,dark' }, 7],
+  ['Read', { kind: 'file_io', operation: 'read', path: 'apps/kiki-gui/src/components/AgentBreadcrumb.tsx' }, 5],
+  ['Bash', { kind: 'command', command: 'npx oxlint --type-aware apps/kiki-gui/src/components/rail-variants' }, 2],
+];
+
+function buildSession(SID, full) {
+const rows = full ? [...ROWS, ...EXTRA_ROWS] : ROWS.filter((row) => REGULAR_IDS.has(row[0]));
 const WAITING = [
   { agent: 'agent-216', id: 'approval_cmd_settings', kind: 'approval', tool: 'Bash', display: { kind: 'command', command: 'pnpm --filter @kiki/gui build' }, action: 'Run: pnpm --filter @kiki/gui build', ago: 6 },
   { agent: 'agent-219', id: 'approval_cmd_search', kind: 'approval', tool: 'Write', display: { kind: 'file_io', operation: 'write', path: 'packages/kap-server/src/search/sqliteBackend.ts' }, action: 'Write packages/kap-server/src/search/sqliteBackend.ts', ago: 3 },
   { agent: 'agent-223', id: 'question_cmd_composer', kind: 'question', header: '排队预览', question: '排队的消息要做成几种预览给你挑？', options: ['三种：条、卡片、内联', '两种就够', '先只做一种'], ago: 1 },
+  ...(full ? [
+    { agent: 'agent-234', id: 'approval_cmd_bundle', kind: 'approval', tool: 'Bash', display: { kind: 'command', command: 'pnpm --filter @kiki/gui desktop:build && node scripts/desktop-release.mjs --promote --channel preview --skip-notarize' }, action: 'Run: pnpm --filter @kiki/gui desktop:build', ago: 2 },
+    { agent: 'agent-236', id: 'approval_cmd_fold', kind: 'approval', tool: 'Edit', display: { kind: 'diff', path: 'apps/kiki-gui/src/components/timeline/foldRules.ts', diff: '' }, action: 'Edit apps/kiki-gui/src/components/timeline/foldRules.ts', ago: 1 },
+  ] : []),
 ];
 
 // The user's recent prompts on the main timeline (newest last).
@@ -111,7 +176,7 @@ const COMPACTIONS = [2351, 1915, 1664, 1190, 921, 301];
 
 const ended = (status) => status === 'completed' || status === 'failed' || status === 'cancelled';
 
-const roster = ROWS.map(([id, label, description, family, profile, status, parent, startedAgo, endedAgo, summary, error], index) => ({
+const roster = rows.map(([id, label, description, family, profile, status, parent, startedAgo, endedAgo, summary, error], index) => ({
   id: `task_${id}`,
   session_id: SID,
   kind: 'subagent',
@@ -194,20 +259,36 @@ function childTranscript([id, , description, family, , status, , startedAgo, , ,
   };
 }
 
+const activity = full ? ACTIVITY_FULL : ACTIVITY_REGULAR;
 const turnItems = PROMPTS.map(([ago, prompt], index) => {
   const last = index === PROMPTS.length - 1;
   const turnId = `t${300 + index}`;
   const state = last ? 'running' : 'completed';
+  const nextAgo = index + 1 < PROMPTS.length ? PROMPTS[index + 1][0] : -1;
+  const tools = activity
+    .filter(([, , toolAgo]) => toolAgo <= ago && toolAgo > nextAgo)
+    .toSorted((l, r) => r[2] - l[2])
+    .map(([name, display, toolAgo], i) => ({
+      kind: 'tool', frameId: `${turnId}-tool-${i}`, toolCallId: `${turnId}-call-${i}`, name, state: 'done', input: {}, display,
+      startedAt: ts(toolAgo), endedAt: ts(toolAgo - 0.2),
+    }));
+  const liveTool = last ? [{ kind: 'tool', frameId: `${turnId}-live`, toolCallId: `${turnId}-live`, name: 'Read', state: 'running', input: {}, display: { kind: 'file_io', operation: 'read', path: 'apps/kiki-gui/src/components/Transcript.tsx' }, startedAt: ts(0.3) }] : [];
   return {
     kind: 'turn', turnId, ordinal: 300 + index, state, origin: { kind: 'user' }, prompt,
     startedAt: ts(ago), ...(last ? {} : { endedAt: ts(Math.max(0.5, ago - 1)) }),
     steps: [{
       kind: 'step', stepId: `${turnId}.1`, turnId, ordinal: 1, state, startedAt: ts(ago),
       ...(last ? {} : { endedAt: ts(Math.max(0.5, ago - 1)) }),
-      frames: [{ kind: 'text', frameId: `${turnId}-reply`, role: 'assistant', text: last ? '收到，先定位右侧对齐的来源，再派给 timeline 的 owner。' : '已派给对应的 owner，结果回来后汇总给你。' }],
+      frames: [
+        ...tools,
+        { kind: 'text', frameId: `${turnId}-reply`, role: 'assistant', text: last ? '收到，先定位右侧对齐的来源，再派给 timeline 的 owner。' : '已派给对应的 owner，结果回来后汇总给你。' },
+        ...liveTool,
+      ],
     }],
   };
 });
+const todoItems = (full ? TODOS_FULL : TODOS_REGULAR).map(([title, status]) => ({ title, status }));
+const todos = [{ todoId: 'todo', items: todoItems, ...(full ? { notes: NOTES_FULL, notesMeta: { rev: 7, hash: 'fx', writtenTurn: 322, writtenStep: 't322.1', coveredMessageId: 'm', windowEpoch: 6 } } : {}), updatedAt: ts(2) }];
 const compactionItems = COMPACTIONS.map((ago, index) => ({
   kind: 'marker', markerId: `cmd-compact-${index + 1}`, marker: 'compaction', at: ts(ago),
   payload: index % 2 === 0 ? { strategy: 'relay' } : {},
@@ -219,6 +300,7 @@ const agentTranscripts = {
     agent_id: 'main',
     has_more: false,
     items: mainItems,
+    todos,
     meta: {
       activity: 'turn',
       agent: {
@@ -232,7 +314,7 @@ const agentTranscripts = {
     },
   },
 };
-ROWS.forEach((row, index) => { agentTranscripts[row[0]] = childTranscript(row, index); });
+rows.forEach((row, index) => { agentTranscripts[row[0]] = childTranscript(row, index); });
 
 const pendingApprovals = WAITING.filter((wait) => wait.kind === 'approval').map((wait) => ({
   approval_id: wait.id,
@@ -267,26 +349,21 @@ function metricsRow({ input, output, cacheRead, contextTokens, contextLimit, cos
 const metrics = {
   main: metricsRow({ input: 170_686_570, output: 2_857_751, cacheRead: 1_017_957_245, contextTokens: 612_400, contextLimit: 1_000_000, cost: 412.6, compactions: 6 }),
 };
-ROWS.forEach((row, index) => {
+rows.forEach((row, index) => {
   const input = 900_000 + (index % 9) * 410_000;
   metrics[row[0]] = metricsRow({ input, output: 40_000 + (index % 5) * 9_000, cacheRead: Math.round(input * 3.1), contextTokens: 40_000 + ((index * 37_000) % 300_000), contextLimit: row[3] === 'ds' ? 1_000_000 : 400_000, cost: 1.2 + (index % 7) * 0.9 });
 });
 
-export default {
-  agentPanel: {
-    ...railScale.agentPanel,
-    profile: { ...railScale.agentPanel.profile, description: 'Coordinates owners across the kiki workspace.', model: MODEL.opus, thinking_effort: 'max' },
+  return {
     metrics,
-  },
-  sessions: [
-    sessionRecord(SID, {
-      title: '你好',
+    record: sessionRecord(SID, {
+      title: full ? FULL_TITLE : '你好',
       busy: true,
       main_turn_active: true,
       pending_interaction: 'approval',
       created_at: ts(42 * 60 + 11),
       updated_at: ts(0),
-      metadata: { cwd: 'C:/Programs/AI/EasyAgent' },
+      metadata: { cwd: full ? 'C:/Programs/AI/EasyAgent/systems/kiki/apps/kiki-gui/src/components/rail-variants' : 'C:/Programs/AI/EasyAgent' },
       agent_config: { model: MODEL.opus, permission_mode: 'manual' },
       message_count: 1_284,
       usage: {
@@ -300,9 +377,7 @@ export default {
         turn_count: 324,
       },
     }),
-  ],
-  snapshots: {
-    [SID]: {
+    snapshot: {
       messages: [],
       has_more: false,
       subagents: roster,
@@ -310,7 +385,23 @@ export default {
       pending_questions: pendingQuestions,
       agent_transcripts: agentTranscripts,
     },
+  };
+}
+const REGULAR = buildSession('session_fixture_rail_command', false);
+const FULL = buildSession('session_fixture_rail_full', true);
+
+export default {
+  agentPanel: {
+    ...railScale.agentPanel,
+    profile: { ...railScale.agentPanel.profile, description: 'Coordinates owners across the kiki workspace.', model: MODEL.opus, thinking_effort: 'max' },
+    // One panel read serves both sessions; the full one's rows are a superset.
+    metrics: { ...REGULAR.metrics, ...FULL.metrics },
+  },
+  sessions: [REGULAR.record, FULL.record],
+  snapshots: {
+    [REGULAR.record.id]: REGULAR.snapshot,
+    [FULL.record.id]: FULL.snapshot,
   },
 };
 
-export const RAIL_COMMAND = { SID, AGENT_COUNT: ROWS.length, WAITING };
+export const RAIL_COMMAND = { REGULAR: REGULAR.record.id, FULL: FULL.record.id };
