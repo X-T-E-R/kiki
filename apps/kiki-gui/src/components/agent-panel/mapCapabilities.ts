@@ -97,6 +97,11 @@ export function mapPanelSubagentTargets(
   if (!targets) return [];
   return targets.map((target) => ({
     profile: target.profile,
+    description: target.description,
+    callerProfile: target.caller_profile,
+    source: target.source,
+    sourceRoot: target.source_root,
+    sourceFile: target.source_file,
     route: target.route,
     executor: target.executor,
     modelAlias: target.model_alias,
@@ -118,6 +123,8 @@ export function mapPanelSkills(
   return skills.map((skill) => ({
     ...skill,
     id: `${skill.source}:${skill.path}`,
+    sourceKind: skill.source_kind,
+    sourceRoot: skill.source_root,
     unavailableReason: skill.unavailable_reason,
     unavailableReasonCode: skill.unavailable_reason_code,
     argumentHint: skill.argument_hint,

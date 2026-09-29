@@ -4,9 +4,13 @@
  * a session with hundreds of agents is one linear pass per change, and so the
  * ordering rules are testable without a DOM.
  *
- * Ordering: agents that need the user, then running, then failed; settled
- * agents fold into one "N completed" group at the end once there are more
- * than three of them. A parent sorts by the
+ * Buckets: only what needs the user is set apart. Everything else is either
+ * still running or has ended; a failed agent ends like any other (its row
+ * says so in words, the list never sorts or filters by failure).
+ *
+ * Ordering: agents that need the user, then running; ended agents fold into
+ * one "N finished" group at the end once there are more than three of them.
+ * A parent sorts by the
  * most urgent agent in its subtree, so a finished lead with a waiting worker
  * stays at the top. Below the first level every branch starts folded.
  *
@@ -17,11 +21,11 @@
 
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
 
-export type RosterBucket = 'waiting' | 'running' | 'failed' | 'done';
+export type RosterBucket = 'waiting' | 'running' | 'ended';
 
-export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'failed', 'done'];
+export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'ended'];
 
-const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, failed: 2, done: 3 };
+const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, ended: 2 };
 
 export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>): RosterBucket {
   if (waiting.has(node.agentId) || node.status === 'suspended') return 'waiting';
@@ -29,10 +33,8 @@ export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>):
     case 'running':
     case 'background':
       return 'running';
-    case 'failed':
-      return 'failed';
     default:
-      return 'done';
+      return 'ended';
   }
 }
 
@@ -73,7 +75,7 @@ export interface RosterInput {
   readonly expanded: ReadonlySet<string>;
   readonly filter: RosterBucket | 'all';
   readonly query: string;
-  /** The trailing "N completed" group is open. */
+  /** The trailing "N finished" group is open. */
   readonly doneOpen: boolean;
 }
 
@@ -100,7 +102,7 @@ function matches(node: AgentTreeNode, needle: string): boolean {
 export function buildRoster(input: RosterInput): RosterModel {
   const { forest, rootId, waiting, expanded, filter, doneOpen } = input;
   const needle = input.query.trim().toLowerCase();
-  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, failed: 0, done: 0 };
+  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, ended: 0 };
   const bucketOf = new Map<string, RosterBucket>();
   const subtreeRank = new Map<string, number>();
   const waitingBelow = new Map<string, number>();
@@ -135,7 +137,7 @@ export function buildRoster(input: RosterInput): RosterModel {
     return true;
   });
   for (const node of top) visit(node);
-  const total = counts.waiting + counts.running + counts.failed + counts.done;
+  const total = counts.waiting + counts.running + counts.ended;
 
   // Stable within a rank: the forest already orders siblings by recency.
   const byUrgency = (list: readonly AgentTreeNode[]) =>
@@ -178,8 +180,8 @@ export function buildRoster(input: RosterInput): RosterModel {
     for (const child of byUrgency(kids.get(node.agentId) ?? [])) emit(child, depth + 1);
   };
   const ordered = byUrgency(top);
-  const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.done);
-  const settled = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.done);
+  const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.ended);
+  const settled = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.ended);
   for (const node of active) emit(node, 0);
   if (settled.length > 0) {
     // A handful of settled agents is not worth a fold.

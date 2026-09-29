@@ -104,6 +104,10 @@ export interface AgentSkillCapability {
   readonly unavailableReason?: string;
   readonly unavailableReasonCode?: string;
   readonly source?: string;
+  /** `plugin` for a plugin-contributed skill; otherwise the discovery source. */
+  readonly sourceKind?: string;
+  /** Root directory the skill was discovered under (extra / plugin roots). */
+  readonly sourceRoot?: string;
   readonly path?: string;
   readonly argumentHint?: string;
   readonly type?: string;
@@ -116,6 +120,13 @@ export interface AgentSkillCapability {
  */
 export interface AgentSubagentTarget {
   readonly profile: string;
+  readonly description?: string;
+  /** The dispatching profile these targets were resolved for (private aliases need it). */
+  readonly callerProfile?: string;
+  /** Where the target's definition comes from: builtin, plugin, user, extra, workspace. */
+  readonly source?: string;
+  readonly sourceRoot?: string;
+  readonly sourceFile?: string;
   readonly route?: string;
   readonly executor: string;
   readonly modelAlias?: string;
@@ -137,7 +148,7 @@ export type DetailDrawerTarget =
   | { readonly kind: 'tool'; readonly tool: AgentToolCapability }
   | { readonly kind: 'skill'; readonly skill: AgentSkillCapability }
   | { readonly kind: 'subagent'; readonly target: AgentSubagentTarget }
-  | { readonly kind: 'profile-draft'; readonly profile: string };
+  | { readonly kind: 'profile-draft'; readonly profile: string; readonly callerProfile?: string };
 
 /**
  * Defensive extension of AgentPanelProfile supporting upcoming server contract

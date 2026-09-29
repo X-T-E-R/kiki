@@ -12,12 +12,12 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ApprovalBlock, Block, QuestionBlock, ToolBlock } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
-import { ClampText } from '../ClampText';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { useNow } from '../RelativeTime';
 import { toolSummary } from '../ToolCard';
 import { RAIL_MARK } from './InspectorAgents';
+import { plainFailure } from './failureText';
 import { INSPECTOR_LINK, InspectorSection } from './InspectorSection';
 
 type Pending = ApprovalBlock | QuestionBlock;
@@ -135,13 +135,13 @@ export const InspectorNow = memo(function InspectorNow({
     : subStatus !== undefined && !running
       ? t(`subagent.status.${subStatus}` as I18nKey)
       : running ? t('inspector.nowWorking') : t('inspector.nowIdle');
-  const failed = subStatus === 'failed' && subagent?.error !== undefined;
+  const failed = subStatus === 'failed';
   const result = subStatus === 'completed' ? subagent?.result : undefined;
-  // The excerpt: a failure, a result, the brief of a subagent that has not
-  // spoken yet, or the last thing a running agent said. One of them, never
-  // a stack of three.
+  // The excerpt: a failure (one plain sentence, never a payload), a result,
+  // the brief of a subagent that has not spoken yet, or the last thing a
+  // running agent said. One of them, never a stack of three.
   const excerpt = failed
-    ? undefined
+    ? (plainFailure(subagent?.error) ?? t('inspector.failedNoDetail'))
     : result !== undefined && result !== ''
       ? result
       : running && said !== undefined
@@ -155,9 +155,9 @@ export const InspectorNow = memo(function InspectorNow({
           {pending.map((item) => {
             const id = item.kind === 'approval' ? item.request.approval_id : item.request.question_id;
             return (
-              <li key={id} className="flex min-h-9 items-center rounded-lg bg-accent-soft/50 py-1 pr-1 pl-2">
+              <li key={id} className="flex min-h-9 items-center rounded-lg bg-attention-soft/70 py-1 pr-1 pl-2">
                 <span className={RAIL_MARK}>
-                  <span aria-hidden className="h-[7px] w-[7px] rounded-full bg-accent" />
+                  <span aria-hidden className="h-[7px] w-[7px] rounded-full bg-attention" />
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{pendingLabel(t, item)}</span>
                 {onReview !== undefined ? (
@@ -165,7 +165,7 @@ export const InspectorNow = memo(function InspectorNow({
                     type="button"
                     data-inspector-review={id}
                     onClick={() => { onReview(item.kind, id); }}
-                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
                   >
                     {t('inspector.review')}
                   </button>
@@ -179,14 +179,14 @@ export const InspectorNow = memo(function InspectorNow({
       <div>
         <div className="flex min-w-0 items-start">
           <span className={RAIL_MARK}>
-            <LifeMark markId="inspector-now" life={life} />
+            <LifeMark markId="inspector-now" life={life} tone={life === 'working' ? 'bg-success' : life === 'failed' ? 'bg-ink-faint' : undefined} />
           </span>
           <p
             data-agent-status={subStatus}
             data-needs-input={subagent !== undefined && subagent.pendingCount > 0 ? '' : undefined}
             data-inspector-step={step !== undefined ? '' : undefined}
             title={summary === '' ? undefined : summary}
-            className={`min-w-0 flex-1 truncate text-[14px] leading-5 font-medium ${quiet ? 'text-ink-soft' : failed ? 'text-danger' : 'text-ink'}`}
+            className={`min-w-0 flex-1 truncate text-[14px] leading-5 font-medium ${quiet ? 'text-ink-soft' : 'text-ink'}`}
           >
             {step !== undefined ? (
               <>
@@ -202,11 +202,7 @@ export const InspectorNow = memo(function InspectorNow({
           ) : null}
           {running && startedAt !== undefined ? <span className="ml-3 leading-5"><Elapsed since={startedAt} /></span> : null}
         </div>
-        {failed ? (
-          <div className="mt-1.5 ml-3.5 border-l-2 border-danger pl-2.5">
-            <ClampText text={subagent.error ?? ''} lines={3} className="font-mono text-[12px] leading-snug text-danger" />
-          </div>
-        ) : excerpt !== undefined && excerpt !== '' ? (
+        {excerpt !== undefined && excerpt !== '' ? (
           <p
             data-inspector-said
             className="mt-1 ml-3.5 line-clamp-2 text-[13px] leading-[19px] text-ink-soft"

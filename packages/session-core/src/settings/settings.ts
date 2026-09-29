@@ -67,6 +67,8 @@ export interface DesktopSettings {
   defaultAppendTiming: DefaultAppendTiming;
   /** Fold runs of ≥3 consecutive pure reads into one summary line (off by default). */
   foldSteps: boolean;
+  /** The session inspector (right rail) starts open on wide windows. */
+  railOpenByDefault: boolean;
   motion: MotionPreference;
   proseFont: ProseFontPreference;
 }
@@ -275,6 +277,7 @@ const DEFAULTS: DesktopSettings = {
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
   foldSteps: false,
+  railOpenByDefault: true,
   motion: 'system',
   proseFont: 'serif',
 };
@@ -353,6 +356,8 @@ export function readSettings(): DesktopSettings {
       : DEFAULTS.defaultAppendTiming,
     foldSteps:
       typeof stored.foldSteps === 'boolean' ? stored.foldSteps : DEFAULTS.foldSteps,
+    railOpenByDefault:
+      typeof stored.railOpenByDefault === 'boolean' ? stored.railOpenByDefault : DEFAULTS.railOpenByDefault,
     motion: isMotionPreference(stored.motion) ? stored.motion : DEFAULTS.motion,
     proseFont: stored.proseFont === 'sans' ? 'sans' : DEFAULTS.proseFont,
   };
@@ -1991,7 +1996,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-permission-rules', titleKey: 'st.perm.rulesTitle', keywordKeys: ['st.perm.pattern', 'st.perm.decision'], synonyms: ['permission rules', '权限规则', 'always allow', '总是允许'] },
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
   { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
-  { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取'] },
+  { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps', 'st.layout.railOpenByDefault'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },

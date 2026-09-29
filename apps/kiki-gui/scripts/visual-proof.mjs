@@ -1257,10 +1257,18 @@ async function scenarioRailScale() {
   if (await items.count() !== 2) throw new Error(`expected 2 bubbled approvals, got ${await items.count()}`);
   const summary = page.locator('[data-roster-summary]');
   await summary.waitFor({ timeout: 10_000 });
-  for (const [bucket, expected] of Object.entries({ waiting: 2, running: 16, failed: 6, done: 41 })) {
+  // Failures are not a bucket: only waiting is set apart, the rest ran or ended.
+  for (const [bucket, expected] of Object.entries({ waiting: 2, running: 16, ended: 47 })) {
     const count = await summary.locator(`[data-roster-filter="${bucket}"]`).getAttribute('data-roster-count');
     if (count !== String(expected)) throw new Error(`roster summary ${bucket} count wrong: ${count} (expected ${expected})`);
   }
+  if (await summary.locator('[data-roster-filter="failed"]').count() !== 0) throw new Error('roster still filters by failure');
+  const railText = await page.locator('[data-session-rail]').innerText();
+  if (/\{"|"\s*:\s*[{"\d]/.test(railText)) throw new Error('rail shows a raw JSON payload');
+  // The profile card leads the rail and opens onto the capability tabs.
+  await page.locator('[data-session-rail] [data-profile-toggle]').click();
+  await page.locator('[data-session-rail] [data-capability-tab-button="skills"]').click();
+  await page.locator('[data-session-rail] [data-capability-source="global"]').first().waitFor({ timeout: 10_000 });
   await page.locator('[data-roster-toggle="agent-docs"]').click();
   await page.waitForTimeout(300);
   await shot('rail-scale');

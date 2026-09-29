@@ -1,22 +1,26 @@
 /**
- * Session inspector — the on-demand right panel (closed by default, opened
- * from the header toggle). It describes ONE agent at a time, whichever the
- * user last clicked into or focused (see inspectorFocus.ts). Its top is a
- * strip of folder tabs, main plus the subagents worth reaching, and the tab
- * in front shares one sheet with the body below:
+ * Session inspector — the right panel (open by default on wide windows; see
+ * `railOpenByDefault`). It describes ONE agent at a time, whichever the user
+ * last clicked into or focused (see inspectorFocus.ts):
  *
- *   tabs                  who this page is about; turning a tab turns the page
- *   1. Now                what the agent is doing (step, last words, elapsed),
- *                         anything waiting on the user pinned on top
- *   2. Todo · Plan        the agent's own checklist and plan
- *   3. Team               (main) each subagent: state, then brief or result
- *   4. Background tasks   running shells and jobs, latest output line, Stop
- *   5. Recent activity    files touched, recent commands
- *   6. Usage              context, cost and cache at a glance
- *   7. Memory             reserved slot (`memory` prop), not yet populated
- *   tail                  Model and capabilities, Session (folded), workspace links
+ *   head                  who this page is about (breadcrumb), close
+ *   1. Profile            one folded line: name, source, model · effort, what
+ *                         it can use; opens onto tools / skills / subagents /
+ *                         extensions
+ *   2. Needs you          every pending approval or question, any depth
+ *   3. Now                what the agent is doing (step, last words, elapsed)
+ *   4. Overview           context, cost and cache at a glance
+ *   5. Todo · Plan        the agent's own checklist and plan
+ *   6. Agents             the team; a row opens that agent's preview, the
+ *                         same as its card in the timeline
+ *   7. Background tasks   running shells and jobs, latest output line, Stop
+ *   8. Recent activity    files touched, recent commands
+ *   9. Memory             reserved slot (`memory` prop)
+ *   tail                  Session (folded)
  *
- * Empty chapters render nothing; nothing reads "Unknown".
+ * Colour is spent on purpose: accent for what needs the user, green for what
+ * is running, nothing for what ended (a failure included). Empty chapters
+ * render nothing; nothing reads "Unknown".
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -153,7 +157,6 @@ function taskStatusTone(status: Task['status']): string {
     case 'completed':
       return 'text-ink-soft';
     case 'failed':
-      return 'text-danger';
     case 'cancelled':
       return 'text-ink-faint';
   }
@@ -203,7 +206,7 @@ const TasksSection = memo(function TasksSection({
               className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <span className={RAIL_MARK}>
-                <LifeMark markId={`task:${task.id}`} life={task.status === 'running' ? 'working' : task.status === 'failed' ? 'failed' : 'idle'} still />
+                <LifeMark markId={`task:${task.id}`} life={task.status === 'running' ? 'working' : task.status === 'failed' ? 'failed' : 'idle'} tone={task.status === 'running' ? 'bg-success' : task.status === 'failed' ? 'bg-ink-faint' : undefined} still />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-baseline gap-2 leading-5">
@@ -397,9 +400,6 @@ export function RightRail({
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const busy = subagent !== undefined ? (focusedNode?.busy === true || state.busy) : state.busy;
-  const setupSummary = [state.model ?? focusedNode?.model, state.thinkingEffort ?? focusedNode?.thinkingEffort]
-    .filter((part): part is string => part !== undefined && part !== '')
-    .join(' · ');
   // Turning a tab. Inside the session view the document-level focus tracker
   // pins on click (inspectorFocus.ts); main is also handed back explicitly,
   // and the routed agent page (no onInspectMain) navigates instead.
@@ -523,14 +523,18 @@ export function RightRail({
         )}
       />
       {/* One page per agent: switching agents raises the new page into place. */}
-      <div key={focusedAgentId} className="rail-page space-y-6 pt-1">
+      <div key={focusedAgentId} className="rail-page space-y-5 pt-1">
+      <div data-rail-profile-slot>
+        <AgentPanelContainer key={`profile:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="profile" />
+      </div>
+
       {sessionPending !== undefined ? (
         <InspectorNeedsYou
           items={sessionPending}
           forest={forest}
           onResolveApproval={onResolveApproval}
           onReview={onReviewPending}
-          onInspect={selectAgent}
+          onInspect={onOpenSubagent}
         />
       ) : null}
 
@@ -566,7 +570,7 @@ export function RightRail({
       {/* The resident overview: context, usage and setup in every state,
           idle included. Mounts once its slot scrolls into view (it starts
           the capability and compaction-point reads). */}
-      <div ref={panelSlot.slotRef} data-rail-agent-panel-slot className="min-h-px [&:not(:has(section))]:-mt-6">
+      <div ref={panelSlot.slotRef} data-rail-agent-panel-slot className="min-h-px [&:not(:has(section))]:-mt-5">
         {panelSlot.mounted ? (
           <AgentPanelContainer key={`overview:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible={panelSlot.visible} part="overview" />
         ) : null}
@@ -598,7 +602,7 @@ export function RightRail({
             rootId={focusedAgentId}
             peekAgentId={peekAgentId}
             waitingAgentIds={waitingAgentIds}
-            onSelect={selectAgent}
+            onSelect={onOpenSubagent}
           />
         </RailSection>
       ) : null}
@@ -623,13 +627,8 @@ export function RightRail({
         </RailSection>
       ) : null}
 
-      {/* The reference tail: model and capabilities open (the facts a user
-          checks), session info folded. */}
+      {/* The reference tail: session info, folded. */}
       <div data-inspector-tail className="space-y-4">
-        <RailSection title={t('inspector.agentSetup')} summary={setupSummary || undefined} data-inspector-setup="">
-          <AgentPanelContainer key={`setup:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="setup" />
-        </RailSection>
-
         {session !== undefined ? (
           <RailSection
             title={t('inspector.sessionInfo')}

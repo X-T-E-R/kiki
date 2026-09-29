@@ -2,10 +2,10 @@
  * Who the inspector describes, and how to reach the others.
  *
  * RailCrumbs is the head: "Main agent" on main, "Main agent / Reviewer" on a
- * subagent (each step up is a button). TeamSection is the switcher: main's
- * page lists every subagent as two lines of content (name and state, then
- * what it is doing or what it found), and clicking a row turns the rail to
- * that agent. Metadata (model, effort, tool count) stays in the tooltip.
+ * subagent (each step up is a button). AgentRoster lists the team as two
+ * lines of content (name and state, then what it is doing or what it found);
+ * clicking a row opens that agent's preview, exactly as clicking its card in
+ * the timeline does. Metadata (model, effort, tool count) stays in the tooltip.
  *
  * Both share the rail's one left edge: a fixed mark column (RAIL_MARK) then
  * text, so status marks and labels line up down the whole panel.
@@ -21,6 +21,7 @@ import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { buildRoster, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
+import { plainFailure } from './failureText';
 
 /** Fixed status-mark column: every marked row puts its text at the same x. */
 export const RAIL_MARK = 'flex h-5 w-3.5 shrink-0 items-center justify-start';
@@ -42,13 +43,14 @@ export function agentLife(status: string): LifeState {
   }
 }
 
-/** Status as a plain word, the way the timeline's subagent rows say it. */
+/** Status as a plain word, the way the timeline's subagent rows say it.
+ * Only waiting on the user is coloured; a failure reads like any other end. */
 export function agentStatusTone(status: string): string {
   switch (status) {
     case 'suspended':
       return 'text-amber-ink';
     case 'failed':
-      return 'text-danger';
+      return 'text-ink-soft';
     case 'running':
     case 'background':
     case 'completed':
@@ -152,7 +154,11 @@ export const RailCrumbs = memo(function RailCrumbs({
 
 const STATUS_KEY = (status: string): I18nKey => `subagent.status.${status}` as I18nKey;
 
-const BUCKET_LIFE: Record<RosterBucket, LifeState> = { waiting: 'waiting', running: 'working', failed: 'failed', done: 'done' };
+const BUCKET_LIFE: Record<RosterBucket, LifeState> = { waiting: 'waiting', running: 'working', ended: 'done' };
+/** Running is the one live colour in the list; waiting keeps the accent. */
+const BUCKET_TONE: Partial<Record<RosterBucket, string>> = { running: 'bg-success', waiting: 'bg-attention' };
+/** A failed agent is marked by its shape, never by red. */
+const FAILED_TONE = 'bg-ink-faint';
 
 /** Past this many agents the roster offers a search field. */
 const SEARCH_AT = 12;
@@ -194,7 +200,7 @@ function RosterSummary({
   const shown = ROSTER_BUCKETS.filter((bucket) => counts[bucket] > 0);
   if (shown.length === 0) return null;
   return (
-    <div role="group" aria-label={t('inspector.filterAria')} data-roster-summary className="-mx-1 flex flex-wrap items-center gap-y-0.5">
+    <div role="group" aria-label={t('inspector.filterAria')} data-roster-summary className="flex flex-wrap items-center gap-1">
       {shown.map((bucket) => {
         const pressed = filter === bucket;
         return (
@@ -206,20 +212,18 @@ function RosterSummary({
             data-roster-count={counts[bucket]}
             title={pressed ? t('inspector.filterClear') : undefined}
             onClick={() => { onFilter(pressed ? 'all' : bucket); }}
-            className={`inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] whitespace-nowrap tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+            className={`inline-flex h-7 items-center gap-1.5 rounded-full px-2 text-[12px] whitespace-nowrap tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9 ${
               pressed
-                ? 'bg-ink/[0.07] text-ink'
+                ? 'bg-ink text-panel'
                 : bucket === 'waiting'
-                  ? 'font-medium text-accent-ink hover:bg-accent-soft/60'
-                  : bucket === 'failed'
-                    ? 'text-danger hover:bg-danger/[0.06]'
-                    : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                  ? 'bg-attention-soft font-medium text-attention hover:bg-attention-soft/70'
+                  : 'bg-ink/[0.05] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
             }`}
           >
-            <LifeMark markId={`roster-filter:${bucket}`} life={BUCKET_LIFE[bucket]} still className="h-[6px] w-[6px]" />
+            <LifeMark markId={`roster-filter:${bucket}`} life={BUCKET_LIFE[bucket]} tone={pressed ? (bucket === 'ended' ? 'border-panel' : 'bg-panel') : BUCKET_TONE[bucket]} still className="h-[6px] w-[6px]" />
             {t(`inspector.filter.${bucket}`, { count: counts[bucket] })}
             {/* The pressed chip clears itself; the mark says so. */}
-            {pressed ? <Icon name="close" size={12} className="-mr-0.5 text-ink-faint" /> : null}
+            {pressed ? <Icon name="close" size={12} className="-mr-1 opacity-70" /> : null}
           </button>
         );
       })}
@@ -249,9 +253,13 @@ const RosterAgent = memo(function RosterAgent({
 }) {
   const { t, tp } = useI18n();
   const { node, bucket, depth } = row;
-  const failed = bucket === 'failed';
-  const settled = node.status === 'completed' || node.status === 'cancelled';
-  const body = failed ? node.error : settled ? (node.summary ?? node.description) : node.description;
+  const waiting = bucket === 'waiting';
+  const failed = node.status === 'failed';
+  const settled = bucket === 'ended';
+  // A failure reads as one plain line (never a payload), in the same ink as
+  // any other ending; the full error stays in the agent's own timeline.
+  const failure = failed ? (plainFailure(node.error) ?? t('inspector.failedNoDetail')) : undefined;
+  const body = failure ?? (settled ? (node.summary ?? node.description) : node.description);
   const elapsed = bucket === 'running' ? coarseElapsed(node.startedAt, now) : undefined;
   const model = shortModel(node.model);
   const meta = [
@@ -266,7 +274,11 @@ const RosterAgent = memo(function RosterAgent({
       : t(STATUS_KEY(node.status));
   const trail = row.path.length > 0 ? row.path.join(' › ') : undefined;
   return (
-    <div className="relative flex min-w-0 items-start" style={{ paddingLeft: depth * INDENT }}>
+    <div
+      data-roster-waiting={waiting ? '' : undefined}
+      className={`relative flex min-w-0 items-start rounded-lg ${waiting ? 'bg-attention-soft/60' : ''}`}
+      style={{ paddingLeft: depth * INDENT }}
+    >
       {Array.from({ length: depth }, (_, level) => (
         <span
           key={level}
@@ -298,16 +310,21 @@ const RosterAgent = memo(function RosterAgent({
         className={ROW_BUTTON}
       >
         <span className={RAIL_MARK}>
-          <LifeMark markId={`team:${node.agentId}`} life={BUCKET_LIFE[bucket]} still />
+          <LifeMark
+            markId={`team:${node.agentId}`}
+            life={failed ? 'failed' : BUCKET_LIFE[bucket]}
+            tone={failed ? FAILED_TONE : BUCKET_TONE[bucket]}
+            still
+          />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2 leading-5">
-            <span className="max-w-[70%] shrink-0 truncate text-[13px] font-medium text-ink">{node.label}</span>
+            <span className={`max-w-[70%] shrink-0 truncate text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{node.label}</span>
             {model !== undefined ? <span className="min-w-0 truncate text-[11.5px] text-ink-faint">{model}</span> : null}
             <span
               data-agent-status={node.status}
               className={`ml-auto shrink-0 text-[12px] tabular-nums ${
-                bucket === 'waiting' ? 'font-medium text-accent-ink' : failed ? 'text-danger' : 'text-ink-faint'
+                waiting ? 'font-medium text-attention' : bucket === 'running' ? 'text-success' : 'text-ink-faint'
               }`}
             >
               {state}
@@ -316,13 +333,13 @@ const RosterAgent = memo(function RosterAgent({
           <span className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[18px]">
             {trail !== undefined ? <span className="max-w-[45%] shrink-0 truncate text-ink-faint" title={trail}>{trail} ›</span> : null}
             {!row.expanded && row.childCount > 0 ? (
-              <span className={`shrink-0 ${row.waitingBelow > 0 ? 'font-medium text-accent-ink' : 'text-ink-faint'}`}>
+              <span className={`shrink-0 ${row.waitingBelow > 0 ? 'font-medium text-attention' : 'text-ink-faint'}`}>
                 {row.waitingBelow > 0 ? tp('inspector.waitingBelow', row.waitingBelow) : tp('inspector.childCount', row.childCount)}
                 {body !== undefined && body !== '' ? <span aria-hidden className="ml-1.5 text-ink-faint">·</span> : null}
               </span>
             ) : null}
             {body !== undefined && body !== '' ? (
-              <span className={`min-w-0 truncate ${failed ? 'text-danger' : 'text-ink-soft'}`} title={body}>{body}</span>
+              <span className={`min-w-0 truncate ${settled ? 'text-ink-faint' : 'text-ink-soft'}`} title={body}>{body}</span>
             ) : null}
           </span>
         </span>
@@ -343,7 +360,7 @@ function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group
     >
       <span className="flex w-6 shrink-0 justify-center"><DisclosureChevron open={row.open} /></span>
       <span className={RAIL_MARK}><LifeMark markId="roster-done-group" life="done" still /></span>
-      {tp('inspector.completedGroup', row.count)}
+      {tp('inspector.endedGroup', row.count)}
     </button>
   );
 }

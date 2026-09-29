@@ -106,6 +106,15 @@ export function GeneralSection() {
             />
             <Hint>{t('st.transcript.foldStepsHint')}</Hint>
           </div>
+          <div data-settings-field data-setting-rail-open className="space-y-0.5 py-1">
+            <Toggle
+              layout="row"
+              label={t('st.layout.railOpenByDefault')}
+              checked={settings.railOpenByDefault}
+              onChange={(checked) => { writeSettings({ railOpenByDefault: checked }); }}
+            />
+            <Hint>{t('st.layout.railOpenByDefaultHint')}</Hint>
+          </div>
           <AppendTimingField />
         </div>
       </SectionCard>

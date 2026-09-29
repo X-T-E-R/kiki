@@ -10,6 +10,7 @@ import { SkillPreviewButton } from '../capabilities/SkillPreviewButton';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
 import { ProfileDetailSections } from './ProfileDetailSections';
 import { toolCategoryLabel } from './ToolChipList';
+import { capabilitySourceLabel, SOURCE_TONE_CLASS } from './sourceLabel';
 import {
   agentCapabilitiesErrorText,
   capabilityReasonText,
@@ -34,14 +35,18 @@ export interface AgentDetailDrawerProps {
   readonly skills?: readonly AgentSkillCapability[];
   readonly dispatchTargets?: readonly AgentCapabilityTarget[];
   readonly draftScope?: { readonly workspace_id?: string; readonly cwd?: string };
+  /** The dispatching profile; a private alias only resolves through it. */
+  readonly callerProfile?: string;
 }
 
 function ProfileDraftDetail({
   profile,
+  callerProfile,
   scope,
   onOpenTarget,
 }: {
   readonly profile: string;
+  readonly callerProfile?: string;
   readonly scope?: { readonly workspace_id?: string; readonly cwd?: string };
   readonly onOpenTarget?: (target: DetailDrawerTarget) => void;
 }) {
@@ -49,11 +54,14 @@ function ProfileDraftDetail({
   const connection = useOptionalConnection();
   const klient = connection?.klient;
 
+  const caller = callerProfile !== undefined && callerProfile !== '' && callerProfile !== profile
+    ? { caller_profile: callerProfile }
+    : {};
   const query =
     scope?.workspace_id !== undefined
-      ? { profile, workspace_id: scope.workspace_id }
+      ? { profile, workspace_id: scope.workspace_id, ...caller }
       : scope?.cwd !== undefined
-        ? { profile, cwd: scope.cwd }
+        ? { profile, cwd: scope.cwd, ...caller }
         : undefined;
 
   const capabilities = useQuery({
@@ -128,6 +136,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
   skills,
   dispatchTargets,
   draftScope,
+  callerProfile,
 }: AgentDetailDrawerProps) {
   const { t } = useI18n();
 
@@ -238,6 +247,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
         {currentTarget.kind === 'profile-draft' && (
           <ProfileDraftDetail
             profile={currentTarget.profile}
+            callerProfile={currentTarget.callerProfile ?? callerProfile}
             scope={draftScope}
             onOpenTarget={pushTarget}
           />
@@ -316,11 +326,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                 </h3>
                 <CapabilityStateBadge state={currentTarget.skill.state} />
               </div>
-              <div className="mt-1 font-mono text-[11px] text-ink-faint">
-                {currentTarget.skill.scope === 'workspace'
-                  ? t('agentPanel.scopeWorkspace')
-                  : t('agentPanel.scopeGlobal')}
-              </div>
+              <SourceLine {...currentTarget.skill} />
             </div>
 
             {/* Notices */}
@@ -420,6 +426,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               <div className="mt-1 font-mono text-[11px] text-ink-faint">
                 {t('agentPanel.executor', { value: currentTarget.target.executor })}
               </div>
+              <SourceLine {...currentTarget.target} />
             </div>
 
             {/* Admission Notices */}
@@ -460,7 +467,11 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
 
             <button
               type="button"
-              onClick={() => pushTarget({ kind: 'profile-draft', profile: currentTarget.target.profile })}
+              onClick={() => pushTarget({
+                kind: 'profile-draft',
+                profile: currentTarget.target.profile,
+                callerProfile: currentTarget.target.callerProfile ?? callerProfile,
+              })}
               className="inline-flex items-center gap-1 font-mono text-[11px] text-accent-ink transition-colors hover:underline"
             >
               <span>{t('agentPanel.profileDetail')}</span>
@@ -472,3 +483,25 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
     </Dialog>
   );
 });
+
+/** Origin chip plus the root or file it was found under. */
+function SourceLine(input: {
+  readonly source?: string;
+  readonly sourceKind?: string;
+  readonly sourceRoot?: string;
+  readonly sourceFile?: string;
+  readonly scope?: 'workspace' | 'global';
+}) {
+  const { t } = useI18n();
+  const label = capabilitySourceLabel(t, input);
+  if (label === undefined) return null;
+  const where = input.sourceRoot ?? input.sourceFile;
+  return (
+    <div data-capability-source-line={label.tone} className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[11px]">
+      <span className={`shrink-0 rounded px-1.5 py-px leading-4 ${SOURCE_TONE_CLASS[label.tone]}`}>{label.text}</span>
+      {where !== undefined && where !== '' ? (
+        <span className="min-w-0 truncate font-mono text-ink-faint" title={where}>{where}</span>
+      ) : null}
+    </div>
+  );
+}

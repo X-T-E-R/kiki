@@ -1143,11 +1143,11 @@ export function SessionView({
   // only): attachment chips and pill overrides restore instead of vanishing
   // on every session switch. The /new hand-off state wins on first mount.
   const restoredComposer = useMemo(() => readComposerState(sessionId), [sessionId]);
-  // The inspector is on demand at every width: it starts closed and opens
-  // from the header toggle (which carries a running / needs-you hint so the
-  // closed state stays discoverable). Below lg it is a fixed overlay drawer.
+  // The inspector starts open on wide windows (Settings › General can turn
+  // that off). Below lg it is a fixed overlay drawer, so it always starts
+  // closed there and opens from the header toggle.
   const railIsOverlay = useMediaQuery('(max-width: 1023px)');
-  const [railOpen, setRailOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(() => defaults.railOpenByDefault && !railIsOverlay);
   // A desktop rail becomes a fixed drawer on resize. Do not let that drawer
   // cover a full-width preview tab that was already open; a deliberate rail
   // toggle while narrow still works because this runs only at the breakpoint.

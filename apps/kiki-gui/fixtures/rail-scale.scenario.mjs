@@ -92,9 +92,10 @@ const SUMMARY = {
   completed: 'Done; 3 findings written to the lead.',
   cancelled: 'Stopped by its lead before finishing.',
 };
+// One raw provider payload among them: the rail must show its message only.
 const ERRORS = [
   'Test runner exited with code 1 after 42 passed, 3 failed.',
-  'Could not reach the registry: request timed out after 30s.',
+  '{"error":{"type":"upstream_error","message":"Could not reach the registry: request timed out after 30s.","code":504}}',
 ];
 
 function phaseFor(status, turnId) {
@@ -224,6 +225,24 @@ const EXTENSION_TOOLS = [
   { name: 'plugin__release_kit__stage_tag', source: 'plugin', category: 'plugin', state: 'enabled' },
 ];
 
+const EXTRA_ROOT = 'C:/Example/Agents';
+const SKILLS = [
+  { name: 'release-notes', description: 'Draft release notes from merged changes', source: 'project', source_kind: 'project', scope: 'workspace', path: '.kiki/skills/release-notes/SKILL.md', state: 'enabled' },
+  { name: 'api-diff', description: 'Compare two public API snapshots', source: 'project', source_kind: 'project', scope: 'workspace', path: '.kiki/skills/api-diff/SKILL.md', state: 'enabled' },
+  { name: 'paper-outline', description: 'Outline a manuscript section from notes', source: 'extra', source_kind: 'extra', source_root: 'C:/Example/Skills', scope: 'global', path: 'C:/Example/Skills/paper-outline/SKILL.md', state: 'enabled' },
+  { name: 'code-review', description: 'Review a diff for correctness and style', source: 'user', source_kind: 'user', scope: 'global', path: '~/.kiki/skills/code-review/SKILL.md', state: 'enabled' },
+  { name: 'stage-tag', description: 'Stage a signed release tag', source: 'user', source_kind: 'plugin', source_root: '~/.kiki/plugins/release-kit', scope: 'global', path: '~/.kiki/plugins/release-kit/skills/stage-tag/SKILL.md', state: 'enabled' },
+];
+const target = (profile, source, extra = {}) => ({
+  profile, caller_profile: 'agent', source, executor: 'native', defaults_available: true, launch_allowed: true, ...extra,
+});
+const TARGETS = [
+  target('explore', 'builtin', { model_alias: 'deepseek-v4-flash', thinking_effort: 'max', description: 'Bounded read-only evidence gathering' }),
+  target('reviewer', 'workspace', { source_file: '.kiki/agents/reviewer.md', model_alias: 'kimi-code/k3', thinking_effort: 'high' }),
+  target('paper-editor', 'extra', { source_root: EXTRA_ROOT, source_file: `${EXTRA_ROOT}/paper-editor.md`, model_alias: 'claude-fable' }),
+  target('release-bot', 'plugin', { source_root: '~/.kiki/plugins/release-kit', launch_allowed: false, launch_unavailable_reason_code: 'strict_subagent_policy_blocked' }),
+];
+
 const agentPanel = {
   context: 'live',
   live: true,
@@ -239,9 +258,9 @@ const agentPanel = {
     subagent_policy: 'advisory',
     tools: TOOLS.map((tool) => tool.name),
   },
-  targets: [],
+  targets: TARGETS,
   tools: [...TOOLS, ...EXTENSION_TOOLS],
-  skills: [],
+  skills: SKILLS,
   metrics,
 };
 

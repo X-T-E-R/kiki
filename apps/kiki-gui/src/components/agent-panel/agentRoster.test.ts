@@ -33,10 +33,11 @@ const labels = (rows: ReturnType<typeof buildRoster>['rows']) =>
 describe('buildRoster', () => {
   it('counts every agent in the tree and orders by the most urgent agent below', () => {
     const model = buildRoster(base);
-    expect(model.counts).toEqual({ waiting: 1, running: 2, failed: 1, done: 5 });
+    // A failure is not a bucket of its own: it ended like the others.
+    expect(model.counts).toEqual({ waiting: 1, running: 2, ended: 6 });
     expect(model.total).toBe(9);
     // Lead finished, but its grandchild waits on the user: it leads the list.
-    expect(labels(model.rows)).toEqual(['Lead', 'Live', 'Broken', '[4 done]']);
+    expect(labels(model.rows)).toEqual(['Lead', 'Live', '[5 done]']);
     const lead = model.rows[0] as RosterAgentRow;
     expect(lead.expanded).toBe(false);
     expect(lead.childCount).toBe(1);
@@ -45,7 +46,7 @@ describe('buildRoster', () => {
 
   it('opens branches on demand and the completed group on demand', () => {
     const model = buildRoster({ ...base, expanded: new Set(['lead', 'worker']), doneOpen: true });
-    expect(labels(model.rows)).toEqual(['Lead', 'Worker', 'Probe', 'Live', 'Broken', '[4 done]', 'Done A', 'Done B', 'Done C', 'Done D']);
+    expect(labels(model.rows)).toEqual(['Lead', 'Worker', 'Probe', 'Live', '[5 done]', 'Broken', 'Done A', 'Done B', 'Done C', 'Done D']);
     expect((model.rows[2] as RosterAgentRow).depth).toBe(2);
   });
 

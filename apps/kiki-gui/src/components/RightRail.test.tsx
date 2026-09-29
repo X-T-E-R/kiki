@@ -240,17 +240,20 @@ describe('RightRail shared chapters', () => {
     expect(now?.textContent).toContain('Needs you');
     expect(child.querySelector('[data-subagent-context] [data-rail-locate]')).not.toBeNull();
     expect(child.querySelector('[data-agent-tree]')).toBeNull();
-    // Reading order: now, the resident overview, the agent's work slice,
-    // tasks, then model and capabilities and the folded session row.
+    // Reading order: the profile card first, then now, the resident
+    // overview, the agent's work slice, tasks and the folded session row.
+    // The old "Model and capabilities" chapter is gone.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
+    expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
     const order = [
+      scroll.querySelector('[data-panel-props="profile"]'),
       now,
       scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-panel-props="work"]'),
       scroll.querySelector('[data-tasks-scroll]'),
-      scroll.querySelector('[data-inspector-setup]'),
-      scroll.querySelector('[data-inspector-session]') ?? scroll.querySelector('[data-inspector-setup]'),
+      scroll.querySelector('[data-inspector-session]') ?? scroll.querySelector('[data-tasks-scroll]'),
     ];
+    expect(order.every((node) => node !== null)).toBe(true);
     for (let index = 1; index < order.length; index += 1) {
       const before = order[index - 1]!;
       const after = order[index]!;
@@ -294,12 +297,11 @@ describe('RightRail shared chapters', () => {
     expect(shallow.querySelector('[data-inspect-parent]')).toBeNull();
   });
 
-  it('opens model and capabilities by default and folds only the session row', async () => {
+  it('leads with the profile card and folds only the session row', async () => {
     const rail = await renderRail();
-    const setup = rail.querySelector('[data-inspector-setup]');
-    const toggle = setup?.querySelector<HTMLButtonElement>(':scope > div > button');
-    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
-    expect(setup?.querySelector('[data-panel-props="setup"]')).not.toBeNull();
+    const page = rail.querySelector('.rail-page')!;
+    expect(page.firstElementChild?.querySelector('[data-panel-props="profile"]')).not.toBeNull();
+    expect(rail.querySelector('[data-inspector-setup]')).toBeNull();
     const session = rail.querySelector('[data-inspector-session]');
     expect(session === null || session.querySelector('[aria-expanded="false"]') !== null).toBe(true);
   });
@@ -317,7 +319,7 @@ describe('RightRail shared chapters', () => {
     expect(roster?.querySelector(':scope > div > [aria-expanded]')).toBeNull();
   });
 
-  it('windows a large roster, folds settled agents and filters by status', async () => {
+  it('windows a large roster, folds ended agents and never sets failures apart', async () => {
     const large = buildAgentForest([], [
       { agentId: 'main', name: 'Main' },
       ...Array.from({ length: 511 }, (_, index) => ({
@@ -329,12 +331,15 @@ describe('RightRail shared chapters', () => {
     const rows = rail.querySelectorAll('[data-agent-tree] [data-agent-id]');
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(60);
-    expect(rail.querySelector('[data-roster-done-group]')?.textContent).toContain('completed');
+    expect(rail.querySelector('[data-roster-done-group]')?.textContent).toContain('finished');
     expect(rail.querySelector('[data-roster-search]')).not.toBeNull();
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-filter="failed"]')!.click(); });
-    const failed = [...rail.querySelectorAll<HTMLElement>('[data-agent-tree] [data-agent-id]')];
-    expect(failed.length).toBe(11);
-    expect(failed.every((row) => row.dataset['rosterBucket'] === 'failed')).toBe(true);
+    // No failed filter, no red: a failure ended like any other agent.
+    expect(rail.querySelector('[data-roster-filter="failed"]')).toBeNull();
+    expect(rail.querySelector('[data-agent-tree] .text-danger')).toBeNull();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-filter="running"]')!.click(); });
+    const running = [...rail.querySelectorAll<HTMLElement>('[data-agent-tree] [data-agent-id]')];
+    expect(running.length).toBeGreaterThan(0);
+    expect(running.every((row) => row.dataset['rosterBucket'] === 'running')).toBe(true);
   });
 
   it('bubbles nested approvals to the top with their trail and decides them in place', async () => {
@@ -367,6 +372,17 @@ describe('RightRail shared chapters', () => {
     expect(decided).toEqual(['a1:approved']);
     // The lead's folded row says a descendant waits.
     expect(rail.querySelector('[data-agent-id="lead"]')?.textContent).toContain('1 needs you below');
+  });
+
+  it('opens a roster row through the timeline open handler', async () => {
+    const opened: string[] = [];
+    const onInspectMain = vi.fn();
+    const rail = await renderRail({ onOpenSubagent: (agentId) => { opened.push(agentId); }, onInspectMain });
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-agent-tree] [data-agent-id="agent-1"]')!.click(); });
+    // The same handler the timeline card uses (SessionView.openAgent): the
+    // preview opens, and the rail does not turn to the agent on its own.
+    expect(opened).toEqual(['agent-1']);
+    expect(onInspectMain).not.toHaveBeenCalled();
   });
 });
 describe('preview focus bridge', () => {

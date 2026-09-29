@@ -23,13 +23,12 @@ import { useI18n } from '../i18n';
 import { permissionModeDef } from '../lib/permissionModes';
 import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
-import { InspectorRow } from './agent-panel/InspectorSection';
 import { agentUsageCacheHitRate } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
 import { AgentTodoSection } from './agent-panel/AgentTodoSection';
 import { AgentPlanSection } from './agent-panel/AgentPlanSection';
-import { AgentCapabilitiesSection } from './agent-panel/AgentCapabilitiesSection';
+import { AgentCapabilitiesSection, capabilityCounts } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
 import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import {
@@ -93,13 +92,14 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
 }
 
 /**
- * Slices of the panel the inspector places at different depths: `work`
- * (todo + plan, near the top), `overview` (the resident context / usage /
- * setup summary), `usage` (the older two-line usage slice), and `setup`
- * (model, window, permissions, tools, capabilities). `all`
- * keeps the historical single column for the preview tab body.
+ * Slices of the panel the inspector places at different depths: `profile`
+ * (the top card: who this agent is, folded to one line, opening onto its
+ * tools, skills, subagents and extensions), `work` (todo + plan), `overview`
+ * (the resident context / usage summary) and `usage` (the older two-line
+ * usage slice). `all` keeps the historical single column for the preview
+ * tab body.
  */
-export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'setup';
+export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
 
 export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all' }: {
   state: SessionViewState;
@@ -169,10 +169,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     workspace_id: state.session?.workspace_id,
     cwd: state.session?.metadata?.cwd,
   }), [state.session?.workspace_id, state.session?.metadata?.cwd]);
-  // The resident overview and the setup facts need the server's automatic
-  // compaction point; only those slices start that read.
+  // The resident overview needs the server's automatic compaction point;
+  // only that slice starts the read.
   const autoCompact = useAutoCompact({
-    sessionId: (part === 'overview' || part === 'setup') && visible ? state.sessionId : undefined,
+    sessionId: part === 'overview' && visible ? state.sessionId : undefined,
     agentId,
     refreshKey: `${agentState?.model ?? ''}:${agentState?.maxContextTokens ?? ''}`,
   });
@@ -230,18 +230,6 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     } : undefined,
     onOpenUsageDetail: () => { void navigate(usageSessionDeepLink(state.sessionId)); },
   };
-  // A failed or unsupported capability read is a quiet, recoverable line in
-  // the (collapsed) setup chapter — never a red wall above the agent's work.
-  const capabilityStatus = <>
-    {capabilities.isPending && visible ? <p role="status" className="text-[12px] text-ink-faint">{t('diagnostics.loading')}</p> : null}
-    {capabilities.isError && isCapabilityUnsupportedError(capabilities.error) ? (
-      <p role="status" data-capabilities-unsupported className="sr-only">{t('diagnostics.unknown')}</p>
-    ) : null}
-    {capabilities.isError && !isCapabilityUnsupportedError(capabilities.error) ? <p role="alert" className="text-[12px] leading-relaxed text-ink-soft">
-      {t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}
-      <button type="button" className="ml-1.5 font-medium text-ink transition-colors hover:text-accent" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
-    </p> : null}
-  </>;
   if (part === 'usage') {
     return <AgentIdentitySection {...identityProps} part="usage" />;
   }
@@ -269,24 +257,40 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       />
     </div>;
   }
-  if (part === 'setup') {
-    return <div data-agent-panel-container data-agent-panel-part="setup" className="space-y-3">
-      <AgentIdentitySection {...identityProps} part="setup" setupFacts={facts.setupRows.length > 0 ? (
-        <dl data-setup-facts>
-          {facts.setupRows.map((row) => (
-            <InspectorRow key={row.key} label={row.label} title={row.title}>{row.value}</InspectorRow>
-          ))}
-        </dl>
-      ) : undefined} />
-      {capabilityStatus}
-      {data !== undefined && (data.tools === undefined || data.skills === undefined) && unavailableReason !== undefined ?
-        <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{unavailableReason}</p> : null}
-      {data?.tools !== undefined && data.skills !== undefined ? <AgentCapabilitiesSection
+  if (part === 'profile') {
+    const counts = data?.tools !== undefined && data.skills !== undefined
+      ? capabilityCounts(mappedTools, mappedSkills, subagentTargets)
+      : undefined;
+    // Hover detail on the folded line; the tabs carry the counts when open.
+    const summary = counts === undefined ? undefined : [
+      `${t('inspector.cap.tools')} ${counts.toolsOn}`,
+      `${t('inspector.cap.skills')} ${counts.skills}`,
+      `${t('inspector.cap.subagents')} ${counts.subagents}`,
+      `${t('inspector.cap.extensions')} ${counts.extensions}`,
+    ].join(' · ');
+    // A failed read is one quiet line inside the card, never a banner.
+    const capabilityBody = counts !== undefined ? (
+      <AgentCapabilitiesSection
         tools={mappedTools}
         skills={mappedSkills}
         subagentTargets={subagentTargets}
         draftScope={draftScope}
-      /> : null}
+        callerProfile={profileName === '' ? undefined : profileName}
+      />
+    ) : capabilities.isPending ? (
+      <p role="status" className="text-[12px] text-ink-faint">{t('inspector.cap.loading')}</p>
+    ) : capabilities.isError && isCapabilityUnsupportedError(capabilities.error) ? (
+      <p role="status" data-capabilities-unsupported className="sr-only">{t('diagnostics.unknown')}</p>
+    ) : capabilities.isError ? (
+      <p role="status" data-capabilities-error className="text-[12px] leading-relaxed text-ink-faint">
+        {t('inspector.cap.loadFailed')}
+        <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
+      </p>
+    ) : unavailableReason !== undefined ? (
+      <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{unavailableReason}</p>
+    ) : null;
+    return <div data-agent-panel-container data-agent-panel-part="profile">
+      <AgentIdentitySection {...identityProps} part="profile" capabilities={capabilityBody} capabilitySummary={summary} />
     </div>;
   }
   return <div data-agent-panel-container className="space-y-5">
@@ -442,11 +446,9 @@ function overviewFacts(input: {
   const permission = agentState?.permissionMode ?? (isMain ? state.permissionMode : undefined);
   const permissionDef = permission === undefined ? undefined : permissionModeDef(permission);
   const permissionLabel = permissionDef === undefined ? undefined : t(permissionDef.labelKey);
-  const setupLine = [
-    model,
-    effort !== undefined && effort !== '' ? t('subagent.effort', { effort }) : undefined,
-    permissionLabel,
-  ].filter((part): part is string => part !== undefined && part !== '');
+  // Model and effort head the profile card; the overview only adds the
+  // permission mode so the rail never says the same thing twice.
+  const setupLine = [permissionLabel].filter((part): part is string => part !== undefined && part !== '');
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
   const turns = isMain ? state.session?.usage?.turn_count : undefined;
   const toolCalls = !isMain && node?.toolCallCountKnown === true ? node.toolCallCount : undefined;

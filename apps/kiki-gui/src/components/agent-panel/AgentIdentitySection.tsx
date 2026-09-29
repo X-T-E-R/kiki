@@ -1,7 +1,7 @@
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useId, useState, type ReactNode } from 'react';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
-import { Icon } from '../icons';
+import { DisclosureChevron, Icon } from '../icons';
 import type {
   AgentIdentity,
   AgentSkillCapability,
@@ -14,6 +14,7 @@ import type {
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { agentUsageCacheHitRate } from './cacheRate';
 import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow } from './InspectorSection';
+import { capabilitySourceLabel, SOURCE_TONE_CLASS } from './sourceLabel';
 
 function dispatchPolicyClass(policy: AgentCapabilityTarget['dispatch_policy']): string {
   return policy === 'strict'
@@ -129,12 +130,17 @@ export interface AgentIdentitySectionProps {
   readonly onOpenUsageDetail?: () => void;
   /**
    * Which slice the inspector wants: `usage` (context bar + known metrics),
-   * `setup` (model, profile, badges, dispatch policy, detail links), or the
-   * legacy `all` (heading + both) for standalone callers.
+   * `profile` (the rail's top card: one folded line, then description,
+   * badges and the capability tabs), or the legacy `all` for standalone
+   * callers.
    */
-  readonly part?: 'all' | 'usage' | 'setup';
-  /** Setup slice: the caller's fact rows replace the model / effort / profile list. */
-  readonly setupFacts?: ReactNode;
+  readonly part?: 'all' | 'usage' | 'profile';
+  /** Profile slice: the capability tabs (or their loading / error line). */
+  readonly capabilities?: ReactNode;
+  /** Profile slice: folded-line hint, e.g. "14 tools · 3 skills". */
+  readonly capabilitySummary?: string;
+  /** Profile slice: starts expanded. */
+  readonly defaultExpanded?: boolean;
 }
 
 export const AgentIdentitySection = memo(function AgentIdentitySection({
@@ -150,7 +156,9 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   onOpenTreeSelect,
   onOpenUsageDetail,
   part = 'all',
-  setupFacts,
+  capabilities,
+  capabilitySummary,
+  defaultExpanded = false,
 }: AgentIdentitySectionProps) {
   const { t, tp } = useI18n();
   const unknownLabel = t('agentPanel.unknown');
@@ -364,54 +372,92 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
     </div>
   ) : null;
 
-  // Model / effort / profile line plus source badges and dispatch policy.
-  const setupBlock = (
-    <div className="space-y-2">
-      {setupFacts ?? <dl>
-        {identity.model !== undefined ? (
-          <InspectorRow label={t('inspector.agent')} title={identity.model}>{identity.model}</InspectorRow>
-        ) : null}
-        {effortValue ? (
-          <InspectorRow label={t('inspector.effort')}>{String(effortValue)}</InspectorRow>
-        ) : null}
-        {identity.profile !== '' && identity.profile !== unknownLabel ? (
-          <InspectorRow label={t('inspector.profile')} title={identity.profile}>{identity.profile}</InspectorRow>
-        ) : null}
-      </dl>}
-      {hasBadges ? (
-        <div className="flex flex-wrap gap-1">
-          {identity.thinkingEffortSource !== undefined ? (
-            <span data-thinking-effort-source={identity.thinkingEffortSource} className="rounded-sm bg-amber-card px-1.5 text-[11.5px] text-amber-ink">
-              {t(`agentPanel.effortSource.${identity.thinkingEffortSource}`)}
-            </span>
-          ) : null}
-          {identity.profileSource === 'profile-file' ? (
-            <span data-profile-source="profile-file" className="rounded-sm bg-ink/[0.05] px-1.5 text-[11.5px] text-ink-soft">
-              {t('agentPanel.profileFileBadge')}
-            </span>
-          ) : null}
-          {identity.routeDetached === true ? (
-            <span data-route-status="detached" className="rounded-sm bg-amber-card px-1.5 text-[11.5px] text-amber-ink">
-              {t('agentPanel.routeDetachedBadge')}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      {identity.summary ? (
-        <p className="line-clamp-2 text-[12.5px] leading-relaxed text-ink-soft">{identity.summary}</p>
-      ) : null}
-      {profilePolicy !== undefined || (dispatchTargets?.length ?? 0) > 0 ? (
-        <DispatchPolicyBadges profilePolicy={profilePolicy} targets={dispatchTargets} />
-      ) : null}
+  // The rail's top card. Folded it is one line: a small agent mark, the
+  // name in the display face, its source, then model · effort. Open, it adds
+  // the description, the badges that change behaviour, and the capability
+  // tabs. The whole line is the toggle.
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const bodyId = useId();
+  const profileLabel = identity.profile !== '' && identity.profile !== unknownLabel ? identity.profile : identity.label;
+  const source = capabilitySourceLabel(t, { source: identity.source, sourceFile: identity.sourceFile });
+  const modelLine = [
+    identity.model,
+    effortValue ? t('subagent.effort', { effort: String(effortValue) }) : undefined,
+  ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
+  const profileCard = (
+    <div data-profile-card data-expanded={expanded ? '' : undefined} className="rounded-xl bg-paper/80 ring-1 ring-hairline">
       <button
         type="button"
-        data-expand-profile-button
-        onClick={() => setDrawerTarget({ kind: 'profile', identity })}
-        className={INSPECTOR_LINK}
+        data-profile-toggle
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        title={t(expanded ? 'inspector.profileCollapse' : 'inspector.profileExpand')}
+        onClick={() => { setExpanded((open) => !open); }}
+        className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-2.5 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
       >
-        {t('inspector.details')}
-        <Icon name="arrowRight" size={12} className="text-ink-faint" />
+        <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-ink">
+          <Icon name="agent" size={12} />
+        </span>
+        <span data-profile-name className="min-w-0 shrink truncate font-display text-[14.5px] leading-5 font-semibold tracking-tight text-ink">{profileLabel}</span>
+        {source !== undefined ? (
+          <span data-profile-source-badge={identity.source} title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>
+            {source.text}
+          </span>
+        ) : null}
+        <span
+          data-profile-model
+          title={[modelLine, capabilitySummary].filter((part) => part !== undefined && part !== '').join('\n')}
+          className="min-w-0 flex-1 truncate text-right text-[12px] text-ink-faint"
+        >
+          {expanded ? null : modelLine}
+        </span>
+        <span className="shrink-0"><DisclosureChevron open={expanded} /></span>
       </button>
+      {expanded ? (
+        <div id={bodyId} data-profile-body className="space-y-2.5 border-t border-hairline px-2.5 pt-2.5 pb-2">
+          {identity.summary ? (
+            <p className="text-[12.5px] leading-relaxed text-ink-soft">{identity.summary}</p>
+          ) : null}
+          {identity.model !== undefined && identity.model !== '' ? (
+            <p data-profile-model-full className="truncate text-[12px] text-ink-soft" title={modelLine}>{modelLine}</p>
+          ) : null}
+          {hasBadges || profilePolicy !== undefined ? (
+            <div className="flex flex-wrap items-center gap-1">
+              {identity.thinkingEffortSource !== undefined ? (
+                <span data-thinking-effort-source={identity.thinkingEffortSource} className="rounded-sm bg-amber-card px-1.5 text-[11.5px] text-amber-ink">
+                  {t(`agentPanel.effortSource.${identity.thinkingEffortSource}`)}
+                </span>
+              ) : null}
+              {identity.profileSource === 'profile-file' ? (
+                <span data-profile-source="profile-file" className="rounded-sm bg-ink/[0.05] px-1.5 text-[11.5px] text-ink-soft">
+                  {t('agentPanel.profileFileBadge')}
+                </span>
+              ) : null}
+              {identity.routeDetached === true ? (
+                <span data-route-status="detached" className="rounded-sm bg-amber-card px-1.5 text-[11.5px] text-amber-ink">
+                  {t('agentPanel.routeDetachedBadge')}
+                </span>
+              ) : null}
+              {/* Only the policy itself: an unreported recommendation is not news. */}
+              {profilePolicy !== undefined ? (
+                <span data-dispatch-policy={profilePolicy} className={`rounded-sm px-1.5 py-px text-[11.5px] ${dispatchPolicyClass(profilePolicy)}`}>
+                  {t(`diagnostics.policy.${profilePolicy}`)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {capabilities}
+          <button
+            type="button"
+            data-expand-profile-button
+            onClick={() => setDrawerTarget({ kind: 'profile', identity })}
+            className={INSPECTOR_LINK}
+          >
+            {t('inspector.details')}
+            <Icon name="arrowRight" size={12} className="text-ink-faint" />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 
@@ -438,10 +484,10 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       </section>
     );
   }
-  if (part === 'setup') {
+  if (part === 'profile') {
     return (
-      <section data-agent-identity-section data-agent-identity-part="setup">
-        {setupBlock}
+      <section data-agent-identity-section data-agent-identity-part="profile">
+        {profileCard}
         {drawer}
       </section>
     );

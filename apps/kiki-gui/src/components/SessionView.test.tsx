@@ -1598,7 +1598,8 @@ describe('agent tree chrome', () => {
     );
     expect(html).toContain('data-agent-status="failed"');
     expect(html).toContain('model request failed: upstream timeout');
-    expect(html).toContain('text-danger');
+    // A failure is stated, not emphasized: no danger colour in the rail.
+    expect(html).not.toContain('text-danger');
   });
 
   it('lists the team, clickable task rows, and the bulk stop button', () => {
