@@ -22,6 +22,7 @@ import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
 import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard } from './ModelsSection';
+import { pickValue } from './testControls';
 
 const listDiscoveredModels = vi.fn();
 const refreshAllProviders = vi.fn();
@@ -233,11 +234,9 @@ describe('ModelCatalogCard row editor', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const editor = container.querySelector<HTMLElement>('[data-generation-editor="model:kimi-code/kimi-k2"]')!;
     expect(editor.textContent).toContain('[providers.*.defaults]');
-    const tempMode = editor.querySelector<HTMLSelectElement>('select[aria-label="Temperature mode"]')!;
-    await act(async () => { setSelectValue(tempMode, 'custom'); });
+    await pickValue(editor.querySelector('button[aria-label="Temperature mode"]')!, 'data-param-mode', 'custom');
     expect(editor.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('0');
-    const topMode = editor.querySelector<HTMLSelectElement>('select[aria-label="Top P mode"]')!;
-    await act(async () => { setSelectValue(topMode, 'api_default'); });
+    await pickValue(editor.querySelector('button[aria-label="Top P mode"]')!, 'data-param-mode', 'api_default');
     await act(async () => { [...editor.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save parameters')!.click(); });
     expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
       base_revision: 'rev-7', parameters: { temperature: 0, top_p: { kind: 'api_default' } },
@@ -308,17 +307,9 @@ describe('ModelCatalogCard row editor', () => {
     const remoteId = container.querySelector<HTMLInputElement>(
       'input[aria-label="Remote ID for kimi-code/kimi-k2"]',
     )!;
-    const acceptedMode = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Accepted image types source"]',
-    )!;
-    const conversion = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Unsupported image conversion"]',
-    )!;
-    await act(async () => {
-      setInputValue(remoteId, 'kimi-k2.5');
-      setSelectValue(acceptedMode, 'custom');
-      setSelectValue(conversion, 'png');
-    });
+    await act(async () => { setInputValue(remoteId, 'kimi-k2.5'); });
+    await pickValue(container.querySelector('button[aria-label="Accepted image types source"]')!, 'data-image-accepted-mode', 'custom');
+    await pickValue(container.querySelector('button[aria-label="Unsupported image conversion"]')!, 'data-image-conversion', 'png');
     await act(async () => {
       [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
     });
@@ -572,9 +563,8 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       await act(async () => { toggle.click(); });
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       const identityLabel = translate(locale as 'en' | 'zh', 'st.models.requestIdentity');
-      const select = [...container.querySelectorAll<HTMLSelectElement>('[data-model-row-editor] label select')]
-        .find((candidate) => candidate.closest('label')?.textContent?.startsWith(identityLabel))!;
-      await act(async () => { setSelectValue(select, 'custom_overrides'); });
+      const select = container.querySelector(`[data-model-row-editor] button[aria-label="${identityLabel}"]`)!;
+      await pickValue(select, 'data-request-identity-choice', 'custom_overrides');
       const textarea = container.querySelector<HTMLTextAreaElement>('[data-model-row-editor] textarea')!;
       await act(async () => { setTextareaValue(textarea, text); });
       const saveLabel = translate(locale as 'en' | 'zh', 'common.save');

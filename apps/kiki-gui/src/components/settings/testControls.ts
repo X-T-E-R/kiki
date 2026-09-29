@@ -67,3 +67,13 @@ export async function commitText(input: HTMLInputElement, value: string): Promis
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   });
 }
+
+/** Opens a select, reads every option value in order, and closes it again. */
+export async function optionValues(target: Element): Promise<string[]> {
+  const trigger = triggerOf(target);
+  await act(async () => { trigger.click(); });
+  const root = trigger.closest('[data-searchable-select]') ?? document.body;
+  const values = [...root.querySelectorAll('[role="option"]')].map((row) => row.getAttribute('data-option-value') ?? '');
+  await act(async () => { trigger.click(); });
+  return values;
+}

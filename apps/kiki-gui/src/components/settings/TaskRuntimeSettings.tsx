@@ -13,6 +13,7 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { SearchableSelect } from '../SearchableSelect';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
 import { NumberField } from './runtimeControls';
 import { useSavedTick } from './useSavedTick';
 
@@ -103,9 +104,13 @@ export function TaskPolicyCard() {
               </div>
             </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Toggle label={t('st.taskPolicy.keepAlive')} checked={draft.keepAliveOnExit} onChange={(keepAliveOnExit) => { updateTask({ keepAliveOnExit }); }} />
-            <Toggle label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
+          <div className="space-y-1">
+            <SettingField label={t('st.taskPolicy.keepAlive')}>
+              <Toggle layout="bare" label={t('st.taskPolicy.keepAlive')} checked={draft.keepAliveOnExit} onChange={(keepAliveOnExit) => { updateTask({ keepAliveOnExit }); }} />
+            </SettingField>
+            <SettingField label={t('st.taskPolicy.autoBackground')}>
+              <Toggle layout="bare" label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
+            </SettingField>
           </div>
         </fieldset>
         <SettingsDraftFooter saved={justSaved} id="task-policy" dirty={dirty} saving={saving}

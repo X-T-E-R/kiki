@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { RequestIdentityLayerDraft } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { pickValue } from './settings/testControls';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -51,17 +52,14 @@ async function renderEditor(): Promise<HTMLDivElement> {
   return container;
 }
 
-async function choose(select: HTMLSelectElement, value: string): Promise<void> {
-  await act(async () => {
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+async function choose(select: Element, value: string): Promise<void> {
+  await pickValue(select, 'data-request-identity-choice', value);
 }
 
 describe('RequestIdentityLayerEditor', () => {
   it('preserves overrides when switching authored presets', async () => {
     const container = await renderEditor();
-    const select = container.querySelector('select')!;
+    const select = container.querySelector('[data-request-identity-choice]')!;
     await choose(select, 'codex_compatible');
 
     expect(container.querySelector('textarea')?.value).toBe('{"client":{"user_agent":"host"}}');
@@ -70,7 +68,7 @@ describe('RequestIdentityLayerEditor', () => {
 
   it('clears overrides only when the layer is explicitly inherited', async () => {
     const container = await renderEditor();
-    const select = container.querySelector('select')!;
+    const select = container.querySelector('[data-request-identity-choice]')!;
     await choose(select, 'inherit');
 
     expect(container.querySelector('textarea')).toBeNull();

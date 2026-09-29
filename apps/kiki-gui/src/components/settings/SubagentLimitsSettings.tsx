@@ -3,11 +3,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { subagentLimitsFromConfig } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
-import { SavedTick } from '../controls';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { FeedbackLine, Hint } from '../controls';
+import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
-import { useDirtyReporter } from '../dirtyGuard';
 
 export function SubagentLimitsSettings() {
   const { client } = useConnection();
@@ -18,7 +19,6 @@ export function SubagentLimitsSettings() {
   const [direct, setDirect] = useState('16');
   const [total, setTotal] = useState('0');
   const [dirty, setDirty] = useState(false);
-  useDirtyReporter('subagent-limits', dirty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [tick, ping] = useSavedTick();
@@ -42,20 +42,29 @@ export function SubagentLimitsSettings() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSaving(false); }
   };
+  const discard = () => {
+    if (config.data !== undefined) {
+      const value = subagentLimitsFromConfig(config.data);
+      setHours(String(value.timeoutMs / 3_600_000)); setDirect(String(value.maxDirectChildren)); setTotal(String(value.maxTotalSubagents));
+    }
+    setDirty(false); setError(undefined);
+  };
+  const field = (id: string, label: string, help: string, value: string, set: (next: string) => void, step: string) => (
+    <SettingField label={label} htmlFor={id} help={help}>
+      <input id={id} className={`${SMALL_INPUT} h-8 w-24 text-right tabular-nums`} type="number" min="0" step={step} value={value}
+        onChange={(event) => { set(event.target.value); setDirty(true); }} />
+    </SettingField>
+  );
   return <SectionCard id="st-card-subagent-limits" title={t('st.subagentLimits.title')}>
-    <p className="text-xs text-ink-soft">{t('st.subagentLimits.hint')}</p>
-    <fieldset disabled={saving || config.isPending || config.isError} className="mt-3 space-y-3">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <label className="block text-xs">{t('st.subagentLimits.timeout')}<input className={`${INPUT} mt-1`} type="number" min="0" step="any" value={hours} onChange={(event) => { setHours(event.target.value); setDirty(true); }} /></label>
-        <label className="block text-xs">{t('st.subagentLimits.direct')}<input className={`${INPUT} mt-1`} type="number" min="0" step="1" value={direct} onChange={(event) => { setDirect(event.target.value); setDirty(true); }} /></label>
-        <label className="block text-xs">{t('st.subagentLimits.total')}<input className={`${INPUT} mt-1`} type="number" min="0" step="1" value={total} onChange={(event) => { setTotal(event.target.value); setDirty(true); }} /></label>
-      </div>
-      <div className="flex items-center gap-2">
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || config.isPending || config.isError || !dirty} onClick={() => { void save(); }}>{t('st.boardStorage.save')}</button>
-        <button type="button" className={SECONDARY_BUTTON} disabled={saving || !dirty} onClick={() => { if (config.data !== undefined) { const value = subagentLimitsFromConfig(config.data); setHours(String(value.timeoutMs / 3_600_000)); setDirect(String(value.maxDirectChildren)); setTotal(String(value.maxTotalSubagents)); } setDirty(false); setError(undefined); }}>{t('st.advanced.discard')}</button>
-        <SavedTick show={tick} />
-      </div>
+    <Hint>{t('st.subagentLimits.lead')}</Hint>
+    <fieldset disabled={saving || config.isPending || config.isError} className="mt-2 space-y-1">
+      {field('subagent-limit-hours', t('st.subagentLimits.timeoutShort'), t('st.subagentLimits.timeoutHelp'), hours, setHours, 'any')}
+      {field('subagent-limit-direct', t('st.subagentLimits.directShort'), t('st.subagentLimits.directHelp'), direct, setDirect, '1')}
+      {field('subagent-limit-total', t('st.subagentLimits.totalShort'), t('st.subagentLimits.totalHelp'), total, setTotal, '1')}
     </fieldset>
-    {error || config.error ? <p role="alert" className="text-xs text-danger">{error ?? config.error?.message}</p> : null}
+    <SettingsDraftFooter id="subagent-limits" dirty={dirty} saving={saving} saved={tick}
+      saveLabel={t('st.boardStorage.save')} saveDisabled={config.isPending || config.isError}
+      onSave={() => { void save(); }} onDiscard={discard} />
+    {error || config.error ? <FeedbackLine feedback={{ tone: 'error', text: error ?? config.error?.message ?? '' }} /> : null}
   </SectionCard>;
 }

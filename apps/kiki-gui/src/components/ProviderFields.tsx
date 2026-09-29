@@ -79,7 +79,7 @@ import {
   type ProviderPreset,
 } from './providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
-import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
+import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSelect } from './settings/SettingsPrimitives';
 import { SecretField, type SecretDraft } from './settings/SecretField';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
@@ -364,15 +364,16 @@ export function MsUnitInput({
           onChange={(event) => { commit(Number(event.target.value)); }}
         />
         <StepButton direction={1} label={t('st.stepper.increase')} disabled={disabled} onStep={() => { commit(shown + 1); }} />
-        <select
-          aria-label={ariaLabel}
+        <SettingsSelect<MsUnit>
+          variant="form"
+          className="w-auto"
+          dataAttr="data-ms-unit"
+          ariaLabel={ariaLabel}
           disabled={disabled}
-          className={SMALL_INPUT}
           value={unit}
-          onChange={(event) => { setUnit(event.target.value as MsUnit); }}
-        >
-          {MS_UNITS.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
-        </select>
+          onChange={setUnit}
+          choices={MS_UNITS.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
+        />
       </div>
       <p className="mt-1 text-[11px] text-ink-faint">= {t(`st.unit.${humanized.unit}`, { n: humanized.value })}</p>
     </div>
@@ -399,22 +400,22 @@ export function ImagePolicyEditor({
         <span className="text-[11px] font-medium text-ink-soft">
           {t('st.images.acceptedTypes')}
         </span>
-        <select
-          aria-label={t('st.images.acceptedTypesModeAria')}
-          className={SMALL_INPUT}
+        <SettingsSelect<'inherit' | 'custom'>
+          variant="form"
+          dataAttr="data-image-accepted-mode"
+          ariaLabel={t('st.images.acceptedTypesModeAria')}
           value={acceptedMode}
-          onChange={(event) => {
+          onChange={(next) => {
             onChange({
               ...value,
-              imageAcceptedTypes: event.target.value === 'inherit'
-                ? null
-                : [...KNOWN_IMAGE_MIME_TYPES],
+              imageAcceptedTypes: next === 'inherit' ? null : [...KNOWN_IMAGE_MIME_TYPES],
             });
           }}
-        >
-          <option value="inherit">{inheritLabel}</option>
-          <option value="custom">{t('st.images.custom')}</option>
-        </select>
+          choices={[
+            { value: 'inherit', label: inheritLabel },
+            { value: 'custom', label: t('st.images.custom') },
+          ]}
+        />
       </div>
       {value.imageAcceptedTypes === null ? (
         <Hint>{t('st.images.inheritHint')}</Hint>
@@ -432,24 +433,24 @@ export function ImagePolicyEditor({
         <span className="text-[11px] font-medium text-ink-soft">
           {t('st.images.convertUnsupported')}
         </span>
-        <select
-          aria-label={t('st.images.convertUnsupportedAria')}
-          className={SMALL_INPUT}
+        <SettingsSelect
+          variant="form"
+          dataAttr="data-image-conversion"
+          ariaLabel={t('st.images.convertUnsupportedAria')}
           value={value.imageConvertUnsupported ?? ''}
-          onChange={(event) => {
+          onChange={(next) => {
             onChange({
               ...value,
-              imageConvertUnsupported: event.target.value === ''
+              imageConvertUnsupported: next === ''
                 ? null
-                : event.target.value as NonNullable<ImagePolicyDraft['imageConvertUnsupported']>,
+                : next as NonNullable<ImagePolicyDraft['imageConvertUnsupported']>,
             });
           }}
-        >
-          <option value="">{inheritLabel}</option>
-          {(['off', 'auto', 'png', 'jpeg'] as const).map((mode) => (
-            <option key={mode} value={mode}>{t(`st.images.convert.${mode}`)}</option>
-          ))}
-        </select>
+          choices={[
+            { value: '', label: inheritLabel },
+            ...(['off', 'auto', 'png', 'jpeg'] as const).map((mode) => ({ value: mode, label: t(`st.images.convert.${mode}`) })),
+          ]}
+        />
       </div>
     </div>
   );
@@ -627,15 +628,22 @@ function ModelDraftRow({
           onClick={() => { setOpen((value) => !value); }}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <span className={`truncate font-mono text-[12px] ${model.remoteId === '' ? 'text-ink-faint' : 'text-ink'}`}>
-            {model.remoteId === '' ? 'model-id' : model.remoteId}
+          {/* Name in the reading font; the wire id stays mono but quiet. */}
+          <span className={`truncate text-[13px] ${model.remoteId === '' ? 'text-ink-faint' : 'font-medium text-ink'}`}>
+            {model.remoteId === '' ? 'model-id' : model.displayName || model.remoteId}
           </span>
-          {model.id !== '' ? (
-            <span className="hidden shrink-0 truncate font-mono text-[11px] text-ink-faint sm:inline">
-              {model.id}
-            </span>
-          ) : null}
-          <span className="shrink-0 font-mono text-[11px] text-ink-faint">{formatTokens(model.maxContextSize)}</span>
+          {model.remoteId !== '' ? (() => {
+            const ids = [
+              ...((model.displayName || model.remoteId) !== model.remoteId ? [model.remoteId] : []),
+              ...(model.id !== '' && model.id !== model.remoteId ? [model.id] : []),
+            ];
+            return ids.length > 0 ? (
+              <span className="hidden min-w-0 shrink truncate font-mono text-[11px] text-ink-faint sm:inline">
+                {ids.join(' · ')}
+              </span>
+            ) : null;
+          })() : null}
+          <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">{formatTokens(model.maxContextSize)}</span>
           <span className="hidden sm:inline-flex"><CapabilityMarks capabilities={model.capabilities} /></span>
           {requestIdentitySummary !== 'inherit' ? (
             <span className="hidden shrink-0 text-[11px] text-ink-faint sm:inline">
@@ -985,24 +993,27 @@ export function ProviderFields({
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, blankModel()] }); }}>{t('st.providers.addModel')}</button>
         </div>
         {idLocked ? (
-          <label className={FORM_LABEL}>
-            {t('st.models.providerDefault')}
-            <select
-              className={`${INPUT} mt-1`}
+          <div className="space-y-1">
+            <span className={FORM_LABEL}>{t('st.models.providerDefault')}</span>
+            <SettingsSelect
+              variant="form"
+              dataAttr="data-provider-default-model"
+              ariaLabel={t('st.models.providerDefault')}
               value={draft.defaultModel}
-              onChange={(event) => { onChange({ ...draft, defaultModel: event.target.value }); }}
-            >
-              <option value="">{t('st.auth.none')}</option>
-              {draft.defaultModel !== '' && !draft.models.some((model) => (model.id || model.remoteId) === draft.defaultModel) ? (
-                <option value={draft.defaultModel}>{draft.defaultModel}</option>
-              ) : null}
-              {draft.models.filter((model) => model.remoteId !== '').map((model, index) => (
-                <option key={model.id || `new-${index}`} value={model.id || model.remoteId}>
-                  {model.displayName || model.id || model.remoteId}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={(defaultModel) => { onChange({ ...draft, defaultModel }); }}
+              choices={[
+                { value: '', label: t('st.auth.none') },
+                ...(draft.defaultModel !== '' && !draft.models.some((model) => (model.id || model.remoteId) === draft.defaultModel)
+                  ? [{ value: draft.defaultModel, label: draft.defaultModel }]
+                  : []),
+                ...draft.models.filter((model) => model.remoteId !== '').map((model) => ({
+                  value: model.id || model.remoteId,
+                  label: model.displayName || model.id || model.remoteId,
+                  hint: model.displayName !== '' ? model.remoteId : undefined,
+                })),
+              ]}
+            />
+          </div>
         ) : null}
         {draft.models.map((model, index) => (
           <ModelDraftRow
@@ -1573,36 +1584,38 @@ export function SavedGenerationParametersEditor({
         return (
           <div key={key} className="grid gap-1 sm:grid-cols-[9rem_8rem_minmax(0,1fr)] sm:items-center">
             <label className="text-[11px] font-medium text-ink-soft" htmlFor={`${scope}-${id}-${key}`}>{label}</label>
-            <select
-              aria-label={`${label} ${zh ? '模式' : 'mode'}`}
-              className={SMALL_INPUT}
+            <SettingsSelect<'inherit' | 'custom' | 'api_default'>
+              variant="form"
+              dataAttr="data-param-mode"
+              ariaLabel={`${label} ${zh ? '模式' : 'mode'}`}
               value={mode}
               disabled={saving}
-              onChange={(event) => {
-                const next = event.target.value;
+              onChange={(next) => {
                 change(key, next === 'inherit' ? undefined : next === 'api_default' ? { kind: 'api_default' }
                   : key === 'thinking_effort' ? 'on' : key === 'service_tier' ? 'auto' : key === 'max_completion_tokens' ? 8192 : 0);
               }}
-            >
-              <option value="inherit">{zh ? '继承 / 未设置' : 'Inherit / unset'}</option>
-              <option value="custom">{zh ? '自定义' : 'Custom'}</option>
-              {canOmit ? <option value="api_default">{zh ? 'API 默认（不发送）' : 'API default (omit)'}</option> : null}
-            </select>
+              choices={[
+                { value: 'inherit', label: zh ? '继承 / 未设置' : 'Inherit / unset' },
+                { value: 'custom', label: zh ? '自定义' : 'Custom' },
+                ...(canOmit ? [{ value: 'api_default' as const, label: zh ? 'API 默认（不发送）' : 'API default (omit)' }] : []),
+              ]}
+            />
             <div>
               {mode === 'custom' && key === 'service_tier' ? (
-                <select id={`${scope}-${id}-${key}`} className={SMALL_INPUT} value={typeof value === 'string' ? value : 'auto'} disabled={saving}
-                  onChange={(event) => { change(key, event.target.value as GenerationParametersWire['service_tier']); }}>
-                  {(['auto', 'default', 'flex', 'priority'] as const).map((tier) => <option key={tier} value={tier}>{tier}</option>)}
-                </select>
+                <SettingsSelect id={`${scope}-${id}-${key}`} variant="form" mono dataAttr="data-service-tier" ariaLabel={label}
+                  value={typeof value === 'string' ? value : 'auto'} disabled={saving}
+                  onChange={(next) => { change(key, next as GenerationParametersWire['service_tier']); }}
+                  choices={(['auto', 'default', 'flex', 'priority'] as const).map((tier) => ({ value: tier, label: tier }))} />
               ) : mode === 'custom' && key === 'thinking_effort' ? (
                 <div className="flex gap-1">
-                  <select className={SMALL_INPUT} aria-label={zh ? '思考选择' : 'Thinking choice'}
+                  <SettingsSelect<'on' | 'off' | 'effort'> variant="form" className="w-auto" dataAttr="data-thinking-choice" ariaLabel={zh ? '思考选择' : 'Thinking choice'}
                     value={value === 'on' || value === 'off' ? value : 'effort'} disabled={saving}
-                    onChange={(event) => { change(key, event.target.value === 'effort' ? (supportEfforts?.[0] ?? 'high') : event.target.value); }}>
-                    <option value="on">{zh ? '自动' : 'Auto'}</option>
-                    <option value="off" disabled={alwaysThinking}>{zh ? '关闭' : 'Off'}</option>
-                    <option value="effort">{zh ? '指定档位' : 'Specific effort'}</option>
-                  </select>
+                    onChange={(next) => { change(key, next === 'effort' ? (supportEfforts?.[0] ?? 'high') : next); }}
+                    choices={[
+                      { value: 'on', label: zh ? '自动' : 'Auto' },
+                      ...(alwaysThinking ? [] : [{ value: 'off' as const, label: zh ? '关闭' : 'Off' }]),
+                      { value: 'effort', label: zh ? '指定档位' : 'Specific effort' },
+                    ]} />
                   {value !== 'on' && value !== 'off' ? <input id={`${scope}-${id}-${key}`} className={SMALL_INPUT} value={typeof value === 'string' ? value : ''}
                     disabled={saving} list={supportEfforts?.length ? `${scope}-${id}-efforts` : undefined}
                     onChange={(event) => { change(key, event.target.value); }} /> : null}

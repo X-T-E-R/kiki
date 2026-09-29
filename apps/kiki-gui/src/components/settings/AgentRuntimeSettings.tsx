@@ -14,6 +14,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { Icon } from '../icons';
 import { useSavedTick } from './useSavedTick';
@@ -215,14 +216,14 @@ export function AgentRuntimeCard() {
               <input className={`${INPUT} mt-1 font-mono`} value={draft.identitySlug} onChange={(event) => { updateDraft({ ...draft, identitySlug: event.target.value }); }} />
             </label>
           </div>
-          <div className="space-y-1.5 rounded-md border border-hairline bg-paper px-3 py-2.5">
+          <SettingField label={t('st.agentIdentity.advertiseAsKimiCode')} help={t('st.agentIdentity.advertiseAsKimiCodeHint')}>
             <Toggle
+              layout="bare"
               label={t('st.agentIdentity.advertiseAsKimiCode')}
               checked={draft.advertiseAsKimiCode}
               onChange={(advertiseAsKimiCode) => { updateDraft({ ...draft, advertiseAsKimiCode }); }}
             />
-            <Hint>{t('st.agentIdentity.advertiseAsKimiCodeHint')}</Hint>
-          </div>
+          </SettingField>
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
           <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
         </fieldset>

@@ -17,6 +17,7 @@ import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -113,12 +114,12 @@ function SkillsDefaultsCard() {
     <SectionCard id="st-card-caps" title={t('st.caps.title')}>
       <div className="space-y-4">
         <div className="space-y-1">
-          <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-          <Hint>{t('st.caps.mergeSkillsHint')}</Hint>
-        </div>
-        <div className="space-y-1">
-          <Toggle label={t('st.sidecar.builtinSkills')} checked={builtinProductSkills} onChange={setBuiltinProductSkills} />
-          <Hint>{t('st.caps.builtinSkillsHint')}</Hint>
+          <SettingField label={t('st.caps.mergeSkills')} help={t('st.caps.mergeSkillsHint')}>
+            <Toggle layout="bare" label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
+          </SettingField>
+          <SettingField label={t('st.sidecar.builtinSkills')} help={t('st.caps.builtinSkillsHint')}>
+            <Toggle layout="bare" label={t('st.sidecar.builtinSkills')} checked={builtinProductSkills} onChange={setBuiltinProductSkills} />
+          </SettingField>
         </div>
         <div>
           <div className="flex items-center justify-between gap-3">

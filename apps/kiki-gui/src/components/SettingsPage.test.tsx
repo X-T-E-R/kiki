@@ -336,14 +336,20 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(input.value).toBe('30');
     expect(card.textContent).toContain('Request timeout (seconds)');
 
-    await setInput(input, '120');
-    await click(card.querySelector('button')!);
+    // The field saves itself on Enter; there is no separate Save button.
+    expect(card.querySelector('button')).toBeNull();
+    await commitText(input, '120');
     await flush();
 
     expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({
       requestTimeoutSeconds: 120,
     });
-    expect(card.textContent).toContain('New requests use the updated limit.');
+    expect(card.querySelector('[data-saved-tick]')?.textContent).toBe('Saved');
+
+    // Out-of-range input stays in the field with a message and is not written.
+    await commitText(input, '2');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ requestTimeoutSeconds: 120 });
   });
 
   it('reveals, edits, and overwrites the saved connection token', async () => {

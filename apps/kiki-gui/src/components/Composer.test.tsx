@@ -1172,7 +1172,7 @@ describe('Composer model chip', () => {
     const rows = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
     expect(rows).toHaveLength(3);
     // The inherit row shows the resolved display name and the serving provider.
-    expect(rows[0]?.textContent).toContain('inherit server default');
+    expect(rows[0]?.textContent).toContain('Default · ');
     expect(rows[0]?.textContent).toContain('K3 256K');
     expect(rows[0]?.textContent).toContain('alpha');
     // Catalog rows group by provider.

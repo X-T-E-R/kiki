@@ -6,6 +6,7 @@ import {
 import { useI18n } from '../i18n';
 import { Hint } from './controls';
 import { INPUT, SECONDARY_BUTTON } from './ui';
+import { SettingsSelect } from './settings/SettingsPrimitives';
 
 export function RequestIdentityLayerEditor({
   value,
@@ -34,19 +35,20 @@ export function RequestIdentityLayerEditor({
   return (
     <div className="space-y-3">
       <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{label}
-          <select
-            className={`${INPUT} mt-1`}
+        <div className="space-y-1 text-[11px] font-medium text-ink-soft">
+          <span className="block">{label}</span>
+          <SettingsSelect<RequestIdentityChoice>
+            variant="form"
+            dataAttr="data-request-identity-choice"
+            ariaLabel={label}
             value={value.requestIdentityChoice}
-            onChange={(event) => { choose(event.target.value as RequestIdentityChoice); }}
-          >
-            {REQUEST_IDENTITY_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice === 'inherit' ? inheritLabel : t(`st.requestIdentity.option.${choice}`)}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={choose}
+            choices={REQUEST_IDENTITY_CHOICES.map((choice) => ({
+              value: choice,
+              label: choice === 'inherit' ? inheritLabel : t(`st.requestIdentity.option.${choice}`),
+            }))}
+          />
+        </div>
         <Hint>{hint}</Hint>
       </div>
       {authored ? (

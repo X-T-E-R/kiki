@@ -15,9 +15,12 @@ import { useI18n } from '../../i18n';
 import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
+import { CommitInput } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 import { useDirtyReporter } from '../dirtyGuard';
 
 export function ConnectionSection() {
@@ -32,11 +35,8 @@ export function ConnectionSection() {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const busySessions = useBusySessionCount();
-  const savedRequestTimeoutSeconds = readSettings().requestTimeoutSeconds;
-  const [requestTimeoutDraft, setRequestTimeoutDraft] = useState(
-    String(savedRequestTimeoutSeconds),
-  );
-  const [requestTimeoutFeedback, setRequestTimeoutFeedback] = useState<Feedback>(null);
+  const [savedRequestTimeout, setSavedRequestTimeout] = useState(() => readSettings().requestTimeoutSeconds);
+  const [timeoutSaved, pingTimeoutSaved] = useSavedTick();
   // Inline editing: the page owns the (url, token) pair, so the value is
   // edited where it is shown instead of behind disconnect → connect screen.
   const [urlDraft, setUrlDraft] = useState(config.url);
@@ -48,20 +48,17 @@ export function ConnectionSection() {
   }, [config.url, config.token]);
   const draftsDirty =
     urlDraft.trim() !== config.url.trim() || tokenDraft.trim() !== config.token.trim();
-  const requestTimeoutDirty = requestTimeoutDraft !== String(savedRequestTimeoutSeconds);
   useDirtyReporter('connection-endpoint', draftsDirty);
-  useDirtyReporter('connection-timeout', requestTimeoutDirty);
 
-  const saveRequestTimeout = () => {
-    const seconds = Number(requestTimeoutDraft);
-    const validation = validateRequestTimeoutSeconds(seconds);
-    if (validation !== null) {
-      setRequestTimeoutFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
+  // Validated by CommitInput before this runs.
+  const saveRequestTimeout = (seconds: number) => {
     writeSettings({ requestTimeoutSeconds: seconds });
-    setRequestTimeoutDraft(String(seconds));
-    setRequestTimeoutFeedback({ tone: 'success', text: t('st.conn.timeoutSaved') });
+    setSavedRequestTimeout(seconds);
+    pingTimeoutSaved();
+  };
+  const timeoutIssue = (text: string): string | null => {
+    const issue = validateRequestTimeoutSeconds(text === '' ? Number.NaN : Number(text));
+    return issue === null ? null : issueText(locale, issue);
   };
 
   const restart = async () => {
@@ -175,40 +172,22 @@ export function ConnectionSection() {
       </SectionCard>
 
       <SectionCard id="st-card-conn-timeout" title={t('st.conn.timeoutTitle')}>
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            saveRequestTimeout();
-          }}
+        {/* One number on this device: it saves itself on blur/Enter. */}
+        <SettingField
+          label={t('st.conn.timeoutLabel')}
+          htmlFor="st-conn-request-timeout"
+          help={t('st.conn.timeoutHint', { minimum: MIN_REQUEST_TIMEOUT_SECONDS, maximum: MAX_REQUEST_TIMEOUT_SECONDS })}
         >
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[180px] flex-1">
-              <label htmlFor="st-conn-request-timeout" className="mb-1 block text-[11px] font-medium text-ink-soft">
-                {t('st.conn.timeoutLabel')}
-              </label>
-              <input
-                id="st-conn-request-timeout"
-                type="number"
-                min={MIN_REQUEST_TIMEOUT_SECONDS}
-                max={MAX_REQUEST_TIMEOUT_SECONDS}
-                step={1}
-                className={INPUT}
-                value={requestTimeoutDraft}
-                onChange={(event) => {
-                  setRequestTimeoutDraft(event.target.value);
-                  setRequestTimeoutFeedback(null);
-                }}
-              />
-            </div>
-            <button type="submit" className={PRIMARY_BUTTON} disabled={!requestTimeoutDirty}>
-              {t('common.save')}
-            </button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={!requestTimeoutDirty} onClick={() => { setRequestTimeoutDraft(String(savedRequestTimeoutSeconds)); setRequestTimeoutFeedback(null); }}>{t('st.advanced.discard')}</button>
-          </div>
-          <Hint>{t('st.conn.timeoutHint', { minimum: MIN_REQUEST_TIMEOUT_SECONDS, maximum: MAX_REQUEST_TIMEOUT_SECONDS })}</Hint>
-          <FeedbackLine feedback={requestTimeoutFeedback} />
-        </form>
+          <SavedTick show={timeoutSaved} />
+          <CommitInput
+            id="st-conn-request-timeout"
+            className="w-24 text-right"
+            inputMode="numeric"
+            value={String(savedRequestTimeout)}
+            validate={timeoutIssue}
+            onCommit={(text) => { saveRequestTimeout(Number(text)); }}
+          />
+        </SettingField>
       </SectionCard>
 
       {!isSsh ? <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')} badge="desktop">

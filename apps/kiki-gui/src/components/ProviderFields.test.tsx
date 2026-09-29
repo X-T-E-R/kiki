@@ -26,6 +26,7 @@ import { I18nProvider } from '../i18n';
 import { NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
+import { optionValues, pickValue } from './settings/testControls';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -319,10 +320,8 @@ describe('ProviderEditor save channel', () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const editor = container.querySelector<HTMLElement>('[data-generation-editor="provider:edge:gateway"]')!;
     expect(editor.textContent).toContain('models without local overrides');
-    const temperature = editor.querySelector<HTMLSelectElement>('select[aria-label="Temperature mode"]')!;
-    await act(async () => { setSelectValue(temperature, 'inherit'); });
-    const tokens = editor.querySelector<HTMLSelectElement>('select[aria-label="Max generated tokens mode"]')!;
-    await act(async () => { setSelectValue(tokens, 'custom'); });
+    await pickValue(editor.querySelector('button[aria-label="Temperature mode"]')!, 'data-param-mode', 'inherit');
+    await pickValue(editor.querySelector('button[aria-label="Max generated tokens mode"]')!, 'data-param-mode', 'custom');
     await act(async () => { [...editor.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save parameters')!.click(); });
     expect(updateProvider).toHaveBeenCalledWith('edge:gateway', { base_revision: 'provider-rev-1', defaults: { temperature: null } });
     expect(updateModel).not.toHaveBeenCalled();
@@ -502,12 +501,12 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
       base_url: 'https://repaired.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
     });
-    const select = [...container.querySelectorAll('select')].find((input) => input.value === 'removed-alias')!;
-    expect([...select.options].map((option) => option.value)).toEqual(['', 'removed-alias', 'fast']);
-    await act(async () => { select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    const select = container.querySelector('[data-provider-default-model="removed-alias"]')!;
+    expect(await optionValues(select)).toEqual(['', 'removed-alias', 'fast']);
+    await pickValue(select, 'data-provider-default-model', '');
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { default_model: null, base_revision: 'provider-rev-2' });
-    await act(async () => { select.value = 'fast'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await pickValue(select, 'data-provider-default-model', 'fast');
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { default_model: 'fast', base_revision: 'provider-rev-2' });
     expect(updateModel).not.toHaveBeenCalled();
