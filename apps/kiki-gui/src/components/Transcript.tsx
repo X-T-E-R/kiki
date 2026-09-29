@@ -2006,6 +2006,13 @@ function formatLatencySeconds(ms: number): string {
 
 export { TurnExecutionBadge };
 
+const CANCELLATION_LABEL_KEY = {
+  user: 'transcript.stoppedByYou',
+  aborted: 'transcript.interrupted',
+  recovery: 'transcript.interruptedByRestart',
+  unknown: 'transcript.interrupted',
+} as const satisfies Record<NonNullable<TurnTailInfo['cancellation']>, I18nKey>;
+
 /**
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
@@ -2024,6 +2031,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   const [copied, setCopied] = useState(false);
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
+  // Only an explicit stop request reads as "Stopped by you"; engine aborts,
+  // restarts and records without provenance say "Interrupted".
+  const cancellation = tail.cancellation ?? 'unknown';
   const facts: string[] = [];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
@@ -2059,8 +2069,8 @@ export const TurnTailLine = memo(function TurnTailLine({
               {t('notice.turnFailed')}
             </span>
           ) : isCancelled ? (
-            <span className="text-[12px] font-semibold text-amber-ink">
-              {t('transcript.stoppedByYou')}
+            <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
+              {t(CANCELLATION_LABEL_KEY[cancellation])}
             </span>
           ) : null}
           {isCancelled && onResume !== undefined ? (

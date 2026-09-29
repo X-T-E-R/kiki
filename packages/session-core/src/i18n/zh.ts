@@ -1085,6 +1085,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'transcript.stopped': '已停止',
   'transcript.stoppedAria': '已停止',
   'transcript.stoppedByYou': '已由你停止',
+  'transcript.interrupted': '已中断',
+  'transcript.interruptedByRestart': 'Kiki 重启时中断',
   'transcript.resume': '继续',
   'transcript.resumeTitle': '重新运行这条消息',
   'transcript.resumeFailed': '无法继续：{detail}',

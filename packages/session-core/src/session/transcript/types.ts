@@ -320,6 +320,12 @@ export interface SessionCursorState {
 export interface TurnTailInfo {
   readonly turnId: string;
   readonly state?: string;
+  /**
+   * Why a `cancelled` turn ended: `user` (an explicit stop), `aborted`,
+   * `recovery` (found unfinished after a restart), or `unknown` (older
+   * records without provenance). Absent on other states.
+   */
+  readonly cancellation?: 'user' | 'aborted' | 'recovery' | 'unknown';
   readonly error?: string;
   readonly endedAt: string;
   readonly durationMs: number | undefined;

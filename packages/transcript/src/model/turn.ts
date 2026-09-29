@@ -17,6 +17,15 @@ export type TurnOrigin =
 
 export type TurnState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+/**
+ * Who or what ended a `cancelled` turn. `user` is an explicit stop request
+ * (`turn.cancel` with `user_cancelled`), `aborted` is an engine or host abort,
+ * `recovery` is a turn the cold replay found unfinished (the process died
+ * mid-turn), and `unknown` is a cancelled turn whose records carry no
+ * provenance (older wire files).
+ */
+export type TurnCancellation = 'user' | 'aborted' | 'recovery' | 'unknown';
+
 export type StepState = 'running' | 'completed' | 'interrupted' | 'failed';
 
 export interface TranscriptUsage {
@@ -93,6 +102,7 @@ export interface TranscriptTurn {
   readonly execution?: TranscriptTurnExecution;
   /** Wall-clock duration of the turn, set on terminal upserts (`turn.ended`). */
   readonly durationMs?: number;
+  readonly cancellation?: TurnCancellation;
   /**
    * Terminal error message (`turn.ended.error`); the structured payload
    * already rides the 'error' notice marker.

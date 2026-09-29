@@ -9,7 +9,7 @@ import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/pr
 import type { TranscriptTask } from '../model/task';
 import type { TodoItem } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
-import type { StepUsage, TranscriptTurnExecution, TurnOrigin } from '../model/turn';
+import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
 
 export interface TranscriptWireRecord {
   readonly type: string;
@@ -94,6 +94,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly deliveredTaskNotifications?: readonly [string, string][];
   readonly unpairedSteerCredits: readonly [string, readonly [string, number][]][];
   readonly executions: readonly [string, TranscriptTurnExecution][];
+  readonly cancelRequests?: readonly [string, TurnCancellation][];
   readonly goal?: GoalMeta;
   readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   readonly recordOrdinal: number;
@@ -134,6 +135,7 @@ export class TranscriptWireAdapter {
   readonly #deliveredTaskNotifications = new Map<string, string>();
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
+  readonly #cancelRequests = new Map<string, TurnCancellation>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
   readonly #hiddenPromptIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
@@ -184,6 +186,7 @@ export class TranscriptWireAdapter {
       deliveredTaskNotifications: [...this.#deliveredTaskNotifications],
       unpairedSteerCredits: [...this.#unpairedSteerCredits].map(([key, value]) => [key, [...value]]),
       executions: [...this.#executions],
+      cancelRequests: [...this.#cancelRequests],
       goal: this.#goal,
       plan: this.#plan,
       recordOrdinal: this.#recordOrdinal,
@@ -237,6 +240,7 @@ export class TranscriptWireAdapter {
       checkpoint.unpairedSteerCredits.map(([key, value]) => [key, new Map(value)]),
     );
     replaceMap(this.#executions, checkpoint.executions);
+    replaceMap(this.#cancelRequests, checkpoint.cancelRequests ?? []);
     this.#goal = checkpoint.goal;
     this.#plan = checkpoint.plan;
     this.#recordOrdinal = checkpoint.recordOrdinal;
@@ -299,7 +303,12 @@ export class TranscriptWireAdapter {
     }
     for (const [turnId, previous] of this.#turnHeaders) {
       if (previous.state !== 'running') continue;
-      const turn: TurnHeader = { ...previous, state: 'cancelled', endedAt };
+      const turn: TurnHeader = {
+        ...previous,
+        state: 'cancelled',
+        cancellation: this.#cancelRequests.get(turnId) ?? 'recovery',
+        endedAt,
+      };
       this.#turnHeaders.set(turnId, turn);
       operations.push({ op: 'turn.upsert', turn });
     }
@@ -912,12 +921,15 @@ export class TranscriptWireAdapter {
       return [this.ensureTurn(turnId), { op: 'step.upsert', turnId, step }];
     }
     if (record.type === 'turn.step.retrying') return [];
-    if (
-      record.type === 'turn.cancel' &&
-      record['target'] === 'active' &&
-      record['reason'] === 'user_cancelled'
-    ) {
-      return [this.marker(record, ordinal, 'interruption')];
+    if (record.type === 'turn.cancel' && record['target'] !== 'queued') {
+      const cancelTurnId = turnIdOf(record['turnId'], this.#currentTurnId);
+      const userCancelled = record['reason'] === 'user_cancelled';
+      if (cancelTurnId !== undefined) {
+        this.#cancelRequests.set(cancelTurnId, userCancelled ? 'user' : 'aborted');
+      }
+      return record['target'] === 'active' && userCancelled
+        ? [this.marker(record, ordinal, 'interruption')]
+        : [];
     }
     return [];
   }
@@ -1555,7 +1567,12 @@ export class TranscriptWireAdapter {
             : finishReason === 'interrupted'
               ? 'cancelled'
               : 'completed';
-        const turn: TurnHeader = { ...previous, state, endedAt: isoOf(time) };
+        const turn: TurnHeader = {
+          ...previous,
+          state,
+          cancellation: state === 'cancelled' ? this.#cancelRequests.get(turnId) ?? 'unknown' : undefined,
+          endedAt: isoOf(time),
+        };
         this.#turnHeaders.set(turnId, turn);
         operations.push({ op: 'turn.upsert', turn });
       }
@@ -1720,6 +1737,8 @@ export class TranscriptWireAdapter {
         ? rawReason
         : 'completed';
     const durationMs = numberOf(record['durationMs']);
+    const cancellation = reason === 'cancelled' ? turnEndCancellation(record, this.#cancelRequests.get(turnId)) : undefined;
+    this.#cancelRequests.delete(turnId);
     const turn: TurnHeader = {
       kind: 'turn',
       turnId,
@@ -1736,6 +1755,7 @@ export class TranscriptWireAdapter {
       usage,
       execution: this.#executions.get(turnId) ?? previous?.execution,
       durationMs,
+      cancellation,
       error: stringOf(objectOf(record['error'])?.['message']),
     };
     this.#turnHeaders.set(turnId, turn);
@@ -1967,6 +1987,7 @@ export class TranscriptWireAdapter {
       this.#stepUsages.delete(turnId);
       this.#pendingSteers.delete(turnId);
       this.#pendingTaskNotifications.delete(turnId);
+      this.#cancelRequests.delete(turnId);
       this.#unpairedSteerCredits.delete(turnId);
       for (const stepId of this.#stepIdsByTurn.get(turnId) ?? []) {
         this.#turnIdByStepId.delete(stepId);
@@ -2258,6 +2279,16 @@ function mediaPartsOf(values: readonly unknown[]): PendingSteerMedia[] {
 function textOfPart(value: unknown): string {
   const part = objectOf(value);
   return stringOf(part?.['type']) === 'text' ? (stringOf(part?.['text']) ?? '') : '';
+}
+
+function turnEndCancellation(
+  record: TranscriptWireRecord,
+  requested: TurnCancellation | undefined,
+): TurnCancellation {
+  const interruptReason = record['interruptReason'];
+  if (interruptReason === 'user_cancelled') return 'user';
+  if (interruptReason === 'aborted') return 'aborted';
+  return requested ?? 'unknown';
 }
 
 function turnIdOf(value: unknown, fallback: string | undefined): string | undefined {

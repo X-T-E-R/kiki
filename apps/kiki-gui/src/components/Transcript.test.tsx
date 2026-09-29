@@ -458,6 +458,27 @@ describe('splitPrefixSegments streaming differential', () => {
     expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('20 tok/s');
   });
 
+  it('labels crash recovery as an interruption and still offers resume', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine tail={{
+      turnId: 't1', state: 'cancelled', cancellation: 'recovery',
+      endedAt: new Date().toISOString(), durationMs: 1000,
+    }} onResume={() => undefined} />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.textContent).toContain('Interrupted when Kiki restarted');
+    expect(tail?.textContent).not.toContain('Stopped by you');
+    expect(tail?.textContent).toContain('Resume');
+  });
+
+  it('keeps the user-stop label for an explicit cancellation', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine tail={{
+      turnId: 't1', state: 'cancelled', cancellation: 'user',
+      endedAt: new Date().toISOString(), durationMs: 1000,
+    }} onResume={() => undefined} />);
+    expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('Stopped by you');
+  });
+
   it('ages the turn-tail clock instead of freezing at first render', async () => {
     const probe = makeRoot();
     await renderSettled(

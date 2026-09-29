@@ -1816,6 +1816,7 @@ function sameTurnExecution(
 function turnTailFromItem(item: {
   readonly turnId: string;
   readonly state?: string;
+  readonly cancellation?: TurnTailInfo['cancellation'];
   readonly error?: string;
   readonly endedAt?: string;
   readonly durationMs?: number;
@@ -1829,6 +1830,7 @@ function turnTailFromItem(item: {
   return {
     turnId: item.turnId,
     state: item.state,
+    cancellation: item.state === 'cancelled' ? item.cancellation ?? 'unknown' : undefined,
     error: item.error,
     endedAt: item.endedAt,
     durationMs: item.durationMs,

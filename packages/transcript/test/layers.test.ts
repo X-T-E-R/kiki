@@ -620,6 +620,25 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('classifies unfinished turns after a restart without a user stop', () => {
+    const transcript = replay([records[0]!]);
+    expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });
+  });
+
+  it('preserves user-stop provenance through the terminal event', () => {
+    const transcript = replay([
+      records[0]!,
+      { type: 'turn.cancel', turnId: 0, target: 'active', reason: 'user_cancelled', time: 2_000 },
+      { type: 'turn.ended', turnId: 0, reason: 'cancelled', interruptReason: 'user_cancelled', time: 3_000 },
+    ]);
+    expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'user' });
+    expect(replay([
+      records[0]!,
+      { type: 'turn.cancel', turnId: 0, target: 'active', reason: 'aborted', time: 2_000 },
+      { type: 'turn.ended', turnId: 0, reason: 'cancelled', time: 3_000 },
+    ]).getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'aborted' });
+  });
+
   it('produces identical cold and incremental snapshots with engine identities and stable order', () => {
     const cold = replay(records);
     const live = replay(records);

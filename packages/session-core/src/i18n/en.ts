@@ -1090,6 +1090,8 @@ export const en = {
   'transcript.stopped': 'Stopped',
   'transcript.stoppedAria': 'stopped',
   'transcript.stoppedByYou': 'Stopped by you',
+  'transcript.interrupted': 'Interrupted',
+  'transcript.interruptedByRestart': 'Interrupted when Kiki restarted',
   'transcript.resume': 'Resume',
   'transcript.resumeTitle': 'Run this prompt again',
   'transcript.resumeFailed': 'Could not resume: {detail}',

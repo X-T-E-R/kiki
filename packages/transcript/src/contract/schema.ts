@@ -248,6 +248,7 @@ export const transcriptTurnSchema = z.object({
   usage: transcriptUsageSchema.optional(),
   execution: transcriptTurnExecutionSchema.optional(),
   durationMs: z.number().optional(),
+  cancellation: z.enum(['user', 'aborted', 'recovery', 'unknown']).optional(),
   error: z.string().optional(),
 });
 
