@@ -37,6 +37,23 @@ import {
   type AgentProfileSelection,
 } from './sessionAgentProfileCatalog';
 
+const duplicateWarningsByLog = new WeakMap<ILogService, Set<string>>();
+
+function warnCatalog(log: ILogService, message: string): void {
+  if (!message.startsWith('Duplicate agent profile ')) {
+    log.warn(message);
+    return;
+  }
+  let warnings = duplicateWarningsByLog.get(log);
+  if (warnings === undefined) {
+    warnings = new Set();
+    duplicateWarningsByLog.set(log, warnings);
+  }
+  if (warnings.has(message)) return;
+  warnings.add(message);
+  log.warn(message);
+}
+
 export class SessionAgentProfileCatalogService
   extends Disposable
   implements ISessionAgentProfileCatalog
@@ -257,7 +274,7 @@ export class SessionAgentProfileCatalogService
         entries: this.relevantEntries(),
         disabledNamedProfiles: this.disabledNamedProfileNames(),
         routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
-        warn: (message) => this.log.warn(message),
+        warn: (message) => warnCatalog(this.log, message),
       });
       this.resolvable = new Map(projection.resolvableProfiles);
       this.publicProfiles = new Map(projection.profiles);

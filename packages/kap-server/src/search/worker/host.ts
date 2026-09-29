@@ -62,7 +62,7 @@ export interface SearchWorkerHostOptions {
   readonly requestTimeoutMs?: number;
   /** Watchdog budget per sync/reindex request (ms). Default 30 min. */
   readonly syncTimeoutMs?: number;
-  /** Worker heap cap, mirroring the text-build worker. Default 1024. */
+  /** Worker heap cap. Default 2048. */
   readonly maxOldSpaceMb?: number;
   /** Test hook: worker factory override. */
   readonly workerFactory?: (entry: { url: URL; data: SearchWorkerData; execArgv: string[] }) => Worker;
@@ -82,7 +82,7 @@ type PendingRequest = {
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_OLD_SPACE_MB = 1024;
+const DEFAULT_MAX_OLD_SPACE_MB = 2048;
 const STABLE_SESSION_MS = 60_000;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 10_000;

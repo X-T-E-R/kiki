@@ -284,6 +284,45 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
+  it('logs the same duplicate profile warning once across catalog projections', async () => {
+    const container = new InstantiationService(new ServiceCollection(), true);
+    const registry = container.createInstance(AgentProfileRegistryService);
+    const config = configStub();
+    const warnings: string[] = [];
+    const log = stubLog();
+    log.warn = (message: string) => warnings.push(message);
+    const low = normalizeAgentProfile({
+      name: 'duplicate',
+      sourcePath: '/agents/duplicate.md',
+      systemPrompt: () => 'low',
+    });
+    const high = normalizeAgentProfile({
+      name: 'duplicate',
+      sourcePath: '/agents/based_on_model/duplicate.md',
+      systemPrompt: () => 'high',
+    });
+    const registration = registry.register({
+      sourceId: 'user',
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
+      workspaceKey: WORKSPACE_KEY,
+      contribution: { profiles: [low, high] },
+    });
+    const catalogs = [0, 1].map(() => new SessionAgentProfileCatalogService(
+      registry,
+      { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
+      config.service,
+      log,
+      { enabled: () => false } as unknown as IFlagService,
+    ));
+    await Promise.all(catalogs.map((catalog) => catalog.ready));
+    await Promise.all(catalogs.map((catalog) => catalog.reload()));
+
+    expect(warnings.filter((message) => message.startsWith('Duplicate agent profile '))).toHaveLength(1);
+    for (const catalog of catalogs) catalog.dispose();
+    registration.dispose();
+    container.dispose();
+  });
+
   it('lets a same-name file profile win the default agent name by source priority', () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);

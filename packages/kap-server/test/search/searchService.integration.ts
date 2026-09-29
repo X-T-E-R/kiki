@@ -2987,6 +2987,19 @@ describe('search worker host (stage 4)', () => {
     });
   }
 
+  it('starts the search worker with a 2 GiB old-space budget', async () => {
+    const host = new SearchWorkerHost({
+      dir: join(home!, 'search-index'),
+      log: noopLog,
+    });
+    hosts.push(host);
+    await host.ensureOpen();
+    const worker = (host as unknown as {
+      worker: Worker;
+    }).worker;
+    expect(worker.resourceLimits?.maxOldGenerationSizeMb).toBe(2048);
+  });
+
   it('restarts a killed worker, reaps its lock, and keeps serving', { timeout: 30_000 }, async () => {
     const s1 = summary('s1', 'crash', T1);
     await writeWire(home!, 's1', 'main', [userLine('苹果 crash', T1)]);
