@@ -72,6 +72,7 @@ export function SearchableSelect({
   hideFilter = false,
   allowCustomValue = false,
   customValueLabel,
+  density = 'comfortable',
 }: {
   id?: string;
   readonly options: readonly SearchableSelectOption[];
@@ -112,6 +113,12 @@ export function SearchableSelect({
   /** Adds the trimmed search text as a final selectable row when no option has that exact value. */
   readonly allowCustomValue?: boolean;
   readonly customValueLabel?: (value: string) => string;
+  /**
+   * `compact`: one line per option (label, badges as faint inline text, hint
+   * on the right edge) for long pickers opened from a tight spot such as the
+   * composer status line. Descriptions stay in the row tooltip.
+   */
+  readonly density?: 'comfortable' | 'compact';
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -319,6 +326,17 @@ export function SearchableSelect({
                           {groupHeader}
                         </p>
                       ) : null}
+                      {density === 'compact' ? (
+                        <CompactOptionRow
+                          id={`${listId}-option-${index}`}
+                          index={index}
+                          option={option}
+                          active={active}
+                          selected={isSelected}
+                          onCommit={() => { commit(option); }}
+                          onHover={() => { if (!active) setActiveIndex(index); }}
+                        />
+                      ) : (
                       <button
                         type="button"
                         id={`${listId}-option-${index}`}
@@ -373,6 +391,7 @@ export function SearchableSelect({
                           </span>
                         ) : null}
                       </button>
+                      )}
                     </div>
                   );
                 })}
@@ -404,5 +423,67 @@ export function SearchableSelect({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One-line option row (`density="compact"`): the label leads, badges follow as
+ * faint inline words (an accent badge keeps its accent), and the hint sits on
+ * the right edge in mono. Everything truncates before the row wraps, so a long
+ * catalog reads as a list instead of a stack of cards.
+ */
+function CompactOptionRow({
+  id,
+  index,
+  option,
+  active,
+  selected,
+  onCommit,
+  onHover,
+}: {
+  readonly id: string;
+  readonly index: number;
+  readonly option: SearchableSelectOption;
+  readonly active: boolean;
+  readonly selected: boolean;
+  readonly onCommit: () => void;
+  readonly onHover: () => void;
+}) {
+  const badges = option.badges ?? [];
+  const tooltip = [option.title ?? option.label, option.description].filter((part) => part !== undefined && part !== '').join('\n');
+  return (
+    <button
+      type="button"
+      id={id}
+      data-index={index}
+      data-option-density="compact"
+      role="option"
+      aria-selected={selected}
+      title={tooltip}
+      onClick={onCommit}
+      onMouseMove={onHover}
+      className={`flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-10 ${
+        selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''
+      }`}
+    >
+      <span className={`min-w-0 shrink truncate text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>
+        {option.label}
+      </span>
+      {badges.length > 0 ? (
+        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-ink-faint">
+          {badges.map((badge) => (
+            <span key={badge.label} className={`shrink-0 ${badge.accent === true ? 'text-accent-ink' : ''}`}>
+              {badge.label}
+            </span>
+          ))}
+        </span>
+      ) : null}
+      <span className="ml-auto flex min-w-0 shrink-[3] items-center gap-2 pl-2">
+        {option.hint !== undefined ? (
+          <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">{option.hint}</span>
+        ) : null}
+        <Icon name="check" size={12} className={`shrink-0 ${selected ? 'text-ink-soft' : 'text-transparent'}`} />
+      </span>
+    </button>
   );
 }

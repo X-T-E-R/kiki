@@ -82,11 +82,15 @@ import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterUsage } fr
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { Icon } from './icons';
+import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import {
   AddMenu,
   type AddMenuView,
+  COMPOSER_PANEL_START,
+  ComposerCardContext,
+  ComposerPanelOrigin,
   PermissionSelect,
   RunModeChip,
   STATUS_SEGMENT_CLASS,
@@ -1582,6 +1586,7 @@ export function Composer({
     statusSegments.push({
       key: 'agent',
       node: (
+        <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
         <SearchableSelect
           id="composer-agent-profile-select"
           options={agentProfileOptions}
@@ -1608,13 +1613,14 @@ export function Composer({
             )
           }
           triggerIcon={<Icon name="agent" size={14} className={STATUS_SEGMENT_ICON_CLASS} />}
-          panelClassName={`anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+          panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
           buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-52 ${
             agentProfilePending
               ? 'font-medium text-accent-ink hover:text-accent-ink'
               : agentProfile !== DEFAULT_AGENT_PROFILE ? STATUS_SEGMENT_SET : ''
           }`}
         />
+        </ComposerPanelOrigin>
       ),
     });
   }
@@ -1652,6 +1658,7 @@ export function Composer({
   }
 
   return (
+    <ComposerCardContext.Provider value={cardRef}>
     <div className="group/composer px-6 pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       {ssh.dialog}
@@ -2036,7 +2043,6 @@ export function Composer({
                 scopeKey: mentionScopeKey ?? sessionId ?? 'none',
                 onMention: mentionFromMenu,
               }}
-              anchorRef={cardRef}
             />
             <div
               data-composer-status
@@ -2209,6 +2215,7 @@ export function Composer({
         </div>
       </div>
     </div>
+    </ComposerCardContext.Provider>
   );
 }
 
@@ -2471,6 +2478,7 @@ function ModelChip({
   }
 
   return (
+    <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
     <SearchableSelect
       id="composer-model-select"
       options={hasCatalog ? modelOptions : []}
@@ -2498,9 +2506,10 @@ function ModelChip({
       ariaLabel={t('composer.modelAria')}
       emptyText={t('composer.inheritDefault')}
       searchPlaceholder={t('composer.modelSearchPlaceholder')}
+      density="compact"
       placement="above"
       hideChevron
-      panelClassName={`anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] ${POPOVER_SURFACE_CLASS}`}
+      panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
       buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}
@@ -2568,6 +2577,7 @@ function ModelChip({
         ) : null
       }
     />
+    </ComposerPanelOrigin>
   );
 }
 

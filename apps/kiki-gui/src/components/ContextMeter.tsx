@@ -32,6 +32,7 @@ import { compactUsageLevel } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
 import { usageSessionDeepLink } from '../lib/usageV2';
 import { ContextCompactSection, type ContextCompactSectionProps } from './ContextCompactSection';
+import { COMPOSER_PANEL_END, useComposerPanelAnchor, usePopoverDismiss } from './ComposerControls';
 import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
 import { Icon } from './icons';
 import type { ContextStrategyHandle, ManualCompactStrategy } from './useContextStrategy';
@@ -156,6 +157,16 @@ export function ContextMeter({
   const breakdown = useContext(ContextBreakdownContext);
   const detailsId = useId();
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Same dismissal and placement as the other status-line panels: outside
+  // pointer or Escape closes, and above the composer the card floats flush
+  // with the composer card's right edge.
+  const onPanelKeyDown = usePopoverDismiss(open, (refocus) => {
+    setOpen(false);
+    if (refocus === true) triggerRef.current?.focus();
+  }, rootRef, 'composer-context');
+  useComposerPanelAnchor(rootRef, open);
   // The percent answers "how full is the usable window"; colour answers
   // "is compaction close", so it keys on the point once one is known.
   const usable = autoCompact?.status.effectiveMaxContextTokens ?? limit;
@@ -191,8 +202,10 @@ export function ContextMeter({
         usage.cache_creation_tokens;
 
   return (
-    <div className="relative shrink-0">
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape for the open card
+    <div ref={rootRef} className="relative shrink-0" onKeyDown={onPanelKeyDown}>
       <button
+        ref={triggerRef}
         type="button"
         data-context-meter
         data-context-level={level}
@@ -250,8 +263,8 @@ export function ContextMeter({
           data-context-details
           role="dialog"
           aria-label={t('context.detailsTitle')}
-          className={`anim-enter absolute right-0 z-30 w-72 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
-            placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'
+          className={`anim-enter w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
+            placement === 'below' ? 'absolute right-0 z-40 top-full mt-2 max-w-[calc(100vw-48px)]' : COMPOSER_PANEL_END
           }`}
         >
           <div className="flex items-baseline justify-between gap-3">

@@ -146,6 +146,39 @@ describe('ContextMeter interaction', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('closes the detail card on an outside pointer and on Escape from anywhere', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><ContextMeter used={8_000} limit={32_000} /></I18nProvider>);
+    });
+    const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]')!;
+
+    await act(async () => { meter.click(); });
+    expect(container.querySelector('[data-context-details]')).not.toBeNull();
+    await act(async () => {
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+
+    await act(async () => { meter.click(); });
+    await act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+
+    await act(async () => { meter.click(); });
+    const details = container.querySelector<HTMLElement>('[data-context-details]')!;
+    await act(async () => {
+      details.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('[data-context-details]')).toBeNull();
+    expect(document.activeElement).toBe(meter);
+    await act(async () => { root.unmount(); });
+  });
+
   it('shows the lifetime session usage and cost in the detail card', async () => {
     const container = document.createElement('div');
     document.body.append(container);

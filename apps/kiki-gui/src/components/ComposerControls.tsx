@@ -13,9 +13,14 @@
  * All popovers share one contract: Escape closes and refocuses the trigger,
  * ↑/↓ walk `[data-menu-row]`, a pointerdown outside closes, and an open panel
  * registers as an overlay so the global Escape (turn abort) stays out.
+ *
+ * All status-line panels also share one place (useComposerPanelAnchor): they
+ * float just above the composer card's top edge, flush with the card's left
+ * edge when opened from the left of the status line and with its right edge
+ * when opened from the right, whatever the trigger's own position.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { FsSearchHit, PermissionMode } from '@kiki/protocol';
@@ -54,11 +59,97 @@ const MENU_ROW_CLASS =
 
 export type RunMode = 'normal' | 'plan' | 'goal';
 
-/** Shared popover plumbing: overlay registration, outside-pointer close, keys. */
-function usePopover(
+/** Gap between the composer card's top edge and any status-line panel. */
+const PANEL_GAP_PX = 6;
+
+/** The composer card every status-line panel floats above. */
+export const ComposerCardContext = createContext<RefObject<HTMLElement | null> | undefined>(undefined);
+
+/**
+ * Status-line panel placement. Panels stay absolutely positioned inside
+ * their trigger's root; this hook writes the root-relative offsets of the
+ * composer card onto the root as CSS variables, so a panel carrying
+ * `COMPOSER_PANEL_START` / `COMPOSER_PANEL_END` lands just above the card,
+ * flush with its left / right edge and never wider than it. Without a card
+ * (a picker rendered outside the composer) the classes fall back to "just
+ * above the trigger". Re-measured when the card resizes (chips, a growing
+ * draft), on window resize, and right before a pointer or key opens a panel.
+ */
+export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, open?: boolean): void {
+  const cardRef = useContext(ComposerCardContext);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const card = cardRef?.current;
+    if (root === null || card === null || card === undefined) return;
+    const measure = () => {
+      // Offsets are relative to the panel's containing block: the root, or
+      // the positioned root of a wrapped SearchableSelect (ComposerPanelOrigin).
+      const origin = root.querySelector<HTMLElement>(':scope > [data-searchable-select]') ?? root;
+      const rootRect = origin.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      root.style.setProperty('--cp-bottom', `${Math.max(0, rootRect.bottom - cardRect.top) + PANEL_GAP_PX}px`);
+      root.style.setProperty('--cp-left', `${cardRect.left - rootRect.left}px`);
+      root.style.setProperty('--cp-right', `${rootRect.right - cardRect.right}px`);
+      root.style.setProperty('--cp-max-w', `${cardRect.width}px`);
+    };
+    measure();
+    root.addEventListener('pointerdown', measure, true);
+    root.addEventListener('keydown', measure, true);
+    window.addEventListener('resize', measure);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
+    observer?.observe(card);
+    return () => {
+      root.removeEventListener('pointerdown', measure, true);
+      root.removeEventListener('keydown', measure, true);
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, [rootRef, cardRef, open]);
+}
+
+const PANEL_Y = 'bottom-[var(--cp-bottom,calc(100%_+_6px))] max-w-[min(var(--cp-max-w,100vw),calc(100vw_-_32px))]';
+/** A panel opened from the left of the status line: flush with the card's left edge. */
+export const COMPOSER_PANEL_START = `absolute z-40 ${PANEL_Y} left-[var(--cp-left,0px)]`;
+/** A panel opened from the right of the status line: flush with the card's right edge. */
+export const COMPOSER_PANEL_END = `absolute z-40 ${PANEL_Y} right-[var(--cp-right,0px)]`;
+
+/**
+ * Anchors a SearchableSelect (whose root and panel it does not own) to the
+ * composer card: the variables land on this wrapper and inherit into the
+ * select's panel, which takes `COMPOSER_PANEL_START` as its class.
+ */
+export function ComposerPanelOrigin({ children, className }: { children: React.ReactNode; className?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useComposerPanelAnchor(ref);
+  // The select closes itself on Escape while focus is inside it. Focus can
+  // leave an open panel (Tab out of the filter); Escape from anywhere still
+  // closes it here, before the session's Escape-to-abort sees the key.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const root = ref.current;
+      if (root === null || root.contains(event.target as Node)) return;
+      const trigger = root.querySelector<HTMLButtonElement>('[data-searchable-select] > button[aria-expanded="true"]');
+      if (trigger === null) return;
+      event.preventDefault();
+      trigger.click();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => { document.removeEventListener('keydown', onKeyDown, true); };
+  }, []);
+  return <div ref={ref} className={className}>{children}</div>;
+}
+
+/**
+ * Shared popover dismissal: overlay registration (so the global Escape never
+ * aborts the turn under an open panel), a pointerdown outside the root, and
+ * Escape anywhere in the document, including while focus sits outside the
+ * panel. Returns the in-panel key handler (Escape refocuses the trigger).
+ */
+export function usePopoverDismiss(
   open: boolean,
   close: (refocus?: boolean) => void,
-  rootRef: RefObject<HTMLDivElement | null>,
+  rootRef: RefObject<HTMLElement | null>,
   overlayId: string,
 ) {
   const closeRef = useRef(close);
@@ -71,12 +162,41 @@ function usePopover(
         closeRef.current();
       }
     };
+    // Focus outside the root (e.g. the panel opened by pointer and focus
+    // went back to the page): the document still hears Escape. In-panel
+    // Escape is handled (and stopped) by the root's own key handler first.
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (rootRef.current?.contains(event.target as Node) === true) return;
+      event.preventDefault();
+      closeRef.current();
+    };
     document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
     return () => {
       release();
       document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
     };
   }, [open, overlayId, rootRef]);
+  return (event: KeyboardEvent<HTMLElement>) => {
+    if (!open || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeRef.current(true);
+  };
+}
+
+/** Shared popover plumbing: dismissal (usePopoverDismiss) plus ↑/↓ row walking. */
+function usePopover(
+  open: boolean,
+  close: (refocus?: boolean) => void,
+  rootRef: RefObject<HTMLDivElement | null>,
+  overlayId: string,
+) {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  usePopoverDismiss(open, close, rootRef, overlayId);
 
   return (event: KeyboardEvent<HTMLDivElement>) => {
     if (!open) return;
@@ -227,8 +347,8 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * closes, since nothing was drilled from). `data-plan-select` stays on the
  * root for proofs that address the run-shape panel by that hook.
  *
- * The panel floats above the whole composer card (`anchorRef`), never over
- * the card's own chips or header.
+ * The panel floats above the whole composer card (useComposerPanelAnchor),
+ * never over the card's own chips or header.
  */
 export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention';
 
@@ -259,8 +379,6 @@ export interface AddMenuFiles {
 const FILE_ROW_LIMIT = 8;
 const SEARCH_ROW_LIMIT = 5;
 const FILE_DEBOUNCE_MS = 200;
-/** Gap between the composer card's top edge and the panel. */
-const PANEL_GAP_PX = 6;
 
 function useDebounced<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -269,40 +387,6 @@ function useDebounced<T>(value: T, delay: number): T {
     return () => { clearTimeout(timer); };
   }, [value, delay]);
   return debounced;
-}
-
-/**
- * Bottom offset (px) that lifts an absolutely positioned panel inside `root`
- * to just above `anchor`'s top edge; re-measured while the anchor resizes
- * (host chips joining from the SSH view grow the card under an open panel).
- */
-function useAboveAnchor(
-  open: boolean,
-  rootRef: RefObject<HTMLDivElement | null>,
-  anchorRef: RefObject<HTMLElement | null> | undefined,
-): number | undefined {
-  const [offset, setOffset] = useState<number | undefined>(undefined);
-  useLayoutEffect(() => {
-    if (!open || anchorRef === undefined) return;
-    const measure = () => {
-      const root = rootRef.current;
-      const anchor = anchorRef.current;
-      if (root === null || anchor === null) return;
-      const rootRect = root.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
-      setOffset(Math.max(0, rootRect.bottom - anchorRect.top) + PANEL_GAP_PX);
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined' || anchorRef.current === null) return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(anchorRef.current);
-    window.addEventListener('resize', measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, [open, rootRef, anchorRef]);
-  return offset;
 }
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
@@ -375,7 +459,6 @@ export function AddMenu({
   ssh,
   skills,
   files,
-  anchorRef,
 }: {
   readonly view: AddMenuView;
   readonly onViewChange: (view: AddMenuView) => void;
@@ -398,8 +481,6 @@ export function AddMenu({
   readonly skills?: AddMenuSkills;
   /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
   readonly files?: AddMenuFiles;
-  /** The composer card: the panel floats above it instead of over its chips. */
-  readonly anchorRef?: RefObject<HTMLElement | null>;
 }) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -425,7 +506,7 @@ export function AddMenu({
     onViewChange('root');
   };
   const popoverKeyDown = usePopover(open, close, rootRef, 'composer-add');
-  const bottomOffset = useAboveAnchor(open, rootRef, anchorRef);
+  useComposerPanelAnchor(rootRef, open);
   useEffect(() => {
     if (!open) setQuery('');
   }, [open]);
@@ -758,8 +839,7 @@ export function AddMenu({
               : view === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
           }
-          style={bottomOffset === undefined ? undefined : { bottom: bottomOffset }}
-          className={`anim-enter absolute left-0 z-30 w-80 max-w-[calc(100vw-32px)] p-1 ${bottomOffset === undefined ? 'bottom-full mb-1.5' : ''} ${POPOVER_SURFACE_CLASS}`}
+          className={`anim-enter ${COMPOSER_PANEL_START} w-80 p-1 ${POPOVER_SURFACE_CLASS}`}
         >
           {view === 'root' ? (
             <>
@@ -868,6 +948,7 @@ export function PermissionSelect({
     if (refocus) triggerRef.current?.focus();
   };
   const onKeyDown = usePopover(open, close, rootRef, 'composer-mode');
+  useComposerPanelAnchor(rootRef, open);
 
   useEffect(() => {
     if (!open) return;
@@ -898,7 +979,7 @@ export function PermissionSelect({
         <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">{t(current.labelKey)}</span>
       </button>
       {open ? (
-        <div className={`anim-enter absolute right-0 bottom-full z-30 mb-1.5 w-72 max-w-[calc(100vw-48px)] p-1 ${POPOVER_SURFACE_CLASS}`}>
+        <div data-permission-panel className={`anim-enter ${COMPOSER_PANEL_END} w-72 p-1 ${POPOVER_SURFACE_CLASS}`}>
           <p className={POPOVER_LABEL_CLASS}>{t('composer.permAria')}</p>
           <div role="listbox" aria-label={t('composer.permAria')}>
             {PERMISSION_MODES.map((mode) => {
