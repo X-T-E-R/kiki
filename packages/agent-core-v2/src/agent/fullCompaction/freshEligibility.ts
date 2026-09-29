@@ -42,7 +42,7 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (input.instruction?.trim()) reasons.push('manual_instruction');
   const users = collectCompactableUserMessages(section);
   const selection = selectCompactionUserMessages(users, undefined, undefined, estimateMessage);
-  if (selection.elided && after.some((message) => users.includes(message))) reasons.push('user_input_elided');
+  if (after.some((message) => users.includes(message) && !selection.tail.includes(message))) reasons.push('user_input_elided');
   const newTokens = after.reduce((sum, message) => sum + estimateMessage(message), 0);
   if (newTokens > Math.max(16_000, input.threshold * 0.2)) reasons.push('new_content_large');
   if (after.some((message) => message.role === 'tool' && (message.isError || message.content.some((part) => part.type === 'text' && /(?:exit code|exit status|exit)[: ]+([1-9]\d*)\b/i.test(part.text))))) reasons.push('tool_error');
@@ -55,7 +55,8 @@ export function evaluateFreshEligibility(input: FreshEligibilityInput): { eligib
   if (section.filter((message) => message.role === 'tool' && message.isError).length >= 3 && hasChangingDebugNotes(section)) reasons.push('debug_chain');
   if (selection.elided && !input.notes?.goal) reasons.push('elided_goal_missing');
   if (nonReplayable.length >= 5 && new Set(nonReplayable.map((message) => toolNames.get(message.toolCallId ?? ''))).size >= 3) reasons.push('multiple_sources');
-  if (section.some((message) => message.content.some((part) => part.type !== 'text'))) reasons.push('non_text_result');
+  if (after.some((message) => message.role === 'tool' &&
+    message.content.some((part) => part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url'))) reasons.push('non_text_result');
   const safety = new Set<ReasonCode>(['history_unavailable', 'notes_missing', 'notes_previous_window', 'projected_too_large', 'manual_instruction', 'user_input_elided']);
   const safe = !reasons.some((reason) => safety.has(reason));
   return { safe, eligible: safe && (input.strategy === 'fresh' || reasons.length === 0), reasons };

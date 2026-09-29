@@ -22,6 +22,7 @@ describe('relay-v1 zero-model contract', () => {
       tokensBefore: 500, tokensAfter: live.tokensAfter, keptUserMessageCount: live.keptUserMessageCount,
       keptHeadUserMessageCount: live.keptHeadUserMessageCount, strategy: 'relay', shapeVersion: 1 });
     expect(replay).toEqual(live.messages);
+    expect(summary).toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
     expect(summary).toContain('agent_id:"child"');
     expect(summary).toContain('old window t0–t4');
     expect(summary).toContain('turn:4');
@@ -59,5 +60,38 @@ describe('relay-v1 zero-model contract', () => {
     const riskHistory = [...input.history.slice(0, 3), { role: 'tool', content: [{ type: 'text', text: 'failed' }], toolCalls: [], isError: true } as ContextMessage];
     expect(evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'fresh' }).eligible).toBe(true);
     expect(evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'auto' }).eligible).toBe(false);
+  });
+
+  it('keeps a short post-watermark user request when older user input is elided', () => {
+    const recent = user('short new request');
+    const history = [user('x'.repeat(120_000)), assistant, recent, user('latest request')];
+    const result = evaluateFreshEligibility({ history, compactCount: 3, notes: { goal: 'finish the request' }, meta,
+      windowEpoch: 0, strategy: 'fresh', threshold: 1_000_000, projectedTokens: 1,
+      historyAvailable: true, estimateMessage: (message) => Math.ceil(JSON.stringify(message.content).length / 4) });
+    expect(result.safe).toBe(true);
+    expect(result.reasons).not.toContain('user_input_elided');
+  });
+
+  it('vetoes omitted and partly retained post-watermark user input', () => {
+    const base = { notes: { goal: 'finish the request' }, meta, windowEpoch: 0, strategy: 'fresh' as const,
+      threshold: 1_000_000, projectedTokens: 1, historyAvailable: true,
+      estimateMessage: (message: ContextMessage) => Math.ceil(JSON.stringify(message.content).length / 4) };
+    const omitted = [assistant, user('short request'), user('x'.repeat(120_000))];
+    expect(evaluateFreshEligibility({ ...base, history: omitted, compactCount: omitted.length }).reasons).toContain('user_input_elided');
+    const partial = [assistant, user('x'.repeat(120_000))];
+    expect(evaluateFreshEligibility({ ...base, history: partial, compactCount: partial.length }).reasons).toContain('user_input_elided');
+  });
+
+  it('ignores assistant thinking and pre-watermark media, but flags recent media tool results in auto', () => {
+    const image: ContextMessage = { role: 'tool', content: [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AA==' } }], toolCalls: [] };
+    const thinking: ContextMessage = { role: 'assistant', content: [{ type: 'think', think: 'working' }], toolCalls: [] };
+    const base = { notes: { goal: 'finish the request' }, meta, windowEpoch: 0, strategy: 'auto' as const,
+      threshold: 1_000_000, projectedTokens: 1, historyAvailable: true, estimateMessage: (_message: ContextMessage) => 1 };
+    const safe = evaluateFreshEligibility({ ...base, history: [image, assistant, thinking], compactCount: 3 });
+    expect(safe.reasons).not.toContain('non_text_result');
+    expect(safe.eligible).toBe(true);
+    const risky = evaluateFreshEligibility({ ...base, history: [assistant, image], compactCount: 2 });
+    expect(risky.reasons).toContain('non_text_result');
+    expect(risky.eligible).toBe(false);
   });
 });

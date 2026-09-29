@@ -775,6 +775,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         summary: relaySummary, compactedCount: compactCount, tokensBefore,
         requestOverheadTokens: this.requestTokens([]),
       }).tokensAfter;
+      const visibleTools = this.toolSelect.shapeTools(this.toolRegistry.list());
+      const historyToolAvailable = (name: string) => this.toolPolicy.isToolActive(name, 'builtin') &&
+        (visibleTools.some((tool) => tool.name === name) || this.toolSelect.isLoadable(name));
       const eligibility = choice.strategy === 'summarize' && !choice.shadow
         ? { eligible: false, safe: false, reasons: [] as ReasonCode[] }
         : renderFailed ? { eligible: false, safe: false, reasons: ['relay_render_failed'] as ReasonCode[] }
@@ -782,10 +785,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             history: originalHistory, compactCount, notes: notes.notes, meta: notes.meta,
             windowEpoch: epoch, strategy: choice.strategy, threshold: this.getAutoCompact().tokens,
             projectedTokens: projected, instruction: customInstruction,
-            historyAvailable: this.toolPolicy.isToolActive('HistoryRead', 'builtin') &&
-              this.toolPolicy.isToolActive('HistorySearch', 'builtin') &&
-              this.toolSelect.shapeTools(this.toolRegistry.list()).some((tool) => tool.name === 'HistoryRead') &&
-              this.toolSelect.shapeTools(this.toolRegistry.list()).some((tool) => tool.name === 'HistorySearch'),
+            historyAvailable: historyToolAvailable('HistoryRead') && historyToolAvailable('HistorySearch'),
             estimateMessage: (message) => this.tokenCounting.estimateMessage(message),
           });
       const reasons: ReasonCode[] = [...eligibility.reasons];

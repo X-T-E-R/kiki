@@ -705,6 +705,19 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
+  it('reports an unloaded deferred tool as loadable only when SelectTools is exposed', () => {
+    const h = createHarness();
+    registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(USER_DEFERRED);
+    expect(h.sut.isLoadable(USER_DEFERRED)).toBe(true);
+    activeToolNames = new Set(['another-tool']);
+    expect(h.sut.isLoadable(USER_DEFERRED)).toBe(false);
+    activeToolNames = new Set([USER_DEFERRED]);
+    disclosureToolActive = false;
+    expect(h.sut.isLoadable(USER_DEFERRED)).toBe(false);
+  });
+
   it('hides SelectTools when an explicit policy disables disclosure', () => {
     const h = createHarness();
     registerMcp(h, new StubMcpTool(MCP_ALPHA));

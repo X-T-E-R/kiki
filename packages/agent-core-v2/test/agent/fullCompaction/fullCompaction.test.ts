@@ -2258,6 +2258,54 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('uses fresh relay with deferred history tools and a fully kept post-watermark user request', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'true');
+    const ctx = testAgent(sessionServices((reg) => {
+      reg.defineInstance(ISessionTodoService, {
+        _serviceBrand: undefined,
+        getTodos: () => [],
+        getNotes: () => ({ notes: { goal: 'finish request', next: 'continue' }, meta: {
+          rev: 1, hash: 'fixture', writtenTurn: 2, writtenStep: 't2.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0,
+        } }),
+        setNotes: () => {}, setTodos: () => {}, clear: () => {},
+        onDidChange: () => ({ dispose: () => {} }), onDidChangeAgent: () => ({ dispose: () => {} }),
+      });
+    }));
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: ['SelectTools', 'HistoryRead', 'HistorySearch', 'TodoList'],
+    });
+    const registry = ctx.get(IAgentToolRegistryService);
+    const read = registry.register(mcpTool('HistoryRead', {}), { source: 'builtin', disclosure: 'deferred' });
+    const search = registry.register(mcpTool('HistorySearch', {}), { source: 'builtin', disclosure: 'deferred' });
+    try {
+      const select = ctx.get(IAgentToolSelectService);
+      expect(select.enabled()).toBe(true);
+      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).not.toContain('HistoryRead');
+      expect(select.shapeTools(registry.list()).map((tool) => tool.name)).toContain('SelectTools');
+      ctx.appendExchange(1, 'x'.repeat(120_000), 'old answer', 35_000);
+      ctx.context.append({ role: 'assistant', content: [], toolCalls: [
+        { type: 'function', id: 'notes-call', name: 'TodoList', arguments: '{"notes":{"goal":"finish"}}' },
+      ] });
+      ctx.appendExchange(2, 'short new request', 'answer', 35_100);
+      ctx.appendExchange(3, 'recent user', 'recent answer', 35_200);
+      ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
+      const completed = ctx.once('compaction.completed');
+      expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+      await completed;
+      expect(ctx.llmCalls).toHaveLength(0);
+      const relay = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
+      expect(messageText(relay)).toContain('## Working notes');
+      expect(messageText(relay)).toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
+      expect(ctx.compactHistory().some((message) => message.text === 'short new request')).toBe(true);
+      await ctx.expectResumeMatches();
+    } finally {
+      read.dispose();
+      search.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('does not trigger auto compaction from a deferred loaded MCP schema', async () => {
     vi.stubEnv(MASTER_ENV, '1');
     vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'true');
