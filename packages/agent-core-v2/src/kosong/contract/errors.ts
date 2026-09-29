@@ -34,13 +34,65 @@ function codeForStatusError(statusCode: number): ProviderErrorCode {
   return PROVIDER_API_ERROR_CODE;
 }
 
+/**
+ * Stable classification of a provider failure that hosts can act on without
+ * parsing provider text. `provider.api_error` carries no class of its own, so
+ * its HTTP status decides between a server failure and a rejected request.
+ */
+export type ProviderErrorKind =
+  | 'auth'
+  | 'rate_limit'
+  | 'network'
+  | 'server'
+  | 'invalid_request'
+  | 'filtered'
+  | 'context_overflow'
+  | 'unknown';
+
+export function providerErrorKind(code: ProviderErrorCode, statusCode?: number): ProviderErrorKind {
+  switch (code) {
+    case PROVIDER_AUTH_ERROR_CODE:
+      return 'auth';
+    case PROVIDER_RATE_LIMIT_ERROR_CODE:
+      return 'rate_limit';
+    case PROVIDER_CONNECTION_ERROR_CODE:
+      return 'network';
+    case PROVIDER_OVERLOADED_ERROR_CODE:
+      return 'server';
+    case PROVIDER_FILTERED_ERROR_CODE:
+      return 'filtered';
+    case CONTEXT_OVERFLOW_ERROR_CODE:
+      return 'context_overflow';
+    case PROVIDER_API_ERROR_CODE:
+      break;
+  }
+  if (statusCode === undefined) return 'unknown';
+  if (statusCode === 429) return 'rate_limit';
+  if (statusCode === 401 || statusCode === 403) return 'auth';
+  if (statusCode >= 500) return 'server';
+  if (statusCode >= 400) return 'invalid_request';
+  return 'unknown';
+}
+
+function readStatusCode(details: Error2Options['details']): number | undefined {
+  const statusCode = details?.['statusCode'];
+  return typeof statusCode === 'number' ? statusCode : undefined;
+}
+
 export class ChatProviderError extends Error2 {
   constructor(
     message: string,
     code: ProviderErrorCode = PROVIDER_API_ERROR_CODE,
     options?: Error2Options,
   ) {
-    super(code, message, { ...options, name: 'ChatProviderError' });
+    super(code, message, {
+      ...options,
+      name: 'ChatProviderError',
+      details: {
+        ...options?.details,
+        error_kind: providerErrorKind(code, readStatusCode(options?.details)),
+      },
+    });
   }
 }
 

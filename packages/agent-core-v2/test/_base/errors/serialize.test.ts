@@ -4,6 +4,7 @@ import '#/errors';
 
 import { Error2 } from '#/_base/errors/errors';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
+import { APIProviderRateLimitError } from '#/kosong/contract/errors';
 
 describe('toErrorPayload', () => {
   it('passes a coded error through with registry retryability and details', () => {
@@ -59,6 +60,21 @@ describe('toErrorPayload', () => {
       current = current.cause;
     }
     expect(depth).toBeLessThanOrEqual(8);
+  });
+
+  it('carries the provider error kind into the payload a host reads', () => {
+    const payload = toErrorPayload(new APIProviderRateLimitError('Too many requests'));
+    expect(payload).toMatchObject({
+      code: 'provider.rate_limit',
+      retryable: true,
+      details: { error_kind: 'rate_limit' },
+    });
+  });
+
+  it('adds no error kind to a non-provider failure', () => {
+    expect(toErrorPayload(new Error('boom')).details).toBeUndefined();
+    expect(toErrorPayload(new Error2('internal', 'boom', { details: { op: 'read' } })).details)
+      .toEqual({ op: 'read' });
   });
 });
 

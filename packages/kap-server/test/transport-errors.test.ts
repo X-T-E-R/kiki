@@ -1,4 +1,4 @@
-import { Error2, ErrorCodes } from '@kiki/agent-core-v2';
+import { APIProviderRateLimitError, Error2, ErrorCodes } from '@kiki/agent-core-v2';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { describe, expect, it } from 'vitest';
 
@@ -43,7 +43,7 @@ describe('/api/debug transport mapError', () => {
 });
 
 describe('installErrorHandler (catch-all)', () => {
-  function run(err: unknown): { code: number; msg: string } {
+  function run(err: unknown): { code: number; msg: string; details?: unknown } {
     let installed: unknown;
     installErrorHandler({
       setErrorHandler: (h) => {
@@ -79,5 +79,18 @@ describe('installErrorHandler (catch-all)', () => {
 
   it('keeps unknown exceptions at INTERNAL_ERROR', () => {
     expect(run(new Error('boom')).code).toBe(ErrorCode.INTERNAL_ERROR);
+  });
+
+  it('forwards the stable provider error kind an escaped provider failure carries', () => {
+    const env = run(new APIProviderRateLimitError('Too many requests', 'req-upstream'));
+    expect(env.code).toBe(ErrorCode.INTERNAL_ERROR);
+    expect(env.msg).toContain('Too many requests');
+    expect(env.details).toEqual({ error_kind: 'rate_limit' });
+  });
+
+  it('forwards no details for a coded error without a provider kind', () => {
+    const env = run(new Error2(ErrorCodes.OS_FS_UNKNOWN, 'boom', { details: { path: '/tmp/x' } }));
+    expect(env.code).toBe(ErrorCode.INTERNAL_ERROR);
+    expect(env.details).toBeUndefined();
   });
 });

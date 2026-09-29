@@ -7,6 +7,7 @@ import {
   APIProviderOverloadedError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
+  APIRequestTooLargeError,
   APIStatusError,
   APITimeoutError,
   ChatProviderError,
@@ -15,6 +16,9 @@ import {
   isAbortError,
   isRetryableGenerateError,
   normalizeAPIStatusError,
+  PROVIDER_API_ERROR_CODE,
+  PROVIDER_FILTERED_ERROR_CODE,
+  providerErrorKind,
   throwIfAbortError,
 } from '#/kosong/contract/errors';
 
@@ -298,5 +302,46 @@ describe('classifyApiError', () => {
   it('falls back to other for unknown values', () => {
     expect(classifyApiError(new Error('boom')).kind).toBe('other');
     expect(classifyApiError('boom').kind).toBe('other');
+  });
+});
+
+describe('providerErrorKind', () => {
+  it('maps every provider error class to a stable kind in its details', () => {
+    const cases: [ChatProviderError, string][] = [
+      [new APIConnectionError('Connection error.'), 'network'],
+      [new APITimeoutError('Request timed out.'), 'network'],
+      [new APIProviderRateLimitError('Too many requests'), 'rate_limit'],
+      [new APIProviderQuotaExhaustedError('quota exhausted'), 'rate_limit'],
+      [new APIProviderOverloadedError(529, 'Overloaded'), 'server'],
+      [new APIContextOverflowError(400, 'context length exceeded'), 'context_overflow'],
+      [new APIStatusError(401, 'Unauthorized'), 'auth'],
+      [new APIStatusError(403, 'Forbidden'), 'auth'],
+      [new APIStatusError(400, 'Bad request'), 'invalid_request'],
+      [new APIStatusError(500, 'Internal'), 'server'],
+      [new APIRequestTooLargeError(413, 'Request exceeds the maximum size.'), 'invalid_request'],
+      [new APIEmptyResponseError('empty', { finishReason: 'filtered' }), 'filtered'],
+      [new APIEmptyResponseError('empty'), 'unknown'],
+      [new ChatProviderError('boom'), 'unknown'],
+      [normalizeAPIStatusError(429, 'Too many requests'), 'rate_limit'],
+      [normalizeAPIStatusError(400, 'Invalid request'), 'invalid_request'],
+      [normalizeAPIStatusError(529, 'Overloaded'), 'server'],
+    ];
+    expect(cases.map(([error]) => error.details?.['error_kind'])).toEqual(cases.map(([, kind]) => kind));
+  });
+
+  it('keeps the provider details that were already present', () => {
+    const error = new APIStatusError(429, 'Too many requests', 'req-1', 7_000, 'trace-1');
+    expect(error.details).toEqual({
+      statusCode: 429,
+      requestId: 'req-1',
+      traceId: 'trace-1',
+      error_kind: 'rate_limit',
+    });
+  });
+
+  it('reports unknown instead of guessing for an unclassified provider failure', () => {
+    expect(providerErrorKind(PROVIDER_API_ERROR_CODE)).toBe('unknown');
+    expect(providerErrorKind(PROVIDER_FILTERED_ERROR_CODE)).toBe('filtered');
+    expect(new ChatProviderError('boom').details).toEqual({ error_kind: 'unknown' });
   });
 });

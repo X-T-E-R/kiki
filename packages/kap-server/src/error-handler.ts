@@ -14,6 +14,9 @@ interface ErrorHandlerHost {
   ): unknown;
 }
 
+/** Installs the catch-all REST error handler. Provider failures keep their wire code but add the
+ *  engine's stable `error_kind` classification to `details`; their remaining details (upstream
+ *  text, request ids) stay server-side. */
 export function installErrorHandler(app: ErrorHandlerHost): void {
   app.setErrorHandler((err, req, reply) => {
     const requestId = req.id;
@@ -40,13 +43,20 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
       return;
     }
     req.log.error({ error_type: err.code ?? err.name, request_id: requestId }, 'unhandled error');
-    reply.status(200).send(
-      errEnvelope(
+    const errorKind = isError2(err) ? providerErrorKindOf(err.details) : undefined;
+    reply.status(200).send({
+      ...errEnvelope(
         ErrorCode.INTERNAL_ERROR,
         err.message !== undefined && err.message !== '' ? err.message : 'internal error',
         requestId,
         err.stack,
       ),
-    );
+      ...(errorKind === undefined ? {} : { details: { error_kind: errorKind } }),
+    });
   });
+}
+
+function providerErrorKindOf(details: Readonly<Record<string, unknown>> | undefined): string | undefined {
+  const kind = details?.['error_kind'];
+  return typeof kind === 'string' && kind.length > 0 ? kind : undefined;
 }
