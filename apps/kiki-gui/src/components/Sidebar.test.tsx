@@ -13,6 +13,7 @@ import {
   SESSION_PIN_META_KEY,
   type SessionGroup,
 } from '@kiki/session-core/sessions';
+import { subscribeComposerInserts } from '@kiki/session-core/composer';
 import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
@@ -34,11 +35,13 @@ const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 const setWorkspacePinned = vi.fn(async () => {});
 const listEphemeralSessions = vi.fn(async (): Promise<{ items: Session[] }> => ({ items: [] }));
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
+const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
+const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useConnection: () => ({
-    client: { searchMessages, retrySearchIndexer, setWorkspacePinned, listEphemeralSessions },
+    client: { searchMessages, retrySearchIndexer, setWorkspacePinned, listEphemeralSessions, listTasks, listPrompts },
     scopeId: connectionScope.id,
     meta: {
       server_version: '1.0.0',
@@ -537,6 +540,25 @@ describe('Sidebar session row states', () => {
   });
 });
 
+describe('Sidebar background tasks', () => {
+  it('marks running background tasks with a terminal glyph and a list, not a "+N" chip', async () => {
+    listTasks.mockResolvedValue({ items: [
+      { id: 't1', session_id: 's-run', kind: 'bash', description: 'live viewer', status: 'running', created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 't2', session_id: 's-run', kind: 'bash', description: 'rerun the suite', status: 'running', created_at: '2026-01-01T00:01:00.000Z' },
+    ] });
+    listPrompts.mockResolvedValue({ active: null, queued: [] });
+    const running = { ...session('s-run'), busy: true, main_turn_active: false };
+    const { container } = await mount({ sessions: [running], sessionGroups: [{ key: 'today', label: 'Today', items: [running] }] });
+    for (let index = 0; index < 4; index += 1) await settle();
+    const mark = container.querySelector<HTMLElement>('[data-session-row="s-run"] [data-session-background-tasks]');
+    expect(mark?.getAttribute('data-session-background-tasks')).toBe('2');
+    expect(mark?.querySelector('svg[data-icon="terminal"]')).not.toBeNull();
+    expect(mark?.title).toBe(['2 background tasks running', '· live viewer', '· rerun the suite'].join('\n'));
+    expect(mark?.textContent).toContain('2 background tasks running');
+    expect(container.querySelector('[data-session-row="s-run"]')?.textContent).not.toContain('+2');
+  });
+});
+
 describe('Sidebar temporary conversations', () => {
   it('lists them in their own block above the history, without row actions', async () => {
     const saved = session('s-saved');
@@ -971,6 +993,36 @@ describe('Sidebar session menu location & link group', () => {
     expect(writeText).toHaveBeenCalledWith('/home/dev/project');
     expect(revealPath).not.toHaveBeenCalled();
     expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it('adds the thread link to the open conversation, and disables itself with none open', async () => {
+    const other = session('session_other');
+    const current = session('session_current');
+    const items = [other, current];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }], activeSessionId: 'session_current' });
+    const inserted: string[] = [];
+    const unsubscribe = subscribeComposerInserts('session_current', (text) => { inserted.push(text); return true; });
+    try {
+      const row = container.querySelector('[data-session-row="session_other"] [data-session-title]')!;
+      await act(async () => { row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+      const entry = container.querySelector<HTMLButtonElement>('[data-session-menu] [data-menu-item="add-to-conversation"]')!;
+      expect(entry.textContent).toBe('Add to conversation');
+      expect(entry.disabled).toBe(false);
+      await act(async () => { entry.click(); });
+      expect(inserted).toEqual(['/s/session_other']);
+      expect(container.querySelector('[data-session-menu]')).toBeNull();
+      // The open conversation's own row has nothing to add to.
+      const self = container.querySelector('[data-session-row="session_current"] [data-session-title]')!;
+      await act(async () => { self.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+      expect(container.querySelector<HTMLButtonElement>('[data-menu-item="add-to-conversation"]')?.disabled).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+    const none = await mount(listed());
+    const menu = await openSessionMenu(none.container);
+    const disabled = menu.querySelector<HTMLButtonElement>('[data-menu-item="add-to-conversation"]')!;
+    expect(disabled.disabled).toBe(true);
+    expect(disabled.title).toBe('Open a conversation to add this thread to it');
   });
 
   it('keeps the link entries below the action group and above pin/rename', async () => {

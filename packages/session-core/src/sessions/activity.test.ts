@@ -120,6 +120,7 @@ describe('buildActivityModel', () => {
       queuedCount: 2,
       runningTaskCount: 1, // the subagent-kind task stays out, mirroring the rail
     });
+    expect(entry?.runningTasks.map((item) => item.id)).toEqual(['t1']);
     expect(model.queuedTotal).toBe(2);
     expect(model.runningTaskTotal).toBe(1);
   });
@@ -153,6 +154,7 @@ describe('buildActivityModel', () => {
       promptPreview: 'ship it',
       queuedCount: 0,
       runningTaskCount: 0,
+      runningTasks: [],
       turnStartedAt: undefined,
       mainTurnActive: false,
     });

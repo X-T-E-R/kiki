@@ -34,6 +34,7 @@
 import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 
 import type { DeferredAppendTiming } from '@kiki/protocol';
+import { stripThreadRefContext } from '@kiki/session-core/composer';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -327,10 +328,10 @@ export function QueueStrip({
           {index + 1}
         </span>
         <span
-          title={item.text === '' ? undefined : item.text}
+          title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
           className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
         >
-          {item.text === '' ? t('sv.queueNoText') : item.text}
+          {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
         </span>
         {item.media?.map((media, mediaIndex) => {
           const label = media.name ?? media.mime ?? t('media.attachment');

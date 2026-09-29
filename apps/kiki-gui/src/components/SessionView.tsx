@@ -49,6 +49,7 @@ import {
 import {
   addAnnotation,
   buildAnnotationsPrefix,
+  stripThreadRefContext,
   buildPromptContent,
   buildQuotePrefix,
   buildSkillActivation,
@@ -1817,7 +1818,7 @@ export function SessionView({
           })
           .catch((error: unknown) => {
             setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
-            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, text, composerAttachments);
+            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
             if (recovery !== undefined) {
               updateDraft(recovery.text);
               updateAttachments(recovery.attachments);
@@ -2446,7 +2447,8 @@ export function SessionView({
       const item = queuedItems.find((entry) => entry.promptId === promptId);
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
       setQueueEdit({ promptId, savedDraft: draftRef.current });
-      updateDraft(item.text);
+      // The composer re-attaches the thread context on confirm.
+      updateDraft(stripThreadRefContext(item.text));
     },
     [queueEdit, queuedItems, updateDraft],
   );
@@ -2575,7 +2577,7 @@ export function SessionView({
     }
     // Seed the session draft first: if this send fails, the text stays
     // recoverable in the composer (and in localStorage across reloads).
-    updateDraft(submission.text);
+    updateDraft(stripThreadRefContext(submission.text));
     updateAttachments(submission.attachments);
     void actions.send(
       submission.text,

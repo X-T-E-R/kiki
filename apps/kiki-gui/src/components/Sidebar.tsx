@@ -35,6 +35,7 @@ import {
   undoLastTurn,
   type SessionActionContext,
 } from '@kiki/session-core/commands';
+import { appendToDraft, requestComposerInsert, threadRefLink } from '@kiki/session-core/composer';
 import {
   formatElapsedClock,
   hasActiveSessionFilters,
@@ -51,6 +52,7 @@ import {
   splitByRanges,
   togglePinned,
   type ActivityEntry,
+  type ActivityTask,
   type MatchRange,
   type SessionGroup,
   type SessionSortOrder,
@@ -1170,6 +1172,7 @@ export function Sidebar({
         <SessionMenu
           session={menu.session}
           scopeId={scopeId}
+          activeSessionId={activeSessionId}
           x={menu.x}
           y={menu.y}
           onClose={() => { setMenu(null); }}
@@ -1313,8 +1316,10 @@ function SessionRow({
     : [
         elapsed === undefined ? undefined : formatElapsedClock(elapsed),
         activity.queuedCount > 0 ? tp('activity.queueChip', activity.queuedCount) : undefined,
-        activity.runningTaskCount > 0 ? tp('activity.taskChip', activity.runningTaskCount) : undefined,
       ].filter((entry): entry is string => entry !== undefined);
+  // Background tasks are not queued work: they ride their own terminal glyph
+  // and count after the fact, with the task list on hover.
+  const backgroundTasks = activity === undefined || status !== 'running' ? [] : activity.runningTasks;
   const relationNote = relation !== undefined && parentTitle !== undefined
     ? t(relation.kind === 'branch' ? 'sidebar.thread.branchedFrom' : 'sidebar.thread.from', { title: parentTitle })
     : undefined;
@@ -1404,7 +1409,7 @@ function SessionRow({
               <RelativeTime at={session.updated_at} />
             </span>
           </span>
-          {fact !== undefined || archived || session.worktree !== undefined ? (
+          {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 ? (
             <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
                 <span data-session-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
@@ -1424,6 +1429,7 @@ function SessionRow({
                 <span data-session-location className="min-w-0 truncate" title={locationPath}>{fact.text}</span>
               )}
               <WorktreeMark worktree={session.worktree} className={fact === undefined ? 'max-w-full' : 'max-w-[55%] shrink-0'} />
+              {backgroundTasks.length > 0 ? <BackgroundTasksMark tasks={backgroundTasks} /> : null}
               {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
             </span>
           ) : null}
@@ -1471,6 +1477,28 @@ function SessionRow({
       </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Running background tasks on a session row: a terminal glyph and the count,
+ * never a "+N" chip (that shape reads as queued or pending work). The hover
+ * title lists what is running; the accessible name says it in words.
+ */
+function BackgroundTasksMark({ tasks }: { tasks: readonly ActivityTask[] }) {
+  const { tp } = useI18n();
+  const summary = tp('sidebar.backgroundTasks', tasks.length);
+  const list = tasks.map((task) => `· ${task.description.trim() || task.command || task.id}`).join('\n');
+  return (
+    <span
+      data-session-background-tasks={tasks.length}
+      title={`${summary}\n${list}`}
+      className="flex shrink-0 items-center gap-0.5 text-ink-faint tabular-nums"
+    >
+      <Icon name="terminal" size={12} />
+      <span aria-hidden>{tasks.length}</span>
+      <span className="sr-only">{summary}</span>
+    </span>
   );
 }
 
@@ -1961,6 +1989,7 @@ function SidebarFilterMenu({
 function SessionMenu({
   session,
   scopeId,
+  activeSessionId,
   x,
   y,
   onClose,
@@ -1972,6 +2001,8 @@ function SessionMenu({
 }: {
   session: Session;
   scopeId: string;
+  /** The open conversation; the thread-reference entry needs one to insert into. */
+  activeSessionId: string | undefined;
   x: number;
   y: number;
   onClose: () => void;
@@ -2077,6 +2108,30 @@ function SessionMenu({
             }}
           >
             {t('menu.copyLink')}
+          </button>
+          {/* A thread reference into the open conversation's composer, at its
+              caret. Nothing open, or this row IS the open one: nothing to add to. */}
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="add-to-conversation"
+            disabled={activeSessionId === undefined || activeSessionId === session.id}
+            title={
+              activeSessionId === undefined
+                ? t('menu.addToConversationNone')
+                : activeSessionId === session.id
+                  ? t('menu.addToConversationSelf')
+                  : undefined
+            }
+            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+            onClick={() => {
+              if (activeSessionId === undefined) return;
+              onClose();
+              const link = threadRefLink(session.id);
+              if (!requestComposerInsert(activeSessionId, link)) appendToDraft(activeSessionId, link);
+            }}
+          >
+            {t('menu.addToConversation')}
           </button>
           {cwd !== '' ? (
             <button

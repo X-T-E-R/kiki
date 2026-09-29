@@ -688,11 +688,24 @@ describe('user message token projection', () => {
     expect(container.querySelector('[data-block-id="user-slash"]')?.textContent).toContain(
       '/lint please',
     );
-    expect(container.querySelector('[data-block-id="user-session-path"]')?.textContent).toContain(
-      '/s/session_example',
-    );
+    // A session route is a thread link: it renders as a thread chip, never a skill.
+    const threadChip = container.querySelector('[data-block-id="user-session-path"] [data-thread-ref-chip="session_example"]');
+    expect(threadChip?.getAttribute('href')).toBe('/s/session_example');
+    expect(threadChip?.textContent).toContain('Thread example');
     expect(container.querySelector('[data-ref-chip="skill"]')).toBeNull();
     expect(container.querySelector('[data-skill]')).toBeNull();
+  });
+
+  it('shows thread links as chips and keeps the model-only context block out of the bubble', async () => {
+    const id = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const sent = `compare with /s/${id} first\n\n<thread_refs>\n<thread_ref id="${id}" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>`;
+    const container = await renderTranscript([userBlock({ id: 'user-thread-ref', text: sent })]);
+    const bubble = container.querySelector('[data-block-id="user-thread-ref"]')!;
+    expect(bubble.querySelector(`[data-thread-ref-chip="${id}"]`)).not.toBeNull();
+    expect(bubble.textContent).toContain('compare with');
+    expect(bubble.textContent).toContain('first');
+    expect(bubble.textContent).not.toContain('thread_ref');
+    expect(bubble.textContent).not.toContain('ThreadRead');
   });
 
   it('still decorates subagent references without promoting slash prose to a skill', async () => {

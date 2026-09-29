@@ -623,6 +623,9 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'link.open': '打开链接',
   'link.copyLink': '复制链接',
   'file.menuAria': '文件操作',
+  'menu.addToConversation': '添加到当前对话',
+  'menu.addToConversationNone': '先打开一个对话，才能把这个线程加进去',
+  'menu.addToConversationSelf': '这就是当前打开的对话',
   'file.openPreview': '打开预览',
   'file.copyPath': '复制路径',
   'file.copyRelativePath': '复制相对路径',
@@ -1779,8 +1782,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'activity.turnTitle': '本轮已运行 {elapsed}',
   'activity.queueChip.one': '+{count} 排队',
   'activity.queueChip.other': '+{count} 排队',
-  'activity.taskChip.one': '+{count} 任务',
-  'activity.taskChip.other': '+{count} 任务',
+  'sidebar.backgroundTasks.one': '{count} 个后台任务运行中',
+  'sidebar.backgroundTasks.other': '{count} 个后台任务运行中',
 
   // ---- usage dashboard (/usage) ----
   'usage.title': '用量',
@@ -3951,6 +3954,17 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'sidebar.ws.open': '已连接',
   'new.cwdAria': '工作目录（绝对路径）',
   'new.cwdPlaceholder': '项目文件夹的绝对路径',
+  'threadRef.aria': '线程：{title}',
+  'threadRef.open': '打开 {title}',
+  'threadRef.remove': '移除指向 {title} 的链接',
+  'threadRef.unknown': '线程 {id}',
+  'threadRef.notLoaded': '不在已加载的线程列表中',
+  'threadRef.status.running': '运行中',
+  'threadRef.status.awaiting_approval': '待批准',
+  'threadRef.status.awaiting_answer': '待回答',
+  'threadRef.status.idle': '空闲',
+  'threadRef.status.archived': '已归档',
+  'threadRef.status.unknown': '状态未知',
   'new.cwdInvalid': '请输入工作目录的绝对路径（例如 C:/work/project 或 /home/you/project）。',
 
   // ---- 技能目录与 MCP 状态（设置 技能/MCP 页）----

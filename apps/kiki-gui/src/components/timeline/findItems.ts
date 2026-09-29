@@ -7,7 +7,7 @@
  * rendered text of the leaf it lands on.
  */
 
-import { parseSelectionCarryovers } from '@kiki/session-core/composer';
+import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
 import type { Block, DisplayNode, ToolBlock } from '@kiki/session-core/session';
 
@@ -68,8 +68,9 @@ function turnOf(block: Block): string | undefined {
 export function blockFindText(block: Block): string {
   switch (block.kind) {
     case 'user': {
-      const carry = parseSelectionCarryovers(block.text);
-      return carry.annotations.length > 0 || carry.quote !== null ? carry.body : block.text;
+      const typed = stripThreadRefContext(block.text);
+      const carry = parseSelectionCarryovers(typed);
+      return carry.annotations.length > 0 || carry.quote !== null ? carry.body : typed;
     }
     case 'assistant':
       return markdownVisibleText(block.text);

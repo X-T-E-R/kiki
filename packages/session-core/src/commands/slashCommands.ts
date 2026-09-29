@@ -15,6 +15,8 @@
 
 import type { SkillDescriptor } from '@kiki/protocol';
 
+import { isAppRouteLink } from '../composer/threadRefs';
+
 export type SlashActionId = 'plan' | 'goal' | 'new' | 'fork' | 'undo' | 'compact';
 
 export interface SlashItem {
@@ -185,6 +187,9 @@ export function classifySlashSubmission(
 ): SlashSubmission | null {
   const parsed = parseSlashDraft(text);
   if (parsed === null || parsed.query === '') return null;
+  // A pasted GUI route (`/s/<session>`, `/settings/…`) is a link, not a
+  // command name: it goes out as prompt text without the typo guard.
+  if (isAppRouteLink(`/${parsed.query}`)) return null;
   const name = parsed.query.toLowerCase();
   const item = items.find((candidate) => candidate.name.toLowerCase() === name);
   if (item === undefined) return { kind: 'unknown', name: parsed.query, args: parsed.args };

@@ -194,6 +194,14 @@ describe('classifySlashSubmission', () => {
     if (classified?.kind === 'resolved') expect(classified.item.action).toBe('plan');
   });
 
+  it('treats GUI route links as plain text, not an unknown command', () => {
+    expect(classifySlashSubmission(items, '/s/session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b 看一下这个线程')).toBeNull();
+    expect(classifySlashSubmission(items, '/settings/models')).toBeNull();
+    // A real typo still asks.
+    expect(classifySlashSubmission(items, '/sessions')).toMatchObject({ kind: 'unknown', name: 'sessions' });
+    expect(classifySlashSubmission(items, '/s')).toMatchObject({ kind: 'unknown', name: 's' });
+  });
+
   it('tells an unknown command name apart from a disabled entry', () => {
     const unknown = classifySlashSubmission(items, '/revie stuff');
     expect(unknown).toMatchObject({ kind: 'unknown', name: 'revie', args: 'stuff' });

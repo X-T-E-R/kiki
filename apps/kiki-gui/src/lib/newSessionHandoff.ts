@@ -17,6 +17,8 @@
  * Durations and curves live in styles/new-session.css on the motion tokens.
  */
 
+import { stripThreadRefContext } from '@kiki/session-core/composer';
+
 import { prefersReducedMotion } from './motion';
 
 /** Attribute on <html> while a hand-off runs: `morph` (View Transition) or `fade`. */
@@ -138,7 +140,7 @@ export function runNewSessionHandoff({ text, navigate }: {
     return;
   }
 
-  const message = text?.trim() ?? '';
+  const message = stripThreadRefContext(text ?? '').trim();
   const source = message === '' ? null : document.querySelector<HTMLElement>('textarea[data-composer]');
   source?.setAttribute(SOURCE_ATTR, '');
   root.setAttribute(HANDOFF_ATTR, 'morph');

@@ -43,6 +43,9 @@ import {
   type AnnotationOverride,
   type TimelineAnnotation,
   appendToDraft,
+  appendThreadRefContext,
+  findThreadRefs,
+  stripThreadRefContext,
 } from '@kiki/session-core/composer';
 import {
   subscribeSettings,
@@ -149,6 +152,8 @@ import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
 import { MessageRowActions, UserMessageEditor } from './RowActions';
+import { ThreadRefText } from './ThreadRefChip';
+import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
@@ -312,11 +317,21 @@ const UserMessage = memo(function UserMessage({
       ? undefined
       : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
   const senderLabel = agentMessageLabel ?? peerThreadLabel;
+  // Linked threads ride the prompt as a trailing <thread_refs> block for the
+  // model; the bubble (and copy / edit / retry) works on the text as typed.
+  const typedText = useMemo(() => stripThreadRefContext(block.text), [block.text]);
+  const threadRefDirectory = useThreadRefDirectory(
+    useMemo(() => findThreadRefs(typedText).map((ref) => ref.sessionId), [typedText]),
+  );
   // Selection carry-overs (quote / annotations) sent as a text prefix render
   // as the composer tray's chips above the bubble; the bubble keeps the body.
-  const carry = useMemo(() => parseSelectionCarryovers(block.text), [block.text]);
+  const carry = useMemo(() => parseSelectionCarryovers(typedText), [typedText]);
   const carried = carry.annotations.length > 0 || carry.quote !== null;
-  const bodyText = carried ? carry.body : block.text;
+  const bodyText = carried ? carry.body : typedText;
+  const projectBody = useCallback(
+    (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
+    [],
+  );
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       {/* Meta line: the sender shows only when it is not the user (agent or
@@ -325,7 +340,7 @@ const UserMessage = memo(function UserMessage({
       <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
         {rowActions !== undefined && !editing ? (
           <MessageRowActions
-            copyText={block.text}
+            copyText={typedText}
             canEdit={canMutate}
             canFork={canMutate}
             disabled={rowActions.disabled}
@@ -364,10 +379,10 @@ const UserMessage = memo(function UserMessage({
       {block.media !== undefined ? <div data-user-media className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
-          initialText={block.text}
+          initialText={typedText}
           onSubmit={(text) => {
             setEditing(false);
-            rowActions.onEditMessage(block, text);
+            rowActions.onEditMessage(block, appendThreadRefContext(text, threadRefDirectory.info));
           }}
           onCancel={() => { setEditing(false); }}
         />
@@ -384,8 +399,8 @@ const UserMessage = memo(function UserMessage({
             }
           >
             {annotations === undefined || annotations.length === 0
-              ? projectUserText(bodyText)
-              : projectTextWithAnnotationMarks(bodyText, annotations, projectUserText)}
+              ? projectBody(bodyText)
+              : projectTextWithAnnotationMarks(bodyText, annotations, projectBody)}
           </div>
         </div>
       )}
@@ -415,9 +430,9 @@ const UserMessage = memo(function UserMessage({
       {block.promptOutcome !== undefined && !editing ? (
         <PromptOutcomeLine
           outcome={block.promptOutcome}
-          onRetry={outcomeActions.onRetry === undefined || block.text.trim() === ''
+          onRetry={outcomeActions.onRetry === undefined || typedText.trim() === ''
             ? undefined
-            : () => { outcomeActions.onRetry?.(block.text); }}
+            : () => { outcomeActions.onRetry?.(typedText); }}
           retryDisabled={outcomeActions.disabled === true}
         />
       ) : null}

@@ -25,7 +25,7 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -43,10 +43,16 @@ import {
 } from '@kiki/session-core/commands';
 import {
   ACCEPTED_IMAGE_MIMES,
+  appendThreadRefContext,
   fileToImageAttachment,
+  findThreadRefs,
   formatBytes,
   hasMention,
   insertDroppedPaths,
+  insertThreadRef,
+  removeThreadRef,
+  subscribeComposerInserts,
+  threadRefDeletionRange,
   parseMentionTrigger,
   pushInputHistory,
   readInputHistory,
@@ -86,6 +92,8 @@ import { useComposerContextMenu } from './ComposerContextMenu';
 import { Icon } from './icons';
 import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
+import { ThreadRefChip } from './ThreadRefChip';
+import { useThreadRefDirectory } from '../lib/threadRefs';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import {
@@ -841,7 +849,23 @@ export function Composer({
     onChange(text.replace(/^\/\S*\s*/, ''));
     textareaRef.current?.focus();
   };
+  // Thread links in the draft: one tray chip each (title, workspace, status),
+  // a tinted token in the text, and whole-link deletion.
+  const threadRefs = useMemo(() => findThreadRefs(text), [text]);
+  const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.sessionId), [threadRefs]);
+  const fetchThreadSession = useCallback((id: string) => client.getSession(id), [client]);
+  const threadRefDirectory = useThreadRefDirectory(threadRefIds, fetchThreadSession);
+  const threadRefBackdropRef = useRef<HTMLDivElement>(null);
+  const removeThreadRefAt = (index: number) => {
+    const ref = threadRefs[index];
+    if (ref === undefined) return;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    const next = removeThreadRef(text, ref);
+    applyTextChange(next.text, next.cursor);
+  };
   const hasTray =
+    threadRefs.length > 0 ||
     draftSkill !== undefined ||
     (quote !== undefined && quote !== null) ||
     (annotations !== undefined && annotations.length > 0) ||
@@ -928,6 +952,27 @@ export function Composer({
       }
     });
   };
+
+  // Outside inserts (the sidebar's "Add to conversation"): the snippet lands
+  // at the last caret of this session's main composer, as one undo step.
+  const insertAtCaretRef = useRef<(snippet: string) => boolean>(() => false);
+  insertAtCaretRef.current = (snippet: string) => {
+    if (disabled || queueEditing) return false;
+    const node = textareaRef.current;
+    const focused = node !== null && document.activeElement === node;
+    const selection = focused
+      ? { start: node.selectionStart, end: node.selectionEnd }
+      : { start: lastCursorRef.current, end: lastCursorRef.current };
+    const next = insertThreadRef(text, selection, snippet);
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    applyTextChange(next.text, next.cursor);
+    return true;
+  };
+  useEffect(() => {
+    if (sessionId === undefined || variant === 'subagent') return;
+    return subscribeComposerInserts(sessionId, (snippet) => insertAtCaretRef.current(snippet));
+  }, [sessionId, variant]);
 
   const undoEdit = () => {
     const entry = undoStackRef.current.pop();
@@ -1363,7 +1408,7 @@ export function Composer({
     // never to command classification, skill activation, or a fresh send.
     if (queueEditing) {
       setMenu(null);
-      const edited = text.trim();
+      const edited = appendThreadRefContext(text.trim(), threadRefDirectory.info);
       runAgentTurn(async () => {
         await onQueueEditConfirm?.(edited);
       });
@@ -1431,10 +1476,15 @@ export function Composer({
     // The caret the send leaves behind is not the user's choice to keep
     // typing: a decision arriving after this send may take the card over.
     setInputFocused(false);
-    const deliver = (prepared: string) =>
-      now && options === undefined && onSendNow !== undefined
+    // Linked threads ride along as a trailing <thread_refs> context block the
+    // model reads; the transcript strips it back off and shows chips.
+    const withContext = (prepared: string) => appendThreadRefContext(prepared, threadRefDirectory.info);
+    const deliver = (raw: string) => {
+      const prepared = withContext(raw);
+      return now && options === undefined && onSendNow !== undefined
         ? onSendNow(prepared, attachments)
         : options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
+    };
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
         recordSubmission();
@@ -1496,6 +1546,21 @@ export function Composer({
     // half-committed text stranded. keyCode 229 covers engines that skip the
     // isComposing flag on keydown.
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    // A thread link deletes as one token: Backspace/Delete touching it (or a
+    // selection overlapping it) takes the whole link.
+    if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
+      const node = event.currentTarget;
+      const range = threadRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
+      if (range !== null) {
+        event.preventDefault();
+        pushUndoSnapshot({ text, cursor: node.selectionStart });
+        historyIndexRef.current = null;
+        const next = removeThreadRef(text, range);
+        applyTextChange(next.text, next.cursor);
+        refreshMenu(next.text, next.cursor);
+        return;
+      }
+    }
     if (menu !== null && menuRowCount > 0) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -1920,6 +1985,14 @@ export function Composer({
               right above the input — state (goal/queue) stays in the header. */}
           {hasTray ? (
             <div data-context-tray role="group" aria-label={t('composer.contextTrayAria')} className="flex flex-wrap items-center gap-1.5 px-3 pt-2 pb-0.5">
+              {threadRefs.map((ref, index) => (
+                <ThreadRefChip
+                  key={`thread-${ref.start}`}
+                  sessionId={ref.sessionId}
+                  entry={threadRefDirectory.lookup(ref.sessionId)}
+                  onRemove={() => { removeThreadRefAt(index); }}
+                />
+              ))}
               {draftSkill !== undefined ? (
                 <SkillChip name={draftSkill.name} description={draftSkill.description} onRemove={removeDraftSkill} />
               ) : null}
@@ -2086,11 +2159,35 @@ export function Composer({
             {slashPreviewItem !== null ? (
               <SkillPreviewCard item={slashPreviewItem} />
             ) : null}
+            {/* Thread links read as tokens: a tinted backdrop mirrors the draft
+                behind the (transparent) textarea and tints each link's range.
+                Only mounted while the draft carries a link. */}
+            {threadRefs.length > 0 ? (
+              <div
+                ref={threadRefBackdropRef}
+                aria-hidden
+                data-thread-ref-backdrop
+                className="pointer-events-none absolute top-3 right-3.5 left-3.5 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
+              >
+                {threadRefs.map((ref, index) => (
+                  <span key={ref.start}>
+                    {text.slice(index === 0 ? 0 : threadRefs[index - 1]!.end, ref.start)}
+                    <mark data-thread-ref-token className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
+                  </span>
+                ))}
+                {text.slice(threadRefs.at(-1)!.end)}
+                {'​'}
+              </div>
+            ) : null}
             <textarea
               ref={textareaRef}
               rows={1}
               value={text}
               data-composer
+              onScroll={(event) => {
+                const backdrop = threadRefBackdropRef.current;
+                if (backdrop !== null) backdrop.scrollTop = event.currentTarget.scrollTop;
+              }}
               data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
               onChange={(event) => {
@@ -2140,7 +2237,7 @@ export function Composer({
               }
               // The card's focus-within border is the focus indicator; the
               // global :focus-visible ring would draw a box inside the card.
-              className="max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+              className="relative max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 

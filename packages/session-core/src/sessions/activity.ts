@@ -30,7 +30,18 @@ export interface ActivityEntry {
   readonly promptPreview: string | undefined;
   readonly queuedCount: number;
   readonly runningTaskCount: number;
+  /** The running background tasks behind `runningTaskCount`, oldest first. */
+  readonly runningTasks: readonly ActivityTask[];
   readonly updatedAt: string;
+}
+
+/** One running background task as the sidebar row's hover list shows it. */
+export interface ActivityTask {
+  readonly id: string;
+  readonly kind: Task['kind'];
+  readonly description: string;
+  readonly command?: string;
+  readonly startedAt?: string;
 }
 
 export interface ActivityModel {
@@ -68,6 +79,16 @@ function toEntry(
       ? promptPreviewText(prompts.active.content)
       : undefined;
   const fallback = session.last_prompt?.trim();
+  const runningTasks = (tasks ?? [])
+    .filter((task) => task.status === 'running' && task.kind !== 'subagent')
+    .map((task): ActivityTask => ({
+      id: task.id,
+      kind: task.kind,
+      description: task.description,
+      command: task.command,
+      startedAt: task.started_at ?? task.created_at,
+    }))
+    .toSorted((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
   return {
     sessionId: session.id,
     title: switcherSessionLabel(session, untitled),
@@ -76,8 +97,8 @@ function toEntry(
     turnStartedAt: prompts?.active?.created_at,
     promptPreview: activeText ?? (fallback !== undefined && fallback !== '' ? fallback : undefined),
     queuedCount: liveQueuedCount !== undefined ? liveQueuedCount : (prompts?.queued.length ?? 0),
-    runningTaskCount:
-      tasks?.filter((task) => task.status === 'running' && task.kind !== 'subagent').length ?? 0,
+    runningTaskCount: runningTasks.length,
+    runningTasks,
     updatedAt: session.updated_at,
   };
 }
