@@ -10,7 +10,7 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
-import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   ToolAccesses,
   type ExecutableToolContext,
@@ -54,7 +54,7 @@ export class FetchURLTool implements IFetchURLTool {
         description: `Fetch: ${subject.slice(0, 100)}`,
         display: path === undefined ? { kind: 'url_fetch', url: subject } : { kind: 'file_io', operation: 'read', path },
         approvalRule: literalRulePattern(this.name, subject),
-        matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, subject),
+        matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, subject),
         execute: async (ctx) => {
           if (path !== undefined && input.action === 'run') {
             const lease = this.runtime.acquire(['fs']);

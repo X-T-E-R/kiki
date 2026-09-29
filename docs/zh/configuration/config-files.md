@@ -648,7 +648,11 @@ balance_ttl_ms = 600000
 
 ## `permission`
 
-`permission` 设置会话启动时自动加载的权限规则，控制 Agent 调用工具时是否需要用户确认。规则用 `[[permission.rules]]` 数组表写出。不论在文件中的顺序，先检查拒绝规则，再检查询问，最后检查允许；同一种决定内，第一条命中的规则生效。因此命中的 `deny` 总是优先于写在它前面的 `allow`。
+`permission` 设置会话启动时自动加载的权限规则，控制 Agent 调用工具时是否需要用户确认。规则用 `[[permission.rules]]` 数组表写出。求值顺序固定为 `deny`、`ask`、`allow`，与文件中的顺序无关。命中的 `deny` 总是优先于命中的 `ask` 或 `allow`；规则顺序不会改变这个优先级。
+
+`Bash` 参数模式使用命令匹配，不使用文件路径 glob。模式会锚定到整条命令：只有 `*`（匹配任意长度的字符，包括 `/`、点文件名、空格和换行）和 `?`（匹配一个字符）是通配符，其他字符全部按字面匹配。使用 `\\` 转义 `*`、`?` 或 `\\`；例如 `Bash(arena \\*)` 匹配字面量参数 `*`。`[]`、`{}`、`()`、`!`、`|` 等 Shell glob 语法在 Bash 模式中没有特殊含义。
+
+Kiki 会把复合 Bash 命令按 `;`、`&&`、`||`、`|` 和换行拆成多个段。命令替换（`$(...)` 和反引号）及子 Shell 也会作为独立段检查。任意段命中 `deny` 都会拒绝调用。在 `auto` 和 `yolo` 之外，所有段都必须命中 `allow`，否则结果为 `ask`。解析不可靠时，任何 `allow` 都不能批准调用，但 `deny` 仍会按原始命令判断。在 `kiki -p` 等非交互运行中，`ask` 会转换为拒绝，不会等待审批界面。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -676,6 +680,31 @@ pattern = "Bash(rm -rf*)"
 decision = "ask"
 pattern = "Bash"
 ```
+
+如果要让非交互 Agent 只能运行 `arena` 命令，请使用受限权限模式并配置一条 allow 规则。在该模式下，只有每个解析后的命令段都命中时才会批准；未命中的调用会变成 `ask`，而 `-p` 会把它转换为拒绝。不要在这条 allow 规则旁再加宽泛的 `deny Bash(*)`：`deny` 优先级更高，会连允许的命令一起拒绝。
+
+```sh
+kiki -p '运行状态检查' --agent arena --permission-mode default
+```
+
+```toml
+[[permission.rules]]
+decision = "allow"
+pattern = "Bash(arena *)"
+```
+
+`kiki permission test 'Bash(arena status; ls)'` 可以在不执行命令的情况下进行同样的 dry-run。它会输出生效的权限模式、解析出的每个命令段、命中的规则、scope 和来源文件。
+
+`deny` 应用于具体的危险模式；即使在 `auto` 和 `yolo` 中，命中的拒绝也不会被绕过：
+
+```toml
+[[permission.rules]]
+decision = "deny"
+pattern = "Bash(* ../state/*)"
+reason = "禁止读取 state 目录"
+```
+
+反例：在 `allow Bash(arena *)` 旁再加 `deny Bash(*)` 并不能提供兜底。由于 `deny` 先求值，它会拒绝所有 Bash 调用，包括本来允许的 `arena` 命令。
 
 ### 危险 Bash 命令
 

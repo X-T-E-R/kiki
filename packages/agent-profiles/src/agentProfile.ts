@@ -24,6 +24,7 @@ export type SubagentDeclaration =
 
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 export type ContextStrategy = 'summarize' | 'auto' | 'fresh';
+export type AgentPermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 export interface AgentModelParameters {
   readonly autoCompact?: number;
@@ -99,6 +100,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly override?: boolean;
   readonly private?: boolean;
   readonly allowParentNotify?: boolean;
+  readonly permissionMode?: AgentPermissionMode;
   readonly main?: boolean;
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];

@@ -80,7 +80,7 @@ export {
   resolveGlobalLogPath,
 } from '#/logging';
 export type { LogContext, LogLevel, LogPayload, Logger } from '#/logging';
-export { resolveKikiHome } from '@kiki/agent-core-v2';
+export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleSubject, parsePattern } from '@kiki/agent-core-v2';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect

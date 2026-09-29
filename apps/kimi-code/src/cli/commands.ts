@@ -46,6 +46,10 @@ export function createProgram(
     .option('-y, --yolo', 'Auto-approve regular tool calls; the agent may still ask questions.', false)
     .option('--auto', 'Approve routine actions automatically; ask for protected access or user input.', false)
     .addOption(
+      new Option('--permission-mode <mode>', 'Permission mode for prompt runs; default means restricted/manual.')
+        .choices(['default', 'manual', 'auto', 'review', 'yolo']),
+    )
+    .addOption(
       new Option(
         '-m, --model <model>',
         'LLM model alias to use for this invocation. Defaults to default_model in config.toml.',
@@ -161,6 +165,7 @@ export function createProgram(
       ephemeral: raw['ephemeral'] === true,
       yolo: yoloValue,
       auto: autoValue,
+      permissionMode: raw['permissionMode'] as CLIOptions['permissionMode'],
       plan: raw['plan'] as boolean,
       model: raw['model'] as string | undefined,
       thinking: raw['thinking'] as string | undefined,

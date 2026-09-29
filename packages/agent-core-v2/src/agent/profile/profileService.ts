@@ -1527,6 +1527,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : this.profileState.thinkingEffortAdjusted ? 'adjusted' : undefined,
       routeDetached,
       profileSource: this.profileState.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
+      permissionMode: (this.profileState.boundProfile ?? this.activeProfile)?.permissionMode,
       bindingAdvisories: this.profileState.bindingAdvisories,
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,

@@ -470,8 +470,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const hasRestoredPermissionMode = handle.accessor
       .get(IAgentStateService)
       .get(permissionModeConfiguredKey);
+    const permissionModeService = handle.accessor.get(IAgentPermissionModeService);
     if (permissionMode !== undefined && !hasRestoredPermissionMode) {
-      handle.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
+      permissionModeService.setMode(permissionMode);
+    }
+    const profilePermissionMode = profile.data().permissionMode;
+    if (profilePermissionMode !== undefined && !hasRestoredPermissionMode) {
+      permissionModeService.setMode(profilePermissionMode);
     }
     return restoreFellBack;
   }

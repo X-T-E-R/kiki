@@ -61,7 +61,9 @@ export async function flushPrintWires(app: Scope): Promise<void> {
   await Promise.allSettled(flushes);
 }
 
-export async function createPrintClient(input: BootstrapInput & { homeDir: string }): Promise<PrintClientHost> {
+export async function createPrintClient(
+  input: BootstrapInput & { homeDir: string; interactive?: boolean },
+): Promise<PrintClientHost> {
   let app: Scope | undefined;
   const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),

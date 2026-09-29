@@ -72,6 +72,7 @@ export interface IBootstrapOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
+  readonly interactive?: boolean;
 }
 
 export const IBootstrapOptions: ServiceIdentifier<IBootstrapOptions> =
@@ -108,6 +109,7 @@ export interface IBootstrapService {
   readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
+  readonly interactive?: boolean;
   readonly sessionsDir: string;
   readonly blobsDir: string;
   readonly storeDir: string;
@@ -134,6 +136,7 @@ export interface BootstrapInput {
   readonly cwd?: string;
   readonly clientIdentity: KimiHostIdentity;
   readonly args?: HostArgsInput;
+  readonly interactive?: boolean;
 }
 
 export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOptions {
@@ -162,6 +165,7 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
     env,
     clientIdentity: input.clientIdentity,
     args: resolveHostArgs(input.args),
+    interactive: input.interactive ?? true,
   };
 }
 

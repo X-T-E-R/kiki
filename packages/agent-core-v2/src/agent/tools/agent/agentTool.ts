@@ -10,7 +10,7 @@ import {
 } from '#/_base/utils/abort';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   IAgentTaskService,
   type RegisterAgentTaskOptions,
@@ -274,7 +274,7 @@ export class SubagentTool implements ISubagentTool {
         background: args.background,
       },
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, profileNameForDisplay),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
       execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy),
     };
   }

@@ -137,6 +137,37 @@ export function matchesGlobRuleSubject(ruleArgs: string, subject: string): boole
   return matchRuleSubjects(ruleArgs, [subject], (pattern, value) => globMatch(value, pattern));
 }
 
+export function matchesStringRuleSubject(ruleArgs: string, subject: string): boolean {
+  return matchRuleSubjects(ruleArgs, [subject], (pattern, value) => stringWildcardMatch(pattern, value));
+}
+
+function stringWildcardMatch(pattern: string, value: string): boolean {
+  const patternChars = Array.from(pattern);
+  const valueChars = Array.from(value);
+  let previous = Array.from({ length: valueChars.length + 1 }, () => false);
+  previous[0] = true;
+  for (let index = 0; index < patternChars.length; index += 1) {
+    const token = patternChars[index]!;
+    const current = Array.from({ length: valueChars.length + 1 }, () => false);
+    if (token === '*') {
+      current[0] = previous[0] === true;
+      for (let valueIndex = 1; valueIndex <= valueChars.length; valueIndex += 1) {
+        current[valueIndex] = current[valueIndex - 1] === true || previous[valueIndex] === true;
+      }
+    } else {
+      const literal = token === '\\' && (patternChars[index + 1] === '*' || patternChars[index + 1] === '?' || patternChars[index + 1] === '\\')
+        ? patternChars[++index]!
+        : token;
+      for (let valueIndex = 1; valueIndex <= valueChars.length; valueIndex += 1) {
+        current[valueIndex] = previous[valueIndex - 1] === true &&
+          (token === '?' || literal === valueChars[valueIndex - 1]);
+      }
+    }
+    previous = current;
+  }
+  return previous[valueChars.length] === true;
+}
+
 export function matchesPathRuleSubject(
   ruleArgs: string,
   subject: string,

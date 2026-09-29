@@ -83,6 +83,7 @@ export async function runV2Print(
   const identity = createKimiCodeHostIdentity(version, { homeDir });
   const host = await createPrintClient({
     homeDir,
+    interactive: false,
     clientIdentity: identity,
     args: {
       requestHeaders: createKimiDefaultHeaders({ homeDir, ...identity }),
@@ -193,7 +194,9 @@ async function resolvePrintSession(
     if (opts.thinking !== undefined) await agent.setThinking(opts.thinking);
     const currentModel = await agent.getModel();
     const previousPermission = await agent.getPermission();
-    await agent.setPermission('auto', { broadcast: false });
+    if (opts.permissionMode !== undefined) {
+      await agent.setPermission(resolvePrintPermissionMode(opts.permissionMode), { broadcast: false });
+    }
     return {
       sessionId, session, agent,
       restorePermission: () => agent.setPermission(previousPermission, { broadcast: false }),
@@ -230,8 +233,14 @@ async function resolvePrintSession(
   });
   const session = klient.session(created.id);
   const agent = session.agent('main');
-  await agent.setPermission('auto', { broadcast: false });
+  if (opts.permissionMode !== undefined) {
+    await agent.setPermission(resolvePrintPermissionMode(opts.permissionMode), { broadcast: false });
+  }
   return { sessionId: created.id, session, agent, restorePermission: async () => {}, goalModel: await agent.getModel() };
+}
+
+function resolvePrintPermissionMode(mode: NonNullable<CLIOptions['permissionMode']>): Exclude<NonNullable<CLIOptions['permissionMode']>, 'default'> {
+  return mode === 'default' ? 'manual' : mode;
 }
 
 async function runPrintTurn(

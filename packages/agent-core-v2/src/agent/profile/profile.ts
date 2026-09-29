@@ -67,6 +67,7 @@ export interface ProfileData extends AgentConfigData {
   readonly thinkingEffortSource?: ThinkingEffortSource;
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileBindingSource;
+  readonly permissionMode?: import('@kiki/agent-profiles/agentProfile').AgentPermissionMode;
   readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;

@@ -1,5 +1,5 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesStringRuleSubject } from '#/tool/rule-match';
 import { type ExecutableToolResult, type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
@@ -43,7 +43,7 @@ export class TaskOutputTool implements ITaskOutputTool {
     return {
       description: `Reading output of task ${args.task_id}`,
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.task_id),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.task_id),
       execute: () => this.execute(args),
     };
   }

@@ -105,6 +105,13 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
           ),
         };
       case 'ask':
+        if (this.modeService.interactive === false) {
+          return this.resolvePermissionResolution(
+            this.nonInteractiveDenial(context, result),
+            context,
+            origin,
+          );
+        }
         return this.requestToolApproval(context, result, origin);
       case 'result':
         return { veto: result.result };
@@ -117,6 +124,9 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     origin: string,
     approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined> {
+    if (this.modeService.interactive === false) {
+      return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
+    }
     const name = context.toolCall.name;
     const action = context.execution.description ?? `Approve ${name}`;
     const display =
@@ -296,6 +306,17 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       return `${message} Try a different approach — don't retry the same call, don't attempt to bypass the restriction.`;
     }
     return message;
+  }
+
+  private nonInteractiveDenial(
+    context: ResolvedToolExecutionHookContext,
+    result: Extract<PermissionPolicyResult, { kind: 'ask' }>,
+  ): Extract<PermissionPolicyResult, { kind: 'deny' }> {
+    return {
+      kind: 'deny',
+      reason: result.reason,
+      message: `Tool "${context.toolCall.name}" requires approval; non-interactive run denied (use an allow rule or --permission-mode auto).`,
+    };
   }
 
   private async review(

@@ -45,6 +45,7 @@ describe('CLI options parsing', () => {
     it('returns defaults when no arguments are given', () => {
       const opts = parse([]);
       expect(opts.yolo).toBe(false);
+      expect(opts.permissionMode).toBeUndefined();
       expect(opts.plan).toBe(false);
       expect(opts.continue).toBe(false);
       expect(opts.session).toBeUndefined();
@@ -193,6 +194,25 @@ describe('CLI options parsing', () => {
       for (const argv of [['--ephemeral', '--session', 'id'], ['--ephemeral', '--continue']]) {
         expect(() => validateOptions(parse(argv))).toThrow('Cannot combine --ephemeral with --session/--continue.');
       }
+    });
+  });
+
+  describe('--permission-mode', () => {
+    it('accepts restricted default and explicit modes', () => {
+      expect(parse(['--permission-mode', 'default']).permissionMode).toBe('default');
+      expect(parse(['--permission-mode', 'manual']).permissionMode).toBe('manual');
+      expect(parse(['--permission-mode', 'review']).permissionMode).toBe('review');
+    });
+
+    it('normalizes default to manual during validation', () => {
+      const opts = parse(['--prompt', 'hello', '--permission-mode', 'default']);
+      expect(validateOptions(opts).options.permissionMode).toBe('manual');
+    });
+
+    it('rejects permission mode outside prompt mode', () => {
+      expect(() => validateOptions(parse(['--permission-mode', 'manual']))).toThrow(
+        '--permission-mode is only supported in prompt mode.',
+      );
     });
   });
 
@@ -620,6 +640,7 @@ describe('CLI options parsing', () => {
         'seat',
         'mcp',
         'prompt-fields',
+        'permission',
         'agents',
         'list',
         'dispatch',

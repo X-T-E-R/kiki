@@ -92,6 +92,7 @@ describe('AgentToolApprovalService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let mode: PermissionMode;
+  let interactive: boolean;
   let records: TelemetryRecord[];
   let recorded: PermissionApprovalResultRecord[];
   let eventBus: IEventBus;
@@ -100,6 +101,7 @@ describe('AgentToolApprovalService', () => {
     disposables = new DisposableStore();
     eventBus = disposables.add(new EventBusService());
     mode = 'manual';
+    interactive = true;
     records = [];
     recorded = [];
     ix = createServices(disposables, {
@@ -108,7 +110,11 @@ describe('AgentToolApprovalService', () => {
           IAgentScopeContext,
           makeAgentScopeContext({ agentId: 'main', agentScope: 'main' }),
         );
-        reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
+        reg.defineInstance(IAgentPermissionModeService, {
+          ...stubPermissionModeService(() => mode),
+          get mode() { return mode; },
+          get interactive() { return interactive; },
+        });
         reg.defineInstance(IAgentPermissionRulesService, {
           _serviceBrand: undefined,
           rules: [],
@@ -277,6 +283,19 @@ describe('AgentToolApprovalService', () => {
       await expect(
         svc.resolvePermissionResolution(ask(), makeContext('Bash'), 'p'),
       ).resolves.toBeUndefined();
+    });
+
+    it('denies ask resolutions in a non-interactive run with recovery guidance', async () => {
+      interactive = false;
+      const svc = make();
+      await expect(
+        svc.resolvePermissionResolution(ask(), makeContext('Bash'), 'fallback-ask'),
+      ).resolves.toMatchObject({
+        veto: {
+          isError: true,
+          output: 'Tool "Bash" requires approval; non-interactive run denied (use an allow rule or --permission-mode auto).',
+        },
+      });
     });
   });
 

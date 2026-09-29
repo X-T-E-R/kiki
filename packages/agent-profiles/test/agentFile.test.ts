@@ -171,6 +171,11 @@ body
     ).toThrow(/"delegation_notice"/);
   });
 
+  it('parses permission_mode and rejects unsupported values', () => {
+    expect(parse('---\nname: solo\ndescription: d\npermission_mode: manual\n---\n\nbody\n').permissionMode).toBe('manual');
+    expect(() => parse('---\nname: solo\ndescription: d\npermission_mode: unsafe\n---\n\nbody\n')).toThrow(/"permission_mode"/);
+  });
+
   it('parses exact model, effort, and service tier fields', () => {
     const def = parse(
       '---\nname: solo\ndescription: d\nmodel_alias: fast-model\nthinking_effort: low\nservice_tier: priority\n---\n\nbody\n',

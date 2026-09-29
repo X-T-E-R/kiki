@@ -84,7 +84,11 @@ export function matchPermissionRule({
     return { rule, strategy: 'tool_name_only', hasRuleArgs: false };
   }
 
-  return execution.matchesRule?.(parsed.argPattern) === true || execution.approvalRule === rule.pattern
+  const mode = rule.decision === 'allow' ? 'all' : 'any';
+  const exactApprovalRule = parsed.toolName.toLowerCase() === 'bash'
+    ? false
+    : execution.approvalRule === rule.pattern;
+  return execution.matchesRule?.(parsed.argPattern, mode) === true || exactApprovalRule
     ? { rule, strategy: 'matches_rule', hasRuleArgs: true }
     : undefined;
 }

@@ -35,6 +35,7 @@ export interface AgentFileDefinition {
   readonly contributionRoot: string;
   readonly private: boolean;
   readonly allowParentNotify?: boolean;
+  readonly permissionMode?: import('./agentProfile').AgentPermissionMode;
   readonly description: string;
   readonly whenToUse?: string;
   readonly override: boolean;

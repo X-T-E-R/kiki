@@ -37,7 +37,7 @@
 | --- | --- | --- |
 | `Bash` | 需审批 | 执行 Shell 命令 |
 
-**`Bash`** 是权限要求最严格的工具，也是功能最通用的工具。参数：
+**`Bash`** 是权限要求最严格的工具，也是功能最通用的工具。参数模式和复合命令的检查方式见[权限规则](../configuration/config-files.md#permission)；可以使用 `kiki permission test 'Bash(...)'` 检查规则而不执行命令。参数：
 
 - `command`（必填）：要执行的 Shell 命令
 - `cwd`：工作目录。本地运行时中，Agent 当前有效权限模式为 YOLO 时，可显式指定工作区外的绝对路径；放行不会越过 Agent 权限上限或真实远程/容器隔离。manual/auto 模式及相对路径越界仍受原有工作区边界约束。
@@ -61,6 +61,8 @@ MCP、插件和延迟提供的内置工具先公告名称。需要调用时，�
 `HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中延迟提供的内置工具。收到公告后，用 `SelectTools` 只加载当前需要的工具。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。
 
 **从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent；此前默认在整个工作区进行词元 AND 检索。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
+
+省略新版的 scope 和 mode 参数时，会按当前 session 和 `auto` 模式处理。不要假定旧版默认值，请读取响应中的 `scope_used` 和 `mode_used`；如果结果范围太窄，按 `expand_hint.next_call` 的建议改用 `scope: "workspace"` 重试。
 
 不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
 

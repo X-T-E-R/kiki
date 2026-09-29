@@ -6,7 +6,7 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
-import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   ToolAccesses,
   type ExecutableToolContext,
@@ -36,7 +36,7 @@ export class WebSearchTool implements IWebSearchTool {
         description: `Search: ${subject.slice(0, 80)}`,
         display: { kind: 'search', query: subject },
         approvalRule: literalRulePattern(this.name, subject),
-        matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, subject),
+        matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, subject),
         execute: (ctx) => this.execution(input, ctx),
       };
     } catch (error) {

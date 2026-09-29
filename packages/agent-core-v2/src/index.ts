@@ -792,6 +792,7 @@ export * from '#/session/todo/sessionTodoService';
 export * from '#/agent/tools/todo-list/todo-list';
 import '#/agent/tools/todo-list/todoListTool';
 export * from '#/tool/toolContract';
+export * from '#/tool/bash-rule-match';
 export * from '#/agent/toolExecutor/toolHooks';
 export * from '#/agent/toolExecutor/toolExecutor';
 export * from '#/agent/toolExecutor/toolExecutorService';

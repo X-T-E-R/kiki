@@ -9,7 +9,9 @@ import type { PermissionRuleMatchExecution } from '#/agent/permissionRules/match
 import {
   matchesGlobRuleSubject,
   matchesPathRuleSubject,
+  matchesStringRuleSubject,
 } from '#/tool/rule-match';
+import { matchBashPattern, matchesBashRuleSubject } from '#/tool/bash-rule-match';
 
 function rule(pattern: string): PermissionRule {
   return { decision: 'allow', scope: 'user', pattern };
@@ -160,6 +162,10 @@ describe('permissionRules/matchPermissionRule', () => {
     expect(matches(rule('Custom("query":"a.b")'), 'Custom', noArgs)).toBe(false);
     expect(matches(rule('Bash("command":"git status")'), 'Bash', noArgs)).toBe(false);
     expect(matches(rule('Bash(^git status$)'), 'Bash', noArgs)).toBe(false);
+    expect(matches(rule('Bash(arena $(cat k)'), 'Bash', {
+      approvalRule: 'Bash(arena $(cat k)',
+      matchesRule: () => false,
+    })).toBe(false);
     expect(matches(rule('Read([invalid'), 'Read', noArgs)).toBe(false);
     expect(matches(rule('AgentSwarm(swarm)'), 'AgentSwarm', noArgs)).toBe(false);
   });
@@ -179,6 +185,67 @@ describe('permissionRules/matchPermissionRule', () => {
           pathClass: 'posix',
         }),
     })).toBe(true);
+  });
+});
+
+describe('tool/rule-match string subjects', () => {
+  it('matches non-path subjects without path or extglob semantics', () => {
+    expect(matchesStringRuleSubject('https://example.com/*', 'https://example.com/a/b')).toBe(true);
+    expect(matchesStringRuleSubject('task-*', 'task-.hidden')).toBe(true);
+    expect(matchesStringRuleSubject('name[ab]', 'name[ab]')).toBe(true);
+    expect(matchesStringRuleSubject('name[ab]', 'namea')).toBe(false);
+    expect(matchesStringRuleSubject('name\\*', 'name*')).toBe(true);
+  });
+});
+
+describe('tool/bash-rule-match', () => {
+  it('uses only anchored star and question wildcards', () => {
+    expect(matchBashPattern('arena*', 'arena status')).toBe(true);
+    expect(matchBashPattern('arena*', 'arena/status')).toBe(true);
+    expect(matchBashPattern('arena*', 'xarena status')).toBe(false);
+    expect(matchBashPattern('arena ?', 'arena x')).toBe(true);
+    expect(matchBashPattern('arena ?', 'arena xx')).toBe(false);
+    expect(matchBashPattern('arena[?]', 'arena[?]')).toBe(true);
+    expect(matchBashPattern('arena[?]', 'arena?')).toBe(false);
+  });
+
+  it('supports escapes for wildcard characters and backslashes', () => {
+    const slash = '\\';
+    expect(matchBashPattern(`arena ${slash}*`, 'arena *')).toBe(true);
+    expect(matchBashPattern(`arena ${slash}?`, 'arena ?')).toBe(true);
+    expect(matchBashPattern(`arena ${slash}${slash}`, `arena ${slash}`)).toBe(true);
+    expect(matchBashPattern(`arena ${slash}*`, 'arena status')).toBe(false);
+  });
+
+  it.each([
+    ['arena status;ls', 'semicolon'],
+    ['arena status && cat x', 'and list'],
+    ['arena status || cat x', 'or list'],
+    ['arena status | tee', 'pipeline'],
+    ['arena status\nls', 'newline'],
+    ['arena $(cat k)', 'dollar substitution'],
+    ['arena `cat k`', 'backtick substitution'],
+  ])('requires every command segment to match an allow pattern: $1 ($2)', (command) => {
+    expect(matchesBashRuleSubject('arena*', command, 'all')).toBe(false);
+  });
+
+  it('matches ordinary command arguments including slash and dot-file text', () => {
+    expect(matchesBashRuleSubject('arena *', 'arena ../state/.engine_key', 'all')).toBe(true);
+    expect(matchesBashRuleSubject('arena*', 'arena ../state/.engine_key', 'all')).toBe(true);
+  });
+
+  it('lets deny and ask patterns match the raw composite command or one segment', () => {
+    expect(matchesBashRuleSubject('*;*', 'arena status; ls ../state', 'any')).toBe(true);
+    expect(matchesBashRuleSubject('*&&*', 'arena status && cat x', 'any')).toBe(true);
+    expect(matchesBashRuleSubject('*|*', 'arena status | tee', 'any')).toBe(true);
+    expect(matchesBashRuleSubject('*$(*)', 'arena $(cat k)', 'any')).toBe(true);
+    expect(matchesBashRuleSubject('*`*`', 'arena `cat k`', 'any')).toBe(true);
+    expect(matchesBashRuleSubject('cat *', 'arena $(cat k)', 'any')).toBe(true);
+  });
+
+  it('does not allow a parser failure to satisfy an allow pattern', () => {
+    expect(matchesBashRuleSubject('arena*', 'arena $(cat k', 'all')).toBe(false);
+    expect(matchesBashRuleSubject('*$(*)', 'arena $(cat k', 'any')).toBe(false);
   });
 });
 

@@ -33,6 +33,7 @@ export class BootstrapService implements IBootstrapService {
   readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
+  readonly interactive: boolean;
   readonly sessionsDir: string;
   readonly blobsDir: string;
   readonly storeDir: string;
@@ -62,6 +63,7 @@ export class BootstrapService implements IBootstrapService {
     this.baseConfigDocumentStore = options.baseHomeDir === undefined ? undefined : createBaseConfigDocumentStore(options.baseHomeDir);
     this.clientIdentity = options.clientIdentity;
     this.args = options.args;
+    this.interactive = options.interactive ?? true;
     this.sessionsDir = join(options.homeDir, 'sessions');
     this.blobsDir = join(options.homeDir, 'blobs');
     this.storeDir = join(options.homeDir, 'store');

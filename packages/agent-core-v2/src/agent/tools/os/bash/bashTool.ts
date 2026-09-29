@@ -23,7 +23,7 @@ import {
 } from '#/tool/output-accumulator';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import { userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
@@ -138,7 +138,7 @@ export class BashTool implements IBashTool {
         language: 'bash',
       },
       approvalRule: toolApprovalRule(this.name, args.command, inspectAgentRuntime(this.runtime), target.host),
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.command),
+      matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
       execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
         const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints !== false;

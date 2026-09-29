@@ -1,5 +1,5 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   type ExecutableToolContext,
   type ExecutableToolResult,
@@ -115,7 +115,7 @@ export class TaskWaitTool implements ITaskWaitTool {
           ? `Waiting up to ${String(args.timeout)}s for any background task`
           : `Waiting up to ${String(args.timeout)}s for task ${args.task_id}`,
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.task_id ?? 'any'),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.task_id ?? 'any'),
       execute: (ctx) => this.execute(args, ctx),
     };
   }

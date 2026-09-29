@@ -1,5 +1,5 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesStringRuleSubject } from '#/tool/rule-match';
 import { type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
@@ -34,7 +34,7 @@ export class TaskListTool implements ITaskListTool {
     return {
       description: 'Listing background tasks',
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, listScope),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, listScope),
       execute: async () => {
         const activeOnly = args.active_only ?? true;
         const limit = args.limit ?? 20;

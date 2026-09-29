@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
+import type { PermissionMode } from '@kiki/node-sdk';
 
 export type UIMode = 'shell' | 'print';
 export type PromptOutputFormat = 'text' | 'stream-json';
@@ -44,6 +45,7 @@ export interface CLIOptions {
   ephemeral?: boolean;
   yolo: boolean;
   auto: boolean;
+  permissionMode?: PermissionMode | 'default';
   plan: boolean;
   model: string | undefined;
   thinking?: string;
@@ -121,6 +123,12 @@ export function validateOptions(
   }
   if (opts.thinking !== undefined && opts.thinking.trim().length === 0) {
     throw new OptionConflictError('Thinking effort cannot be empty.');
+  }
+  if (opts.permissionMode === 'default') {
+    opts = { ...opts, permissionMode: 'manual' };
+  }
+  if (!promptMode && opts.permissionMode !== undefined) {
+    throw new OptionConflictError('--permission-mode is only supported in prompt mode.');
   }
   if (!promptMode && opts.outputFormat !== undefined) {
     throw new OptionConflictError('Output format is only supported in prompt mode.');

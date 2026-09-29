@@ -156,6 +156,7 @@ disallowedTools:
 | `override` | 否 | 遗留覆盖元数据，默认 `false`。胜出者由文件优先级决定；同名用户文件替换已安装的内置副本无需设置此字段 |
 | `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选：它不出现在 `AgentRun` 的角色列表、推荐排序和默认选择中。这不是授权门——显式传入 `profile` 名，或用 frontmatter 声明 `main: true` 的 `profile_file`，仍会把它当作 subagent 派遣，其模型、工具与权限按普通 subagent 解析（它不会成为会话的 main agent）；回执会附带一次 `main_profile_notice`，提示长期协作或用户可见会话更适合用 `ThreadCreate`。`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
+| `permission_mode` | 否 | 该 profile 的权限模式：`manual`、`auto`、`review` 或 `yolo`。profile 启动新 Agent 时会覆盖 `default_permission_mode`；显式 CLI 参数 `--permission-mode` 优先级更高。 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或显式写 `inherit`，让 subagent 绑定调用方当前模型。未固定模型的 profile 需要派发时显式提供 `model_alias`；省略不会继承。main agent 没有调用方，不可使用 `inherit` |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |

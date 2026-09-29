@@ -41,6 +41,7 @@ const AGENT_FILE_KEYS = new Set([
   'main',
   'private',
   'allow_parent_notify',
+  'permission_mode',
   'delegation_notice',
   'tools',
   'disallowedTools',
@@ -157,6 +158,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     frontmatter['delegation_notice'],
     options.path,
   );
+  const permissionMode = parsePermissionMode(frontmatter['permission_mode'], options.path);
   const rawTools = parseStringList(frontmatter['tools'], 'tools', options.path);
   const tools = rawTools?.length === 1 && rawTools[0] === '*' ? undefined : rawTools;
   const disallowedTools = parseStringList(
@@ -290,6 +292,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     contributionRoot: options.contributionRoot ?? dirname(options.path),
     private: privateProfile,
     allowParentNotify,
+    permissionMode,
     description,
     whenToUse: nonEmptyString(frontmatter['whenToUse']),
     override,
@@ -623,6 +626,17 @@ function parseContextStrategy(
   if (value === 'summarize' || value === 'auto' || value === 'fresh') return value;
   throw new AgentFileParseError(
     `Frontmatter field "${field}" in ${filePath} must be "summarize", "auto", or "fresh"`,
+  );
+}
+
+function parsePermissionMode(
+  value: unknown,
+  filePath: string,
+): import('./agentProfile').AgentPermissionMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo') return value;
+  throw new AgentFileParseError(
+    `Frontmatter field "permission_mode" in ${filePath} must be "manual", "auto", "review", or "yolo"`,
   );
 }
 

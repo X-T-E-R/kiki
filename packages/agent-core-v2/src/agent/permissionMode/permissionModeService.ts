@@ -34,6 +34,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
   private readonly _onDidChangeMode = this._register(new Emitter<PermissionModeChangedContext>());
   readonly onDidChangeMode: Event<PermissionModeChangedContext> = this._onDidChangeMode.event;
   private ceiling: PermissionMode | undefined;
+  readonly interactive: boolean;
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -45,6 +46,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     @IBootstrapService bootstrap: IBootstrapService,
   ) {
     super();
+    this.interactive = bootstrap.interactive ?? true;
     this.agentState.contributeState(permissionModeKey);
     this.agentState.contributeState(permissionModeConfiguredKey);
     if (parseBooleanEnv(bootstrap.getEnv(PERMISSION_MODE_REMINDER_ENV)) !== false) {

@@ -13,6 +13,7 @@ import {
   matchesGlobRuleSubject,
   matchesPathRuleSubject,
 } from '#/tool/rule-match';
+import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { IHostEnvironment, type IHostEnvironment as HostEnvironmentService } from '#/os/interface/hostEnvironment';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -218,6 +219,65 @@ describe('AgentPermissionPolicyService chain', () => {
     await expect(evaluate({
       toolName: 'Bash', args: { command: 'git -C /source commit -m bad', timeout: 60 },
     })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
+  });
+
+  it('gives a Bash deny rule priority over a matching allow rule', async () => {
+    rules.push(
+      { decision: 'allow', scope: 'user', pattern: 'Bash(arena *)' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash' },
+    );
+
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena clue 语脉', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny' },
+    });
+  });
+
+  it('requires every Bash segment to satisfy an allow rule outside auto mode', async () => {
+    rules.push({ decision: 'allow', scope: 'user', pattern: 'Bash(arena *)' });
+
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena status', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'user-configured-allow', result: { kind: 'approve' },
+    });
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena status; ls ../state', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'fallback-ask', result: { kind: 'ask' },
+    });
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'cat ../state/.engine_key', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'fallback-ask', result: { kind: 'ask' },
+    });
+  });
+
+  it('applies composite deny patterns in auto mode before automatic approval', async () => {
+    mode = 'auto';
+    rules.push(
+      { decision: 'allow', scope: 'user', pattern: 'Bash(arena*)' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash(*;*)', reason: '禁止分号' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash(*&*)', reason: '禁止后台' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash(*|*)', reason: '禁止管道' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash(*$(*)', reason: '禁止命令替换' },
+      { decision: 'deny', scope: 'user', pattern: 'Bash(*`*)', reason: '禁止反引号' },
+    );
+
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena status', timeout: 60 },
+    })).resolves.toMatchObject({ policyName: 'auto-mode-approve', result: { kind: 'approve' } });
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena status; ls ../state', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny', message: expect.stringContaining('禁止分号') },
+    });
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'arena $(cat k)', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny', message: expect.stringContaining('禁止命令替换') },
+    });
   });
 
   it('keeps ask rules higher priority than matching allow rules', async () => {
@@ -777,7 +837,7 @@ function policyContext(input: PolicyContextInput): ResolvedToolExecutionHookCont
       matchesRule:
         subject === undefined
           ? undefined
-          : (ruleArgs) => matchesRuleSubject(input.toolName, ruleArgs, subject),
+          : (ruleArgs, matchMode) => matchesRuleSubject(input.toolName, ruleArgs, subject, matchMode),
       execute: async () => ({ output: '' }),
     },
   };
@@ -809,8 +869,15 @@ function ruleSubject(toolName: string, args: Record<string, unknown>): string | 
   }
 }
 
-function matchesRuleSubject(toolName: string, ruleArgs: string, subject: string): boolean {
+function matchesRuleSubject(
+  toolName: string,
+  ruleArgs: string,
+  subject: string,
+  mode: 'all' | 'any' = 'all',
+): boolean {
   switch (toolName) {
+    case 'Bash':
+      return matchesBashRuleSubject(ruleArgs, subject, mode);
     case 'Read':
     case 'ReadMediaFile':
     case 'Write':

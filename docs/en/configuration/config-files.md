@@ -659,7 +659,11 @@ balance_ttl_ms = 600000
 
 ## `permission`
 
-`permission` sets permission rules that are automatically loaded when a session starts, controlling whether the Agent needs user confirmation before calling a tool. Rules are written as a `[[permission.rules]]` array of tables. Deny rules are checked first, then ask, then allow, regardless of their order in the file; within one decision the first matching rule wins. A matching `deny` therefore always beats an `allow` listed above it.
+`permission` sets permission rules that are automatically loaded when a session starts, controlling whether the Agent needs user confirmation before calling a tool. Rules are written as a `[[permission.rules]]` array of tables. Decisions are evaluated in fixed priority order: `deny`, then `ask`, then `allow`, regardless of file order. A matching `deny` therefore always beats a matching `ask` or `allow`; rule order never changes that priority.
+
+`Bash` argument patterns use command matching, not filesystem globs. The pattern is anchored to the complete command: only `*` (any sequence of characters, including `/`, dot-file names, spaces, and newlines) and `?` (one character) are wildcards. Every other character is literal. Escape `*`, `?`, or `\\` with `\\`; for example, `Bash(arena \\*)` matches the literal argument `*`. Shell glob syntax such as `[]`, `{}`, `()`, `!`, and `|` has no special meaning in a Bash pattern.
+
+Kiki parses compound Bash commands into segments at `;`, `&&`, `||`, `|`, and newlines. Command substitutions (`$(...)` and backticks) and subshells are inspected as separate segments too. A matching `deny` on any segment rejects the call. Outside `auto` and `yolo`, every segment must match an `allow` rule; otherwise the result is `ask`. If parsing is unreliable, no `allow` rule can approve the call, while `deny` rules still use the raw command. In non-interactive runs such as `kiki -p`, `ask` is converted to a denial instead of waiting for an approval UI.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -687,6 +691,31 @@ pattern = "Bash(rm -rf*)"
 decision = "ask"
 pattern = "Bash"
 ```
+
+For a restricted non-interactive agent that may run only `arena` commands, use a restricted permission mode and an allow rule. In this mode, a command is approved only when every parsed segment matches; an unmatched command becomes `ask`, and `-p` converts that ask to a denial. Do not add a broad `deny Bash(*)` alongside the allow rule: `deny` has higher priority by design and would deny the allowed command too.
+
+```sh
+kiki -p 'run the status check' --agent arena --permission-mode default
+```
+
+```toml
+[[permission.rules]]
+decision = "allow"
+pattern = "Bash(arena *)"
+```
+
+The `kiki permission test 'Bash(arena status; ls)'` command performs the same dry run without executing the command. It reports the effective mode, each parsed segment, matching rules, scope, and source file.
+
+Use `deny` for a specific dangerous pattern, including in `auto` and `yolo`; those modes do not bypass a matching denial:
+
+```toml
+[[permission.rules]]
+decision = "deny"
+pattern = "Bash(* ../state/*)"
+reason = "Do not read the state directory"
+```
+
+As a counterexample, adding `deny Bash(*)` next to `allow Bash(arena *)` does not provide a fallback: `deny` is evaluated first, so it rejects every Bash command, including the allowed `arena` commands.
 
 ### Dangerous Bash commands
 

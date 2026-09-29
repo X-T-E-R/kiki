@@ -1,5 +1,5 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesStringRuleSubject } from '#/tool/rule-match';
 import { type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
@@ -25,7 +25,7 @@ export class TaskStopTool implements ITaskStopTool {
     return {
       description: `Stopping task ${args.task_id}`,
       approvalRule: this.name,
-      matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.task_id),
+      matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.task_id),
       execute: async () => {
         const info = this.tasks.getTask(args.task_id);
         if (!info) {
