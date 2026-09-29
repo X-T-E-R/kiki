@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
@@ -57,6 +57,9 @@ type BenchResult = {
   outputChars?: number;
   segments?: number;
   retainedBodyChars?: number;
+  tailRecordsRead?: number;
+  tailBytesRead?: number;
+  manifestBytes?: number;
   error?: string;
 };
 
@@ -408,6 +411,72 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
   } finally { clearInterval(sampler); await sqlite?.close(); }
 }
 
+async function runNavigationResumeWorker(wirePath: string, deepTurn: number): Promise<BenchResult> {
+  const beforeImportRssBytes = sampleRss();
+  const { HistoryLocatorStore } = await import('../../src/services/history/historyLocatorStore');
+  const { HistoryNavigationDb } = await import('../../src/services/history/historyNavigationDb');
+  const afterImportRssBytes = sampleRss();
+  const dbPath = join(dirname(wirePath), 'history-navigation-resume.sqlite');
+  let db = HistoryNavigationDb.lazy(dbPath);
+  const transcript = { historyWireLocation: async () => ({ wirePath, workspaceId: WORKSPACE_ID }) };
+  let nav = new HistoryLocatorStore(db, transcript as never);
+  const startRssBytes = sampleRss();
+  let peakRssBytes = startRssBytes;
+  let records = 0;
+  let segments = 0;
+  const started = performance.now();
+  const sampler = setInterval(() => { peakRssBytes = Math.max(peakRssBytes, sampleRss()); }, 10);
+  try {
+    for (;;) {
+      const scan = await nav.scan(SESSION_ID, AGENT_ID);
+      if (scan === undefined) throw new Error('navigation source missing');
+      records += scan.recordsRead;
+      segments += 1;
+      if (scan.complete) break;
+      if (scan.recordsRead === 0) throw new Error('navigation made no progress');
+    }
+    const deepFrame = `history-pressure-part-${deepTurn}:text`;
+    const deep = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'frame', deepTurn,
+      `t${deepTurn}.1`, deepFrame, 'text');
+    if (deep === undefined || (await nav.read(nav.ref(deep))).status !== 'ok') throw new Error('deep source missing');
+    const manifestRow = (await db.ready()).db.prepare('SELECT length(value) AS bytes FROM manifest WHERE scope=?')
+      .get(`${WORKSPACE_ID}\0${SESSION_ID}\0${AGENT_ID}`) as { bytes: number } | undefined;
+    if (manifestRow === undefined || manifestRow.bytes > (16 << 10)) throw new Error('navigation manifest too large');
+    await db.close();
+    const tail = [
+      { type: 'turn.prompt', turnId: 1_000_000, promptId: 'resume-prompt', origin: { kind: 'user' },
+        input: [{ type: 'text', text: 'history-resume-tail-marker' }] },
+      { type: 'turn.ended', turnId: 1_000_000, reason: 'completed' },
+    ].map((record) => `${JSON.stringify(record)}\n`).join('');
+    await appendFile(wirePath, tail);
+    db = HistoryNavigationDb.lazy(dbPath);
+    nav = new HistoryLocatorStore(db, transcript as never);
+    const continued = await nav.scan(SESSION_ID, AGENT_ID);
+    const row = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'turn', 1_000_000);
+    const original = await nav.row(WORKSPACE_ID, SESSION_ID, AGENT_ID, 'frame', deepTurn,
+      `t${deepTurn}.1`, deepFrame, 'text');
+    if (continued?.recordsRead !== 2 || row === undefined || original === undefined) {
+      throw new Error('tail-only recovery failed');
+    }
+    const tailText = await nav.read(nav.ref(row));
+    const deepText = await nav.read(nav.ref(original));
+    if (tailText.status !== 'ok' || tailText.text !== 'history-resume-tail-marker' ||
+        deepText.status !== 'ok' || !deepText.text?.includes(TAIL_NEEDLE)) throw new Error('tail-only recovery failed');
+    const afterReadRssBytes = sampleRss();
+    const osHighWaterRssBytes = process.resourceUsage().maxRSS * 1024;
+    return { case: 'navigation-resume', api: 'HistoryLocatorStore.restore/scan/read', status: 'ok',
+      records, segments, complete: true, tailRecordsRead: continued.recordsRead,
+      tailBytesRead: continued.bytesRead, manifestBytes: manifestRow.bytes,
+      latencyMs: performance.now() - started, beforeImportRssBytes, afterImportRssBytes,
+      startRssBytes, afterReadRssBytes, osHighWaterRssBytes,
+      peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
+      rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes };
+  } catch (error) {
+    return { case: 'navigation-resume', api: 'HistoryLocatorStore.restore/scan/read', status: 'error',
+      records, segments, error: String(error), peakRssBytes: Math.max(peakRssBytes, process.resourceUsage().maxRSS * 1024) };
+  } finally { clearInterval(sampler); await db.close(); }
+}
+
 async function runCurrentHistoryRead(
   caseName: string,
   homeDir: string,
@@ -521,6 +590,10 @@ async function runWorker(args: readonly string[]): Promise<void> {
     workerResult(await runNavigationWorker(mode, wirePath));
     return;
   }
+  if (mode === 'navigation-resume') {
+    workerResult(await runNavigationResumeWorker(wirePath, positiveInteger(args[3], 0)));
+    return;
+  }
   const selectedTurn = positiveInteger(args[3], 0);
   const needle = mode === 'current-history-mid' ? MID_NEEDLE : TAIL_NEEDLE;
   const homeDir = args[4];
@@ -567,6 +640,7 @@ function printUsage(): void {
     'HISTORY_BENCH_BYTES overrides the default 238000000-byte fixture.',
     '--navigation scans the SQLite navigation model through the deep-tail marker with bounded scan cursors.',
     '--navigation-map keeps the old in-memory row backend as a diagnostic comparison.',
+    '--navigation-resume scans, reopens the SQLite index, appends a tail, and checks tail-only recovery.',
     '--current-api runs the checked-out v1 HistoryRead archive backend for both marker turns.',
     'Synthetic input is always removed before the command exits.',
   ].join('\n'));
@@ -600,6 +674,9 @@ async function runParent(args: readonly string[]): Promise<void> {
     }
     if (args.includes('--navigation-map')) {
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-map', fixture))}\n`);
+    }
+    if (args.includes('--navigation-resume')) {
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-resume', fixture))}\n`);
     }
     if (args.includes('--current-api')) {
       for (const mode of ['current-history-mid', 'current-history-tail']) {

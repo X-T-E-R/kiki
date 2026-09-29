@@ -30,6 +30,7 @@ import {
 } from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
+  AgentTranscriptDraft,
   TranscriptFactReducer,
   TranscriptStore,
   TranscriptWireAdapter,
@@ -2277,6 +2278,51 @@ describe('TranscriptService live integration', () => {
         expect(firstSnapshot?.toolCallCount).toBe(1);
         expect(firstSnapshot?.toolCallCountKnown).toBe(true);
       } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('skips checkpoint reads and construction for a sealed wire over 8 MiB', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const query = core.accessor.get(IQueryStore);
+      const get = vi.spyOn(query, 'get');
+      const put = vi.spyOn(query, 'put');
+      const draftCheckpoint = vi.spyOn(AgentTranscriptDraft.prototype, 'checkpoint');
+      const adapterCheckpoint = vi.spyOn(TranscriptWireAdapter.prototype, 'checkpoint');
+      const records = Array.from({ length: 300 }, (_, index) =>
+        JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index }));
+      await appendFile(wirePath, `${records.join('\n')}\n${JSON.stringify({ type: 'turn.prompt', turnId: 2,
+        promptId: 'large-prompt', origin: { kind: 'user' },
+        input: [{ type: 'text', text: `large-visible-${'x'.repeat(8 << 20)}` }] })}\n`);
+      const service = new TranscriptService({ homeDir: home, core });
+      try {
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(snapshot?.items.some((item) => item.kind === 'turn' && item.turnId === 't2')).toBe(true);
+        expect(get.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(0);
+        expect(put.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(0);
+        expect(draftCheckpoint).toHaveBeenCalledTimes(1); // The full GUI snapshot still materializes once.
+        expect(adapterCheckpoint).not.toHaveBeenCalled();
+      } finally {
+        service.dispose();
+        get.mockRestore(); put.mockRestore(); draftCheckpoint.mockRestore(); adapterCheckpoint.mockRestore();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('skips checkpoint construction when no query store exists', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) =>
+        JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
+      const draftCheckpoint = vi.spyOn(AgentTranscriptDraft.prototype, 'checkpoint');
+      const service = new TranscriptService({ homeDir: home, core: coldCore() });
+      try {
+        expect((await service.readColdSnapshot('s1', 'main'))?.items.length).toBeGreaterThan(0);
+        expect(draftCheckpoint).toHaveBeenCalledTimes(1); // Required once by snapshot().
+      } finally {
+        service.dispose(); draftCheckpoint.mockRestore();
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });

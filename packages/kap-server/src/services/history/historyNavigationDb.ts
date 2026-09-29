@@ -3,7 +3,8 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { ColumnPageQuery, IQueryStore, Page, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
-import type { NavigationScalarState } from '@kiki/transcript/navigationWireAdapter';
+import type { NavigationAdapterCursor, NavigationScalarState } from '@kiki/transcript/navigationWireAdapter';
+import type { HistoryNavigationProof } from './historyNavigationProof';
 
 import { HISTORY_NAV_COLLECTION, type HistoryNavRow } from './historyLocatorStore';
 import { SqliteNavigationAnchorSequence, SqliteNavigationMap,
@@ -11,13 +12,26 @@ import { SqliteNavigationAnchorSequence, SqliteNavigationMap,
 
 type NavigationStore = Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>;
 const APPLICATION_ID = 0x4b484e31;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const MANIFEST_MAX_BYTES = 16 << 10;
+
+export interface HistoryNavManifest {
+  readonly v: 2;
+  readonly generation: string;
+  readonly incarnation: string;
+  readonly offset: number;
+  readonly ordinal: number;
+  readonly complete: boolean;
+  readonly source: HistoryNavigationProof;
+}
+
 const COLUMNS = new Set(['turn', 'position', 'time']);
 const FILTERS = new Set(['workspace', 'session', 'agent', 'kind', 'turn', 'active', 'step']);
 
 /** Derived, per-installation history index. Never used as the canonical wire/replay store. */
 export class HistoryNavigationDb implements NavigationStore {
   private closed = false;
+  private scanTransactionOpen = false;
   private constructor(readonly db: DatabaseSync) {}
 
   static async open(path: string): Promise<HistoryNavigationDb> {
@@ -33,10 +47,10 @@ export class HistoryNavigationDb implements NavigationStore {
         .all() as Array<{ name: string }>).map((row) => row.name);
       if (applicationId !== 0 && applicationId !== APPLICATION_ID ||
           applicationId === 0 && tables.length > 0 ||
-          applicationId === APPLICATION_ID && version !== SCHEMA_VERSION) {
+          applicationId === APPLICATION_ID && version !== 1 && version !== SCHEMA_VERSION) {
         throw new Error(`unrecognized history navigation index at ${actual}`);
       }
-      if (tables.some((name) => !['rows', 'state', 'turn_sequence', 'anchor_sequence'].includes(name))) {
+      if (tables.some((name) => !['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest'].includes(name))) {
         throw new Error(`unrecognized history navigation tables at ${actual}`);
       }
       db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-16384; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000; PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432');
@@ -67,6 +81,9 @@ export class HistoryNavigationDb implements NavigationStore {
         ) STRICT, WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS nav_anchor_ordinal ON anchor_sequence(scope,active,ordinal DESC);
         CREATE INDEX IF NOT EXISTS nav_anchor_turn ON anchor_sequence(scope,active,turn_id);
+        CREATE TABLE IF NOT EXISTS manifest (
+          scope TEXT PRIMARY KEY, value TEXT NOT NULL
+        ) STRICT, WITHOUT ROWID;
       `);
       db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}`);
       return new HistoryNavigationDb(db);
@@ -74,6 +91,66 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   static lazy(path: string): LazyHistoryNavigationDb { return new LazyHistoryNavigationDb(path); }
+
+  readManifest(scope: string): HistoryNavManifest | undefined {
+    const row = this.db.prepare('SELECT value FROM manifest WHERE scope=?').get(scope) as { value: string } | undefined;
+    if (row === undefined || Buffer.byteLength(row.value) > MANIFEST_MAX_BYTES) return undefined;
+    let value: Partial<HistoryNavManifest>;
+    try { value = JSON.parse(row.value) as Partial<HistoryNavManifest>; }
+    catch { return undefined; }
+    return value.v === 2 && typeof value.generation === 'string' && value.generation.length > 0 &&
+      typeof value.incarnation === 'string' && Number.isSafeInteger(value.offset) && value.offset! >= 0 &&
+      Number.isSafeInteger(value.ordinal) && value.ordinal! >= 0 && typeof value.complete === 'boolean' &&
+      typeof value.source?.identity === 'string' && typeof value.source.head === 'string' &&
+      typeof value.source.tail === 'string' && Number.isSafeInteger(value.source.size)
+      ? value as HistoryNavManifest : undefined;
+  }
+
+  readAdapterCursor(scope: string): NavigationAdapterCursor | undefined {
+    const row = this.db.prepare("SELECT value FROM state WHERE scope=? AND bucket='cursor' AND key='adapter'")
+      .get(scope) as { value: string } | undefined;
+    if (row === undefined) return undefined;
+    let value: Partial<NavigationAdapterCursor>;
+    try { value = JSON.parse(row.value) as Partial<NavigationAdapterCursor>; }
+    catch { return undefined; }
+    return Number.isSafeInteger(value.ordinal) && value.ordinal! >= 0 &&
+      Number.isSafeInteger(value.legacyTurn) && value.legacyTurn! >= 0 &&
+      (value.currentTurn === undefined || typeof value.currentTurn === 'string') &&
+      (value.currentPrompt === undefined || typeof value.currentPrompt === 'string')
+      ? value as NavigationAdapterCursor : undefined;
+  }
+
+  beginSlice(): void {
+    if (this.scanTransactionOpen) throw new Error('history navigation transaction already active');
+    this.db.exec('BEGIN IMMEDIATE');
+    this.scanTransactionOpen = true;
+  }
+
+  commitSlice(scope: string, manifest: HistoryNavManifest, cursor: NavigationAdapterCursor): void {
+    if (!this.scanTransactionOpen || manifest.ordinal !== cursor.ordinal) throw new Error('invalid navigation checkpoint');
+    const value = JSON.stringify(manifest);
+    if (Buffer.byteLength(value) > MANIFEST_MAX_BYTES) throw new Error('navigation manifest exceeds 16 KiB');
+    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'cursor','adapter',?)
+      ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`).run(scope, JSON.stringify(cursor));
+    this.db.prepare(`INSERT INTO manifest(scope,value) VALUES(?,?)
+      ON CONFLICT(scope) DO UPDATE SET value=excluded.value`).run(scope, value);
+    this.db.exec('COMMIT');
+    this.scanTransactionOpen = false;
+  }
+
+  rollbackSlice(): void {
+    if (!this.scanTransactionOpen) return;
+    try { this.db.exec('ROLLBACK'); }
+    finally { this.scanTransactionOpen = false; }
+  }
+
+  clearProjection(scope: string, workspace: string, session: string, agent: string): void {
+    this.clearState(scope);
+    this.db.prepare('DELETE FROM manifest WHERE scope=?').run(scope);
+    this.db.prepare('DELETE FROM rows WHERE workspace=? AND session=? AND agent=?')
+      .run(workspace, session, agent);
+    this.db.prepare('DELETE FROM rows WHERE key=?').run(`${scope}\0checkpoint`);
+  }
 
   clearState(scope: string): void {
     this.db.prepare('DELETE FROM state WHERE scope=?').run(scope);
@@ -137,15 +214,18 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   async batch(ops: readonly WriteOp[]): Promise<void> {
-    this.db.exec('BEGIN IMMEDIATE');
+    if (!this.scanTransactionOpen) this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const op of ops) {
         this.assertCollection(op.collection);
         if (op.kind === 'put') this.write(op.key, op.value);
         else this.db.prepare('DELETE FROM rows WHERE key=?').run(op.key);
       }
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      if (!this.scanTransactionOpen) this.db.exec('COMMIT');
+    } catch (error) {
+      if (!this.scanTransactionOpen) this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async pageByColumn<T>(collection: string, query: ColumnPageQuery): Promise<Page<T>> {
@@ -175,6 +255,7 @@ export class HistoryNavigationDb implements NavigationStore {
 
   close(): void {
     if (this.closed) return;
+    this.rollbackSlice();
     this.closed = true;
     this.db.close();
   }

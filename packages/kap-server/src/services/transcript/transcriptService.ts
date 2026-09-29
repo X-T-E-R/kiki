@@ -80,6 +80,7 @@ const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
 const TRANSCRIPT_CHECKPOINT_FORMAT = 2;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
+const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
 const OPS_JOURNAL_ESTIMATE_NODE_OVERHEAD_BYTES = 64;
 const OPS_JOURNAL_ESTIMATE_SCALAR_BYTES = 8;
@@ -1722,14 +1723,15 @@ export class TranscriptService {
     });
     const checkpointKey = `${summary.workspaceId}\0${sessionId}\0${agentId}`;
     const checkpointStore = this.deps.core.accessor.get(IQueryStore) as IQueryStore | undefined;
-    const checkpoint = !sealed || fingerprint === undefined || preserveOpenTurnIds !== undefined
-      ? undefined
-      : await readTranscriptProjectionCheckpoint(
+    const checkpointEligible = sealed && fingerprint !== undefined && preserveOpenTurnIds === undefined &&
+      checkpointStore !== undefined && info !== undefined && info.size <= TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES;
+    const checkpoint = checkpointEligible
+      ? await readTranscriptProjectionCheckpoint(
           checkpointStore,
           checkpointKey,
           fingerprint,
           info!.size,
-        );
+        ) : undefined;
     if (checkpoint !== undefined) {
       transcript.seed(checkpoint.snapshot);
       adapter.restore(checkpoint.adapter);
@@ -1780,11 +1782,10 @@ export class TranscriptService {
         if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
       }
       if (
-        preserveOpenTurnIds === undefined &&
+        checkpointEligible &&
         complete &&
-        sealed &&
         readResult !== undefined &&
-        fingerprint !== undefined &&
+        readResult.nextByteOffset <= TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES &&
         (checkpoint?.recordCount ?? 0) + readResult.recordCount >= TRANSCRIPT_CHECKPOINT_MIN_RECORDS
       ) {
         const seed = transcript.checkpoint();

@@ -1,8 +1,8 @@
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { IQueryStore, WriteOp, IHistoryArchive, Scope } from '@kiki/agent-core-v2';
 import { HistoryReadTool } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
@@ -135,6 +135,90 @@ describe('history navigation source rows', () => {
       const reused = await nav.row('ws', 's', 'main', 'turn', 0);
       expect(await nav.read(nav.ref(reused!))).toMatchObject({ status: 'ok', text: 'new turn zero' });
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('restores a small manifest and disk identities after reopen, then scans only the appended tail', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-restore-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const path = join(dir, 'navigation.sqlite');
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const firstDb = HistoryNavigationDb.lazy(path);
+      const first = new HistoryLocatorStore(firstDb, transcript);
+      expect((await first.scan('s', 'main'))?.recordsRead).toBe(6);
+      const oldOutput = await first.row('ws', 's', 'main', 'frame', 4, 't4.1', 'uuid-1.call-1:output', 'output');
+      const scope = 'ws\0s\0main';
+      const manifest = (await firstDb.ready()).readManifest(scope);
+      expect(manifest).toMatchObject({ v: 2, offset: Buffer.byteLength(lines.join('')), ordinal: 6 });
+      const size = (await firstDb.ready()).db.prepare('SELECT length(value) AS size FROM manifest WHERE scope=?')
+        .get(scope) as { size: number };
+      expect(size.size).toBeLessThanOrEqual(16 << 10);
+      await firstDb.close();
+      const appended = [
+        line({ type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-1',
+          result: { output: 'late result after restart' } }, time: 1006 }),
+        line({ type: 'turn.prompt', turnId: 5, promptId: 'p5', origin: { kind: 'user' },
+          input: [{ type: 'text', text: 'tail original' }], time: 1007 }),
+      ];
+      await appendFile(wirePath, appended.join(''));
+      const secondDb = HistoryNavigationDb.lazy(path);
+      try {
+        const second = new HistoryLocatorStore(secondDb, transcript);
+        const scan = await second.scan('s', 'main');
+        expect(scan).toMatchObject({ recordsRead: 2, bytesRead: expect.any(Number), complete: true });
+        expect(scan!.bytesRead).toBeLessThan(Buffer.byteLength(lines.join('')));
+        expect((await second.read(second.ref(oldOutput!))).status).toBe('stale_ref');
+        const updated = await second.row('ws', 's', 'main', 'frame', 4, 't4.1', 'uuid-1.call-1:output', 'output');
+        expect(await second.read(second.ref(updated!))).toMatchObject({ status: 'ok', text: 'late result after restart' });
+        expect((await secondDb.ready()).readManifest(scope)?.ordinal).toBe(8);
+      } finally { await secondDb.close(); }
+      const original = await readFile(wirePath, 'utf8');
+      await writeFile(wirePath, original.replace('late result after restart', 'cold result after restart'));
+      const changedDb = HistoryNavigationDb.lazy(path);
+      try {
+        const changed = new HistoryLocatorStore(changedDb, transcript);
+        expect((await changed.scan('s', 'main'))?.recordsRead).toBe(8);
+        const replacement = await changed.row('ws', 's', 'main', 'frame', 4, 't4.1', 'uuid-1.call-1:output', 'output');
+        expect(await changed.read(changed.ref(replacement!))).toMatchObject({ status: 'ok', text: 'cold result after restart' });
+      } finally { await changedDb.close(); }
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['crash', 'cancel'] as const)('rolls back flushed rows and scalar state on %s before checkpoint', async (failure) => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-crash-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const path = join(dir, 'navigation.sqlite');
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const firstDb = HistoryNavigationDb.lazy(path);
+      const first = new HistoryLocatorStore(firstDb, transcript);
+      const before = await first.scan('s', 'main');
+      const tail = Array.from({ length: 300 }, (_, n) => line({ type: 'turn.prompt', turnId: n + 10,
+        promptId: `tail-${n}`, origin: { kind: 'user' }, input: [{ type: 'text', text: `tail-prompt-${n}` }] }));
+      await appendFile(wirePath, tail.join(''));
+      const disk = await firstDb.ready();
+      const original = disk.batch.bind(disk);
+      const controller = new AbortController();
+      vi.spyOn(disk, 'batch').mockImplementationOnce(async (ops) => {
+        await original(ops);
+        if (failure === 'cancel') controller.abort(new DOMException('injected scan cancel', 'AbortError'));
+        else throw new Error('simulated crash after microbatch write');
+      });
+      await expect(first.scan('s', 'main', controller.signal)).rejects.toThrow(
+        failure === 'cancel' ? 'injected scan cancel' : 'simulated crash');
+      expect(disk.readManifest('ws\0s\0main')?.offset).toBe(before?.nextByteOffset);
+      expect(await first.row('ws', 's', 'main', 'turn', 10)).toBeUndefined();
+      await firstDb.close();
+      const secondDb = HistoryNavigationDb.lazy(path);
+      try {
+        const second = new HistoryLocatorStore(secondDb, transcript);
+        expect((await second.scan('s', 'main'))?.recordsRead).toBe(300);
+        const row = await second.row('ws', 's', 'main', 'turn', 309);
+        expect(await second.read(second.ref(row!))).toMatchObject({ status: 'ok', text: 'tail-prompt-299' });
+      } finally { await secondDb.close(); }
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
   it('serializes two concurrent SQLite query workspaces and keeps both source hits readable', async () => {

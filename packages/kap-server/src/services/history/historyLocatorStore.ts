@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 
 import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
@@ -12,6 +12,7 @@ import { streamWireRecordsAwaited, type WireRecordSpan } from '@kiki/transcript-
 import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
 import type { LazyHistoryNavigationDb } from './historyNavigationDb';
+import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
 import type { TranscriptService } from '../transcript/transcriptService';
@@ -93,6 +94,7 @@ export interface HistoryNavBlocksPage {
 interface Scanner {
   readonly adapter: NavigationWireAdapter;
   readonly incarnation: string;
+  readonly generation: string;
   offset: number;
   ordinal: number;
 }
@@ -202,6 +204,13 @@ export class HistoryLocatorStore {
         await previous;
         signal?.throwIfAborted();
         return await this.scanSlice({ workspace, session, agent, wirePath, incarnation, key, signal, search });
+      } catch (error) {
+        this.scanners.delete(key);
+        if ('ready' in this.store) {
+          const db = await (this.store as LazyHistoryNavigationDb).ready().catch(() => undefined);
+          db?.rollbackSlice();
+        }
+        throw error;
       } finally {
         this.queuedScans -= 1;
         release();
@@ -218,21 +227,33 @@ export class HistoryLocatorStore {
     const stateDb = 'ready' in this.store
       ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
     let scanner = this.scanners.get(input.key);
-    if (input.search?.cursor !== undefined && (scanner?.offset !== input.search.cursor.offset ||
-        scanner.incarnation !== input.search.cursor.incarnation)) throw new Error('stale_scan_cursor');
-    if (scanner === undefined || scanner.incarnation !== input.incarnation ||
-        input.search !== undefined && input.search.cursor === undefined) {
-      stateDb?.clearState(input.key);
-      scanner = { adapter: new NavigationWireAdapter(input.agent, stateDb?.scalarState(input.key)),
-        incarnation: input.incarnation, offset: 0, ordinal: 0 };
+    const saved = stateDb?.readManifest(input.key);
+    const cursor = saved === undefined ? undefined : stateDb?.readAdapterCursor(input.key);
+    const sourceMatches = saved !== undefined && cursor?.ordinal === saved.ordinal &&
+      saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset)
+        .then((proof) => matchesNavigationProof(saved.source, proof), () => false);
+    const freshSearch = input.search !== undefined && input.search.cursor === undefined;
+    const rebuild = stateDb === undefined
+      ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
+      : freshSearch || !sourceMatches;
+    stateDb?.beginSlice();
+    if (rebuild) {
+      stateDb?.clearProjection(input.key, input.workspace, input.session, input.agent);
+      scanner = undefined;
+    }
+    if (scanner === undefined || scanner.incarnation !== input.incarnation) {
+      const adapter = new NavigationWireAdapter(input.agent, stateDb?.scalarState(input.key));
+      if (!rebuild && cursor !== undefined) adapter.restore(cursor);
+      scanner = { adapter, incarnation: input.incarnation,
+        generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
+        offset: !rebuild && saved !== undefined ? saved.offset : 0,
+        ordinal: !rebuild && saved !== undefined ? saved.ordinal : 0 };
       this.scanners.delete(input.key);
-      if (this.scanners.size >= MAX_SCANNERS) {
-        const evicted = this.scanners.keys().next().value!;
-        this.scanners.delete(evicted);
-        stateDb?.clearState(evicted);
-      }
+      if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
       this.scanners.set(input.key, scanner);
     }
+    if (input.search?.cursor !== undefined && (scanner.offset !== input.search.cursor.offset ||
+        scanner.incarnation !== input.search.cursor.incarnation)) throw new Error('stale_scan_cursor');
     const pending: PendingRecord[] = [];
     const store = this.store;
     const plan = input.search === undefined ? undefined : planHistoryQuery(input.search.query, input.search.mode);
@@ -452,12 +473,21 @@ export class HistoryLocatorStore {
       pendingBytes = 0;
     }
     await flushPending();
+    const nextOrdinal = scanner.ordinal + read.recordCount;
+    if (stateDb !== undefined) {
+      const proof = await historyNavigationProof(input.wirePath, read.nextByteOffset);
+      if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
+      stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
+        incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
+        complete: read.complete, source: proof }, scanner.adapter.checkpoint());
+    } else {
+      await this.store.put(HISTORY_NAV_COLLECTION, `${input.key}\0checkpoint`, {
+        v: 1, incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
+        complete: read.complete,
+      });
+    }
     scanner.offset = read.nextByteOffset;
-    scanner.ordinal += read.recordCount;
-    await this.store.put(HISTORY_NAV_COLLECTION, `${input.key}\0checkpoint`, {
-      v: 1, incarnation: input.incarnation, offset: scanner.offset, ordinal: scanner.ordinal,
-      complete: read.complete,
-    });
+    scanner.ordinal = nextOrdinal;
     const activeHits: HistoryHit[] = [];
     for (const hit of hits) {
       const parent = await load(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,

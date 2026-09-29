@@ -1,6 +1,8 @@
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -91,6 +93,70 @@ describe('history navigation SQLite repository', () => {
         expect(state.turns!.indexOf('t21')).toBe(20);
         expect(state.turns!.findFromOrdinal(900)).toBe(20);
       } finally { db.close(); }
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('upgrades the earlier derived index without treating its non-atomic checkpoint as resumable', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-v1-'));
+    const path = join(home, 'navigation.sqlite');
+    try {
+      const previous = await HistoryNavigationDb.open(path);
+      await previous.put(HISTORY_NAV_COLLECTION, 'old-row', { workspace: 'ws', session: 's',
+        agent: 'main', kind: 'turn', turn: 1, active: true, position: 1 });
+      previous.db.exec('DROP TABLE manifest; PRAGMA user_version=1');
+      previous.close();
+      const upgraded = await HistoryNavigationDb.open(path);
+      try {
+        expect((upgraded.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+        expect(upgraded.readManifest('ws\0s\0main')).toBeUndefined();
+        upgraded.beginSlice();
+        upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
+        upgraded.rollbackSlice();
+        expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeDefined();
+        upgraded.beginSlice();
+        upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
+        upgraded.commitSlice('ws\0s\0main', { v: 2, generation: 'rebuilt', incarnation: 'new',
+          offset: 0, ordinal: 0, complete: false,
+          source: { identity: 'new', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' } },
+          { ordinal: 0, legacyTurn: 0 });
+        expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeUndefined();
+      } finally { upgraded.close(); }
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('recovers the preceding manifest after a worker exits with uncommitted rows and state', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-crash-'));
+    const path = join(home, 'navigation.sqlite');
+    try {
+      const db = await HistoryNavigationDb.open(path);
+      const proof = { identity: 'fixture', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' };
+      db.beginSlice();
+      db.commitSlice('scope', { v: 2, generation: 'before-crash', incarnation: 'fixture',
+        offset: 0, ordinal: 0, complete: false, source: proof }, { ordinal: 0, legacyTurn: 0 });
+      db.close();
+      const moduleUrl = new URL('../src/services/history/historyNavigationDb.ts', import.meta.url).href;
+      const script = `const { HistoryNavigationDb } = await import(${JSON.stringify(moduleUrl)});
+        const db = await HistoryNavigationDb.open(process.argv[1]);
+        db.beginSlice();
+        db.scalarState('scope').turnStart.set('t99', 7);
+        await db.put('history_navigation_v1', 'uncommitted', { workspace: 'ws', session: 's',
+          agent: 'main', kind: 'turn', turn: 99, active: true, position: 7 });
+        process.exit(79);`;
+      const rawLoader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
+      const tsconfig = fileURLToPath(new URL('../../agent-core-v2/tsconfig.json', import.meta.url));
+      const child = spawnSync(process.execPath,
+        ['--import', 'tsx', '--import', rawLoader, '--input-type=module', '-e', script, path], {
+          cwd: process.cwd(), encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, TSX_TSCONFIG_PATH: tsconfig, NODE_NO_WARNINGS: '1' },
+        });
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(79);
+      const reopened = await HistoryNavigationDb.open(path);
+      try {
+        expect(reopened.readManifest('scope')).toMatchObject({ generation: 'before-crash', ordinal: 0 });
+        expect(reopened.scalarState('scope').turnStart.has('t99')).toBe(false);
+        expect(await reopened.get(HISTORY_NAV_COLLECTION, 'uncommitted')).toBeUndefined();
+      } finally { reopened.close(); }
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 });

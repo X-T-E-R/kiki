@@ -60,6 +60,13 @@ const promptText = (parts: unknown, origin: unknown): string | undefined => open
 const stamp = (time: unknown): string | undefined => typeof time === 'number' ? new Date(time).toISOString() : undefined;
 const outputOf = (value: unknown): string => typeof value === 'string' ? value : textOf(value);
 
+export interface NavigationAdapterCursor {
+  readonly ordinal: number;
+  readonly legacyTurn: number;
+  readonly currentTurn?: string;
+  readonly currentPrompt?: string;
+}
+
 /** Unlike the canonical replay adapter, this projection never retains message or tool bodies. */
 export class NavigationWireAdapter {
   private readonly turns: NavigationTurnSequence;
@@ -94,6 +101,20 @@ export class NavigationWireAdapter {
     this.deliveries = state.deliveries ?? new Map<string, Anchor>();
     this.steeredMessageIds = state.steeredMessageIds ?? new Set<string>();
     this.unpairedSteerCredits = state.unpairedSteerCredits ?? new Map<string, number>();
+  }
+
+  checkpoint(): NavigationAdapterCursor {
+    return { ordinal: this.ordinal, legacyTurn: this.legacyTurn,
+      currentTurn: this.currentTurn, currentPrompt: this.currentPrompt };
+  }
+
+  restore(cursor: NavigationAdapterCursor): void {
+    if (!Number.isSafeInteger(cursor.ordinal) || cursor.ordinal < 0 ||
+        !Number.isSafeInteger(cursor.legacyTurn) || cursor.legacyTurn < 0) throw new Error('invalid_navigation_cursor');
+    this.ordinal = cursor.ordinal;
+    this.legacyTurn = cursor.legacyTurn;
+    this.currentTurn = cursor.currentTurn;
+    this.currentPrompt = cursor.currentPrompt;
   }
 
   add(record: TranscriptWireRecord): NavigationEffect[] {
