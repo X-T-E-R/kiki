@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ISessionActivityView, ISessionInteractionService, ISessionManager } from '@kiki/agent-core-v2';
 
 import {
   createInstanceRegistry,
@@ -10,7 +11,7 @@ import {
   listLiveServerInstances,
   type ServerInstanceInfo,
 } from '../src/instanceRegistry';
-import { type RunningServer, startServer } from '../src/start';
+import { type RunningServer, idleExitBlocked, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 let tmpDir: string;
@@ -370,6 +371,55 @@ describe('startServer — instance registry wiring', () => {
     servers.push(restarted);
     expect(await listLiveServerInstances(home)).toHaveLength(1);
     expect((await listLiveServerInstances(home))[0]?.port).toBe(restarted.port);
+  });
+
+  it('keeps an otherwise idle server alive while an approval, question or user tool awaits input', () => {
+    expect(idleExitBlocked({ busy: false, pendingInteraction: 'approval' }, 0)).toBe(true);
+    expect(idleExitBlocked({ busy: false, pendingInteraction: 'question' }, 0)).toBe(true);
+    expect(idleExitBlocked({ busy: false, pendingInteraction: 'none' }, 1)).toBe(true);
+    expect(idleExitBlocked({ busy: true, pendingInteraction: 'none' }, 0)).toBe(true);
+    expect(idleExitBlocked({ busy: false, pendingInteraction: 'none' }, 0)).toBe(false);
+  });
+
+  it('does not idle-exit while a non-busy session is awaiting approval', async () => {
+    home = mkdtempSync(join(tmpdir(), 'kimi-server-idle-approval-'));
+    const running = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      idleExitMs: 100,
+    });
+    servers.push(running);
+    const sessions = running.core.accessor.get(ISessionManager);
+    let pendingInteraction = 'approval';
+    const fakeSession = {
+      accessor: {
+        get(identifier: unknown) {
+          if (identifier === ISessionActivityView) {
+            return { state: () => ({ busy: false, pendingInteraction }) };
+          }
+          if (identifier === ISessionInteractionService) {
+            return { listPending: () => [] };
+          }
+          throw new Error('Unexpected session service');
+        },
+      },
+    };
+    const stub = vi.spyOn(sessions, 'list').mockReturnValue(
+      [fakeSession] as unknown as ReturnType<typeof sessions.list>,
+    );
+    try {
+      await sleep(180);
+      expect((await fetch(`http://127.0.0.1:${running.port}/api/healthz`)).status).toBe(200);
+      pendingInteraction = 'none';
+      await running.closed;
+      servers.splice(servers.indexOf(running), 1);
+      expect(await listLiveServerInstances(home)).toHaveLength(0);
+    } finally {
+      stub.mockRestore();
+    }
   });
 
   it('keeps an idle server alive for an active lease and closes after the lease expires', async () => {

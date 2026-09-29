@@ -13,6 +13,7 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   ISessionActivityView,
+  ISessionInteractionService,
   ICapabilityService,
   IPluginService,
   resolvePluginMarketplaceSource,
@@ -39,8 +40,8 @@ import { historyDirectorySeed } from './services/history/historyDirectory';
 import { HistoryLocatorStore } from './services/history/historyLocatorStore';
 import { IQueryStore } from '@kiki/agent-core-v2';
 import './services/historyTools';
-import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import { NotificationService } from './services/notifications/notificationService';
+import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
@@ -428,8 +429,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, (error) => {
     logger.warn({ event_type: 'lease_expiry_cleanup_failed' }, 'lease resource expiry cleanup failed');
   });
-  let idleTimer: NodeJS.Timeout | undefined;
   let notifications: NotificationService | undefined;
+  let idleTimer: NodeJS.Timeout | undefined;
   let authMonitor: NodeJS.Timeout | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -458,12 +459,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       appClosing = Promise.resolve();
     }
     await appClosing;
-    try {
     try { await notifications?.close(); }
     catch (error) {
       closeErrors.push(error);
       logger.warn({ event_type: 'notifications_close_failed' }, 'notification service close failed');
     }
+    try {
       await core.accessor.get(IThreadCommunicationService).shutdown();
     } catch (error) {
       closeErrors.push(error);
@@ -583,11 +584,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     });
 
   await configService.ready;
-  const externalDelegationEnabled = core.accessor
   notifications = new NotificationService(core, homeDir,
     (sessionId) => broadcaster.isSessionViewed(sessionId),
     () => logger.warn({ event_type: 'notification_operation_failed' }, 'notification operation failed'));
   await notifications.start();
+  const externalDelegationEnabled = core.accessor
     .get(IFlagService)
     .enabled(EXTERNAL_DELEGATION_FLAG_ID);
   let externalDelegationState: ExternalDelegationState = externalDelegationEnabled
@@ -672,8 +673,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
-    themesDir: join(homeDir, 'themes'),
     notifications,
+    themesDir: join(homeDir, 'themes'),
     pluginBridgeServerToken: () => authTokenService.getToken(),
     pluginMarketplaceUrl: () =>
       resolvePluginMarketplaceSource({
@@ -920,7 +921,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       const busy = core.accessor
         .get(ISessionManager)
         .list()
-        .some((session) => session.accessor.get(ISessionActivityView).state().busy);
+        .some((session) => idleExitBlocked(
+          session.accessor.get(ISessionActivityView).state(),
+          session.accessor.get(ISessionInteractionService).listPending('user_tool').length,
+        ));
       if (leaseRegistry.activeCount() > 0 || busy) {
         idleSince = Date.now();
         return;
@@ -943,6 +947,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     closed,
     close,
   };
+}
+
+export function idleExitBlocked(activity: { readonly busy: boolean; readonly pendingInteraction: string }, pendingUserTools: number): boolean {
+  return activity.busy || activity.pendingInteraction !== 'none' || pendingUserTools > 0;
 }
 
 async function resolveSeatWorkspacePath(
