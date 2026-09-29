@@ -79,7 +79,7 @@ describe('history archive', () => {
     const page = await archive.search({ query: '原话', workspaceId: 'ws-a', pageSize: 8,
       fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;
     expect(page).toMatchObject({ items: [], hasMore: false, source: 'index', incomplete: 'index_unavailable' });
-    expect(page.warning).toContain('requested range');
+    expect(page.warning).toContain("scope='this_session'");
     expect(readColdSnapshotBounded).not.toHaveBeenCalled();
     const other = await archive.search({ query: '原话', workspaceId: 'ws-a', sessionId: 'other', agentId: 'main',
       pageSize: 8, fallbackSessionId: 'current', fallbackAgentId: 'main' }) as HistorySearchPage;

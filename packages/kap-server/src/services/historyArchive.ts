@@ -181,7 +181,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         return { ...unavailablePage, items: [], hasMore: false, source: 'index',
           indexState: unavailablePage?.indexState ?? { state: 'unavailable', degraded: SEARCH_INDEX_UNAVAILABLE },
           incomplete: 'index_unavailable',
-          warning: 'The index cannot search this requested range. Select one session and agent for a bounded transcript scan.',
+          warning: "The index cannot search this requested range. Retry with scope='this_session' and an agent_id to scan the current session.",
         };
       }
       return fallbackSearch(getTranscript(), {
