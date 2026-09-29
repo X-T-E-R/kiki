@@ -313,14 +313,15 @@ export async function agentCapabilities(
   try {
     const snapshot = workspace.catalog.snapshot();
     const defaultProfile = snapshot.defaultProfile;
+    const visible = workspace.catalog.list();
     const caller = query.caller_profile === undefined ? undefined
-      : workspace.catalog.get(query.caller_profile)
+      : visible.find((candidate) => candidate.name === query.caller_profile)
         ?? (defaultProfile?.name === query.caller_profile ? defaultProfile : undefined);
     if (query.caller_profile !== undefined && caller === undefined) return 'profile-not-found';
     const scoped = caller?.definitionId === undefined ? undefined
       : snapshot.scopedBindings.get(caller.definitionId)?.get(query.profile);
     const profile = scoped === undefined
-      ? workspace.catalog.get(query.profile)
+      ? visible.find((candidate) => candidate.name === query.profile)
         ?? (defaultProfile?.name === query.profile ? defaultProfile : undefined)
       : scoped.status === 'ready' && scoped.profile !== undefined
         ? { ...scoped.profile, name: scoped.alias }

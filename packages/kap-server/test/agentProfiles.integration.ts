@@ -1407,6 +1407,10 @@ describe('GET /api/agents', () => {
       `/api/agents/capabilities?cwd=${encodeURIComponent(home!)}&profile=missing-writer&caller_profile=research-lead`))
       .json() as Envelope<unknown>;
     expect(unavailable.code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+    const privateDetail = await (await authedFetch(server, base,
+      `/api/agents/capabilities?cwd=${encodeURIComponent(home!)}&profile=private-research-writer`))
+      .json() as Envelope<unknown>;
+    expect(privateDetail.code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
   });
 
   it('projects scoped source status from a loaded workspace without a live session', async () => {
