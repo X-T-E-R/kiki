@@ -58,12 +58,19 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   }
   return { ...actual, SessionController: StubSessionController };
 });
-vi.mock('./ConversationShell', () => ({
-  EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
-  useConversationShell: () => ({ slots: { header: null, dock: null, rail: null, footer: null } }),
-  useOptionalConversationShell: () => ({ slots: { header: null, dock: null, rail: null, footer: null } }),
-  useRegisterSeat: (next: { composer: unknown }) => { seat.composer = next.composer; },
-}));
+vi.mock('./ConversationShell', () => {
+  // A real dock target so the tray portals somewhere the test can count.
+  const dock = document.createElement('div');
+  dock.setAttribute('data-test-dock', '');
+  document.body.append(dock);
+  const slots = { header: null, dock, heroFooter: null, rail: null, footer: null, preview: null };
+  return {
+    EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
+    useConversationShell: () => ({ slots }),
+    useOptionalConversationShell: () => ({ slots }),
+    useRegisterSeat: (next: { composer: unknown }) => { seat.composer = next.composer; },
+  };
+});
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 vi.mock('./mediaPreview', () => ({
   MediaPreviewProvider: ({ children }: { children: ReactNode }) => children,
@@ -230,6 +237,34 @@ describe('session selection annotations', () => {
       expect(back).toHaveLength(2);
       expect(back[1]).toBe(added[0]);
       expect(back[0]!.id).not.toBe(added[0]!.id);
+    });
+  });
+
+  it('shows an unsent note once: as the composer chip, never also in the tray', async () => {
+    await withSession(async (container) => {
+      const composerHost = document.createElement('div');
+      document.body.append(composerHost);
+      const composerRoot = createRoot(composerHost);
+      try {
+        await act(async () => {
+          composerRoot.render(
+            <QueryClientProvider client={new QueryClient()}>
+              <I18nProvider><MemoryRouter>{seat.composer as ReactElement}</MemoryRouter></I18nProvider>
+            </QueryClientProvider>,
+          );
+        });
+        // Every surface that could carry an unsent note: the page, the composer
+        // seat and the dock above it. The chip's own hover card is part of the
+        // chip, so the chip (not its text) is what counts.
+        const surfaces = [container, composerHost, document.querySelector('[data-test-dock]')!];
+        const chips = surfaces.flatMap((root) => [...root.querySelectorAll('[data-annotation-chip]')]);
+        expect(chips).toHaveLength(1);
+        expect(surfaces.some((root) => root.querySelector('[data-annotation-tray-row]') !== null)).toBe(false);
+        expect(document.querySelector('[data-annotation-tray]')).toBeNull();
+      } finally {
+        await act(async () => { composerRoot.unmount(); });
+        composerHost.remove();
+      }
     });
   });
 });

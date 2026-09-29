@@ -1,10 +1,9 @@
 /**
- * AnnotationTray — the notes riding the next prompt, one card above the
- * composer. It exists only while something is unsent: once a prompt carries
- * its notes they live in the timeline (the marks and the note under the
- * message), and the tray leaves with them. While it is open, the notes
- * already in the conversation sit behind one collapsed line for editing or
- * locating, so the tray never reads as a list of things still to send.
+ * AnnotationTray — the way back to notes already in this conversation, one
+ * quiet line above the composer ("3 notes in this conversation"). Unsent
+ * notes are not here: they are the composer's own chips, where they can be
+ * removed before sending, so a note never shows in two places. Opened, each
+ * sent note can be located in the timeline, edited, or removed.
  *
  * Sent notes derive from the transcript exactly like the in-line marks
  * (collectTimelineAnnotations + the local override overlay), so an edit here
@@ -19,7 +18,6 @@ import {
   getAnnotationOverridesSnapshot,
   subscribeAnnotationOverrides,
   writeAnnotationOverride,
-  type SelectionAnnotation,
   type TimelineBlockLike,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
@@ -31,8 +29,7 @@ interface TrayNote {
   readonly id: string;
   readonly quote: string;
   readonly comment: string | null;
-  /** Anchor block for sent notes; undefined while the note is still a draft. */
-  readonly blockId?: string;
+  readonly blockId: string;
 }
 
 function oneLine(text: string): string {
@@ -43,21 +40,13 @@ export function AnnotationTray({
   sessionId,
   agentId,
   blocks,
-  pending,
-  onUpdatePending,
-  onRemovePending,
 }: {
   readonly sessionId: string;
   readonly agentId?: string;
   readonly blocks: readonly TimelineBlockLike[];
-  /** Notes attached to the next prompt (the composer's chips). */
-  readonly pending: readonly SelectionAnnotation[];
-  readonly onUpdatePending: (id: string, comment: string) => void;
-  readonly onRemovePending: (id: string) => void;
 }) {
   const { t, tp } = useI18n();
   const [open, setOpen] = useState(false);
-  const [sentOpen, setSentOpen] = useState(false);
   const overrides = useSyncExternalStore(
     subscribeAnnotationOverrides,
     getAnnotationOverridesSnapshot,
@@ -73,11 +62,7 @@ export function AnnotationTray({
     }
     return notes;
   }, [derived, overrides]);
-  const drafts = useMemo<TrayNote[]>(
-    () => pending.map((annotation) => ({ key: `p:${annotation.id}`, id: annotation.id, quote: annotation.quote, comment: annotation.comment })),
-    [pending],
-  );
-  if (drafts.length === 0) return null;
+  if (sent.length === 0) return null;
 
   const saveSent = (id: string, comment: string) => {
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], comment });
@@ -85,7 +70,6 @@ export function AnnotationTray({
   const removeSent = (id: string) => {
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], deleted: true });
   };
-  const latest = drafts.at(-1);
 
   return (
     <div className="px-6 pb-2">
@@ -93,66 +77,36 @@ export function AnnotationTray({
         data-annotation-tray
         data-annotation-tray-open={open || undefined}
         aria-label={t('annotationTray.aria')}
-        className="anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[14px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]"
+        className={`anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[12px] ${open ? 'border border-hairline bg-panel' : ''}`}
       >
         <button
           type="button"
           data-annotation-tray-toggle
           aria-expanded={open}
-          aria-label={open ? t('annotationTray.collapse') : t('annotationTray.expand')}
           onClick={() => { setOpen((value) => !value); }}
-          className="flex min-h-10 w-full items-center gap-2 rounded-[14px] px-3.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="flex min-h-8 w-full items-center gap-1.5 rounded-[12px] px-2.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
         >
-          <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
-          <span className="shrink-0 text-[13px] font-medium text-ink">{t('annotationTray.title')}</span>
-          <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] font-medium tabular-nums text-ink-soft">{drafts.length}</span>
-          {!open && latest !== undefined ? (
-            <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">
-              {latest.comment === null || latest.comment === '' ? `“${oneLine(latest.quote)}”` : latest.comment}
-            </span>
-          ) : <span className="flex-1" />}
-          <DisclosureChevron open={open} className="shrink-0 text-ink-faint" />
+          <span aria-hidden className="flex shrink-0"><Icon name="edit" size={12} /></span>
+          <span className="min-w-0 flex-1 truncate">{tp('annotationTray.sentCount', sent.length)}</span>
+          <DisclosureChevron open={open} className="shrink-0" />
         </button>
         {open ? (
-          <div className="max-h-[min(40vh,320px)] overflow-y-auto px-2 pb-2">
-            <ul className="flex flex-col pt-1">
-              {drafts.map((note) => (
-                <TrayRow key={note.key} note={note} onSave={onUpdatePending} onRemove={onRemovePending} />
-              ))}
-            </ul>
-            {sent.length > 0 ? (
-              <div data-annotation-tray-sent className="mt-1 border-t border-hairline pt-1">
-                <button
-                  type="button"
-                  data-annotation-tray-sent-toggle
-                  aria-expanded={sentOpen}
-                  onClick={() => { setSentOpen((value) => !value); }}
-                  className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[11.5px] font-medium text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
-                >
-                  <DisclosureChevron open={sentOpen} className="shrink-0" />
-                  <span>{tp('annotationTray.sentCount', sent.length)}</span>
-                </button>
-                {sentOpen ? (
-                  <ul className="flex flex-col">
-                  {sent.map((note) => (
-                    <TrayRow
-                      key={note.key}
-                      note={note}
-                      onSave={saveSent}
-                      onRemove={removeSent}
-                      onShow={() => {
-                        void locateInTimeline(
-                          { kind: 'annotation', annotationId: note.id, blockId: note.blockId! },
-                          { sessionId, agentId },
-                        );
-                      }}
-                    />
-                  ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+          <ul className="max-h-[min(40vh,320px)] overflow-y-auto px-2 pb-2">
+            {sent.map((note) => (
+              <TrayRow
+                key={note.key}
+                note={note}
+                onSave={saveSent}
+                onRemove={removeSent}
+                onShow={() => {
+                  void locateInTimeline(
+                    { kind: 'annotation', annotationId: note.id, blockId: note.blockId },
+                    { sessionId, agentId },
+                  );
+                }}
+              />
+            ))}
+          </ul>
         ) : null}
       </section>
     </div>

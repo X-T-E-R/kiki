@@ -1276,9 +1276,6 @@ export function SessionView({
   const handleRemoveAnnotation = useCallback((id: string) => {
     setAnnotations((current) => removeAnnotation(current, id));
   }, []);
-  const handleUpdateAnnotation = useCallback((id: string, comment: string) => {
-    setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
-  }, []);
 
   const controller = useActiveController(sessionId, selectedAgentId);
   const queryClient = useQueryClient();
@@ -3064,13 +3061,7 @@ export function SessionView({
               <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
                 onConfirm={handleRecoveryConfirm} />
             ) : null}
-            <AnnotationTray
-              sessionId={sessionId}
-              blocks={mainTranscriptBlocks}
-              pending={queueEdit === null ? annotations : []}
-              onUpdatePending={handleUpdateAnnotation}
-              onRemovePending={handleRemoveAnnotation}
-            />
+            <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
             <NeedsYouTray
               ref={trayRef}
               items={trayItems}
