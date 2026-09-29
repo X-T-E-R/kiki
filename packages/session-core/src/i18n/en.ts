@@ -1278,6 +1278,16 @@ export const en = {
   'notice.compacted': 'Context compacted — {before} → {after} tokens',
   'notice.promptAborted': 'Prompt aborted',
   'notice.promptFailed': 'Prompt failed',
+  'notice.earlierPromptOutcomes': '{count} earlier messages did not complete',
+  'transcript.promptOutcome.failed': 'Not sent',
+  'transcript.promptOutcome.replyFailed': 'Reply failed',
+  'transcript.promptOutcome.aborted': 'Aborted',
+  'transcript.promptOutcome.retry': 'Send again',
+  'transcript.promptOutcome.retryTitle': 'Put this message back in the composer',
+  'transcript.promptOutcome.details': 'Details',
+  'transcript.promptOutcome.noDetails': 'No failure reason was recorded.',
+  'transcript.promptOutcome.locate': 'Show',
+  'transcript.historyPartial': 'Earlier history is unverified and may be incomplete',
   'notice.turnFailed': 'Turn failed',
 
   // ---- interaction cards ----

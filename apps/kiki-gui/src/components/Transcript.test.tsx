@@ -1867,15 +1867,62 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
-  it('warns that unverified history is partial without claiming the beginning was reached', async () => {
+  it('keeps unverified coverage quiet while older pages remain to load', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
-      historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: true,
+      historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: false,
     });
-    const warning = container.querySelector('[role="status"]');
-    expect(warning?.textContent).toContain('History completeness is unverified');
-    expect(warning?.textContent).toContain('Earlier messages may be missing');
-    expect(warning?.textContent).not.toContain('beginning of history');
-    expect(warning?.querySelector('button')).not.toBeNull();
+    expect(container.querySelector('[data-top-edge="unverified"]')).toBeNull();
+    expect(container.textContent).toContain('Load earlier messages');
+  });
+
+  it('says unverified history is partial, as one quiet line, once the pages run out', async () => {
+    const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
+      historyCoverageKind: 'unknown', hasMoreHistory: false, oldestMessageId: 'known-turn', fetchedOlder: true,
+    });
+    const line = container.querySelector('[data-top-edge="unverified"]');
+    expect(line?.getAttribute('role')).toBe('status');
+    expect(line?.textContent).toContain('Earlier history is unverified');
+    expect(line?.querySelector('button')).toBeNull();
+    expect(container.textContent).not.toContain('beginning of history');
+  });
+
+  it('hangs a failed prompt on its bubble as a neutral line with the turn error behind Details', async () => {
+    const container = await renderTranscript([
+      userBlock({
+        id: 'user-failed', text: 'please retry me', userMessageId: 'um-failed', turnId: 't1',
+        promptOutcome: { status: 'failed', delivered: true, error: 'Connection error.', at: '2026-01-01T00:00:02.000Z' },
+      }),
+    ]);
+    const line = container.querySelector('[data-prompt-outcome="failed"]');
+    expect(line?.textContent).toContain('Reply failed');
+    expect(line?.querySelector('.text-danger')).toBeNull();
+    expect(container.querySelector('[data-notice-tone="danger"]')).toBeNull();
+    const details = [...line!.querySelectorAll('button')].find((button) => button.textContent?.includes('Details'))!;
+    expect(details.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { details.click(); });
+    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toBe('Connection error.');
+  });
+
+  it('merges earlier settled prompts into one expandable neutral row', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'notice', id: 'notice-prompt-outcomes-earlier', text: '3 earlier', tone: 'neutral',
+        i18n: { key: 'notice.earlierPromptOutcomes', params: { count: 3 } },
+        earlierPromptOutcomes: [
+          { promptId: 'p1', userMessageId: 'p1', status: 'failed', text: 'first' },
+          { promptId: 'p2', userMessageId: 'p2', status: 'failed', text: 'second' },
+          { promptId: 'p3', userMessageId: 'p3', status: 'aborted', text: 'third' },
+        ],
+      },
+      userBlock({ id: 'u-now', text: 'current' }),
+    ]);
+    const row = container.querySelector('[data-prompt-failed-run]')!;
+    expect(row.textContent).toContain('3 earlier messages did not complete');
+    expect(container.querySelectorAll('[data-prompt-failed-entry]')).toHaveLength(0);
+    const toggle = row.querySelector('button[aria-expanded]') as HTMLButtonElement;
+    await act(async () => { toggle.click(); });
+    expect([...container.querySelectorAll('[data-prompt-failed-entry]')].map((el) => el.getAttribute('data-prompt-failed-entry')))
+      .toEqual(['failed', 'failed', 'aborted']);
   });
 
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {

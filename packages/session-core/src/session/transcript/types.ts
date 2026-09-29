@@ -34,6 +34,11 @@ export interface UserBlock {
   readonly clientRequestId?: string;
   readonly optimisticStatus?: 'sending' | 'slow';
   readonly promptStatus?: PromptStatus;
+  /**
+   * Terminal outcome of the prompt behind this message when it did not
+   * complete. The bubble carries it; there is no separate timeline row.
+   */
+  readonly promptOutcome?: PromptOutcome;
   readonly agentMessage?: {
     readonly senderAgentId?: string;
     readonly senderTaskName?: string;
@@ -41,6 +46,26 @@ export interface UserBlock {
   readonly peerThread?: {
     readonly sessionId?: string;
   };
+}
+
+export interface PromptOutcome {
+  readonly status: 'failed' | 'aborted';
+  /** When the prompt settled (`finishedAt`). */
+  readonly at?: string;
+  /** Terminal error of the turn it opened, when one is known. */
+  readonly error?: string;
+  /** True when the message reached a turn; false when it never started. */
+  readonly delivered: boolean;
+}
+
+/** A settled prompt whose message is outside the loaded window. */
+export interface EarlierPromptOutcome {
+  readonly promptId: string;
+  readonly userMessageId?: string;
+  readonly status: PromptOutcome['status'];
+  readonly at?: string;
+  /** Opening of the message text, for the expanded list. */
+  readonly text?: string;
 }
 
 export interface SystemReminderBlock {
@@ -242,6 +267,11 @@ export interface NoticeBlock {
   readonly reasonCodes?: readonly string[];
   /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
   readonly executor?: ExecutorNote;
+  /**
+   * Set on the single `notice-prompt-outcomes-earlier` row: settled prompts
+   * whose messages sit in history pages that are not loaded yet.
+   */
+  readonly earlierPromptOutcomes?: readonly EarlierPromptOutcome[];
 }
 
 /**

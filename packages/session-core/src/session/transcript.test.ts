@@ -32,6 +32,7 @@ import {
   buildFloorEntries,
   classifyTranscriptText,
   createViewState,
+  EARLIER_PROMPT_OUTCOMES_ID,
   filterBlocksToDirectChildren,
   floorPreview,
   latestFinalAssistantBlockId,
@@ -3696,7 +3697,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(replayed.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(false);
   });
 
-  it('keeps the settled user bubble and shows a danger notice when the matching prompt fails', () => {
+  it('keeps the settled user bubble and marks it when the matching prompt fails', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -3733,17 +3734,16 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(
       projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.promptStatus === 'queued'),
     ).toBe(false);
+    expect(projected.blocks.some((block) => block.kind === 'notice')).toBe(false);
     expect(
-      projected.blocks.some(
-        (block) => block.kind === 'notice' && block.id === 'notice-failed-p-queued' && block.tone === 'danger',
-      ),
-    ).toBe(true);
+      projected.blocks.find((block) => block.kind === 'user' && block.promptId === 'p-queued'),
+    ).toMatchObject({ promptOutcome: { status: 'failed', delivered: false } });
     expect(
       projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.text === 'B: fail me.'),
     ).toBe(true);
   });
 
-  it('anchors a terminal prompt notice to its materialized turn and finish time', () => {
+  it('hangs a terminal prompt outcome on its materialized turn bubble', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -3775,12 +3775,105 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         ],
       }),
     );
-    expect(projected.blocks.find((block) => block.id === 'notice-failed-p-failed')).toMatchObject({
-      kind: 'notice',
-      tone: 'danger',
-      createdAt: FIXED_AT_1,
-      turnId: 't9',
+    expect(projected.blocks.some((block) => block.kind === 'notice')).toBe(false);
+    expect(projected.blocks.find((block) => block.kind === 'user' && block.turnId === 't9')).toMatchObject({
+      promptId: 'p-failed',
+      promptOutcome: { status: 'failed', at: FIXED_AT_1, delivered: true },
     });
+  });
+
+  // Shapes from a real long session: the reset window carries the last turns
+  // only, while `prompts` carries every prompt the agent ever ran.
+  function windowedFailureSnapshot(extraPrompts: readonly Record<string, unknown>[] = []) {
+    const turn = (n: number, state: 'completed' | 'failed', error?: string) => ({
+      kind: 'turn' as const,
+      turnId: `t${n}`,
+      ordinal: n,
+      state,
+      origin: { kind: 'user' as const, payload: { promptId: `p${n}`, userMessageId: `p${n}` } },
+      prompt: `message ${n}`,
+      startedAt: `2026-01-02T00:${String(n).padStart(2, '0')}:00.000Z`,
+      endedAt: `2026-01-02T00:${String(n).padStart(2, '0')}:30.000Z`,
+      error,
+      steps: [],
+    });
+    const prompt = (id: string, status: string, createdAt: string, finishedAt: string, text = `text ${id}`) => ({
+      promptId: id,
+      userMessageId: id,
+      status,
+      createdAt,
+      finishedAt,
+      content: [{ type: 'text', text }],
+    });
+    return emptySnapshot({
+      items: [turn(40, 'completed'), turn(41, 'failed', 'Connection error.'), turn(42, 'completed')],
+      hasMoreOlder: true,
+      prompts: [
+        prompt('p17', 'failed', '2026-01-01T01:00:00.000Z', '2026-01-01T01:04:00.000Z'),
+        prompt('p18', 'aborted', '2026-01-01T02:00:00.000Z', '2026-01-01T02:01:00.000Z'),
+        prompt('p19', 'failed', '2026-01-01T03:00:00.000Z', '2026-01-01T03:02:00.000Z'),
+        prompt('p40', 'completed', '2026-01-02T00:40:00.000Z', '2026-01-02T00:40:30.000Z'),
+        prompt('p41', 'failed', '2026-01-02T00:41:00.000Z', '2026-01-02T00:41:30.000Z'),
+        prompt('p42', 'completed', '2026-01-02T00:42:00.000Z', '2026-01-02T00:42:30.000Z'),
+        ...extraPrompts,
+      ] as never,
+    });
+  }
+
+  it('merges prompts settled outside the loaded window into one neutral row', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot());
+    const notices = projected.blocks.filter((block) => block.kind === 'notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      id: EARLIER_PROMPT_OUTCOMES_ID,
+      tone: 'neutral',
+      i18n: { key: 'notice.earlierPromptOutcomes', params: { count: 3 } },
+    });
+    expect(notices[0]!.kind === 'notice' && notices[0]!.earlierPromptOutcomes?.map((outcome) => `${outcome.promptId}:${outcome.status}`))
+      .toEqual(['p17:failed', 'p18:aborted', 'p19:failed']);
+    expect(projected.blocks[0]?.id).toBe(EARLIER_PROMPT_OUTCOMES_ID);
+    expect(projected.blocks.some((block) => block.id.startsWith('notice-failed-') || block.id.startsWith('notice-aborted-'))).toBe(false);
+  });
+
+  it('marks the in-window failure on its bubble with the turn error', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot());
+    const users = projected.blocks.filter((block) => block.kind === 'user');
+    expect(users.map((block) => block.kind === 'user' && block.promptOutcome?.status)).toEqual([undefined, 'failed', undefined]);
+    expect(users[1]).toMatchObject({
+      turnId: 't41',
+      promptOutcome: { status: 'failed', error: 'Connection error.', delivered: true },
+    });
+  });
+
+  it('counts a message that failed more than once as one outcome', () => {
+    const repeat = [
+      { promptId: 'p19-retry', userMessageId: 'p19', status: 'failed', createdAt: '2026-01-01T03:05:00.000Z', finishedAt: '2026-01-01T03:06:00.000Z', content: [{ type: 'text', text: 'text p19' }] },
+      { promptId: 'p41-retry', userMessageId: 'p41', status: 'failed', createdAt: '2026-01-02T00:41:40.000Z', finishedAt: '2026-01-02T00:41:50.000Z' },
+    ];
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot(repeat));
+    const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
+    expect(earlier?.kind === 'notice' && earlier.earlierPromptOutcomes?.map((outcome) => outcome.promptId))
+      .toEqual(['p17', 'p18', 'p19-retry']);
+    expect(earlier).toMatchObject({ i18n: { params: { count: 3 } } });
+    const marked = projected.blocks.filter((block) => block.kind === 'user' && block.promptOutcome !== undefined);
+    expect(marked).toHaveLength(1);
+  });
+
+  it('clears an earlier failure once the same message completes', () => {
+    const recovered = [
+      { promptId: 'p17-regen', userMessageId: 'p17', status: 'completed', createdAt: '2026-01-01T01:10:00.000Z', finishedAt: '2026-01-01T01:12:00.000Z' },
+    ];
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot(recovered));
+    const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
+    expect(earlier?.kind === 'notice' && earlier.earlierPromptOutcomes?.map((outcome) => outcome.promptId))
+      .toEqual(['p18', 'p19']);
+  });
+
+  it('drops the earlier row when every settled prompt is on the page', () => {
+    const snapshot = windowedFailureSnapshot();
+    const inWindow = { ...snapshot, prompts: snapshot.prompts.filter((prompt) => !['p17', 'p18', 'p19'].includes(prompt.promptId)) };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', inWindow);
+    expect(projected.blocks.some((block) => block.kind === 'notice')).toBe(false);
   });
 
   it('shows a danger taskref notice with the error for lost and timed_out background tasks', () => {

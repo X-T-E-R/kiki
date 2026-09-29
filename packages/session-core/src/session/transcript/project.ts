@@ -49,7 +49,9 @@ import {
   type ApprovalBlock,
   type AssistantBlock,
   type Block,
+  type EarlierPromptOutcome,
   type NoticeBlock,
+  type PromptOutcome,
   type QuestionBlock,
   type QueuedPromptMeta,
   type SessionViewState,
@@ -1639,12 +1641,164 @@ function isRegeneratingJournalUser(
   );
 }
 
+export const EARLIER_PROMPT_OUTCOMES_ID = 'notice-prompt-outcomes-earlier';
+
+type TerminalPrompt = TranscriptPrompt & { readonly status: 'failed' | 'aborted' };
+
+interface PromptOutcomeContext {
+  /** Start of the oldest loaded turn; anything settled before it is history. */
+  readonly windowStartMs: number | undefined;
+  /** promptId / message id → the turn it opened. */
+  readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly error?: string }>;
+}
+
+function promptOutcomeContext(
+  blocks: readonly Block[],
+  items: AgentTranscriptProjectionSource['items'],
+): PromptOutcomeContext {
+  const turns = new Map<string, { turnId: string; error?: string }>();
+  let windowStartMs: number | undefined;
+  for (const item of items as readonly { readonly kind: string }[]) {
+    if (item.kind !== 'turn') continue;
+    const turn = item as unknown as {
+      readonly turnId: string;
+      readonly promptId?: string;
+      readonly error?: string;
+      readonly startedAt?: string;
+      readonly origin?: PromptOriginLike;
+    };
+    const started = timestampMs(turn.startedAt);
+    if (started !== undefined && (windowStartMs === undefined || started < windowStartMs)) windowStartMs = started;
+    const identity = identityFromTurnOrigin(turn.origin);
+    const entry = { turnId: turn.turnId, error: turn.error };
+    for (const key of [turn.promptId, identity.promptId, identity.userMessageId, turnMessageId(turn)]) {
+      if (key !== undefined) turns.set(key, entry);
+    }
+  }
+  if (windowStartMs === undefined) {
+    for (const block of blocks) {
+      const at = block.kind === 'user' ? timestampMs(block.createdAt) : undefined;
+      if (at !== undefined && (windowStartMs === undefined || at < windowStartMs)) windowStartMs = at;
+    }
+  }
+  return { windowStartMs, turns };
+}
+
+/** A newer prompt for the same message already settled it (retry, regenerate, repeat failure). */
+function supersededByLaterPrompt(prompt: TranscriptPrompt, prompts: readonly TranscriptPrompt[]): boolean {
+  if (prompt.userMessageId === undefined) return false;
+  const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
+  return prompts.some(
+    (other) =>
+      other !== prompt &&
+      other.userMessageId === prompt.userMessageId &&
+      !(other.status === 'aborted' && other.abortedBeforeStart === true) &&
+      (timestampMs(other.finishedAt ?? other.createdAt) ?? 0) > settledAt,
+  );
+}
+
+function promptOutcomeOf(prompt: TerminalPrompt, context: PromptOutcomeContext, user?: UserBlock): PromptOutcome {
+  const turn =
+    context.turns.get(prompt.promptId) ??
+    (prompt.userMessageId === undefined ? undefined : context.turns.get(prompt.userMessageId));
+  return {
+    status: prompt.status,
+    at: prompt.finishedAt,
+    error: turn?.error,
+    delivered: turn !== undefined || user?.turnId !== undefined,
+  };
+}
+
+/**
+ * Hang a failed / aborted prompt's outcome on its message bubble. Returns
+ * undefined when the message is not on the page: its turn sits in a history
+ * page that is not loaded yet, so it joins the one "earlier" row instead of
+ * becoming an orphan divider at the top of the window.
+ */
+function placePromptOutcome(
+  blocks: Block[],
+  prompt: TerminalPrompt,
+  previous: readonly Block[],
+  context: PromptOutcomeContext,
+): Block[] | undefined {
+  const index = blocks.findIndex((block) => block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
+  if (index >= 0) {
+    const user = blocks[index] as UserBlock;
+    const next = [...blocks];
+    next[index] = { ...user, promptStatus: undefined, queuedContent: undefined, promptOutcome: promptOutcomeOf(prompt, context, user) };
+    return next;
+  }
+  const previousUser = previous.find(
+    (block): block is UserBlock => block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
+  );
+  // A local / queued echo never owned a turn: it stays where the reader saw it.
+  if (previousUser !== undefined && previousUser.turnId === undefined) {
+    const next = [...blocks];
+    const settled: UserBlock = {
+      ...previousUser,
+      promptStatus: undefined,
+      queuedContent: undefined,
+      promptOutcome: promptOutcomeOf(prompt, context, previousUser),
+    };
+    if (!insertAtPreviousPosition(next, settled, previous)) insertByTimeline(next, settled);
+    return next;
+  }
+  const createdMs = timestampMs(prompt.createdAt);
+  const insideWindow =
+    context.windowStartMs === undefined || (createdMs !== undefined && createdMs >= context.windowStartMs);
+  if (!insideWindow || context.turns.has(prompt.promptId)) return undefined;
+  const parts = promptContentParts(prompt.content);
+  if (parts.length === 0) return undefined;
+  const projection = projectMessageContent(parts);
+  const identity = prompt.userMessageId ?? prompt.promptId;
+  const created = classifiedTextToBlocks({
+    id: identity,
+    classified: classifyTranscriptText({ text: projection.text, role: 'user', origin: { kind: 'user' } }),
+    createdAt: prompt.createdAt,
+    media: projection.media,
+    promptId: prompt.promptId,
+    userMessageId: prompt.userMessageId,
+  });
+  const next = [...blocks];
+  for (const block of created) {
+    insertByTimeline(next, block.kind === 'user' ? { ...block, promptOutcome: promptOutcomeOf(prompt, context) } : block);
+  }
+  return next;
+}
+
+/** One quiet row at the top of the window for every settled prompt it cannot show. */
+function earlierPromptOutcomesBlock(prompts: readonly TerminalPrompt[]): NoticeBlock {
+  const outcomes: EarlierPromptOutcome[] = prompts
+    .toSorted((a, b) => (timestampMs(a.finishedAt ?? a.createdAt) ?? 0) - (timestampMs(b.finishedAt ?? b.createdAt) ?? 0))
+    .map((prompt) => {
+      const text = projectMessageContent(promptContentParts(prompt.content)).text.trim();
+      return {
+        promptId: prompt.promptId,
+        userMessageId: prompt.userMessageId,
+        status: prompt.status,
+        at: prompt.finishedAt,
+        text: text === '' ? undefined : text.slice(0, 280),
+      };
+    });
+  return {
+    kind: 'notice',
+    id: EARLIER_PROMPT_OUTCOMES_ID,
+    text: `${outcomes.length} earlier prompts did not complete`,
+    tone: 'neutral',
+    i18n: { key: 'notice.earlierPromptOutcomes', params: { count: outcomes.length } },
+    earlierPromptOutcomes: outcomes,
+  };
+}
+
 function mergeTranscriptPromptBlocks(
   blocks: Block[],
   prompts: readonly TranscriptPrompt[],
   previous: readonly Block[] = [],
+  items: AgentTranscriptProjectionSource['items'] = [],
 ): Block[] {
   let next = blocks;
+  const context = promptOutcomeContext(blocks, items);
+  const earlier: TerminalPrompt[] = [];
   for (const prompt of prompts) {
     if (prompt.status === 'completed') {
       next = settleCompletedPrompt(next, prompt);
@@ -1662,28 +1816,13 @@ function mergeTranscriptPromptBlocks(
           ? { ...block, promptStatus: undefined, queuedContent: undefined }
           : block,
       );
-      const isFailed = prompt.status === 'failed';
-      const noticeId = isFailed ? `notice-failed-${prompt.promptId}` : `notice-aborted-${prompt.promptId}`;
-      if (!next.some((block) => block.id === noticeId)) {
-        const promptUser = next.find(
-          (block): block is UserBlock =>
-            block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-        ) ?? previous.find(
-          (block): block is UserBlock =>
-            block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-        );
-        const notice: NoticeBlock = {
-          kind: 'notice',
-          id: noticeId,
-          text: isFailed ? 'Prompt failed' : 'Prompt aborted',
-          tone: isFailed ? 'danger' : 'neutral',
-          createdAt: prompt.finishedAt ?? prompt.createdAt,
-          turnId: promptUser?.turnId,
-          i18n: { key: isFailed ? 'notice.promptFailed' : 'notice.promptAborted' },
-        };
-        next = [...next];
-        insertByTimeline(next, notice);
-      }
+      // One outcome per message: a later prompt for the same message (a
+      // retry, a regenerate, a second failure) speaks for it instead.
+      if (supersededByLaterPrompt(prompt, prompts)) continue;
+      const terminal: TerminalPrompt = { ...prompt, status: prompt.status };
+      const placed = placePromptOutcome(next, terminal, previous, context);
+      if (placed === undefined) earlier.push(terminal);
+      else next = placed;
       continue;
     }
     if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') {
@@ -1717,6 +1856,7 @@ function mergeTranscriptPromptBlocks(
     };
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
   }
+  if (earlier.length > 0) next = [earlierPromptOutcomesBlock(earlier), ...next];
   return next;
 }
 
@@ -1727,30 +1867,9 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     if (block.promptId !== undefined) known.add(`p:${block.promptId}`);
     if (block.userMessageId !== undefined) known.add(`u:${block.userMessageId}`);
   }
-  const abortedPromptIds = new Set(
-    next
-      .filter(
-        (block) =>
-          block.kind === 'notice' &&
-          (block.id.startsWith('notice-aborted-') || block.id.startsWith('notice-failed-')),
-      )
-      .map((block) =>
-        block.id.startsWith('notice-aborted-')
-          ? block.id.slice('notice-aborted-'.length)
-          : block.id.slice('notice-failed-'.length),
-      ),
-  );
   const extras: Block[] = [];
   for (const block of previous) {
     if (block.kind !== 'user') continue;
-    const abortedPromptId = block.promptId;
-    const aborted = abortedPromptId !== undefined && abortedPromptIds.has(abortedPromptId);
-    if (aborted) {
-      if (!next.some((candidate) => candidate.kind === 'user' && isPromptIdentity(candidate, abortedPromptId, block.userMessageId))) {
-        extras.push({ ...block, promptStatus: undefined, queuedContent: undefined });
-      }
-      continue;
-    }
     if (block.promptStatus !== 'queued' && block.promptStatus !== 'blocked' && block.promptStatus !== 'running') {
       continue;
     }
@@ -2288,7 +2407,7 @@ export function agentTranscriptToBlocks(
       cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
     }
   }
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(blocks, prompts, previous)];
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(blocks, prompts, previous, response.items)];
   for (const block of deferredTaskBlocks) {
     if (
       blockTimelineMs(block) === undefined &&

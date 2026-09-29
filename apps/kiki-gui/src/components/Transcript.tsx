@@ -42,6 +42,7 @@ import {
   writeAnnotationOverride,
   type AnnotationOverride,
   type TimelineAnnotation,
+  appendToDraft,
 } from '@kiki/session-core/composer';
 import {
   subscribeSettings,
@@ -89,6 +90,7 @@ import { firstSentence, formatTokensPerSecond, plainInline } from '@kiki/session
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
+  locateInTimeline,
   normalizeTurnId,
   registerTimelineLocator,
   timelineBecameVisible,
@@ -121,6 +123,13 @@ import {
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
+import {
+  EarlierPromptOutcomesRow,
+  PromptOutcomeActionsContext,
+  PromptOutcomeLine,
+  usePromptOutcomeActions,
+  type PromptOutcomeActions,
+} from './timeline/PromptOutcome';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
@@ -260,6 +269,7 @@ const UserMessage = memo(function UserMessage({
   annotations?: readonly TimelineAnnotation[];
 }) {
   const { t, time } = useI18n();
+  const outcomeActions = usePromptOutcomeActions();
   const [editing, setEditing] = useState(false);
   const { contentRef, contentId, isOverflowing, expanded, toggle } =
     useCollapsibleOverflow<HTMLDivElement>(block.text);
@@ -383,6 +393,15 @@ const UserMessage = memo(function UserMessage({
         <span className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] font-medium text-danger">
           {t('transcript.blocked')}
         </span>
+      ) : null}
+      {block.promptOutcome !== undefined && !editing ? (
+        <PromptOutcomeLine
+          outcome={block.promptOutcome}
+          onRetry={outcomeActions.onRetry === undefined || block.text.trim() === ''
+            ? undefined
+            : () => { outcomeActions.onRetry?.(block.text); }}
+          retryDisabled={outcomeActions.disabled === true}
+        />
       ) : null}
     </div>
   );
@@ -1568,7 +1587,9 @@ const BlockView = memo(function BlockView({
     case 'notice':
       return block.executor !== undefined
         ? <ExecutorNoteRow note={block.executor} createdAt={block.createdAt} />
-        : <Notice block={block} />;
+        : block.earlierPromptOutcomes !== undefined
+          ? <EarlierPromptOutcomesRow block={block} />
+          : <Notice block={block} />;
     case 'approval':
       // Terminal facts stay inline as one compact history line (readOnly or
       // not); only a PENDING approval keeps the full interactive card.
@@ -2146,23 +2167,18 @@ function TopEdge({ state, onLoadOlder }: {
   onLoadOlder: () => Promise<boolean>;
 }) {
   const { t } = useI18n();
-
-  if (state.historyCoverageKind === 'unknown') {
+  // Unverified coverage says one thing: the top of what loaded cannot be
+  // vouched for as the beginning. While older pages remain there is nothing
+  // to warn about yet (the reader just loads them); it replaces the
+  // "beginning of history" boundary once the pages run out.
+  if (state.historyCoverageKind === 'unknown' && !state.hasMoreHistory && !state.loadingOlder && state.olderError === undefined) {
     return (
-      <div role="status" className="mx-auto flex max-w-[440px] flex-col items-center gap-1.5 rounded-lg border border-hairline bg-panel px-4 py-3 text-center">
-        <p className="text-[13px] font-medium text-ink">{t('transcript.historyUnverified')}</p>
-        <p className="text-[12px] text-ink-soft">{t('transcript.historyUnverifiedHint')}</p>
-        {state.olderError !== undefined ? <p className="text-[11px] text-danger">{state.olderError}</p> : null}
-        {state.loadingOlder ? <span className="text-[11px] text-ink-faint">{t('transcript.loadingEarlier')}</span> : null}
-        {!state.loadingOlder && state.hasMoreHistory && state.oldestMessageId !== undefined ? (
-          <button
-            type="button"
-            onClick={() => { void onLoadOlder(); }}
-            className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-          >
-            {t(state.olderError === undefined ? 'transcript.loadEarlier' : 'transcript.retryEarlier')}
-          </button>
-        ) : null}
+      <div role="status" data-top-edge="unverified" className="flex items-center gap-3 pb-1">
+        <span className="h-px flex-1 bg-hairline" />
+        <span className="text-[12px] text-ink-faint" title={t('transcript.historyUnverifiedHint')}>
+          {t('transcript.historyPartial')}
+        </span>
+        <span className="h-px flex-1 bg-hairline" />
       </div>
     );
   }
@@ -2432,6 +2448,19 @@ export function Transcript({
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
+  // Failed / aborted prompts: send again puts the text back in this session's
+  // composer (nothing is rewritten or re-run behind the reader's back); an
+  // earlier one is reached through the one locate entry point.
+  const promptOutcomeActions = useMemo<PromptOutcomeActions>(() => {
+    if (readOnly || sessionIdForLocate === undefined) return {};
+    return {
+      disabled: rowActions?.disabled === true,
+      onRetry: agentId === 'main' ? (text) => { appendToDraft(sessionIdForLocate, text); } : undefined,
+      onLocate: (userMessageId) => {
+        void locateInTimeline({ kind: 'block', blockId: `user-${userMessageId}` }, { sessionId: sessionIdForLocate, agentId });
+      },
+    };
+  }, [readOnly, sessionIdForLocate, rowActions?.disabled, agentId]);
   const timelineBlocks = useMemo(
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
@@ -2559,14 +2588,20 @@ export function Transcript({
     // Live abort notices can lack a turn id; anything after the last user row
     // belongs to the stopped tail turn too.
     const lastUserIndex = nodes.findLastIndex((node) => node.kind === 'user');
-    return nodes.filter(
-      (node, index) =>
-        !(
-          node.kind === 'notice' &&
-          (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
-          (sameTurn(node.turnId, stoppedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
-        ),
-    );
+    return nodes
+      .filter(
+        (node, index) =>
+          !(
+            node.kind === 'notice' &&
+            (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
+            (sameTurn(node.turnId, stoppedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
+          ),
+      )
+      .map((node) =>
+        node.kind === 'user' && node.promptOutcome?.status === 'aborted' && sameTurn(node.turnId, stoppedTailTurnId)
+          ? { ...node, promptOutcome: undefined }
+          : node,
+      );
   }, [nodes, stoppedTailTurnId]);
   // Settled entries are NOT folded behind a counter: they stay in place at
   // their own timestamp, one quiet activity line each. One subagent is ONE
@@ -3169,6 +3204,7 @@ export function Transcript({
   }
 
   return (
+    <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
@@ -3269,5 +3305,6 @@ export function Transcript({
       />
       <JumpToBottom virtualizer={virtualizer} />
     </div>
+    </PromptOutcomeActionsContext.Provider>
   );
 }

@@ -1270,6 +1270,16 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'notice.compacted': '上下文已压缩 — {before} → {after} tokens',
   'notice.promptAborted': '消息已中止',
   'notice.promptFailed': '消息发送失败',
+  'notice.earlierPromptOutcomes': '{count} 条较早的消息没有完成',
+  'transcript.promptOutcome.failed': '发送失败',
+  'transcript.promptOutcome.replyFailed': '回复失败',
+  'transcript.promptOutcome.aborted': '已中止',
+  'transcript.promptOutcome.retry': '重新发送',
+  'transcript.promptOutcome.retryTitle': '把这条消息放回输入框',
+  'transcript.promptOutcome.details': '详情',
+  'transcript.promptOutcome.noDetails': '没有记录失败原因。',
+  'transcript.promptOutcome.locate': '定位',
+  'transcript.historyPartial': '更早的历史未经完整性验证，可能有缺失',
   'notice.turnFailed': '本轮失败',
 
   // ---- interaction cards ----
