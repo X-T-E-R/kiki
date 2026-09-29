@@ -42,7 +42,7 @@ export function registerRequestLogging(app: FastifyInstance): void {
       {
         req: {
           method: req.method,
-          url: req.url,
+          url: req.routeOptions.url ?? req.url.split('?')[0],
           version: req.headers['accept-version'],
           host: req.host,
           remoteAddress: req.ip,

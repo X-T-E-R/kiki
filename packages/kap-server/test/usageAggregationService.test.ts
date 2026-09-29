@@ -3,6 +3,7 @@ import {
   IRetainedUsageService,
   ISessionIndex,
   RETAINED_USAGE_VERSION,
+  type EphemeralUsageTotal,
   type RetainedDeletedSessionUsage,
   type RetainedUsageListQuery,
   type RetainedUsageListResult,
@@ -98,6 +99,7 @@ function fixture(
     scannedRecords: 0,
   },
   onCheckpointRead: (bytes: number) => void = () => {},
+  ephemeral: readonly EphemeralUsageTotal[] = [],
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
@@ -165,6 +167,11 @@ function fixture(
       retainedQueries.push(query);
       return retainedResult;
     },
+    listEphemeralUsage: async (input) => ({
+      items: ephemeral.filter((item) => input.workspaceIds === undefined || input.workspaceIds.includes(item.workspaceId)),
+      complete: true,
+      scannedRecords: ephemeral.length,
+    }),
   };
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
@@ -204,6 +211,19 @@ async function query(service: UsageAggregationService, input: UsageQuery = {}) {
 }
 
 describe('UsageAggregationService accounting evidence', () => {
+  it('adds temporary usage to daily totals without exposing a session or drilldown', async () => {
+    const { service } = fixture([], {}, () => 86_400_100, {}, undefined, undefined, [{
+      workspaceId: 'w', time: 86_400_000, model: 'priced-model',
+      usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 },
+    }]);
+    const response = await query(service, { granularity: 'day' });
+    expect(response.summary.tokens).toEqual({ input_other: 1, output: 1, input_cache_read: 1, input_cache_creation: 1 });
+    expect(response.summary.session_count).toBe(0);
+    expect(response.sessions.items).toEqual([]);
+    expect(response.trend[0]?.groups[0]?.tokens.input_other).toBe(1);
+    expect(response.trend[0]?.drilldown.sessions).toEqual([]);
+  });
+
   it('preserves explicit missing usage and legacy-zero provenance without dropping known tokens', async () => {
     const zero = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
     const records = [

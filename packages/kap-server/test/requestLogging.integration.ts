@@ -48,6 +48,15 @@ describe('requestLogging', () => {
     }
   });
 
+  it('does not log request query values that may contain conversation text', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-request-log-'));
+    const { logger, lines } = captureLogger();
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logger });
+    await fetch(`http://127.0.0.1:${String(server.port)}/api/healthz?query=private-phrase`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(lines.join('')).not.toContain('private-phrase');
+  });
+
   it('logs the envelope code instead of the HTTP status code', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-request-log-'));
     const { logger, lines } = captureLogger();

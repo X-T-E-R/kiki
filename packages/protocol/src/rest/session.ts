@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { goalSnapshotSchema } from '../events';
 import { messageSchema } from '../message';
 import { cursorQuerySchema, pageResponseSchema } from '../pagination';
+import { worktreeRemovalOutcomeSchema } from './worktree';
 import {
   sessionChildCreateSchema,
   sessionCreateSchema,
@@ -34,6 +35,20 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export const createSessionResponseSchema = sessionSchema;
 export type CreateSessionResponse = z.infer<typeof createSessionResponseSchema>;
 
+export const listSessionsResponseSchema = pageResponseSchema(sessionSchema).extend({
+  ephemeral: z.array(sessionSchema).optional(),
+});
+export type ListSessionsResponse = z.infer<typeof listSessionsResponseSchema>;
+export const listEphemeralSessionsResponseSchema = z.object({ items: z.array(sessionSchema) });
+export type ListEphemeralSessionsResponse = z.infer<typeof listEphemeralSessionsResponseSchema>;
+export const endEphemeralSessionResponseSchema = z.object({
+  ended: z.literal(true),
+  worktree: z.object({ id: z.string(), outcome: z.union([z.literal('kept'), worktreeRemovalOutcomeSchema]) }).optional(),
+});
+export type EndEphemeralSessionResponse = z.infer<typeof endEphemeralSessionResponseSchema>;
+export const saveEphemeralSessionResponseSchema = sessionSchema;
+export type SaveEphemeralSessionResponse = z.infer<typeof saveEphemeralSessionResponseSchema>;
+
 const booleanQueryParam = z.preprocess(
   (value) => {
     if (value === 'true' || value === '1' || value === 1 || value === true) return true;
@@ -47,6 +62,7 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
   z.object({
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
+    include_ephemeral: booleanQueryParam,
     archived_only: booleanQueryParam,
     exclude_empty: booleanQueryParam,
   }),

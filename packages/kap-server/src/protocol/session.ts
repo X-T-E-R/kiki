@@ -61,6 +61,7 @@ export const sessionSchema = z.object({
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   archived: z.boolean().optional(),
+  ephemeral: z.boolean().optional(),
   archived_at: isoDateTimeSchema.optional(),
   current_prompt_id: z.string().min(1).optional(),
   last_prompt: z.string().optional(),
@@ -80,6 +81,7 @@ export const sessionCreateSchema = z.object({
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
+  ephemeral: z.boolean().optional(),
   isolation: worktreeIsolationSchema.optional(),
 });
 

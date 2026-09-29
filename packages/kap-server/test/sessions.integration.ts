@@ -71,6 +71,7 @@ interface SessionWire {
   pending_interaction: 'none' | 'approval' | 'question';
   last_turn_reason?: 'completed' | 'cancelled' | 'failed';
   archived?: boolean;
+  ephemeral?: boolean;
   metadata: { cwd: string } & Record<string, unknown>;
   agent_config: { model: string; profile?: string };
   usage: {
@@ -2311,6 +2312,157 @@ describe('server-v2 /api/sessions', () => {
       title: 'nope',
     });
     expect(body.code).toBe(40401);
+  });
+
+  it('rejects ending and saving a normal session as temporary', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+    expect((await postJson(`/api/sessions/${id}/ephemeral/end`, {})).body.code).toBe(40401);
+    expect((await postJson(`/api/sessions/${id}/ephemeral/save`, {})).body.code).toBe(40401);
+  });
+
+  it('keeps temporary sessions outside normal index and list and deletes them on end', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home }, ephemeral: true, title: 'ephemeral needle',
+    });
+    expect(created.body.code).toBe(0);
+    expect(created.body.data.ephemeral).toBe(true);
+    const id = created.body.data.id;
+    const dir = join(home!, 'ephemeral', created.body.data.workspace_id, id);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+    expect((await getJson<{ items: SessionWire[] }>('/api/sessions/ephemeral')).body.data.items.map((item) => item.id)).toContain(id);
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items.map((item) => item.id)).not.toContain(id);
+    const grouped = await getJson<PageWire & { ephemeral: SessionWire[] }>('/api/sessions?include_ephemeral=true');
+    expect(grouped.body.data.ephemeral.map((item) => item.id)).toContain(id);
+    expect(grouped.body.data.items.map((item) => item.id)).not.toContain(id);
+    expect(await server!.core.accessor.get(ISessionIndex).get(id)).toBeUndefined();
+    const indexFile = await readFile(join(home!, 'session_index.jsonl'), 'utf8').catch(() => '');
+    expect(indexFile).not.toContain(id);
+    const search = await postJson<{ items: { session_id: string }[] }>('/api/search', { query: 'ephemeral needle' });
+    expect(search.body.data.items.map((item) => item.session_id)).not.toContain(id);
+    const ended = await postJson<{ ended: boolean }>(`/api/sessions/${id}/ephemeral/end`, {});
+    expect(ended.body.data).toEqual({ ended: true });
+    await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await getJson<{ items: SessionWire[] }>('/api/sessions/ephemeral')).body.data.items).toEqual([]);
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items.map((item) => item.id)).not.toContain(id);
+    expect(await readFile(join(home!, 'session_index.jsonl'), 'utf8').catch(() => '')).not.toContain(id);
+    const endedSearch = await postJson<{ items: { session_id: string }[] }>('/api/search', { query: 'ephemeral needle' });
+    expect(endedSearch.body.data.items.map((item) => item.session_id)).not.toContain(id);
+  });
+
+  it.each([{ dirty: false, keep: false }, { dirty: true, keep: false }, { dirty: true, keep: true }])(
+    'ends an isolated temporary session safely (dirty=$dirty, keep=$keep)', async ({ dirty, keep }) => {
+    const cwd = join(home!, 'temporary-repo');
+    await mkdir(cwd);
+    const { execFileSync } = await import('node:child_process');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    await writeFile(join(cwd, 'file.txt'), 'original\n');
+    git('add', 'file.txt');
+    git('commit', '-m', 'initial');
+    const created = await postJson<SessionWire & { worktree: { worktree_id: string } }>('/api/sessions', {
+      metadata: { cwd }, ephemeral: true, isolation: { kind: 'worktree' },
+    });
+    expect(created.body.code).toBe(0);
+    const { id, metadata, worktree } = created.body.data;
+    if (dirty) await writeFile(join(metadata.cwd, 'file.txt'), 'unsaved changes\n');
+    const ended = await postJson<{ ended: boolean; worktree: { id: string; outcome: string } }>(
+      `/api/sessions/${id}/ephemeral/end`, keep ? { worktree: 'keep' } : {},
+    );
+    expect(ended.body.code).toBe(0);
+    expect(ended.body.data.worktree).toEqual({
+      id: worktree.worktree_id, outcome: keep ? 'kept' : dirty ? 'retained_dirty' : 'removed',
+    });
+    if (dirty) expect(await readFile(join(metadata.cwd, 'file.txt'), 'utf8')).toBe('unsaved changes\n');
+    else await expect(stat(metadata.cwd)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(join(home!, 'ephemeral', created.body.data.workspace_id, id)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  }, 30_000);
+
+  it('removes a clean temporary worktree during graceful backend shutdown', async () => {
+    const cwd = join(home!, 'temporary-shutdown-repo');
+    await mkdir(cwd);
+    const { execFileSync } = await import('node:child_process');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    await writeFile(join(cwd, 'file.txt'), 'original\n');
+    git('add', 'file.txt');
+    git('commit', '-m', 'initial');
+    const created = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd }, ephemeral: true, isolation: { kind: 'worktree' },
+    });
+    expect(created.body.code).toBe(0);
+    const checkout = created.body.data.metadata.cwd;
+    const sessionDir = join(home!, 'ephemeral', created.body.data.workspace_id, created.body.data.id);
+    await server!.close();
+    server = undefined;
+    await expect(stat(checkout)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(sessionDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  }, 30_000);
+
+  it('saves an idle temporary session into the searchable normal sessions scope', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home }, ephemeral: true, title: 'savedneedle',
+    });
+    expect(created.body.code).toBe(0);
+    const { id, workspace_id: workspaceId } = created.body.data;
+    const saved = await postJson<SessionWire>(`/api/sessions/${id}/ephemeral/save`, {});
+    expect(saved.body.code).toBe(0);
+    expect(saved.body.data.ephemeral).toBeUndefined();
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items.map((item) => item.id)).toContain(id);
+    expect(await readFile(join(home!, 'session_index.jsonl'), 'utf8')).toContain(id);
+    await expect(stat(join(home!, 'ephemeral', workspaceId, id))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(join(home!, 'sessions', workspaceId, id))).isDirectory()).toBe(true);
+    await vi.waitFor(async () => {
+      const indexed = await postJson<{ items: { session_id: string }[] }>('/api/search', { query: 'savedneedle' });
+      expect(indexed.body.code).toBe(0);
+      expect(indexed.body.data.items.map((item) => item.session_id)).toContain(id);
+    }, { timeout: 10_000, interval: 250 });
+  });
+
+  it('counts ended temporary usage without publishing its title or session id', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home }, ephemeral: true, title: 'secret-title-for-usage',
+    });
+    expect(created.body.code).toBe(0);
+    const { id, workspace_id: workspaceId } = created.body.data;
+    const append = server!.core.accessor.get(IAppendLogStore);
+    append.append(`ephemeral/${workspaceId}/${id}/agents/main`, 'wire.jsonl', {
+      type: 'usage.record', time: Date.now(), model: 'local-model',
+      usage: { inputOther: 3, output: 4, inputCacheRead: 0, inputCacheCreation: 0 },
+    });
+    await append.flush();
+    expect((await postJson(`/api/sessions/${id}/ephemeral/end`, {})).body.code).toBe(0);
+    const data = (await getJson<{ summary: { tokens: { input_other: number; output: number }; session_count: number }; sessions: { items: { id: string }[] } }>('/api/usage?granularity=day')).body.data;
+    expect(data.summary.tokens).toMatchObject({ input_other: 3, output: 4 });
+    expect(data.summary.session_count).toBe(0);
+    expect(data.sessions.items).toEqual([]);
+    const retained = await readFile(join(home!, 'store', 'ephemeral-totals-v1.jsonl'), 'utf8');
+    expect(retained).not.toMatch(/secret-title-for-usage|session_/);
+  });
+
+  it('clears orphaned temporary directories on backend restart', async () => {
+    await server!.close();
+    server = undefined;
+    const dir = join(home!, 'ephemeral', 'ws-after-crash', 'session_orphan');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'state.json'), '{"id":"session_orphan"}');
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent', debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    await vi.waitFor(async () => {
+      await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    }, { timeout: 5_000 });
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items).toEqual([]);
   });
 
   it('derives the session title from the first prompt submitted via /api', async () => {

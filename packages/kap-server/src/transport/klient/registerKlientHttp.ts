@@ -64,7 +64,7 @@ export function registerKlientHttp(
       return await reply.send(okEnvelope(data, req.id));
     } catch (error) {
       if (!(error instanceof RPCError)) {
-        req.log.error({ err: error }, 'klient http call failed');
+        req.log.error({ request_id: req.id, event_type: 'klient_call_failed' }, 'klient http call failed');
       }
       return await reply.send(errorEnvelope(error, req.id));
     } finally {
@@ -219,12 +219,12 @@ class KlientHttpConnection {
         try {
           const returned = iterator.return?.();
           if (returned !== undefined) {
-            void Promise.resolve(returned).catch((error: unknown) => {
-              this.app.log.warn({ err: error }, 'klient stream cancellation failed');
+            void Promise.resolve(returned).catch(() => {
+              this.app.log.warn({ request_id: id, event_type: 'stream_cancel_failed' }, 'klient stream cancellation failed');
             });
           }
-        } catch (error) {
-          this.app.log.warn({ err: error }, 'klient stream cancellation failed');
+        } catch {
+          this.app.log.warn({ request_id: id, event_type: 'stream_cancel_failed' }, 'klient stream cancellation failed');
         }
       },
     };
@@ -259,7 +259,7 @@ class KlientHttpConnection {
 
   private sendError(type: 'error' | 'stream_error' | 'view_error', id: string, error: unknown): void {
     if (!(error instanceof RPCError)) {
-      this.app.log.error({ err: error }, 'klient websocket operation failed');
+      this.app.log.error({ request_id: id, event_type: type }, 'klient websocket operation failed');
     }
     const payload = errorPayload(error);
     this.send({ type, id, ...payload });

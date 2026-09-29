@@ -149,6 +149,7 @@ export const sessionSchema = z.object({
    *  reason is cancelled/failed). */
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   archived: z.boolean().optional(),
+  ephemeral: z.boolean().optional(),
   /** When the session was archived (ISO 8601); absent for sessions archived
    *  before the field existed — clients fall back to `updated_at`. */
   archived_at: isoDateTimeSchema.optional(),
@@ -171,6 +172,7 @@ export const sessionCreateSchema = z.object({
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
+  ephemeral: z.boolean().optional(),
   isolation: worktreeIsolationSchema.optional(),
 });
 

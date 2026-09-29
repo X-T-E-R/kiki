@@ -53,6 +53,7 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
+import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';
@@ -140,6 +141,7 @@ const sessionsListQueryCoercion = z
     page_size: z.coerce.number().int().min(1).max(100).optional(),
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
+    include_ephemeral: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
     workspace_id: workspaceIdSchema.optional(),
@@ -273,6 +275,16 @@ export function registerSessionsRoutes(
   core.accessor.get(ISessionManager).onDidArchiveSession?.(({ sessionId }) => {
     releaseSessionOverlays(sessionId);
   });
+  const ephemeralSessions = async (workspaceId?: string): Promise<Session[]> => {
+    const handles = core.accessor.get(ISessionManager).listEphemeral();
+    return Promise.all(handles.filter((handle) => {
+      return workspaceId === undefined || handle.accessor.get(ISessionContext).workspaceId === workspaceId;
+    }).map(async (handle) => {
+      const ctx = handle.accessor.get(ISessionContext);
+      const meta = await handle.accessor.get(ISessionMetadata).read();
+      return toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), undefined, true);
+    }));
+  };
   const createRoute = defineRoute(
     {
       method: 'POST',
@@ -360,6 +372,7 @@ export function registerSessionsRoutes(
           workspaceId: touched.id,
           workDir,
           sessionId: createdSessionId,
+          ephemeral: body.ephemeral,
           worktree: worktree === undefined ? undefined : {
             worktreeId: worktree.id, branch: worktree.branch,
             sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
@@ -400,6 +413,8 @@ export function registerSessionsRoutes(
           { ...meta, workspaceId: touched.id },
           workDir,
           resolveSessionFacts(core, meta.id),
+          undefined,
+          body.ephemeral === true,
         );
         core.accessor.get(IEventService).publish(
           new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
@@ -408,8 +423,8 @@ export function registerSessionsRoutes(
       } catch (error) {
         if (worktreeId !== undefined) {
           if (sessionCreated && createdSessionId !== undefined) {
-            await core.accessor.get(ISessionManager).delete(createdSessionId).catch((cleanupError: unknown) => {
-              requestLog(req)?.warn({ err: cleanupError, session_id: createdSessionId }, 'worktree session rollback failed');
+            await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {
+              requestLog(req)?.warn({ session_id: createdSessionId, event_type: 'worktree_rollback_failed' }, 'worktree session rollback failed');
             });
           }
           const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
@@ -418,9 +433,9 @@ export function registerSessionsRoutes(
         if (autoRoot !== undefined && !sessionCreated) {
           try {
             await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
-          } catch (cleanupError) {
+          } catch {
             requestLog(req)?.warn(
-              { err: cleanupError, workspace_root: autoRoot },
+              { event_type: 'automatic_workspace_cleanup_failed' },
               'automatic workspace cleanup failed',
             );
           }
@@ -440,7 +455,7 @@ export function registerSessionsRoutes(
       method: 'GET',
       path: '/sessions',
       querystring: sessionsListQueryCoercion,
-      success: { data: pageResponseSchema(sessionSchema) },
+      success: { data: pageResponseSchema(sessionSchema).extend({ ephemeral: z.array(sessionSchema).optional() }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
@@ -548,7 +563,7 @@ export function registerSessionsRoutes(
           raw.busy !== undefined
             ? projected.filter((session) => session.busy === raw.busy)
             : projected;
-        reply.send(okEnvelope({ items, has_more: false }, req.id));
+        reply.send(okEnvelope({ items, has_more: false, ephemeral: raw.include_ephemeral === true ? await ephemeralSessions(raw.workspace_id) : undefined }, req.id));
         return;
       }
 
@@ -565,7 +580,7 @@ export function registerSessionsRoutes(
         raw.busy !== undefined && !archivedOnly
           ? projected.filter((session) => session.busy === raw.busy)
           : projected;
-      reply.send(okEnvelope({ items, has_more: hasMore }, req.id));
+      reply.send(okEnvelope({ items, has_more: hasMore, ephemeral: raw.include_ephemeral === true ? await ephemeralSessions(raw.workspace_id) : undefined }, req.id));
     },
   );
   app.get(
@@ -573,6 +588,20 @@ export function registerSessionsRoutes(
     listRoute.options,
     listRoute.handler as Parameters<SessionRouteHost['get']>[2],
   );
+
+  const ephemeralListRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/sessions/ephemeral',
+      success: { data: z.object({ items: z.array(sessionSchema) }) },
+      description: 'List live temporary sessions',
+      tags: ['sessions'],
+    },
+    async (req, reply) => {
+      reply.send(okEnvelope({ items: await ephemeralSessions() }, req.id));
+    },
+  );
+  app.get(ephemeralListRoute.path, ephemeralListRoute.options, ephemeralListRoute.handler as Parameters<SessionRouteHost['get']>[2]);
 
   const getRoute = defineRoute(
     {
@@ -590,6 +619,21 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       const { session_id } = req.params;
       const cursor = await broadcaster?.getCursor(session_id);
+      const manager = core.accessor.get(ISessionManager);
+      if (manager.isEphemeral(session_id)) {
+        const handle = manager.get(session_id);
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const ctx = handle.accessor.get(ISessionContext);
+        const meta = await handle.accessor.get(ISessionMetadata).read();
+        reply.send(okEnvelope(toWireSession(
+          { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
+          resolveSessionFacts(core, session_id), cursor?.seq, true,
+        ), req.id));
+        return;
+      }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
       if (summary === undefined) {
         reply.send(
@@ -643,6 +687,21 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const { session_id } = req.params;
+      const manager = core.accessor.get(ISessionManager);
+      if (manager.isEphemeral(session_id)) {
+        const handle = manager.get(session_id);
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const ctx = handle.accessor.get(ISessionContext);
+        const meta = await handle.accessor.get(ISessionMetadata).read();
+        reply.send(okEnvelope(toWireSession(
+          { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
+          resolveSessionFacts(core, session_id), undefined, true,
+        ), req.id));
+        return;
+      }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
       if (summary === undefined) {
         reply.send(
@@ -702,7 +761,7 @@ export function registerSessionsRoutes(
           if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
           const fields = await updateSessionProfile(handle, profileBody);
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
-          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id));
+          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), undefined, core.accessor.get(ISessionManager).isEphemeral(fields.id));
           if (typeof req.body.title === 'string' && req.body.title.trim().length > 0) {
             core.accessor.get(IEventService).publish(
               new SessionMetaUpdated({
@@ -779,6 +838,54 @@ export function registerSessionsRoutes(
     generateTitleRoute.options,
     generateTitleRoute.handler as Parameters<SessionRouteHost['post']>[2],
   );
+
+  for (const action of ['end', 'save'] as const) {
+    const route = defineRoute(
+      {
+        method: 'POST',
+        path: `/sessions/{session_id}/ephemeral/${action}`,
+        params: sessionIdParamSchema,
+        body: z.object({ worktree: z.enum(['keep', 'remove']).optional() }).optional(),
+        success: { data: action === 'save' ? sessionSchema : z.object({
+          ended: z.literal(true),
+          worktree: z.object({ id: z.string(), outcome: z.union([z.literal('kept'), worktreeRemovalOutcomeSchema]) }).optional(),
+        }) },
+        errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.SESSION_BUSY]: {} },
+        description: action === 'save' ? 'Save a temporary session' : 'End and delete a temporary session',
+        tags: ['sessions'],
+      },
+      async (req, reply) => {
+        try {
+          const id = req.params.session_id;
+          const manager = core.accessor.get(ISessionManager);
+          if (!manager.isEphemeral(id)) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `temporary session ${id} does not exist`, req.id));
+            return;
+          }
+          if (action === 'end') {
+            const worktreeId = (await manager.get(id)?.accessor.get(ISessionMetadata).read())?.worktree?.worktreeId;
+            await manager.delete(id);
+            if (worktreeId === undefined) {
+              reply.send(okEnvelope({ ended: true }, req.id));
+              return;
+            }
+            const outcome = req.body?.worktree === 'keep' ? 'kept' : await core.accessor
+              .get(IWorktreeService).remove(worktreeId)
+              .then((result) => result.outcome, () => 'failed' as const);
+            reply.send(okEnvelope({ ended: true, worktree: { id: worktreeId, outcome } }, req.id));
+            return;
+          }
+          await manager.saveEphemeral(id);
+          const summary = await core.accessor.get(ISessionIndex).get(id);
+          if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `saved session ${id} not found`);
+          reply.send(okEnvelope(toWireSession(summary, summary.cwd ?? '', resolveSessionFacts(core, id, summary.usage)), req.id));
+        } catch (error) {
+          sendMappedError(reply, req, error);
+        }
+      },
+    );
+    app.post(route.path, route.options, route.handler as Parameters<SessionRouteHost['post']>[2]);
+  }
 
   const sessionActionRoute = defineRoute(
     {
@@ -1320,6 +1427,7 @@ export function toWireSession(
   cwd: string,
   facts: SessionFacts,
   lastSeq?: number,
+  ephemeral = false,
 ): Session {
   return {
     id: fields.id,
@@ -1335,6 +1443,7 @@ export function toWireSession(
     last_turn_reason:
       facts.lastTurnReason ?? (facts.live === false ? fields.lastTurnReason : undefined),
     archived: fields.archived,
+    ephemeral: ephemeral || undefined,
     last_prompt: fields.lastPrompt,
     metadata: buildWireMetadata(fields.custom, cwd),
     worktree: fields.worktree === undefined ? undefined : {
@@ -1705,7 +1814,7 @@ function sendMappedError(
         return;
     }
   }
-  log?.error({ err }, 'session request failed');
+  log?.error({ request_id: requestId, error_type: err instanceof Error ? err.name : typeof err }, 'session request failed');
   reply.send(
     errEnvelope(
       ErrorCode.INTERNAL_ERROR,

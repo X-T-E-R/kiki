@@ -8,6 +8,7 @@ import {
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
+  type EphemeralUsageTotal,
   type RetainedUsageRecord,
   type Scope,
   type SessionSummary,
@@ -221,10 +222,23 @@ export class UsageAggregationService {
       if (session !== undefined) sessions.push(session);
       if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break;
     }
+    let ephemeralUsage: readonly EphemeralUsageTotal[] = [];
     if (budget.incompleteReason === null) {
       sessions.push(...await this.readRetainedSessions(query, budget, listed.activeKeys, sessions.length));
     }
-    return this.aggregate(query, sessions, fingerprint, cursor, budget);
+    const retainedUsage = this.core.accessor.get(IRetainedUsageService);
+    if (budget.incompleteReason === null && retainedUsage.listEphemeralUsage !== undefined) {
+      const anonymous = await retainedUsage.listEphemeralUsage({
+        workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
+        deadlineAt: budget.deadlineAt,
+        recordLimit: budget.remainingRecords,
+      });
+      ephemeralUsage = anonymous.items;
+      budget.remainingRecords -= anonymous.scannedRecords;
+      if (!anonymous.complete) budget.sourcesComplete = false;
+      if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
+    }
+    return this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeralUsage);
   }
 
   private async listSessions(
@@ -549,6 +563,7 @@ export class UsageAggregationService {
     fingerprint: string,
     cursor: readonly [number, string] | undefined,
     budget: ScanBudget,
+    ephemeralUsage: readonly EphemeralUsageTotal[] = [],
   ): UsageResponse {
     const total = emptyAggregate();
     const buckets = new Map<string, BucketAccumulator>();
@@ -661,6 +676,43 @@ export class UsageAggregationService {
         sessionAcc.modelCounts.set(record.model, (sessionAcc.modelCounts.get(record.model) ?? 0) + 1);
         if (record.profileName !== undefined) sessionAcc.profileNames.add(record.profileName);
       }
+    }
+    for (const entry of ephemeralUsage) {
+      if (!inRange(entry.time, query.range)) continue;
+      if (query.workspaceIds.length > 0 && !query.workspaceIds.includes(entry.workspaceId)) continue;
+      if (query.agentIds.length > 0 || query.providers.length > 0) continue;
+      if (query.models.length > 0 && !query.models.includes(entry.model)) continue;
+      const record: NormalizedUsageRecord = entry;
+      const cost = pricing.calculate(record.model, record.usage);
+      addAggregate(total, record, cost);
+      if (cost === undefined) unknownPriceModels.add(record.model);
+      earliestAt = earliestAt === undefined ? record.time : Math.min(earliestAt, record.time);
+      latestAt = latestAt === undefined ? record.time : Math.max(latestAt, record.time);
+      if (query.granularity !== 'day') continue;
+      const startAt = startOfDay(record.time, query.timezoneOffsetMinutes);
+      const key = String(startAt);
+      let bucket = buckets.get(key);
+      if (bucket === undefined) {
+        bucket = {
+          key, startAt, endAt: startAt + DAY_MS, groups: new Map(),
+          turnKeys: new Set(), requestCount: 0, drilldownSessions: new Map(),
+          drilldownSessionsTruncated: false,
+        };
+        buckets.set(key, bucket);
+      }
+      bucket.requestCount += 1;
+      const groupKey = query.dimension === 'project' ? entry.workspaceId
+        : query.dimension === 'model' ? entry.model : 'ephemeral';
+      let group = bucket.groups.get(groupKey);
+      if (group === undefined) {
+        group = {
+          key: groupKey, ...emptyAggregate(), providers: new Set(), modelAliases: new Set(),
+          agentIds: new Set(), parentAgentIds: new Set(), profileNames: new Set(),
+        };
+        bucket.groups.set(groupKey, group);
+      }
+      addAggregate(group, record, cost);
+      group.modelAliases.add(entry.model);
     }
     if (budget.incompleteReason === null && this.now() >= budget.deadlineAt) {
       budget.incompleteReason = 'deadline';

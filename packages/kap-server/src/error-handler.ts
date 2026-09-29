@@ -39,7 +39,7 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
         .send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack));
       return;
     }
-    req.log.error({ err, request_id: requestId }, 'unhandled error');
+    req.log.error({ error_type: err.code ?? err.name, request_id: requestId }, 'unhandled error');
     reply.status(200).send(
       errEnvelope(
         ErrorCode.INTERNAL_ERROR,

@@ -18,6 +18,8 @@ import {
   resolvePluginMarketplaceSource,
   IHomeRuntimeService,
   ISessionManager,
+  ISessionMetadata,
+  IWorktreeService,
   IThreadCommunicationService,
   IThreadMailboxStore,
   IWorkspaceService,
@@ -414,7 +416,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (shutdownController.signal.aborted) app.server.closeIdleConnections();
   });
   const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, (error) => {
-    logger.warn({ err: error }, 'lease resource expiry cleanup failed');
+    logger.warn({ event_type: 'lease_expiry_cleanup_failed' }, 'lease resource expiry cleanup failed');
   });
   let idleTimer: NodeJS.Timeout | undefined;
   let authMonitor: NodeJS.Timeout | undefined;
@@ -431,17 +433,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       leaseRegistry.dispose();
     } catch (error) {
       closeErrors.push(error);
-      logger.warn({ err: error }, 'lease registry dispose failed; continuing server cleanup');
+      logger.warn({ event_type: 'lease_registry_dispose_failed' }, 'lease registry dispose failed; continuing server cleanup');
     }
     let appClosing: Promise<void>;
     try {
       appClosing = app.close().catch((error) => {
         closeErrors.push(error);
-        logger.warn({ err: error }, 'http listener close failed; continuing server cleanup');
+        logger.warn({ event_type: 'http_listener_close_failed' }, 'http listener close failed; continuing server cleanup');
       });
     } catch (error) {
       closeErrors.push(error);
-      logger.warn({ err: error }, 'http listener close failed; continuing server cleanup');
+      logger.warn({ event_type: 'http_listener_close_failed' }, 'http listener close failed; continuing server cleanup');
       appClosing = Promise.resolve();
     }
     await appClosing;
@@ -449,28 +451,36 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await core.accessor.get(IThreadCommunicationService).shutdown();
     } catch (error) {
       closeErrors.push(error);
-      logger.warn({ err: error }, 'thread communication shutdown failed; continuing server cleanup');
+      logger.warn({ event_type: 'thread_communication_shutdown_failed' }, 'thread communication shutdown failed; continuing server cleanup');
     }
     const sessionManager = core.accessor.get(ISessionManager);
     for (const session of sessionManager.list()) {
       try {
+        const ephemeral = sessionManager.isEphemeral(session.id);
+        const worktreeId = ephemeral
+          ? (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId
+          : undefined;
         await sessionManager.close(session.id);
+        if (worktreeId !== undefined) {
+          const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
+          if (outcome !== 'removed') logger.warn({ sessionId: session.id, worktreeId, outcome }, 'temporary session worktree retained on shutdown');
+        }
       } catch (error) {
         closeErrors.push(error);
-        logger.warn({ err: error, sessionId: session.id }, 'session close failed; continuing server cleanup');
+        logger.warn({ sessionId: session.id, event_type: 'session_close_failed' }, 'session close failed; continuing server cleanup');
       }
     }
     try {
       await core.accessor.get(IThreadMailboxStore).close();
     } catch (error) {
       closeErrors.push(error);
-      logger.warn({ err: error }, 'thread mailbox close failed; continuing server cleanup');
+      logger.warn({ event_type: 'thread_mailbox_close_failed' }, 'thread mailbox close failed; continuing server cleanup');
     }
     try {
       await core.accessor.get(IHomeRuntimeService).close();
     } catch (error) {
       closeErrors.push(error);
-      logger.warn({ err: error }, 'home runtime close failed; continuing server cleanup');
+      logger.warn({ event_type: 'home_runtime_close_failed' }, 'home runtime close failed; continuing server cleanup');
     }
     configWarningSubscription.dispose();
     pluginChangeSubscription.dispose();
@@ -576,7 +586,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       const message = error instanceof Error ? error.message : String(error);
       externalDelegationState = { state: 'disabled', reason, message };
       logger.warn(
-        { err: error, reason },
+        { event_type: 'external_delegation_bootstrap_failed', reason },
         'external delegation Session bootstrap failed; disabling the edge and continuing server startup',
       );
     }
@@ -652,7 +662,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           ?.marketplaceUrl,
       }),
     onShutdown: () => {
-      void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
+      void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed'));
     },
     shutdownSignal: shutdownController.signal,
     connectionRegistry,
@@ -814,8 +824,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     });
   };
   app.server.on('upgrade', (req, socket, head) => {
-    void handleUpgrade(req, socket, head).catch((error: unknown) =>
-      logger.error({ err: error }, 'ws upgrade handler failed'),
+    void handleUpgrade(req, socket, head).catch(() =>
+      logger.error({ event_type: 'ws_upgrade_failed' }, 'ws upgrade handler failed'),
     );
   });
 
@@ -895,7 +905,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
         return;
       }
       if (Date.now() - idleSince >= idleExitMs) {
-        void close().catch((error) => logger.error({ err: error }, 'idle server close failed'));
+        void close().catch(() => logger.error({ event_type: 'idle_server_close_failed' }, 'idle server close failed'));
       }
     }, intervalMs);
     idleTimer.unref();

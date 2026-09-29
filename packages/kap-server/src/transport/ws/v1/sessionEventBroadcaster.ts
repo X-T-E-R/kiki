@@ -1545,13 +1545,13 @@ export class SessionEventBroadcaster {
    * Log a rejected `dispatchSessionEvent` promise — the session's scope was
    * torn down mid-dispatch, or a non-disposed error escaped `ensureState`.
    */
-  private logDispatchError(sessionId: string, eventType: string, error: unknown): void {
+  private logDispatchError(sessionId: string, eventType: string, _error: unknown): void {
     const logger = this.opts.logger;
     if (logger === undefined) return;
     if (logger.error !== undefined) {
-      logger.error({ sessionId, eventType, err: error }, 'session event dispatch failed');
+      logger.error({ sessionId, eventType }, 'session event dispatch failed');
     } else {
-      logger.warn({ sessionId, eventType, err: error }, 'session event dispatch failed');
+      logger.warn({ sessionId, eventType }, 'session event dispatch failed');
     }
   }
 
