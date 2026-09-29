@@ -184,6 +184,28 @@ function parseHistoricalShell(
   };
 }
 
+const SKILL_LOADED_RE = /<skill-loaded\b([^>]*)>([\s\S]*?)(?:<\/skill-loaded>|$)/i;
+
+function envelopeAttribute(attributes: string, name: 'name' | 'args'): string | undefined {
+  const pattern = name === 'name' ? /\bname\s*=\s*"([^"]*)"/i : /\bargs\s*=\s*"([^"]*)"/i;
+  const value = pattern.exec(attributes)?.[1];
+  return value === undefined || value === '' ? undefined : unescapeXml(value);
+}
+
+function skillFromEnvelope(text: string): ClassifiedText['skill'] | undefined {
+  const match = SKILL_LOADED_RE.exec(text);
+  if (match === null) return undefined;
+  const name = envelopeAttribute(match[1] ?? '', 'name');
+  return name === undefined ? undefined : { source: 'skill', name, args: envelopeAttribute(match[1] ?? '', 'args') };
+}
+
+/** The skill body without the engine's `Skill loaded…` line and XML envelope. */
+function stripSkillEnvelope(text: string): string {
+  const match = SKILL_LOADED_RE.exec(text);
+  if (match === null) return text;
+  return (match[2] ?? '').trim();
+}
+
 function skillFromOrigin(origin: PromptOriginLike | undefined): ClassifiedText['skill'] | undefined {
   if (origin?.kind === 'skill_activation') {
     return {
@@ -233,21 +255,14 @@ export function classifyTranscriptText(input: {
     return { lane: 'peer', origin, text: split.text, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {
-    if (origin?.trigger === 'user-slash') {
-      return {
-        lane: 'skill',
-        origin,
-        text: split.text,
-        reminders: split.reminders,
-        skill: skillFromOrigin(origin),
-      };
-    }
     return {
-      lane: 'system',
+      lane: 'skill',
       origin,
-      text: split.text,
+      text: stripSkillEnvelope(split.text),
       reminders: split.reminders,
-      systemVariant: 'system',
+      skill: origin?.skillName === undefined && origin?.commandName === undefined
+        ? skillFromEnvelope(split.text) ?? skillFromOrigin(origin)
+        : skillFromOrigin(origin),
     };
   }
   if (kind === 'shell_command') {

@@ -1010,6 +1010,22 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-status]')).toBeNull();
   });
 
+  it('names an injected reminder by its first readable line and keeps the body folded', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'system-reminder',
+        id: 'reminder-1',
+        text: '<tools_added>\nEnterPlanMode\n</tools_added>\nUse SelectTools before calling them.',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    const row = container.querySelector('[data-activity-row]');
+    expect(row?.textContent).toContain('System reminder');
+    expect(row?.textContent).toContain('EnterPlanMode');
+    expect(row?.textContent).not.toContain('<tools_added>');
+    expect(row?.textContent).not.toContain('Use SelectTools');
+  });
+
   it('keeps loaded skills compact until their details are explicitly expanded', async () => {
     const container = await renderTranscript([
       {

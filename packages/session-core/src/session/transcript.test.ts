@@ -146,7 +146,7 @@ describe('classifyTranscriptText', () => {
         role: 'user',
         origin: { kind: 'skill_activation', skillName: 'review', trigger: 'auto' },
       }).lane,
-    ).toBe('system');
+    ).toBe('skill');
     expect(
       classifyTranscriptText({
         text: 'Continue toward the goal',
@@ -4255,7 +4255,54 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     expect(projected.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
     expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Keep an eye on the nightly job.');
-    expect(projected.blocks.filter((block) => block.kind === 'system')).toHaveLength(4);
+    expect(projected.blocks.filter((block) => block.kind === 'system')).toHaveLength(3);
+    expect(projected.blocks.find((block) => block.kind === 'skill')).toMatchObject({ name: 'review' });
+  });
+
+  it('keeps injected reminders as their own quiet rows, never empty', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'other', payload: { kind: 'injection', variant: 'todo_list_reminder' } },
+            prompt: '<system-reminder>\nTodoList has not been updated recently.\n</system-reminder>',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed', frames: [] }],
+          },
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Ship it.\n<system-reminder>\nImage compressed to fit.\n</system-reminder>',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't2.1', turnId: 't2', ordinal: 1, state: 'completed', frames: [] }],
+          },
+        ],
+      }),
+    );
+    const reminders = projected.blocks.filter((block) => block.kind === 'system-reminder');
+    expect(reminders.map((block) => block.text)).toEqual(['TodoList has not been updated recently.', 'Image compressed to fit.']);
+    expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Ship it.');
+    expect(projected.blocks.some((block) => block.kind === 'system' && block.text === '')).toBe(false);
+  });
+
+  it('names a model-loaded skill from its envelope and drops the XML', () => {
+    const classified = classifyTranscriptText({
+      text: 'Skill loaded for this request.\n\n<skill-loaded name="kiki-desktop-ops" trigger="model-tool" source="project" args="">\n# Ops\n\nBuild, promote, launch.\n</skill-loaded>',
+      role: 'user',
+      origin: { kind: 'skill_activation', trigger: 'model-tool' },
+    });
+    expect(classified.lane).toBe('skill');
+    expect(classified.skill).toEqual({ source: 'skill', name: 'kiki-desktop-ops', args: undefined });
+    expect(classified.text).toBe('# Ops\n\nBuild, promote, launch.');
   });
 
   it('projects a no-origin turn prompt as a user block, not a fake task system block', () => {

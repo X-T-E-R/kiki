@@ -58,6 +58,7 @@ import {
   type SubagentBlock,
   type SubagentEventBlock,
   type SystemBlock,
+  type SystemReminderBlock,
   type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
@@ -91,6 +92,26 @@ export function agentStateToProjectionSource(
     prompts: Array.isArray(state.prompts) ? state.prompts : [...state.prompts.values()],
     tasks: Array.isArray(state.tasks) ? state.tasks : [...state.tasks.values()],
   };
+}
+
+/**
+ * Daemon-injected <system-reminder> bodies, peeled out of the message they
+ * rode in on: kept as their own quiet rows (collapsed, summary line only) so
+ * what the model was told stays inspectable without reading as conversation.
+ */
+function reminderBlocks(
+  id: string,
+  createdAt: string | undefined,
+  reminders: readonly string[],
+  turnId?: string,
+): SystemReminderBlock[] {
+  return reminders.map((reminder, index) => ({
+    kind: 'system-reminder',
+    id: `reminder-${id}-${index}`,
+    text: reminder,
+    createdAt,
+    turnId,
+  }));
 }
 
 function classifiedTextToBlocks(input: {
@@ -185,8 +206,7 @@ function classifiedTextToBlocks(input: {
     case 'reminder':
       break;
   }
-  // Daemon-injected <system-reminder> bodies are model context, not
-  // conversation: they are peeled out of the text and never shown.
+  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId));
   return blocks;
 }
 

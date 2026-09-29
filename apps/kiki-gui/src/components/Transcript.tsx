@@ -470,6 +470,15 @@ function firstLineOf(text: string): string {
   return newline === -1 ? text : text.slice(0, newline);
 }
 
+/** An injected body's first readable line: envelope tags are transport. */
+function injectionSummary(text: string): string {
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/<\/?[a-z][\w-]*(?:\s[^>]*)?>/gi, '').trim();
+    if (line !== '') return line;
+  }
+  return '';
+}
+
 function latestLineOf(text: string): string {
   const visible = text.trimEnd();
   const newline = visible.lastIndexOf('\n');
@@ -509,7 +518,8 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
 });
 
 /** Daemon-injected reminder peeled out of a user message — left lane, dimmed,
- * collapsed by default so the user's own bubble stays clean. */
+ * collapsed by default so the user's own bubble stays clean. The first line
+ * rides the collapsed row so it never reads as an empty "System reminder". */
 const SystemReminderMessage = memo(function SystemReminderMessage({
   block,
 }: {
@@ -521,6 +531,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
     <ActivityRow
       glyph={<Icon name="system" />}
       label={<span className="font-normal text-ink-faint">{t('transcript.systemReminder')}</span>}
+      detail={<span className="text-ink-faint/80">{injectionSummary(block.text)}</span>}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
       onToggle={() => { setOpen((value) => !value); }}
