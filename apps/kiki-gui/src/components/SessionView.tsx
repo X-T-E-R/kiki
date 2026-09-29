@@ -1092,6 +1092,20 @@ export function agentDetailPath(sessionId: string, agentId: string): string {
  * The provider owns tab state, and the shared right rail renders above it,
  * so the focus travels through a callback instead of context re-entry.
  */
+/** Focus an agent's preview tab once it has rendered (a few frames at most). */
+function focusAgentTabWhenMounted(agentId: string, framesLeft = 10): void {
+  requestAnimationFrame(() => {
+    const key = `panel:${agentId}`;
+    const tab = [...document.querySelectorAll<HTMLElement>('[role="tab"][data-preview-tab-key]')]
+      .find((element) => element.dataset['previewTabKey'] === key) ?? null;
+    if (tab !== null && tab.getAttribute('aria-selected') === 'true') {
+      tab.focus({ preventScroll: true });
+      return;
+    }
+    if (framesLeft > 0) focusAgentTabWhenMounted(agentId, framesLeft - 1);
+  });
+}
+
 export function PreviewFocusBridge({ onFocusedAgent }: { onFocusedAgent: (agentId: string | undefined) => void }) {
   const preview = useMediaPreview();
   const focused = preview?.activeAgentPanelId;
@@ -2211,6 +2225,10 @@ export function SessionView({
   const forest = useStableForest(forestRaw);
 
   const previewRef = useRef<MediaPreviewApi | null>(null);
+  // Read at open time; kept off openAgent's deps so its identity (a memo
+  // input across the transcript) does not change when the rail toggles.
+  const overlayRailOpenRef = useRef(false);
+  overlayRailOpenRef.current = railIsOverlay && railOpen;
 
   const openAgent = useCallback(
     (agentId: string) => {
@@ -2229,6 +2247,14 @@ export function SessionView({
       const node = forest.byId[agentId];
       const title = node?.label ?? agentId;
       previewRef.current.openAgentPanel(agentId, title);
+      // On narrow viewports the rail is an overlay over the preview: an agent
+      // opened from it (a row, a Needs-you origin, a relation) would get its
+      // tab underneath. The overlay steps aside and the new tab takes focus.
+      // The docked rail stays open.
+      if (overlayRailOpenRef.current) {
+        setRailOpen(false);
+        focusAgentTabWhenMounted(agentId);
+      }
     },
     [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
   );
