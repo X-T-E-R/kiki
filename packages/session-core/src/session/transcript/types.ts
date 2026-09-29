@@ -71,6 +71,8 @@ export interface SystemBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly source?: string;
+  /** Task notifications: the background task the note is about. */
+  readonly taskId?: string;
 }
 
 export interface SkillBlock {

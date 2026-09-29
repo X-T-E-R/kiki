@@ -58,6 +58,7 @@ import {
   latestFinalAssistantBlockId,
   latestTurnId,
   MAIN_AGENT_ID,
+  readSubagentEndings,
   stabilizeAgentForest,
   type AgentForest,
   type AgentTreeNode,
@@ -65,7 +66,9 @@ import {
   type Block,
   type DisplayNode,
   type HistoryFold,
+  type MediaRun,
   type NoticeBlock,
+  type SubagentEnding,
   type SessionViewState,
   type ShellBlock,
   type SkillBlock,
@@ -116,6 +119,7 @@ import {
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
+import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
@@ -1332,6 +1336,42 @@ const ToolGroupRow = memo(
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
 
+/** The end row with its agent's name, model and run time (live node first). */
+function EndedRow({
+  ending,
+  forest,
+  childBlocks,
+  onOpenAgent,
+  onLocateDispatch,
+}: {
+  ending: SubagentEnding;
+  forest: AgentForest | undefined;
+  childBlocks: ReadonlyMap<string, SubagentBlock>;
+  onOpenAgent?: (agentId: string) => void;
+  onLocateDispatch?: (agentId: string) => void;
+}) {
+  const { time } = useI18n();
+  const node = forest?.byId[ending.agentId];
+  const card = childBlocks.get(ending.agentId);
+  const start = parseTimelineMs(node?.startedAt) ?? parseTimelineMs(card?.startedAt);
+  const end = parseTimelineMs(node?.endedAt) ?? parseTimelineMs(card?.endedAt) ?? parseTimelineMs(ending.note.createdAt);
+  const elapsed = start === undefined || end === undefined ? undefined : Math.max(0, end - start);
+  const model = node?.model ?? card?.model;
+  const effort = node?.thinkingEffort ?? card?.thinkingEffort;
+  return (
+    <SubagentEndedRow
+      ending={ending}
+      name={node?.label ?? card?.name ?? ending.agentId}
+      model={model === undefined ? undefined : [model.replace(/^.*\//, ''), effort].filter(Boolean).join(' · ')}
+      summary={node?.summary ?? card?.summary}
+      elapsed={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
+      onOpenAgent={onOpenAgent}
+      onLocateDispatch={onLocateDispatch}
+      renderReceipt={(markdown) => <Markdown text={markdown} />}
+    />
+  );
+}
+
 /**
  * Folded history (codeg's settled-turn fold, Apache-2.0): a finished turn's
  * stretch of process rows between two messages reads as one quiet line that
@@ -1355,6 +1395,8 @@ function HistoryFoldRow({
   const parts = [
     fold.steps > 0 ? tp('transcript.fold.steps', fold.steps) : null,
     fold.thoughts > 0 ? tp('transcript.fold.thoughts', fold.thoughts) : null,
+    fold.agents > 0 ? tp('transcript.fold.agents', fold.agents) : null,
+    fold.agentsDone > 0 ? tp('transcript.fold.agentsDone', fold.agentsDone) : null,
     fold.notes > 0 ? tp('transcript.fold.notes', fold.notes) : null,
   ].filter((part): part is string => part !== null);
   const summary = parts.join(' · ');
@@ -1669,6 +1711,7 @@ function AnnotationNotes({ annotations, align }: { annotations: readonly Timelin
 /** Turn a display node belongs to (tool groups take their first tool's). */
 function displayNodeTurnId(node: DisplayNode): string | undefined {
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
+  if (node.kind === 'subagent') return node.parentTurnId;
   return 'turnId' in node ? node.turnId : undefined;
 }
 
@@ -1810,6 +1853,17 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
       a.members.every((member, index) => member === b.members[index])
     );
   }
+  if ((a.kind === 'media-run' && b.kind === 'media-run') || (a.kind === 'subagent-group' && b.kind === 'subagent-group')) {
+    return (
+      a.id === b.id &&
+      (a.kind !== 'media-run' || a.latest === (b as MediaRun).latest) &&
+      a.members.length === b.members.length &&
+      a.members.every((member, index) => member === b.members[index])
+    );
+  }
+  if (a.kind === 'subagent-ended' && b.kind === 'subagent-ended') {
+    return a.id === b.id && a.note === b.note && a.outcome === b.outcome && a.dispatchOnPage === b.dispatchOnPage;
+  }
   if (a.kind === 'history-fold' && b.kind === 'history-fold') {
     return (
       a.id === b.id &&
@@ -1829,6 +1883,7 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
 const AGENT_LANE = 'w-full max-w-[var(--kiki-agent-column,640px)]';
 
 const TRANSCRIPT_OVERSCAN = 6;
+const EMPTY_HELD: ReadonlySet<string> = new Set();
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
@@ -1892,6 +1947,8 @@ type TranscriptRowProps = {
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
   onOpenAgent?: (agentId: string) => void;
+  /** Scroll back to a subagent's dispatch card (the end row's "Dispatch ↑"). */
+  onLocateDispatch?: (agentId: string) => void;
 };
 
 function nodeUsesAgentNames(node: DisplayNode): boolean {
@@ -1909,6 +1966,14 @@ function subagentBranchEqual(
   previousForest: AgentForest | undefined,
   nextForest: AgentForest | undefined,
 ): boolean {
+  // Cards now also sit inside folds and live groups; each must repaint with
+  // its own agent's node.
+  if (node.kind === 'history-fold') {
+    return node.members.every((member) => member.kind === 'tool-group' || subagentBranchEqual(member, previousForest, nextForest));
+  }
+  if (node.kind === 'subagent-group') {
+    return node.members.every((member) => subagentBranchEqual(member, previousForest, nextForest));
+  }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
 }
@@ -1942,12 +2007,15 @@ const TranscriptRow = memo(
     onDismissQuestion,
     onCancelQueued,
     onOpenAgent,
+    onLocateDispatch,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
     // nodes, so the attribute simply doesn't render there.
     const rowTurnId = displayNodeTurnId(node);
-    const renderNode = (member: DisplayNode): ReactNode =>
+    // Inside a live group every agent is one compact line until the reader
+    // opens it; elsewhere a running card takes its full form.
+    const renderNode = (member: DisplayNode, cardForm?: SubagentCardForm): ReactNode =>
       member.kind === 'history-fold' ? (
         <HistoryFoldRow
           fold={member}
@@ -1955,6 +2023,12 @@ const TranscriptRow = memo(
           onToggle={onToggleFold}
           renderMember={renderNode}
         />
+      ) : member.kind === 'subagent-ended' ? (
+        <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
+      ) : member.kind === 'media-run' ? (
+        <MediaRunRow run={member} agentId={agentId} />
+      ) : member.kind === 'subagent-group' ? (
+        <SubagentGroupRow group={member} forest={forest} renderMember={(agent) => renderNode(agent, 'compact')} />
       ) : member.kind === 'tool-group' ? (
         <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
       ) : member.kind === 'tool' ? (
@@ -1974,7 +2048,7 @@ const TranscriptRow = memo(
           forest={forest}
           childBlocks={childBlocks}
           subagentFormOverride={
-            member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) : undefined
+            member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) ?? cardForm : undefined
           }
           onToggleSubagentForm={onToggleSubagentForm}
           onOpenAgent={onOpenAgent}
@@ -2022,7 +2096,8 @@ const TranscriptRow = memo(
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
     prev.onCancelQueued === next.onCancelQueued &&
-    prev.onOpenAgent === next.onOpenAgent,
+    prev.onOpenAgent === next.onOpenAgent &&
+    prev.onLocateDispatch === next.onLocateDispatch,
 );
 
 /** Jump-to-bottom pill driven by the virtualizer's end state. */
@@ -2477,13 +2552,29 @@ export function Transcript({
   // lifecycle entries (spawned / completed / failed / cancelled) and the
   // dispatching tool call — all three said the same thing three times.
   // Deliveries (sent / resumed) carry their own message and stay.
-  const mergedNodes = useMemo(() => mergeSubagentRows(tailNodes), [tailNodes]);
-  // Settled history folds: every finished turn's process stretches collapse
-  // into one line each. The latest turn stays open while it runs AND after
-  // it settles, so the answer the reader just watched arrive keeps its work
-  // in view; it folds once the next turn starts.
+  // A subagent's task notification is read as that agent's end: dropped
+  // when its card is in the same turn (the card says it), a row of its own
+  // with a way back to the card when it ended in a later turn.
+  // The task list is rebuilt per publish; only the fields endings read count.
+  const endingTasksKey = state.tasks
+    .map((task) => `${task.id}|${task.agent_id ?? ''}|${task.status}|${task.stop_reason ?? ''}`)
+    .join(';');
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content, see above
+  const endingTasks = useMemo(() => state.tasks, [endingTasksKey]);
+  const mergedNodes = useMemo(
+    () => readSubagentEndings(mergeSubagentRows(tailNodes), endingTasks),
+    [tailNodes, endingTasks],
+  );
+  // Settled process folds (FOLDING.md): finished turns fold whole, and the
+  // latest turn folds everything but its newest process row, which stays in
+  // view until the next one arrives. Rows the reader is looking at while
+  // scrolled up (`heldRows`) are left in place until they return.
   const liveTurnId = latestTurnId(mergedNodes);
-  const groupedNodes = useMemo(() => foldHistory(mergedNodes, liveTurnId), [mergedNodes, liveTurnId]);
+  const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
+  const groupedNodes = useMemo(
+    () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows }),
+    [mergedNodes, liveTurnId, heldRows],
+  );
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -2570,12 +2661,14 @@ export function Transcript({
   const locateIndex = useMemo(() => {
     const blocks = new Map<string, { index: number; foldId?: string }>();
     const turns = new Map<string, number>();
-    const subagents = new Map<string, number>();
+    const subagents = new Map<string, { index: number; foldId?: string }>();
     const visit = (node: DisplayNode, index: number, foldId: string | undefined) => {
       blocks.set(node.id, { index, foldId });
-      if (node.kind === 'subagent' && !subagents.has(node.subagentId)) subagents.set(node.subagentId, index);
+      if (node.kind === 'subagent' && !subagents.has(node.subagentId)) subagents.set(node.subagentId, { index, foldId });
       if (node.kind === 'history-fold') {
         for (const member of node.members) visit(member, index, node.id);
+      } else if (node.kind === 'subagent-group' || node.kind === 'media-run') {
+        for (const member of node.members) visit(member, index, foldId);
       } else if (node.kind === 'tool-group') {
         for (const member of node.members) blocks.set(member.id, { index, foldId });
       }
@@ -2898,8 +2991,9 @@ export function Transcript({
           return index === undefined ? undefined : { index };
         }
         case 'subagent': {
-          const index = subagents.get(target.agentId);
-          return index === undefined ? undefined : { index };
+          const hit = subagents.get(target.agentId);
+          // Land on the card itself, even when it sits inside a fold or group.
+          return hit === undefined ? undefined : { ...hit, blockId: `subagent-${target.agentId}` };
         }
         case 'interaction':
           for (const blockId of [`approval-${target.id}`, `question-${target.id}`]) {
@@ -2975,6 +3069,37 @@ export function Transcript({
       locate,
     });
   }, [sessionIdForLocate, agentId, locate]);
+  const handleLocateDispatch = useCallback((subagentId: string) => {
+    void locate({ kind: 'subagent', agentId: subagentId });
+  }, [locate]);
+
+  // ---- reading hold: an auto-fold never pulls rows from under the reader ----
+  // Scrolled up (off the end) in the live turn, the rows on screen keep their
+  // place: they are held out of the fold until the reader is back at the end,
+  // then fold together. A fold forming above the viewport is absorbed by the
+  // virtualizer's anchor (keys and offsets survive), so it does not move them.
+  const liveProcessKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (liveTurnId === undefined) return keys;
+    for (const node of groupedNodes) {
+      if (node.kind === 'history-fold' || node.kind === 'user' || node.kind === 'assistant') continue;
+      if (normalizeTurnId(displayNodeTurnId(node) ?? '') === liveTurnId) keys.add(node.id);
+    }
+    return keys;
+  }, [groupedNodes, liveTurnId]);
+  useLayoutEffect(() => {
+    const anchor = viewportAnchorRef.current;
+    if (anchor.atEnd) {
+      if (heldRows.size > 0) setHeldRows(EMPTY_HELD);
+      return;
+    }
+    const onScreen = virtualizer.getVirtualItems()
+      .map((item) => virtualNodes[item.index])
+      .filter((node): node is DisplayNode => node !== undefined && liveProcessKeys.has(node.id))
+      .map((node) => node.id);
+    const missing = onScreen.filter((id) => !heldRows.has(id));
+    if (missing.length > 0) setHeldRows((previous) => new Set([...previous, ...missing]));
+  });
 
   useEffect(() => () => {
     const initialFrame = initialScrollFrameRef.current;
@@ -3078,6 +3203,7 @@ export function Transcript({
                         onDismissQuestion={onDismissQuestion}
                         onCancelQueued={onCancelQueued}
                         onOpenAgent={onOpenAgent}
+                        onLocateDispatch={handleLocateDispatch}
                       />
                     </div>
                   )}

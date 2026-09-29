@@ -2690,6 +2690,10 @@ describe('external executor badge', () => {
       ],
       {},
     );
+    // Settled engine notes fold with the turn's other process; open the fold.
+    const fold = container.querySelector('[data-history-fold] [data-activity-toggle]');
+    expect(fold).not.toBeNull();
+    await act(async () => { click(fold!); });
     expect(container.querySelector('[data-executor-note="hint-delivered"]')?.textContent).toContain('reached the engine during the turn');
     // Queued is waiting, never delivered.
     const queued = container.querySelector('[data-executor-note="hint-queued"]')?.textContent ?? '';
@@ -3658,16 +3662,17 @@ describe('settled history folds and the unified locate entry', () => {
     ];
   };
 
-  it('folds a finished turn’s work into one line, keeps the latest turn open, and expands in place', async () => {
+  it('folds each turn’s work into one line once its answer is in, and expands in place', async () => {
     const container = await renderTranscript([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
     const folds = container.querySelectorAll('[data-history-fold]');
-    expect(folds).toHaveLength(1);
+    // The latest turn folds too: its answer came after the work, so no
+    // process row is the newest thing any more.
+    expect(folds).toHaveLength(2);
     expect(folds[0]!.textContent).toContain('Worked');
     expect(folds[0]!.textContent).toContain('2 steps');
     expect(folds[0]!.textContent).toContain('1 thought');
     expect(container.querySelector('[data-block-id="tool1a"]')).toBeNull();
-    // The latest turn is not folded.
-    expect(container.querySelector('[data-block-id="tool2a"]')).not.toBeNull();
+    expect(container.querySelector('[data-block-id="tool2a"]')).toBeNull();
     await act(async () => { click(folds[0]!.querySelector('[data-activity-toggle]')!); });
     expect(container.querySelector('[data-history-fold-members] [data-block-id="tool1a"]')).not.toBeNull();
   });
@@ -3759,5 +3764,63 @@ describe('settled history folds and the unified locate entry', () => {
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight + 200);
     expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('folding the live turn and what the agent looked at (FOLDING.md)', () => {
+  const step = (id: string, turnId = 't1'): Block => ({
+    kind: 'tool', id, toolCallId: id, name: 'Bash', argsText: '', args: { command: `echo ${id}` }, display: undefined,
+    description: undefined, status: 'done', output: 'ok', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
+  });
+  const look = (id: string, turnId = 't1'): Block => ({
+    kind: 'tool', id, toolCallId: id, name: 'ReadMediaFile', argsText: '', args: { path: `C:/w/${id}.png` }, display: undefined,
+    description: undefined, status: 'done', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
+    output: [
+      { type: 'text', text: `<image path="C:/w/${id}.png">` },
+      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+      { type: 'text', text: '</image>' },
+    ],
+  });
+  const user = { ...userBlock({ id: 'u1', text: 'go' }), turnId: 't1' } as Block;
+
+  it('folds the live turn’s settled work behind one line and keeps its newest row out', async () => {
+    const container = await renderTranscript([user, step('s1'), step('s2'), step('s3')], undefined, { busy: true });
+    const fold = container.querySelector('[data-history-fold]');
+    expect(fold?.textContent).toContain('2 steps');
+    expect(container.querySelector('[data-history-fold] [data-block-id="s1"]')).toBeNull();
+    // The newest row stays in view until the next one arrives.
+    expect(container.querySelector('[data-block-id="s3"]')?.closest('[data-history-fold]')).toBeNull();
+  });
+
+  it('never closes a fold the reader opened when the turn moves on', async () => {
+    const { root, container } = makeRoot();
+    const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
+    await render([user, step('s1'), step('s2'), step('s3')]);
+    const toggle = container.querySelector<HTMLElement>('[data-history-fold] [data-activity-toggle]')!;
+    await act(async () => { click(toggle); });
+    expect(container.querySelector('[data-history-fold-open] [data-block-id="s2"]')).not.toBeNull();
+    // s3 joins the same fold (its id is s1's); the fold stays open.
+    await render([user, step('s1'), step('s2'), step('s3'), step('s4')]);
+    expect(container.querySelector('[data-history-fold-open] [data-block-id="s3"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
+  });
+
+  it('shows what the agent looked at as its own row: a preview while latest, a strip once history', async () => {
+    const { root, container } = makeRoot();
+    const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
+    await render([user, step('s1'), step('s2'), look('m1'), look('m2')]);
+    const latest = container.querySelector('[data-media-run]');
+    expect(latest?.getAttribute('data-media-run')).toBe('2');
+    expect(latest?.hasAttribute('data-media-run-latest')).toBe(true);
+    expect(latest?.textContent).toContain('Viewed images');
+    expect(latest?.querySelectorAll('[data-media-thumb] img')).toHaveLength(2);
+    expect(latest?.querySelector('img')?.className).toContain('h-[120px]');
+    // Never inside a fold: the fold before it stops there.
+    expect(latest?.closest('[data-history-fold]')).toBeNull();
+    await render([user, step('s1'), step('s2'), look('m1'), look('m2'), step('s3'), step('s4')]);
+    const settled = container.querySelector('[data-media-run]');
+    expect(settled?.hasAttribute('data-media-run-latest')).toBe(false);
+    expect(settled?.querySelector('img')?.className).toContain('h-9');
+    expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
   });
 });

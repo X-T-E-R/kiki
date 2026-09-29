@@ -200,6 +200,7 @@ function classifiedTextToBlocks(input: {
           createdAt: input.createdAt,
           turnId: input.turnId,
           source: producerFromOrigin(classified.origin),
+          taskId: classified.systemVariant === 'task' ? classified.origin?.taskId : undefined,
         } satisfies SystemBlock);
       }
       break;

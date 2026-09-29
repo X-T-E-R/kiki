@@ -13,7 +13,8 @@
  * underlying block list (and its reducer semantics) is untouched.
  */
 
-import type { Block, ShellBlock, ThinkingBlock, ToolBlock } from './transcript';
+import { extractToolOutputMedia } from '../composer/media';
+import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
 export interface ToolGroup {
   readonly kind: 'tool-group';
@@ -42,12 +43,59 @@ export interface ToolGroup {
   readonly durationMs: number | undefined;
 }
 
-export type DisplayNode = Block | ToolGroup | HistoryFold;
+export type DisplayNode = Block | ToolGroup | HistoryFold | SubagentGroup | MediaRun | SubagentEnding;
+
+export type SubagentOutcome = 'completed' | 'failed' | 'cancelled' | 'timedOut';
 
 /**
- * A settled stretch of work between two messages of a FINISHED turn, folded
- * into one expandable line ("Worked · 12 steps · 3 thoughts"). Members keep
- * their order and identity; the fold is a render-time projection only.
+ * A subagent's run ended in a later turn than the one that dispatched it:
+ * the task notification, read as the agent it is about. When the dispatch
+ * sits in the same turn the card itself carries the end and no row is made.
+ */
+export interface SubagentEnding {
+  readonly kind: 'subagent-ended';
+  readonly id: string;
+  readonly turnId: string | undefined;
+  readonly agentId: string;
+  readonly taskId: string;
+  readonly outcome: SubagentOutcome;
+  /** The notification this row stands for (its text is the fallback receipt). */
+  readonly note: SystemBlock;
+  /** The dispatch card is on this page, so the row can point back to it. */
+  readonly dispatchOnPage: boolean;
+}
+
+/**
+ * Two or more subagents dispatched together while at least one still runs:
+ * one head line ("Dispatched 4 subagents · 2/4 done") with a row per agent.
+ * Once all settle, the members join the surrounding fold like any process.
+ */
+export interface SubagentGroup {
+  readonly kind: 'subagent-group';
+  /** Stable id from the first card (survives agents appending). */
+  readonly id: string;
+  readonly turnId: string | undefined;
+  readonly members: readonly SubagentBlock[];
+}
+
+/**
+ * Consecutive image-returning tool calls (ReadMediaFile, screenshot tools):
+ * what the agent looked at. Always its own row; a fold stops at it and
+ * resumes after it. `latest` marks the run that ends the live turn, which
+ * renders a preview instead of the thumbnail strip.
+ */
+export interface MediaRun {
+  readonly kind: 'media-run';
+  readonly id: string;
+  readonly turnId: string | undefined;
+  readonly members: readonly ToolBlock[];
+  readonly latest: boolean;
+}
+
+/**
+ * A settled stretch of process between two things the reader reads, folded
+ * into one expandable line ("Worked · 12 steps · 3 thoughts · 4 subagents").
+ * Members keep their order and identity; the fold is a render-time projection.
  */
 export interface HistoryFold {
   readonly kind: 'history-fold';
@@ -55,10 +103,14 @@ export interface HistoryFold {
   readonly id: string;
   readonly turnId: string | undefined;
   /** Members in occurrence order; read runs stay folded inside. */
-  readonly members: readonly (Block | ToolGroup)[];
+  readonly members: readonly (Block | ToolGroup | SubagentEnding)[];
   /** Tool calls + shell runs (a read run counts each read). */
   readonly steps: number;
   readonly thoughts: number;
+  /** Subagent cards folded in (each dispatched agent once). */
+  readonly agents: number;
+  /** Subagent runs that completed in this stretch (their end rows folded in). */
+  readonly agentsDone: number;
   /** Reminders, system injections, skills and quiet notices. */
   readonly notes: number;
   readonly failed: number;
@@ -66,11 +118,15 @@ export interface HistoryFold {
   readonly durationMs: number | undefined;
 }
 
+/** What a fold can hold. */
+type Row = Block | ToolGroup | SubagentEnding;
+
 /** A stretch this short reads faster in place than behind a fold. */
 export const HISTORY_FOLD_MIN = 2;
 
-function foldTurnId(node: Block | ToolGroup): string | undefined {
+function foldTurnId(node: Block | ToolGroup | SubagentGroup | MediaRun | SubagentEnding): string | undefined {
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
+  if (node.kind === 'subagent-group' || node.kind === 'media-run' || node.kind === 'subagent-ended') return node.turnId;
   if (node.kind === 'subagent') return node.parentTurnId;
   if (node.kind === 'approval') return node.request.turn_id === undefined ? undefined : `t${node.request.turn_id}`;
   if (node.kind === 'question') return node.request.turn_id === undefined ? undefined : `t${node.request.turn_id}`;
@@ -82,13 +138,33 @@ function normTurn(turnId: string | undefined): string | undefined {
   return turnId.startsWith('t') ? turnId : `t${turnId}`;
 }
 
+/** A subagent whose run is still going (it needs watching, so it stays out). */
+export function subagentLive(block: SubagentBlock): boolean {
+  return block.status === 'running' || block.status === 'suspended';
+}
+
+/**
+ * A tool call whose result is an image the agent looked at (ReadMediaFile,
+ * a screenshot MCP, a browser capture). Recognised by the result itself, so
+ * any image-returning tool qualifies without a name list.
+ */
+export function isMediaTool(block: Block): block is ToolBlock {
+  if (block.kind !== 'tool' || block.status === 'running') return false;
+  const media = extractToolOutputMedia(block.output);
+  return media !== undefined && media.media.some((item) => item.kind === 'image');
+}
+
 /**
  * What may disappear into a fold: the agent's settled process, never its
  * voice, the user, a boundary, or anything that still wants attention.
- * Subagent cards and lifecycle rows stay out — they are navigation targets.
+ * A settled subagent card is process too (its conclusion is the answer that
+ * follows); a live one stays out until it settles.
  */
-function foldable(node: Block | ToolGroup): boolean {
+function foldable(node: Row): boolean {
   switch (node.kind) {
+    case 'subagent-ended':
+      // A run that did not complete stays in view.
+      return node.outcome === 'completed';
     case 'tool-group':
       return !groupHasRunning(node);
     case 'tool':
@@ -97,6 +173,8 @@ function foldable(node: Block | ToolGroup): boolean {
       return node.done;
     case 'thinking':
       return !node.streaming;
+    case 'subagent':
+      return !subagentLive(node);
     case 'system-reminder':
     case 'skill':
       return true;
@@ -113,16 +191,19 @@ function foldable(node: Block | ToolGroup): boolean {
   }
 }
 
-function nodeFailed(node: Block | ToolGroup): boolean {
+function nodeFailed(node: Row): boolean {
   if (node.kind === 'tool-group') return groupHasError(node);
   if (node.kind === 'tool') return node.status === 'error' || node.isError === true;
   if (node.kind === 'shell') return node.isError === true;
+  if (node.kind === 'subagent') return node.status === 'failed';
   return false;
 }
 
-function buildFold(run: readonly (Block | ToolGroup)[], turnId: string | undefined): HistoryFold {
+function buildFold(run: readonly Row[], turnId: string | undefined): HistoryFold {
   let steps = 0;
   let thoughts = 0;
+  let agents = 0;
+  let agentsDone = 0;
   let notes = 0;
   let failed = 0;
   let duration: number | undefined;
@@ -145,14 +226,21 @@ function buildFold(run: readonly (Block | ToolGroup)[], turnId: string | undefin
       steps += 1;
     } else if (node.kind === 'thinking') {
       thoughts += 1;
+    } else if (node.kind === 'subagent') {
+      agents += 1;
+    } else if (node.kind === 'subagent-ended') {
+      agentsDone += 1;
     } else {
       notes += 1;
     }
   }
-  return { kind: 'history-fold', id: `fold-${run[0]!.id}`, turnId, members: run, steps, thoughts, notes, failed, durationMs: duration };
+  return {
+    kind: 'history-fold', id: `fold-${run[0]!.id}`, turnId, members: run,
+    steps, thoughts, agents, agentsDone, notes, failed, durationMs: duration,
+  };
 }
 
-/** The latest turn on the page: the one a fold must leave open. */
+/** The latest turn on the page: the one whose last process row stays open. */
 export function latestTurnId(nodes: readonly DisplayNode[]): string | undefined {
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const node = nodes[index]!;
@@ -161,21 +249,150 @@ export function latestTurnId(nodes: readonly DisplayNode[]): string | undefined 
   }
   return undefined;
 }
+/** Just the fields of a session task this needs. */
+export interface EndingTask {
+  readonly id: string;
+  readonly agent_id?: string;
+  readonly status: string;
+  readonly stop_reason?: string;
+}
+
+function outcomeOf(task: EndingTask | undefined, note: SystemBlock): SubagentOutcome {
+  // The headline ("Background agent failed") is agent-core's; the task
+  // record wins when it knows.
+  const head = note.text.split('\n', 1)[0] ?? '';
+  if (/\btimed[_ ]out\b/i.test(head) || task?.stop_reason === 'timeout') return 'timedOut';
+  if (task?.status === 'cancelled' || /\b(?:killed|cancelled|stopped)\b/i.test(head)) return 'cancelled';
+  if (task?.status === 'failed' || /\b(?:failed|lost)\b/i.test(head)) return 'failed';
+  return 'completed';
+}
 
 /**
- * Fold settled history: inside every finished turn, each run of ≥2
- * consecutive process rows (tools, read runs, shell, thinking, reminders,
- * settled decisions, engine notes) becomes one `HistoryFold`. The turn in
- * progress (`liveTurnId`) and turn-less rows are never folded, and a run
- * breaks at anything the user reads: messages, subagent cards, dividers.
+ * Read subagent task notifications as the agent they are about (FOLDING §3).
+ * The notification's task id resolves to the agent through the session's
+ * task list. Same turn as the dispatch card: the note is dropped, the card
+ * states the end. Later turn: it becomes a `SubagentEnding` row. Notes that
+ * resolve to no subagent stay as they are.
+ */
+export function readSubagentEndings(
+  nodes: readonly DisplayNode[],
+  tasks: readonly EndingTask[],
+): DisplayNode[] {
+  const agentByTask = new Map<string, EndingTask>();
+  for (const task of tasks) {
+    if (task.agent_id !== undefined && task.agent_id !== '') agentByTask.set(task.id, task);
+  }
+  if (agentByTask.size === 0) return nodes as DisplayNode[];
+  const dispatchTurn = new Map<string, string | undefined>();
+  for (const node of nodes) {
+    if (node.kind === 'subagent' && !dispatchTurn.has(node.subagentId)) dispatchTurn.set(node.subagentId, normTurn(node.parentTurnId));
+  }
+  let changed = false;
+  const out: DisplayNode[] = [];
+  for (const node of nodes) {
+    const task = node.kind === 'system' && node.variant === 'task' && node.taskId !== undefined ? agentByTask.get(node.taskId) : undefined;
+    if (node.kind !== 'system' || task === undefined) {
+      out.push(node);
+      continue;
+    }
+    changed = true;
+    const agentId = task.agent_id!;
+    const turn = normTurn(node.turnId);
+    const onPage = dispatchTurn.has(agentId);
+    if (onPage && dispatchTurn.get(agentId) === turn) continue;
+    out.push({
+      kind: 'subagent-ended',
+      id: `ended-${node.id}`,
+      turnId: turn,
+      agentId,
+      taskId: task.id,
+      outcome: outcomeOf(task, node),
+      note: node,
+      dispatchOnPage: onPage,
+    });
+  }
+  return changed ? out : (nodes as DisplayNode[]);
+}
+
+export interface FoldOptions {
+  /**
+   * Blocks of the live turn that must stay where they are: the reader has
+   * scrolled up into them, so a fold forming now would move what they read.
+   * The fold catches up once they return to the end.
+   */
+  readonly keepOpen?: ReadonlySet<string>;
+}
+
+/** Media runs and live subagent groups: rows of their own, never folded. */
+function gatherRows(nodes: readonly DisplayNode[], live: string | undefined): DisplayNode[] {
+  const out: DisplayNode[] = [];
+  let index = 0;
+  while (index < nodes.length) {
+    const node = nodes[index]!;
+    if (node.kind === 'tool' && isMediaTool(node)) {
+      const turn = normTurn(node.turnId);
+      const members: ToolBlock[] = [];
+      while (index < nodes.length) {
+        const next = nodes[index]!;
+        if (next.kind !== 'tool' || !isMediaTool(next) || normTurn(next.turnId) !== turn) break;
+        members.push(next);
+        index += 1;
+      }
+      const tail = nodes.slice(index).every((rest) => rest.kind !== 'history-fold' && normTurn(foldTurnId(rest)) !== live);
+      out.push({ kind: 'media-run', id: `media-${members[0]!.id}`, turnId: turn, members, latest: turn !== undefined && turn === live && tail });
+      continue;
+    }
+    if (node.kind === 'subagent') {
+      const turn = normTurn(node.parentTurnId);
+      const members: SubagentBlock[] = [];
+      while (index < nodes.length) {
+        const next = nodes[index]!;
+        if (next.kind !== 'subagent' || normTurn(next.parentTurnId) !== turn) break;
+        members.push(next);
+        index += 1;
+      }
+      if (members.length >= 2 && members.some(subagentLive)) {
+        out.push({ kind: 'subagent-group', id: `agents-${members[0]!.id}`, turnId: turn, members });
+      } else {
+        out.push(...members);
+      }
+      continue;
+    }
+    out.push(node);
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * Fold settled process: each run of ≥2 consecutive process rows of one turn
+ * (tools, read runs, shell, thinking, settled subagents, reminders, settled
+ * decisions, engine notes) becomes one `HistoryFold`. In the latest turn
+ * (`liveTurnId`) the newest process row stays out, as does anything still
+ * running or held by `keepOpen`; the next row to arrive folds it in. A run
+ * breaks at anything the user reads: messages, dividers, image rows, live
+ * subagent groups.
  */
 export function foldHistory(
   nodes: readonly DisplayNode[],
   liveTurnId: string | undefined,
+  options: FoldOptions = {},
 ): DisplayNode[] {
   const live = normTurn(liveTurnId);
+  const rows = gatherRows(nodes, live);
+  // The newest row of the live turn, when it is process (the one the reader
+  // is watching arrive); a message at the end already closes the stretch.
+  let newest: string | undefined;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const node = rows[index]!;
+    const turn = node.kind === 'history-fold' ? node.turnId : normTurn(foldTurnId(node));
+    if (turn !== live) continue;
+    newest = node.id;
+    break;
+  }
+  const keepOpen = options.keepOpen;
   const out: DisplayNode[] = [];
-  let run: (Block | ToolGroup)[] = [];
+  let run: Row[] = [];
   let runTurn: string | undefined;
   const flush = () => {
     if (run.length >= HISTORY_FOLD_MIN) out.push(buildFold(run, runTurn));
@@ -183,14 +400,15 @@ export function foldHistory(
     run = [];
     runTurn = undefined;
   };
-  for (const node of nodes) {
-    if (node.kind === 'history-fold') {
+  for (const node of rows) {
+    if (node.kind === 'history-fold' || node.kind === 'subagent-group' || node.kind === 'media-run') {
       flush();
       out.push(node);
       continue;
     }
     const turn = normTurn(foldTurnId(node));
-    const eligible = turn !== undefined && turn !== live && foldable(node);
+    const held = turn === live && (node.id === newest || keepOpen?.has(node.id) === true);
+    const eligible = turn !== undefined && !held && foldable(node);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {
       run.push(node);
@@ -315,7 +533,8 @@ export function stepObject(block: ToolBlock): StepObject {
 /** A pure read: a non-memory tool call that only looks at the world. */
 export function isReadStep(block: Block): block is ToolBlock {
   if (block.kind !== 'tool' || isMemoryToolName(block.name)) return false;
-  return READ_VERBS.has(stepObject(block).verb);
+  // An image the agent looked at is its own row (see `MediaRun`), not a read.
+  return READ_VERBS.has(stepObject(block).verb) && !isMediaTool(block);
 }
 
 export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {

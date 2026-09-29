@@ -9,11 +9,15 @@ import {
   isMemoryToolName,
   isReadStep,
   latestTurnId,
+  readSubagentEndings,
   stepObject,
   type HistoryFold,
+  type MediaRun,
+  type SubagentEnding,
+  type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, ShellBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import type { AssistantBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
@@ -223,5 +227,79 @@ describe('foldHistory', () => {
     const loose = read();
     const nodes = foldHistory([inTurn(read(), 't1'), running, loose, loose], 't9');
     expect(nodes.every((node) => node.kind !== 'history-fold')).toBe(true);
+  });
+});
+
+describe('folding the live turn, subagents, images and ends (FOLDING.md)', () => {
+  const inTurn = <T extends { turnId?: string }>(block: T, turnId: string): T => ({ ...block, turnId });
+  const image = (turnId: string): ToolBlock => inTurn(tool('ReadMediaFile', 'done', {
+    args: { path: 'C:/w/shot.png' },
+    output: [
+      { type: 'text', text: '<image path="C:/w/shot.png">' },
+      { type: 'image_url', imageUrl: { url: 'blobref:image/png;0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' } },
+      { type: 'text', text: '</image>' },
+    ],
+  }), turnId);
+  const agent = (id: string, status: SubagentBlock['status'], turnId = 't2'): SubagentBlock => ({
+    kind: 'subagent', id: `subagent-${id}`, subagentId: id, parentAgentId: 'main', parentToolCallId: undefined,
+    parentTurnId: turnId, name: id, description: undefined, model: undefined, thinkingEffort: undefined,
+    status, summary: undefined, error: undefined, startedAt: undefined, endedAt: undefined, toolCallCount: 0, transcript: [],
+  });
+
+  it('folds the live turn’s settled work and leaves only its newest row out', () => {
+    const blocks = [inTurn(text('user'), 't2'), inTurn(thinking(), 't2'), inTurn(read('/w/a'), 't2'), inTurn(shell(), 't2'), inTurn(read('/w/b'), 't2')];
+    const nodes = foldHistory(blocks, latestTurnId(blocks));
+    expect(nodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'tool']);
+    expect((nodes[1] as HistoryFold).members).toEqual(blocks.slice(1, 4));
+    expect(nodes[2]).toBe(blocks[4]);
+  });
+
+  it('keeps rows the reader holds in place, folding around them', () => {
+    const blocks = [inTurn(thinking(), 't2'), inTurn(read('/w/a'), 't2'), inTurn(shell(), 't2'), inTurn(read('/w/b'), 't2')];
+    const nodes = foldHistory(blocks, 't2', { keepOpen: new Set([blocks[1]!.id, blocks[2]!.id]) });
+    // Held rows break the run: nothing folds that would move them.
+    expect(nodes.map((node) => node.kind)).toEqual(['thinking', 'tool', 'shell', 'tool']);
+  });
+
+  it('folds settled subagents into the line, counting them, and keeps a live set as a group', () => {
+    const settled = [inTurn(read('/w/a'), 't1'), agent('a1', 'completed', 't1'), agent('a2', 'failed', 't1'), inTurn(shell(), 't1'), inTurn(text('assistant'), 't1')];
+    const folded = foldHistory(settled, 't9');
+    expect(folded.map((node) => node.kind)).toEqual(['history-fold', 'assistant']);
+    expect(folded[0]).toMatchObject({ steps: 2, agents: 2, failed: 1 });
+    const live = [inTurn(read('/w/a'), 't2'), inTurn(shell(), 't2'), agent('b1', 'completed'), agent('b2', 'running'), inTurn(thinking(), 't2')];
+    const nodes = foldHistory(live, 't2');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'subagent-group', 'thinking']);
+    expect((nodes[1] as SubagentGroup).members.map((member) => member.subagentId)).toEqual(['b1', 'b2']);
+  });
+
+  it('gives image reads a row of their own that breaks the fold, latest only at the live end', () => {
+    const blocks = [inTurn(read('/w/a'), 't1'), inTurn(shell(), 't1'), image('t1'), image('t1'), inTurn(read('/w/b'), 't1'), inTurn(shell(), 't1'), inTurn(text('user'), 't2'), inTurn(read('/w/c'), 't2'), image('t2')];
+    const nodes = foldHistory(blocks, latestTurnId(blocks));
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'media-run', 'history-fold', 'user', 'tool', 'media-run']);
+    expect(nodes[1]).toMatchObject({ latest: false });
+    expect((nodes[1] as MediaRun).members).toHaveLength(2);
+    expect(nodes[5]).toMatchObject({ latest: true });
+    expect(isReadStep(image('t1'))).toBe(false);
+  });
+
+  it('reads a subagent’s task notification as its end: dropped beside its card, a row in a later turn', () => {
+    const note = (id: string, taskId: string, turnId: string, text = 'Background agent completed\nDone.'): SystemBlock =>
+      ({ kind: 'system', id, variant: 'task', text, createdAt: undefined, turnId, taskId });
+    const tasks = [
+      { id: 'task-a', agent_id: 'a1', status: 'completed' },
+      { id: 'task-b', agent_id: 'a2', status: 'failed' },
+      { id: 'task-x', status: 'completed' },
+    ];
+    const nodes = readSubagentEndings([
+      agent('a1', 'completed', 't1'), agent('a2', 'failed', 't1'), note('n1', 'task-a', 't1'),
+      inTurn(text('user'), 't2'), note('n2', 'task-b', 't2', 'Background agent failed\nboom'), note('n3', 'task-x', 't2'),
+    ], tasks);
+    expect(nodes.map((node) => node.kind)).toEqual(['subagent', 'subagent', 'user', 'subagent-ended', 'system']);
+    expect(nodes[3]).toMatchObject({ agentId: 'a2', outcome: 'failed', dispatchOnPage: true });
+    // A completed end folds with the turn's work; one that failed stays out.
+    const ended = foldHistory([inTurn(read('/w/a'), 't2'), { ...(nodes[3] as SubagentEnding), outcome: 'completed' }, inTurn(text('assistant'), 't2')], 't2');
+    expect(ended[0]).toMatchObject({ kind: 'history-fold', agentsDone: 1 });
+    const failed = foldHistory([inTurn(read('/w/a'), 't2'), nodes[3]!, inTurn(read('/w/b'), 't2'), inTurn(text('assistant'), 't2')], 't2');
+    expect(failed.map((node) => node.kind)).toEqual(['tool', 'subagent-ended', 'tool', 'assistant']);
   });
 });

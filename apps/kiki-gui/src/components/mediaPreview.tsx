@@ -570,7 +570,7 @@ function AttachmentPreviewDialog({
   );
 }
 
-function SessionMediaThumb({ item }: { item: MediaRef }) {
+function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: MediaThumbSize }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const [hostRef, visible] = useVisibleOnce();
@@ -579,11 +579,13 @@ function SessionMediaThumb({ item }: { item: MediaRef }) {
 
   let body: ReactNode;
   if (load.status === 'failed') {
-    body = <FileChip item={item.blobHash === undefined ? item : { ...item, path: undefined, fileId: undefined }} />;
+    body = size === 'default'
+      ? <FileChip item={item.blobHash === undefined ? item : { ...item, path: undefined, fileId: undefined }} />
+      : <BrokenThumb size={size} name={name} />;
   } else if (load.status === 'loading') {
     body = (
-      <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
-        {t('preview.loading')}
+      <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
+        {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
   } else if (item.kind === 'video' || load.mime.startsWith('video/')) {
@@ -594,14 +596,30 @@ function SessionMediaThumb({ item }: { item: MediaRef }) {
         type="button"
         title={name}
         onClick={() => { preview?.openImage(load.url, name); }}
-        className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
+        className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
       >
-        <img src={load.thumbnailUrl ?? load.url} alt={name} className="h-28 w-auto object-cover" />
+        <img src={load.thumbnailUrl ?? load.url} alt={name} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
     );
   }
 
   return <span ref={hostRef} className="inline-flex">{body}</span>;
+}
+
+/** An image that could not be read, in the slot it would have taken: neutral, never an error. */
+function BrokenThumb({ size, name }: { size: MediaThumbSize; name: string }) {
+  const { t } = useI18n();
+  return (
+    <span
+      data-media-broken
+      role="img"
+      aria-label={t('media.unavailable', { name })}
+      title={name}
+      className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel text-ink-faint`}
+    >
+      <Icon name="file" size={size === 'strip' ? 12 : 16} />
+    </span>
+  );
 }
 
 function FileChip({ item }: { item: MediaRef }) {
@@ -648,7 +666,7 @@ function FileChip({ item }: { item: MediaRef }) {
 }
 
 /** Preview for path-backed image/video results (fs:content needs the bearer header). */
-function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; path: string } }) {
+function HostMediaThumb({ item, size = 'default' }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const preview = useMediaPreview();
@@ -695,11 +713,11 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
     };
   }, [client, kind, path]);
 
-  if (failed) return <FileChip item={item} />;
+  if (failed) return size === 'default' ? <FileChip item={item} /> : <BrokenThumb size={size} name={name ?? basenameOf(path)} />;
   if (url === null) {
     return (
-      <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
-        {t('preview.loading')}
+      <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
+        {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
   }
@@ -711,16 +729,29 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
       type="button"
       title={name ?? path}
       onClick={() => { preview?.openImage(url, name ?? basenameOf(path)); }}
-      className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
+      className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
     >
-      <img src={thumbnailUrl ?? url} alt={name ?? basenameOf(path)} className="h-28 w-auto object-cover" />
+      <img src={thumbnailUrl ?? url} alt={name ?? basenameOf(path)} className={`${THUMB_SIZE[size].img} object-cover`} />
     </button>
   );
 }
 
+/**
+ * Thumbnail sizes. `strip` is the timeline's row of what an agent looked at
+ * (one line tall); `preview` is the latest look, large enough to read at a
+ * glance; `default` is a message attachment.
+ */
+export type MediaThumbSize = 'default' | 'strip' | 'preview';
+
+const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: string }> = {
+  default: { img: 'h-28 w-auto', slot: 'h-28 w-40', frame: 'rounded-lg' },
+  strip: { img: 'h-9 w-auto max-w-[96px]', slot: 'h-9 w-12', frame: 'rounded-[5px]' },
+  preview: { img: 'h-[120px] w-auto max-w-[240px]', slot: 'h-[120px] w-40', frame: 'rounded-lg' },
+};
+
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
-function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
+export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef; agentId?: string; size?: MediaThumbSize }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   if (item.blobHash !== undefined) {
@@ -730,13 +761,13 @@ function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
       name: item.name ?? (item.path === undefined ? undefined : basenameOf(item.path)),
       fileId: item.fileId ?? (agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`),
     };
-    return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} />;
+    return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} size={size} />;
   }
   if (item.kind === 'image') {
     // Only schemes a browser can load reach <img>; anything else (a stray
     // `blobref:` / `kimi-file:` reference) degrades to the file chip.
     if (item.url !== undefined && !LOADABLE_MEDIA_URL.test(item.url)) {
-      return item.fileId !== undefined ? <SessionMediaThumb item={item} /> : <FileChip item={item} />;
+      return item.fileId !== undefined ? <SessionMediaThumb item={item} size={size} /> : <FileChip item={item} />;
     }
     if (item.url !== undefined) {
       const name = item.name ?? t('media.viewImage');
@@ -745,7 +776,7 @@ function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
         <img
           src={url}
           alt={name}
-          className="h-28 w-auto rounded-lg border border-hairline object-cover"
+          className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`}
         />
       );
       if (preview === null) return image;
@@ -760,8 +791,8 @@ function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
         </button>
       );
     }
-    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} />;
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'video') {
