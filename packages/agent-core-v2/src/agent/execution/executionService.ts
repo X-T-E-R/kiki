@@ -136,7 +136,8 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
           ...externalStateHints({
             todos: todos.getTodos(this.agent.id),
             notes: todos.getNotes(this.agent.id).notes,
-            goal: this.agent.accessor.get(IAgentGoalService).getGoal().goal,
+            goal: this.scope.agentId === 'main'
+              ? this.agent.accessor.get(IAgentGoalService).getGoal().goal : null,
           }),
         ];
         const deliverable = hints.filter((hint) => hint.text.length > 0);

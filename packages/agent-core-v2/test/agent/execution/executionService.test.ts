@@ -91,6 +91,60 @@ function executionService(
 }
 
 describe('AgentExecutionService', () => {
+  it.each(['child', 'main'] as const)('starts and completes an external %s agent with only main goal state', async (agentId) => {
+    const ix = new TestInstantiationService();
+    const run = vi.fn<AgentExecutorSession['run']>(async (request) => ({
+      agentId,
+      turn: {
+        id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+      },
+      completion: Promise.resolve({ summary: 'done' }),
+    }));
+    const session: AgentExecutorSession = {
+      run, status: () => ({ state: 'idle' }), cancel: () => false,
+      shutdown: async () => {}, settled: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const registry = { resolveExecutable: async () => ({
+      descriptor: { id: 'grok-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
+      options: {}, provider: { create: () => session },
+    }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope(agentId), profile({
+      executorId: 'grok-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+    }), registry, states());
+    const getGoal = vi.fn(() => {
+      if (agentId !== 'main') throw new Error('Goals are only supported by the main agent');
+      return { goal: {
+        goalId: 'goal-1', objective: 'Finish the main task', status: 'active' as const,
+        turnsUsed: 0, tokensUsed: 0, wallClockMs: 0,
+        budget: {
+          tokenBudget: null, turnBudget: null, wallClockBudgetMs: null,
+          remainingTokens: null, remainingTurns: null, remainingWallClockMs: null,
+          tokenBudgetReached: false, turnBudgetReached: false, wallClockBudgetReached: false,
+          overBudget: false,
+        },
+      } };
+    });
+    ix.stub(IAgentGoalService, { getGoal });
+    try {
+      const handle = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await expect(handle.completion).resolves.toEqual({ summary: 'done' });
+      await service.settled();
+      expect(getGoal).toHaveBeenCalledTimes(agentId === 'main' ? 1 : 0);
+      expect(run).toHaveBeenCalledOnce();
+      const request = vi.mocked(run).mock.calls[0]![0];
+      expect(request.kind).toBe('prompt');
+      if (request.kind === 'prompt') {
+        expect(request.prompt).toBe(agentId === 'main'
+          ? '[Kiki goal_state]\nGoal (active): Finish the main task\n\nwork'
+          : 'work');
+      }
+    } finally {
+      await service.dispose();
+      ix.dispose();
+    }
+  });
+
   it('accounts for direct prompts before launch and keeps each cancellation signal through settlement', async () => {
     const ix = new TestInstantiationService();
     const service = executionService(ix, scope(), profile({ executorId: 'native' }), {} as IAgentExecutorRegistry, states());
