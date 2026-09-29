@@ -255,6 +255,7 @@ describe('server-v2 /api model/provider catalog', () => {
         display_name: 'Kimi K2',
         max_context_size: 131072,
         capabilities: ['thinking'],
+        effective_capabilities: ['thinking'],
         request_identity: { overrides: { request: { logical_id: 'none' } } },
       },
       {
@@ -270,8 +271,42 @@ describe('server-v2 /api model/provider catalog', () => {
         remote_id: 'gpt-4o',
         display_name: 'gpt-4o',
         max_context_size: 128000,
+        effective_capabilities: ['image_in', 'tool_use'],
       },
     ]);
+  });
+
+  it('lists runtime-effective capabilities without changing declared capabilities', async () => {
+    await boot([
+      '[providers.openai]',
+      'type = "openai"',
+      '',
+      '[models.vision]',
+      'provider = "openai"',
+      'model = "gpt-4o"',
+      'max_context_size = 128000',
+      '',
+      '[models.text]',
+      'provider = "openai"',
+      'model = "gpt-3.5-turbo"',
+      'max_context_size = 16384',
+      'capabilities = ["tool_use"]',
+    ].join('\n'));
+    const { status, body } = await getJson<{
+      items: Array<{
+        id: string;
+        capabilities?: string[];
+        effective_capabilities?: string[];
+      }>;
+    }>('/api/models');
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    const vision = body.data.items.find((item) => item.id === 'vision');
+    const text = body.data.items.find((item) => item.id === 'text');
+    expect(vision?.capabilities).toBeUndefined();
+    expect(vision?.effective_capabilities).toContain('image_in');
+    expect(text?.capabilities).toEqual(['tool_use']);
+    expect(text?.effective_capabilities).not.toContain('image_in');
   });
 
   it('lists models without refreshing providers', async () => {

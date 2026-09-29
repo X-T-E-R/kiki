@@ -1217,6 +1217,25 @@ describe('Composer model chip', () => {
     expect(selected?.textContent).toContain('alpha/k3-256k');
   });
 
+  it('uses runtime-effective capabilities for the vision badge', async () => {
+    listModels.mockResolvedValue({
+      items: [{
+        id: 'vision',
+        provider_id: 'openai',
+        remote_id: 'gpt-4o',
+        display_name: 'GPT-4o',
+        max_context_size: 128000,
+        capabilities: ['tool_use'],
+        effective_capabilities: ['image_in', 'tool_use'],
+      }],
+    });
+    const { container } = await renderComposer({ model: 'vision' });
+    for (let index = 0; index < 5; index += 1) await settle();
+    await click(container.querySelector('#composer-model-select')!);
+    const row = container.querySelector<HTMLButtonElement>('[role="option"][data-option-value="vision"]')!;
+    expect([...row.querySelectorAll('[data-option-fact]')].map((node) => node.textContent)).toEqual(['128k']);
+  });
+
   it('shows context, auto-compact and a missing-vision mark, never capability or effort badges', async () => {
     listModels.mockResolvedValue({
       items: [

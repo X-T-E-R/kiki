@@ -33,7 +33,8 @@ export function modelFactBadges(item: ModelCatalogItem, t: Translate): Searchabl
   if (item.auto_compact !== undefined) {
     badges.push({ label: t('composer.modelCompactAt', { tokens: formatContextSize(item.auto_compact) }) });
   }
-  if (item.capabilities !== undefined && !item.capabilities.includes('image_in')) {
+  const capabilities = item.effective_capabilities ?? item.capabilities;
+  if (capabilities !== undefined && !capabilities.includes('image_in')) {
     badges.push({ label: t('composer.modelNoVision'), tone: 'caution' });
   }
   return badges;

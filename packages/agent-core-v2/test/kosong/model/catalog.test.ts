@@ -1267,6 +1267,7 @@ describe('wire projection (pure)', () => {
         display_name: 'Kimi K2',
         max_context_size: 131072,
         capabilities: ['thinking'],
+        effective_capabilities: ['thinking'],
         support_efforts: undefined,
         default_effort: undefined,
         request_identity: undefined,
@@ -1362,6 +1363,7 @@ describe('ModelCatalog enumeration', () => {
           display_name: 'Kimi K2',
           max_context_size: 131072,
           capabilities: ['thinking'],
+          effective_capabilities: ['thinking'],
         },
         {
           id: 'turbo',
@@ -1376,6 +1378,7 @@ describe('ModelCatalog enumeration', () => {
           remote_id: 'gpt-4o',
           display_name: 'gpt-4o',
           max_context_size: 128000,
+          effective_capabilities: ['image_in', 'tool_use'],
         },
       ]);
     } finally {

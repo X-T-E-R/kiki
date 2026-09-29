@@ -98,6 +98,7 @@ export const modelCatalogItemSchema = z.object({
   max_context_size: z.number().int().min(0),
   auto_compact: z.number().int().positive().safe().optional(),
   capabilities: z.array(z.string()).optional(),
+  effective_capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
@@ -164,6 +165,8 @@ export function toProtocolModel(
   record: ModelRecord,
   providerType?: string,
 ): ModelCatalogItem {
+  const effective = effectiveModelConfig(record, providerType ?? model.providerType);
+  const effectiveCapabilities = modelCapabilityNames(model.capabilities);
   return {
     id: model.id,
     provider_id: model.providerName,
@@ -171,7 +174,11 @@ export function toProtocolModel(
     display_name: model.displayName ?? model.name ?? model.id,
     max_context_size: model.maxContextSize,
     auto_compact: model.autoCompact,
-    capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
+    capabilities: effective.capabilities,
+    effective_capabilities:
+      effective.capabilities === undefined && effectiveCapabilities.length === 0
+        ? undefined
+        : effectiveCapabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
     service_tier: model.serviceTier,
@@ -196,6 +203,7 @@ export function toProtocolModelFallback(
     max_context_size: effective.maxContextSize ?? 0,
     auto_compact: effective.autoCompact,
     capabilities: effective.capabilities,
+    effective_capabilities: undefined,
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,
     service_tier: effective.serviceTier,
@@ -203,6 +211,17 @@ export function toProtocolModelFallback(
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };
+}
+
+function modelCapabilityNames(capabilities: ModelCapability): string[] {
+  return [
+    capabilities.image_in ? 'image_in' : undefined,
+    capabilities.video_in ? 'video_in' : undefined,
+    capabilities.audio_in ? 'audio_in' : undefined,
+    capabilities.thinking ? 'thinking' : undefined,
+    capabilities.tool_use ? 'tool_use' : undefined,
+    capabilities.dynamically_loaded_tools ? 'dynamically_loaded_tools' : undefined,
+  ].filter((capability): capability is string => capability !== undefined);
 }
 
 export function toProtocolProvider(

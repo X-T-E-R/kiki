@@ -136,6 +136,7 @@ export const modelCatalogItemSchema = z.object({
   max_context_size: z.number().int().min(0),
   auto_compact: z.number().int().positive().safe().optional(),
   capabilities: z.array(z.string()).optional(),
+  effective_capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
