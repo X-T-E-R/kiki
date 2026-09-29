@@ -1,10 +1,13 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService, ProfileError, ProfileErrors } from '#/agent/profile/profile';
 import { TOOLS_SECTION, type ToolsConfig } from './configSection';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IConfigService } from '#/app/config/config';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
@@ -26,6 +29,8 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @ref(ISessionContext) private readonly session: LiveRef<ISessionContext>,
+    @ref(ICapabilitySnapshotService) private readonly capabilities: LiveRef<ICapabilitySnapshotService>,
   ) {
     super();
     this._register(
@@ -101,6 +106,10 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     source: ToolSource,
     subagent: SubagentToolPolicy | undefined,
   ): boolean {
+    const capabilities = this.capabilities.current;
+    const session = this.session.current;
+    if (capabilities !== undefined && session !== undefined &&
+      !capabilities.toolAvailable(name, session.workspaceId)) return false;
     return isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,

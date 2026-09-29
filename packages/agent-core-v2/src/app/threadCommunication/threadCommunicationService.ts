@@ -7,6 +7,7 @@ import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -30,7 +31,6 @@ import {
 import { IWireService } from '#/wire/wire';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
-import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from './configSection';
 import {
   IThreadCommunicationService,
   type ListThreadsInput,
@@ -129,6 +129,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   constructor(
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
+    @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @ISessionManager private readonly sessionManager: ISessionManager,
     @IThreadMailboxStore private readonly mailbox: IThreadMailboxStore,
@@ -395,8 +396,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private async globalEnabled(): Promise<boolean> {
-    await this.config.ready;
-    return this.config.get<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION).enabled;
+    await this.capabilities.ready;
+    return this.capabilities.threadEnabled();
   }
 
   private async workspaceEnabled(workspaceId: string): Promise<boolean> {

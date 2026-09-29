@@ -11,6 +11,7 @@ import {
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import {
   IAgentSystemReminderService,
   systemReminderContent,
@@ -79,6 +80,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     @ILogService private readonly log: ILogService,
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
   ) {
     super();
     this.states.contributeState(pluginSessionStartSnapshotKey);
@@ -102,6 +104,7 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     this._register(
       this.plugins.onDidMutate(({ mutation }) => {
         this.pendingMutationCatalogChanges++;
+        if (this.toolSelect.enabled()) return;
         this.reminders.appendSystemReminder(renderPluginChangeReminder(mutation), {
           kind: 'injection',
           variant: PLUGIN_CHANGE_INJECTION_VARIANT,

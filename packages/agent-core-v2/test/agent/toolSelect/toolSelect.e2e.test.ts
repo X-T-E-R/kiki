@@ -10,6 +10,17 @@ import { TOOL_SELECT_FLAG_ENV } from '#/agent/toolSelect/flag';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import { IAgentToolSelectSchemasService } from '#/agent/toolSelect/toolSelectSchemas';
+import { IAgentProfileCapabilityChangesService } from '#/agent/toolSelect/profileCapabilityChanges';
+import { IAgentCapabilityRebuildService } from '#/agent/capabilityRebuild/capabilityRebuild';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { IConfigService } from '#/app/config/config';
+import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
+import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSection';
+import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
+import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { SessionSkillCatalogService } from '#/session/sessionSkillCatalog/skillCatalogService';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import '#/agent/tools/select-tools/selectToolsTool';
 
@@ -324,6 +335,203 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(firstRequest.systemPromptHash).toBe(secondRequest.systemPromptHash);
     expect(firstRequest.toolsHash).toBe(secondRequest.toolsHash);
     expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('preserves $name prefix across identical MCP reconnect; announces a changed set', async ({ provider }) => {
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    registration?.dispose();
+    registration = ctx.get(IAgentToolRegistryService).register(new StubMcpTool(MCP_ALPHA), { source: 'mcp' });
+    ctx.mockNextResponse({ type: 'text', text: 'second' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+    await ctx.untilTurnEnd();
+    const [first, second] = wireEvents(ctx, 'llm.request').map((event) => event.args as { systemPromptHash?: string; toolsHash?: string });
+    expect(second!.systemPromptHash).toBe(first!.systemPromptHash);
+    expect(second!.toolsHash).toBe(first!.toolsHash);
+    expect(historyText(ctx.llmCalls[1]!.history).match(/<tools_added>/g)).toHaveLength(1);
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+
+    const extra = ctx.get(IAgentToolRegistryService).register(new StubMcpTool('mcp__srv__beta'), { source: 'mcp' });
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'third' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'third' }] });
+      await ctx.untilTurnEnd();
+      expect(historyText(ctx.llmCalls[2]!.history)).toContain('mcp__srv__beta —');
+      expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
+      expect(ctx.llmCalls[2]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+    } finally { extra.dispose(); }
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('announces one new plugin tool on $name, not an identical re-registration', async ({ provider }) => {
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    const name = 'plugin__demo__create';
+    let plugin = ctx.get(IAgentToolRegistryService).register(new StubMcpTool(name), { source: 'plugin' });
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'second' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+      await ctx.untilTurnEnd();
+      const added = historyText(ctx.llmCalls[1]!.history);
+      expect(added.match(/<tools_added>/g)).toHaveLength(2);
+      expect(added.split('<tools_added>')[2]).toContain(`${name} —`);
+      expect(added.split('<tools_added>')[2]).not.toContain(MCP_ALPHA);
+      expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+      plugin.dispose();
+      plugin = ctx.get(IAgentToolRegistryService).register(new StubMcpTool(name), { source: 'plugin' });
+      ctx.mockNextResponse({ type: 'text', text: 'third' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'third' }] });
+      await ctx.untilTurnEnd();
+      expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
+    } finally { plugin.dispose(); }
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('coalesces effective profile skill changes on $name, ignoring unchanged content', async ({ provider }) => {
+    ctx.get(IAgentProfileCapabilityChangesService);
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    const catalog = ctx.get(ISessionSkillCatalog) as SessionSkillCatalogService;
+    const skill = { name: 'hot-update', description: 'Hot update.', path: '/tmp/hot-update/SKILL.md',
+      dir: '/tmp/hot-update', content: 'Updated skill body', source: 'project' as const, metadata: {} };
+    catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
+    catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
+    await vi.waitFor(() => {
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+        message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+    }, { timeout: 2_500 });
+    ctx.mockNextResponse({ type: 'text', text: 'second' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+    await ctx.untilTurnEnd();
+    const history = ctx.get(IAgentContextMemoryService).get();
+    const notice = history.findIndex((message) => message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed');
+    const user = history.findIndex((message) => message.origin?.kind === 'user' && historyText([message]).includes('second'));
+    expect(notice).toBeGreaterThan(-1);
+    expect(notice).toBeLessThan(user);
+    expect(historyText(ctx.llmCalls[1]!.history)).toContain('Available profile capabilities changed');
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+    const requests = wireEvents(ctx, 'llm.request');
+    expect((requests[1]!.args as { systemPromptHash?: string }).systemPromptHash)
+      .toBe((requests[0]!.args as { systemPromptHash?: string }).systemPromptHash);
+    catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+  });
+
+  it('coalesces repeated skill edits into one notice until the next user turn', async () => {
+    ctx.get(IAgentProfileCapabilityChangesService);
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    const catalog = ctx.get(ISessionSkillCatalog) as SessionSkillCatalogService;
+    const skill = { name: 'rapid-edit', description: 'Rapid edit.', path: '/tmp/rapid/SKILL.md',
+      dir: '/tmp/rapid', content: 'one', source: 'project' as const, metadata: {} };
+    catalog.set('rapid', { skills: [skill] }, { priority: 50 });
+    catalog.set('rapid', { skills: [{ ...skill, content: 'two' }] }, { priority: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 1_150));
+    const notices = () => ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed');
+    expect(notices()).toHaveLength(1);
+    ctx.mockNextResponse({ type: 'text', text: 'second' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+    await ctx.untilTurnEnd();
+    catalog.set('rapid', { skills: [{ ...skill, content: 'three' }] }, { priority: 50 });
+    expect(notices()).toHaveLength(2);
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('announces only usable subagent profile changes on $name', async ({ provider }) => {
+    ctx.get(IAgentProfileCapabilityChangesService);
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    const catalog = ctx.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+    const worker = normalizeAgentProfile({ name: 'hot-worker', systemPrompt: () => 'Work on this task.' });
+    catalog.setContribution('hot-profile', { profiles: [worker] }, 50);
+    await vi.waitFor(() => {
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+        message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+    }, { timeout: 2_500 });
+    const hidden = normalizeAgentProfile({ name: 'hidden-worker', private: true, systemPrompt: () => 'Internal.' });
+    catalog.setContribution('hot-profile', { profiles: [worker, hidden] }, 50);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+    ctx.mockNextResponse({ type: 'text', text: 'second' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('rebuilds memory and Thread once on the next $name user turn, not mid-turn', async ({ provider }) => {
+    ctx.get(IAgentCapabilityRebuildService);
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    let start!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const registration = ctx.get(IAgentToolRegistryService).register({
+      name: 'test_gate', description: 'Block this test turn.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      resolveExecution: () => ({ approvalRule: 'test_gate', execute: async () => { start(); await gate; return { output: 'created' }; } }),
+    });
+    ctx.mockNextResponse({ type: 'function', id: 'call_gate', name: 'test_gate', arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'first done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await started;
+    const config = ctx.get(IConfigService);
+    await config.replace(MEMORY_SECTION, { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+    await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: true });
+    const threadDuringTurn = ctx.get(ICapabilitySnapshotService).threadEnabled();
+    release();
+    expect(threadDuringTurn).toBe(false);
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+    expect(toolNames(ctx.llmCalls[1]!.tools)).not.toContain('ThreadList');
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'next done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next' }] });
+    await ctx.untilTurnEnd();
+    registration.dispose();
+    expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
+    expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
+    const notices = ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt');
+    expect(notices).toHaveLength(1);
+    expect(historyText(notices)).toContain('memory, thread communication');
+    const requests = wireEvents(ctx, 'llm.request').map((event) => event.args as { toolsHash?: string });
+    expect(requests[1]!.toolsHash).toBe(requests[0]!.toolsHash);
+    expect(requests[2]!.toolsHash).not.toBe(requests[1]!.toolsHash);
+  });
+
+  it.each(PREFIX_PROTOCOL_CASES)('keeps $name prefix when capability toggles revert before the next user message', async ({ provider }) => {
+    ctx.get(IAgentCapabilityRebuildService);
+    ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({ type: 'text', text: 'first' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
+    await ctx.untilTurnEnd();
+    const config = ctx.get(IConfigService);
+    await config.replace(MEMORY_SECTION, { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+    await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: true });
+    await config.replace(MEMORY_SECTION, { enabled: false, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+    await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: false });
+    ctx.mockNextResponse({ type: 'text', text: 'second' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+    const requests = wireEvents(ctx, 'llm.request').map((event) => event.args as { systemPromptHash?: string; toolsHash?: string });
+    expect(requests[1]!.systemPromptHash).toBe(requests[0]!.systemPromptHash);
+    expect(requests[1]!.toolsHash).toBe(requests[0]!.toolsHash);
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(0);
   });
 
   it('re-injects a selected schema after undo slices the tail of the loaded exchange', async () => {

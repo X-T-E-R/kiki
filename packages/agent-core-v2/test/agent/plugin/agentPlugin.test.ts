@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { AsyncEmitter, Emitter } from '#/_base/event';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
+import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { AgentPluginService } from '#/agent/plugin/agentPluginService';
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -359,6 +360,21 @@ describe('AgentPluginService plugin-change reminder', () => {
     expect(messages).toHaveLength(1);
     expect(messageText(messages[0]!)).toContain('Plugin "demo" was enabled.');
     expect(messageText(messages[0]!)).toContain('Plugin tools refresh in live sessions; prompt contributions may remain until /new or /reload.');
+    mutateEmitter.dispose();
+  });
+
+  it('leaves tool mutations to dynamic announcements when disclosure is enabled', async () => {
+    const mutateEmitter = new Emitter<PluginMutationSummary>();
+    ctx = createTestAgent(
+      { autoConfigure: true },
+      appService(IPluginService, stubPluginService({ sessionStarts: [], mutateEmitter })),
+      skillServices(new InMemorySkillCatalog()),
+      agentService(IAgentToolSelectService, { enabled: () => true } as unknown as IAgentToolSelectService),
+      agentService(IAgentPluginService, new SyncDescriptor(AgentPluginService)),
+    );
+    ctx.get(IAgentPluginService);
+    mutateEmitter.fire({ added: ['demo'], removed: [], errors: [], mutation: { kind: 'install', id: 'demo' } });
+    expect(findPluginChangeMessages(ctx)).toHaveLength(0);
     mutateEmitter.dispose();
   });
 

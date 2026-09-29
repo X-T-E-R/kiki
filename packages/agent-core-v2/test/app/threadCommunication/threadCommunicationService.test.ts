@@ -15,6 +15,8 @@ import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { IConfigService } from '#/app/config/config';
+import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import {
@@ -255,6 +257,7 @@ describe('ThreadCommunicationService', () => {
       },
       close: mailboxClose,
     });
+    ix.set(ICapabilitySnapshotService, new SyncDescriptor(CapabilitySnapshotService));
     ix.set(IThreadCommunicationService, new SyncDescriptor(ThreadCommunicationService));
   });
 
@@ -482,6 +485,8 @@ describe('ThreadCommunicationService', () => {
     expect(listed.threads.map((thread) => thread.ref.workspaceId)).toEqual(['workspace-a']);
     globalEnabled = false;
     workspaceOverrides.set('workspace-b', true);
+    expect(await service.isWorkspaceEnabled('workspace-b')).toBe(true);
+    ix.get(ICapabilitySnapshotService).refresh('workspace-b');
     expect(await service.isWorkspaceEnabled('workspace-b')).toBe(false);
     expect(await service.listThreads()).toEqual({ threads: [] });
   });
