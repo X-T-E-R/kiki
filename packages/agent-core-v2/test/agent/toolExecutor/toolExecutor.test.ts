@@ -110,6 +110,16 @@ afterEach(() => {
 });
 
 describe('AgentToolExecutorService', () => {
+  it('runs the connection gate before resolving a tool execution', async () => {
+    const tool = new TestTool('echo');
+    registry.register(tool);
+    const resolution = vi.spyOn(tool, 'resolveExecution');
+    executor.registerBeforeResolveTool(async () => 'SSH host was not approved');
+    const results = await execute([toolCall('call_ssh_gate', 'echo', { text: 'secret' })]);
+    expect(results[0]).toMatchObject({ isError: true, output: 'SSH host was not approved' });
+    expect(resolution).not.toHaveBeenCalled();
+  });
+
   it('resolves by interface and routes a successful tool call through execute', async () => {
     const tool = new TestTool('echo');
     registry.register(tool);

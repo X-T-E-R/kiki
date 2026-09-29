@@ -4,6 +4,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const GrepInputSchema = z.object({
+  host: z.string().optional(),
   pattern: z.string().describe('Regular expression to search for.'),
   path: z
     .string()

@@ -8,6 +8,9 @@ import {
 import { toolGroupForName } from '../../../src/agent/toolRegistry/toolGroups';
 import { isToolActive } from '../../../src/agent/toolPolicy/evaluate';
 import type { ISessionContext } from '../../../src/session/sessionContext/sessionContext';
+import type { IAgentScopeContext } from '../../../src/agent/scopeContext/scopeContext';
+
+const caller = { agentId: 'main' } as IAgentScopeContext;
 import type { ISessionIndex } from '../../../src/app/sessionIndex/sessionIndex';
 import type { IWorkspaceService } from '../../../src/app/workspace/workspace';
 
@@ -55,10 +58,10 @@ describe('history tools', () => {
 
   it('searches across sessions in the current workspace without widening the query', async () => {
     const source = archive();
-    const { data } = await run(new HistorySearchTool(source, session, workspaces), { query: '原话' });
+    const { data } = await run(new HistorySearchTool(source, session, workspaces, caller), { query: '原话' });
     expect(source.search).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-a', sessionId: undefined }));
     expect(data.hits).toEqual([{ session_id: 'older', agent_id: 'main', role: 'user', turn: 3, snippet: '原话' }]);
-    await run(new HistorySearchTool(source, session, workspaces), {
+    await run(new HistorySearchTool(source, session, workspaces, caller), {
       query: '原话', scope: 'this_session', mode: 'literal',
     });
     expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -68,17 +71,17 @@ describe('history tools', () => {
 
   it('reads a precise step including tool output from a previous turn', async () => {
     const source = archive('{"steps":[{"step_id":"t7.2","frames":[{"role":"tool","output":"old result"}]}]}');
-    const { data } = await run(new HistoryReadTool(source, session, workspaces, sessions),
+    const { data } = await run(new HistoryReadTool(source, session, workspaces, sessions, caller),
       { session_id: 'older', turn: 7, step_id: 't7.2' });
     expect(source.readTurn).toHaveBeenCalledWith('older', 'main', 7, 't7.2');
     expect(data.text).toContain('old result');
-    await expect(new HistoryReadTool(source, session, workspaces, sessions)
+    await expect(new HistoryReadTool(source, session, workspaces, sessions, caller)
       .resolveExecution({ turn: 7, step_id: 't8.2' })).rejects.toThrow('step_id');
   });
 
   it('pages large output with a bounded chunk and bound cursor', async () => {
     const source = archive('压'.repeat(17_000));
-    const tool = new HistoryReadTool(source, session, workspaces, sessions);
+    const tool = new HistoryReadTool(source, session, workspaces, sessions, caller);
     const first = await run(tool, { turn: 2 });
     expect((first.data.text as string).length).toBeLessThanOrEqual(3_000);
     expect(first.data.has_more).toBe(true);
@@ -96,14 +99,14 @@ describe('history tools', () => {
 
   it('rejects another workspace by default and subjects an explicit request to external access policy', async () => {
     const source = archive();
-    const reader = new HistoryReadTool(source, session, workspaces, sessions);
+    const reader = new HistoryReadTool(source, session, workspaces, sessions, caller);
     await expect(reader.resolveExecution({ session_id: 'foreign', turn: 0 })).rejects.toThrow('requested workspace');
     expect(source.readTurn).not.toHaveBeenCalled();
     const external = await reader.resolveExecution({ session_id: 'foreign', workspace_id: 'ws-b', turn: 0 });
     expect('accesses' in external && external.accesses).toEqual([{
       kind: 'file', operation: 'read', path: '/external/project', implicitExternal: true,
     }]);
-    const search = await new HistorySearchTool(source, session, workspaces)
+    const search = await new HistorySearchTool(source, session, workspaces, caller)
       .resolveExecution({ query: 'needle', workspace_id: 'ws-b' });
     expect('accesses' in search && search.accesses).toEqual([{
       kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,

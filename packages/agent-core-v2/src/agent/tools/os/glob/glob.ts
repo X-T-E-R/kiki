@@ -4,6 +4,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const GlobInputSchema = z.object({
+  host: z.string().optional(),
   pattern: z.string().describe('Glob pattern to match files.'),
   head_limit: z
     .number()

@@ -19,6 +19,7 @@ function isValidTimeoutValue(timeout: number, isBackground: boolean): boolean {
 export const BashInputSchema = z
   .object({
     command: z.string().min(1, 'Command cannot be empty.').describe('The command to execute.'),
+    host: z.string().optional(),
     cwd: z
       .string()
       .optional()

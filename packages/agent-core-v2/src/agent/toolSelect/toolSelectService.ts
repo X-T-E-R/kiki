@@ -7,7 +7,7 @@ import { IFlagService } from '#/app/flag/flag';
 import type { Tool } from '#/kosong/contract/tool';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
-import { isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
+import { usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -103,7 +103,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     if (!disclosure) return activeEntries;
     const loaded = this.loadedToolNames();
     const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
-    const kimiProvider = model.providerType === 'kimi' || isOAuthCatalogVendor(model.providerType);
+    const kimiProvider = usesKimiToolSchema(model.providerType);
     const shaped: ShapedToolEntry[] = [];
     for (const entry of activeEntries) {
       if (entry.name === SELECT_TOOLS_TOOL_NAME || entry.name === CALL_TOOL_NAME) {

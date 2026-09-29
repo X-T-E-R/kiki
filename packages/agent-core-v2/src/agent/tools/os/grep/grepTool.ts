@@ -11,8 +11,10 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
+import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -68,7 +70,9 @@ export class GrepTool implements IGrepTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Grep' as const;
   readonly description = GREP_DESCRIPTION;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(GrepInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(GrepInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
@@ -81,25 +85,30 @@ export class GrepTool implements IGrepTool {
   }
 
   async resolveExecution(args: GrepInput): Promise<ToolExecution> {
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
       additionalDirs: this.workspaceCtx.additionalDirs,
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const workspace = withDefinitionReadRoots(this.workspace(view), this.skillCatalog?.catalog.getSkillRoots() ?? [], env.homeDir);
+    const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
+    const workspace = withDefinitionReadRoots(this.workspace(view), roots, env.homeDir);
     const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
     let implicitExternal = false;
     if (args.path !== undefined) {
-      const preparation = this.runtime.acquire(['fs']);
+      const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
       try {
-        if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+        if (preparation.runtime.identity.generation !== generation) {
           return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
         }
         const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
         path = admitted.path;
-        implicitExternal = admitted.implicitExternal === true;
+        implicitExternal = admitted.implicitExternal === true ||
+          (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
       } finally {
         preparation.dispose();
       }
@@ -110,12 +119,13 @@ export class GrepTool implements IGrepTool {
       accesses: ToolAccesses.searchTree(searchPaths[0]!, implicitExternal),
       description: `Searching for '${args.pattern}' in ${searchPath}`,
       display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
-      approvalRule: literalRulePattern(this.name, args.pattern),
+      approvalRule: toolApprovalRule(this.name, args.pattern, inspected, target.host),
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.pattern),
       execute: async ({ signal }) => {
-        const lease = this.runtime.acquire(['fs', 'process']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs', 'process']) : acquireToolRuntime(this.runtime, target.host, ['fs', 'process']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           if (args.path !== undefined) {
@@ -128,7 +138,7 @@ export class GrepTool implements IGrepTool {
               return { isError: true, output: error instanceof Error ? error.message : String(error) };
             }
           }
-          return await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths);
+          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths), inspected);
         } finally {
           lease.dispose();
         }
@@ -152,16 +162,20 @@ export class GrepTool implements IGrepTool {
     const pathClass = env.pathClass;
     let rgPath: string;
     try {
-      const resolution = await ensureRgPath(this.createRgProbe(processService), {
-        signal,
-        allowCachedFallback: true,
-      });
-      rgPath = resolution.path;
-      if (resolution.source !== 'system-path') {
-        this.telemetry.track2('grep_tool_rg_fallback', {
-          source: resolution.source,
-          outcome: 'resolved',
+      if (processService instanceof SshHostProcessService) {
+        rgPath = 'rg';
+      } else {
+        const resolution = await ensureRgPath(this.createRgProbe(processService), {
+          signal,
+          allowCachedFallback: true,
         });
+        rgPath = resolution.path;
+        if (resolution.source !== 'system-path') {
+          this.telemetry.track2('grep_tool_rg_fallback', {
+            source: resolution.source,
+            outcome: 'resolved',
+          });
+        }
       }
     } catch (error) {
       if (signal.aborted) {
@@ -284,11 +298,12 @@ export class GrepTool implements IGrepTool {
     }
 
     const contentIncludesLineNumbers = mode === 'content' && args['-n'] !== false;
+    const displayBase = processService instanceof SshHostProcessService ? '/__ssh_display_absolute__' : workspace.workspaceDir;
     const displayedLines = limited.map((line) =>
       formatDisplayLine(
         line,
         mode,
-        workspace.workspaceDir,
+        displayBase,
         pathClass,
         contentIncludesLineNumbers,
       ),

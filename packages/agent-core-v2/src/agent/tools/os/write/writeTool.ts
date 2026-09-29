@@ -3,6 +3,7 @@ import { dirname } from 'pathe';
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
@@ -12,6 +13,7 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
+  resolveRealPathAccess,
   resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
@@ -24,7 +26,9 @@ export class WriteTool implements IWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Write' as const;
   readonly description = WRITE_DESCRIPTION;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(WriteInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(WriteInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
 
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
@@ -36,7 +40,10 @@ export class WriteTool implements IWriteTool {
   }
 
   async resolveExecution(args: WriteInput): Promise<ToolExecution> {
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path ?? args.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
       additionalDirs: this.workspaceCtx.additionalDirs,
@@ -44,21 +51,25 @@ export class WriteTool implements IWriteTool {
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
     const pathOptions = { env, workspace, operation: 'write' as const };
-    const preparation = this.runtime.acquire(['fs']);
+    const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
+    let external = false;
     try {
-      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+      if (preparation.runtime.identity.generation !== generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
-      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+      const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
+      path = admitted.path;
+      external = admitted.implicitExternal === true ||
+        (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
     } finally {
       preparation.dispose();
     }
     return {
-      accesses: ToolAccesses.writeFile(path),
+      accesses: external ? ToolAccesses.file('write', path, { implicitExternal: true }) : ToolAccesses.writeFile(path),
       description: `Writing ${args.path}`,
       display: { kind: 'file_io', operation: 'write', path, content: args.content },
-      approvalRule: literalRulePattern(this.name, path),
+      approvalRule: toolApprovalRule(this.name, path, inspected, target.host),
       matchesRule: (ruleArgs) =>
         matchesPathRuleSubject(ruleArgs, path, {
           cwd: workspace.workspaceDir,
@@ -66,9 +77,10 @@ export class WriteTool implements IWriteTool {
           homeDir: env.homeDir,
         }),
       execute: async () => {
-        const lease = this.runtime.acquire(['fs']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           try {
@@ -79,7 +91,7 @@ export class WriteTool implements IWriteTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return await this.execution(lease.runtime.fs!, args, path);
+          return tagSshResult(await this.execution(lease.runtime.fs!, args, path), inspected);
         } finally {
           lease.dispose();
         }

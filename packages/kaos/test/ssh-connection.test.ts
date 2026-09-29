@@ -28,7 +28,7 @@ function key(): string {
   return generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 }
 
-async function startServer(hostKey: string, port = 0, holdExec = false): Promise<{ server: Server; port: number; connections: () => number; drop: () => void; finishExec: () => void }> {
+async function startServer(hostKey: string, port = 0, holdExec = false, keyboard = false): Promise<{ server: Server; port: number; connections: () => number; drop: () => void; finishExec: () => void }> {
   let count = 0;
   const clients: Array<{ end(): void }> = [];
   const pendingExec: Array<{ exit(code: number): void; end(): void }> = [];
@@ -38,14 +38,30 @@ async function startServer(hostKey: string, port = 0, holdExec = false): Promise
     clients.push(client);
     client.on('error', () => undefined);
     client.on('authentication', (ctx) => {
-      if (ctx.method === 'password' && ctx.username === 'tester' && ctx.password === 'temporary-password') ctx.accept();
+      if (keyboard && ctx.method === 'keyboard-interactive') {
+        let round = 0;
+        const ask = (): void => {
+          const expected = round++ === 0 ? 'one-time-code' : 'second-factor';
+          ctx.prompt([{ prompt: expected, echo: false }], (answers) => {
+            if (answers[0] !== expected) return ctx.reject();
+            if (round === 2) ctx.accept(); else ask();
+          });
+        };
+        ask();
+      } else if (!keyboard && ctx.method === 'password' && ctx.username === 'tester' && ctx.password === 'temporary-password') ctx.accept();
       else ctx.reject();
     });
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept();
-        session.on('exec', (acceptExec) => {
+        session.on('exec', (acceptExec, _reject, info) => {
           const channel = acceptExec();
+          if (info.command.includes('KIKI_SSH_ENV')) {
+            channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/bash\n');
+            channel.exit(0);
+            channel.end();
+            return;
+          }
           channel.write('hello from SSH\n');
           if (holdExec) pendingExec.push(channel);
           else {
@@ -117,6 +133,24 @@ function host(port: number, knownHostsFile: string, trustUnknown?: SshConnection
 }
 
 describe('SSH connection manager with an actual ssh2 server', () => {
+  it('answers multiple keyboard-interactive challenges without writing responses to known_hosts', async () => {
+    const { path } = await fixture();
+    const { port } = await startServer(key(), 0, false, true);
+    const seen: string[] = [];
+    const manager = new SshConnectionManager(async () => ({
+      ...host(port, path), password: undefined, autoTrustFirstKey: true,
+      keyboardInteractive: async (prompts) => {
+        seen.push(prompts[0]!.prompt);
+        return [prompts[0]!.prompt];
+      },
+    }));
+    managers.push(manager);
+    const connection = await manager.get('keyboard');
+    expect(connection.gethome()).toBe('/home/tester');
+    expect(seen).toEqual(['one-time-code', 'second-factor']);
+    expect(await readFile(path, 'utf8')).not.toContain('one-time-code');
+  });
+
   it('shares one transport for exec and SFTP, records trust, and reconnects after disconnect', async () => {
     const { path } = await fixture();
     const { port, connections, drop } = await startServer(key());
@@ -136,6 +170,9 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     expect(await proc.wait()).toBe(0);
     await a.writeText('/home/tester/test.txt', 'remote contents');
     expect(await a.readText('/home/tester/test.txt')).toBe('remote contents');
+    expect((await a.readBytes('/home/tester/test.txt', 4, 7)).toString()).toBe('cont');
+    expect(await a.probeEnvironment()).toMatchObject({ osKind: 'Linux', osArch: 'x86_64', shellName: 'bash' });
+    expect(a.osEnv.shellPath).toBe('/bin/bash');
     expect(prompts).toBe(1);
     expect(await readFile(path, 'utf8')).toContain('[127.0.0.1]:');
     const disconnected = new Promise<void>((resolve) => {

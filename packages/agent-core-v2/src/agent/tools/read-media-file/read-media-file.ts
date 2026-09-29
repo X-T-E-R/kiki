@@ -14,6 +14,7 @@ export type VideoUploader = (
 ) => Promise<VideoURLPart>;
 
 export const ReadMediaFileInputSchema = z.object({
+  host: z.string().optional(),
   path: z
     .string()
     .describe(

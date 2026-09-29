@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { isAbsolute, normalize } from 'node:path/posix';
 import { join } from 'pathe';
 import { parse, stringify } from 'smol-toml';
 
@@ -9,7 +10,7 @@ import { appendSshHost, discoverSshAliases, resolveSshConfig, validateSshAlias, 
 export interface SshHostRecord {
   readonly id: string;
   readonly name: string;
-  readonly source: 'kiki' | 'ssh-config';
+  readonly source: 'kiki' | 'ssh-config' | 'session';
   readonly hostname?: string;
   readonly user?: string;
   readonly port?: number;
@@ -25,6 +26,7 @@ export interface SshHostInput extends Omit<SshHostRecord, 'source'> {
 
 interface HostDocument {
   sync_ssh_config?: boolean;
+  connection_approval?: boolean;
   hosts?: Record<string, Omit<SshHostInput, 'id'>>;
 }
 
@@ -52,6 +54,10 @@ function normalizeHost(host: SshHostInput): SshHostRecord {
   if (host.agentAccess !== undefined && !['offered', 'hidden'].includes(host.agentAccess)) {
     throw new Error('Invalid SSH agent access');
   }
+  if (host.roots !== undefined && (!Array.isArray(host.roots) || host.roots.length === 0 ||
+    host.roots.some((root) => typeof root !== 'string' || !isAbsolute(root) || root.includes('\\') || root.includes('\0')))) {
+    throw new Error('SSH roots must be absolute POSIX paths');
+  }
   return {
     id: host.id,
     name: host.name,
@@ -60,7 +66,7 @@ function normalizeHost(host: SshHostInput): SshHostRecord {
     user: host.user,
     port: host.port,
     identityFile: host.identityFile,
-    roots: host.roots,
+    roots: host.roots?.map((root) => normalize(root)),
     description: host.description,
     agentAccess: host.agentAccess,
   };
@@ -90,11 +96,19 @@ export class SshHostStore {
     await this.change(GLOBAL_KEY, (document) => ({ ...document, sync_ssh_config: enabled }));
   }
 
+  async connectionApprovalEnabled(): Promise<boolean> {
+    return (await this.read(GLOBAL_KEY)).document.connection_approval !== false;
+  }
+
+  async setConnectionApproval(enabled: boolean): Promise<void> {
+    await this.change(GLOBAL_KEY, (document) => ({ ...document, connection_approval: enabled }));
+  }
+
   async list(workspaceId?: string): Promise<readonly SshHostRecord[]> {
     const global = (await this.read(GLOBAL_KEY)).document;
     const workspace = workspaceId === undefined ? {} : (await this.read(workspaceSshKey(workspaceId))).document;
     const hosts = new Map<string, SshHostRecord>();
-    if (global.sync_ssh_config === true) {
+    if (global.sync_ssh_config !== false) {
       for (const alias of await discoverSshAliases(this.sshConfigFile)) {
         hosts.set(alias, { id: alias, name: alias, source: 'ssh-config' });
       }

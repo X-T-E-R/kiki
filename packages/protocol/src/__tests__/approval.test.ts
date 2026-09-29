@@ -58,6 +58,14 @@ describe('approvalRequestSchema (SCHEMAS §6.1)', () => {
     expect((parsed.tool_input_display as { kind: string }).kind).toBe('future_unknown_kind');
   });
 
+  it('preserves non-secret SSH login and host-key details for GUI cards', () => {
+    const parsed = approvalRequestSchema.parse({ ...base, ssh: {
+      kind: 'host_key', hostname: 'example.test', user: 'tester', port: 22,
+      algorithm: 'ssh-ed25519', fingerprint: 'SHA256:example',
+    } });
+    expect(parsed.ssh).toMatchObject({ kind: 'host_key', fingerprint: 'SHA256:example' });
+  });
+
   it('accepts optional turn_id', () => {
     const parsed = approvalRequestSchema.parse({ ...base, turn_id: 42 });
     expect(parsed.turn_id).toBe(42);

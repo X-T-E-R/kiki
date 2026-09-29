@@ -30,6 +30,7 @@ import {
   type ToolUpdate,
 } from '#/tool/toolContract';
 import type {
+  BeforeResolveToolContext,
   BeforeToolExecuteEvent,
   ResolvedToolExecutionHookContext,
   ToolDidExecuteContext,
@@ -125,6 +126,12 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   private missingToolDescriber: MissingToolDescriber | undefined;
   private unavailableToolDescriber: UnavailableToolDescriber | undefined;
   private toolCallGuard: ToolCallGuard | undefined;
+  private readonly beforeResolveHandlers = new Set<(context: BeforeResolveToolContext) => Promise<string | undefined>>();
+
+  registerBeforeResolveTool(handler: (context: BeforeResolveToolContext) => Promise<string | undefined>) {
+    this.beforeResolveHandlers.add(handler);
+    return toDisposable(() => { this.beforeResolveHandlers.delete(handler); });
+  }
 
   recordDupType(toolCallId: string, dupType: ToolCallDupType): void {
     this.toolCallDupTypes.set(toolCallId, dupType);
@@ -388,6 +395,19 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
     let execution: ToolExecution;
     try {
+      for (const handler of this.beforeResolveHandlers) {
+        const reason = await handler({
+          turnId: options.turnId,
+          signal: options.signal,
+          trace: options.trace,
+          toolCall: call.toolCall,
+          toolCalls: allCalls,
+          tool: call.tool,
+          args: call.args,
+        });
+        if (reason !== undefined) return settleError(call.args, reason, 'preflight-rejected');
+      }
+      options.signal.throwIfAborted();
       execution = await call.tool.resolveExecution(call.args);
     } catch (error) {
       const output =
@@ -524,6 +544,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     try {
       const executePromise = execution.execute({
         turnId: options.turnId,
+        step: options.step,
         toolCallId: call.toolCall.id,
         trace: options.trace,
         metadata,

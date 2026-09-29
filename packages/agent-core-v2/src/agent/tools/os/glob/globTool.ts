@@ -10,9 +10,11 @@ import {
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
+import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -63,7 +65,9 @@ const SENSITIVE_GLOBS_TO_EXCLUDE: readonly string[] = [
 export class GlobTool implements IGlobTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Glob' as const;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(GlobInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(GlobInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
@@ -82,25 +86,30 @@ export class GlobTool implements IGlobTool {
   }
 
   async resolveExecution(args: GlobInput): Promise<ToolExecution> {
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
       additionalDirs: this.workspaceCtx.additionalDirs,
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), this.skillCatalog?.catalog.getSkillRoots() ?? [], env.homeDir);
+    const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
+    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
     const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
     let implicitExternal = false;
     if (args.path !== undefined) {
-      const preparation = this.runtime.acquire(['fs']);
+      const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
       try {
-        if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+        if (preparation.runtime.identity.generation !== generation) {
           return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
         }
         const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
         path = admitted.path;
-        implicitExternal = admitted.implicitExternal === true;
+        implicitExternal = admitted.implicitExternal === true ||
+          (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
       } finally {
         preparation.dispose();
       }
@@ -124,12 +133,13 @@ export class GlobTool implements IGlobTool {
         path: searchRoots[0]!,
         detail: detailParts.join(', '),
       },
-      approvalRule: literalRulePattern(this.name, args.pattern),
+      approvalRule: toolApprovalRule(this.name, args.pattern, inspected, target.host),
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.pattern),
       execute: async ({ signal }) => {
-        const lease = this.runtime.acquire(['fs', 'process']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs', 'process']) : acquireToolRuntime(this.runtime, target.host, ['fs', 'process']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           if (args.path !== undefined) {
@@ -142,7 +152,7 @@ export class GlobTool implements IGlobTool {
               return { isError: true, output: error instanceof Error ? error.message : String(error) };
             }
           }
-          return await this.execution(
+          return tagSshResult(await this.execution(
             lease.runtime.fs!,
             lease.runtime.process!,
             env,
@@ -150,7 +160,7 @@ export class GlobTool implements IGlobTool {
             args,
             signal,
             searchRoots,
-          );
+          ), inspected);
         } finally {
           lease.dispose();
         }
@@ -187,16 +197,20 @@ export class GlobTool implements IGlobTool {
 
     let rgPath: string;
     try {
-      const resolution = await ensureRgPath(createRgProbe(processService), {
-        signal,
-        allowCachedFallback: true,
-      });
-      rgPath = resolution.path;
-      if (resolution.source !== 'system-path') {
-        this.telemetry.track2('glob_tool_rg_fallback', {
-          source: resolution.source,
-          outcome: 'resolved',
+      if (processService instanceof SshHostProcessService) {
+        rgPath = 'rg';
+      } else {
+        const resolution = await ensureRgPath(createRgProbe(processService), {
+          signal,
+          allowCachedFallback: true,
         });
+        rgPath = resolution.path;
+        if (resolution.source !== 'system-path') {
+          this.telemetry.track2('glob_tool_rg_fallback', {
+            source: resolution.source,
+            outcome: 'resolved',
+          });
+        }
       }
     } catch (error) {
       if (signal.aborted) {
@@ -261,7 +275,8 @@ export class GlobTool implements IGlobTool {
     const partial = bufferTruncated || timedOut || traversalWarning !== undefined;
 
     const pathClass = env.pathClass;
-    const shouldRelativize = isWithinDirectory(searchRoot, workspace.workspaceDir, pathClass);
+    const shouldRelativize = !(processService instanceof SshHostProcessService) &&
+      isWithinDirectory(searchRoot, workspace.workspaceDir, pathClass);
     const candidates = limited.map((p) =>
       shouldRelativize ? relativizeIfUnder(p, searchRoot, pathClass) : p,
     );

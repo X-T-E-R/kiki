@@ -7,6 +7,7 @@ import type { ITelemetryService } from '#/app/telemetry/telemetry';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { inspectAgentRuntime, type IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import {
@@ -183,7 +184,9 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ReadMediaFile' as const;
   readonly description: string;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(ReadMediaFileInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(ReadMediaFileInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
   private readonly compressTelemetry: ImageCompressionTelemetry | undefined;
   private readonly inlineVideoSupported: boolean;
   constructor(
@@ -225,27 +228,32 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     if (!args.path) {
       return { isError: true, output: 'File path cannot be empty.' };
     }
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path ?? args.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const env = inspected.environment;
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspace.workspaceDir,
       additionalDirs: this.workspace.additionalDirs,
     });
+    const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.workspace.definitionReadRoots ?? [];
     const workspace = withDefinitionReadRoots(
       { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
-      this.workspace.definitionReadRoots ?? [], env.homeDir,
+      roots, env.homeDir,
     );
     const pathOptions = { env, workspace, operation: 'read' as const };
-    const preparation = this.runtime.acquire(['fs']);
+    const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let implicitExternal: boolean;
     try {
-      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+      if (preparation.runtime.identity.generation !== generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
       const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
       path = admitted.path;
-      implicitExternal = admitted.implicitExternal === true;
+      implicitExternal = admitted.implicitExternal === true ||
+        (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
     } finally {
       preparation.dispose();
     }
@@ -253,17 +261,18 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       accesses: ToolAccesses.readFile(path, implicitExternal),
       description: `Reading media: ${args.path}`,
       display: { kind: 'file_io', operation: 'read', path },
-      approvalRule: literalRulePattern(this.name, path),
+      approvalRule: toolApprovalRule(this.name, path, inspected, target.host),
       matchesRule: (ruleArgs) =>
         matchesPathRuleSubject(ruleArgs, path, {
-          cwd: this.workspace.workspaceDir,
+          cwd: workspace.workspaceDir,
           pathClass: env.pathClass,
           homeDir: env.homeDir,
         }),
       execute: async () => {
-        const lease = this.runtime.acquire(['fs']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           try {
@@ -274,7 +283,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return await this.execution(args, path, lease.runtime.fs!, env);
+          return tagSshResult(await this.execution(args, path, lease.runtime.fs!, env), inspected);
         } finally {
           lease.dispose();
         }

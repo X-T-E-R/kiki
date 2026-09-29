@@ -1,8 +1,14 @@
-import { createDecorator, IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { IFlagService } from '#/app/flag/flag';
+import { NATIVE_SSH_FLAG_ID } from '#/app/ssh/flag';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { SshRuntime } from '#/runtime/sshRuntime';
+import type { TrustUnknownKey } from '@kiki/kaos/ssh-connection';
+import type { SshCredentialSubmission } from '#/session/approval/approval';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
 import { runtimeStatusAllows, type RuntimeGenerationSnapshot } from '#/runtime/runtimeRegistry';
 import {
@@ -24,6 +30,12 @@ export interface IAgentRuntimeService {
   inspect(): Runtime;
   isAvailable(required?: readonly RuntimeCapability[]): boolean;
   acquire(required?: readonly RuntimeCapability[]): RuntimeLease;
+  nativeSshEnabled?(): boolean;
+  approveSshTarget?(host: string, fingerprint: string, trustUnknown?: TrustUnknownKey,
+    credential?: SshCredentialSubmission,
+    keyboardInteractive?: (prompts: readonly { prompt: string; echo: boolean }[]) => Promise<readonly string[]>): void;
+  prepareFor?(host?: string): Promise<Runtime>;
+  acquireFor?(host: string | undefined, required?: readonly RuntimeCapability[]): RuntimeLease;
 }
 
 export const IAgentRuntimeService: ServiceIdentifier<IAgentRuntimeService> =
@@ -63,12 +75,17 @@ export class AgentRuntimeService implements IAgentRuntimeService {
   private readonly workspaceSubscription: IDisposable;
   private readonly scopeSubscription: IDisposable;
   private registrySubscription: IDisposable | undefined;
+  private readonly approvedSshTargets = new Map<string, { fingerprint: string; trustUnknown?: TrustUnknownKey;
+    credential?: SshCredentialSubmission;
+    keyboardInteractive?: (prompts: readonly { prompt: string; echo: boolean }[]) => Promise<readonly string[]> }>();
 
   constructor(
     @IAgentRuntimeBindingService private readonly binding: IAgentRuntimeBindingService,
     @IRuntimeResolver private readonly resolver: IRuntimeResolver,
     @IWorkspaceInstanceManager private readonly workspaces: IWorkspaceInstanceManager,
     @IInstantiationService instantiation: IInstantiationService,
+    @IFlagService private readonly flags: IFlagService,
+    @ref(IAgentPermissionModeService) private readonly permissionMode: LiveRef<IAgentPermissionModeService>,
   ) {
     this.bindingSubscription = this.binding.onDidChange(() => this.rebind());
     this.workspaceSubscription = this.workspaces.onDidChange((change) => {
@@ -93,6 +110,43 @@ export class AgentRuntimeService implements IAgentRuntimeService {
 
   acquire(required: readonly RuntimeCapability[] = []): RuntimeLease {
     return this.resolver.acquire(this.binding.current, required);
+  }
+
+  nativeSshEnabled(): boolean {
+    return this.flags.enabled(NATIVE_SSH_FLAG_ID);
+  }
+
+  approveSshTarget(host: string, fingerprint: string, trustUnknown?: TrustUnknownKey,
+    credential?: SshCredentialSubmission,
+    keyboardInteractive?: (prompts: readonly { prompt: string; echo: boolean }[]) => Promise<readonly string[]>): void {
+    this.approvedSshTargets.set(host, { fingerprint, trustUnknown, credential, keyboardInteractive });
+  }
+
+  private bindingFor(host?: string): RuntimeBinding {
+    if (host === undefined) return this.binding.current;
+    if (!this.nativeSshEnabled()) throw new Error('Native SSH is disabled');
+    return {
+      workspaceId: this.binding.current.workspaceId,
+      runtimeId: host === 'local' ? 'local' : `ssh:${host}`,
+    };
+  }
+
+  async prepareFor(host?: string): Promise<Runtime> {
+    const binding = this.bindingFor(host);
+    const runtime = this.resolver.inspect(binding);
+    if (runtime instanceof SshRuntime) {
+      const approval = this.approvedSshTargets.get(runtime.identity.runtimeId.slice(4));
+      if (approval === undefined) throw new Error('SSH target has not passed the connection gate');
+      await runtime.connect(this.permissionMode.current!.mode === 'yolo', approval.fingerprint,
+        approval.trustUnknown, approval.credential, approval.keyboardInteractive);
+      this.approvedSshTargets.set(runtime.identity.runtimeId.slice(4), { fingerprint: approval.fingerprint,
+        trustUnknown: approval.trustUnknown, keyboardInteractive: approval.keyboardInteractive });
+    }
+    return this.resolver.inspect(binding);
+  }
+
+  acquireFor(host: string | undefined, required: readonly RuntimeCapability[] = []): RuntimeLease {
+    return this.resolver.acquire(this.bindingFor(host), required);
   }
 
   dispose(): void {

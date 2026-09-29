@@ -1,6 +1,7 @@
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -208,7 +209,9 @@ export class ReadTool implements IReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Read' as const;
   readonly description = READ_DESCRIPTION;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(ReadInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(ReadInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
@@ -221,24 +224,29 @@ export class ReadTool implements IReadTool {
   }
 
   async resolveExecution(args: ReadInput): Promise<ToolExecution> {
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path ?? args.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
       additionalDirs: this.workspaceCtx.additionalDirs,
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), this.skillCatalog.catalog.getSkillRoots(), env.homeDir);
+    const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog.catalog.getSkillRoots();
+    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
     const pathOptions = { env, workspace, operation: 'read' as const };
-    const preparation = this.runtime.acquire(['fs']);
+    const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let implicitExternal: boolean;
     try {
-      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+      if (preparation.runtime.identity.generation !== generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
       const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
       path = admitted.path;
-      implicitExternal = admitted.implicitExternal === true;
+      implicitExternal = admitted.implicitExternal === true ||
+        (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
     } finally {
       preparation.dispose();
     }
@@ -246,7 +254,7 @@ export class ReadTool implements IReadTool {
       accesses: ToolAccesses.readFile(path, implicitExternal),
       description: `Reading ${args.path}`,
       display: { kind: 'file_io', operation: 'read', path },
-      approvalRule: literalRulePattern(this.name, path),
+      approvalRule: toolApprovalRule(this.name, path, inspected, target.host),
       matchesRule: (ruleArgs) =>
         matchesPathRuleSubject(ruleArgs, path, {
           cwd: workspace.workspaceDir,
@@ -254,9 +262,10 @@ export class ReadTool implements IReadTool {
           homeDir: env.homeDir,
         }),
       execute: async () => {
-        const lease = this.runtime.acquire(['fs']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           try {
@@ -267,7 +276,7 @@ export class ReadTool implements IReadTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          const result = await this.execution(lease.runtime.fs!, args, path);
+          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path), inspected);
           return this.resultTruncation.isSpillFilePath(path)
             ? { ...result, spillExempt: true as const }
             : result;

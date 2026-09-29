@@ -20,6 +20,14 @@ export interface ResolvedSshConfig {
   readonly userKnownHostsFiles: readonly string[];
 }
 
+export function parseTransientSshTarget(value: string): { user: string; hostname: string; port: number } | undefined {
+  const match = /^([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})@([A-Za-z0-9][A-Za-z0-9.-]{0,252})(?::([0-9]{1,5}))?$/.exec(value);
+  if (match === null) return undefined;
+  const port = match[3] === undefined ? 22 : Number(match[3]);
+  if (port < 1 || port > 65535) return undefined;
+  return { user: match[1]!, hostname: match[2]!, port };
+}
+
 export function validateSshAlias(alias: string): string {
   if (!SAFE_ALIAS.test(alias) || alias.startsWith('-')) throw new Error('Invalid SSH host alias');
   return alias;

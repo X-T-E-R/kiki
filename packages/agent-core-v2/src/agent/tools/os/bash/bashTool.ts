@@ -8,6 +8,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import {
@@ -80,7 +81,9 @@ function withoutAutoBackgroundOnTimeout(description: string): string {
 export class BashTool implements IBashTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Bash' as const;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(BashInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(BashInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
 
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
@@ -120,6 +123,8 @@ export class BashTool implements IBashTool {
   }
 
   resolveExecution(args: BashInput): ToolExecution {
+    const target = resolveSshToolTarget(args.host, args.cwd);
+    const input = { ...args, host: target.host, cwd: target.path };
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
       description: args.run_in_background
@@ -128,19 +133,21 @@ export class BashTool implements IBashTool {
       display: {
         kind: 'command',
         command: args.command,
-        cwd: args.cwd ?? this.ctx.cwd,
+        cwd: args.cwd ?? (target.host === undefined ? this.ctx.cwd : `ssh://${target.host}/`),
         description: args.description,
         language: 'bash',
       },
-      approvalRule: literalRulePattern(this.name, args.command),
+      approvalRule: toolApprovalRule(this.name, args.command, inspectAgentRuntime(this.runtime), target.host),
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.command),
       execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
-        const result = await this.execution(args, signal, onUpdate, onForegroundTaskStart);
+        const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints !== false;
-        const hint = bashFileToolHint(args.command, this.ctx, enabled);
-        return hint !== undefined && typeof result.output === 'string'
+        const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
+          ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
+        const withHint = hint !== undefined && typeof result.output === 'string'
           ? { ...result, output: `${result.output}\n${hint}` }
           : result;
+        return tagSshResult(withHint, target.host ?? this.runtime.inspect());
       },
     };
   }
@@ -182,7 +189,9 @@ export class BashTool implements IBashTool {
       : foregroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
-    const lease = this.runtime.acquire(['process']);
+    await prepareToolRuntime(this.runtime, args.host);
+    const lease = args.host === undefined
+      ? this.runtime.acquire(['process']) : acquireToolRuntime(this.runtime, args.host, ['process']);
     let proc: IHostProcess;
     let command: string;
     try {

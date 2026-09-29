@@ -1,4 +1,5 @@
 import {
+  resolveRealPathAccess,
   resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
@@ -8,6 +9,7 @@ import { IFileEditService } from '#/app/edit/fileEdit';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
@@ -24,7 +26,9 @@ export class EditTool implements IEditTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Edit' as const;
   readonly description = editDescriptionTemplate;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(EditInputSchema);
+  get parameters(): Record<string, unknown> {
+    return toolParametersWithHost(toInputJsonSchema(EditInputSchema), this.runtime.nativeSshEnabled?.() === true);
+  }
 
   constructor(
     @IFileEditService private readonly editor: IFileEditService,
@@ -41,22 +45,29 @@ export class EditTool implements IEditTool {
   }
 
   async resolveExecution(args: EditInput): Promise<ToolExecution> {
-    const inspected = inspectAgentRuntime(this.runtime);
+    const target = resolveSshToolTarget(args.host, args.path);
+    args = { ...args, path: target.path ?? args.path };
+    const inspected = await prepareToolRuntime(this.runtime, target.host);
+    const generation = inspected.identity.generation;
     const env = inspected.environment;
     const workspace = this.workspaceConfig(inspected);
     const pathOptions = { env, workspace, operation: 'write' as const };
-    const preparation = this.runtime.acquire(['fs']);
+    const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
+    let external = false;
     try {
-      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+      if (preparation.runtime.identity.generation !== generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
-      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+      const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
+      path = admitted.path;
+      external = admitted.implicitExternal === true ||
+        (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
     } finally {
       preparation.dispose();
     }
     return {
-      accesses: ToolAccesses.readWriteFile(path),
+      accesses: external ? ToolAccesses.file('readwrite', path, { implicitExternal: true }) : ToolAccesses.readWriteFile(path),
       description: `Editing ${args.path}`,
       display: {
         kind: 'file_io',
@@ -65,7 +76,7 @@ export class EditTool implements IEditTool {
         before: args.old_string,
         after: args.new_string,
       },
-      approvalRule: literalRulePattern(this.name, path),
+      approvalRule: toolApprovalRule(this.name, path, inspected, target.host),
       matchesRule: (ruleArgs) =>
         matchesPathRuleSubject(ruleArgs, path, {
           cwd: workspace.workspaceDir,
@@ -73,9 +84,10 @@ export class EditTool implements IEditTool {
           homeDir: env.homeDir,
         }),
       execute: async () => {
-        const lease = this.runtime.acquire(['fs']);
+        const lease = target.host === undefined
+          ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
-          if (lease.runtime.identity.generation !== inspected.identity.generation) {
+          if (lease.runtime.identity.generation !== generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           try {
@@ -86,7 +98,7 @@ export class EditTool implements IEditTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return await this.execution(args, path, lease.runtime.fs!);
+          return tagSshResult(await this.execution(args, path, lease.runtime.fs!), inspected);
         } finally {
           lease.dispose();
         }

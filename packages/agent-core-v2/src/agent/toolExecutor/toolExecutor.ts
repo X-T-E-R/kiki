@@ -3,6 +3,7 @@ import type { IDisposable } from '#/_base/di/lifecycle';
 import type { Event } from '#/_base/event';
 import type { ToolResult } from '#/tool/toolContract';
 import type {
+  BeforeResolveToolContext,
   BeforeToolExecuteEvent,
   ToolDidExecuteContext,
   WillExecuteToolEvent,
@@ -22,6 +23,7 @@ export interface ToolExecutorExecuteOptions {
   readonly signal: AbortSignal;
   readonly steerSignal?: AbortSignal;
   readonly turnId: number;
+  readonly step?: number;
   readonly trace?: LLMRequestTrace;
   readonly onToolCall?: (payload: ToolCallStartedPayload) => void;
 }
@@ -45,6 +47,8 @@ export interface IAgentToolExecutorService {
   readonly _serviceBrand: undefined;
 
   execute(calls: ToolCall[], options: ToolExecutorExecuteOptions): AsyncIterable<ToolExecutionResult>;
+
+  registerBeforeResolveTool(handler: (context: BeforeResolveToolContext) => Promise<string | undefined>): IDisposable;
 
   readonly onBeforeExecuteTool: Event<BeforeToolExecuteEvent>;
 

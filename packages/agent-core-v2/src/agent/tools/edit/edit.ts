@@ -4,6 +4,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const EditInputSchema = z.object({
+  host: z.string().optional(),
   path: z
     .string()
     .describe(

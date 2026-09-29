@@ -6,6 +6,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
 
@@ -114,6 +115,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<z.in
     @IHistoryArchive archive: IHistoryArchive,
     @ISessionContext session: ISessionContext,
     @IWorkspaceService workspaces: IWorkspaceService,
+    @IAgentScopeContext private readonly caller: IAgentScopeContext,
   ) { super(archive, session, workspaces); }
 
   async resolveExecution(input: z.infer<typeof HistorySearchInputSchema>): Promise<ToolExecution> {
@@ -128,7 +130,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<z.in
           mode: input.mode,
           workspaceId: target.id,
           sessionId: input.scope === 'this_session' ? this.session.sessionId : undefined,
-          agentId: input.agent_id,
+          agentId: input.agent_id ?? (input.scope === 'this_session' ? this.caller.agentId : undefined),
           role: input.role,
           pageSize: input.limit ?? 8,
           pageToken: input.cursor,
@@ -156,6 +158,7 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     @ISessionContext session: ISessionContext,
     @IWorkspaceService workspaces: IWorkspaceService,
     @ISessionIndex private readonly sessions: ISessionIndex,
+    @IAgentScopeContext private readonly caller: IAgentScopeContext,
   ) { super(archive, session, workspaces); }
 
   async resolveExecution(input: z.infer<typeof HistoryReadInputSchema>): Promise<ToolExecution> {
@@ -167,7 +170,7 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     if (input.step_id !== undefined && !input.step_id.startsWith(`t${input.turn}.`)) {
       throw new Error('step_id does not belong to turn.');
     }
-    const agentId = input.agent_id ?? 'main';
+    const agentId = input.agent_id ?? this.caller.agentId;
     return {
       approvalRule: this.name,
       description: 'Reading historical transcript',

@@ -60,6 +60,8 @@ export interface SSHKaosOptions {
   password?: string;
   keyPaths?: string[];
   keyContents?: string[];
+  passphrase?: string;
+  keyboardInteractive?: (prompts: readonly { readonly prompt: string; readonly echo: boolean }[]) => Promise<readonly string[]>;
   cwd?: string;
   /** Verify the raw server key against an independently trusted record. Missing verifier rejects every connection. */
   hostVerifier?: ConnectConfig['hostVerifier'];
@@ -187,9 +189,10 @@ function mapSftpError(operation: string, error: unknown): KaosSSHError {
 
 function buildAuthHandler(
   username: string,
-  privateKeys: readonly (Buffer | string)[],
+  privateKeys: readonly (Buffer | string | ssh2.ParsedKey)[],
   password?: string,
   agent?: ConnectConfig['agent'],
+  keyboardInteractive?: SSHKaosOptions['keyboardInteractive'],
 ): ConnectConfig['authHandler'] {
   const authQueue: AnyAuthMethod[] = [];
   if (agent !== undefined) authQueue.push({ type: 'agent', username, agent });
@@ -201,6 +204,13 @@ function buildAuthHandler(
       username,
     });
   }
+  if (keyboardInteractive !== undefined) authQueue.push({
+    type: 'keyboard-interactive', username,
+    prompt: (_name, _instructions, _lang, prompts, finish) => {
+      void keyboardInteractive(prompts.map(({ prompt, echo }) => ({ prompt, echo: echo === true })))
+        .then((answers) => finish([...answers]), () => finish([]));
+    },
+  });
 
   let index = 0;
   return (_authsLeft, _partialSuccess, next) => {
@@ -443,13 +453,30 @@ export class SSHKaos implements Kaos {
   private readonly _envLayers: readonly Record<string, string>[];
   private readonly _activity: { count: number };
   private _closed = false;
+  private _osEnv: Environment = {
+    osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
+  };
 
-  // Stub: real wiring (probing the remote host via `uname` / `$SHELL` over the
-  // SSH transport) is deferred.
   get osEnv(): Environment {
-    throw new KaosError(
-      'SSHKaos.osEnv is not yet wired — remote environment probing is not implemented.',
-    );
+    return this._osEnv;
+  }
+
+  async probeEnvironment(): Promise<Environment> {
+    const proc = await this.exec('/bin/sh', '-c', 'printf "KIKI_SSH_ENV\\n%s\\n%s\\n%s\\n" "$(uname -s)" "$(uname -m)" "$(uname -r)"; printf "%s\\n" "$SHELL"');
+    const chunks: Buffer[] = [];
+    for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));
+    if (await proc.wait() !== 0) throw new KaosSSHError('Remote POSIX environment probe failed');
+    const [marker, kind, arch, version, shell] = Buffer.concat(chunks).toString('utf8').trim().split(/\r?\n/);
+    if (marker !== 'KIKI_SSH_ENV' || !kind || !arch || !version) {
+      throw new KaosSSHError('Remote POSIX environment probe returned invalid data');
+    }
+    const shellPath = shell?.startsWith('/') && !/[\r\n]/.test(shell) ? shell : '/bin/sh';
+    this._osEnv = {
+      osKind: kind === 'Darwin' ? 'macOS' : kind === 'Linux' ? 'Linux' : kind,
+      osArch: arch, osVersion: version,
+      shellName: shellPath.endsWith('/bash') ? 'bash' : 'sh', shellPath,
+    };
+    return this._osEnv;
   }
 
   private constructor(
@@ -531,8 +558,14 @@ export class SSHKaos implements Kaos {
         if (key !== undefined) privateKeys.push(key);
       }
     }
-    if (privateKeys.length > 0 || config.agent !== undefined) {
-      const authHandler = buildAuthHandler(options.username, privateKeys, options.password, config.agent);
+    const parsedKeys = privateKeys.map((key) => {
+      if (options.passphrase === undefined) return key;
+      const parsed = ssh2.utils.parseKey(key, options.passphrase);
+      if (parsed instanceof Error) throw new Error('SSH private key or passphrase is invalid');
+      return parsed;
+    });
+    if (parsedKeys.length > 0 || config.agent !== undefined || options.keyboardInteractive !== undefined) {
+      const authHandler = buildAuthHandler(options.username, parsedKeys, options.password, config.agent, options.keyboardInteractive);
       if (authHandler !== undefined) {
         config.authHandler = authHandler;
       }
@@ -729,10 +762,62 @@ export class SSHKaos implements Kaos {
 
   // ── File operations (async) ────────────────────────────────────────
 
-  async readBytes(path: string, n?: number): Promise<Buffer> {
-    const data = await sftpReadFile(this._sftp, this._resolvePath(path));
-    if (n === undefined) return data;
-    return data.subarray(0, n);
+  async readBytes(path: string, n?: number, offset = 0): Promise<Buffer> {
+    const resolved = this._resolvePath(path);
+    if (n === undefined && offset === 0) return sftpReadFile(this._sftp, resolved);
+    if (typeof this._sftp.createReadStream !== 'function') {
+      return (await sftpReadFile(this._sftp, resolved)).subarray(offset, n === undefined ? undefined : offset + n);
+    }
+    const stream = this._sftp.createReadStream(resolved, {
+      start: offset,
+      ...(n === undefined ? {} : { end: offset + n - 1 }),
+    });
+    if (n === 0) {
+      stream.destroy();
+      return Buffer.alloc(0);
+    }
+    const chunks: Buffer[] = [];
+    try {
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+      return Buffer.concat(chunks);
+    } catch (error) {
+      throw mapSftpError('read', error);
+    }
+  }
+
+  async readdir(path: string): Promise<readonly { name: string; mode: number }[]> {
+    const entries = await sftpReaddir(this._sftp, this._resolvePath(path));
+    return entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..')
+      .map((entry) => ({ name: entry.filename, mode: buildStMode(entry.attrs) }));
+  }
+
+  async realpath(path: string): Promise<string> {
+    return sftpRealpath(this._sftp, this._resolvePath(path));
+  }
+
+  async createExclusive(path: string, data: Buffer): Promise<boolean> {
+    const target = this._resolvePath(path);
+    try {
+      const stream = this._sftp.createWriteStream(target, { flags: 'wx' });
+      await new Promise<void>((resolve, reject) => {
+        stream.once('error', reject);
+        stream.end(data, (error?: Error) => error ? reject(error) : resolve());
+      });
+      return true;
+    } catch (error) {
+      if (getErrorCode(error) === getSftpStatusCode().FAILURE && await sftpExists(this._sftp, target)) return false;
+      throw mapSftpError('createExclusive', error);
+    }
+  }
+
+  async remove(path: string): Promise<void> {
+    const target = this._resolvePath(path);
+    const attrs = await sftpLstat(this._sftp, target);
+    await new Promise<void>((resolve, reject) => {
+      const done = (error: Error | null | undefined): void => error ? reject(mapSftpError('remove', error)) : resolve();
+      if (attrs.isDirectory()) this._sftp.rmdir(target, done);
+      else this._sftp.unlink(target, done);
+    });
   }
 
   async readText(

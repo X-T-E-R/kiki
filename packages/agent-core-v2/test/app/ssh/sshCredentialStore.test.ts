@@ -32,6 +32,9 @@ describe('SSH credentials', () => {
     expect(await store.save('dev', 'passphrase', 'once', false)).toBe('memory');
     expect(await store.read('dev', 'passphrase')).toBe('once');
     const keyPath = await store.savePrivateKey('dev', 'private material');
+    expect(await store.save('workspace:dev', 'identityFile', keyPath)).toBe('keyring');
+    expect(await store.read('workspace:dev', 'identityFile')).toBe(keyPath);
+    expect(await store.read('other-workspace:dev', 'identityFile')).toBeUndefined();
     expect(await readFile(keyPath, 'utf8')).toBe('private material');
     if (process.platform !== 'win32') expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
     await store.forget('dev', 'password');

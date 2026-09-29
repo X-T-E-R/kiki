@@ -18,6 +18,7 @@ const PositiveLineOffsetSchema = z.number().int().min(1);
 const TailLineOffsetSchema = z.number().int().min(-MAX_LINES).max(-1);
 
 export const ReadInputSchema = z.object({
+  host: z.string().optional(),
   path: z
     .string()
     .describe(

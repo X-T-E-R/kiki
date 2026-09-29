@@ -13,6 +13,9 @@ export interface SshConnectionHost {
   readonly username: string;
   readonly password?: string;
   readonly keyPaths?: string[];
+  readonly keyContents?: string[];
+  readonly passphrase?: string;
+  readonly keyboardInteractive?: (prompts: readonly { readonly prompt: string; readonly echo: boolean }[]) => Promise<readonly string[]>;
   readonly agent?: string;
   readonly proxyJump?: string;
   readonly proxyCommand?: string;
@@ -145,6 +148,9 @@ export class SshConnectionManager {
         username: host.username,
         password: host.password,
         keyPaths: host.keyPaths,
+        keyContents: host.keyContents,
+        passphrase: host.passphrase,
+        keyboardInteractive: host.keyboardInteractive,
         hostVerifier: ((rawKey, done) => {
           void knownHosts.verify(host.hostname, host.port, rawKey, async (key) => {
             if (host.autoTrustFirstKey) return true;

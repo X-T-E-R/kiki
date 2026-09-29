@@ -40,7 +40,7 @@ export class SshCredentialStore {
     private readonly entryFactory: SecretEntryFactory = systemKeyring,
   ) {}
 
-  private account(hostId: string, kind: 'password' | 'passphrase'): string {
+  private account(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): string {
     if (!hostId.trim()) throw new Error('SSH host ID is required');
     return `${kind}-${createHash('sha256').update(hostId).digest('hex')}`;
   }
@@ -49,7 +49,7 @@ export class SshCredentialStore {
     return join(this.homeDir, 'credentials', 'ssh', `${account}.secret`);
   }
 
-  async save(hostId: string, kind: 'password' | 'passphrase', value: string, remember = true): Promise<'keyring' | 'file' | 'memory'> {
+  async save(hostId: string, kind: 'password' | 'passphrase' | 'identityFile', value: string, remember = true): Promise<'keyring' | 'file' | 'memory'> {
     const account = this.account(hostId, kind);
     if (!remember) {
       await this.forget(hostId, kind);
@@ -95,7 +95,7 @@ export class SshCredentialStore {
     return 'file';
   }
 
-  async read(hostId: string, kind: 'password' | 'passphrase'): Promise<string | undefined> {
+  async read(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): Promise<string | undefined> {
     const account = this.account(hostId, kind);
     const memory = this.ephemeral.get(account);
     if (memory !== undefined) return memory;
@@ -111,7 +111,7 @@ export class SshCredentialStore {
     }
   }
 
-  async forget(hostId: string, kind: 'password' | 'passphrase'): Promise<void> {
+  async forget(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): Promise<void> {
     const account = this.account(hostId, kind);
     let keyringError: unknown;
     try {
@@ -157,15 +157,15 @@ export class SshCredentialStorageService implements ISshCredentialStore {
     this.store = new SshCredentialStore(bootstrap.homeDir);
   }
 
-  save(hostId: string, kind: 'password' | 'passphrase', value: string, remember?: boolean): Promise<'keyring' | 'file' | 'memory'> {
+  save(hostId: string, kind: 'password' | 'passphrase' | 'identityFile', value: string, remember?: boolean): Promise<'keyring' | 'file' | 'memory'> {
     return this.store.save(hostId, kind, value, remember);
   }
 
-  read(hostId: string, kind: 'password' | 'passphrase'): Promise<string | undefined> {
+  read(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): Promise<string | undefined> {
     return this.store.read(hostId, kind);
   }
 
-  forget(hostId: string, kind: 'password' | 'passphrase'): Promise<void> {
+  forget(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): Promise<void> {
     return this.store.forget(hostId, kind);
   }
 

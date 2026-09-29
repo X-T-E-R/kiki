@@ -23,6 +23,10 @@ export interface ResolvedToolExecutionHookContext extends ToolExecutionHookConte
   readonly execution: RunnableToolExecution;
 }
 
+export interface BeforeResolveToolContext extends ToolExecutionHookContext {
+  readonly tool: ExecutableTool;
+}
+
 export interface BeforeExecuteDecision {
   readonly veto?: ExecutableToolResult;
   readonly executionMetadata?: unknown;
