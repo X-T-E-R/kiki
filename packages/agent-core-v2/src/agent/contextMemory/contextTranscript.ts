@@ -9,7 +9,7 @@ import {
   readContextCompactedCount,
 } from './contextOps';
 import { createLoopEventFold, type LoopRecordedEvent } from './loopEventFold';
-import type { ContextMessage } from './types';
+import type { ContextMessage, ContextMessageSource } from './types';
 
 export interface ContextTranscript {
   readonly entries: readonly ContextMessage[];
@@ -32,6 +32,8 @@ interface MutableMessage {
   note?: string;
   origin?: ContextMessage['origin'];
   partial?: boolean;
+  source?: ContextMessageSource;
+  toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
 }
 
 interface MutableEntry {
@@ -190,6 +192,8 @@ function toMutableEntry(message: ContextMessage, time: number | undefined): Muta
       ...(message.note !== undefined ? { note: message.note } : {}),
       ...(message.origin !== undefined ? { origin: message.origin } : {}),
       ...(message.partial !== undefined ? { partial: message.partial } : {}),
+      ...(message.source !== undefined ? { source: message.source } : {}),
+      ...(message.toolCallSources !== undefined ? { toolCallSources: message.toolCallSources } : {}),
     },
     time,
   };

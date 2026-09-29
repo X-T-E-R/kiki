@@ -8,10 +8,13 @@ import { hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
 
 const user = (text: string, origin?: ContextMessage['origin']): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
 const meta = { rev: 1, hash: hashTodoNotes({ next: 'act' }), writtenTurn: 4, writtenStep: 't4.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0 };
-const assistant: ContextMessage = { role: 'assistant', content: [], toolCalls: [{ id: 'notes', type: 'function', name: 'TodoList', arguments: '{}' }] };
-const receipt = user('done with a conclusive result', { kind: 'task', taskId: 'task-1', status: 'completed', notificationId: 'n1' });
+const assistant: ContextMessage = { role: 'assistant', content: [], toolCalls: [{ id: 'notes', type: 'function', name: 'TodoList', arguments: '{}' }],
+  source: { turnId: 2, stepId: 'step-notes', step: 1 },
+  toolCallSources: { notes: { turnId: 2, stepId: 'step-notes', step: 1, frameId: 'step-notes.notes', toolCallId: 'notes' } } };
+const receipt = { ...user('done with a conclusive result', { kind: 'task', taskId: 'task-1', status: 'completed', notificationId: 'n1' }),
+  source: { turnId: 3, stepId: 'step-receipt', step: 2 } };
 const input: RelayInput = { history: [user('initial'), assistant, receipt, user('recent')], compactCount: 3,
-  sessionId: 's1', agentId: 'child', epoch: 0, turnId: 4, todos: [], notes: { next: 'act' }, meta,
+  sessionId: 's1', agentId: 'child', epoch: 0, todos: [], notes: { next: 'act' }, meta,
   estimateText: (text) => Math.ceil(text.length / 4) };
 
 describe('relay-v1 zero-model contract', () => {
@@ -24,8 +27,10 @@ describe('relay-v1 zero-model contract', () => {
     expect(replay).toEqual(live.messages);
     expect(summary).toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
     expect(summary).toContain('agent_id:"child"');
-    expect(summary).toContain('old window t0–t4');
-    expect(summary).toContain('turn:4');
+    expect(summary).toContain('Removed history boundary:');
+    expect(summary).toContain('step_id:"t3.2"');
+    expect(summary).not.toContain('old window t0–t4');
+    expect(summary).not.toContain('turn:4');
     expect(summary).toContain('task-1');
     expect(live.messages.at(-1)).toEqual(input.history.at(-1));
   });
@@ -36,8 +41,21 @@ describe('relay-v1 zero-model contract', () => {
     const text = renderPendingReceipts({ ...input, history: [assistant, older, recent], compactCount: 3 });
     expect(text.indexOf('newer')).toBeLessThan(text.indexOf('older'));
     expect(text).toContain('older');
-    expect(text).toContain('HistoryRead');
+    expect(text).toContain('HistorySearch');
+    expect(text).toContain('source coordinate unavailable');
     expect(text).not.toContain('x'.repeat(20_000));
+  });
+
+  it('uses a supplied durable ref without deriving one from a turn or array position', () => {
+    const message: ContextMessage = {
+      ...assistant,
+      source: { ref: 'h1_real-evidence' },
+      toolCallSources: { notes: { ref: 'h1_real-frame', toolCallId: 'notes' } },
+    };
+    const summary = renderRelay({ ...input, history: [message], compactCount: 1, meta: undefined });
+    expect(summary).toContain('HistoryRead {ref:"h1_real-frame"}');
+    expect(summary).toContain('ref:"h1_real-frame"');
+    expect(summary).not.toContain('turn:4');
   });
 
   it('merges or clears notes independently and rejects oversized updates', () => {

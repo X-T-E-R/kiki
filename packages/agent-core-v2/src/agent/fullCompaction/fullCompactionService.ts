@@ -14,7 +14,7 @@ import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
 import { IAgentLoopService, type LoopErrorContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
-import { TurnEnded, turnKey } from '#/agent/loop/turnOps';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { isAbortError } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -753,11 +753,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
       const memoryEntries = choice.strategy !== 'summarize' ? await this.memorySnapshot.getSessionEntries() : [];
-      const turns = this.states.get(turnKey);
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
-        turnId: active.originTurnId ?? turns?.lastEnded?.turnId ?? Math.max(0, (turns?.nextTurnId ?? 1) - 1),
         notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
         estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries,
       };

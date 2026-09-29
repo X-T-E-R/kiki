@@ -125,12 +125,23 @@ export type PromptOrigin =
   | PeerThreadOrigin
   | AgentMessageOrigin;
 
+export interface ContextMessageSource {
+  readonly ref?: string;
+  readonly turnId?: number;
+  readonly stepId?: string;
+  readonly step?: number;
+  readonly frameId?: string;
+  readonly toolCallId?: string;
+}
+
 export type ContextMessage = Message & {
   readonly id?: string;
   readonly providerMessageId?: string;
   readonly origin?: PromptOrigin | undefined;
   readonly isError?: boolean;
   readonly note?: string;
+  readonly source?: ContextMessageSource;
+  readonly toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
 };
 
 export interface UserMessageRecord {

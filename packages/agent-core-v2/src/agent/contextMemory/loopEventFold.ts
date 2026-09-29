@@ -4,7 +4,7 @@ import type { FinishReason } from '#/kosong/contract/provider';
 import { createToolMessage, type ContentPart, type ToolCall } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
-import type { ContextMessage } from './types';
+import type { ContextMessage, ContextMessageSource } from './types';
 import { isVacuousContentPart } from './vacuousContent';
 
 const TOOL_INTERRUPTED_ON_RESUME_OUTPUT =
@@ -65,12 +65,12 @@ export type LoopRecordedEvent =
     };
 
 export interface LoopEventFoldSink {
-  openAssistant(time: number | undefined): void;
+  openAssistant(time: number | undefined, source?: ContextMessageSource): void;
   appendOpenContent(part: ContentPart): void;
-  appendOpenToolCall(call: ToolCall): void;
+  appendOpenToolCall(call: ToolCall, source?: ContextMessageSource): void;
   dropOpenAssistant(): void;
   sealOpenAssistant(): void;
-  pushToolMessage(message: ContextMessage, time: number | undefined): void;
+  pushToolMessage(message: ContextMessage, time: number | undefined, source?: ContextMessageSource): void;
   pushMessage(message: ContextMessage, time: number | undefined): void;
 }
 
@@ -89,6 +89,7 @@ interface InitialFoldState {
   readonly openHasToolCalls: boolean;
   readonly openVacuous: boolean;
   readonly pendingToolCallIds: readonly string[];
+  readonly pendingToolSources?: ReadonlyMap<string, ContextMessageSource>;
 }
 
 function createLoopEventFoldWithState(
@@ -98,7 +99,9 @@ function createLoopEventFoldWithState(
   let openStepUuid: string | null | undefined = initial === undefined ? undefined : null;
   let openHasToolCalls = initial?.openHasToolCalls ?? false;
   let openVacuous = initial?.openVacuous ?? true;
-  const pending = new Set(initial?.pendingToolCallIds);
+  const pending = new Map<string, ContextMessageSource | undefined>(
+    initial?.pendingToolCallIds.map((id) => [id, initial.pendingToolSources?.get(id)]),
+  );
   let deferred: { message: ContextMessage; time: number | undefined }[] = [];
 
   const flushDeferred = (): void => {
@@ -108,8 +111,8 @@ function createLoopEventFoldWithState(
   };
   const closePending = (time: number | undefined): void => {
     if (pending.size === 0) return;
-    for (const toolCallId of pending) {
-      sink.pushToolMessage(interruptedToolMessage(toolCallId), time);
+    for (const [toolCallId, source] of pending) {
+      sink.pushToolMessage(interruptedToolMessage(toolCallId), time, source);
     }
     pending.clear();
     flushDeferred();
@@ -145,7 +148,7 @@ function createLoopEventFoldWithState(
       switch (event.type) {
         case 'step.begin': {
           settleOpen(time);
-          sink.openAssistant(time);
+          sink.openAssistant(time, sourceOf(event.turnId, event.step, event.uuid));
           openStepUuid = event.uuid;
           openHasToolCalls = false;
           openVacuous = true;
@@ -165,6 +168,7 @@ function createLoopEventFoldWithState(
         }
         case 'tool.call': {
           if (!acceptsOpenStep(event.stepUuid)) return;
+          const source = sourceOf(event.turnId, event.step, event.stepUuid, event.toolCallId);
           const call: ToolCall = {
             type: 'function',
             id: event.toolCallId,
@@ -172,12 +176,13 @@ function createLoopEventFoldWithState(
             arguments: event.args === undefined ? null : JSON.stringify(event.args),
             ...(event.extras !== undefined ? { extras: event.extras } : {}),
           };
-          sink.appendOpenToolCall(call);
-          pending.add(event.toolCallId);
+          sink.appendOpenToolCall(call, source);
+          pending.set(event.toolCallId, source);
           openHasToolCalls = true;
           return;
         }
         case 'tool.result': {
+          const source = pending.get(event.toolCallId);
           if (!pending.has(event.toolCallId)) return;
           pending.delete(event.toolCallId);
           const output = event.result.output;
@@ -191,6 +196,7 @@ function createLoopEventFoldWithState(
               note: event.result.note,
             },
             time,
+            source,
           );
           flushDeferred();
           return;
@@ -278,15 +284,21 @@ function createImmutableFoldSink(initial: readonly ContextMessage[]): ImmutableF
   };
   return {
     current: () => current,
-    openAssistant: () => {
-      current = [...current, { role: 'assistant', content: [], toolCalls: [], partial: true }];
+    openAssistant: (_time, source) => {
+      current = [...current, { role: 'assistant', content: [], toolCalls: [], partial: true, source }];
       openIndex = current.length - 1;
     },
     appendOpenContent: (part) => {
       updateOpen((message) => ({ ...message, content: [...message.content, part] }));
     },
-    appendOpenToolCall: (call) => {
-      updateOpen((message) => ({ ...message, toolCalls: [...message.toolCalls, call] }));
+    appendOpenToolCall: (call, source) => {
+      updateOpen((message) => ({
+        ...message,
+        toolCalls: [...message.toolCalls, call],
+        toolCallSources: source === undefined
+          ? message.toolCallSources
+          : { ...message.toolCallSources, [call.id]: source },
+      }));
     },
     dropOpenAssistant: () => {
       if (openIndex === -1) return;
@@ -297,8 +309,8 @@ function createImmutableFoldSink(initial: readonly ContextMessage[]): ImmutableF
       updateOpen((message) => ({ ...message, partial: undefined }));
       openIndex = -1;
     },
-    pushToolMessage: (message) => {
-      current = [...current, message];
+    pushToolMessage: (message, _time, source) => {
+      current = [...current, source === undefined ? message : { ...message, source }];
     },
     pushMessage: (message) => {
       current = [...current, message];
@@ -324,13 +336,37 @@ function recoverFoldState(state: readonly ContextMessage[]): InitialFoldState | 
       resolvedToolCallIds.add(message.toolCallId);
     }
   }
+  const pendingToolCallIds = open.toolCalls
+    .map((call) => call.id)
+    .filter((toolCallId) => !resolvedToolCallIds.has(toolCallId));
   return {
     openHasToolCalls: open.toolCalls.length > 0,
     openVacuous: open.content.every(isVacuousContentPart),
-    pendingToolCallIds: open.toolCalls
-      .map((call) => call.id)
-      .filter((toolCallId) => !resolvedToolCallIds.has(toolCallId)),
+    pendingToolCallIds,
+    pendingToolSources: new Map(
+      pendingToolCallIds.map((toolCallId) => [toolCallId, open.toolCallSources?.[toolCallId]])
+        .filter((entry): entry is [string, ContextMessageSource] => entry[1] !== undefined),
+    ),
   };
+}
+
+function sourceOf(
+  turnId: string | undefined,
+  step: number | undefined,
+  stepId: string | undefined,
+  toolCallId?: string,
+): ContextMessageSource | undefined {
+  const numericTurnId = turnId === undefined ? undefined : Number(turnId);
+  const source: ContextMessageSource = {
+    turnId: numericTurnId !== undefined && Number.isSafeInteger(numericTurnId) && numericTurnId >= 0
+      ? numericTurnId
+      : undefined,
+    stepId,
+    step,
+    frameId: stepId === undefined || toolCallId === undefined ? undefined : `${stepId}.${toolCallId}`,
+    toolCallId,
+  };
+  return Object.values(source).some((value) => value !== undefined) ? source : undefined;
 }
 
 function interruptedToolMessage(toolCallId: string): ContextMessage {

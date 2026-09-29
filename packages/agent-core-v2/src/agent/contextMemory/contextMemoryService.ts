@@ -44,7 +44,7 @@ import {
   type UndoCut,
 } from './contextOps';
 import type { LoopRecordedEvent } from './loopEventFold';
-import type { ContextMessage } from './types';
+import type { ContextMessage, ContextMessageSource } from './types';
 
 export class AgentContextMemoryService extends Disposable implements IAgentContextMemoryService {
   declare readonly _serviceBrand: undefined;
@@ -91,9 +91,10 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
   appendManaged(message: ContextMessage, delivery: MessageDelivery): void {
     const start = this.get().length;
     const messageId = message.id ?? delivery.messageId;
-    const normalized: ContextMessage = messageId === message.id
+    const source = message.source ?? sourceOfDelivery(delivery, message);
+    const normalized: ContextMessage = messageId === message.id && source === message.source
       ? message
-      : { ...message, id: messageId };
+      : { ...message, id: messageId, source };
     if (messageId !== delivery.messageId) {
       throw new BugIndicatingError(
         'Message delivery identity mismatch: delivery.messageId must equal the stored message id',
@@ -246,3 +247,19 @@ registerScopedService(
   ScopeActivation.OnScopeCreated,
   'contextMutation',
 );
+
+function sourceOfDelivery(
+  delivery: MessageDelivery,
+  message: ContextMessage,
+): ContextMessageSource | undefined {
+  const source: ContextMessageSource = {
+    turnId: delivery.turnId,
+    stepId: delivery.stepId,
+    step: delivery.step,
+    frameId: delivery.stepId === undefined || message.toolCallId === undefined
+      ? undefined
+      : `${delivery.stepId}.${message.toolCallId}`,
+    toolCallId: message.toolCallId,
+  };
+  return Object.values(source).some((value) => value !== undefined) ? source : undefined;
+}
