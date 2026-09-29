@@ -659,7 +659,7 @@ balance_ttl_ms = 600000
 
 ## `permission`
 
-`permission` sets permission rules that are automatically loaded when a session starts, controlling whether the Agent needs user confirmation before calling a tool. Rules are written as a `[[permission.rules]]` array of tables, matched in order — the first matching rule takes effect.
+`permission` sets permission rules that are automatically loaded when a session starts, controlling whether the Agent needs user confirmation before calling a tool. Rules are written as a `[[permission.rules]]` array of tables. Deny rules are checked first, then ask, then allow, regardless of their order in the file; within one decision the first matching rule wins. A matching `deny` therefore always beats an `allow` listed above it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -724,13 +724,12 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-`backend` accepts `model` or `jev`; the model backend requires `model`. `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects Jev yes/no checks from the five names above. The default timeout is 8 seconds for a model and 4 seconds for Jev (`timeout_ms` overrides either; accepted range 100–30,000). To use TypeSafe Jev, explicitly permit sending this limited reviewer input to TypeSafe and store the key separately:
+`backend` accepts `model` or `jev`; the model backend requires `model`. `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects Jev yes/no checks from the five names above. The default timeout is 8 seconds for a model and 4 seconds for Jev (`timeout_ms` overrides either; accepted range 100–30,000). To use TypeSafe Jev, select it as the backend and store the key separately. Choosing `backend = "jev"` is the consent to send this limited reviewer input to TypeSafe; there is no separate consent flag (an old `jev_consent` key is ignored):
 
 ```toml
 # ~/.kiki/config.toml
 [permission.reviewer]
 backend = "jev"
-jev_consent = true
 model = "jev-latest"
 ```
 
@@ -740,7 +739,7 @@ model = "jev-latest"
 api_key = "YOUR_TYPESAFE_API_KEY"
 ```
 
-The config writer keeps `api_key` in `credentials.toml` rather than `config.toml`; `TYPESAFE_API_KEY` in the server environment is a fallback when no stored key is present. Without `jev_consent = true` and an available key, Jev is not called and approval goes to you.
+The config writer keeps `api_key` in `credentials.toml` rather than `config.toml`; `TYPESAFE_API_KEY` in the server environment is a fallback when no stored key is present. Without an available key, Jev is not called and approval goes to you. In **Settings → Permissions → Reviewer** a saved key stays masked but is not write-only: you can explicitly reveal, copy, edit, or clear it, and a key taken from the environment shows its source and can be overridden with a value saved in Kiki. Anyone holding the Kiki bearer token can reveal the stored key.
 
 ::: tip
 MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is not read. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).

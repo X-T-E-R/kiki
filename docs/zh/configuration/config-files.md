@@ -648,7 +648,7 @@ balance_ttl_ms = 600000
 
 ## `permission`
 
-`permission` 设置会话启动时自动加载的权限规则，控制 Agent 调用工具时是否需要用户确认。规则用 `[[permission.rules]]` 数组表写出，按顺序匹配，第一条命中即生效。
+`permission` 设置会话启动时自动加载的权限规则，控制 Agent 调用工具时是否需要用户确认。规则用 `[[permission.rules]]` 数组表写出。不论在文件中的顺序，先检查拒绝规则，再检查询问，最后检查允许；同一种决定内，第一条命中的规则生效。因此命中的 `deny` 总是优先于写在它前面的 `allow`。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -713,13 +713,12 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-`backend` 可选 `model` 或 `jev`，模型后端必须配置 `model`。`allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 Jev 的是非检查项。默认超时：模型 8 秒、Jev 4 秒；`timeout_ms` 可覆盖为 100–30,000 毫秒。使用 TypeSafe Jev 时，须明确同意将上述有限审查内容发送给 TypeSafe，并单独保存密钥：
+`backend` 可选 `model` 或 `jev`，模型后端必须配置 `model`。`allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 Jev 的是非检查项。默认超时：模型 8 秒、Jev 4 秒；`timeout_ms` 可覆盖为 100–30,000 毫秒。使用 TypeSafe Jev 时，把它选为审查后端，并单独保存密钥。选择 `backend = "jev"` 即表示同意把上述有限审查内容发送给 TypeSafe，不再有单独的同意开关（旧的 `jev_consent` 键会被忽略）：
 
 ```toml
 # ~/.kiki/config.toml
 [permission.reviewer]
 backend = "jev"
-jev_consent = true
 model = "jev-latest"
 ```
 
@@ -729,7 +728,7 @@ model = "jev-latest"
 api_key = "YOUR_TYPESAFE_API_KEY"
 ```
 
-配置写入器把 `api_key` 保存在 `credentials.toml` 而不是 `config.toml`。未保存密钥时，可从服务器进程的 `TYPESAFE_API_KEY` 环境变量读取。没有同时设置 `jev_consent = true` 和可用密钥，就不会调用 Jev，而是询问你。
+配置写入器把 `api_key` 保存在 `credentials.toml` 而不是 `config.toml`。未保存密钥时，可从服务器进程的 `TYPESAFE_API_KEY` 环境变量读取。没有可用密钥时不会调用 Jev，而是询问你。在「设置 → 权限 → 审查者」中，已保存的密钥默认遮盖，但不是只写：可以主动显示、复制、编辑或清除；来自环境变量的密钥会标明来源，也可以在 Kiki 中另存一个值覆盖它。持有 Kiki bearer 令牌的人都能显示已保存的密钥。
 
 ::: tip
 MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径不会读取。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
