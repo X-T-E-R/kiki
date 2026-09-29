@@ -3,7 +3,7 @@ import type { HistorySearchPage, Scope } from '@kiki/agent-core-v2';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 
-function fixture(live: boolean, unavailable = false) {
+function fixture(live: boolean, unavailable = false, degradedBuilding = false) {
   const turn = {
     kind: 'turn', ordinal: 4, state: 'completed', origin: { kind: 'user' },
     prompt: '用户压缩前的原话', steps: [
@@ -24,7 +24,12 @@ function fixture(live: boolean, unavailable = false) {
     readColdSnapshotBounded,
   } as unknown as TranscriptService;
   const search = vi.fn(async () => ({
-    items: [], hasMore: false, indexState: { state: unavailable ? 'building' : 'ready' },
+    items: [], hasMore: false,
+    indexState: unavailable
+      ? { state: 'unavailable' }
+      : degradedBuilding
+        ? { state: 'building', degraded: 'refresh failed' }
+        : { state: 'ready' },
     source: 'index', unavailable: unavailable || undefined,
   }));
   const core = { accessor: { get: () => ({ search }) } } as unknown as Scope;
@@ -59,6 +64,14 @@ describe('history archive', () => {
       workspaceId: 'ws-a', indexOnly: true, container: { sessionId: 'old', agentId: undefined }, pageSize: 8,
     }));
     await expect(archive.readTurn('old', '../outside', 0)).rejects.toThrow('Invalid agent id');
+  });
+
+  it('keeps partial building results on the index instead of using the fallback heuristic', async () => {
+    const { archive, readColdSnapshotBounded } = fixture(false, false, true);
+    const page = await archive.search({ query: 'needle', pageSize: 8 }) as HistorySearchPage;
+    expect(page.source).toBe('index');
+    expect(page.indexState.state).toBe('building');
+    expect(readColdSnapshotBounded).not.toHaveBeenCalled();
   });
 
   it('reports an unavailable index and searches only the bounded current-session wire', async () => {

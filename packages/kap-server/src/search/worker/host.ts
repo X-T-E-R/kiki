@@ -36,8 +36,8 @@ export type SearchWorkerErrorCode =
   | 'disposed';
 
 /**
- * Recognizable worker-availability failure. The service maps it to a
- * building/degraded response (searches) or the degraded state (background
+ * Recognizable worker-availability failure. The service maps it to an
+ * unavailable/degraded response (searches) or the degraded state (background
  * ops) — it is never swallowed silently.
  */
 export class SearchWorkerError extends Error {

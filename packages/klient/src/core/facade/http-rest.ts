@@ -82,12 +82,21 @@ export interface HttpRestSearchMessagesResponse {
   readonly page_token?: string;
   readonly incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
   readonly index_state: {
-    readonly state: 'building' | 'ready' | 'readonly';
+    readonly state: 'building' | 'ready' | 'readonly' | 'unavailable';
     readonly indexed_sessions: number;
     readonly total_sessions: number;
     readonly documents: number;
     readonly stale?: boolean;
     readonly degraded?: string;
+    readonly reason?:
+      | 'disabled'
+      | 'indexer_backoff'
+      | 'memory_budget'
+      | 'wal_stuck'
+      | 'disk_low'
+      | 'corrupt_rebuilding'
+      | 'sqlite_unavailable'
+      | 'runtime_disabled';
   };
   readonly source: 'live' | 'index';
 }

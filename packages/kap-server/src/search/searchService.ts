@@ -26,6 +26,7 @@ import {
   type GlobalSearchHit,
   type GlobalSearchIndexState,
   type GlobalSearchPage,
+  type GlobalSearchUnavailableReason,
   type GlobalSearchQuery,
 } from './contract';
 import { MAX_DOC_TEXT_CHARS, type MessageDoc, type TitleDoc } from './docs';
@@ -343,6 +344,10 @@ export class GlobalSearchService implements IGlobalSearchService {
       : new InlineSearchBackend({ indexDir, log: this.log });
   }
 
+  private workerRuntimeDisabled(): boolean {
+    return this.backend instanceof SearchWorkerHost && process.env['KIKI_DESKTOP_BUNDLED'] === '1';
+  }
+
   setLiveTranscriptSource(source: LiveTranscriptSource): void {
     this.liveSource = source;
     this.requestSync();
@@ -423,7 +428,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private requestSync(): void {
-    if (this.disposed || this.reindexing) return;
+    if (this.disposed || this.reindexing || this.workerRuntimeDisabled()) return;
     if (this.syncPromise !== null) {
       this.syncQueued = true;
       return;
@@ -478,6 +483,8 @@ export class GlobalSearchService implements IGlobalSearchService {
         }
       },
       (error: unknown) => {
+        if (this.workerRuntimeDisabled() ||
+            (error instanceof SearchWorkerError && error.code === 'runtime-unavailable')) return;
         this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
         this.log.warn('global search: background sync failed', { error: errorMessage(error) });
       },
@@ -496,7 +503,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private async runSync(): Promise<void> {
-    if (this.disposed || this.reindexing) return;
+    if (this.disposed || this.reindexing || this.workerRuntimeDisabled()) return;
     const indexStatus = await Promise.race([this.sessionIndex.prepare(), this.syncStop]);
     if (indexStatus === undefined || this.disposed || this.reindexing) return;
     if (!this.sessionIndexUsable(indexStatus)) {
@@ -814,6 +821,19 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
+  private workerUnavailableReason(code: SearchWorkerError['code']): GlobalSearchUnavailableReason {
+    switch (code) {
+      case 'backoff':
+      case 'spawn-failed':
+      case 'crashed':
+        return 'indexer_backoff';
+      case 'runtime-unavailable':
+        return 'runtime_disabled';
+      case 'disposed':
+        return 'disabled';
+    }
+  }
+
   private async searchIndex(
     q: NormalizedQuery,
     pageToken: string | undefined,
@@ -843,22 +863,19 @@ export class GlobalSearchService implements IGlobalSearchService {
         throw error;
       }
       if (error instanceof SearchWorkerError) {
-        this.lastRefreshError = { at: Date.now(), message: error.message };
-        this.log.warn('global search: search worker unavailable; serving a degraded page', {
-          error: error.message,
-          code: error.code,
-        });
         if (error.code === 'disposed') {
           throw new GlobalSearchError('index_unavailable', 'search service is disposed');
         }
-        this.requestSync();
-        if (pageToken !== undefined) {
-          throw new GlobalSearchError(
-            'invalid_page_token',
-            'the search index is not ready yet; restart the search',
-          );
+        if (error.code === 'runtime-unavailable') {
+          return this.unavailablePage('runtime_disabled', error.message);
         }
-        return this.buildingPage(null, true);
+        this.lastRefreshError = { at: Date.now(), message: error.message };
+        this.log.warn('global search: search worker unavailable; serving an unavailable page', {
+          error: error.message,
+          code: error.code,
+        });
+        this.requestSync();
+        return this.unavailablePage(this.workerUnavailableReason(error.code), error.message);
       }
       throw error;
     }
@@ -927,15 +944,30 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
-  /**
-   * The page served while the index base is unavailable: the first full sync
-   * has not finished yet (no db yet), a deferred open-time base build is
-   * still running / finally failed on the served handle, or the search
-   * worker is down. Same "never wait" rule as every other request path —
-   * the background coordinator/build catches up and a later search serves
-   * real hits.
-   */
-  private buildingPage(view: CoreIndexView | null, unavailable = false): GlobalSearchPage {
+  private unavailablePage(
+    reason: GlobalSearchUnavailableReason,
+    detail?: string,
+  ): GlobalSearchPage {
+    return {
+      items: [],
+      hasMore: false,
+      pageToken: undefined,
+      incomplete: undefined,
+      indexState: {
+        state: 'unavailable',
+        indexedSessions: 0,
+        totalSessions: this.summaries.size,
+        documents: 0,
+        stale: true,
+        reason,
+        degraded: detail ?? this.lastRefreshError?.message,
+      },
+      unavailable: true,
+      source: 'index',
+    };
+  }
+
+  private buildingPage(view: CoreIndexView | null): GlobalSearchPage {
     const indexed = view?.indexedSessions ?? 0;
     const readOnly = view?.readOnly === true;
     return {
@@ -951,7 +983,6 @@ export class GlobalSearchService implements IGlobalSearchService {
         stale: true,
         degraded: this.lastRefreshError?.message ?? view?.degraded,
       },
-      unavailable: unavailable || undefined,
       source: 'index',
     };
   }

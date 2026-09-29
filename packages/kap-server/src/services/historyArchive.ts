@@ -176,8 +176,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           container: sessionId === undefined && agentId === undefined
             ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
         });
-        if (page.unavailable !== true &&
-            !(page.indexState.state === 'building' && page.indexState.degraded !== undefined)) return page;
+        if (page.indexState.state !== 'unavailable') return page;
       } catch (error) {
         if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&
             !(error instanceof SearchWorkerError)) throw error;

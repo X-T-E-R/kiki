@@ -39,12 +39,22 @@ export const searchMessagesResponseSchema = z.object({
   page_token: z.string().optional(),
   incomplete: z.enum(['candidate_cap', 'postings_budget', 'deadline']).optional(),
   index_state: z.object({
-    state: z.enum(['building', 'ready', 'readonly']),
+    state: z.enum(['building', 'ready', 'readonly', 'unavailable']),
     indexed_sessions: z.number(),
     total_sessions: z.number(),
     documents: z.number(),
     stale: z.boolean().optional(),
     degraded: z.string().optional(),
+    reason: z.enum([
+      'disabled',
+      'indexer_backoff',
+      'memory_budget',
+      'wal_stuck',
+      'disk_low',
+      'corrupt_rebuilding',
+      'sqlite_unavailable',
+      'runtime_disabled',
+    ]).optional(),
   }),
   source: z.enum(['live', 'index']),
 });

@@ -169,12 +169,21 @@ export interface SearchMessagesResponse {
   page_token?: string;
   incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
   index_state: {
-    state: 'building' | 'ready' | 'readonly';
+    state: 'building' | 'ready' | 'readonly' | 'unavailable';
     indexed_sessions: number;
     total_sessions: number;
     documents: number;
     stale?: boolean;
     degraded?: string;
+    reason?:
+      | 'disabled'
+      | 'indexer_backoff'
+      | 'memory_budget'
+      | 'wal_stuck'
+      | 'disk_low'
+      | 'corrupt_rebuilding'
+      | 'sqlite_unavailable'
+      | 'runtime_disabled';
   };
   source: 'live' | 'index';
 }

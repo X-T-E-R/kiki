@@ -87,15 +87,28 @@ export interface GlobalSearchHit {
   readonly score: number;
 }
 
+export type GlobalSearchUnavailableReason =
+  | 'disabled'
+  | 'indexer_backoff'
+  | 'memory_budget'
+  | 'wal_stuck'
+  | 'disk_low'
+  | 'corrupt_rebuilding'
+  | 'sqlite_unavailable'
+  | 'runtime_disabled';
+
 export interface GlobalSearchIndexState {
   /**
    * building — the first full sync has not finished yet, or the index base
    * is (re)building after a no-generation fallback recovery — results may
    * be incomplete; ready — a full sync completed in this process;
    * readonly — another process holds the index write lock, this process only
-   * reads (catching up from the WAL in the background).
+   * reads (catching up from the WAL in the background); unavailable — the
+   * index cannot serve content search and the optional `reason` explains why.
    */
-  readonly state: 'building' | 'ready' | 'readonly';
+  readonly state: 'building' | 'ready' | 'readonly' | 'unavailable';
+  /** Why content search is unavailable, when `state` is `unavailable`. */
+  readonly reason?: GlobalSearchUnavailableReason;
   /** Progress counters behind `state`. */
   readonly indexedSessions: number;
   readonly totalSessions: number;

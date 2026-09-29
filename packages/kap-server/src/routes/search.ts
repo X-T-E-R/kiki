@@ -70,6 +70,7 @@ function toWirePage(page: GlobalSearchPage): SearchMessagesResponse {
       documents: page.indexState.documents,
       stale: page.indexState.stale,
       degraded: page.indexState.degraded,
+      reason: page.indexState.reason,
     },
     source: page.source,
   };

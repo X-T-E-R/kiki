@@ -70,6 +70,8 @@ export interface SessionSearchState {
   readonly contentInitialError: Error | null;
   readonly contentAppendError: boolean;
   readonly building: SearchMessagesResponse['index_state'] | undefined;
+  /** The server cannot provide content results; local title matches still apply. */
+  readonly unavailable: SearchMessagesResponse['index_state'] | undefined;
   readonly incomplete: boolean;
   readonly hasNextPage: boolean;
   readonly isFetchingNextPage: boolean;
@@ -171,6 +173,7 @@ export function useSessionSearch(input: {
     [query.data, debounced.scopeKey, input.allowedSessionIds],
   );
   const building = query.data?.pages.findLast((page) => page.index_state.state === 'building')?.index_state;
+  const unavailable = query.data?.pages.findLast((page) => page.index_state.state === 'unavailable')?.index_state;
   const incomplete = query.data?.pages.some((page) => page.incomplete !== undefined) === true;
   const typedContent = isSearchable(parsed.text);
   const waitingDebounce = typedContent && parsed.text.trim() !== debounced.text;
@@ -186,6 +189,7 @@ export function useSessionSearch(input: {
     contentInitialError: query.isError && query.data === undefined ? (query.error) : null,
     contentAppendError: query.isFetchNextPageError,
     building,
+    unavailable,
     incomplete,
     hasNextPage: contentActive && query.hasNextPage,
     isFetchingNextPage: query.isFetchingNextPage,
