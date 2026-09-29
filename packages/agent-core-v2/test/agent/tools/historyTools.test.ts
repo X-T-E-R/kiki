@@ -1,3 +1,4 @@
+import Ajv from 'ajv';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -105,6 +106,25 @@ describe('history tools', () => {
     expect(data.text).toContain('old result');
     await expect(new HistoryReadTool(source, session, workspaces, sessions, caller)
       .resolveExecution({ turn: 7, step_id: 't8.2' })).rejects.toThrow('step_id');
+  });
+
+  it('advertises and executes step-only and cursor-only reads', async () => {
+    const source = archive('响'.repeat(6_101));
+    const tool = new HistoryReadTool(source, session, workspaces, sessions, caller);
+    const validate = new Ajv({ strict: false }).compile(tool.parameters);
+    expect(validate({ step_id: 't7.2' })).toBe(true);
+    expect(validate({ cursor: 'opaque' })).toBe(true);
+    expect(validate({ turn: 7, step_id: 't7.2' })).toBe(true);
+    expect(validate({})).toBe(false);
+    expect(validate({ step_id: 't7.2', turns: 7 })).toBe(false);
+    const first = await run(tool, { step_id: 't7.2' });
+    expect(source.readTurn).toHaveBeenLastCalledWith('current', 'main', 7, 't7.2');
+    const second = await run(tool, { cursor: first.data.next_cursor });
+    expect(second.data.text).toBe('响'.repeat(3_000));
+    expect(source.readTurn).toHaveBeenLastCalledWith('current', 'main', 7, 't7.2');
+    const wrong = await run(tool, { cursor: first.data.next_cursor, turn: 8 });
+    expect(wrong.result).toMatchObject({ isError: true });
+    expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
   });
 
   it('pages large output with a bounded chunk and bound cursor', async () => {

@@ -24,13 +24,15 @@ export const HistorySearchInputSchema = z.object({
 }).strict();
 
 export const HistoryReadInputSchema = z.object({
-  session_id: z.string().min(1).max(256).optional(),
-  workspace_id: z.string().min(1).max(512).optional(),
-  agent_id: AgentIdSchema.optional(),
-  turn: z.number().int().nonnegative(),
-  step_id: z.string().regex(/^t\d+\.\d+$/).optional(),
-  cursor: z.string().min(1).max(4096).optional(),
-}).strict();
+  session_id: z.string().min(1).max(256).optional().describe('Session to read; defaults to this session. A cursor supplies its original session.'),
+  workspace_id: z.string().min(1).max(512).optional().describe('Workspace ID; another workspace requires explicit access approval.'),
+  agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent here or main in another session.'),
+  turn: z.number().int().nonnegative().optional().describe('0-based transcript turn; omit when step_id or cursor identifies it.'),
+  step_id: z.string().regex(/^t\d+\.\d+$/).optional().describe('Step ID such as t42.3; sufficient without turn.'),
+  cursor: z.string().min(1).max(4096).optional().describe('Pass alone to continue a previous Read page.'),
+}).strict().refine((input) => input.turn !== undefined || input.step_id !== undefined || input.cursor !== undefined, {
+  message: 'Provide turn, step_id, or cursor.',
+});
 
 export interface HistoryHit {
   readonly sessionId: string;
@@ -165,8 +167,10 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<z.in
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
-  readonly description = 'Read an exact transcript turn or step, including tool output. turn is 0-based; step_id must belong to turn. Use cursor for the next text chunk.';
-  readonly parameters = toInputJsonSchema(HistoryReadInputSchema);
+  readonly description = 'Read an exact transcript turn or step, including tool output. A step_id such as t42.3 is sufficient without turn. Pass only cursor to continue a page; turn is 0-based.';
+  readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
+    schema['anyOf'] = [{ required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
+  });
 
   constructor(
     @IHistoryArchive archive: IHistoryArchive,
@@ -177,35 +181,51 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
   ) { super(archive, session, workspaces); }
 
   async resolveExecution(input: z.infer<typeof HistoryReadInputSchema>): Promise<ToolExecution> {
-    const sessionId = input.session_id ?? this.session.sessionId;
-    const summary = await this.sessions.get(sessionId);
-    if (summary === undefined) throw new Error('Session not found.');
-    const target = await this.target(input.workspace_id);
-    if (summary.workspaceId !== target.id) throw new Error('Session not found in the requested workspace.');
-    if (input.step_id !== undefined && !input.step_id.startsWith(`t${input.turn}.`)) {
+    const cursor = readCursor(input.cursor);
+    const stepTurn = input.step_id === undefined ? undefined : Number(input.step_id.match(/^t(\d+)\.\d+$/)?.[1]);
+    if (input.turn === undefined && stepTurn === undefined && cursor === undefined) {
+      throw new Error('Provide turn, step_id, or cursor.');
+    }
+    const turn = input.turn ?? stepTurn ?? cursor!.turn;
+    if (!Number.isSafeInteger(turn) || turn < 0 ||
+      (stepTurn !== undefined && input.turn !== undefined && stepTurn !== input.turn)) {
       throw new Error('step_id does not belong to turn.');
     }
-    const agentId = input.agent_id ?? this.caller.agentId;
+    const sessionId = input.session_id ?? cursor?.session ?? this.session.sessionId;
+    const summary = await this.sessions.get(sessionId);
+    if (summary === undefined) throw new Error('Session not found.');
+    const target = await this.target(input.workspace_id ?? (cursor === undefined ? undefined : summary.workspaceId));
+    if (summary.workspaceId !== target.id) throw new Error('Session not found in the requested workspace.');
+    const agentId = input.agent_id ?? cursor?.agent ??
+      (sessionId === this.session.sessionId ? this.caller.agentId : 'main');
+    const stepId = input.step_id ?? cursor?.step;
+    const cursorMismatch = cursor !== undefined && (cursor.session !== sessionId || cursor.agent !== agentId ||
+      cursor.turn !== turn || cursor.step !== stepId);
     return {
       approvalRule: this.name,
       description: 'Reading historical transcript',
       accesses: target.externalRoot === undefined ? ToolAccesses.none() : ToolAccesses.readFile(target.externalRoot, true),
       execute: async () => {
-        const text = await this.archive.readTurn(sessionId, agentId, input.turn, input.step_id);
+        if (cursorMismatch) return { isError: true, output: JSON.stringify({ error: {
+          code: 'cursor_mismatch', message: 'HistoryRead cursor conflicts with the selector.',
+          retryable: true, next_call: { tool: 'HistoryRead', arguments: { session_id: sessionId, agent_id: agentId, turn, step_id: stepId } },
+        } }) };
+        const text = await this.archive.readTurn(sessionId, agentId, turn, stepId);
         if (text === undefined) return { isError: true, output: 'Turn or step not found.' };
         const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
-        const cursor = readCursor(input.cursor);
-        if (cursor !== undefined && (cursor.session !== sessionId || cursor.agent !== agentId ||
-            cursor.turn !== input.turn || cursor.step !== input.step_id || cursor.hash !== hash || cursor.offset >= text.length)) {
-          return { isError: true, output: 'HistoryRead cursor does not match this transcript; restart without cursor.' };
+        if (cursor !== undefined && (cursor.hash !== hash || cursor.offset >= text.length)) {
+          return { isError: true, output: JSON.stringify({ error: {
+            code: 'cursor_mismatch', message: 'HistoryRead cursor no longer matches this transcript.',
+            retryable: true, next_call: { tool: 'HistoryRead', arguments: { session_id: sessionId, agent_id: agentId, turn, step_id: stepId } },
+          } }) };
         }
         const offset = cursor?.offset ?? 0;
         let end = Math.min(text.length, offset + PAGE_CHARS);
         if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end -= 1;
         const next = end < text.length ? Buffer.from(JSON.stringify({ v: 1, session: sessionId, agent: agentId,
-          turn: input.turn, step: input.step_id, offset: end, hash } satisfies ReadCursor)).toString('base64url') : undefined;
-        return { output: JSON.stringify({ session_id: sessionId, agent_id: agentId, turn: input.turn,
-          step_id: input.step_id, text: text.slice(offset, end), next_cursor: next,
+          turn, step: stepId, offset: end, hash } satisfies ReadCursor)).toString('base64url') : undefined;
+        return { output: JSON.stringify({ session_id: sessionId, agent_id: agentId, turn,
+          step_id: stepId, text: text.slice(offset, end), next_cursor: next,
           has_more: next !== undefined, truncated: next !== undefined, offset, total_chars: text.length }) };
       },
     };
