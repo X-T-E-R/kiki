@@ -62,8 +62,10 @@ import {
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
@@ -102,6 +104,8 @@ interface FakeHarnessOptions {
   readonly args?: readonly string[];
   readonly priorBindingFingerprint?: string;
   readonly deferTurnCompletion?: boolean;
+  readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
+  readonly supportsMcp?: boolean;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -269,6 +273,15 @@ function createHarness(options: FakeHarnessOptions = {}) {
       return { providerName: options.providerName } as Model;
     },
   } as unknown as IModelCatalog;
+  const mcpHandle = {
+    ready: Promise.resolve(),
+    connectionManager: {
+      list: () => Object.entries(options.mcpServers ?? {}).map(([name, config]) => ({
+        name, status: 'connected', transport: config.transport, toolCount: 0,
+      })),
+      configOf: (name: string) => options.mcpServers?.[name],
+    },
+  } as unknown as ISessionMcpHandle;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, state.state],
     [IModelCatalog, modelCatalog],
@@ -278,6 +291,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [IAgentContextMemoryService, contextMemory],
     [ISessionApprovalService, approval],
     [ISessionInteractionService, interaction],
+    [ISessionMcpHandle, mcpHandle],
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
@@ -405,6 +419,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
             yolo: true,
           },
       profileDelivery: options.profileDelivery,
+      supportsMcp: options.supportsMcp,
       revision: 'r1',
     },
     binding: {
@@ -455,6 +470,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     runtime,
     runtimeLease,
     workspace,
+    mcpHandle,
     permissionMode,
     usage,
     modelCatalog,
@@ -508,6 +524,7 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
   ix.set(IWireService, harness.wire);
   ix.set(ISessionApprovalService, harness.approval);
   ix.set(ISessionInteractionService, harness.interaction);
+  ix.set(ISessionMcpHandle, harness.mcpHandle);
   ix.set(ISessionWorkspaceContext, harness.workspace);
   ix.provide(IAgentLoopService, {} as IAgentLoopService);
   ix.stub(IAgentPromptService, {});
@@ -561,6 +578,21 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('passes session MCP servers to the engine and honors the descriptor opt-out', async () => {
+    const config = { relay: { transport: 'stdio' as const, command: 'node', args: ['relay.js'] } };
+    const forwarded = createHarness({ mcpServers: config, thinkingEffort: 'off', unpinModel: true });
+    await forwarded.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
+    expect(forwarded.opens[0]?.mcpServers).toEqual([
+      { name: 'relay', command: 'node', args: ['relay.js'], env: [] },
+    ]);
+    await forwarded.session.shutdown();
+
+    const optedOut = createHarness({ mcpServers: config, supportsMcp: false, thinkingEffort: 'off', unpinModel: true });
+    await optedOut.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
+    expect(optedOut.opens[0]?.mcpServers).toEqual([]);
+    await optedOut.session.shutdown();
+  });
+
   it.each([
     ['unknown key', { typo: true }],
     ['approval bypass key', { always_approve: true }],

@@ -301,6 +301,7 @@ function descriptorFromConfig(
     permissionModeMapping: config.permissionModeMapping,
     permission: config.permission,
     promptDeliveries: config.promptDeliveries,
+    supportsMcp: config.supportsMcp,
     defaultProfile: config.defaultProfile,
     installHint: config.installHint,
     programLabel: config.programLabel,

@@ -27,6 +27,10 @@ export class MergedMcpConnectionView implements McpConnectionView {
     return this.owner(name).get(name);
   }
 
+  configOf(name: string): ReturnType<McpConnectionView['configOf']> {
+    return this.owner(name).configOf(name);
+  }
+
   resolved(name: string): ReturnType<McpConnectionView['resolved']> {
     return this.owner(name).resolved(name);
   }

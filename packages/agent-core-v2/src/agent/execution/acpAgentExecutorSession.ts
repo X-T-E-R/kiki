@@ -15,6 +15,7 @@ import {
   type NormalizedExecutorEvent,
 } from '@kiki/acp-client';
 
+import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -37,6 +38,7 @@ import { createHooks } from '#/hooks';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type {
   AgentRunHandle,
@@ -185,7 +187,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const origin: PromptOrigin = request.kind === 'mailbox'
       ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
       : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
-    const sessionOptions = this.#sessionOptions(options.signal);
+    const sessionOptions = await this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession(sessionOptions);
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
     if (
@@ -491,7 +493,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
   }
 
-  #sessionOptions(signal: AbortSignal): AcpOpenSessionOptions {
+  async #sessionOptions(signal: AbortSignal): Promise<AcpOpenSessionOptions> {
+    const mcp = this.context.agent.accessor.get(ISessionMcpHandle);
+    await mcp.ready;
+    signal.throwIfAborted();
     const runtime = this.#runtimeLease.runtime;
     const roots = runtime.workspace.mapRoots({
       workDir: this.#workspace.workDir,
@@ -512,7 +517,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
-      mcpServers: [],
+      mcpServers: this.context.descriptor.supportsMcp === false
+        ? [] : acpMcpServers(mcp.connectionManager, roots.workDir, (name) => process.env[name]),
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined

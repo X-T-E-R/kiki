@@ -160,6 +160,7 @@ export interface AgentExecutorDescriptor {
   readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
   readonly permission?: AgentExecutorPermission;
   readonly promptDeliveries?: readonly ExecutorPromptDelivery[];
+  readonly supportsMcp?: boolean;
   readonly defaultProfile?: boolean;
   readonly installHint?: string;
   readonly loginCommand?: readonly string[];
