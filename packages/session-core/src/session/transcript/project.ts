@@ -2617,7 +2617,10 @@ export function projectAgentTranscriptView(
     hasMoreHistory: snapshot.hasMoreOlder === true,
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
-    turnTail: turnTail ?? previous.turnTail,
+    // A running last turn has no tail yet; never carry the previous turn's.
+    turnTail: lastTurn !== undefined && 'state' in lastTurn && lastTurn.state === 'running'
+      ? undefined
+      : turnTail ?? previous.turnTail,
     turnRetry: turnRetryFromItem(lastTurn),
   };
 }
@@ -2706,7 +2709,12 @@ export function agentBusyFromMeta(
   ) {
     return true;
   }
-  if (kind === 'idle' || kind === 'ended' || kind === 'interrupted') return false;
+  if (kind === 'idle' || kind === 'ended' || kind === 'interrupted') {
+    // A terminal phase only describes the turn it names. A newer turn that is
+    // already running (notification-, steer- or agent-message-opened turns
+    // replayed cold, or a snapshot meta merged over a live phase) wins.
+    return runningTurnAfterPhase(response, response.meta?.agent?.phase) !== undefined;
+  }
   if (response.meta?.activity === 'turn') return true;
   if (response.meta?.activity === 'idle' || response.meta?.activity === 'disposing') return false;
   if (response.prompts?.some((prompt) => prompt.status === 'running')) return true;
@@ -2720,6 +2728,26 @@ export function agentBusyFromMeta(
       if (stepState === 'running') return true;
       if (step.frames.some((frame) => frame.kind === 'tool' && frame.state === 'running')) return true;
     }
+  }
+  return undefined;
+}
+
+/** Latest running turn newer than the turn a terminal phase refers to. */
+export function runningTurnAfterPhase(
+  response: Pick<AgentTranscriptProjectionSource, 'items'>,
+  phase: unknown,
+): { readonly ordinal: number } | undefined {
+  const phaseTurnId = typeof phase === 'object' && phase !== null && 'turnId' in phase
+    ? (phase as { readonly turnId?: unknown }).turnId
+    : undefined;
+  for (let index = response.items.length - 1; index >= 0; index -= 1) {
+    const item = response.items[index]!;
+    if (item.kind !== 'turn') continue;
+    if (!('state' in item) || item.state !== 'running') return undefined;
+    const ordinal = (item as { readonly ordinal?: unknown }).ordinal;
+    if (typeof ordinal !== 'number') return undefined;
+    if (typeof phaseTurnId === 'number' && ordinal <= phaseTurnId) return undefined;
+    return { ordinal };
   }
   return undefined;
 }

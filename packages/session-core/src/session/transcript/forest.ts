@@ -10,7 +10,7 @@ import {
   type AgentRosterDescriptor,
   type AgentTaskItem,
 } from '../agentTree';
-import { agentBusyFromMeta, snapshotSubagentAgentId } from './project';
+import { agentBusyFromMeta, runningTurnAfterPhase, snapshotSubagentAgentId } from './project';
 import { subagentBlocksFromState } from './selectors';
 import type { SessionViewState, SubagentBlock } from './types';
 
@@ -34,6 +34,14 @@ export function rosterFromTranscriptAgents(
 
 export function agentStatusFromMeta(response: AgentTranscriptResponse | undefined): AgentRosterDescriptor['status'] {
   const phase = response?.meta?.agent?.phase;
+  // Same rule as agentBusyFromMeta: a newer running turn outranks a stale terminal phase.
+  if (
+    response !== undefined &&
+    (phase?.kind === 'ended' || phase?.kind === 'interrupted' || phase?.kind === 'idle') &&
+    runningTurnAfterPhase(response, phase) !== undefined
+  ) {
+    return 'running';
+  }
   switch (phase?.kind) {
     case 'running':
     case 'streaming':
@@ -458,13 +466,13 @@ export function sessionAgentForestFromAgentSnapshots(
       toolCallCountAuthoritative: true,
       status: agentStatusFromMeta({
         agent_id: agentId,
-        items: [],
+        items: snapshot.items,
         has_more: false,
         meta: snapshot.meta,
       }),
       busy: agentBusyFromMeta({
         agent_id: agentId,
-        items: [],
+        items: snapshot.items,
         has_more: false,
         meta: snapshot.meta,
       }),

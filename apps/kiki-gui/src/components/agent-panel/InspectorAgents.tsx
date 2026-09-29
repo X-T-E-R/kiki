@@ -270,7 +270,9 @@ const RosterAgent = memo(function RosterAgent({
   const state = bucket === 'waiting'
     ? t('rail.needsInput')
     : bucket === 'running'
-      ? (elapsed ?? t(STATUS_KEY(node.status)))
+      // A busy row reads as working from its first moment, never as a bare
+      // "background" status until the first minute has passed.
+      ? (elapsed ?? (node.busy === false ? t(STATUS_KEY(node.status)) : t('inspector.nowWorking')))
       : t(STATUS_KEY(node.status));
   const trail = row.path.length > 0 ? row.path.join(' › ') : undefined;
   return (
