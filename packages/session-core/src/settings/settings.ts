@@ -265,7 +265,7 @@ const RESTART_REQUIRED_KEY = 'kiki.restartRequired';
 const DEFAULTS: DesktopSettings = {
   defaultPermissionMode: 'auto',
   defaultPlanMode: false,
-  sendShortcut: 'cmd-enter',
+  sendShortcut: 'enter',
   draftPersistence: true,
   defaultModel: undefined,
   defaultEffort: undefined,
@@ -471,9 +471,35 @@ export interface ComposerKeyLike {
 
 /** True when the key event should send (or queue) according to the saved shortcut. */
 export function isComposerSendKey(event: ComposerKeyLike, shortcut: SendShortcut): boolean {
-  if (event.key !== 'Enter' || event.shiftKey) return false;
+  return composerEnterAction(event, shortcut) === 'send';
+}
+
+/**
+ * What an Enter key press does in the composer:
+ *   - `send`: send now when idle, queue behind the running turn when busy;
+ *   - `send-now`: send into the running turn (steer); a plain send when idle;
+ *   - `newline`: leave the key to the textarea;
+ *   - `none`: not an Enter press, or an IME composition owns it.
+ *
+ * `enter` (default): Enter sends, ⌘/Ctrl+Enter sends now, Shift+Enter is a
+ * new line. `cmd-enter`: Enter is a new line, ⌘/Ctrl+Enter sends,
+ * ⌘/Ctrl+Shift+Enter sends now. An Enter that commits an IME candidate
+ * (`isComposing`, or keyCode 229 on engines that drop the flag) never sends.
+ */
+export function composerEnterAction(
+  event: ComposerKeyLike & { readonly isComposing?: boolean; readonly keyCode?: number; readonly altKey?: boolean },
+  shortcut: SendShortcut,
+): 'send' | 'send-now' | 'newline' | 'none' {
+  if (event.key !== 'Enter') return 'none';
+  if (event.isComposing === true || event.keyCode === 229) return 'none';
+  if (event.altKey === true) return 'newline';
   const modified = event.metaKey || event.ctrlKey;
-  return shortcut === 'cmd-enter' ? modified : !modified;
+  if (shortcut === 'enter') {
+    if (event.shiftKey) return 'newline';
+    return modified ? 'send-now' : 'send';
+  }
+  if (!modified) return 'newline';
+  return event.shiftKey ? 'send-now' : 'send';
 }
 
 export function readLastSessionId(): string | undefined {

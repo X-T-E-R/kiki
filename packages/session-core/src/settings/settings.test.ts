@@ -33,6 +33,7 @@ import {
   modelPatchBody,
   modelCreateBody,
   providerTemplateFor,
+  composerEnterAction,
   isComposerSendKey,
   isDefaultAppendTiming,
   readDesktopPrefs,
@@ -151,7 +152,7 @@ describe('settings persistence and validation', () => {
       defaultAppendTiming: 'immediate',
     }));
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
-    expect(readSettings().sendShortcut).toBe('cmd-enter');
+    expect(readSettings().sendShortcut).toBe('enter');
     expect(readSettings().defaultPermissionMode).toBe('auto');
     expect(readSettings().requestTimeoutSeconds).toBe(30);
     expect(readSettings().subagentPanelOpenMode).toBe('tab');
@@ -1467,6 +1468,45 @@ describe('composer send shortcut and live settings', () => {
     expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false }, 'cmd-enter')).toBe(false);
   });
 
+  it('maps Enter presses to send / send-now / newline under both shortcuts', () => {
+    const key = (mods: Partial<{ shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
+      key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, ...mods,
+    });
+    expect(composerEnterAction(key(), 'enter')).toBe('send');
+    expect(composerEnterAction(key({ ctrlKey: true }), 'enter')).toBe('send-now');
+    expect(composerEnterAction(key({ metaKey: true }), 'enter')).toBe('send-now');
+    expect(composerEnterAction(key({ shiftKey: true }), 'enter')).toBe('newline');
+    expect(composerEnterAction(key({ altKey: true }), 'enter')).toBe('newline');
+    expect(composerEnterAction(key(), 'cmd-enter')).toBe('newline');
+    expect(composerEnterAction(key({ ctrlKey: true }), 'cmd-enter')).toBe('send');
+    expect(composerEnterAction(key({ ctrlKey: true, shiftKey: true }), 'cmd-enter')).toBe('send-now');
+    expect(composerEnterAction({ ...key(), key: 'a' }, 'enter')).toBe('none');
+  });
+
+  it('never sends on an Enter that commits an IME composition', () => {
+    const base = { key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false };
+    expect(composerEnterAction({ ...base, isComposing: true }, 'enter')).toBe('none');
+    expect(composerEnterAction({ ...base, keyCode: 229 }, 'enter')).toBe('none');
+    expect(composerEnterAction({ ...base, ctrlKey: true, isComposing: true }, 'cmd-enter')).toBe('none');
+    expect(isComposerSendKey({ ...base, isComposing: true } as typeof base, 'enter')).toBe(false);
+  });
+
+  it('defaults to Enter-sends when nothing is stored', () => {
+    localStorage.removeItem('kiki.settings');
+    expect(readSettings().sendShortcut).toBe('enter');
+  });
+
+  it('keeps an explicitly stored shortcut across the default change', () => {
+    // Saved before Enter became the default: an explicit choice is never migrated away.
+    localStorage.setItem('kiki.settings', JSON.stringify({ sendShortcut: 'cmd-enter' }));
+    expect(readSettings().sendShortcut).toBe('cmd-enter');
+    localStorage.setItem('kiki.settings', JSON.stringify({ sendShortcut: 'enter' }));
+    expect(readSettings().sendShortcut).toBe('enter');
+    // Other stored fields without a shortcut pick up the new default.
+    localStorage.setItem('kiki.settings', JSON.stringify({ draftPersistence: false }));
+    expect(readSettings().sendShortcut).toBe('enter');
+  });
+
   it('notifies subscribers as soon as sendShortcut is written', () => {
     const seen: string[] = [];
     const unsubscribe = subscribeSettings(() => {
@@ -1483,7 +1523,7 @@ describe('composer send shortcut and live settings', () => {
 
   it('serves a stable server snapshot for useSyncExternalStore', () => {
     expect(settingsServerSnapshot()).toBe(settingsServerSnapshot());
-    expect(settingsServerSnapshot().sendShortcut).toBe('cmd-enter');
+    expect(settingsServerSnapshot().sendShortcut).toBe('enter');
   });
 
   it('refreshes the snapshot from a cross-document storage event', () => {

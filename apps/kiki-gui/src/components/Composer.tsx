@@ -57,7 +57,7 @@ import {
 } from '@kiki/session-core/composer';
 import { errorText, issueText, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import {
-  isComposerSendKey,
+  composerEnterAction,
   resolveCatalogModel,
   resolveSelectedEffort,
   settingsServerSnapshot,
@@ -244,6 +244,8 @@ export function Composer({
   onChangeGoalMode,
   onChangeEffort,
   onSend,
+  onSendNow,
+  working,
   onAbort,
   abortPending = false,
   queueEditing = false,
@@ -386,6 +388,18 @@ export function Composer({
     attachments: readonly ComposerAttachment[],
     options?: { readonly goalObjective?: string },
   ) => void | Promise<unknown>;
+  /**
+   * Send into the running turn instead of queueing behind it (⌘/Ctrl+Enter
+   * under the default Enter semantics). Omit where there is no running turn
+   * to join; the key then falls back to a normal send.
+   */
+  onSendNow?: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  /**
+   * The agent is working on this conversation: the row under the card shows
+   * a quiet working line with the age of its latest output. Omit when idle
+   * or while the session waits on the user (the tray says that instead).
+   */
+  working?: { readonly lastResponseAt: number | undefined };
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /**
@@ -505,6 +519,7 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const turnInFlightRef = useRef(false);
+  const sendNowRef = useRef(false);
   const [turnInFlight, setTurnInFlight] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [contextRebuildConfirm, setContextRebuildConfirm] = useState(false);
@@ -1278,8 +1293,10 @@ export function Composer({
     setLocalGoalArmed(false);
   };
 
-  const send = () => {
+  /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
+  const send = (now = false) => {
     if (!canSend || slashCatalogPendingRef.current) return;
+    sendNowRef.current = now && onSendNow !== undefined;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
     // it to the queue round-trip (in-place replace at the original slot) —
     // never to command classification, skill activation, or a fresh send.
@@ -1348,8 +1365,12 @@ export function Composer({
   const sendPrompt = (content: string, options?: { readonly goalObjective?: string }) => {
     // Keep the two-argument call shape for plain sends: existing callers and
     // test spies assert on exactly (text, attachments).
+    const now = sendNowRef.current;
+    sendNowRef.current = false;
     const deliver = (prepared: string) =>
-      options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
+      now && options === undefined && onSendNow !== undefined
+        ? onSendNow(prepared, attachments)
+        : options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
         recordSubmission();
@@ -1481,16 +1502,24 @@ export function Composer({
       send();
       return;
     }
-    if (isComposerSendKey(event, sendShortcut)) {
+    // Enter semantics come from Settings (composerEnterAction): the default
+    // sends with Enter (queued while busy) and sends into the running turn
+    // with ⌘/Ctrl+Enter; the alternative keeps Enter as a new line.
+    const enterAction = composerEnterAction(
+      {
+        key: event.key,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        isComposing: event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
+      },
+      sendShortcut,
+    );
+    if (enterAction === 'send' || enterAction === 'send-now') {
       event.preventDefault();
-      send();
-      return;
-    }
-    // Ctrl/Cmd+Enter always sends immediately, whatever the configured send
-    // shortcut is (an open menu still owns Enter above).
-    if (event.key === 'Enter' && !event.shiftKey && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      send();
+      send(enterAction === 'send-now' && busy);
     }
   };
 
@@ -2152,7 +2181,7 @@ export function Composer({
                   has a mouse path too (Enter works as before). */}
               <button
                 type="button"
-                onClick={send}
+                onClick={() => { send(); }}
                 disabled={!canSend}
                 title={
                   queueEditing
@@ -2199,9 +2228,17 @@ export function Composer({
           </div>
         </div>
         {/* Key hints teach an empty draft only while the composer holds
-            focus; the fixed-height row keeps the card from hopping. */}
+            focus; while the agent works the same fixed-height row says so.
+            The row never changes height, so the card never hops. */}
         <div className="mt-1.5 h-4 min-w-0">
-          {text.trim() === '' && !busy ? (
+          {working !== undefined ? (
+            <ComposerWorkingLine
+              lastResponseAt={working.lastResponseAt}
+              sendNowHint={text.trim() !== '' && onSendNow !== undefined && !queueEditing
+                ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
+                : undefined}
+            />
+          ) : text.trim() === '' && !busy ? (
             <p
               data-composer-hints
               className="truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100 motion-reduce:transition-none"
@@ -2616,6 +2653,39 @@ function EffortGauge({
         />
       ))}
     </svg>
+  );
+}
+
+/**
+ * "Working · last response 12s ago" under the composer card. One faint line
+ * led by the busy pulse, ticking once a second; before the turn's first
+ * output it just says "Working". With a draft typed it also teaches the
+ * send-now key, the one moment that key matters.
+ */
+function ComposerWorkingLine({
+  lastResponseAt,
+  sendNowHint,
+}: {
+  readonly lastResponseAt: number | undefined;
+  readonly sendNowHint: string | undefined;
+}) {
+  const { t, time } = useI18n();
+  useNow();
+  const status = lastResponseAt === undefined
+    ? t('composer.working')
+    : t('composer.workingLastResponse', { ago: time.relativeTime(new Date(lastResponseAt).toISOString()) });
+  return (
+    <p
+      data-composer-working
+      data-last-response-at={lastResponseAt}
+      className="anim-enter flex min-w-0 items-center justify-center gap-1.5 text-[12px] leading-4 text-ink-faint"
+    >
+      <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+      <span className="min-w-0 truncate tabular-nums">{status}</span>
+      {sendNowHint !== undefined ? (
+        <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
+      ) : null}
+    </p>
   );
 }
 

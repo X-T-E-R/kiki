@@ -283,21 +283,69 @@ describe('Composer host compatibility', () => {
     vi.stubGlobal('crypto', originalCrypto);
   });
 
-  it('defaults to Ctrl/Cmd+Enter send with plain Enter reserved for newlines', async () => {
+  it('defaults to Enter send with Shift+Enter reserved for newlines', async () => {
     localStorage.clear();
     writeSettings({});
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'default shortcut', onSend });
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 
+    await pressKey(textarea, { key: 'Enter', shiftKey: true });
+    expect(onSend).not.toHaveBeenCalled();
     await pressKey(textarea, { key: 'Enter' });
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('default shortcut', []);
+  });
+
+  it('never sends on an Enter that commits an IME candidate', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: '你好', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await pressKey(textarea, { key: 'Enter', isComposing: true });
+    await pressKey(textarea, { key: 'Enter', keyCode: 229 });
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('sends into the running turn on Ctrl/Cmd+Enter while busy, and queues on Enter', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ value: 'steer this', busy: true, onSend, onSendNow });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
+    await settle();
+    expect(onSendNow).toHaveBeenCalledWith('steer this', []);
+    expect(onSend).not.toHaveBeenCalled();
+    await pressKey(textarea, { key: 'Enter' });
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('steer this', []);
+    expect(onSendNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Enter as a newline under the ⌘/Ctrl+Enter setting', async () => {
+    writeSettings({ sendShortcut: 'cmd-enter' });
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ value: 'cmd mode', busy: true, onSend, onSendNow });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await pressKey(textarea, { key: 'Enter' });
+    await settle();
     expect(onSend).not.toHaveBeenCalled();
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
     await settle();
-    expect(onSend).toHaveBeenCalledWith('default shortcut', []);
-    await pressKey(textarea, { key: 'Enter', metaKey: true });
+    expect(onSend).toHaveBeenCalledWith('cmd mode', []);
+    await pressKey(textarea, { key: 'Enter', ctrlKey: true, shiftKey: true });
     await settle();
-    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSendNow).toHaveBeenCalledWith('cmd mode', []);
+    writeSettings({ sendShortcut: 'enter' });
+  });
+
+  it('shows the working line with the latest response age while working', async () => {
+    const at = Date.now() - 12_000;
+    const { container } = await renderComposer({ value: '', busy: true, working: { lastResponseAt: at } });
+    const line = container.querySelector('[data-composer-working]');
+    expect(line?.textContent).toContain('Working · last response 12s ago');
+    expect(container.querySelector('[data-composer-hints]')).toBeNull();
   });
 
   it('submits browser prompts synchronously without VS Code preflight state', async () => {

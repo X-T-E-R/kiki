@@ -65,7 +65,15 @@ export function GeneralSection() {
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')}>
         <div className="space-y-1">
-          <SettingField label={t('st.composer.sendShortcut')} labelId="send-shortcut-label">
+          <SettingField
+            label={t('st.composer.sendShortcut')}
+            labelId="send-shortcut-label"
+            help={
+              <span data-send-shortcut-help={settings.sendShortcut}>
+                {t(settings.sendShortcut === 'cmd-enter' ? 'st.composer.shortcutCmdEnterHint' : 'st.composer.shortcutEnterHint')}
+              </span>
+            }
+          >
             <SettingsSelect<SendShortcut>
               id="send-shortcut-select"
               ariaLabel={t('st.composer.sendShortcut')}

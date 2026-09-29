@@ -16,6 +16,7 @@ import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, Work
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
+import { useLastResponseAt } from './composerWorking';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
@@ -1705,7 +1706,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -1753,10 +1754,22 @@ export function SessionView({
             goalObjective: promptGoalObjective(options),
             appendTiming: liveSettings.defaultAppendTiming,
           })
-          .then(() => {
+          .then((result) => {
             setQuote(null);
             setAnnotations([]);
             setGoalMode(false);
+            // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
+            // running turn joins it right away through the queue's steer route.
+            if (options?.now === true && result.status === 'queued') {
+              void controller.steerQueued(result.prompt_id).catch((error: unknown) => {
+                pushToast({
+                  tone: 'error',
+                  text: t('sv.steerQueuedFailed', {
+                    detail: error instanceof Error ? error.message : String(error),
+                  }),
+                });
+              });
+            }
             if (profileSwitch.profile !== undefined) {
               setPendingProfile(undefined);
               setProfileModelTouched(false);
@@ -2613,6 +2626,11 @@ export function SessionView({
     ) => actions?.send(text, composerAttachments, options),
     [actions],
   );
+  const handleComposerSendNow = useCallback(
+    (text: string, composerAttachments: readonly ComposerAttachment[]) =>
+      actions?.send(text, composerAttachments, { now: true }),
+    [actions],
+  );
   const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);
 
   // ---- goal card + recovered-queue gate (main view dock) ----
@@ -2713,6 +2731,14 @@ export function SessionView({
   }, [client, sessionId, t]);
 
   const composerBusy = canAbortActiveTurn(state);
+  // The working line under the composer: only while the agent itself is
+  // busy (an approval or question hands the floor to the tray instead).
+  const composerWorking = composerBusy && state.pendingInteraction === 'none';
+  const lastResponseAt = useLastResponseAt(composerWorking, state.blocks, state.turnStartedAt);
+  const composerWorkingInfo = useMemo(
+    () => (composerWorking ? { lastResponseAt } : undefined),
+    [composerWorking, lastResponseAt],
+  );
   // Child routes dock their mailbox composer locally in AgentWorkspace;
   // only main publishes the resident prompt composer to ConversationShell.
   const seat = useMemo<ConversationSeat>(() => ({
@@ -2777,6 +2803,8 @@ export function SessionView({
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
+            onSendNow={handleComposerSendNow}
+            working={composerWorkingInfo}
             onAbort={handleComposerAbort}
             queueEditing={queueEdit !== null}
             onQueueEditConfirm={handleQueueEditConfirm}
@@ -2794,6 +2822,7 @@ export function SessionView({
     state.resyncFailed,
     state.contextBreakdown,
     composerBusy,
+    composerWorkingInfo,
     composerDisabled,
     draft,
     updateDraft,
@@ -2827,6 +2856,7 @@ export function SessionView({
     runSessionAction,
     handleCompactContext,
     handleComposerSend,
+    handleComposerSendNow,
     handleComposerAbort,
     queueEdit,
     handleQueueEditConfirm,
