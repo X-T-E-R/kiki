@@ -1907,12 +1907,12 @@ describe('agent profile loaders + session catalog', () => {
         expect([...bySourceId.keys()].toSorted()).toEqual([
           'explicit',
           'extra',
+          'inherited',
           'plugin',
           'user',
           'workspace',
         ]);
         for (const sourceId of ['explicit', 'extra', 'inherited', 'plugin', 'user', 'workspace'] as const) {
-          'inherited',
           expect(bySourceId.get(sourceId)?.workspaceKey).toBe('wd_test');
           expect(bySourceId.get(sourceId)?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY[sourceId]);
         }
