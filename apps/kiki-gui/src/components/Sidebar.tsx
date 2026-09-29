@@ -1559,7 +1559,7 @@ function SearchResults({
       ) : null}
 
       <div role="group" aria-label={t('sidebar.results.messages')} data-search-messages>
-        {search.hits.length > 0 || search.contentPending || search.contentInitialError !== null ? (
+        {search.hits.length > 0 || search.contentPending || search.contentInitialError !== null || search.unavailable !== undefined ? (
           <ResultHeading>{t('sidebar.results.messages')}</ResultHeading>
         ) : null}
         {!isSearchable(parsed.text) && parsed.text.trim() !== '' ? (
@@ -1594,7 +1594,13 @@ function SearchResults({
             </span>
           </button>
         ))}
-        {search.building !== undefined ? (
+        {search.unavailable !== undefined ? (
+          <p data-search-unavailable role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">
+            {search.unavailable.reason === 'runtime_disabled'
+              ? t('sidebar.results.unavailable.runtime_disabled')
+              : t('sidebar.results.unavailable.generic')}
+          </p>
+        ) : search.building !== undefined ? (
           <p data-search-building className="px-2 pt-1.5 text-[12px] text-ink-faint">
             {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
           </p>

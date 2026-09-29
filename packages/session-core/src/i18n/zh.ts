@@ -3816,6 +3816,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'inspector.running': '运行中',
   'inspector.waiting.one': '{count} 项等你处理',
   'inspector.waiting.other': '{count} 项等你处理',
+  'sidebar.results.unavailable.runtime_disabled': '这个桌面版本的全文搜索不可用，会话标题搜索仍然可用。',
+  'sidebar.results.unavailable.generic': '全文搜索不可用，会话标题搜索仍然可用。',
   'inspector.tasks.one': '{count} 个任务',
   'inspector.tasks.other': '{count} 个任务',
   'inspector.agent': '智能体',

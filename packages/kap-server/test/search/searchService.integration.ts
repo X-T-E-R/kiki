@@ -3017,6 +3017,32 @@ describe('search worker host (stage 4)', () => {
     }
   });
 
+  it('reports runtime-disabled search without starting a background sync loop', async () => {
+    const previous = process.env['KIKI_DESKTOP_BUNDLED'];
+    process.env['KIKI_DESKTOP_BUNDLED'] = '1';
+    const warnings: unknown[][] = [];
+    const log = {
+      ...noopLog,
+      warn: (...args: unknown[]) => { warnings.push(args); },
+    } as unknown as ILogService;
+    try {
+      const service = track(new GlobalSearchService(staticIndex([]), makeBootstrap(home!), log, makeFlags(true)));
+      service.syncDebounceMs = 0;
+      service.setLiveTranscriptSource(noLiveSource);
+      const page = await service.search({ query: 'anything' });
+      expect(page.items).toEqual([]);
+      expect(page.indexState).toMatchObject({ state: 'unavailable', reason: 'runtime_disabled' });
+      expect(page.unavailable).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(warnings.filter((args) => args[0] === 'global search: background sync failed')).toEqual([]);
+      expect((service as unknown as { syncPromise: Promise<void> | null }).syncPromise).toBeNull();
+      expect((service as unknown as { syncTimer: ReturnType<typeof setTimeout> | null }).syncTimer).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env['KIKI_DESKTOP_BUNDLED'];
+      else process.env['KIKI_DESKTOP_BUNDLED'] = previous;
+    }
+  });
+
   it('backs off for hours after worker memory pressure instead of restarting the rebuild loop', async () => {
     const host = new SearchWorkerHost({
       dir: join(home!, 'search-index'),
@@ -3049,7 +3075,8 @@ describe('search worker host (stage 4)', () => {
 
     const degraded = await service.search({ query: '苹果' });
     expect(degraded.items).toEqual([]);
-    expect(degraded.indexState.state).toBe('building');
+    expect(degraded.indexState.state).toBe('unavailable');
+    expect(degraded.indexState.reason).toBe('indexer_backoff');
     expect(degraded.indexState.degraded).toContain('worker');
     expect(degraded.unavailable).toBe(true);
 
@@ -3730,7 +3757,8 @@ describe('search lifecycle diagnostics (stage 5)', () => {
     const page = await service.search({ query: 'anything' });
     expect(page.items).toEqual([]);
     expect(page.source).toBe('index');
-    expect(page.indexState.state).toBe('building');
+    expect(page.indexState.state).toBe('unavailable');
+    expect(page.indexState.reason).toBe('indexer_backoff');
     expect(page.indexState.degraded).toContain('threads unavailable');
     await expect(stat(join(home!, 'search-index'))).rejects.toThrow();
 

@@ -3880,6 +3880,8 @@ export const en = {
   'inspector.running': 'Running',
   'inspector.waiting.one': '{count} needs you',
   'inspector.waiting.other': '{count} need you',
+  'sidebar.results.unavailable.runtime_disabled': 'Full-text search is unavailable in this desktop build. Session title search still works.',
+  'sidebar.results.unavailable.generic': 'Full-text search is unavailable. Session title search still works.',
   'inspector.tasks.one': '{count} task',
   'inspector.tasks.other': '{count} tasks',
   'inspector.agent': 'Agent',
