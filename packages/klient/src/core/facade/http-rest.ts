@@ -431,6 +431,10 @@ export interface HttpRestFacade {
       options?: HttpRestRequestOptions,
     ): Promise<HttpRestSearchMessagesResponse>;
     retry(): Promise<{ retried: boolean }>;
+    status(): Promise<{ index_state: HttpRestSearchMessagesResponse['index_state'] & {
+      readonly retry_after_ms?: number;
+      readonly writer?: boolean;
+    } }>;
   };
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */

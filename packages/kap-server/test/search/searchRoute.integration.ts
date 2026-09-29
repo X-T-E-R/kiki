@@ -175,6 +175,16 @@ describe('server-v2 /api/search', () => {
     expect(body!.data.source).toBe('index');
   });
 
+  it('reports index progress on an authenticated REST status route', async () => {
+    const response = await authedFetch(server!, base, '/api/search/status');
+    expect(response.status).toBe(200);
+    const body = await response.json() as Envelope<{ index_state: SearchPageWire['index_state'] }>;
+    expect(body.code).toBe(0);
+    expect(['building', 'ready', 'readonly']).toContain(body.data.index_state.state);
+    expect(body.data.index_state.indexed_sessions).toBeGreaterThanOrEqual(0);
+    expect(body.data.index_state.total_sessions).toBeGreaterThanOrEqual(0);
+  });
+
   it('accepts an authenticated search retry without a search body', async () => {
     const response = await authedFetch(server!, base, '/api/search/retry', { method: 'POST' });
     expect(response.status).toBe(200);

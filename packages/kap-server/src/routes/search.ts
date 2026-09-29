@@ -15,6 +15,7 @@ import type { GlobalSearchPage, GlobalSearchQuery } from '../search/contract';
 import { GlobalSearchError, IGlobalSearchService } from '../search/searchService';
 
 interface SearchRouteHost {
+  get(path: string, options: { preHandler: unknown[] }, handler: (req: { id: string }, reply: { send(payload: unknown): unknown }) => Promise<void>): unknown;
   post(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
@@ -115,6 +116,22 @@ export function registerSearchRoutes(app: SearchRouteHost, core: Scope): void {
     },
   );
   app.post(route.path, route.options, route.handler as Parameters<SearchRouteHost['post']>[2]);
+  app.get('/search/status', { preHandler: [] }, async (req, reply) => {
+    const status = await core.accessor.get(IGlobalSearchService).status();
+    const indexer = status.indexer;
+    reply.send(okEnvelope({ index_state: indexer === undefined ? {
+      state: status.lifecycle.state === 'ready' ? 'ready' :
+        status.lifecycle.state === 'degraded' ? 'unavailable' : 'building',
+      indexed_sessions: status.sessions, total_sessions: status.sessions,
+      documents: status.documents, degraded: status.degraded,
+    } : {
+      state: status.lifecycle.detail === 'disabled' ? 'unavailable' : indexer.state,
+      indexed_sessions: indexer.indexedSessions, total_sessions: indexer.totalSessions,
+      documents: indexer.documents, stale: indexer.stale,
+      reason: status.lifecycle.detail === 'disabled' ? 'disabled' : indexer.reason,
+      retry_after_ms: indexer.retryAfterMs, writer: indexer.state !== 'readonly',
+    } }, req.id));
+  });
   app.post('/search/retry', { preHandler: [] }, (req, reply) => {
     core.accessor.get(IGlobalSearchService).retryIndexer();
     reply.send(okEnvelope({ retried: true }, req.id));

@@ -12,12 +12,6 @@ type IndexState = SearchMessagesResponse['index_state'];
 
 export const SEARCH_INDEX_STATE_KEY = ['search-index-state'] as const;
 
-/**
- * The server has no status route for the full-text index, but every search
- * page carries `index_state`; one single-result query reads it.
- */
-const PROBE = { query: 'kiki', page_size: 1 } as const;
-
 /** Reasons the user cannot fix by restarting the indexer. */
 const NOT_RETRYABLE = new Set<IndexState['reason']>(['disabled', 'runtime_disabled']);
 
@@ -34,9 +28,9 @@ export function SearchIndexStatusCard() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const state = useQuery({
     queryKey: SEARCH_INDEX_STATE_KEY,
-    queryFn: async ({ signal }) => (await client.searchMessages(PROBE, signal)).index_state,
+    queryFn: async () => (await client.searchIndexStatus()).index_state,
     staleTime: 10_000,
-    refetchInterval: (query) => (query.state.data?.state === 'building' ? 3_000 : false),
+    refetchInterval: (query) => (query.state.data?.state === 'building' ? 3_000 : 30_000),
   });
   const index = state.data;
 

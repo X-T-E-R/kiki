@@ -8,11 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { SearchIndexStatusCard } from './SearchIndexStatusCard';
 
-const searchMessages = vi.fn();
+const searchIndexStatus = vi.fn();
 const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { searchMessages, retrySearchIndexer } }),
+  useConnection: () => ({ client: { searchIndexStatus, retrySearchIndexer } }),
 }));
 
 const page = (index_state: Record<string, unknown>) => ({
@@ -30,7 +30,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
-  searchMessages.mockReset();
+  searchIndexStatus.mockReset();
   retrySearchIndexer.mockClear();
 });
 
@@ -53,8 +53,8 @@ async function render() {
 
 describe('SearchIndexStatusCard', () => {
   it('says the indexer ran out of memory and restarts it on request', async () => {
-    searchMessages.mockResolvedValueOnce(page({ state: 'unavailable', reason: 'memory_budget' }));
-    searchMessages.mockResolvedValue(page({ state: 'ready', indexed_sessions: 3 }));
+    searchIndexStatus.mockResolvedValueOnce(page({ state: 'unavailable', reason: 'memory_budget' }));
+    searchIndexStatus.mockResolvedValue(page({ state: 'ready', indexed_sessions: 3 }));
     await render();
     const card = container.querySelector<HTMLElement>('[data-search-index-status]')!;
     expect(card.dataset['searchIndexReason']).toBe('memory_budget');
@@ -68,7 +68,7 @@ describe('SearchIndexStatusCard', () => {
   });
 
   it('offers no restart when search is switched off', async () => {
-    searchMessages.mockResolvedValue(page({ state: 'unavailable', reason: 'disabled' }));
+    searchIndexStatus.mockResolvedValue(page({ state: 'unavailable', reason: 'disabled' }));
     await render();
     expect(container.querySelector('[data-search-index-retry]')).toBeNull();
     expect(container.textContent).toContain('Full-text search is off');

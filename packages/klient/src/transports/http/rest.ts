@@ -411,6 +411,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         timeoutMs: options?.timeoutMs,
       }),
       retry: () => transport.json('/search/retry', { method: 'POST' }),
+      status: () => transport.json('/search/status', { method: 'GET' }),
     },
 
     cron: {

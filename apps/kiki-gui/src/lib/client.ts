@@ -1841,6 +1841,10 @@ export class KikiClient {
     }));
   }
 
+  searchIndexStatus(): Promise<{ index_state: SearchMessagesResponse['index_state'] }> {
+    return this.run(this.rest.search.status());
+  }
+
   /** Clear the SQLite indexer's retry backoff and restart it. */
   retrySearchIndexer(): Promise<{ retried: boolean }> {
     return this.run(this.rest.search.retry());
