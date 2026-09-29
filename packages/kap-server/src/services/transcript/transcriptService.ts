@@ -654,7 +654,29 @@ export class TranscriptService {
       );
       if (snapshot === undefined) failed = true;
       if (snapshot !== undefined) {
-        const result = transcript.apply(snapshotToOps(snapshot));
+        const liveMeta = transcript.snapshot().meta;
+        const livePhase = liveMeta.agent?.phase;
+        const coldPhase = snapshot.meta.agent?.phase;
+        const liveTurn = livePhase !== undefined && 'turnId' in livePhase ? livePhase.turnId : undefined;
+        const coldTurn = coldPhase !== undefined && 'turnId' in coldPhase ? coldPhase.turnId : undefined;
+        const liveTime = livePhase !== undefined && 'since' in livePhase ? livePhase.since
+          : livePhase !== undefined && 'at' in livePhase ? livePhase.at : undefined;
+        const coldTime = coldPhase !== undefined && 'since' in coldPhase ? coldPhase.since
+          : coldPhase !== undefined && 'at' in coldPhase ? coldPhase.at : undefined;
+        const keepLivePhase = liveTurn !== undefined && (
+          (coldTurn !== undefined && liveTurn > coldTurn) ||
+          (coldTurn === undefined && coldPhase?.kind === 'idle' && livePhase?.kind !== 'ended') ||
+          (coldTurn === liveTurn && liveTime !== undefined && coldTime !== undefined && liveTime >= coldTime)
+        );
+        const backfill = keepLivePhase
+          ? { ...snapshot, meta: {
+              ...snapshot.meta,
+              activity: livePhase !== undefined && 'since' in livePhase
+                ? 'turn' : liveMeta.activity ?? snapshot.meta.activity,
+              agent: { ...snapshot.meta.agent, phase: livePhase },
+            } }
+          : snapshot;
+        const result = transcript.apply(snapshotToOps(backfill));
         if (result.gap !== undefined) {
           this.deps.logger?.warn({ sessionId, agentId, gap: result.gap }, 'transcript: backfill append gap');
         }

@@ -1719,6 +1719,33 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it('keeps a newer live running phase when backfilling an older ended snapshot', async () => {
+    const home = await seedWireHome(undefined, true);
+    try {
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'running', activeTurnId: 1 } });
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      const store = service.forSessionLive('s1')!;
+      const transcript = store.ensureAgent('main');
+      main.bus.emit(ev({ type: 'turn.started', time: 3_000, turnId: 1, origin: { kind: 'user' } }));
+      transcript.apply([{ op: 'meta.merge', meta: {
+        agent: { phase: { kind: 'running', turnId: 1, step: 0, stepId: '', since: 3_000 } },
+      } }]);
+      expect(transcript.snapshot().meta.agent?.phase).toMatchObject({ kind: 'running', turnId: 1 });
+      await service.whenReady('s1');
+      expect(transcript.getTurn('t1')?.state).toBe('running');
+      expect(transcript.snapshot().meta).toMatchObject({
+        activity: 'turn', agent: { phase: { kind: 'running', turnId: 1 } },
+      });
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('omits a cold uncertain subagent task without overwriting live terminal evidence', async () => {
     const home = await seedWireHomeWithRunningSubagentTask();
     try {
