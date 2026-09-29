@@ -9,6 +9,7 @@ const schedule = vi.hoisted(() => ({
   afterRename: undefined as undefined | ((source: string, target: string) => void),
   afterReaddir: undefined as undefined | ((path: string) => void),
   beforeUnlink: undefined as undefined | ((path: string) => Promise<void>),
+  beforeLink: undefined as undefined | ((source: string, target: string) => void),
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -28,6 +29,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     unlink: async (path: string) => {
       await schedule.beforeUnlink?.(path);
       return actual.unlink(path);
+    },
+    link: async (source: string, target: string) => {
+      schedule.beforeLink?.(source, target);
+      return actual.link(source, target);
     },
   };
 });
@@ -184,3 +189,59 @@ describe('FileStorageService — stale takeover scheduling', () => {
     }
   });
 });
+
+describe('FileStorageService — transient access denial during acquisition', () => {
+  let directory: string | undefined;
+
+  afterEach(async () => {
+    schedule.beforeLink = undefined;
+    if (directory !== undefined) await rm(directory, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    directory = undefined;
+  });
+
+  function accessDenial(): NodeJS.ErrnoException {
+    return Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM', errno: -4048 });
+  }
+
+  it('reports contention instead of a permission failure when the denial is transient', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-transient-denial-'));
+    const service = new FileStorageService(directory);
+    const holder = await service.acquireLock('session-locks', 'session.lock', { owner: { contender: 'holder' } });
+    try {
+      let denials = 0;
+      schedule.beforeLink = (_source, target) => {
+        if (target.includes('.watch-') && denials++ === 0) throw accessDenial();
+      };
+      const error: unknown = await new FileStorageService(directory)
+        .acquireLock('session-locks', 'session.lock', { owner: { contender: 'contender' } })
+        .then(() => undefined, (thrown: unknown) => thrown);
+      expect(denials).toBe(2);
+      expect(error).toMatchObject({ code: 'storage.locked' });
+      expect((await readdir(join(directory, 'session-locks'))).filter((entry) => entry.startsWith('session.lock.watch-')))
+        .toHaveLength(1);
+    } finally {
+      schedule.beforeLink = undefined;
+      await holder.release();
+    }
+    const replacement = await new FileStorageService(directory).acquireLock('session-locks', 'session.lock');
+    await replacement.release();
+  });
+
+  it('still reports a permission failure when the access denial persists', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-persistent-denial-'));
+    let attempts = 0;
+    schedule.beforeLink = () => {
+      attempts += 1;
+      throw accessDenial();
+    };
+    await expect(new FileStorageService(directory).acquireLock('session-locks', 'session.lock'))
+      .rejects.toMatchObject({
+        code: 'storage.permission_denied',
+        details: { op: 'lock', errno: 'EPERM' },
+      });
+    expect(attempts).toBe(5);
+    expect((await readdir(join(directory, 'session-locks'))).filter((entry) => entry.startsWith('session.lock.')))
+      .toHaveLength(0);
+  });
+});
+

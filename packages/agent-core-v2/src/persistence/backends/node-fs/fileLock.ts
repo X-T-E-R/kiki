@@ -46,6 +46,9 @@ const TAKEOVER_SETTLE_BASE_MS = 60;
 const TAKEOVER_SETTLE_MAX_MS = 2_000;
 const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000;
+const TRANSIENT_DENIAL_RETRIES = 4;
+const TRANSIENT_DENIAL_DELAY_MS = 10;
+const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
 let exitHooked = false;
@@ -105,6 +108,21 @@ function isPayload(value: unknown): value is FileLockPayload {
     Number.isFinite(payload.leaseMs) &&
     payload.leaseMs > 0
   );
+}
+
+/**
+ * Reports whether an acquisition attempt failed for a reason that is a race
+ * rather than a real permission problem: Windows surfaces a concurrent delete
+ * or replace of a lock sidecar as `EPERM`/`EACCES`/`EBUSY` instead of `ENOENT`,
+ * so a writer that arrives while another one releases the lock would otherwise
+ * read a transient access denial. Retrying keeps that contention inside the
+ * lock's own arbitration; a persistent denial is still reported as-is.
+ */
+function isTransientAccessDenial(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  if (TRANSIENT_DENIAL_CODES.has((error as NodeJS.ErrnoException).code ?? '')) return true;
+  const errno = (error as { details?: { errno?: unknown } }).details?.errno;
+  return typeof errno === 'string' && TRANSIENT_DENIAL_CODES.has(errno);
 }
 
 function hookExit(): void {
@@ -269,6 +287,17 @@ class FileLock implements IStorageLock {
   }
 
   private async acquireOnce(): Promise<boolean> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.acquireAttempt();
+      } catch (error) {
+        if (attempt >= TRANSIENT_DENIAL_RETRIES || !isTransientAccessDenial(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, TRANSIENT_DENIAL_DELAY_MS * (attempt + 1)));
+      }
+    }
+  }
+
+  private async acquireAttempt(): Promise<boolean> {
     if (this.held) return true;
     this.token = `${process.pid}:${randomUUID()}`;
     this.acquiredAt = Date.now();

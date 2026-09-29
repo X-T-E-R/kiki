@@ -46,9 +46,9 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
 import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
 import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
-import { managedBinding } from '#/app/nbSearch/managedCredentials';
+import { managedBinding, NbSearchManagedCredentials } from '#/app/nbSearch/managedCredentials';
 import { copyNbSearchEnvironment } from '#/app/nbSearch/environment';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import {
   DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS,
@@ -745,6 +745,53 @@ describe('NbSearchSourceStore', () => {
       await expect(store.writeManaged(source, current, 'exa.default', 'fixture-new-key', 'none', 'b'.repeat(64))).rejects.toMatchObject({ reason: 'changed' });
       expect(managedWrite.mock.calls.every(([scope]) => scope !== 'secrets/nb-search')).toBe(true);
       expect(lock.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits out a lock release that surfaces as an access denial and then saves', async () => {
+      const storage = ix.get(IFileSystemStorageService);
+      serveManagedDocument(storage, managedDocument({}));
+      const lock = { release: vi.fn(async () => undefined) };
+      const acquireLock = vi.fn()
+        .mockRejectedValueOnce(new StorageError(
+          StorageErrors.codes.STORAGE_PERMISSION_DENIED,
+          'storage lock failed: permission denied',
+          { details: { path: '/fixture/cache/nb-search/gui-credentials.json.lock', op: 'lock', errno: 'EPERM' } },
+        ))
+        .mockResolvedValue(lock);
+      storage.acquireLock = acquireLock;
+      const managedWrite = vi.fn(async (..._args: unknown[]) => undefined);
+      storage.write = managedWrite;
+      const entry = { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY', binding: 'fixture-binding', value: 'fixture-key' };
+      await expect(new NbSearchManagedCredentials(storage).set('exa.default', entry, 'none', async () => true))
+        .resolves.toMatch(/^[0-9a-f]{64}$/);
+      expect(acquireLock).toHaveBeenCalledTimes(2);
+      const [scope, key, bytes] = managedWrite.mock.calls[0] as unknown[];
+      expect([scope, key]).toEqual(['secrets/nb-search', 'gui-credentials.json']);
+      expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
+        slots: { 'exa.default': entry },
+      });
+      expect(lock.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a lock failure that is not lock contention', async () => {
+      const storage = ix.get(IFileSystemStorageService);
+      serveManagedDocument(storage, managedDocument({}));
+      const acquireLock = vi.fn(async () => {
+        throw new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage lock failed: unrecognized I/O error', {
+          details: { path: '/fixture/cache/nb-search/gui-credentials.json.lock', op: 'lock', errno: 'EUNKNOWN' },
+        });
+      });
+      storage.acquireLock = acquireLock;
+      const managedWrite = vi.fn(async (..._args: unknown[]) => undefined);
+      storage.write = managedWrite;
+      await expect(new NbSearchManagedCredentials(storage).set(
+        'exa.default',
+        { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY', binding: 'fixture-binding', value: 'fixture-key' },
+        'none',
+        async () => true,
+      )).rejects.toMatchObject({ code: 'storage.io_failed' });
+      expect(acquireLock).toHaveBeenCalledTimes(1);
+      expect(managedWrite).not.toHaveBeenCalled();
     });
   });
 });

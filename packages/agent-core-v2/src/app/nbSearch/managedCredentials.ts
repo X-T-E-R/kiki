@@ -34,7 +34,7 @@ export class NbSearchManagedCredentials {
         lock = await this.storage.acquireLock(SCOPE, `${KEY}.lock`);
         break;
       } catch (error) {
-        if (!isStorageError(error, StorageErrors.codes.STORAGE_LOCKED) || attempt === 19) throw error;
+        if (!isRetryableLockContention(error) || attempt === 19) throw error;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     }
@@ -81,6 +81,20 @@ export class ManagedCredentialError extends Error {
     super(`NB_SEARCH_MANAGED_CREDENTIAL_${reason.toUpperCase()}`);
     this.name = 'ManagedCredentialError';
   }
+}
+
+/**
+ * A concurrent release of the credential lock sidecars can surface as an
+ * access denial on Windows (`EPERM`/`EACCES`/`EBUSY`), which is lock
+ * contention rather than a permission problem with the storage directory.
+ * Waiting keeps a concurrent save from failing while the other writer is
+ * still finishing; the bounded attempt budget above still applies.
+ */
+function isRetryableLockContention(error: unknown): boolean {
+  if (isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) return true;
+  if (!isStorageError(error, StorageErrors.codes.STORAGE_PERMISSION_DENIED)) return false;
+  const errno = (error as { details?: { errno?: unknown } }).details?.errno;
+  return errno === 'EPERM' || errno === 'EACCES' || errno === 'EBUSY';
 }
 
 function version(entry: RecordEntry | undefined): string {
