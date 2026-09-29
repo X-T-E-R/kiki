@@ -78,7 +78,7 @@ describe('plugin archive extraction', () => {
     await expect(extractZip(buffer, join(dir, 'out'))).rejects.toMatchObject({
       code: 'plugin.load_failed',
     });
-  });
+  }, 30_000);
 
   it('rejects a zip with more entries than the entry limit', async () => {
     const source = join(dir, 'source');

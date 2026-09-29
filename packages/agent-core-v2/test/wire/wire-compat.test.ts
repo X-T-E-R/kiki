@@ -192,9 +192,9 @@ describe('wire.jsonl round-trip', () => {
     await legacy.dispatcher.restore();
 
     expect(legacy.agentState.get(compatCounterKey)).toEqual({ value: 7 });
-    expect(legacy.agentState.get(todoKey)).toEqual([
-      { title: 'legacy todo', status: 'pending' },
-    ]);
+    expect(legacy.agentState.get(todoKey)).toEqual({
+      items: [{ title: 'legacy todo', status: 'pending' }],
+    });
 
     expect(await collect(makeReader(storage), 'legacy')).toEqual([
       { type: 'metadata', protocol_version: WIRE_PROTOCOL_VERSION, created_at: 1 },

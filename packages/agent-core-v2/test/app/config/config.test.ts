@@ -219,7 +219,7 @@ describe('Agent config', () => {
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
       [wire] config.update            { "profileName": "test-profile", "systemPrompt": "Profile system prompt.", "environmentDisclosure": { "cwd": "<cwd>", "date": { "disclosed": false } }, "agentsMdPaths": [], "disallowedTools": [], "time": "<time>" }
       [emit] agent.status.updated     { "time": "<time>", "model": "mock-model", "maxContextTokens": 1000000 }
-      [emit] agent.status.updated     { "time": "<time>", "autoCompactTokens": 850000, "autoCompactSource": "legacy", "effectiveMaxContextTokens": 1000000, "reservedContextTokens": 50000 }
+      [emit] agent.status.updated     { "time": "<time>", "autoCompactTokens": 850000, "autoCompactSource": "legacy", "effectiveMaxContextTokens": 1000000, "reservedContextTokens": 50000, "contextStrategy": "summarize", "contextStrategySource": "default" }
       [wire] tools.set_active_tools   { "names": [ "Read" ], "time": "<time>" }
     `);
   });
@@ -1726,8 +1726,8 @@ describe('removed config sections and keys', () => {
   }
 
   const bindingReplacement =
-    'Subagent model and effort bindings come from the agent profile (or its route or the caller ' +
-    'lease), or from an explicit model_alias and effort at dispatch. Run /kiki-ops fix this configuration warning.';
+    'Subagent models come from an explicit dispatch model_alias, the agent profile (or its route or caller lease), ' +
+    'or [subagent].default_model when no model is pinned. Effort follows explicit dispatch, profile, and model defaults. Run /kiki-ops fix this configuration warning.';
 
   it('warns about the removed secondary_model section instead of silently ignoring it', async () => {
     const { config, disposables } = await createConfig(
@@ -1743,16 +1743,13 @@ describe('removed config sections and keys', () => {
     disposables.dispose();
   });
 
-  it('warns about removed subagent keys that the schema would silently drop', async () => {
+  it('accepts the default subagent model while warning about removed default_effort', async () => {
     const { config, disposables } = await createConfig(
       '[subagent]\ndefault_model = "k3-max"\ndefault_effort = "high"\n',
     );
 
-    expect(config.diagnostics()).toContainEqual({
-      domain: 'subagent',
-      severity: 'warning',
-      message: `[subagent] 'default_model' was removed and is no longer read. ${bindingReplacement}`,
-    });
+    expect(config.get<{ defaultModel?: string }>('subagent')?.defaultModel).toBe('k3-max');
+    expect(config.diagnostics().some((diagnostic) => diagnostic.message.includes("'default_model' was removed"))).toBe(false);
     expect(config.diagnostics()).toContainEqual({
       domain: 'subagent',
       severity: 'warning',

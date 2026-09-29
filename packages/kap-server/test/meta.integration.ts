@@ -78,10 +78,10 @@ describe('/api/meta experimental_flags', () => {
     return body.data.experimental_flags as Record<string, boolean>;
   }
 
-  it('reports registered flags as off by default', async () => {
+  it('reports tool-select as on by default', async () => {
     const base = await boot();
     const flags = await getMetaFlags(base);
-    expect(flags['tool-select']).toBe(false);
+    expect(flags['tool-select']).toBe(true);
   });
 
   it('reports the immutable desktop build identity when supplied', async () => {
@@ -111,16 +111,16 @@ describe('/api/meta experimental_flags', () => {
 
   it('flips live when the [experimental] config section is written via POST /config', async () => {
     const base = await boot();
-    expect((await getMetaFlags(base))['tool-select']).toBe(false);
+    expect((await getMetaFlags(base))['tool-select']).toBe(true);
 
     const res = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ experimental: { 'tool-select': true } }),
+      body: JSON.stringify({ experimental: { 'tool-select': false } }),
     });
     expect(res.status).toBe(200);
 
-    expect((await getMetaFlags(base))['tool-select']).toBe(true);
+    expect((await getMetaFlags(base))['tool-select']).toBe(false);
   });
 
   it('keeps an env-forced flag on when the config section disables it', async () => {

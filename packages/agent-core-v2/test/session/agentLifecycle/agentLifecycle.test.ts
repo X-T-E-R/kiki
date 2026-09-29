@@ -84,6 +84,7 @@ import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { ILogService } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -280,6 +281,8 @@ describe('AgentLifecycleService', () => {
       additionalDirs: [],
     } as unknown as ISessionWorkspaceContext);
     ix.stub(IPluginService, pluginServiceStub);
+    ix.stub(IPluginHostService, { _serviceBrand: undefined, list: async () => [] });
+    ix.stub(IFlagService, stubFlag(false));
     ix.stub(IConfigService, {
       ready: Promise.resolve(),
       get: (() => undefined) as IConfigService['get'],
@@ -1554,7 +1557,9 @@ describe('AgentLifecycleService', () => {
     expect(state.replayableKeys().map((key) => key.name)).toEqual(
       expect.arrayContaining(['todo', 'cron', 'interaction']),
     );
-    expect(state.get(todoKey)).toEqual([{ title: 'bridged', status: 'pending' }]);
+    expect(state.get(todoKey)).toEqual({
+      items: [{ title: 'bridged', status: 'pending' }],
+    });
     expect(state.get(interactionKey).get('i1')).toMatchObject({
       id: 'i1',
       kind: 'question',

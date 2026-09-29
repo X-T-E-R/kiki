@@ -6,6 +6,8 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { Emitter } from '#/_base/event';
 import { AgentRuntimeService, IAgentRuntimeService, snapshotAgentRuntimeBinding } from '#/agent/runtimeBinding/agentRuntime';
+import { IFlagService } from '#/app/flag/flag';
+import { stubFlag } from '../../app/flag/stubs';
 import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { AgentRuntimeBindingService, agentRuntimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -80,6 +82,7 @@ function setup() {
       });
       reg.defineInstance(ISessionContext, session);
       reg.defineInstance(IRuntimeResolver, resolver);
+      reg.defineInstance(IFlagService, stubFlag(false));
       reg.defineInstance(IEventDispatcher, dispatcher);
       reg.defineInstance(IWorkspaceInstanceManager, workspaces);
       reg.define(IAgentRuntimeBindingService, AgentRuntimeBindingService);

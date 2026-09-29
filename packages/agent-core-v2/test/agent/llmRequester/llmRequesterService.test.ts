@@ -66,6 +66,9 @@ import {
   type ToolCall,
 } from '#/kosong/contract/message';
 import type { ThinkingEffort } from '#/kosong/contract/provider';
+import type { ToolInfo } from '#/tool/toolContract';
+import { toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { SshHostStore } from '#/app/ssh/sshHosts';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService, type ModelRecord } from '#/kosong/model/model';
@@ -228,6 +231,7 @@ function createService(
     readonly promptConfig?: { value: PromptConfig };
     readonly promptRefresh?: () => Promise<void>;
     readonly systemPrompt?: () => string;
+    readonly tools?: readonly ToolInfo[];
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -307,7 +311,7 @@ function createService(
   const context = {
     get: () => options.contextMessages ?? history,
   };
-  const tools = { list: () => [] };
+  const tools = { list: () => options.tools ?? [] };
   const hostRequestHeaders = options.hostRequestHeaders ?? {
     'X-Msh-Device-Name': 'example-host',
     'X-Msh-Device-Model': 'Example Model',
@@ -337,6 +341,7 @@ function createService(
     enabled: () => false,
     shapeTools: (entries) => entries,
     shapeHistory: (messages) => messages,
+    resolveBridgeCall: (call) => call,
   };
   const testSnapshot = Object.freeze({}) as MediaStripSnapshot;
   const events: Event2[] = [];
@@ -599,6 +604,44 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
     expect(JSON.stringify(inputs)).not.toContain('SEARCH_ONLY');
     expect(prepare).not.toHaveBeenCalled();
     expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps constructed tools[] and system prompt byte-identical across real SSH host CRUD', async () => {
+    const documents = new Map<string, string>();
+    const hosts = new SshHostStore({
+      getText: async (_scope: string, key: string) => documents.get(key),
+      compareAndSetText: async (_scope: string, key: string, before: string | undefined, after: string) => {
+        if (documents.get(key) !== before) return false;
+        documents.set(key, after);
+        return true;
+      },
+    } as unknown as ConstructorParameters<typeof SshHostStore>[0]);
+    await hosts.setSyncSshConfig(false);
+    const inputs: ModelRequestInput[] = [];
+    const names = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'ReadMediaFile'];
+    const tools: ToolInfo[] = names.map((name) => ({
+      name, source: 'builtin', description: `${name} on the selected host`,
+      parameters: toolParametersWithHost({ type: 'object', properties: { path: { type: 'string' } } }, true),
+    }));
+    const { service } = createService(createRequester({ value: 0 }, null, [], inputs), undefined, {
+      tools, systemPrompt: () => 'system\n\nSSH tools accept a host argument.',
+    });
+    const request = async (turnId: number) => {
+      await service.request({ source: { type: 'turn', turnId, step: 1 } });
+      const last = inputs.at(-1)!;
+      return [Buffer.from(JSON.stringify(last.tools)), Buffer.from(last.systemPrompt)] as const;
+    };
+    const [baseTools, basePrompt] = await request(1);
+    await hosts.upsert({ id: 'dev', name: 'Development', hostname: 'dev.example.test', user: 'tester' });
+    expect((await hosts.list()).map((host) => host.id)).toEqual(['dev']);
+    const [addedTools, addedPrompt] = await request(2);
+    await hosts.remove('dev');
+    expect(await hosts.list()).toEqual([]);
+    const [changedTools, changedPrompt] = await request(3);
+    expect(addedTools.equals(baseTools)).toBe(true);
+    expect(changedTools.equals(baseTools)).toBe(true);
+    expect(addedPrompt.equals(basePrompt)).toBe(true);
+    expect(changedPrompt.equals(basePrompt)).toBe(true);
   });
 });
 

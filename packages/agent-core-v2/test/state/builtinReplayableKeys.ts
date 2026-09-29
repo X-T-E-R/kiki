@@ -4,6 +4,8 @@ import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
 import { staleGuardKey } from '#/features/staleGuard/staleGuardOps';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
 import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
+import { contextStrategyOverrideKey } from '#/agent/fullCompaction/contextStrategyOps';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { goalKey } from '#/agent/goal/goalOps';
 import { goalForkNoticeKey } from '#/agent/goal/goalService';
 import { interruptionReminderKey } from '#/agent/interruptionReminder/interruptionReminderOps';
@@ -37,6 +39,8 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   staleGuardKey,
   fullCompactionKey,
   autoCompactOverrideKey,
+  contextStrategyOverrideKey,
+  contextWindowEpochKey,
   goalKey,
   goalForkNoticeKey,
   interruptionReminderKey,

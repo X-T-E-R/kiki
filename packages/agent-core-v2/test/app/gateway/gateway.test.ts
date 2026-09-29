@@ -81,6 +81,7 @@ describe('RestGateway', () => {
       resumeRecoveredQueue: () => {},
       replace: () => { throw new Error('unexpected prompt replacement'); },
       changeTiming: () => { throw new Error('unexpected prompt timing change'); },
+      setEditHold: () => { throw new Error('unexpected prompt edit hold'); },
       move: () => { throw new Error('unexpected prompt move'); },
       abort: () => true,
       drain: () => Promise.resolve(),

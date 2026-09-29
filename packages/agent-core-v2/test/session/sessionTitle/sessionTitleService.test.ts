@@ -32,7 +32,7 @@ import {
   type TitleTurnExcerpt,
 } from '#/session/sessionTitle/agentTitlePromptSource';
 import { ISessionTitleService } from '#/session/sessionTitle/sessionTitle';
-import { SESSION_TITLE_SECTION } from '#/session/sessionTitle/configSection';
+import { FAST_MODEL_SECTION, SESSION_TITLE_SECTION } from '#/session/sessionTitle/configSection';
 import { SessionTitleService } from '#/session/sessionTitle/sessionTitleService';
 import {
   ISessionMetadata,
@@ -159,6 +159,7 @@ describe('SessionTitleService', () => {
   let tokenCalls: boolean[];
   let flagEnabled: boolean;
   let titleModelAlias: string | undefined;
+  let fastModelAlias: string | undefined;
   let modelRequesters: Map<string, ModelRequester>;
   let requesterLookups: string[];
   let titleRequests: Array<{ readonly systemPrompt: string; readonly text: string }>;
@@ -174,6 +175,7 @@ describe('SessionTitleService', () => {
     tokenCalls = [];
     flagEnabled = true;
     titleModelAlias = undefined;
+    fastModelAlias = undefined;
     modelRequesters = new Map();
     requesterLookups = [];
     titleRequests = [];
@@ -242,10 +244,9 @@ describe('SessionTitleService', () => {
         });
         reg.definePartialInstance(IFlagService, { enabled: () => flagEnabled });
         reg.definePartialInstance(IConfigService, {
-          get: ((key: string) =>
-            key === SESSION_TITLE_SECTION && titleModelAlias !== undefined
-              ? { model: titleModelAlias }
-              : undefined) as unknown as IConfigService['get'],
+          get: ((key: string) => key === SESSION_TITLE_SECTION
+            ? titleModelAlias === undefined ? undefined : { model: titleModelAlias }
+            : key === FAST_MODEL_SECTION ? fastModelAlias : undefined) as unknown as IConfigService['get'],
         });
         reg.definePartialInstance(IModelCatalog, {
           getRequester: (alias: string) => {
@@ -327,6 +328,21 @@ describe('SessionTitleService', () => {
     expect(requesterLookups).toEqual(['title-model']);
     expect(titleRequests).toHaveLength(1);
     expect(titleRequests[0]!.text).toBe('user: 先帮我搭一个 Vite 项目\nuser: 加上路由');
+  });
+
+  it('uses fast_model for titles only when session_title.model is absent', async () => {
+    fastModelAlias = 'fast-title';
+    titlePrompts = ['hello'];
+    modelRequesters.set('fast-title', stubTitleRequester('Fast title'));
+    modelRequesters.set('title-model', stubTitleRequester('Pinned title'));
+
+    await expect(ix.get(ISessionTitleService).generateTitle()).resolves.toBe('Fast title');
+    expect(requesterLookups).toEqual(['fast-title']);
+
+    titleModelAlias = 'title-model';
+    await expect(ix.get(ISessionTitleService).generateTitle({ force: true })).resolves.toBe('Pinned title');
+    expect(requesterLookups).toEqual(['fast-title', 'title-model']);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('clamps a chatty model answer to the shared title budget', async () => {

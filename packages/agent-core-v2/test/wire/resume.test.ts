@@ -466,7 +466,7 @@ describe('Agent resume', () => {
     expect(toolCall?.function).toBeUndefined();
   });
 
-  it('keeps delivered task notifications indexed after compaction replay', async () => {
+  it('restores an unabsorbed completed task receipt in a relay window without redelivery', async () => {
     const origin = {
       kind: 'task',
       taskId: 'agent-seen0000',
@@ -490,17 +490,20 @@ describe('Agent resume', () => {
       },
       {
         type: 'context.apply_compaction',
-        summary: 'Compacted delivered notification.',
+        summary: '## Pending receipts\n- task agent-seen0000 (completed, task:agent-seen0000:completed): already delivered task notification',
         compactedCount: 1,
         tokensBefore: 10,
         tokensAfter: 3,
+        strategy: 'relay',
+        shapeVersion: 1,
       },
     ] as unknown as WireRecord[]);
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-delivered-'));
     let ctx: ReturnType<typeof testAgent> | undefined;
     try {
       const backgroundPersistence = createAgentTaskPersistence(homeDir);
-      ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
+      ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence,
+        initialConfig: { worktree: { cleanup: { auto: false } } } });
       await backgroundPersistence.writeTask({
         taskId: 'agent-seen0000',
         kind: 'agent',
@@ -520,11 +523,16 @@ describe('Agent resume', () => {
         ctx.context.get().some((message) => message.origin?.kind === 'task'),
       ).toBe(false);
 
+      const summary = ctx.context.get().filter((message) => message.origin?.kind === 'compaction_summary');
+      expect(summary).toHaveLength(1);
+      expect(summary[0]?.content).toEqual([{ type: 'text', text: expect.stringContaining('task agent-seen0000 (completed') }]);
       const background = ctx.get(IAgentTaskService) as TaskServiceTestManager;
       await background.loadFromDisk();
       await background.reconcile();
+      await background.reconcile();
 
       expect(steer).not.toHaveBeenCalled();
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'compaction_summary')).toHaveLength(1);
     } finally {
       await ctx?.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });

@@ -348,6 +348,55 @@ describe('server-v2 /api/sessions', () => {
     return createStoppedGoalRig('blocked');
   }
 
+  it('creates an opt-in worktree session and removes its archived checkout through REST', async () => {
+    const cwd = join(home as string, 'repository');
+    await mkdir(cwd);
+    const { execFileSync } = await import('node:child_process');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    await writeFile(join(cwd, 'file.txt'), 'original\n');
+    git('add', 'file.txt');
+    git('commit', '-m', 'initial');
+
+    const normal = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
+    expect(normal.body.code).toBe(0);
+    expect(normal.body.data).not.toHaveProperty('worktree');
+
+    type IsolatedWire = SessionWire & {
+      worktree: { worktree_id: string; branch: string; source_root: string; base_ref: string };
+    };
+    const isolated = await postJson<IsolatedWire>('/api/sessions', {
+      metadata: { cwd }, isolation: { kind: 'worktree' },
+    });
+    expect(isolated.body.code).toBe(0);
+    const session = isolated.body.data;
+    expect(session.workspace_id).toBe(normal.body.data.workspace_id);
+    expect(session.worktree.source_root).toBe(cwd);
+    expect(session.worktree.branch).toMatch(/^kiki\//);
+    expect(session.metadata.cwd).not.toBe(cwd);
+    expect((await getJson<IsolatedWire>(`/api/sessions/${session.id}`)).body.data.worktree).toEqual(session.worktree);
+    const sessions = await getJson<{ items: IsolatedWire[] }>(`/api/sessions?workspace_id=${session.workspace_id}`);
+    expect(sessions.body.data.items.find((item) => item.id === session.id)?.worktree).toEqual(session.worktree);
+    const listed = await getJson<{ worktrees: { id: string; path: string }[] }>('/api/worktrees');
+    expect(listed.body.data.worktrees).toEqual(expect.arrayContaining([expect.objectContaining({ id: session.worktree.worktree_id, path: session.metadata.cwd })]));
+    const record = await getJson<{ id: string; branch: string }>(`/api/worktrees/${session.worktree.worktree_id}`);
+    expect(record.body.data).toMatchObject({ id: session.worktree.worktree_id, branch: session.worktree.branch });
+    const inspection = await postJson<{ failed: boolean }>(`/api/worktrees/${session.worktree.worktree_id}:inspect`, {});
+    expect(inspection.body.data.failed).toBe(false);
+    expect((await postJson<{ outcome: string }>(`/api/worktrees/${session.worktree.worktree_id}:remove`, {})).body.data.outcome)
+      .toBe('retained_in_use');
+    expect((await postJson<{ candidates: unknown[] }>('/api/worktrees:gc', { dryRun: true })).body.data.candidates).toEqual([]);
+
+    expect((await postJson<{ archived: boolean }>(`/api/sessions/${session.id}:archive`)).body.data.archived).toBe(true);
+    const removal = await postJson<{ outcome: string }>(`/api/worktrees/${session.worktree.worktree_id}:remove`, {});
+    expect(removal.body.data.outcome).toBe('removed');
+    await expect(stat(session.metadata.cwd)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await getJson<{ worktrees: { state: string }[] }>('/api/worktrees?state=ready')).toMatchObject({ body: { data: { worktrees: [] } } });
+  }, 30000);
+
   it('creates a session from metadata.cwd', async () => {
     const cwd = home as string;
     const { status, body } = await postJson<SessionWire>('/api/sessions', {

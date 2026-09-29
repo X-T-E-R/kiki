@@ -159,6 +159,8 @@ describe('AgentToolApprovalService', () => {
       request: requestSpy,
       enqueue: (approval) => ({ ...approval, id: approval.id ?? 'approval-1' }),
       decide: () => {},
+      decideSsh: () => {},
+      takeSshCredential: () => undefined,
       listPending: () => [],
     });
     return requestSpy;
@@ -306,6 +308,8 @@ describe('AgentToolApprovalService', () => {
           return { ...approval, id: approval.id! };
         },
         decide: () => { throw new Error('decision failed'); },
+        decideSsh: () => {},
+        takeSshCredential: () => undefined,
         listPending: () => [],
       });
       const events = subscribeApprovalEvents();

@@ -2118,6 +2118,10 @@ export class AgentTestContext {
       decide: (id, response) => {
         this.resolvePendingRpc('requestApproval', id, response);
       },
+      decideSsh: (id, response) => {
+        this.resolvePendingRpc('requestApproval', id, response);
+      },
+      takeSshCredential: () => undefined,
       listPending: () => [],
     };
   }

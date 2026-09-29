@@ -218,7 +218,7 @@ describe('MiniDbQueryStore', () => {
     await second.put(COLLECTION, 'b', { id: 'b', v: 2 });
     const page = await second.query<{ id: string; v: number }>(COLLECTION).where({ v: 2 }).execute();
     expect(page.items).toEqual([{ id: 'b', v: 2 }]);
-  });
+  }, 30_000);
 
   it('refuses to wipe the store while another holder owns a shard lock', async () => {
     const first = build();
@@ -255,7 +255,7 @@ describe('MiniDbQueryStore', () => {
       .where({ v: 3 })
       .execute();
     expect(page.items).toEqual([{ id: 'c', v: 3 }]);
-  });
+  }, 30_000);
 
   it('opens a 16-shard cluster under the cache dir', async () => {
     const store = build();

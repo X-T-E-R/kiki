@@ -680,7 +680,13 @@ describe('server-v2 /api/debug RPC', () => {
         'utf8',
       );
 
-      const installed = await call<{ id: string }>('POST', rpc('core', IPluginService, 'installPlugin'), { source: pluginRoot });
+      const preview = await call<{ fingerprint: string }>('POST', rpc('core', IPluginService, 'previewPlugin'), { source: pluginRoot });
+      expect(preview.body.code).toBe(0);
+      const installed = await call<{ id: string }>('POST', rpc('core', IPluginService, 'installPlugin'), {
+        source: pluginRoot,
+        fingerprint: preview.body.data.fingerprint,
+        consent: true,
+      });
       expect(installed.body.code).toBe(0);
       expect(installed.body.data.id).toBe('rpc-plugin');
 

@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (40 sections · 1 overlay(s))
+# Index (42 sections · 1 overlay(s))
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -20,6 +20,7 @@
 #   experimental                    src/app/flag/flag.ts
 #   extraAgentDirs                  src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   extraSkillDirs                  src/app/skillCatalog/configSection.ts
+#   fastModel                       src/session/sessionTitle/configSection.ts
 #   hooks                           src/features/externalHooks/configSection.ts
 #   identity                        src/app/agentIdentity/configSection.ts
 #   image                           src/agent/media/configSection.ts
@@ -49,6 +50,7 @@
 #   tokenCounting                   src/agent/tokenCounting/configSection.ts
 #   tools                           src/agent/toolPolicy/configSection.ts
 #   workspaceInstance               src/workspace/workspaceInstance/configSection.ts
+#   worktree                        src/app/git/worktreeConfig.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
@@ -63,11 +65,14 @@
 # one [agent_executors."<name>"] table per entry:
 # [agent_executors."<name>"]
   # protocol: string
+  # label: string
   # command: string
   # sources: object | object | object | object[]
   # source: string
   # version_probe: object
     # args: string[]
+  # diagnostics: object | object | object | object | object | object[]
+  # auth: object | object
   # args: string[] (default: [])
   # env: record<string, string>
   # startup_timeout_ms: integer
@@ -84,6 +89,21 @@
     # manual: string | boolean
     # auto: string | boolean
     # yolo: string | boolean
+  # permission: object
+    # via: "config_option" | "session_mode" | "argv" | "turn_param"
+    # flag: string
+    # config_id: string
+    # config_category: string
+    # manual: string
+    # review: string
+    # auto: string
+    # yolo: string
+    # trust_engine_settings: boolean
+  # prompt_deliveries: "append" | "replace" | "preamble"[]
+  # default_profile: boolean
+  # install_hint: string
+  # login_command: string[]
+  # steer_delivery: "native" | "next_turn_preamble"
   # profile_delivery: "system_prompt_override"
   # revision: string
 
@@ -207,6 +227,14 @@ extra_agent_dirs = []
 extra_skill_dirs = []
 
 # ##########################################################################
+# fastModel (config.toml: fast_model)
+#   owner: src/session/sessionTitle/configSection.ts
+#   scope: core
+# ##########################################################################
+
+# fast_model: string
+
+# ##########################################################################
 # hooks
 #   owner: src/features/externalHooks/configSection.ts
 #   scope: core
@@ -274,6 +302,9 @@ advertise_as_kimi_code = false
 # max_attempts_per_step: integer
 # max_ralph_iterations: integer
 # reserved_context_size: integer
+# context_strategy: "summarize" | "auto" | "fresh"
+# subagent_context_strategy: "summarize" | "auto" | "fresh"
+# relay_shadow: boolean
 # auto_compact: string
 # compaction_trigger_ratio: number
 # compaction_max_attempts: integer
@@ -647,6 +678,7 @@ max_queued_restores = 8
 
 [subagent]
 timeout_ms = 7200000
+# default_model: string
 # deny_models: string[]
 max_direct_children = 16
 max_total_subagents = 0
@@ -733,3 +765,17 @@ strategy = "measured+estimated"
 
 [workspace_instance]
 idle_ttl_ms = 300000
+
+# ##########################################################################
+# worktree
+#   owner: src/app/git/worktreeConfig.ts
+#   scope: core
+# ##########################################################################
+
+[worktree]
+enabled = true
+root = ""
+branch_prefix = "kiki/"
+default_base = "head"
+git_timeout_ms = 300000
+cleanup = { auto = true, after_days = 7, disposable_ignored = ["node_modules/", ".turbo/", "dist/", ".venv/",…

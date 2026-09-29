@@ -143,7 +143,7 @@ describe('profile file runtime isolation', () => {
     expect(loaded.snapshot.publicProfiles.get('solo')?.toolAllowPolicies).toContainEqual(['Read']);
   });
 
-  it('keeps the external executor guard for a main profile file', async () => {
+  it('preserves an explicitly dispatched main profile file with its external executor', async () => {
     const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
     const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
     const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
@@ -151,9 +151,11 @@ describe('profile file runtime isolation', () => {
       realpath: async (path: string) => path,
       readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nexecutor: codex-app-server\n---\nMAIN ROLE',
     } as unknown as IHostFileSystem });
-    await expect(loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
+    const loaded = await loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
-    })).rejects.toThrow(/External executor "codex-app-server" is unsupported for main agent profile/);
+    });
+    expect(loaded.profileName).toBe('solo');
+    expect(loaded.snapshot.publicProfiles.get('solo')).toMatchObject({ main: true, executor: 'codex-app-server' });
   });
 
   it('rejects a canonical root that escapes the isolated workspace before reading content', async () => {

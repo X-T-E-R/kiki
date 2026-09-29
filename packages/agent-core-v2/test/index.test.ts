@@ -29,6 +29,7 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { TokenCountingMeasured } from '#/agent/tokenCounting/tokenCountingOps';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { TurnStepInterrupted } from '#/agent/loop/turnEvents';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { todoKey, ToolsUpdateStore } from '#/session/todo/todoOps';
@@ -117,9 +118,11 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'turn.step.retrying',
   'executor.turn.metadata',
   'executor.session.updated',
+  'executor.prompt.delivery',
   'executor.plan.update',
   'executor.plan.remove',
   'executor.runtime.update',
+  'context_strategy.override_changed',
   'auto_compact.override_changed',
 ]);
 
@@ -268,11 +271,19 @@ describe('v1 wire vocabulary', () => {
     expect(replayed).toEqual(records);
   });
 
-  it('round-trips the todo list through the persisted tools.update_store record', async () => {
+  it('restores legacy array todo records into the notes-aware state', async () => {
     await dispatcher.dispatch(
       new ToolsUpdateStore({ key: 'todo', value: [{ title: 'restore me', status: 'in_progress' }] }),
     );
+    await dispatcher.dispatch(
+      new ToolsUpdateStore({ key: 'todo_notes', value: { notes: { goal: 'keep working' } } }),
+    );
     const records = await readRecords();
+    expect(records[0]).toMatchObject({
+      type: 'tools.update_store',
+      key: 'todo',
+      value: [{ title: 'restore me', status: 'in_progress' }],
+    });
 
     const store = new DisposableStore();
     disposables.add(store);
@@ -287,14 +298,44 @@ describe('v1 wire vocabulary', () => {
 
     await restoreTestEventDispatcher(fresh, log2, SCOPE, records);
 
-    expect(freshState.get(todoKey)).toEqual([
-      { title: 'restore me', status: 'in_progress' },
-    ]);
+    expect(freshState.get(todoKey)).toEqual({
+      items: [{ title: 'restore me', status: 'in_progress' }],
+      notes: { goal: 'keep working' },
+      notesMeta: undefined,
+    });
+  });
+
+  it('keeps the compaction window epoch across undo and persisted restore', async () => {
+    const state = disposables.add(new TestInstantiationService());
+    state.stub(IFileSystemStorageService, new InMemoryStorageService());
+    state.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const epochLog = state.get(IAppendLogStore);
+    registerTestAgentWire(state, SCOPE, { log: epochLog });
+    const epochDispatcher = registerTestEventDispatcher(state);
+    state.get(IAgentStateService).contributeState(contextWindowEpochKey);
+    await epochDispatcher.restore();
+    await epochDispatcher.dispatch(new ContextApplyCompaction({ summary: 'relay', compactedCount: 1 }));
+    await epochDispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(state.get(IAgentStateService).get(contextWindowEpochKey)).toBe(1);
+
+    await epochDispatcher.flush();
+    const records: WireRecord[] = [];
+    for await (const record of epochLog.read<WireRecord>(SCOPE, AGENT_WIRE_RECORD_KEY)) records.push(record);
+    const restored = disposables.add(new TestInstantiationService());
+    restored.stub(IFileSystemStorageService, new InMemoryStorageService());
+    restored.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const restoredLog = restored.get(IAppendLogStore);
+    registerTestAgentWire(restored, SCOPE, { log: restoredLog });
+    const fresh = registerTestEventDispatcher(restored);
+    restored.get(IAgentStateService).contributeState(contextWindowEpochKey);
+    await restoreTestEventDispatcher(fresh, restoredLog, SCOPE, records);
+    expect(restored.get(IAgentStateService).get(contextWindowEpochKey)).toBe(1);
   });
 });
 
 describe('conversation-time checkpoint registration', () => {
   const CHECKPOINT_EXEMPT_STATES: ReadonlySet<string> = new Set([
+    'contextWindowEpoch',
     'goalForkNotice',
     'turn',
   ]);

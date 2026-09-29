@@ -120,8 +120,15 @@ describe('model-scoped effort defaults', () => {
   });
 });
 
-describe('a subagent model comes only from a profile pin or the dispatch', () => {
-  it('fails closed with MODEL_NOT_CONFIGURED when neither source supplies a model', () => {
+describe('subagent model selection', () => {
+  it('uses [subagent].default_model only for an unpinned spawn', () => {
+    const configured = new StubConfigService({ [SUBAGENT_SECTION]: { defaultModel: 'fast-model' } });
+    expect(resolveSubagentBinding(configured, {}, {}, catalog).model).toBe('fast-model');
+    expect(resolveSubagentBinding(configured, {}, { modelAlias: 'provider/k3' }, catalog).model).toBe('provider/k3');
+    expect(resolveSubagentBinding(configured, { modelAlias: 'provider/heavy' }, { modelAlias: 'provider/k3' }, catalog).model).toBe('provider/heavy');
+  });
+
+  it('fails closed with MODEL_NOT_CONFIGURED when no source supplies a model', () => {
     let thrown: unknown;
     try {
       resolveSubagentBinding(config(), {}, {}, catalog, undefined, { profileName: 'reviewer' });

@@ -810,8 +810,6 @@ describe('AgentToolActivationService', () => {
       }
 
       await agent.accessor.get(IAgentToolActivationService).activate();
-      // The profile allowlist withholds every profile-gated builtin, but the progressive-disclosure
-      // control tool stays disclosed so a model can load deferred tools later.
       expect(agent.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toEqual([
         SELECT_TOOLS_TOOL_NAME,
       ]);

@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 106 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 108 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -55,6 +55,7 @@
 //     sessionSkillCatalog.contributions  src/session/sessionSkillCatalog/skillCatalogService.ts
 //     sessionSkillCatalog.merged         src/session/sessionSkillCatalog/skillCatalogService.ts
 //     sessionToolPolicy.state            src/session/sessionToolPolicy/sessionToolPolicyService.ts
+//     ssh.sessionHosts                   src/agent/ssh/sshConnectionGateService.ts
 //     workspaceContext.additionalDirs    src/session/workspaceContext/workspaceContextService.ts
 //     workspaceContext.workDir           src/session/workspaceContext/workspaceContextService.ts
 //   Agent
@@ -70,6 +71,8 @@
 //     autoCompactOverride                             src/agent/fullCompaction/autoCompactOps.ts
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
+//     contextStrategyOverride                         src/agent/fullCompaction/contextStrategyOps.ts
+//     contextWindowEpoch                              src/agent/fullCompaction/windowEpoch.ts
 //     cron                                            src/session/cron/cronOps.ts
 //     dateChange.seed                                 src/features/dateChange/dateChangeService.ts
 //     externalExecutor                                src/agent/execution/externalExecutorOps.ts
@@ -454,6 +457,8 @@ export type WorkspaceStateKey = keyof WorkspaceStateSnapshot;
 
 /** Session-scope keys registered into ISessionStateService. */
 export interface SessionStateSnapshot {
+  // src/agent/ssh/sshConnectionGateService.ts
+  'ssh.sessionHosts': Readonly<Record<string, string>>;
   // src/session/cron/sessionCronServiceImpl.ts
   'cron.inFlight': Set<string>;
   'cron.lastSeenAt': Map<string, number>;
@@ -523,6 +528,12 @@ export interface SessionStateSnapshot {
     readonly archived: boolean;
     readonly archivedAt?: number;
     readonly cwd?: string;
+    readonly worktree?: /* SessionWorktree — packages/agent-core-v2/src/app/git/worktreeModel.ts */ {
+      readonly worktreeId: string;
+      readonly branch: string;
+      readonly sourceRoot: string;
+      readonly baseRef: string;
+    };
     readonly forkedFrom?: string;
     readonly agents?: Readonly<Record<string, /* AgentMeta — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
       readonly homedir?: string;
@@ -1330,7 +1341,7 @@ export interface AgentStateSnapshot {
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
   // src/agent/execution/externalExecutorOps.ts
-  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate
+  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
     readonly executorId?: string;
     readonly descriptorRevision?: string;
@@ -1342,7 +1353,7 @@ export interface AgentStateSnapshot {
     };
     readonly sessionEpoch?: number;
     readonly profileDeliveredSessionId?: string;
-    readonly profileDelivery?: 'native' | 'first_prompt_preamble' | 'system_prompt_override';
+    readonly profileDelivery?: 'native' | 'first_prompt_preamble' | 'system_prompt_override' | 'developer_instructions' | 'base_instructions';
     readonly lastCumulativeUsage?: {
       inputTokens: number;
       outputTokens: number;
@@ -1360,12 +1371,18 @@ export interface AgentStateSnapshot {
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
     readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'completed' | 'cancelled' | 'running' | 'idle';
   };
+  // src/agent/fullCompaction/contextStrategyOps.ts
+  // replayable · durable — folds: ContextStrategyOverrideChanged
+  'contextStrategyOverride': 'summarize' | 'auto' | 'fresh' | null;
   // src/agent/fullCompaction/fullCompactionService.ts
   'fullCompaction.activeTurnId': number | undefined;
   'fullCompaction.compactionCountInTurn': number;
   'fullCompaction.consecutiveOverflowCompactions': number;
   'fullCompaction.lastCompactedTokenCount': number | null;
   'fullCompaction.observedMaxContextTokensByModel': Map<string, number>;
+  // src/agent/fullCompaction/windowEpoch.ts
+  // replayable · durable — folds: ContextApplyCompaction
+  'contextWindowEpoch': number;
   // src/agent/goal/goalOps.ts
   // replayable · durable — folds: GoalCreate, GoalUpdate, GoalClear, GoalForked
   'goal': /* GoalModelState — packages/agent-core-v2/src/agent/goal/goalOps.ts */ /* GoalState — packages/agent-core-v2/src/agent/goal/goalOps.ts */ {
@@ -1685,6 +1702,18 @@ export interface AgentStateSnapshot {
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+    readonly executorPrompt?: {
+      include: readonly string[];
+      delivery?: 'replace' | 'append' | 'preamble';
+      body?: string;
+      append?: string;
+      per_engine?: Record<string, {
+        delivery?: 'replace' | 'append' | 'preamble';
+        include?: readonly string[];
+        body?: string;
+        append?: string;
+      }>;
+    };
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
@@ -1743,17 +1772,18 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[] | null;
       readonly disallowedTools?: readonly string[];
       readonly subagents?: readonly string[] | null;
-      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
@@ -1778,17 +1808,18 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[] | null;
       readonly disallowedTools?: readonly string[];
       readonly subagents?: readonly string[] | null;
-      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
@@ -1840,17 +1871,18 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[] | null;
       readonly disallowedTools?: readonly string[];
       readonly subagents?: readonly string[] | null;
-      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
@@ -1875,17 +1907,18 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[] | null;
       readonly disallowedTools?: readonly string[];
       readonly subagents?: readonly string[] | null;
-      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
@@ -1906,6 +1939,7 @@ export interface AgentStateSnapshot {
           spawn: (command: string, args?: readonly string[], options?: /* HostProcessOptions — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly cwd?: string;
             readonly env?: Record<string, string>;
+            readonly envUnset?: readonly string[];
             readonly shell?: boolean | string;
             readonly detached?: boolean;
             readonly windowsHide?: boolean;
@@ -1933,8 +1967,10 @@ export interface AgentStateSnapshot {
           }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
         };
       }) => Promise<string>;
+      readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly autoCompact?: number;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly name: string;
@@ -1972,17 +2008,18 @@ export interface AgentStateSnapshot {
           readonly tools?: readonly string[] | null;
           readonly disallowedTools?: readonly string[];
           readonly subagents?: readonly string[] | null;
-          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
+            readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
@@ -2007,17 +2044,18 @@ export interface AgentStateSnapshot {
           readonly tools?: readonly string[] | null;
           readonly disallowedTools?: readonly string[];
           readonly subagents?: readonly string[] | null;
-          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
+            readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
@@ -2038,6 +2076,18 @@ export interface AgentStateSnapshot {
         };
         readonly executor?: string;
         readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+        readonly executorPrompt?: {
+          include: readonly string[];
+          delivery?: 'replace' | 'append' | 'preamble';
+          body?: string;
+          append?: string;
+          per_engine?: Record<string, {
+            delivery?: 'replace' | 'append' | 'preamble';
+            include?: readonly string[];
+            body?: string;
+            append?: string;
+          }>;
+        };
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
         readonly allowedModels?: readonly string[];
@@ -2045,10 +2095,11 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
+          readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
-          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
@@ -2066,7 +2117,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
-        readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
+        readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
         readonly prompt: string;
         readonly path: string;
         readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
@@ -2077,7 +2128,7 @@ export interface AgentStateSnapshot {
         readonly profile: string;
         readonly description: string;
         readonly whenToUse?: string;
-        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'inherit' | 'prepend' | 'append' | 'wrap';
+        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'append' | 'inherit' | 'prepend' | 'wrap';
         readonly prompt: string;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
@@ -2094,6 +2145,7 @@ export interface AgentStateSnapshot {
       readonly routeId?: string;
       readonly description?: string;
       readonly sourcePath?: string;
+      readonly shadowedFiles?: readonly string[];
       readonly whenToUse?: string;
       readonly override?: boolean;
       readonly private?: boolean;
@@ -2126,17 +2178,18 @@ export interface AgentStateSnapshot {
         readonly tools?: readonly string[] | null;
         readonly disallowedTools?: readonly string[];
         readonly subagents?: readonly string[] | null;
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
+          readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
-          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
@@ -2161,17 +2214,18 @@ export interface AgentStateSnapshot {
         readonly tools?: readonly string[] | null;
         readonly disallowedTools?: readonly string[];
         readonly subagents?: readonly string[] | null;
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
+          readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
-          readonly promptMode?: 'prepend' | 'append' | 'wrap';
+          readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
@@ -2192,6 +2246,18 @@ export interface AgentStateSnapshot {
       };
       readonly executor?: string;
       readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+      readonly executorPrompt?: {
+        include: readonly string[];
+        delivery?: 'replace' | 'append' | 'preamble';
+        body?: string;
+        append?: string;
+        per_engine?: Record<string, {
+          delivery?: 'replace' | 'append' | 'preamble';
+          include?: readonly string[];
+          body?: string;
+          append?: string;
+        }>;
+      };
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -2199,10 +2265,11 @@ export interface AgentStateSnapshot {
       readonly allowedEfforts?: readonly string[];
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
-        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
@@ -2224,7 +2291,7 @@ export interface AgentStateSnapshot {
         readonly files?: readonly string[];
         readonly fields?: Readonly<Record<string, string>>;
       }[];
-      readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
+      readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
         readonly cwd?: string;
         readonly cwdListing?: string;
@@ -2292,6 +2359,7 @@ export interface AgentStateSnapshot {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly autoCompact?: number;
+          readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -2329,17 +2397,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2364,17 +2433,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2395,6 +2465,18 @@ export interface AgentStateSnapshot {
           };
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorPrompt?: {
+            include: readonly string[];
+            delivery?: 'replace' | 'append' | 'preamble';
+            body?: string;
+            append?: string;
+            per_engine?: Record<string, {
+              delivery?: 'replace' | 'append' | 'preamble';
+              include?: readonly string[];
+              body?: string;
+              append?: string;
+            }>;
+          };
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];
@@ -2402,10 +2484,11 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
+            readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
@@ -2423,7 +2506,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
+          readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
@@ -2452,6 +2535,18 @@ export interface AgentStateSnapshot {
           readonly executorId?: string;
           readonly executorProtocol?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorPrompt?: {
+            include: readonly string[];
+            delivery?: 'replace' | 'append' | 'preamble';
+            body?: string;
+            append?: string;
+            per_engine?: Record<string, {
+              delivery?: 'replace' | 'append' | 'preamble';
+              include?: readonly string[];
+              body?: string;
+              append?: string;
+            }>;
+          };
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
@@ -2481,17 +2576,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2516,17 +2612,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2578,17 +2675,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2613,17 +2711,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2688,17 +2787,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2715,6 +2815,7 @@ export interface AgentStateSnapshot {
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly autoCompact?: number;
+            readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly name: string;
@@ -2752,17 +2853,18 @@ export interface AgentStateSnapshot {
               readonly tools?: readonly string[] | null;
               readonly disallowedTools?: readonly string[];
               readonly subagents?: readonly string[] | null;
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
               readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
+                readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
                 readonly when?: string;
                 readonly thinkingEffort?: string;
                 readonly allowedEfforts?: readonly string[];
-                readonly promptMode?: 'prepend' | 'append' | 'wrap';
+                readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
                 readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
@@ -2787,17 +2889,18 @@ export interface AgentStateSnapshot {
               readonly tools?: readonly string[] | null;
               readonly disallowedTools?: readonly string[];
               readonly subagents?: readonly string[] | null;
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
               readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
+                readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
                 readonly when?: string;
                 readonly thinkingEffort?: string;
                 readonly allowedEfforts?: readonly string[];
-                readonly promptMode?: 'prepend' | 'append' | 'wrap';
+                readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
                 readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
@@ -2818,6 +2921,18 @@ export interface AgentStateSnapshot {
             };
             readonly executor?: string;
             readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+            readonly executorPrompt?: {
+              include: readonly string[];
+              delivery?: 'replace' | 'append' | 'preamble';
+              body?: string;
+              append?: string;
+              per_engine?: Record<string, {
+                delivery?: 'replace' | 'append' | 'preamble';
+                include?: readonly string[];
+                body?: string;
+                append?: string;
+              }>;
+            };
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
             readonly allowedModels?: readonly string[];
@@ -2825,10 +2940,11 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2846,7 +2962,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
-            readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
+            readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
             readonly prompt: string;
             readonly path: string;
             readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
@@ -2864,6 +2980,7 @@ export interface AgentStateSnapshot {
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly autoCompact?: number;
+          readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -2901,17 +3018,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2936,17 +3054,18 @@ export interface AgentStateSnapshot {
             readonly tools?: readonly string[] | null;
             readonly disallowedTools?: readonly string[];
             readonly subagents?: readonly string[] | null;
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
+              readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
-              readonly promptMode?: 'prepend' | 'append' | 'wrap';
+              readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
@@ -2967,6 +3086,18 @@ export interface AgentStateSnapshot {
           };
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+          readonly executorPrompt?: {
+            include: readonly string[];
+            delivery?: 'replace' | 'append' | 'preamble';
+            body?: string;
+            append?: string;
+            per_engine?: Record<string, {
+              delivery?: 'replace' | 'append' | 'preamble';
+              include?: readonly string[];
+              body?: string;
+              append?: string;
+            }>;
+          };
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];
@@ -2974,10 +3105,11 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
+            readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
-            readonly promptMode?: 'prepend' | 'append' | 'wrap';
+            readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
@@ -2995,7 +3127,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
-          readonly systemPromptMode?: 'replace' | 'inherit' | 'prepend' | 'append';
+          readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
           readonly prompt: string;
           readonly path: string;
           readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
@@ -3385,10 +3517,22 @@ export interface AgentStateSnapshot {
   }>;
   // src/session/todo/todoOps.ts
   // replayable · durable · undoable — folds: ToolsUpdateStore
-  'todo': readonly /* TodoItem — packages/agent-core-v2/src/session/todo/todoItem.ts */ {
-    readonly title: string;
-    readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'in_progress' | 'done';
-  }[];
+  'todo': /* TodoState — packages/agent-core-v2/src/session/todo/todoOps.ts */ {
+    readonly items: readonly /* TodoItem — packages/agent-core-v2/src/session/todo/todoItem.ts */ {
+      readonly title: string;
+      readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'in_progress' | 'done';
+    }[];
+    readonly notes?: Partial<Record<'goal' | 'decided' | 'rejected' | 'evidence' | 'files' | 'next' | 'open', string>>;
+    readonly notesMeta?: /* NotesMeta — packages/agent-core-v2/src/session/todo/todoNotes.ts */ {
+      readonly rev: number;
+      readonly hash: string;
+      readonly writtenTurn: number;
+      readonly writtenStep: string;
+      readonly coveredMessageId: string;
+      readonly windowEpoch: number;
+    };
+    readonly remindedEpoch?: number;
+  };
 }
 
 export type AgentStateKey = keyof AgentStateSnapshot;

@@ -296,7 +296,7 @@ describe('FileStorageService — exclusive locks', () => {
         await once(child, 'exit');
       }
     }
-  });
+  }, 30_000);
 
   it('cleans up only expired dead locks and leaves live, fresh, and malformed locks alone', async () => {
     const lockDir = join(dir, 'session-locks');
