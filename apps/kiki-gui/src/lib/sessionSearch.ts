@@ -78,6 +78,7 @@ export interface SessionSearchState {
   readonly isFetching: boolean;
   readonly fetchNextPage: () => void;
   readonly retry: () => void;
+  readonly retryUnavailable: () => Promise<void>;
 }
 
 export function useSessionSearch(input: {
@@ -198,5 +199,9 @@ export function useSessionSearch(input: {
     isFetching: query.isFetching,
     fetchNextPage: () => { void query.fetchNextPage(); },
     retry: () => { void (query.data === undefined ? query.refetch() : query.fetchNextPage()); },
+    retryUnavailable: async () => {
+      await client.retrySearchIndexer();
+      await query.refetch();
+    },
   };
 }

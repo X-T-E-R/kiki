@@ -1595,11 +1595,13 @@ function SearchResults({
           </button>
         ))}
         {search.unavailable !== undefined ? (
-          <p data-search-unavailable role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">
-            {search.unavailable.reason === 'runtime_disabled'
-              ? t('sidebar.results.unavailable.runtime_disabled')
-              : t('sidebar.results.unavailable.generic')}
-          </p>
+          <div data-search-unavailable role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">
+            {t(`sidebar.results.unavailable.${search.unavailable.reason ?? 'generic'}`)}
+            {search.unavailable.reason !== 'disabled' && search.unavailable.reason !== 'runtime_disabled' ? (
+              <button type="button" data-search-unavailable-retry onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
+                className="ml-2 font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
+            ) : null}
+          </div>
         ) : search.building !== undefined ? (
           <p data-search-building className="px-2 pt-1.5 text-[12px] text-ink-faint">
             {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}

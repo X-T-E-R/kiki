@@ -30,13 +30,14 @@ import {
 } from './Sidebar';
 
 const searchMessages = vi.fn();
+const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 const setWorkspacePinned = vi.fn(async () => {});
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useConnection: () => ({
-    client: { searchMessages, setWorkspacePinned },
+    client: { searchMessages, retrySearchIndexer, setWorkspacePinned },
     scopeId: connectionScope.id,
     meta: {
       server_version: '1.0.0',
@@ -131,6 +132,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   searchMessages.mockReset();
+  retrySearchIndexer.mockClear();
   setWorkspacePinned.mockClear();
   connectionScope.id = 'local';
 });
@@ -642,6 +644,21 @@ describe('Sidebar semantic structure', () => {
       retryBtn?.click();
     });
     await waitForText(container, 'beta result');
+  });
+
+  it('shows a specific indexer reason and clears backoff before refetching', async () => {
+    searchMessages.mockResolvedValueOnce(page([], false, undefined, { index_state: {
+      state: 'unavailable', reason: 'indexer_backoff', indexed_sessions: 0, total_sessions: 2, documents: 0,
+    } }));
+    const { container } = await mount();
+    await typeQuery(container, 'needle');
+    await waitForText(container, 'backing off');
+    searchMessages.mockResolvedValueOnce(page([hit({ session_id: 's2', snippet: 'needle found' })], false));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-search-unavailable-retry]')?.click();
+    });
+    expect(retrySearchIndexer).toHaveBeenCalledTimes(1);
+    await waitForText(container, 'needle found');
   });
 });
 
