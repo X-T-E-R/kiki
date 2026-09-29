@@ -84,6 +84,7 @@ import { useComposerContextMenu } from './ComposerContextMenu';
 import { Icon } from './icons';
 import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
+import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import {
   AddMenu,
@@ -589,15 +590,20 @@ export function Composer({
   const models = modelsQuery.data?.items ?? [];
 
   // Model picker options: the inherit entry first, then the catalog grouped
-  // by provider; the model id rides `keywords` so searching works against
-  // display names AND raw ids. The inherit row resolves its target against
-  // the catalog so an ambiguous bare alias still shows who will serve it.
+  // by provider display label (buildCatalogModelOptions). The inherit row
+  // resolves its target against the catalog so an ambiguous bare alias still
+  // shows who will serve it; its provider rides the second line.
+  const providerGroupLabel = useProviderGroupLabel();
   const modelOptions: readonly SearchableSelectOption[] = useMemo(
     () => {
       const inheritTargetId = defaultModel ?? serverDefaultModel;
       const inheritResolved =
         inheritTargetId !== undefined ? resolveCatalogModel(models, inheritTargetId) : undefined;
       const inheritDisplay = inheritResolved?.display_name ?? inheritTargetId ?? t('composer.unknown');
+      const inheritHint = [
+        inheritResolved !== undefined ? providerGroupLabel(inheritResolved.provider_id) : undefined,
+        inheritTargetId !== undefined && inheritTargetId !== inheritDisplay ? inheritTargetId : undefined,
+      ].filter((part) => part !== undefined).join(' · ');
       return [
         {
           value: '',
@@ -610,40 +616,14 @@ export function Composer({
                     : 'composer.inheritServer',
                   { model: inheritDisplay },
                 ),
-          hint:
-            inheritResolved?.display_name !== undefined &&
-            inheritResolved.display_name !== inheritTargetId
-              ? inheritTargetId
-              : undefined,
-          badges:
-            inheritResolved !== undefined ? [{ label: inheritResolved.provider_id }] : undefined,
+          hint: inheritHint !== '' ? inheritHint : undefined,
+          badges: inheritResolved !== undefined ? modelFactBadges(inheritResolved, t) : undefined,
+          title: inheritResolved !== undefined ? modelTooltip(inheritResolved) : inheritTargetId,
         },
-        ...models.map((item) => ({
-          value: item.id,
-          label: `${item.display_name ?? item.id}${item.id === defaultModel ? t('composer.modelCurrentSuffix') : ''}`,
-          // The hint names the local alias: two aliases of one remote model
-          // (the supported shape) must stay distinguishable in the picker.
-          hint:
-            item.display_name !== undefined && item.display_name !== item.id
-              ? item.id
-              : item.remote_id,
-          group: item.provider_id,
-          badges: [
-            ...(item.capabilities ?? []).map((capability) => ({ label: capability })),
-            ...(item.support_efforts ?? []).map((level) => ({
-              label:
-                level === item.default_effort
-                  ? t('composer.modelEffortDefaultBadge', { effort: level })
-                  : level,
-              accent: level === item.default_effort,
-            })),
-          ],
-          keywords: `${item.id} ${item.remote_id}`,
-          title: item.id,
-        })),
+        ...buildCatalogModelOptions(models, t, { groupLabel: providerGroupLabel, currentId: defaultModel }),
       ];
     },
-    [models, defaultModel, serverDefaultModel, modelSource, t],
+    [models, defaultModel, serverDefaultModel, modelSource, providerGroupLabel, t],
   );
 
   // The effective catalog validates selections without erasing them on an

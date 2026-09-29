@@ -25,8 +25,10 @@ export const POPOVER_SURFACE_CLASS =
 
 export interface SearchableSelectOptionBadge {
   readonly label: string;
-  /** Accent tint for the one fact worth spotting (e.g. the default effort). */
+  /** Accent tint for the one fact worth spotting (e.g. the current model). */
   readonly accent?: boolean;
+  /** Caution tint for a missing capability that changes what the row can do. */
+  readonly tone?: 'caution';
 }
 
 export interface SearchableSelectOption {
@@ -114,9 +116,9 @@ export function SearchableSelect({
   readonly allowCustomValue?: boolean;
   readonly customValueLabel?: (value: string) => string;
   /**
-   * `compact`: one line per option (label, badges as faint inline text, hint
-   * on the right edge) for long pickers opened from a tight spot such as the
-   * composer status line. Descriptions stay in the row tooltip.
+   * `compact`: a dense two-line row (label, then badges as faint inline facts
+   * followed by the mono hint) for long pickers opened from a tight spot such
+   * as the composer status line. Descriptions stay in the row tooltip.
    */
   readonly density?: 'comfortable' | 'compact';
 }) {
@@ -299,7 +301,7 @@ export function SearchableSelect({
             id={listId}
             role="listbox"
             aria-label={ariaLabel}
-            className="max-h-[min(340px,55vh)] overflow-y-auto p-1.5"
+            className="max-h-[min(340px,55vh)] overflow-x-hidden overflow-y-auto p-1.5"
           >
             {rowCount === 0 ? (
               <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
@@ -383,7 +385,9 @@ export function SearchableSelect({
                                 className={`rounded-[4px] py-px text-[11px] leading-4 ${
                                   badge.accent === true
                                     ? 'font-medium text-accent-ink'
-                                    : 'bg-ink/[0.05] px-1.5 text-ink-faint'
+                                    : badge.tone === 'caution'
+                                      ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
+                                      : 'bg-ink/[0.05] px-1.5 text-ink-faint'
                                 }`}
                               >
                                 {badge.label}
@@ -428,10 +432,11 @@ export function SearchableSelect({
 }
 
 /**
- * One-line option row (`density="compact"`): the label leads, badges follow as
- * faint inline words (an accent badge keeps its accent), and the hint sits on
- * the right edge in mono. Everything truncates before the row wraps, so a long
- * catalog reads as a list instead of a stack of cards.
+ * Two-line option row (`density="compact"`). Line one is the label (it owns
+ * the width and truncates last-resort) with any accent badge and the check;
+ * line two is the mono hint, truncating, then the plain badges as short faint
+ * facts that never shrink. Nothing wraps sideways, so the list cannot scroll
+ * horizontally however long a name, id, or fact set gets.
  */
 function CompactOptionRow({
   id,
@@ -450,7 +455,9 @@ function CompactOptionRow({
   readonly onCommit: () => void;
   readonly onHover: () => void;
 }) {
-  const badges = option.badges ?? [];
+  const accents = (option.badges ?? []).filter((badge) => badge.accent === true);
+  const facts = (option.badges ?? []).filter((badge) => badge.accent !== true);
+  const hasSecondLine = option.hint !== undefined || facts.length > 0;
   const tooltip = [option.title ?? option.label, option.description].filter((part) => part !== undefined && part !== '').join('\n');
   return (
     <button
@@ -464,28 +471,46 @@ function CompactOptionRow({
       title={tooltip}
       onClick={onCommit}
       onMouseMove={onHover}
-      className={`flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-10 ${
-        selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''
-      }`}
+      className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-2.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+        hasSecondLine ? 'min-h-10 py-1 pointer-coarse:min-h-12' : 'h-8 pointer-coarse:h-10'
+      } ${selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''}`}
     >
-      <span className={`min-w-0 shrink truncate text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>
-        {option.label}
-      </span>
-      {badges.length > 0 ? (
-        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-ink-faint">
-          {badges.map((badge) => (
-            <span key={badge.label} className={`shrink-0 ${badge.accent === true ? 'text-accent-ink' : ''}`}>
-              {badge.label}
-            </span>
-          ))}
+      <span className="flex w-full min-w-0 items-center gap-2">
+        <span
+          data-option-label
+          className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] text-ink ${selected ? 'font-medium' : ''}`}
+        >
+          {option.label}
         </span>
-      ) : null}
-      <span className="ml-auto flex min-w-0 shrink-[3] items-center gap-2 pl-2">
-        {option.hint !== undefined ? (
-          <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">{option.hint}</span>
-        ) : null}
+        {accents.map((badge) => (
+          <span key={badge.label} className="shrink-0 text-[11.5px] font-medium text-accent-ink">
+            {badge.label}
+          </span>
+        ))}
         <Icon name="check" size={12} className={`shrink-0 ${selected ? 'text-ink-soft' : 'text-transparent'}`} />
       </span>
+      {hasSecondLine ? (
+        <span data-option-meta className="flex w-full min-w-0 items-center gap-2 text-[11.5px] leading-4 text-ink-faint">
+          {option.hint !== undefined ? (
+            <span className="min-w-0 truncate font-mono text-[11px]">{option.hint}</span>
+          ) : null}
+          {facts.length > 0 ? (
+            <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums">
+              {facts.map((badge, factIndex) => (
+                <span key={badge.label} className="flex items-center gap-1.5">
+                  {factIndex > 0 ? <span aria-hidden>·</span> : null}
+                  <span
+                    data-option-fact={badge.tone ?? 'plain'}
+                    className={badge.tone === 'caution' ? 'text-amber-ink' : undefined}
+                  >
+                    {badge.label}
+                  </span>
+                </span>
+              ))}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </button>
   );
 }

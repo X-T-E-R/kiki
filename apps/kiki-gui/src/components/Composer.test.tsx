@@ -1172,9 +1172,9 @@ describe('Composer model chip', () => {
     const rows = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
     expect(rows).toHaveLength(3);
     // The inherit row shows the resolved display name and the serving provider.
-    expect(rows[0]?.textContent).toContain('Default · ');
-    expect(rows[0]?.textContent).toContain('K3 256K');
-    expect(rows[0]?.textContent).toContain('alpha');
+    expect(rows[0]?.querySelector('[data-option-label]')?.textContent).toBe('Follow default: K3 256K');
+    // The serving provider rides the second line, not the name line.
+    expect(rows[0]?.querySelector('[data-option-meta]')?.textContent).toContain('alpha');
     // Catalog rows group by provider.
     const headers = [...container.querySelectorAll('#composer-model-select-list p')].map(
       (node) => node.textContent,
@@ -1215,6 +1215,53 @@ describe('Composer model chip', () => {
       (row) => row.getAttribute('aria-selected') === 'true',
     );
     expect(selected?.textContent).toContain('alpha/k3-256k');
+  });
+
+  it('shows context, auto-compact and a missing-vision mark, never capability or effort badges', async () => {
+    listModels.mockResolvedValue({
+      items: [
+        {
+          id: 'opus',
+          provider_id: 'axon',
+          remote_id: 'claude-opus-4-1',
+          display_name: 'Claude Opus 4.1',
+          max_context_size: 1_000_000,
+          auto_compact: 800_000,
+          capabilities: ['thinking', 'always_thinking', 'image_in', 'tool_use'],
+          support_efforts: ['low', 'medium', 'high', 'max'],
+          default_effort: 'high',
+        },
+        {
+          id: 'qwen3-coder',
+          provider_id: 'openrouter',
+          remote_id: 'qwen/qwen3-coder',
+          max_context_size: 262_144,
+          capabilities: ['tool_use'],
+        },
+        { id: 'mystery', provider_id: 'openrouter', remote_id: 'mystery', max_context_size: 32_768 },
+      ],
+    });
+    const { container } = await renderComposer({ model: 'opus' });
+    for (let index = 0; index < 5; index += 1) await settle();
+    await click(container.querySelector('#composer-model-select')!);
+    const row = (value: string) =>
+      container.querySelector<HTMLButtonElement>(`[role="option"][data-option-value="${value}"]`)!;
+    const facts = (value: string) =>
+      [...row(value).querySelectorAll('[data-option-fact]')].map((node) => node.textContent);
+
+    expect(facts('opus')).toEqual(['1M', 'auto-compact 800k']);
+    expect(row('opus').querySelector('[data-option-meta]')?.textContent).toContain('claude-opus-4-1');
+    expect(row('opus').title).toBe('Claude Opus 4.1\nopus → claude-opus-4-1');
+    // No display name: the alias is the label and is not repeated in the hint.
+    expect(row('qwen3-coder').querySelector('[data-option-label]')?.textContent).toBe('qwen3-coder');
+    expect(row('qwen3-coder').querySelector('[data-option-meta]')?.textContent).toContain('qwen/qwen3-coder');
+    expect(facts('qwen3-coder')).toEqual(['262k', 'no vision']);
+    // No declared capabilities means unknown, not missing.
+    expect(facts('mystery')).toEqual(['33k']);
+    const panel = container.querySelector('#composer-model-select-list')!.textContent ?? '';
+    for (const hidden of ['thinking', 'image_in', 'tool_use', 'medium', 'max']) {
+      expect(panel).not.toContain(hidden);
+    }
   });
 });
 
@@ -2251,7 +2298,7 @@ describe('Composer restored selection diagnostics', () => {
     await pressKey(input, { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     await click(container.querySelector('#composer-model-select')!);
-    const valid = [...container.querySelectorAll('[role="option"]')].find((node) => node.getAttribute('title') === 'fixture/kiki-pro')!;
+    const valid = [...container.querySelectorAll('[role="option"]')].find((node) => node.getAttribute('data-option-value') === 'fixture/kiki-pro')!;
     await click(valid);
     expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
   });

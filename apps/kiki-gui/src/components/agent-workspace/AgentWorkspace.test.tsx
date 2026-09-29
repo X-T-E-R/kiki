@@ -237,7 +237,7 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(modelSelect.disabled).toBe(false);
   await act(async () => { modelSelect.click(); });
   await act(async () => {
-    dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+    dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
   });
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]')?.click(); });
@@ -631,7 +631,7 @@ it.each(['completed', 'cancelled', 'failed'] as const)(
     const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
     await act(async () => { modelSelect.click(); });
     await act(async () => {
-      dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+      dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
     });
     expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
     // A closed child owns no running task, so the stop control stays unmounted.
@@ -647,7 +647,7 @@ it('toasts a failed model change and leaves the live model selected', async () =
   const before = modelSelect.textContent;
   await act(async () => { modelSelect.click(); });
   await act(async () => {
-    dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+    dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
   });
   await settle();
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
@@ -706,7 +706,7 @@ it('keeps the effort pick disabled for a terminal subagent', async () => {
   // still offered; only the effort ladder is withheld.
   expect(modelSelect.disabled).toBe(false);
   await act(async () => { modelSelect.click(); });
-  expect(dock.querySelector('[role="option"][title="fixture/kiki-pro"]')).not.toBeNull();
+  expect(dock.querySelector('[role="option"][data-option-value="fixture/kiki-pro"]')).not.toBeNull();
   expect(dock.querySelector('[data-effort]')).toBeNull();
   expect(harness.setAgentEffort).not.toHaveBeenCalled();
 });
