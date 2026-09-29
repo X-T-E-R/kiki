@@ -599,12 +599,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       configured = await this.#client.configureSession({ modeId: selected, signal });
       if (configured.currentModeId === selected) return configured;
     }
-    if (mode === 'manual' || mode === 'review') {
-      if (declared?.trustEngineSettings !== true) {
-        throw new Error2(ErrorCodes.CONFIG_INVALID,
-          `External executor "${this.context.descriptor.id}" cannot verify ${mode} permission mode`);
-      }
-    }
     losses.add('permission_mode_unverified');
     return configured;
   }

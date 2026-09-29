@@ -16,6 +16,7 @@ import {
   descriptorRevisionFromConfig,
 } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
+import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
   AgentExecutorsConfigSchema,
   agentExecutorsFromToml,
@@ -523,6 +524,12 @@ describe('AgentExecutorRegistryService', () => {
       'kimi-acp',
       'opencode-acp',
     ]);
+    expect(resolvePromptDelivery(registry.get('grok-acp')!, { executorPrompt: undefined }))
+      .toEqual({ requested: 'replace', actual: 'replace', downgraded: false });
+    expect(resolvePromptDelivery(registry.get('claude-acp')!, { executorPrompt: undefined }))
+      .toEqual({ requested: 'preamble', actual: 'preamble', downgraded: false });
+    expect(resolvePromptDelivery(registry.get('grok-acp')!, { executorPrompt: { include: [], delivery: 'append' } }))
+      .toEqual({ requested: 'append', actual: 'preamble', downgraded: true });
     expect(registry.get('grok-acp')).toMatchObject({
       args: ['--no-auto-update', 'agent', 'stdio'],
       startupTimeoutMs: 70_000,

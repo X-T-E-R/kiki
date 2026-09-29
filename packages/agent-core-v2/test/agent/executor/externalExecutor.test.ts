@@ -1800,12 +1800,15 @@ describe('ACP external executor', () => {
     expect(harness.selections).not.toContainEqual({ configId: 'brain-1', value: 'high' });
   });
 
-  it('rejects manual mode without a verified permission mapping and labels auto as unverified', async () => {
+  it('runs manual and auto modes without a verified permission mapping and records the loss', async () => {
     const manual = createHarness({ permissionMapping: null });
-    await expect(manual.session.run(
+    const manualRun = await manual.session.run(
       { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
-    )).rejects.toThrow(/cannot verify manual permission mode/);
-    expect(manual.starts).toHaveLength(0);
+    );
+    await manualRun.completion;
+    expect(manual.starts).toHaveLength(1);
+    expect(manual.events.find((event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata)?.losses)
+      .toContain('permission_mode_unverified');
     await manual.session.shutdown();
 
     const auto = createHarness({ permissionMapping: null, permissionMode: 'auto' });

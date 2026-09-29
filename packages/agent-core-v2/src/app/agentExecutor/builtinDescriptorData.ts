@@ -18,7 +18,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     diagnostics: [
       { kind: 'env', name: 'XAI_API_KEY', present: 'XAI_API_KEY is present in the host environment.',
         absent: 'Grok reuses the existing CLI login; set XAI_API_KEY only if that is how the vendor CLI is authenticated.' },
-      { kind: 'message', severity: 'info', message: 'Spawn order is grok --no-auto-update agent stdio; no auto-approve or bypass flag is used.' },
+      { kind: 'message', severity: 'info', message: 'Grok runs with --permission-mode default in manual/review, acceptEdits in auto, and bypassPermissions in yolo.' },
     ],
     permission: { via: 'argv', flag: '--permission-mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
     revision: '2026-08-30.1',
