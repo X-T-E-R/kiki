@@ -5,7 +5,7 @@
  * ConversationShell composer seat across /new → /s/:id.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
@@ -27,7 +27,7 @@ import {
 import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
 import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
-import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
+import { QueueHeadActions, QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { RightRail } from './rail-variants/RailSwitch';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
@@ -52,6 +52,7 @@ import {
   buildPromptContent,
   buildQuotePrefix,
   buildSkillActivation,
+  findQuoteRange,
   flushDrafts,
   readComposerState,
   readDraft,
@@ -1277,6 +1278,9 @@ export function SessionView({
   const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
   const handleRemoveAnnotation = useCallback((id: string) => {
     setAnnotations((current) => removeAnnotation(current, id));
+  }, []);
+  const handleUpdateAnnotation = useCallback((id: string, comment: string) => {
+    setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
   const controller = useActiveController(sessionId, selectedAgentId);
@@ -2720,11 +2724,18 @@ export function SessionView({
           count={queuedItems.length}
           preview={first.text === '' ? t('sv.queueNoText') : first.text}
           editing={queueEdit !== null}
-          alone={headerGoal === undefined}
         />
       ),
-      ariaLabel: t('sv.queueAria'),
+      ariaLabel: t('composer.queueStack.openAria'),
       count: queuedItems.length,
+      // The next prompt's own quick actions; the full set is in the detail.
+      actions: queueEdit !== null ? undefined : (
+        <QueueHeadActions
+          onSendNow={() => { void handleSendNowQueued(first.promptId); }}
+          onEdit={() => { handleStartQueueEdit(first.promptId); }}
+          sendNowDisabled={state.resyncing || state.resyncFailed}
+        />
+      ),
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
       panel: (
@@ -2766,6 +2777,82 @@ export function SessionView({
         setRecoveryPending(false);
       });
   }, [client, sessionId, t]);
+
+  // Main-transcript projection, memoized so unrelated publishes don't rescan
+  // the full block list; per-delta publishes reuse it when blocks/forest are
+  // untouched.
+  const mainTranscriptBlocks = useMemo(
+    () => withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
+    [state.blocks, forest, pendingSubmission],
+  );
+  // "Needs you": every pending approval/question in the session (main and
+  // subagents) is answered in the composer card itself (it takes the input
+  // over, see Composer `needsYou`); the timeline keeps one-line records
+  // (InteractionPlacementContext) whose Review action focuses the item.
+  const trayRef = useRef<NeedsYouTrayHandle>(null);
+  const trayItems = useMemo(
+    () => state.blocks.filter(
+      (block): block is ApprovalBlock | QuestionBlock =>
+        (block.kind === 'approval' && block.resolution === undefined) ||
+        (block.kind === 'question' && block.outcome === undefined),
+    ),
+    [state.blocks],
+  );
+  const trayAgentNames = useMemo(() => {
+    const names = new Map<string, string>();
+    if (forest !== undefined) {
+      for (const node of Object.values(forest.byId)) names.set(node.agentId, node.label);
+    }
+    return names;
+  }, [forest]);
+  // A Review action (rail, timeline record) takes the card over even with a
+  // draft in it, then focuses the item once the tray has mounted.
+  const [reviewRequest, setReviewRequest] = useState<{ readonly kind: 'approval' | 'question'; readonly id: string; readonly seq: number } | null>(null);
+  const reviewPending = useCallback((kind: 'approval' | 'question', id: string) => {
+    setReviewRequest((current) => ({ kind, id, seq: (current?.seq ?? 0) + 1 }));
+  }, []);
+  useEffect(() => {
+    if (reviewRequest === null) return;
+    const frame = requestAnimationFrame(() => { trayRef.current?.focusItem(reviewRequest.kind, reviewRequest.id); });
+    return () => { cancelAnimationFrame(frame); };
+  }, [reviewRequest]);
+  const composerNeedsYou = useMemo(() => (
+    trayItems.length === 0 ? undefined : {
+      count: trayItems.length,
+      takeOverSeq: reviewRequest?.seq,
+      render: (footer: ReactNode) => (
+        <NeedsYouTray
+          ref={trayRef}
+          placement="card"
+          footer={footer}
+          items={trayItems}
+          agentNames={trayAgentNames}
+          onResolveApproval={handleResolveApproval}
+          onAnswerQuestion={handleAnswerQuestion}
+          onDismissQuestion={handleDismissQuestion}
+          onRequestBatchResolve={handleBatchResolve}
+        />
+      ),
+    }
+  ), [trayItems, trayAgentNames, reviewRequest?.seq, handleResolveApproval, handleAnswerQuestion, handleDismissQuestion, handleBatchResolve]);
+  // An unsent note's passage: the newest visible message that quotes it.
+  const handleLocateAnnotation = useCallback((annotation: SelectionAnnotation) => {
+    for (let index = mainTranscriptBlocks.length - 1; index >= 0; index -= 1) {
+      const block = mainTranscriptBlocks[index]!;
+      if ((block.kind === 'assistant' || block.kind === 'user') && findQuoteRange(block.text, annotation.quote) !== null) {
+        void locateInTimeline({ kind: 'block', blockId: block.id }, { sessionId });
+        return;
+      }
+    }
+    void locateInTimeline({ kind: 'latest' }, { sessionId });
+  }, [mainTranscriptBlocks, sessionId]);
+  // The one connection fact the line under the card carries.
+  const composerStatusNotice = useMemo(() => {
+    if (wsStatus === 'connecting') return <span className="truncate">{t('app.reconnecting')}</span>;
+    if (wsStatus === 'closed') return <span className="truncate">{t('app.disconnected')}</span>;
+    // Resync already has its own banner in the dock; the line stays quiet about it.
+    return undefined;
+  }, [wsStatus, t]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
@@ -2849,10 +2936,18 @@ export function SessionView({
             onQueueEditRemove={handleQueueEditRemove}
             header={composerHeader}
             onOpenImage={openImageInPreview}
+            onUpdateAnnotation={handleUpdateAnnotation}
+            onLocateAnnotation={handleLocateAnnotation}
+            needsYou={composerNeedsYou}
+            statusNotice={composerStatusNotice}
           />
         </ContextBreakdownProvider>
       ),
   }), [
+    handleUpdateAnnotation,
+    handleLocateAnnotation,
+    composerNeedsYou,
+    composerStatusNotice,
     selectedAgentId,
     state.loaded,
     state.resyncing,
@@ -2909,36 +3004,9 @@ export function SessionView({
   ]);
   useRegisterSeat(seat);
 
-  // Main-transcript projection, memoized so unrelated publishes don't rescan
-  // the full block list; per-delta publishes reuse it when blocks/forest are
-  // untouched.
-  const mainTranscriptBlocks = useMemo(
-    () => withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
-    [state.blocks, forest, pendingSubmission],
-  );
-  // "Needs you" tray: every pending approval/question in the session (main
-  // and subagents) answers above the composer; the timeline keeps one-line
-  // records (InteractionPlacementContext) whose Review action focuses the
-  // tray item.
-  const trayRef = useRef<NeedsYouTrayHandle>(null);
-  const trayItems = useMemo(
-    () => state.blocks.filter(
-      (block): block is ApprovalBlock | QuestionBlock =>
-        (block.kind === 'approval' && block.resolution === undefined) ||
-        (block.kind === 'question' && block.outcome === undefined),
-    ),
-    [state.blocks],
-  );
-  const trayAgentNames = useMemo(() => {
-    const names = new Map<string, string>();
-    if (forest !== undefined) {
-      for (const node of Object.values(forest.byId)) names.set(node.agentId, node.label);
-    }
-    return names;
-  }, [forest]);
   const interactionPlacement = useMemo<InteractionPlacement>(
-    () => ({ inTray: true, onReview: (kind, id) => { trayRef.current?.focusItem(kind, id); } }),
-    [],
+    () => ({ inTray: true, onReview: reviewPending }),
+    [reviewPending],
   );
   // The subagent route branch: the shell resolves the target and navigation;
   // the workspace owns header, timeline, resync, details, and actions.
@@ -3079,15 +3147,6 @@ export function SessionView({
               />
             ) : null}
             <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
-            <NeedsYouTray
-              ref={trayRef}
-              items={trayItems}
-              agentNames={trayAgentNames}
-              onResolveApproval={handleResolveApproval}
-              onAnswerQuestion={handleAnswerQuestion}
-              onDismissQuestion={handleDismissQuestion}
-              onRequestBatchResolve={handleBatchResolve}
-            />
           </>,
           rail: <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
@@ -3096,7 +3155,7 @@ export function SessionView({
             onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
             onOpenSubagent={openAgent} onClose={closeRail}
             onInspectMain={inspectMain} onOpenFile={openFileInPreview}
-            onReviewPending={(kind, id) => { trayRef.current?.focusItem(kind, id); }}
+            onReviewPending={reviewPending}
             sessionPending={trayItems} onResolveApproval={handleResolveApproval}
           />,
         }}

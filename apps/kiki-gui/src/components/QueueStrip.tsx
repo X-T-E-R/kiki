@@ -57,33 +57,64 @@ const TIMING_HINT_KEY = {
 } as const;
 
 /**
- * The queue half of the composer's top row, small ink-soft text: "1 queued",
- * the first prompt's preview when the row has room (a container query drops
- * it first on narrow cards), and "paused" while an edit holds the queue.
+ * The queue sheet's label behind the composer card: "下一条 <first prompt>"
+ * on the left, "N 条待发送" on the right, and "已暂停" in place of the
+ * preview while an edit holds the queue.
  */
 export function QueueHeaderSummary({
   count,
   preview,
   editing = false,
-  alone = false,
 }: {
   readonly count: number;
   readonly preview?: string;
   /** A queued prompt is parked in the composer: the queue waits on the user. */
   readonly editing?: boolean;
-  /** No goal beside it: the queue owns the row, so the preview gets the width. */
-  readonly alone?: boolean;
 }) {
   const { t, tp } = useI18n();
   return (
-    <span className={`flex min-w-0 items-center gap-1 ${alone ? 'justify-start' : 'justify-end'}`}>
-      <span className="shrink-0 tabular-nums">{tp('sv.queueBar', count)}</span>
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <span className="shrink-0 font-medium text-section-ink">
+        {editing ? t('composer.queueStack.editing') : t('composer.queueStack.next')}
+      </span>
       {editing ? (
-        <span data-queue-paused className="shrink-0">· {t('queue.headerPaused')}</span>
-      ) : preview !== undefined && preview !== '' ? (
-        <span data-queue-row-preview className="composer-header-preview min-w-0 truncate">· {preview}</span>
-      ) : null}
+        <span data-queue-paused className="min-w-0 flex-1 truncate">{t('queue.headerPaused')}</span>
+      ) : (
+        <span data-queue-row-preview className="min-w-0 flex-1 truncate text-ink-soft">{preview ?? ''}</span>
+      )}
+      <span data-queue-count className="flex shrink-0 items-center gap-1 text-[12px] text-ink-faint tabular-nums">
+        {tp('composer.queueStack.count', count)}
+        <Icon name="chevron" size={12} className="-rotate-90" />
+      </span>
     </span>
+  );
+}
+
+const HEAD_ACTION =
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
+
+/** Send-now and edit for the next queued prompt, beside the queue sheet's label. */
+export function QueueHeadActions({
+  onSendNow,
+  onEdit,
+  sendNowDisabled = false,
+}: {
+  readonly onSendNow: () => void;
+  readonly onEdit: () => void;
+  readonly sendNowDisabled?: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <>
+      <button type="button" data-queue-head-send-now disabled={sendNowDisabled} onClick={onSendNow}
+        aria-label={t('sv.queueSendNow')} title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')} className={HEAD_ACTION}>
+        <Icon name="arrowUpRight" size={12} />
+      </button>
+      <button type="button" data-queue-head-edit onClick={onEdit}
+        aria-label={t('sv.queueEditAria')} title={t('queue.editTitle')} className={HEAD_ACTION}>
+        <Icon name="edit" size={12} />
+      </button>
+    </>
   );
 }
 

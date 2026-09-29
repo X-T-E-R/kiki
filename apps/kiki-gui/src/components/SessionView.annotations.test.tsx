@@ -254,11 +254,13 @@ describe('session selection annotations', () => {
           );
         });
         // Every surface that could carry an unsent note: the page, the composer
-        // seat and the dock above it. The chip's own hover card is part of the
-        // chip, so the chip (not its text) is what counts.
+        // seat and the dock above it. Unsent notes fold into ONE pill in the
+        // composer; its panel (hover/click) is part of the pill.
         const surfaces = [container, composerHost, document.querySelector('[data-test-dock]')!];
-        const chips = surfaces.flatMap((root) => [...root.querySelectorAll('[data-annotation-chip]')]);
-        expect(chips).toHaveLength(1);
+        const pills = surfaces.flatMap((root) => [...root.querySelectorAll('[data-composer-notes-pill]')]);
+        expect(pills).toHaveLength(1);
+        expect(pills[0]!.textContent).toContain('1 note');
+        expect(surfaces.some((root) => root.querySelector('[data-annotation-chip]') !== null)).toBe(false);
         expect(surfaces.some((root) => root.querySelector('[data-annotation-tray-row]') !== null)).toBe(false);
         expect(document.querySelector('[data-annotation-tray]')).toBeNull();
       } finally {

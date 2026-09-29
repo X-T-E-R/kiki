@@ -77,8 +77,10 @@ import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
-import { AnnotationChip, ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
+import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
+import { ComposerNotes } from './ComposerNotes';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterUsage } from './ContextMeter';
+import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { Icon } from './icons';
@@ -256,6 +258,10 @@ export function Composer({
   onOpenImage,
   onQueueEditRemove,
   autoFocus,
+  onUpdateAnnotation,
+  onLocateAnnotation,
+  needsYou,
+  statusNotice,
 }: {
   busy: boolean;
   /**
@@ -421,15 +427,36 @@ export function Composer({
   onQueueEditCancel?: () => void;
   onQueueEditRemove?: () => void;
   /**
-   * The card's own top row (goal + queue state, see ComposerHeader). Rendered
-   * inside the card above the input, so it shares the card's surface and
-   * border; the card clips nothing, so its detail can grow the card upward.
+   * The goal + queue stack (see ComposerHeader): sheets tucked behind the
+   * card's top edge, rendered right above the card.
    */
   header?: ReactNode;
   /** Open an attached image in the lightbox (tray thumbnails are buttons when set). */
   onOpenImage?: (src: string, name: string) => void;
   /** Marks the textarea as the dialog's initial-focus target (`data-autofocus`). */
   autoFocus?: boolean;
+  /** Edit an unsent note's comment from the notes pill's panel. */
+  onUpdateAnnotation?: (id: string, comment: string) => void;
+  /** Scroll the timeline to the passage an unsent note quotes. */
+  onLocateAnnotation?: (annotation: SelectionAnnotation) => void;
+  /**
+   * What is waiting on the user (approvals, questions). With an empty,
+   * unfocused draft the card body becomes `render(footer)` — the decision
+   * itself; with a draft in progress a bar above the card offers it instead,
+   * and the card takes over only when the bar is clicked. Leaving the
+   * takeover restores the draft and its caret.
+   */
+  needsYou?: {
+    readonly count: number;
+    readonly render: (footer: ReactNode) => ReactNode;
+    /** Bumped by an explicit Review elsewhere: take the card over now. */
+    readonly takeOverSeq?: number;
+  };
+  /**
+   * One quiet connection fact for the line under the card (reconnecting,
+   * disconnected). The line keeps the working state beside it.
+   */
+  statusNotice?: ReactNode;
 }) {
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
@@ -454,7 +481,7 @@ export function Composer({
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const sendShortcut = useSyncExternalStore(
     subscribeSettings,
@@ -837,6 +864,54 @@ export function Composer({
     undoStackRef.current.push(snapshot);
     if (undoStackRef.current.length > UNDO_STACK_LIMIT) undoStackRef.current.shift();
     redoStackRef.current = [];
+  };
+
+  // ---- needs-you takeover ----
+  // The card becomes the pending decision when there is nothing of the
+  // user's in it: an empty draft (no text, attachments, quote or notes) and
+  // no caret in the textarea. Otherwise a bar above the card offers it, and
+  // a click on the bar takes over explicitly. "Back to input" releases the
+  // card until the pending set grows again.
+  const [inputFocused, setInputFocused] = useState(false);
+  const [takeoverChoice, setTakeoverChoice] = useState<'take' | 'release' | null>(null);
+  const needsYouCount = needsYou?.count ?? 0;
+  const lastNeedsYouCountRef = useRef(needsYouCount);
+  useEffect(() => {
+    const previous = lastNeedsYouCountRef.current;
+    lastNeedsYouCountRef.current = needsYouCount;
+    // Everything answered: the next arrival starts from the default again.
+    // A new arrival re-offers the card even after a release.
+    if (needsYouCount === 0 || needsYouCount > previous) setTakeoverChoice((choice) => (choice === 'take' && needsYouCount > 0 ? choice : null));
+  }, [needsYouCount]);
+  const takeOverSeq = needsYou?.takeOverSeq;
+  useEffect(() => {
+    if (takeOverSeq !== undefined) setTakeoverChoice('take');
+  }, [takeOverSeq]);
+  const draftHasContent =
+    text.trim() !== '' ||
+    attachments.length > 0 ||
+    (quote !== undefined && quote !== null) ||
+    (annotations !== undefined && annotations.length > 0);
+  const takenOver =
+    needsYou !== undefined && needsYouCount > 0 && !queueEditing &&
+    (takeoverChoice === 'take' || (takeoverChoice === null && !draftHasContent && !inputFocused));
+  const offerTakeover = needsYou !== undefined && needsYouCount > 0 && !takenOver && !queueEditing;
+  const takeOver = () => {
+    lastCursorRef.current = textareaRef.current?.selectionStart ?? lastCursorRef.current;
+    setMenu(null);
+    setTakeoverChoice('take');
+    setInputFocused(false);
+  };
+  const backToInput = () => {
+    setTakeoverChoice('release');
+    const cursor = lastCursorRef.current;
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node === null) return;
+      const at = Math.min(cursor, node.value.length);
+      node.focus();
+      node.setSelectionRange(at, at);
+    });
   };
 
   /** Write a new draft value and land the caret once the controlled value renders. */
@@ -1706,12 +1781,32 @@ export function Composer({
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
+        {/* A draft is in progress: the pending decision waits on a bar
+            instead of taking the card; the bar hands the card over. */}
+        {offerTakeover ? (
+          <button
+            type="button"
+            data-needs-you-banner
+            onClick={takeOver}
+            title={t('composer.needsYou.bannerTitle')}
+            className="anim-enter mx-3 mb-1.5 flex min-h-9 w-[calc(100%-1.5rem)] items-center gap-2 rounded-[12px] bg-attention-soft px-3 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-attention-soft/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:min-h-11"
+          >
+            <LifeMark markId="composer-needs-you-bar" life="waiting" tone="bg-attention" />
+            <span className="min-w-0 flex-1 truncate font-medium text-attention">{tp('composer.needsYou.banner', needsYouCount)}</span>
+            <span className="flex shrink-0 items-center gap-1 text-[12px] font-medium text-attention">
+              {t('composer.needsYou.bannerAction')}
+              <Icon name="arrowRight" size={12} />
+            </span>
+          </button>
+        ) : null}
+        {header}
         <div
           ref={cardRef}
           data-composer-card
+          data-composer-takeover={takenOver ? '' : undefined}
           className={`composer-card relative rounded-[18px] bg-panel transition-[box-shadow] duration-150 ${
             dragActive ? 'ring-2 ring-accent/50' : ''
-          }`}
+          } ${takenOver ? 'ring-1 ring-attention/35' : ''}`}
           onDragEnter={(event) => {
             if (!dragHasFiles(event)) return;
             event.preventDefault();
@@ -1738,7 +1833,34 @@ export function Composer({
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-20 rounded-[18px] border-2 border-dashed border-accent/60 bg-panel/85" />
           ) : null}
-          {header}
+          {/* The takeover: the pending decision is the card's body. The input
+              below stays mounted (hidden) so the draft, caret and undo
+              history are exactly where the user left them. */}
+          {takenOver ? needsYou.render(
+            <button
+              type="button"
+              data-needs-you-back
+              onClick={backToInput}
+              className="flex min-h-10 w-full items-center gap-2 rounded-b-[18px] border-t border-hairline px-3.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.025] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:min-h-11"
+            >
+              <Icon name="edit" size={12} className="shrink-0" />
+              {draftHasContent ? (
+                <>
+                  <span className="shrink-0">{t('composer.needsYou.draftKept')}</span>
+                  <span data-needs-you-draft className="min-w-0 flex-1 truncate text-ink-soft">{text.split('\n')[0]}</span>
+                  {attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0) > 0 ? (
+                    <span className="shrink-0 tabular-nums">
+                      {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0))}
+                    </span>
+                  ) : null}
+                  <span className="shrink-0 font-medium text-ink-soft">{t('composer.needsYou.backToInput')}</span>
+                </>
+              ) : (
+                <span className="min-w-0 flex-1">{t('composer.needsYou.backToInput')}</span>
+              )}
+            </button>,
+          ) : null}
+          <div hidden={takenOver} data-composer-body>
           {/* Chips ride above the input; the toolbar lives below it. The
               wrapper only renders when at least one chip/banner exists so the
               textarea keeps its comfortable top padding on an empty draft. */}
@@ -1802,16 +1924,12 @@ export function Composer({
                 <QuoteChip quote={quote} onRemove={onRemoveQuote} />
               ) : null}
               {annotations !== undefined && annotations.length > 0 ? (
-                <div data-annotation-chips className="contents">
-                  {annotations.map((annotation) => (
-                    <AnnotationChip
-                      key={annotation.id}
-                      quote={annotation.quote}
-                      comment={annotation.comment}
-                      onRemove={() => { onRemoveAnnotation?.(annotation.id); }}
-                    />
-                  ))}
-                </div>
+                <ComposerNotes
+                  annotations={annotations}
+                  onRemove={onRemoveAnnotation}
+                  onUpdate={onUpdateAnnotation}
+                  onLocate={onLocateAnnotation}
+                />
               ) : null}
               {attachments.length > 0 ? (
                 <div data-attachment-chips className="contents">
@@ -1994,8 +2112,12 @@ export function Composer({
               onSelect={(event) => {
                 lastCursorRef.current = event.currentTarget.selectionStart;
               }}
+              onFocus={() => { setInputFocused(true); }}
               onBlur={(event) => {
                 setMenu(null);
+                // A caret in the input holds off the needs-you takeover only
+                // while it is there; leaving an empty draft lets it through.
+                setInputFocused(false);
                 // Redundant arming path for engines that DO fire focusout on
                 // disable; the native listener above covers Chromium.
                 if (event.currentTarget.disabled) refocusOnEnableRef.current = true;
@@ -2214,22 +2336,47 @@ export function Composer({
               </button>
             </div>
           </div>
+          </div>
         </div>
-        {/* Key hints teach an empty draft only while the composer holds
-            focus; while the agent works the same fixed-height row says so.
-            The row never changes height, so the card never hops. */}
-        <div className="mt-1.5 h-4 min-w-0">
-          {working !== undefined ? (
-            <ComposerWorkingLine
-              lastResponseAt={working.lastResponseAt}
-              sendNowHint={text.trim() !== '' && onSendNow !== undefined && !queueEditing
-                ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
-                : undefined}
-            />
+        {/* The status line under the card: what the agent is doing (left) and
+            the one connection fact plus Stop while the card is taken over
+            (right). Key hints teach an empty draft only while the composer
+            holds focus. The row never changes height, so the card never hops. */}
+        <div data-composer-status-line className="mt-1.5 flex h-4 min-w-0 items-center gap-3 px-1">
+          {working !== undefined || statusNotice !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+            <>
+              {working !== undefined ? (
+                <ComposerWorkingLine
+                  lastResponseAt={working.lastResponseAt}
+                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !queueEditing && !takenOver
+                    ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
+                    : undefined}
+                />
+              ) : null}
+              <span className="flex-1" />
+              {statusNotice === undefined ? null : (
+                <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
+                  {statusNotice}
+                </span>
+              )}
+              {takenOver && busy && onAbort !== undefined ? (
+                // The card's Stop button is under the takeover; the line keeps it.
+                <button
+                  type="button"
+                  data-composer-status-stop
+                  onClick={onAbort}
+                  disabled={abortPending}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50"
+                >
+                  <Icon name="stop" size={12} />
+                  {abortPending ? t('tasks.stopping') : t('composer.status.stop')}
+                </button>
+              ) : null}
+            </>
           ) : text.trim() === '' && !busy ? (
             <p
               data-composer-hints
-              className="truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100 motion-reduce:transition-none"
+              className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100 motion-reduce:transition-none"
             >
               {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
               {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
@@ -2666,7 +2813,7 @@ function ComposerWorkingLine({
     <p
       data-composer-working
       data-last-response-at={lastResponseAt}
-      className="anim-enter flex min-w-0 items-center justify-center gap-1.5 text-[12px] leading-4 text-ink-faint"
+      className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
     >
       <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
       <span className="min-w-0 truncate tabular-nums">{status}</span>

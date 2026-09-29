@@ -1,19 +1,19 @@
 /**
- * ComposerHeader — the goal and the queue as the composer card's own top row
- * (rendered through Composer's `header` slot, so it shares the card's surface,
- * radius and border; one hairline separates it from the input):
+ * ComposerHeader — the goal and the queue as a short stack of sheets tucked
+ * behind the composer card's top edge (rendered through Composer's `stack`
+ * slot, above the card):
  *
- *   - left: the goal (LifeMark, title truncated to one line, status word) —
- *     the primary line, visible at every width;
- *   - right: the queue in small ink-soft text ("1 queued", with the first
- *     prompt's preview when the card is wide enough, "· paused" while an edit
- *     holds it). With no goal the queue takes the whole row;
- *   - each half is a disclosure button: its detail grows INSIDE the card,
- *     above the row (grid-rows height + a short rise), pushing the card's top
- *     edge up while the row and the input stay put. One detail at a time; Esc,
- *     clicking the half again, or a click outside the card closes it. A
- *     `forceOpen` section (a queued prompt parked in the composer) ignores all
- *     three so the edit's context never hides;
+ *   - the goal sheet sits on top (LifeMark, title truncated to one line,
+ *     status word); the queue sheet in front of it, nearest the card, reads
+ *     "下一条 <first prompt> · N 条待发送", with the first prompt's own actions
+ *     (`actions`) beside it. Without a goal, extra queued prompts show as
+ *     slivers behind the queue sheet;
+ *   - each sheet's label is a disclosure button: its detail opens as a panel
+ *     above the stack (grid-rows height + a short rise) while the sheets and
+ *     the input stay put. One detail at a time; Esc, clicking the label again,
+ *     or a click outside closes it. A `forceOpen` section (a queued prompt
+ *     parked in the composer) ignores all three so the edit's context never
+ *     hides;
  *   - a growing queue count fades its text in once — never on the session's
  *     cold load (`settled` + a short grace window), never while at rest.
  *
@@ -37,6 +37,8 @@ export interface ComposerHeaderSection {
   /** Keep the detail open (Esc / outside / its own button leave it). */
   readonly forceOpen?: boolean;
   readonly panel: ReactNode;
+  /** Controls beside the label on the sheet (outside the disclosure button). */
+  readonly actions?: ReactNode;
 }
 
 type SectionId = 'goal' | 'queue';
@@ -131,24 +133,34 @@ export function ComposerHeader({
     if (sections[id]?.forceOpen === true) return;
     setOpenId((current) => (current === id && effectiveOpen === id ? null : id));
   };
+  // Slivers behind the queue sheet stand for the prompts after the first; a
+  // goal sheet already sits there, so they only show without one.
+  const slivers = goal === undefined ? Math.min(2, Math.max(0, queueCount - 1)) : 0;
   const half = (id: SectionId, section: ComposerHeaderSection) => {
     const open = effectiveOpen === id;
     return (
-      <button
+      <div
         key={id}
-        type="button"
-        data-header-toggle={id}
-        data-open={open ? '' : undefined}
-        data-bump={id === 'queue' && bumps > 0 ? (bumps % 2 === 0 ? 'b' : 'a') : undefined}
-        aria-expanded={open}
-        aria-controls={panelId}
-        aria-label={section.ariaLabel}
-        title={section.title}
-        onClick={() => { toggle(id); }}
-        className={`composer-header-half composer-header-${id}`}
+        data-header-sheet={id}
+        data-slivers={id === 'queue' && slivers > 0 ? slivers : undefined}
+        className={`composer-header-sheet composer-header-${id}`}
       >
-        <span className="composer-header-label">{section.summary}</span>
-      </button>
+        <button
+          type="button"
+          data-header-toggle={id}
+          data-open={open ? '' : undefined}
+          data-bump={id === 'queue' && bumps > 0 ? (bumps % 2 === 0 ? 'b' : 'a') : undefined}
+          aria-expanded={open}
+          aria-controls={panelId}
+          aria-label={section.ariaLabel}
+          title={section.title}
+          onClick={() => { toggle(id); }}
+          className="composer-header-half"
+        >
+          <span className="composer-header-label">{section.summary}</span>
+        </button>
+        {section.actions === undefined ? null : <span className="composer-header-actions">{section.actions}</span>}
+      </div>
     );
   };
 

@@ -282,8 +282,8 @@ describe('QueueStrip drawer body', () => {
         </I18nProvider>,
       );
     });
-    expect(container.querySelector('[data-idle]')?.textContent).toBe('1 queued· Once the tests settle');
-    expect(container.querySelector('[data-held]')?.textContent).toBe('2 queued· paused');
+    expect(container.querySelector('[data-idle]')?.textContent).toBe('NextOnce the tests settle1 queued');
+    expect(container.querySelector('[data-held]')?.textContent).toBe('Editingpaused2 queued');
     expect(container.querySelector('[data-held] [data-queue-row-preview]')).toBeNull();
   });
 });

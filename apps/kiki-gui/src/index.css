@@ -958,100 +958,127 @@ body[data-pane-resizing='true'] {
     0 16px 40px -18px rgb(0 0 0 / 0.75);
 }
 
-/* Composer header (ComposerHeader.tsx): the goal and the queue as floating
- * pills inside the composer card's top edge — no full-width row, no rule.
- * The goal pill carries a faint warm tint and is the primary one; the queue
- * pill is a quieter neutral. Each pill discloses its detail, which grows
- * INSIDE the card above the pills as an inset rounded panel (the card gets
- * taller upward; pills and input stay put). */
+/* Composer stack (ComposerHeader.tsx): the goal and the queue as sheets
+ * tucked behind the composer card's top edge — each one a little narrower
+ * than the one in front, its bottom hidden under the card. The goal sheet
+ * (warm accent-soft wash) sits furthest back; the queue sheet (panel, faint
+ * ring) sits nearest the card. Details open above the stack. */
 .composer-header {
   container-type: inline-size;
 }
 .composer-header-row {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 12px 0;
-  font-size: 12px;
+  flex-direction: column;
+  font-size: 12.5px;
   line-height: 1.3;
+}
+.composer-header-sheet {
+  position: relative;
+  display: flex;
+  min-height: 38px;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  margin: 0 16px -10px;
+  padding: 0 6px 10px 4px;
+  border-radius: 12px 12px 0 0;
+  background-color: var(--color-panel);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent);
+  animation: kiki-sheet-in var(--kiki-motion-base) var(--kiki-ease-out);
+}
+.composer-header-sheet + .composer-header-sheet {
+  margin-top: 0;
+}
+/* The sheet further back is narrower, so the stack reads as depth. */
+.composer-header-goal:not(:only-child) {
+  margin-inline: 28px;
+}
+.composer-header-goal {
+  background-color: color-mix(in srgb, var(--color-accent-soft) 60%, var(--color-panel));
+}
+/* Slivers: the queued prompts after the first, as thin edges behind it. */
+.composer-header-queue[data-slivers]::before,
+.composer-header-queue[data-slivers='2']::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -5px;
+  height: 5px;
+  border-radius: 10px 10px 0 0;
+  background-color: color-mix(in srgb, var(--color-panel) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 7%, transparent);
+  pointer-events: none;
+}
+.composer-header-queue[data-slivers='2']::after {
+  left: 20px;
+  right: 20px;
+  top: -10px;
+}
+.composer-header-queue[data-slivers='2'] {
+  margin-top: 10px;
+}
+.composer-header-queue[data-slivers='1'] {
+  margin-top: 5px;
+}
+@keyframes kiki-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 .composer-header-half {
   display: flex;
-  height: 26px;
+  min-height: 28px;
   min-width: 0;
+  flex: 1;
   align-items: center;
-  padding: 0 11px;
-  border-radius: 999px;
+  padding: 0 8px;
+  border-radius: 8px;
   color: var(--color-ink-soft);
   text-align: left;
   cursor: pointer;
-  animation: kiki-pill-in var(--kiki-motion-base) var(--kiki-ease-out);
   transition:
     background-color var(--kiki-motion-quick) var(--kiki-ease-out),
-    box-shadow var(--kiki-motion-quick) var(--kiki-ease-out),
     color var(--kiki-motion-quick) var(--kiki-ease-out);
 }
-@keyframes kiki-pill-in {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
+.composer-header-half:hover {
+  background-color: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  color: var(--color-ink);
+}
+.composer-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
 }
 .composer-header-half:focus-visible {
   outline: var(--focus-ring-width) solid var(--color-accent);
   outline-offset: 1px;
 }
-/* The open pill: a soft inner ring and ink text, never a lighter block. */
+/* The open sheet: ink text and a soft inner ring on its label. */
 .composer-header-half[data-open] {
   color: var(--color-ink);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 14%, transparent);
-}
-/* Goal: the primary pill, warm tint from the accent-soft token (brown on dark,
- * never grey); it takes the room, up to the width the queue leaves. */
-.composer-header-goal {
-  flex: 0 1 auto;
-  max-width: 64%;
-  overflow: hidden;
-  font-size: 12.5px;
-  background-color: color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
-}
-.composer-header-goal:hover {
-  background-color: var(--color-accent-soft);
-}
-/* Queue: a quieter neutral pill; its count stays whole, the preview gives way. */
-.composer-header-queue {
-  flex: 0 1 auto;
-  max-width: 40%;
-  overflow: hidden;
-  background-color: color-mix(in srgb, var(--color-ink) 4.5%, transparent);
-}
-.composer-header-queue:hover {
-  background-color: color-mix(in srgb, var(--color-ink) 8%, transparent);
-}
-/* No goal: the queue pill may take more of the row. */
-.composer-header-queue:only-child {
-  max-width: 72%;
 }
 .composer-header-label {
   display: flex;
   width: 100%;
   min-width: 0;
 }
-/* Narrow cards keep the goal pill and fold the queue to a count pill. */
-@container (max-width: 34rem) {
-  .composer-header-goal + .composer-header-queue .composer-header-preview {
+/* Narrow stacks drop the first prompt's inline actions (the detail has them). */
+@container (max-width: 30rem) {
+  .composer-header-actions {
     display: none;
   }
-  .composer-header-goal {
-    max-width: none;
+  .composer-header-sheet {
+    margin-inline: 10px;
   }
-  .composer-header-goal + .composer-header-queue {
-    max-width: none;
-    flex-shrink: 0;
+  .composer-header-goal:not(:only-child) {
+    margin-inline: 20px;
   }
 }
 
-/* The detail: an inset rounded panel that grows from the pills upward (grid
+/* The detail: an inset rounded panel that grows from the sheets upward (grid
  * rows + a short rise), content a beat later; capped at 40vh with its own
  * scroll. A faint ink wash on the card's own surface, no border. */
 .composer-header-panel {
@@ -1075,12 +1102,13 @@ body[data-pane-resizing='true'] {
 }
 .composer-header-scroll {
   max-height: 40vh;
-  margin: 8px 8px 0;
+  margin: 0 8px 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 6px 6px 4px;
   border-radius: 12px;
-  background-color: color-mix(in srgb, var(--color-ink) 3.5%, transparent);
+  background-color: var(--color-panel);
+  box-shadow: var(--kiki-sheet-shadow);
   opacity: 0;
   transform: translateY(var(--kiki-motion-distance));
   transition:

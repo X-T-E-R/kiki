@@ -11,7 +11,7 @@
  * item while the tray is mounted (InteractionPlacementContext).
  */
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { QuestionAnswer } from '@kiki/protocol';
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
@@ -19,7 +19,9 @@ import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen } from '../lib/uiBusy';
+import { Icon } from './icons';
 import { ApprovalCard, QuestionCard } from './Interactions';
+import { LifeMark } from './LifeMark';
 
 type PendingItem = ApprovalBlock | QuestionBlock;
 
@@ -64,7 +66,14 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
    * caller's confirmation.
    */
   readonly onRequestBatchResolve?: (decision: 'approved' | 'rejected', ids: readonly string[]) => void;
-}>(function NeedsYouTray({ items, agentNames, onResolveApproval, onAnswerQuestion, onDismissQuestion, onRequestBatchResolve }, ref) {
+  /**
+   * `card`: rendered as the composer card's own body while it takes the
+   * input over — no outer sheet, a "1 / N ›" stepper instead of the collapsed
+   * rows, and `footer` (the kept draft) along the bottom edge.
+   */
+  readonly placement?: 'dock' | 'card';
+  readonly footer?: ReactNode;
+}>(function NeedsYouTray({ items, agentNames, onResolveApproval, onAnswerQuestion, onDismissQuestion, onRequestBatchResolve, placement = 'dock', footer }, ref) {
   const { t, tp } = useI18n();
   const rootRef = useRef<HTMLElement>(null);
   // Questions the user put off: they drop to the collapsed rows until
@@ -72,11 +81,20 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   const [later, setLater] = useState<ReadonlySet<string>>(new Set());
   const [pinned, setPinned] = useState<string | null>(null);
 
-  const ordered = useMemo(() => {
+  // Handling order without the pin: approvals first, put-off questions last.
+  const natural = useMemo(() => {
     const rank = (item: PendingItem) =>
-      itemId(item) === pinned ? 0 : item.kind === 'approval' ? 1 : later.has(itemId(item)) ? 3 : 2;
-    return [...items].sort((a, b) => rank(a) - rank(b));
-  }, [items, later, pinned]);
+      item.kind === 'approval' ? 1 : later.has(itemId(item)) ? 3 : 2;
+    return items.toSorted((a, b) => rank(a) - rank(b));
+  }, [items, later]);
+  // The dock lifts the pinned item to the front; the card keeps the handling
+  // order and starts from the pin, so its "1 / N" position stays truthful.
+  const cursor = Math.max(0, natural.findIndex((item) => itemId(item) === pinned));
+  const ordered = useMemo(() => {
+    if (placement === 'card') return [...natural.slice(cursor), ...natural.slice(0, cursor)];
+    const lifted = natural.findIndex((item) => itemId(item) === pinned);
+    return lifted <= 0 ? natural : [natural[lifted]!, ...natural.slice(0, lifted), ...natural.slice(lifted + 1)];
+  }, [natural, cursor, pinned, placement]);
 
   // A resolved/pinned item leaving the list must not keep the pin alive.
   useEffect(() => {
@@ -142,7 +160,80 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   const questions = items.length - approvals;
   const currentId = itemId(current);
   const headAction =
-    'shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none';
+    'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-9 font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none';
+  const currentCard = current.kind === 'approval' ? (
+    <ApprovalCard
+      key={currentId}
+      block={current}
+      originAgentName={originName(current)}
+      showShortcutHints
+      onResolve={(decision, scope, selectedOptionId) =>
+        onResolveApproval(currentId, decision, scope, selectedOptionId)
+      }
+    />
+  ) : (
+    <QuestionCard
+      key={currentId}
+      block={current}
+      originAgentName={originName(current)}
+      onAnswer={(answers) => onAnswerQuestion(currentId, answers)}
+      onDismiss={() => onDismissQuestion(currentId)}
+    />
+  );
+  const batch = approvals >= 2 && onRequestBatchResolve !== undefined ? (
+    <span data-approval-batch className="flex shrink-0 items-center gap-0.5">
+      <button type="button" data-approval-approve-all onClick={() => { onRequestBatchResolve('approved', approvalIds); }} className={headAction}>
+        {t('sv.approveAll')}
+      </button>
+      <button type="button" data-approval-reject-all onClick={() => { onRequestBatchResolve('rejected', approvalIds); }}
+        className={`${headAction} hover:bg-danger/[0.08] hover:text-danger`}>
+        {t('sv.rejectAll')}
+      </button>
+    </span>
+  ) : null;
+
+  if (placement === 'card') {
+    // Step through the items in their handling order; the pin is the cursor.
+    const index = cursor;
+    const step = (delta: 1 | -1) => {
+      const next = natural[(index + delta + natural.length) % natural.length];
+      if (next !== undefined) setPinned(itemId(next));
+    };
+    const stepButton = 'flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
+    return (
+      <section ref={rootRef} data-needs-you-tray data-needs-you-card aria-label={t('tray.aria')} className="anim-enter">
+        <header className="flex min-h-10 items-center gap-2 px-3.5 pt-1.5">
+          <LifeMark markId="composer-needs-you" life="waiting" tone="bg-attention" />
+          <h2 className="shrink-0 text-[13px] font-medium text-attention">{t('composer.needsYou.title')}</h2>
+          {ordered.length > 1 ? (
+            <span data-tray-stepper className="flex items-center text-[12px] text-ink-faint tabular-nums">
+              <button type="button" aria-label={t('composer.needsYou.previous')} title={t('composer.needsYou.previous')} onClick={() => { step(-1); }} className={stepButton}>
+                <Icon name="chevron" size={12} className="rotate-180" />
+              </button>
+              <span>{t('composer.needsYou.step', { index: index + 1, total: ordered.length })}</span>
+              <button type="button" aria-label={t('composer.needsYou.next')} title={t('composer.needsYou.next')} onClick={() => { step(1); }} className={stepButton}>
+                <Icon name="chevron" size={12} />
+              </button>
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint max-sm:hidden">
+            {originName(current) === undefined ? '' : t('tray.from', { name: originName(current)! })}
+          </span>
+          {batch}
+          {current.kind === 'question' && rest.length > 0 ? (
+            <button type="button" data-tray-later title={t('tray.laterTitle')} className={headAction}
+              onClick={() => { setPinned(null); setLater((set) => new Set(set).add(currentId)); }}>
+              {t('tray.later')}
+            </button>
+          ) : null}
+        </header>
+        <div data-tray-current={currentId} className="max-h-[min(44vh,400px)] overflow-y-auto px-3.5 pt-1 pb-2.5">
+          {currentCard}
+        </div>
+        {footer}
+      </section>
+    );
+  }
 
   return (
     <div className="px-6 pb-2">
