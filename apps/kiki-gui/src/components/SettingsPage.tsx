@@ -27,6 +27,7 @@ import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
 import { MemorySection } from './settings/MemorySection';
 import { NbSearchSection } from './settings/NbSearchSection';
+import { NotificationsSection } from './settings/NotificationsSection';
 import { PermissionsSection } from './settings/PermissionsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { SECTIONS, type SectionId } from './settings/sections';
@@ -244,6 +245,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
     : active === 'subagents' ? <SubagentsSection />
     : active === 'sessions' ? <SessionsSection />
+    : active === 'notifications' ? <NotificationsSection />
     : active === 'memory' ? <MemorySection />
     : active === 'permissions' ? <PermissionsSection />
     : active === 'tasks' ? <TasksSection />

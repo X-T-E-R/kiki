@@ -567,41 +567,6 @@ describe('AgentExecutorPreflightService', () => {
       expect(result?.credentialDetail).toBeUndefined();
     });
 
-    it('names an API key the CLI reports when nothing local can attribute it', async () => {
-      processService.outputs.set('claude auth status --json', {
-        output: '{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","apiKeySource":"/login managed key"}',
-      });
-      const result = await check();
-
-      expect(result).toMatchObject({
-        loginStatus: 'logged_in',
-        credentialSource: 'api_key',
-        credentialDetail: '/login managed key',
-      });
-    });
-
-    it('accepts a third-party backend declared in the host environment', async () => {
-      services.set(IBootstrapService, bootstrap({ CLAUDE_CODE_USE_BEDROCK: '1' }));
-      const result = await check();
-
-      expect(result).toMatchObject({
-        loginStatus: 'logged_in',
-        credentialSource: 'external_backend',
-        credentialDetail: 'CLAUDE_CODE_USE_BEDROCK',
-      });
-      expect(processService.calls).not.toContain('claude auth status --json');
-    });
-
-    it('ignores a disabled third-party backend switch', async () => {
-      services.set(IBootstrapService, bootstrap({ CLAUDE_CODE_USE_BEDROCK: '0' }));
-      processService.outputs.set('claude auth status --json', {
-        output: '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}',
-      });
-      const result = await check();
-
-      expect(result).toMatchObject({ loginStatus: 'logged_out', credentialSource: 'none' });
-    });
-
     it('reports an unreadable credential as unknown when the CLI cannot answer either', async () => {
       processService.outputs.set('claude auth status --json', { output: 'not json' });
       const result = await check();

@@ -80,6 +80,7 @@ import { handleContextStrategy, resetContextStrategy } from './fixture-context-s
 import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
+import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
 
 import {
   TranscriptProjector,
@@ -548,6 +549,7 @@ class FixtureServer {
     this.plugins = structuredClone(data.plugins ?? []);
     this.autoCompactOverrides = new Map();
     resetContextStrategy(this);
+    resetNotifications(this);
     this.autoCompactAgents = structuredClone(data.autoCompact?.agents ?? {});
     this.usageV2 = data.usageV2 ?? null;
     // Memory (`/api/memory/*`): `memory` seeds the settings section and the
@@ -1669,6 +1671,12 @@ class FixtureServer {
     }
     const memoryHandled = this.routeMemory(res, path, query, body, method);
     if (memoryHandled) return undefined;
+    // nb-IM notifications (scripts/fixture-notifications.mjs).
+    if (handleNotifications(this, res, path, query, method, body)) return undefined;
+    if (path === '/secrets:reveal' && method === 'POST' && body?.ref?.kind === 'notification_credential') {
+      const value = revealNotificationCredential(this, body.ref.slot_id);
+      return this.envelope(res, value === undefined ? { source: 'none' } : { source: 'kiki', value });
+    }
     if ((path === '/nb-search/credentials/read' || path === '/nb-search/credentials/write') && method === 'POST') {
       const target = fixtureSearchCredentialBinding(this.config, body?.instance_id);
       if (target === null) return this.envelope(res, null, 40001, 'Unknown nb-search credential slot.');

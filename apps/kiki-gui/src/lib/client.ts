@@ -1353,6 +1353,25 @@ export class KikiClient {
     return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.writeCredential(instanceId, value, expectedVersion, expectedBinding)));
   }
 
+  /** `/api/notifications/*` (nb-IM), with errors mapped like every other call. Credential values are write-only; read one through `revealSecret`. */
+  get notifications(): import('@kiki/klient').HttpRestFacade['notifications'] {
+    const api = this.rest.notifications;
+    const wrap = <A extends unknown[], R>(call: (...args: A) => Promise<R>) => (...args: A): Promise<R> => this.run(() => call(...args));
+    return {
+      getSettings: wrap(api.getSettings),
+      updateSettings: wrap(api.updateSettings),
+      listProviders: wrap(api.listProviders),
+      upsertInstance: wrap(api.upsertInstance),
+      deleteInstance: wrap(api.deleteInstance),
+      upsertChannel: wrap(api.upsertChannel),
+      deleteChannel: wrap(api.deleteChannel),
+      setCredential: wrap(api.setCredential),
+      checkCredential: wrap(api.checkCredential),
+      sendTest: wrap(api.sendTest),
+      listDeliveries: wrap(api.listDeliveries),
+    };
+  }
+
   listNamedAgentProfiles(
     query?: string | import('@kiki/protocol').ListNamedAgentProfilesQuery,
   ): Promise<ListNamedAgentProfilesResponse> {
