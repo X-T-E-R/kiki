@@ -391,6 +391,8 @@ const REGULAR = buildSession('session_fixture_rail_command', false);
 const FULL = buildSession('session_fixture_rail_full', true);
 
 export default {
+  // The 1M window the main agent runs on; its compaction point sits near 850k.
+  autoCompact: { windows: { [MODEL.opus]: { usable: 1_000_000, reserved: 150_000 } } },
   agentPanel: {
     ...railScale.agentPanel,
     profile: { ...railScale.agentPanel.profile, description: 'Coordinates owners across the kiki workspace.', model: MODEL.opus, thinking_effort: 'max' },
