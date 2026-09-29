@@ -18,17 +18,22 @@
  */
 
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { QueryClientContext } from '@tanstack/react-query';
 
 import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@kiki/protocol';
 
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { PERMISSION_RULES_ROUTE, saveAllowRule } from '../lib/permissionRules';
+import { pushToast } from '../lib/toasts';
+import { useOptionalConnection } from '../state/connection';
 import { reviewerLabel, reviewerTooltip } from './approvalReviewer';
 import { DisclosureChevron, Icon } from './icons';
 import { Markdown } from './Markdown';
 import { SshApprovalCard } from './ssh/SshApprovalCard';
 
-type ApprovalIntent = 'allow-once' | 'allow-always' | 'reject-once';
+type ApprovalIntent = 'allow-once' | 'allow-always' | 'allow-rule' | 'reject-once';
 
 /* Shared decision-strip styling for approvals and questions. The accent is
  * ONE left rule (the "needs you" mark) on a flat surface — no tint: the tray
@@ -231,7 +236,13 @@ export function ApprovalCard({
   showShortcutHints?: boolean;
 }) {
   const { t, time } = useI18n();
+  const connection = useOptionalConnection();
+  const queryClient = useContext(QueryClientContext);
+  const navigate = useNavigate();
   const [forSession, setForSession] = useState(false);
+  // "Always allow": the rule the server saved for this card, or a failed write.
+  const [savedRule, setSavedRule] = useState<string | null>(null);
+  const [ruleFailed, setRuleFailed] = useState(false);
   const [submitting, setSubmitting] = useState<ApprovalIntent | null>(null);
   const [submittingOptionId, setSubmittingOptionId] = useState<string | null>(null);
   const [answered, setAnswered] = useState<ApprovalDecision | null>(null);
@@ -248,6 +259,8 @@ export function ApprovalCard({
     setSubmittingOptionId(null);
     setAnswered(null);
     setFailed(false);
+    setSavedRule(null);
+    setRuleFailed(false);
   }, [approvalId]);
   useEffect(
     () => () => {
@@ -327,6 +340,45 @@ export function ApprovalCard({
         respondingRef.current = false;
         setSubmitting(null);
         setSubmittingOptionId(null);
+      });
+  };
+
+  // "Always allow": save the exact-call rule the engine offered as a
+  // persistent allow rule first, then approve this one call. A failed write
+  // approves nothing, so the user never gets a rule they did not see saved.
+  const approvalRule = external === undefined && !planEnter && connection !== null
+    ? block.request.approval_rule
+    : undefined;
+  const allowAlways = () => {
+    if (approvalRule === undefined || connection === null) return;
+    if (respondingRef.current || answered !== null) return;
+    const epoch = epochRef.current;
+    respondingRef.current = true;
+    setSubmitting('allow-rule');
+    setFailed(false);
+    setRuleFailed(false);
+    void saveAllowRule(connection.client, approvalRule)
+      .then((config) => {
+        queryClient?.setQueryData(['config'], config);
+        if (epochRef.current !== epoch) return;
+        setSavedRule(approvalRule);
+        pushToast({
+          tone: 'success',
+          text: t('ia.alwaysAllow.saved', { rule: approvalRule }),
+          retry: { label: t('ia.alwaysAllow.manage'), run: () => { void navigate(PERMISSION_RULES_ROUTE); } },
+        });
+        return onResolve('approved').then(() => {
+          if (epochRef.current === epoch) setAnswered('approved');
+        }, () => {
+          if (epochRef.current === epoch) setFailed(true);
+        });
+      }, () => {
+        if (epochRef.current === epoch) setRuleFailed(true);
+      })
+      .finally(() => {
+        if (epochRef.current !== epoch) return;
+        respondingRef.current = false;
+        setSubmitting(null);
       });
   };
 
@@ -426,6 +478,20 @@ export function ApprovalCard({
                   <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium">y</kbd>
                 ) : null}
               </button>
+              {approvalRule !== undefined ? (
+                <button
+                  type="button"
+                  data-approval-always-allow
+                  disabled={submitting !== null}
+                  onClick={allowAlways}
+                  title={t('ia.alwaysAllow.title', { rule: approvalRule })}
+                  className={SECONDARY_BUTTON}
+                >
+                  {submitting === 'allow-rule'
+                    ? savedRule === null ? t('ia.alwaysAllow.saving') : t('ia.approving')
+                    : t('ia.alwaysAllow')}
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={submitting !== null}
@@ -448,6 +514,12 @@ export function ApprovalCard({
                 {t('ia.remember', { tool: block.request.tool_name })}
               </label>
             </div>
+            {ruleFailed ? (
+              <p role="alert" className="mt-2 text-[12px] text-danger">
+                {t('ia.alwaysAllow.failed')}
+              </p>
+            ) : null}
+            {savedRule !== null ? <SavedRuleNote rule={savedRule} /> : null}
             {sendFailed}
           </>
         ) : external.ok ? (
@@ -497,7 +569,26 @@ export function ApprovalCard({
           {t('ia.sentToKikiSuffix')}
         </p>
       )}
+      {answered !== null && savedRule !== null ? <SavedRuleNote rule={savedRule} /> : null}
     </div>
+  );
+}
+
+/** What "always allow" saved and where it can be removed again. */
+function SavedRuleNote({ rule }: { rule: string }) {
+  const { t } = useI18n();
+  return (
+    <p data-approval-rule-saved className="mt-1.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[12px] text-ink-soft">
+      <span>{t('ia.alwaysAllow.savedShort')}</span>
+      <code className="min-w-0 truncate font-mono text-[11.5px] text-ink">{rule}</code>
+      <span aria-hidden className="text-ink-faint">·</span>
+      <Link
+        to={PERMISSION_RULES_ROUTE}
+        className="rounded-sm text-accent-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        {t('ia.alwaysAllow.undoHint')}
+      </Link>
+    </p>
   );
 }
 

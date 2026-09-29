@@ -126,7 +126,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
         summary: action,
         detail: context.args,
       } as ToolInputDisplay);
-    const approvalRequest = {
+    const requestFields = {
       id: approvalId ?? `approval_${randomUUID()}`,
       sessionId: this.session.sessionId,
       agentId: this.scopeContext.agentId,
@@ -136,8 +136,13 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       action,
       display,
     };
+    const approvalRequest = {
+      ...requestFields,
+      approvalRule: origin === 'fallback-ask' && result.resolveApproval === undefined
+        && display.kind !== 'external_permission' ? context.execution.approvalRule : undefined,
+    };
     const approvalContext = {
-      ...approvalRequest,
+      ...requestFields,
       toolInput: context.args,
     } satisfies PermissionApprovalRequestedPayload;
     const startedAt = Date.now();

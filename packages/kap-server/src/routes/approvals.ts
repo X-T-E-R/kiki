@@ -186,6 +186,7 @@ export function toWireApproval(interaction: Interaction, sessionId: string): {
   tool_name: string;
   action: string;
   tool_input_display: unknown;
+  approval_rule?: string;
   ssh?: Omit<NonNullable<ApprovalRequest['ssh']>, 'prompts'> & { prompts?: { prompt: string; echo: boolean }[] };
   created_at: string;
   expires_at: string;
@@ -200,6 +201,7 @@ export function toWireApproval(interaction: Interaction, sessionId: string): {
     tool_name: p.toolName,
     action: p.action,
     tool_input_display: p.display,
+    approval_rule: p.approvalRule === undefined || p.approvalRule === '' ? undefined : p.approvalRule,
     ssh: p.ssh === undefined ? undefined : { ...p.ssh,
       prompts: p.ssh.prompts?.map((item) => ({ prompt: item.prompt, echo: item.echo })) },
     created_at: new Date(interaction.createdAt).toISOString(),

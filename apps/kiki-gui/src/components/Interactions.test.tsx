@@ -20,6 +20,15 @@ import type { QuestionAnswer, QuestionItem } from '@kiki/protocol';
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard } from './Interactions';
+import { getToasts } from '../lib/toasts';
+
+const configApi = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  patchConfig: vi.fn(),
+}));
+vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({ client: configApi }),
+}));
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -291,6 +300,72 @@ describe('ApprovalCard plan_enter', () => {
       flushSync(() => { click(approve!); });
     });
     expect(calls).toEqual([['approved', undefined, undefined]]);
+  });
+
+  it('offers no "always allow" for a plan-mode switch', async () => {
+    const container = await renderCard({ ...PLAN_ENTER_BLOCK, request: { ...PLAN_ENTER_BLOCK.request, approval_rule: 'EnterPlanMode' } },
+      () => Promise.resolve());
+    expect(container.querySelector('[data-approval-always-allow]')).toBeNull();
+  });
+});
+
+describe('ApprovalCard always allow', () => {
+  const COMMAND_BLOCK: ApprovalBlock = {
+    kind: 'approval',
+    id: 'approval-cmd-1',
+    request: {
+      approval_id: 'approval-cmd-1',
+      session_id: 'session_test',
+      tool_call_id: 'call-cmd-1',
+      tool_name: 'Bash',
+      action: 'Run git status',
+      tool_input_display: { kind: 'command', command: 'git status' },
+      approval_rule: 'Bash(git status)',
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+  };
+  const existing = { decision: 'deny' as const, scope: 'user' as const, pattern: 'Bash(rm -rf*)' };
+
+  it('saves a persistent allow rule, then approves this call once', async () => {
+    configApi.getConfig.mockResolvedValue({ permission: { rules: [existing] } });
+    configApi.patchConfig.mockImplementation((patch: unknown) => Promise.resolve(patch));
+    const calls: unknown[][] = [];
+    const container = await renderCard(COMMAND_BLOCK, (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve();
+    });
+    const button = container.querySelector<HTMLButtonElement>('[data-approval-always-allow]')!;
+    expect(button.textContent).toBe('Always allow');
+    await act(async () => { click(button); });
+    expect(configApi.patchConfig).toHaveBeenCalledWith({ permission: { rules: [
+      existing, { decision: 'allow', scope: 'user', pattern: 'Bash(git status)' },
+    ] } });
+    expect(calls).toEqual([['approved']]);
+    const note = container.querySelector('[data-approval-rule-saved]');
+    expect(note?.textContent).toContain('Bash(git status)');
+    expect(note?.querySelector('a')?.getAttribute('href')).toBe('/settings/permissions');
+    expect(getToasts().at(-1)).toMatchObject({ tone: 'success', retry: { label: 'Manage rules' } });
+  });
+
+  it('approves nothing when the rule cannot be saved', async () => {
+    configApi.getConfig.mockResolvedValue({ permission: { rules: [] } });
+    configApi.patchConfig.mockRejectedValue(new Error('write failed'));
+    const onResolve = vi.fn(() => Promise.resolve());
+    const container = await renderCard({ ...COMMAND_BLOCK, id: 'approval-cmd-2',
+      request: { ...COMMAND_BLOCK.request, approval_id: 'approval-cmd-2' } }, onResolve);
+    await act(async () => { click(container.querySelector('[data-approval-always-allow]')!); });
+    expect(onResolve).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not save the rule');
+    expect(container.querySelector('[data-approval-always-allow]')?.hasAttribute('disabled')).toBe(false);
+  });
+
+  it('hides the action when the request carries no rule', async () => {
+    const { approval_rule: _rule, ...request } = COMMAND_BLOCK.request;
+    void _rule;
+    const container = await renderCard({ ...COMMAND_BLOCK, request }, () => Promise.resolve());
+    expect(container.querySelector('[data-approval-always-allow]')).toBeNull();
   });
 });
 

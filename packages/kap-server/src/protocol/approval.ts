@@ -17,6 +17,7 @@ export const approvalRequestSchema = z.object({
   tool_name: z.string().min(1),
   action: z.string(),
   tool_input_display: z.unknown(),
+  approval_rule: z.string().min(1).optional(),
   ssh: z.object({
     kind: z.enum(['login', 'host_key']),
     hostname: z.string(), user: z.string(), port: z.number(),

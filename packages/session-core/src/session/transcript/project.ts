@@ -439,6 +439,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         tool_name: recordString(request, 'toolName', 'tool_name') ?? 'tool',
         action: recordString(request, 'action') ?? 'Approve the action',
         tool_input_display: request['display'] ?? request['toolInputDisplay'] ?? request['tool_input_display'],
+        approval_rule: recordString(request, 'approvalRule', 'approval_rule'),
         // Non-secret SSH card fields (login / host_key); absent on other approvals.
         ...(typeof request['ssh'] === 'object' && request['ssh'] !== null
           ? { ssh: request['ssh'] as NonNullable<ApprovalRequest['ssh']> }

@@ -517,7 +517,22 @@ describe('AgentToolApprovalService', () => {
         toolName: 'Bash',
         action: 'clean build output',
         display,
+        approvalRule: 'Bash',
       });
+    });
+
+    it('offers the exact-call rule on a plain fallback ask only', async () => {
+      const broker = useBroker(async () => ({ decision: 'approved' }));
+      const events = subscribeApprovalEvents();
+      const svc = make();
+      const context = makeContext('Bash', { command: 'git status' }, { approvalRule: 'Bash(git status)' });
+      await svc.requestToolApproval(context, ask(), 'fallback-ask');
+      expect(broker.mock.calls[0]![0].approvalRule).toBe('Bash(git status)');
+      expect(events.requested.mock.calls[0]![0]).not.toHaveProperty('approvalRule');
+      await svc.requestToolApproval(context, ask(), 'user-configured-ask');
+      await svc.requestToolApproval(context, ask({ resolveApproval: () => undefined }), 'fallback-ask');
+      expect(broker.mock.calls[1]![0].approvalRule).toBeUndefined();
+      expect(broker.mock.calls[2]![0].approvalRule).toBeUndefined();
     });
 
     it('mints one interaction id shared by the broker request and the events', async () => {

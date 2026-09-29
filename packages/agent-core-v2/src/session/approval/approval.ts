@@ -37,6 +37,8 @@ export interface ApprovalRequest {
   readonly toolName: string;
   readonly action: string;
   readonly display: ToolInputDisplay;
+  /** Permission-rule pattern that matches exactly this call (e.g. `Bash(git status)`); absent for external harness permissions. */
+  readonly approvalRule?: string;
 }
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'cancelled';

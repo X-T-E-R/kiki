@@ -30,6 +30,7 @@ interface ApprovalWire {
   tool_name: string;
   action: string;
   tool_input_display: unknown;
+  approval_rule?: string;
   created_at: string;
   expires_at: string;
 }
@@ -114,6 +115,7 @@ describe('server-v2 /api/sessions/{sid}/approvals', () => {
       toolName: 'Bash',
       action: 'run',
       display: { kind: 'command', command: 'echo hi' },
+      approvalRule: 'Bash(echo hi)',
     });
     return parked.id;
   }
@@ -132,6 +134,7 @@ describe('server-v2 /api/sessions/{sid}/approvals', () => {
     expect(item.tool_name).toBe('Bash');
     expect(item.action).toBe('run');
     expect(item.tool_input_display).toEqual({ kind: 'command', command: 'echo hi' });
+    expect(item.approval_rule).toBe('Bash(echo hi)');
     expect(Number.isNaN(Date.parse(item.created_at))).toBe(false);
     expect(Number.isNaN(Date.parse(item.expires_at))).toBe(false);
   });
