@@ -36,7 +36,7 @@ use tauri::async_runtime::Receiver;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, Url, WindowEvent, Wry,
+    AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::{
@@ -2284,6 +2284,22 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Tauri 2.11.5 exposes clipboard permission on the
+            // WebviewWindowBuilder, not tauri.conf.json. The config window is
+            // created here so the main webview receives that attribute before
+            // WebView2 starts; this removes the native paste permission prompt.
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .ok_or_else(|| std::io::Error::other("main window config is missing"))?;
+            WebviewWindowBuilder::from_config(app.handle(), main_config)
+                .map_err(std::io::Error::other)?
+                .enable_clipboard_access()
+                .build()
+                .map_err(std::io::Error::other)?;
             // The tray is part of the desktop lifecycle contract, not a
             // best-effort decoration: close-to-tray would strand a hidden
             // window if the icon could not be created.
