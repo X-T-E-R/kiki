@@ -60,6 +60,10 @@ export function isOAuthCatalogVendor(id: string | undefined): boolean {
   );
 }
 
+export function usesKimiToolSchema(id: string | undefined): boolean {
+  return id === 'kimi' || isOAuthCatalogVendor(id);
+}
+
 export function listProviderDefinitions(): readonly ProviderDefinition[] {
   return [...providerDefinitions.values()].flatMap((byProtocol) => [...byProtocol.values()]);
 }

@@ -215,6 +215,33 @@ describe('server-v2 /api model/provider catalog', () => {
     });
   });
 
+  it('tests a saved provider and reads only the latest sanitized persisted result', async () => {
+    await boot(CATALOG_TOML);
+    const ping = vi.spyOn(server!.core.accessor.get(IModelCatalog), 'ping').mockResolvedValue({
+      ok: false, durationMs: 11, errorCode: 'provider.auth', httpStatus: 401,
+      error: 'sk-sensitive leaked upstream',
+    });
+    const first = await getJson<{ items: unknown[] }>('/api/providers:health');
+    expect(first.body.data.items).toEqual([]);
+    const tested = await postJson<{ provider_id: string; model_id: string; error: string; ok: boolean }>('/api/providers/kimi:test');
+    expect(tested.body.code).toBe(0);
+    expect(tested.body.data).toMatchObject({ provider_id: 'kimi', model_id: 'k2', ok: false,
+      error: 'The test request failed (HTTP 401).' });
+    expect(ping).toHaveBeenCalledOnce();
+    expect(ping).toHaveBeenCalledWith('k2');
+    expect(JSON.stringify(tested.body)).not.toContain('sk-sensitive');
+    const latest = await getJson<{ items: unknown[] }>('/api/providers:health');
+    expect(latest.body.data.items).toEqual([tested.body.data]);
+    await server!.close();
+    server = undefined;
+    await boot();
+    const afterRestart = await getJson<{ items: unknown[] }>('/api/providers:health');
+    expect(afterRestart.body.data.items).toEqual([tested.body.data]);
+    const rejected = await postJson<unknown>('/api/providers/kimi:test', { api_key: 'sk-request-only' });
+    expect(rejected.body.code).toBe(40001);
+    expect(ping).toHaveBeenCalledOnce();
+  });
+
   it('lists configured models as selectable aliases', async () => {
     await boot(CATALOG_TOML);
     const { status, body } = await getJson<{ items: unknown[] }>('/api/models');

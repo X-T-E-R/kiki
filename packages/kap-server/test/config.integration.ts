@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { ConfigChanged, IEventService } from '@kiki/agent-core-v2';
 import { configResponseSchema, type ConfigResponse } from '../src/protocol/rest-config';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -381,6 +382,54 @@ describe('server-v2 /api/config', () => {
     const cleared = await patchConfig({ subagent: { allowed_tools: [] } });
     expect(cleared.subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: [] });
     expect((await getConfig()).subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: [] });
+  });
+
+  it('round-trips the subagent default_model and top-level fast_model, emitting each patch as ConfigChanged and clearing both with null', async () => {
+    await boot();
+    const events: ConfigChanged[] = [];
+    const subscription = (server as RunningServer).core.accessor
+      .get(IEventService)
+      .onDidPublish((event) => { if (event instanceof ConfigChanged) events.push(event); });
+
+    try {
+      const set = await patchConfig({
+        subagent: { default_model: 'explore/fast', timeout_ms: 60_000 },
+        fast_model: 'kimi-code/kimi-k2',
+      });
+      expect(set.subagent).toMatchObject({ defaultModel: 'explore/fast', timeoutMs: 60_000 });
+      expect(set.fast_model).toBe('kimi-code/kimi-k2');
+
+      const after = await getConfig();
+      expect(after.subagent?.defaultModel).toBe('explore/fast');
+      expect(after.fast_model).toBe('kimi-code/kimi-k2');
+
+      const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+      expect(persisted).toContain('default_model = "explore/fast"');
+      expect(persisted).toContain('fast_model = "kimi-code/kimi-k2"');
+
+      const published = events.at(-1);
+      expect(published?.payload.changedFields).toEqual(expect.arrayContaining(['subagent', 'fast_model']));
+      expect(published?.payload.config).toMatchObject({
+        subagent: { defaultModel: 'explore/fast' },
+        fast_model: 'kimi-code/kimi-k2',
+      });
+
+      const cleared = await patchConfig({ subagent: { default_model: null }, fast_model: null });
+      expect(cleared.subagent?.defaultModel).toBeUndefined();
+      expect(cleared.subagent?.timeoutMs).toBe(60_000);
+      expect(cleared.fast_model).toBeUndefined();
+
+      const clearedAgain = await getConfig();
+      expect(clearedAgain.subagent?.defaultModel).toBeUndefined();
+      expect(clearedAgain.fast_model).toBeUndefined();
+
+      const clearedText = await readFile(join(home as string, 'config.toml'), 'utf-8');
+      expect(clearedText).not.toContain('default_model');
+      expect(clearedText).not.toContain('fast_model');
+      expect(clearedText).toContain('timeout_ms = 60000');
+    } finally {
+      subscription.dispose();
+    }
   });
 
   it('preserves the Kimi Code compatibility flag across partial identity patches', async () => {

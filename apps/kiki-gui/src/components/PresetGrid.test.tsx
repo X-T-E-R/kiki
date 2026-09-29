@@ -51,7 +51,7 @@ async function click(button: Element): Promise<void> {
 }
 
 describe('protocol-first API connection picker', () => {
-  it('shows five wire protocols and five shortcuts, not the full vendor list', async () => {
+  it('shows five wire protocols and vendor-neutral shortcuts, not the full vendor list', async () => {
     const { container, onPick } = await mount();
     expect([...container.querySelectorAll('[data-provider-protocol]')].map((button) =>
       button.getAttribute('data-provider-protocol'))).toEqual([
@@ -59,8 +59,10 @@ describe('protocol-first API connection picker', () => {
     ]);
     expect([...container.querySelectorAll('[data-provider-template]')].map((button) =>
       button.getAttribute('data-provider-template'))).toEqual([
-      'openai', 'anthropic', 'gemini', 'deepseek', 'moonshot',
+      'openai', 'anthropic', 'gemini', 'deepseek', 'openrouter', 'ollama',
     ]);
+    // Presets only fill a URL; no single vendor is promoted to the front row.
+    expect(container.querySelector('[data-provider-template="moonshot"]')).toBeNull();
     expect(container.textContent).not.toContain('Local servers');
     expect(container.textContent).not.toContain('API gateways');
     expect(container.querySelector('[data-provider-protocol="openai"] span[title]')?.getAttribute('title')).toBe('OpenAI Chat Completions');

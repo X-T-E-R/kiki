@@ -1,32 +1,37 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ProviderCatalogItem } from '@kiki/protocol';
+import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { AccountSignIn, OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
-import { Hint, InlineError } from '../controls';
-import { useGuardedNavigate } from '../dirtyGuard';
-import { NewProviderWizard, ProviderEditor } from '../ProviderFields';
-import { PROTOCOL_ORDER, protocolLabel } from '../providerPresets';
+import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
+import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { Icon } from '../icons';
+import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '../ProviderFields';
+import { connectionKind, type ConnectionKind } from '../providerPresets';
 import { SECONDARY_BUTTON } from '../ui';
+import { ExternalEnginesList } from './ExternalEnginesSection';
 import { SectionCard } from './SectionCard';
 
+const KIND_ORDER: readonly ConnectionKind[] = ['account', 'api', 'local'];
+
 /**
- * Tab 1 of "Models & providers": everything about connecting a service.
- * Two ways in, in the order most people need them — an API key for any
- * provider (the general path), or signing in with an account (Kimi Code,
- * GitHub Copilot, ChatGPT). Configured connections follow, grouped by the
- * wire protocol they speak, so the list reads the same whichever vendor sits
- * behind each one. Model browsing and new-session defaults live on the
- * sibling tabs.
+ * Connections tab: the services Kiki can reach. One list of configured
+ * connections — account sign-ins, hosted APIs and local servers side by side,
+ * each a row with its address, model count and health in words — and one
+ * "Add connection" entry that first asks how (API key or account), then
+ * which protocol. Vendors are presets inside that flow, never a type.
  */
 export function ConnectionsTab() {
   const { client } = useConnection();
-  const { t } = useI18n();
-  const navigate = useGuardedNavigate();
+  const { t, locale } = useI18n();
+  const { hash } = useLocation();
   const queryClient = useQueryClient();
+  const [signingOut, setSigningOut] = useState<string | null>(null);
+  const [signOutFeedback, setSignOutFeedback] = useState<Feedback>(null);
 
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -40,85 +45,108 @@ export function ConnectionsTab() {
       queryClient.invalidateQueries({ queryKey: ['auth'] }),
       queryClient.invalidateQueries({ queryKey: ['config'] }),
       queryClient.invalidateQueries({ queryKey: OAUTH_METHODS_QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: PROVIDER_HEALTH_QUERY_KEY }),
     ]);
   }, [queryClient]);
 
   const providerItems = providersQuery.data?.items ?? [];
-  const accountProviders = new Set((methodsQuery.data ?? []).map((method) => method.provider));
+  const methods = methodsQuery.data ?? [];
+  const accountProviders = new Set(methods.map((method) => method.provider));
+  const methodFor = (providerId: string) => methods.find((method) => method.provider === providerId);
   const modelCount = (providerId: string) =>
     (modelsQuery.data?.items ?? []).filter((model) => model.provider_id === providerId).length;
-  const unconfiguredCount = providerItems.filter(
-    (provider) => !provider.has_api_key && !accountProviders.has(provider.id),
-  ).length;
+  const ordered = providerItems.toSorted((a: ProviderCatalogItem, b: ProviderCatalogItem) =>
+    KIND_ORDER.indexOf(connectionKind(a, accountProviders)) - KIND_ORDER.indexOf(connectionKind(b, accountProviders))
+    || a.id.localeCompare(b.id));
+  const empty = providersQuery.isSuccess && providerItems.length === 0;
+  // The /new banner deep-links to account sign-in; open the add flow on it.
+  const wantsAccount = hash === '#st-card-auth';
+  const [adding, setAdding] = useState(false);
+  const addOpen = adding || empty || wantsAccount || hash === '#st-card-providers-add';
 
-  const groups = new Map<string, ProviderCatalogItem[]>();
-  for (const provider of providerItems) {
-    const key = accountProviders.has(provider.id) ? 'account' : provider.type;
-    groups.set(key, [...(groups.get(key) ?? []), provider]);
-  }
-  const order = ['account', ...PROTOCOL_ORDER];
-  const orderedGroups = [...groups.entries()].toSorted(
-    ([a], [b]) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)),
-  );
+  const signOut = async (providerId: string) => {
+    const method = methodFor(providerId);
+    if (method === undefined) return;
+    setSigningOut(providerId);
+    setSignOutFeedback(null);
+    try {
+      await client.logoutOAuth({ provider: method.id });
+      setSignOutFeedback({ tone: 'success', text: t('st.account.signedOut', { method: method.label }) });
+      await refreshProviderData();
+    } catch (error) {
+      setSignOutFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSigningOut(null);
+    }
+  };
 
   return (
-    <div className="space-y-4">
-      <p className="max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('st.connections.intro')}</p>
-
-      <SectionCard id="st-card-providers-add" title={t('st.providers.addTitle')} aside={t('st.providers.addAside')}>
-        <NewProviderWizard onSaved={refreshProviderData} />
-      </SectionCard>
-
-      <SectionCard id="st-card-auth" title={t('st.account.title')} aside={t('st.account.aside')}>
-        <AccountSignIn onChanged={refreshProviderData} />
-      </SectionCard>
-
+    <div className="space-y-6">
       <SectionCard id="st-card-providers" title={t('st.providers.title')}>
-        <div className="space-y-4">
-          {providerItems.length > 0 ? <Hint>{t('st.providers.listHint')}</Hint> : null}
-          {orderedGroups.map(([group, providers]) => (
-            <section key={group} data-provider-group={group} className="space-y-2">
-              <p className="flex items-baseline gap-2 text-[12px] font-medium text-ink-soft">
-                {group === 'account' ? t('st.providers.groupAccount') : protocolLabel(group)}
-                <span className="font-mono text-[11px] font-normal text-ink-faint">{providers.length}</span>
-              </p>
-              {providers.map((provider) => (
-                <ProviderEditor
-                  key={provider.id}
-                  provider={provider}
-                  models={modelsQuery.data?.items ?? []}
-                  managed={accountProviders.has(provider.id)}
-                  modelCount={modelCount(provider.id)}
-                  onSaved={refreshProviderData}
-                />
-              ))}
-            </section>
-          ))}
-          {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
-          {providersQuery.data?.items.length === 0 ? (
-            <div className="space-y-1.5 rounded-lg border border-dashed border-hairline-strong px-3 py-4">
-              <p className="text-[13px] text-ink-soft">{t('st.providers.empty')}</p>
-              <Hint>{t('st.providers.emptyGo')}</Hint>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.connections.intro')}</p>
+            {!addOpen ? (
+              <button type="button" data-add-connection className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                onClick={() => { setAdding(true); }}>
+                <Icon name="plus" size={12} />
+                {t('st.connections.add')}
+              </button>
+            ) : null}
+          </div>
+          {ordered.length > 0 ? (
+            <div data-connection-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
+              {ordered.map((provider) => {
+                const method = methodFor(provider.id);
+                return (
+                  <ProviderEditor
+                    key={provider.id}
+                    provider={provider}
+                    models={modelsQuery.data?.items ?? []}
+                    managed={accountProviders.has(provider.id)}
+                    modelCount={modelCount(provider.id)}
+                    onSaved={refreshProviderData}
+                    accountLabel={method?.label}
+                    account={method}
+                    onSignOut={method?.signed_in === true ? () => void signOut(provider.id) : undefined}
+                    signingOut={signingOut === provider.id}
+                  />
+                );
+              })}
             </div>
           ) : null}
+          {empty ? (
+            <div data-connections-empty className="rounded-lg border border-dashed border-hairline-strong px-4 py-5">
+              <p className="text-[13px] font-medium text-ink">{t('st.connections.emptyTitle')}</p>
+              <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.connections.emptyBody')}</p>
+            </div>
+          ) : null}
+          {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
           {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
+          <FeedbackLine feedback={signOutFeedback} />
         </div>
       </SectionCard>
 
-      {providerItems.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-hairline bg-panel px-3 py-2.5">
-          <Hint>
-            {t('st.providers.nextStepHint')}
-            {unconfiguredCount > 0 ? ` ${t('st.providers.nextStepUnconfigured', { count: unconfiguredCount })}` : ''}
-          </Hint>
-          <button
-            type="button"
-            className={`${SECONDARY_BUTTON} ml-auto`}
-            onClick={() => { navigate('/settings/ai?tab=models'); }}
-          >
-            {t('st.defaults.pickModel')}
-          </button>
-        </div>
+      <SectionCard id="st-card-engines" title={t('st.engines.title')}><ExternalEnginesList /></SectionCard>
+
+      {addOpen ? (
+        <SectionCard id="st-card-providers-add" title={t('st.connections.addTitle')}>
+          <span id="st-card-auth" aria-hidden className="block" />
+          <div className="space-y-3">
+            <NewProviderWizard
+              key={wantsAccount ? 'account' : 'api'}
+              initialMethod={wantsAccount ? 'account' : 'api'}
+              onSaved={async () => { await refreshProviderData(); setAdding(false); }}
+              onAccountChanged={refreshProviderData}
+            />
+            {!empty && adding ? (
+              <button type="button" className="h-7 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
+                onClick={() => { setAdding(false); }}>
+                {t('common.cancel')}
+              </button>
+            ) : null}
+          </div>
+        </SectionCard>
       ) : null}
     </div>
   );

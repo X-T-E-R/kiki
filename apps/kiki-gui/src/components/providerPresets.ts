@@ -104,6 +104,43 @@ export function vendorLabelFor(baseUrl: string | undefined): string | undefined 
   return match?.label;
 }
 
+/**
+ * How a configured connection reaches its models, as the list groups them:
+ * an account sign-in (OAuth-managed), a server on this machine, or a hosted
+ * API reached with a key. There is deliberately no per-vendor kind.
+ */
+export type ConnectionKind = 'account' | 'local' | 'api';
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
+
+export function isLocalBaseUrl(baseUrl: string | undefined): boolean {
+  if (baseUrl === undefined || baseUrl === '') return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return LOCAL_HOSTS.has(host) || host.endsWith('.local') || /^192\.168\.|^10\./.test(host);
+  } catch {
+    return false;
+  }
+}
+
+export function connectionKind(
+  provider: { readonly id: string; readonly base_url?: string },
+  accountProviders: ReadonlySet<string>,
+): ConnectionKind {
+  if (accountProviders.has(provider.id)) return 'account';
+  return isLocalBaseUrl(provider.base_url) ? 'local' : 'api';
+}
+
+/** `api.deepseek.com` / `localhost:11434` — the address a person recognizes. */
+export function hostLabel(baseUrl: string | undefined): string | undefined {
+  if (baseUrl === undefined || baseUrl === '') return undefined;
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
 /** One blank model row sized for the protocol or preset. */
 export function blankModelRow(contextSize: number): ProviderDraft['models'][number] {
   return {

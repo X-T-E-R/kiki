@@ -55,6 +55,14 @@ export interface OAuthMethodStatus {
   readonly provider: string;
   readonly protocol: string;
   readonly signed_in: boolean;
+  readonly account: { readonly state: 'known'; readonly id: string } | { readonly state: 'unknown' };
+  readonly quota: {
+    readonly state: 'known';
+    readonly label: string;
+    readonly remaining: number;
+    readonly unit: 'count' | 'percent';
+    readonly reset_at?: string;
+  } | { readonly state: 'unknown' };
 }
 
 export const IOAuthService: ServiceIdentifier<IOAuthService> =

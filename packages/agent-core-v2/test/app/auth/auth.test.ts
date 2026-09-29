@@ -931,6 +931,7 @@ describe('OAuthService', () => {
       login: ReturnType<typeof vi.fn>;
       logout: ReturnType<typeof vi.fn>;
       getCachedAccessToken: ReturnType<typeof vi.fn>;
+      getAccountDetails: ReturnType<typeof vi.fn>;
       tokenProvider: ReturnType<typeof vi.fn>;
     };
 
@@ -954,6 +955,7 @@ describe('OAuthService', () => {
         login: vi.fn((_provider: string, options: { onDeviceCode?: (device: typeof deviceAuth) => void }) => loginImpl(options)),
         logout: vi.fn(async () => { cached = undefined; }),
         getCachedAccessToken: vi.fn(async () => cached),
+        getAccountDetails: vi.fn(async () => ({})),
         tokenProvider: vi.fn(() => ({ getAccessToken: async () => copilotToken })),
       };
       (toolkit as unknown as { deviceMethods: unknown }).deviceMethods = deviceMethods;
@@ -967,7 +969,44 @@ describe('OAuthService', () => {
         provider: 'managed:github-copilot',
         protocol: 'openai',
         signed_in: false,
+        account: { state: 'unknown' },
+        quota: { state: 'unknown' },
       });
+      expect(toolkit.getManagedUsage).not.toHaveBeenCalled();
+    });
+
+    it('projects signed-in accounts and quotas without exposing token material', async () => {
+      toolkit.getCachedAccessToken.mockResolvedValue('sensitive-kimi-token');
+      toolkit.getManagedUserInfo.mockResolvedValue({ kind: 'ok', userInfo: {
+        userId: 'u_123', username: 'moonwalker',
+      } });
+      toolkit.getManagedUsage.mockResolvedValue({ kind: 'ok', summary: {
+        used: 36, limit: 100, unit: 'percent', resetAt: '2026-10-01T00:00:00Z',
+      }, limits: [], extraUsage: null });
+      providers['managed:github-copilot'] = { type: 'openai', oauth: { storage: 'file', key: 'oauth/github-copilot' } };
+      cached = 'sensitive-copilot-token';
+      deviceMethods.getAccountDetails.mockResolvedValue({ accountId: 'octocat', quota: {
+        label: 'Premium interactions', remaining: 25, unit: 'count',
+      } });
+      const methods = await createService().listMethods();
+      expect(methods.find((method) => method.id === 'kimi-code')).toMatchObject({
+        signed_in: true, account: { state: 'known', id: 'moonwalker' },
+        quota: { state: 'known', remaining: 64, unit: 'percent' },
+      });
+      expect(methods.find((method) => method.id === 'github-copilot')).toMatchObject({
+        signed_in: true, account: { state: 'known', id: 'octocat' },
+        quota: { state: 'known', remaining: 25, unit: 'count' },
+      });
+      expect(JSON.stringify(methods)).not.toContain('sensitive-kimi-token');
+    });
+
+    it('reports unknown independently when account or quota data is unavailable', async () => {
+      toolkit.getCachedAccessToken.mockResolvedValue('token');
+      toolkit.getManagedUserInfo.mockRejectedValue(new Error('credential-secret'));
+      toolkit.getManagedUsage.mockResolvedValue({ kind: 'ok', summary: null, limits: [], extraUsage: null });
+      const method = (await createService().listMethods()).find((item) => item.id === 'kimi-code');
+      expect(method).toMatchObject({ signed_in: true, account: { state: 'unknown' }, quota: { state: 'unknown' } });
+      expect(JSON.stringify(method)).not.toContain('credential-secret');
     });
 
     it('signs in by method id, then provisions the provider and its models', async () => {

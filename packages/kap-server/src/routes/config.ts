@@ -1,6 +1,7 @@
 import {
   ConfigChanged,
   ConfigTarget,
+  FAST_MODEL_SECTION,
   IConfigService,
   IEventService,
   type Scope,
@@ -11,6 +12,7 @@ import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/c
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
+import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
   NB_SEARCH_SECTION,
@@ -131,6 +133,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
+          } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
+            await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
+          } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
+            await config.replace(FAST_MODEL_SECTION, null, ConfigTarget.User);
           } else if (domain === 'prompt' && replaceDomains.has(domain)) {
             await config.replaceSections({ [domain]: camelPatch[domain] }, ConfigTarget.User);
           } else if (replaceDomains.has(domain)) {
@@ -231,6 +237,23 @@ function sendMigrationFailure(req: { id: string }, reply: { send(payload: unknow
   requestLog(req)?.warn({ operation, conflict }, 'config migration refused');
   reply.send(errEnvelope(conflict ? ErrorCode.CONFIG_REVISION_CONFLICT : ErrorCode.VALIDATION_FAILED,
     conflict ? 'Config changed; preview again before continuing.' : 'Migration failed; inspect the configuration and backup before retrying.', req.id));
+}
+
+function isSubagentDefaultModelClear(value: unknown): value is Record<string, unknown> {
+  return isPlainObject(value) && value['defaultModel'] === null;
+}
+
+async function clearSubagentDefaultModel(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+  const current = config.inspect<Record<string, unknown>>(SUBAGENT_SECTION).userValue;
+  const next: Record<string, unknown> = isPlainObject(current) ? { ...current } : {};
+  delete next['defaultModel'];
+  for (const [key, value] of Object.entries(patch)) {
+    if (key !== 'defaultModel') next[key] = value;
+  }
+  await config.replace(SUBAGENT_SECTION, null, ConfigTarget.User);
+  if (Object.keys(next).length > 0) {
+    await config.replace(SUBAGENT_SECTION, next, ConfigTarget.User);
+  }
 }
 
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {

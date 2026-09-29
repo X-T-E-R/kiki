@@ -26,6 +26,30 @@ describe('config REST protocol', () => {
     expect(patchConfigRequestSchema.safeParse({ subagent: { subagent_dispatch_policy: 'off' } }).success).toBe(false);
   });
 
+  it('round-trips the subagent default_model and the top-level fast_model, clearing each with null', () => {
+    expect(patchConfigRequestSchema.parse({
+      subagent: { default_model: 'explore/fast' },
+      fast_model: 'kimi-code/kimi-k2',
+    })).toEqual({
+      subagent: { default_model: 'explore/fast' },
+      fast_model: 'kimi-code/kimi-k2',
+    });
+    expect(patchConfigRequestSchema.parse({
+      subagent: { default_model: null },
+      fast_model: null,
+    })).toEqual({
+      subagent: { default_model: null },
+      fast_model: null,
+    });
+    expect(configResponseSchema.parse({
+      subagent: { defaultModel: 'explore/fast' },
+      fast_model: 'kimi-code/kimi-k2',
+    })).toMatchObject({
+      subagent: { defaultModel: 'explore/fast' },
+      fast_model: 'kimi-code/kimi-k2',
+    });
+  });
+
   it('omits the retired telemetry patch field', () => {
     expect(patchConfigRequestSchema.parse({ telemetry: false })).toEqual({});
   });

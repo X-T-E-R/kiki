@@ -244,6 +244,7 @@ describe('parseManagedUsagePayload (quota model)', () => {
         window: { duration: 1, unit: 'week' },
         used: 20,
         limit: 100,
+        unit: 'percent',
         resetAt: '2026-09-17T00:00:00Z',
       },
       limits: [
@@ -251,10 +252,11 @@ describe('parseManagedUsagePayload (quota model)', () => {
           window: { duration: 5, unit: 'hour' },
           used: 30,
           limit: 100,
+          unit: 'percent',
           resetAt: '2026-09-11T18:00:00Z',
         },
-        { name: 'Monthly limit', used: 40, limit: 100, resetAt: '2026-10-01T00:00:00Z' },
-        { name: 'Monthly code usage', used: 25, limit: 100, resetAt: '2026-10-01T00:00:00Z' },
+        { name: 'Monthly limit', used: 40, limit: 100, unit: 'percent', resetAt: '2026-10-01T00:00:00Z' },
+        { name: 'Monthly code usage', used: 25, limit: 100, unit: 'percent', resetAt: '2026-10-01T00:00:00Z' },
       ],
       extraUsage: null,
     });
@@ -278,7 +280,7 @@ describe('parseManagedUsagePayload (quota model)', () => {
     });
 
     expect(parsed.summary).toBeNull();
-    expect(parsed.limits).toEqual([{ name: 'Monthly code usage', used: 25, limit: 100 }]);
+    expect(parsed.limits).toEqual([{ name: 'Monthly code usage', used: 25, limit: 100, unit: 'percent' }]);
   });
 
   it('keeps reset_time only when it is a non-empty string', () => {

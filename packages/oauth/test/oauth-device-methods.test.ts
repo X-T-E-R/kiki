@@ -276,6 +276,50 @@ describe('OAuthDeviceMethods token lifecycle', () => {
     expect(storage.tokens.has('github-copilot')).toBe(false);
   });
 
+  it('reads Copilot identity and an actual quota snapshot without returning credentials', async () => {
+    const storage = new MemoryTokenStorage();
+    await storage.save('github-copilot', {
+      accessToken: 'short-lived', refreshToken: 'gho-private', expiresAt: 9999999999,
+      scope: 'read:user', tokenType: 'Bearer', expiresIn: 3600,
+    });
+    const fetchImpl = fakeFetch({
+      'https://api.github.com/user': (_url, init) => {
+        expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer gho-private');
+        return json({ login: 'octocat', email: 'private@example.com' });
+      },
+      'https://api.github.com/copilot_internal/user': () => json({
+        quota_snapshots: { premium_interactions: {
+          entitlement: 300, remaining: 75, percent_remaining: 25,
+          reset_date: '2026-10-01T00:00:00Z',
+        } },
+      }),
+    });
+    const methods = new OAuthDeviceMethods({ homeDir: '/unused', storage, fetchImpl });
+    const details = await methods.getAccountDetails('managed:github-copilot');
+    expect(details).toEqual({ accountId: 'octocat', quota: {
+      label: 'Premium interactions', remaining: 75, unit: 'count', resetAt: '2026-10-01T00:00:00Z',
+    } });
+    expect(JSON.stringify(details)).not.toContain('gho-private');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns unknown quota when Copilot reports no usable personal allowance', async () => {
+    const storage = new MemoryTokenStorage();
+    await storage.save('github-copilot', {
+      accessToken: 'short-lived', refreshToken: 'gho-private', expiresAt: 9999999999,
+      scope: 'read:user', tokenType: 'Bearer', expiresIn: 3600,
+    });
+    const fetchImpl = fakeFetch({
+      'https://api.github.com/user': () => json({ login: 'octocat' }),
+      'https://api.github.com/copilot_internal/user': () => json({
+        quota_snapshots: { premium_interactions: { entitlement: 0, remaining: 0, percent_remaining: 0 } },
+      }),
+    });
+    const methods = new OAuthDeviceMethods({ homeDir: '/unused', storage, fetchImpl });
+    expect(await methods.getAccountDetails('github-copilot')).toEqual({ accountId: 'octocat' });
+    expect(await methods.getAccountDetails('openai-codex')).toEqual({});
+  });
+
   it('refuses Kimi Code, which keeps its own toolkit', () => {
     const methods = new OAuthDeviceMethods({ homeDir: '/unused', storage: new MemoryTokenStorage() });
     expect(() => methods.method('kimi-code')).toThrow(/no device sign-in/);

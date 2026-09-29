@@ -14,7 +14,7 @@ import {
   type ProtocolProviderOptions,
 } from '#/kosong/protocol/protocol';
 
-import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
+import { APIStatusError, CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import {
   LATEST_OPUS_PROFILE,
   matchKnownAnthropicModelProfile,
@@ -179,7 +179,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }], toolCalls: [] }],
         },
         undefined,
-        { maxCompletionTokens: 512 },
+        { maxCompletionTokens: 32 },
       )) {
         if (event.type === 'part' && event.part.type === 'text') {
           text += event.part.text;
@@ -199,6 +199,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           baseUrl: model.baseUrl,
           headers,
         }),
+        errorCode: error instanceof Error2 ? error.code : undefined,
+        httpStatus: error instanceof APIStatusError ? error.statusCode : undefined,
       };
     }
   }

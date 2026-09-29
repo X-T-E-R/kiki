@@ -12,6 +12,7 @@ import {
   providerModelDraftsEqual,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
+  sessionTitleModelPatch,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
   writeSettings,
@@ -25,13 +26,22 @@ import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import { ContextStepper, ImagePolicyEditor, SavedGenerationParametersEditor } from '../ProviderFields';
+import {
+  AdvancedDisclosure,
+  CapabilityMarks,
+  ContextStepper,
+  ImagePolicyEditor,
+  SavedGenerationParametersEditor,
+} from '../ProviderFields';
+import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
+import { GlobalCompactionCard, ModelContextFields } from './ContextWindowSettings';
 import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { SearchableSelect } from '../SearchableSelect';
+import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 import { DisclosureChevron, Icon } from '../icons';
 
@@ -126,6 +136,12 @@ export function ModelCatalogCard() {
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
+  const methodsQuery = useQuery({
+    queryKey: OAUTH_METHODS_QUERY_KEY,
+    queryFn: () => client.listOAuthMethods(),
+    staleTime: 10_000,
+    enabled: typeof client.listOAuthMethods === 'function',
+  });
   const items = modelsQuery.data?.items ?? [];
   const providers = useMemo(
     () => new Map((providersQuery.data?.items ?? []).map((provider) => [provider.id, provider])),
@@ -209,11 +225,26 @@ export function ModelCatalogCard() {
   const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError
     && items.length === 0 && modelQuery.trim() === '';
 
+  const defaultItem = items.find((item) => item.id === defaultModel);
+  const accountLabels = new Map((methodsQuery.data ?? []).map((method) => [method.provider, method.label]));
+  const groupLabel = (providerId: string) =>
+    accountLabels.get(providerId) ?? vendorLabelFor(providers.get(providerId)?.base_url) ?? providerId;
+
   return (
     <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <Hint>{t('st.models.catalogHint')}</Hint>
+      <div className="space-y-3">
+        {/* The one global default, stated once, above the list it is picked from. */}
+        <div data-default-model-line className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+          <span className="text-ink-soft">{t('st.models.newSessionsUse')}</span>
+          {defaultItem !== undefined ? (
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-ink">
+              <Icon name="starFilled" size={12} className="text-ink" />
+              <span className="truncate">{defaultItem.display_name ?? defaultItem.id}</span>
+              <span className="truncate text-[12px] font-normal text-ink-faint">{groupLabel(defaultItem.provider_id)}</span>
+            </span>
+          ) : (
+            <span className="text-ink-faint">{defaultModel ?? t('st.models.noDefault')}</span>
+          )}
           <span className="ml-auto"><SavedTick show={tick} /></span>
         </div>
         <input
@@ -227,25 +258,16 @@ export function ModelCatalogCard() {
         <div className="space-y-4">
           {groups.map((group) => {
             const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
-            const providerDefault = provider?.default_model;
             const hidden = matchedIds !== null && !group.models.some((item) => matchedIds.has(item.id));
             return (
-              <div key={group.provider} style={hidden ? { display: 'none' } : undefined}>
-                <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                  <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
-                  {group.provider === defaultProvider ? (
-                    <span className="rounded-[4px] bg-success/10 px-1.5 py-px text-[11px] font-medium text-success">{t('st.models.default')}</span>
-                  ) : null}
-                  {providerDefault !== undefined && providerDefault !== null && providerDefault !== '' ? (
-                    <span
-                      className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-medium text-ink-faint"
-                      title={t('st.models.providerDefaultHint')}
-                    >
-                      {t('st.models.providerDefault')} · {providerDefault}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="space-y-1.5">
+              <div key={group.provider} data-model-group={group.provider} style={hidden ? { display: 'none' } : undefined}>
+                <p className="mb-1.5 flex items-baseline gap-2 px-1 text-[12px] font-medium text-ink-soft">
+                  {groupLabel(group.provider)}
+                  <span className="font-normal text-ink-faint">
+                    {matchedIds === null ? group.models.length : group.models.filter((item) => matchedIds.has(item.id)).length}
+                  </span>
+                </p>
+                <div className="overflow-hidden rounded-lg border border-hairline bg-panel">
                   {group.models.map((item) => (
                     <ModelRow
                       key={item.id}
@@ -267,8 +289,8 @@ export function ModelCatalogCard() {
           <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
         ) : null}
         {catalogEmpty ? (
-          <div className="space-y-2 rounded-lg border border-dashed border-hairline-strong px-3 py-4">
-            <p className="text-[12.5px] text-ink-soft">{t('st.models.emptyCatalog')}</p>
+          <div data-models-empty className="space-y-2 rounded-lg border border-dashed border-hairline-strong px-4 py-5">
+            <p className="text-[13px] text-ink-soft">{t('st.models.emptyCatalog')}</p>
             <button
               type="button"
               className={SECONDARY_BUTTON}
@@ -293,62 +315,187 @@ export function ModelCatalogCard() {
  * instead of duplicating the picker. This is deliberately distinct from the
  * per-provider default edited inside each provider.
  */
+const DEFAULT_PICKER =
+  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-ink-faint';
+
+/**
+ * Every "which model does X" choice in one place: new sessions, then the
+ * background jobs that run on their own model (session titles). Each row
+ * applies on pick. The new-session pick carries its connection along as the
+ * default provider, the same rule the star in the model list follows.
+ */
 export function GlobalDefaultsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
-  const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'model' | 'title' | 'subagent' | 'fast' | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
-  const defaultModel = configQuery.data?.default_model;
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const models = modelsQuery.data?.items ?? [];
+  const defaultModel = configQuery.data?.default_model ?? '';
   const defaultProvider = configQuery.data?.default_provider ?? '';
+  const titleModel = configQuery.data?.session_title?.model ?? '';
+  const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
+  const fastModel = configQuery.data?.fast_model ?? '';
+  const options = useMemo(() => buildCatalogModelOptions(models, t), [models, t]);
 
-  const selectDefaultProvider = async (providerId: string) => {
-    setBusy(true);
+  // These two keys PATCH the normal config route, then re-read GET /config.
+  const pickConfigModel = async (which: 'subagent' | 'fast', modelId: string) => {
+    if (modelId === (which === 'subagent' ? subagentModel : fastModel)) return;
+    setBusy(which);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig({ default_provider: providerId });
-      queryClient.setQueryData(['config'], echoed);
+      if (which === 'subagent') await client.setSubagentDefaultModel(modelId);
+      else await client.setFastModel(modelId);
+      queryClient.setQueryData(['config'], await client.getConfig());
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
+  };
+
+  const pickDefault = async (modelId: string) => {
+    const item = models.find((candidate) => candidate.id === modelId);
+    if (item === undefined || modelId === defaultModel) return;
+    setBusy('model');
+    setFeedback(null);
+    try {
+      const echoed = await client.setDefaultModel(item.id);
+      queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({ ...current, default_model: echoed.default_model }));
+      writeSettings({ defaultModel: echoed.default_model });
+      if (item.provider_id !== defaultProvider) {
+        queryClient.setQueryData(['config'], await client.patchConfig({ default_provider: item.provider_id }));
+      }
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pickTitle = async (modelId: string) => {
+    if (modelId === titleModel) return;
+    setBusy('title');
+    setFeedback(null);
+    try {
+      queryClient.setQueryData(['config'], await client.patchConfig(sessionTitleModelPatch(modelId)));
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rows = [
+    {
+      id: 'new-session',
+      label: t('st.defaults.row.newSession'),
+      help: t('st.defaults.row.newSessionHelp'),
+      picker: (
+        <SearchableSelect
+          id="st-default-model"
+          value={defaultModel}
+          options={options}
+          onChange={(value) => void pickDefault(value)}
+          ariaLabel={t('st.defaults.row.newSession')}
+          searchPlaceholder={t('st.models.searchPlaceholder')}
+          emptyText={t('st.models.noDefault')}
+          disabled={busy !== null || models.length === 0}
+          buttonClassName={DEFAULT_PICKER}
+        />
+      ),
+    },
+    {
+      id: 'session-title',
+      label: t('st.defaults.row.title'),
+      help: titleModel === '' && fastModel !== ''
+        ? t('st.defaults.row.titleFallsBack', { model: fastModel })
+        : t('st.defaults.row.titleHelp'),
+      picker: (
+        <SearchableSelect
+          id="st-default-title-model"
+          value={titleModel}
+          options={[{ value: '', label: t('st.sessionTitleModel.managedDefault'), description: t('st.sessionTitleModel.managedDesc') }, ...options]}
+          onChange={(value) => void pickTitle(value)}
+          ariaLabel={t('st.defaults.row.title')}
+          searchPlaceholder={t('st.models.searchPlaceholder')}
+          emptyText={t('st.sessionTitleModel.managedDefault')}
+          allowCustomValue
+          disabled={busy !== null}
+          buttonClassName={DEFAULT_PICKER}
+        />
+      ),
+    },
+    {
+      id: 'fast',
+      label: t('st.defaults.row.fast'),
+      help: t('st.defaults.row.fastHelp'),
+      picker: (
+        <SearchableSelect
+          id="st-default-fast-model"
+          value={fastModel}
+          options={[{ value: '', label: t('st.defaults.row.fastUnset') }, ...options]}
+          onChange={(value) => void pickConfigModel('fast', value)}
+          ariaLabel={t('st.defaults.row.fast')}
+          searchPlaceholder={t('st.models.searchPlaceholder')}
+          emptyText={t('st.defaults.row.fastUnset')}
+          allowCustomValue
+          disabled={busy !== null}
+          buttonClassName={DEFAULT_PICKER}
+        />
+      ),
+    },
+    {
+      id: 'subagent',
+      label: t('st.defaults.row.subagent'),
+      help: t('st.defaults.row.subagentHelp'),
+      picker: (
+        <SearchableSelect
+          id="st-default-subagent-model"
+          value={subagentModel}
+          options={[{ value: '', label: t('st.defaults.row.subagentUnset') }, ...options]}
+          onChange={(value) => void pickConfigModel('subagent', value)}
+          ariaLabel={t('st.defaults.row.subagent')}
+          searchPlaceholder={t('st.models.searchPlaceholder')}
+          emptyText={t('st.defaults.row.subagentUnset')}
+          allowCustomValue
+          disabled={busy !== null}
+          buttonClassName={DEFAULT_PICKER}
+        />
+      ),
+    },
+  ];
+  const pickerId: Record<string, string> = {
+    'new-session': 'st-default-model', 'session-title': 'st-default-title-model',
+    fast: 'st-default-fast-model', subagent: 'st-default-subagent-model',
   };
 
   return (
     <SectionCard id="st-card-global-defaults" title={t('st.defaults.globalTitle')}>
       <div className="space-y-3">
-        <div className="grid items-center gap-x-3 gap-y-2 sm:grid-cols-[6.5rem_minmax(0,1fr)]">
-          <span className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}</span>
-          <div className="flex items-center gap-2">
-            <SettingsSelect
-              ariaLabel={t('st.models.providerLabel')}
-              value={defaultProvider}
-              disabled={busy}
-              onChange={(value) => void selectDefaultProvider(value)}
-              choices={(providersQuery.data?.items ?? []).map((provider) => ({ value: provider.id, label: provider.id }))}
-            />
-            <SavedTick show={tick} />
-          </div>
-          <span className="text-[11px] font-medium text-ink-soft">{t('st.defaults.globalModelLabel')}</span>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="truncate font-mono text-[12px] text-ink">{defaultModel ?? t('st.auth.none')}</span>
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              onClick={() => { navigate('/settings/ai?tab=models'); }}
-            >
-              {t('st.defaults.pickModel')}
-            </button>
-          </div>
+        <div className="flex items-center gap-2">
+          <Hint>{t('st.defaults.globalHint')}</Hint>
+          <span className="ml-auto"><SavedTick show={tick} /></span>
         </div>
-        <Hint>{t('st.defaults.globalHint')}</Hint>
+        <div className="divide-y divide-hairline">
+          {rows.map((row) => (
+            <div key={row.id} data-default-row={row.id}
+              className="grid gap-x-6 gap-y-1.5 py-3 first:pt-0 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] sm:items-center">
+              <div className="min-w-0">
+                <label htmlFor={pickerId[row.id]} className="text-[13px] text-ink">{row.label}</label>
+                <p className="text-[12px] leading-4 text-ink-faint">{row.help}</p>
+              </div>
+              <div className="min-w-0">{row.picker}</div>
+            </div>
+          ))}
+        </div>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -531,14 +678,17 @@ export function CatalogRefreshCard() {
           disabled={busy}
         />
         {choice !== undefined ? (
-          <div className="space-y-2 rounded-lg border border-hairline p-3">
+          <div className="space-y-3 rounded-lg border border-hairline bg-paper p-3">
             <Hint>{t('st.catalogRefresh.saveHint')}</Hint>
-            <label className="block text-[11px] text-ink-soft">{t('st.catalogRefresh.alias')}
-              <input className={INPUT} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
+            <label className={FORM_LABEL}>{t('st.catalogRefresh.alias')}
+              <input className={`${INPUT} mt-1 font-normal`} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
             </label>
-            <ContextStepper value={context} onChange={setContext} ariaLabel={t('st.models.contextAria', { model: choice.model.remote_id })} />
             <div className="space-y-1">
-              <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
+              <p className={FORM_LABEL}>{t('st.compact.windowLabel')}</p>
+              <ContextStepper value={context} onChange={setContext} ariaLabel={t('st.models.contextAria', { model: choice.model.remote_id })} />
+            </div>
+            <div className="space-y-1">
+              <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
               <ChipSelect
                 values={capabilities}
                 knownOptions={KNOWN_CAPABILITIES}
@@ -549,12 +699,14 @@ export function CatalogRefreshCard() {
                 disabled={busy}
               />
             </div>
-            <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>{t('common.save')}</button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setSelected(''); }}>{t('common.cancel')}</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>{t('common.save')}</button>
+              <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setSelected(''); }}>{t('common.cancel')}</button>
+            </div>
           </div>
         ) : null}
         {(discovered.data?.items ?? []).map((group) => (
-          <p key={group.provider_id} className="text-[11px] text-ink-faint">
+          <p key={group.provider_id} className={`text-[12px] ${group.failure_reason === undefined ? 'text-ink-faint' : 'text-danger'}`}>
             {group.provider_id} · {t('st.catalogRefresh.suggestedCount', { count: group.models.length })}
             {group.fetched_at === null ? '' : ` · ${new Date(group.fetched_at).toLocaleString(locale)}`}
             {group.failure_reason === undefined ? '' : ` · ${t('st.catalogRefresh.lastFailure', { reason: group.failure_reason })}`}
@@ -703,26 +855,36 @@ export function ModelGenerationMigrationCard() {
   );
 }
 
-/** Tab 2 body of the merged "Models & providers" entry. */
+/** Models tab: the cross-connection list first, then adding models, then one-off maintenance. */
 export function ModelsTab() {
+  const { t } = useI18n();
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <ModelCatalogCard />
       <CatalogRefreshCard />
-      <ModelGenerationMigrationCard />
+      <details className="group border-t border-hairline pt-4" data-models-maintenance>
+        <summary className="flex h-7 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink [&::-webkit-details-marker]:hidden">
+          <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
+          {t('st.models.maintenance')}
+        </summary>
+        <div className="pt-4"><ModelGenerationMigrationCard /></div>
+      </details>
     </div>
   );
 }
 
-/** Tab 3 body: global default provider/model, request identity, thinking. */
+/**
+ * Defaults tab: which model each job uses, then how models behave by default
+ * (thinking, compaction), then what new sessions are allowed to do. Request
+ * identity is a protocol-level override and sits last.
+ */
 export function DefaultsTab() {
-  const { t } = useI18n();
   return (
-    <div className="space-y-4">
-      <Hint>{t('st.defaults.tabHint')}</Hint>
+    <div className="space-y-6">
       <GlobalDefaultsCard />
-      <GlobalRequestIdentityCard />
       <ThinkingCard />
+      <GlobalCompactionCard />
+      <GlobalRequestIdentityCard />
     </div>
   );
 }
@@ -781,10 +943,12 @@ function ModelRow({
   };
   return (
     <div
-      className="rounded-lg border border-hairline bg-paper px-3 py-2"
+      data-model-row={item.id}
+      data-default={isDefault ? 'true' : undefined}
+      className={`border-b border-hairline last:border-b-0 ${editorOpen ? 'bg-paper' : ''}`}
       style={hidden ? { display: 'none' } : undefined}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex min-h-11 items-center gap-2 py-1.5 pr-2 pl-1.5">
         <button
           type="button"
           onClick={onSetDefault}
@@ -792,56 +956,43 @@ function ModelRow({
           aria-label={t('st.models.starAria', { model: item.id })}
           title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
           aria-pressed={isDefault}
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-default ${
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default pointer-coarse:h-11 pointer-coarse:w-11 ${
             isDefault ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
           }`}
         >
-          <Icon name={isDefault ? 'check' : 'pin'} size={14} />
+          <Icon name={isDefault ? 'starFilled' : 'star'} size={14} />
         </button>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[13px] font-medium text-ink">
-            {item.display_name ?? item.id}
-            {isDefault ? (
-              <span className="ml-2 rounded-[4px] bg-success/10 px-1.5 py-px align-middle text-[11px] font-medium text-success">
-                {t('st.models.default')}
-              </span>
-            ) : null}
-            {editorMounted && !editorOpen && editorDirty ? (
-              <span
-                data-collapsed-draft
-                className="ml-2 rounded-[4px] bg-amber-card px-1.5 py-px align-middle text-[11px] font-medium text-amber-ink"
-              >
-                {t('st.dirty.badge')}
-              </span>
-            ) : null}
-          </p>
-          <p className="truncate font-mono text-[10.5px] text-ink-faint">
-            {item.remote_id} · {formatTokens(item.max_context_size)} {t('st.models.context')}
-          </p>
-          <p className="truncate font-mono text-[10px] text-ink-faint">{item.id} · {t('st.models.source')}: {vendorLabelFor(provider?.base_url) ?? item.provider_id}</p>
-          {item.capabilities !== undefined && item.capabilities.length > 0 ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {item.capabilities.map((capability) => (
-                <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">
-                  {capability === 'thinking' ? t('st.models.reasoning') : capability === 'image_in' ? t('st.models.vision') : capability}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
         <button
           type="button"
           aria-label={t('st.models.editAria', { model: item.id })}
           aria-expanded={editorOpen}
           title={t('st.models.editTitle')}
           onClick={toggleEditor}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
-          <DisclosureChevron open={editorOpen} className="text-current" />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
+              {isDefault ? <span className="sr-only">{t('st.models.default')}</span> : null}
+              {editorMounted && !editorOpen && editorDirty ? (
+                <span data-collapsed-draft className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
+              ) : null}
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
+              <span className="truncate font-mono text-[11px]">{item.remote_id}</span>
+              <span aria-hidden>·</span>
+              <span className="shrink-0 tabular-nums">{formatTokens(item.max_context_size)}</span>
+              {item.auto_compact !== undefined ? (
+                <span className="hidden shrink-0 sm:inline">· {t('st.compact.rowPoint', { tokens: formatTokens(item.auto_compact) })}</span>
+              ) : null}
+            </span>
+          </span>
+          <span className="hidden sm:inline-flex"><CapabilityMarks capabilities={item.capabilities} /></span>
+          <DisclosureChevron open={editorOpen} className="text-ink-faint" />
         </button>
       </div>
       {editorMounted ? (
-        <div data-model-row-editor={item.id} style={editorOpen ? undefined : { display: 'none' }}>
+        <div data-model-row-editor={item.id} className="px-3 pb-3 sm:pl-12" style={editorOpen ? undefined : { display: 'none' }}>
           <ModelCatalogRowEditor
             item={item}
             inheritedImageTypes={provider?.images?.accepted_types}
@@ -904,6 +1055,11 @@ function ModelCatalogRowEditor({
   const [baseline, setBaseline] = useState<ProviderModelDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // The compaction point rides beside the shared model draft: it is a token
+  // count on the model entity, edited here and nowhere in the provider form.
+  const [autoCompact, setAutoCompact] = useState<number | undefined>(undefined);
+  const [autoCompactBaseline, setAutoCompactBaseline] = useState<number | undefined>(undefined);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
     if (entity === undefined) return;
@@ -914,7 +1070,14 @@ function ModelCatalogRowEditor({
     setBaseline(next);
   }, [entity, draft, baseline]);
 
-  const dirty = draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline);
+  const compactDirty = autoCompact !== autoCompactBaseline;
+  useEffect(() => {
+    if (entity === undefined || compactDirty) return;
+    setAutoCompact(entity.auto_compact);
+    setAutoCompactBaseline(entity.auto_compact);
+  }, [entity, compactDirty]);
+
+  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline)) || compactDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
   // the editor is hidden, so the parent needs this flag either way.
@@ -947,12 +1110,17 @@ function ModelCatalogRowEditor({
         setFeedback({ tone: 'error', text: issueText(locale, identityIssue) });
         return;
       }
-      const patch = modelPatchBody(draft, baseline);
-      if (patch === null) return;
+      const fieldPatch = modelPatchBody(draft, baseline);
+      if (fieldPatch === null && !compactDirty) return;
+      const patch = {
+        ...(fieldPatch ?? {}),
+        ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
+      };
       await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
       await entityQuery.refetch();
       setBaseline(draft);
+      setAutoCompactBaseline(autoCompact);
       setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: entity.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -962,72 +1130,79 @@ function ModelCatalogRowEditor({
   };
 
   return (
-    <div className="mt-2 space-y-2.5 border-t border-hairline pt-3">
-      <p className="truncate font-mono text-[10px] text-ink-faint">
-        {entity.id} → {entity.remote_id}
-      </p>
+    <div className="space-y-4 border-t border-hairline pt-3">
       {entity.issues.length > 0 ? (
-        <p className="text-[10.5px] text-amber-ink">
+        <p role="status" className="rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] leading-4 text-amber-ink">
           {entity.issues.map((issue) => {
             const key = MODEL_ISSUE_KEYS[issue.code];
             return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
           }).join(' · ')}
         </p>
       ) : null}
-      <div className="grid items-center gap-2 sm:grid-cols-2">
-        <input
-          className={INPUT}
-          aria-label={t('st.models.remoteIdAria', { model: entity.id })}
-          value={draft.remoteId}
-          onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
-          placeholder="model-id"
-        />
-        <input
-          className={INPUT}
-          aria-label={t('st.models.displayNameAria', { model: entity.id })}
-          value={draft.displayName}
-          onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
-          placeholder={t('st.providers.displayNamePlaceholder')}
-        />
-        <ContextStepper
-          value={draft.maxContextSize}
-          onChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
-          ariaLabel={t('st.models.contextAria', { model: entity.id })}
-        />
-      </div>
-      <div className="space-y-1">
-        <p className="text-[10.5px] font-medium text-ink-faint">
-          {t('st.chips.capabilities')}
-        </p>
-        <ChipSelect
-          values={draft.capabilities}
-          knownOptions={KNOWN_CAPABILITIES}
-          onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
-          ariaLabel={t('st.models.capsAria', { model: entity.id })}
-          addPlaceholder={t('st.chips.addPlaceholder')}
-          removeLabel={(value) => t('st.chips.removeAria', { value })}
-        />
-      </div>
-      <div className="space-y-1">
-        <p className="text-[10.5px] font-medium text-ink-faint">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className={FORM_LABEL}>
+          {t('st.models.displayNameLabel')}
+          <input
+            className={`${INPUT} mt-1 font-normal`}
+            aria-label={t('st.models.displayNameAria', { model: entity.id })}
+            value={draft.displayName}
+            onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
+            placeholder={entity.remote_id}
+          />
+        </label>
+        <div className={FORM_LABEL}>
           {t('st.chips.efforts')}
-        </p>
-        <ChipSelect
-          values={draft.supportEfforts}
-          knownOptions={KNOWN_EFFORTS}
-          onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts }); }}
-          ariaLabel={t('st.models.effortsAria', { model: entity.id })}
-          addPlaceholder={t('st.chips.addPlaceholder')}
-          removeLabel={(value) => t('st.chips.removeAria', { value })}
-        />
+          <div className="mt-1.5 font-normal">
+            <ChipSelect
+              values={draft.supportEfforts}
+              knownOptions={KNOWN_EFFORTS}
+              onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts }); }}
+              ariaLabel={t('st.models.effortsAria', { model: entity.id })}
+              addPlaceholder={t('st.chips.addPlaceholder')}
+              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+          </div>
+        </div>
       </div>
-      <ImagePolicyEditor
-        value={draft}
-        onChange={(images) => { setDraft({ ...draft, ...images }); }}
-        inheritLabel={t('st.images.inheritProvider')}
+      <ModelContextFields
+        modelId={entity.id}
+        windowTokens={draft.maxContextSize}
+        inputTokens={entity.max_input_size}
+        onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
+        autoCompact={autoCompact}
+        onAutoCompactChange={setAutoCompact}
+        loopControl={configQuery.data?.loop_control}
       />
-      <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} />
-      <div className="border-t border-hairline pt-3">
+      <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
+        <label className={FORM_LABEL}>
+          {t('st.models.remoteIdLabel')}
+          <input
+            className={`${INPUT} mt-1 font-mono font-normal`}
+            aria-label={t('st.models.remoteIdAria', { model: entity.id })}
+            value={draft.remoteId}
+            onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
+            placeholder="model-id"
+          />
+          <span className="mt-1 block font-mono text-[11px] font-normal text-ink-faint">{t('st.models.aliasLine', { alias: entity.id })}</span>
+        </label>
+        <div className="space-y-1">
+          <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+          <Hint>{t('st.models.capabilitiesHint')}</Hint>
+          <ChipSelect
+            values={draft.capabilities}
+            knownOptions={KNOWN_CAPABILITIES}
+            onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
+            ariaLabel={t('st.models.capsAria', { model: entity.id })}
+            addPlaceholder={t('st.chips.addPlaceholder')}
+            removeLabel={(value) => t('st.chips.removeAria', { value })}
+          />
+        </div>
+        <ImagePolicyEditor
+          value={draft}
+          onChange={(images) => { setDraft({ ...draft, ...images }); }}
+          inheritLabel={t('st.images.inheritProvider')}
+        />
+        <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} />
         <RequestIdentityLayerEditor
           value={draft}
           onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
@@ -1035,7 +1210,7 @@ function ModelCatalogRowEditor({
           inheritLabel={t('st.requestIdentity.inheritProvider')}
           hint={t('st.models.requestIdentityHint')}
         />
-      </div>
+      </AdvancedDisclosure>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
@@ -1044,7 +1219,7 @@ function ModelCatalogRowEditor({
           {t('common.close')}
         </button>
         {dirty ? (
-          <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
+          <span className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span>
         ) : null}
       </div>
       <FeedbackLine feedback={feedback} />

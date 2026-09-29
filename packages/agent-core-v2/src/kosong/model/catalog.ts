@@ -81,6 +81,8 @@ export interface ModelPingResult {
   readonly finishReason?: string;
   readonly usage?: TokenUsage;
   readonly error?: string;
+  readonly errorCode?: string;
+  readonly httpStatus?: number;
 }
 
 const imagePolicyWireSchema = z.object({

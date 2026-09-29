@@ -42,6 +42,14 @@ const listProviders = vi.fn();
 const listModels = vi.fn();
 const getAuth = vi.fn();
 const getOAuthStatus = vi.fn();
+const listOAuthMethods = vi.fn(async (): Promise<unknown[]> => []);
+const SIGNED_IN_KIMI = [
+  { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
+    account: { state: 'unknown' }, quota: { state: 'unknown' } },
+];
+const listProviderHealth = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
+const testProviderConnection = vi.fn();
+const logoutOAuth = vi.fn(async () => ({ logged_out: true }));
 const reportDirty = vi.fn();
 
 vi.mock('../state/connection', () => ({
@@ -63,6 +71,10 @@ vi.mock('../state/connection', () => ({
       listModels,
       getAuth,
       getOAuthStatus,
+      listOAuthMethods,
+      logoutOAuth,
+      listProviderHealth,
+      testProviderConnection,
     },
   }),
 }));
@@ -126,6 +138,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   listDiscoveredModels.mockReset().mockResolvedValue({ items: [] });
+  listProviderHealth.mockReset().mockResolvedValue({ items: [] });
+  testProviderConnection.mockReset();
   refreshProvider.mockReset();
   getCatalogProvider.mockReset().mockImplementation(async (id: string) => {
     if (id !== 'edge:gateway') throw new Error('catalog entry not found');
@@ -346,7 +360,8 @@ describe('ProviderEditor save channel', () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(async () => { container.querySelector<HTMLButtonElement>('#provider-field-protocol')!.click(); });
+    // Stored editors scope their field ids so several can share the page.
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Protocol"]')!.click(); });
     const anthropic = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
       .find((option) => option.textContent?.includes('Anthropic Messages'))!;
     await act(async () => { anthropic.click(); });
@@ -831,5 +846,136 @@ describe('ProviderEditor save channel', () => {
 
     expect(container.textContent).toContain('Refresh completed. 2 added, 1 removed.');
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Connections list', () => {
+  const LOCAL_PROVIDER: ProviderCatalogItem = {
+    id: 'ollama',
+    type: 'openai',
+    base_url: 'http://localhost:11434/v1',
+    has_api_key: false,
+    status: 'connected',
+    models: [],
+  };
+
+  it('groups connections by how they are reached, not by vendor, and states health in words', async () => {
+    listOAuthMethods.mockResolvedValue(SIGNED_IN_KIMI);
+    listProviders.mockResolvedValue({ items: [COLON_PROVIDER, LOCAL_PROVIDER, { ...MANAGED_PROVIDER }] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-connection-row]')];
+    expect(rows.map((row) => [row.dataset['connectionRow'], row.dataset['connectionKind']])).toEqual([
+      ['managed:kimi-code', 'account'],
+      ['edge:gateway', 'api'],
+      ['ollama', 'local'],
+    ]);
+    // The account row names the sign-in and its kind, never a wire protocol.
+    const accountSummary = rows[0]!.querySelector('summary')!.textContent;
+    expect(accountSummary).toContain('Kimi Code');
+    expect(accountSummary).toContain('Account');
+    expect(accountSummary).not.toContain('Moonshot');
+    expect(rows[2]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
+    expect(rows[1]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
+    // No per-row protocol/identity/key pills in the collapsed row.
+    expect(rows[1]!.querySelector('summary')!.textContent).not.toContain('key stored');
+  });
+
+  it('shows an error row with the last failure and a fix, and signs an account out from its row', async () => {
+    listDiscoveredModels.mockResolvedValue({
+      items: [{ provider_id: 'edge:gateway', fetched_at: null, attempted_at: 1, failure_reason: '401 Unauthorized', models: [] }],
+    } as never);
+    listOAuthMethods.mockResolvedValue(SIGNED_IN_KIMI);
+    listProviders.mockResolvedValue({ items: [COLON_PROVIDER, MANAGED_PROVIDER] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const errored = container.querySelector<HTMLDetailsElement>('[data-connection-row="edge:gateway"]')!;
+    expect(errored.dataset['connectionHealth']).toBe('error');
+    await act(async () => { errored.open = true; });
+    expect(errored.querySelector('[data-connection-error]')!.textContent).toContain('401 Unauthorized');
+
+    const account = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+    await act(async () => { account.open = true; });
+    await act(async () => { buttonByText(account, 'Sign out').click(); });
+    expect(logoutOAuth).toHaveBeenCalledWith({ provider: 'kimi-code' });
+  });
+
+  it('uses the last connection test over the model fetch and tests again with one request at a time', async () => {
+    listDiscoveredModels.mockResolvedValue({
+      items: [{ provider_id: 'edge:gateway', fetched_at: null, attempted_at: 1, failure_reason: 'upstream said: secret body', models: [] }],
+    } as never);
+    listProviderHealth.mockResolvedValue({ items: [{
+      provider_id: 'edge:gateway', model_id: 'fast', ok: false, checked_at: Date.now() - 60_000, duration_ms: 734,
+      error_code: 'request_failed', http_status: 401, error: 'The test request failed (HTTP 401).',
+    }] });
+    let finish: (value: unknown) => void = () => {};
+    testProviderConnection.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    listProviders.mockResolvedValue({ items: [COLON_PROVIDER] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="edge:gateway"]')!;
+    await act(async () => { row.open = true; });
+    const error = row.querySelector('[data-connection-error]')!;
+    // Only the server's generic text, plus a fix keyed by the status.
+    expect(error.textContent).toContain('The test request failed (HTTP 401).');
+    expect(error.textContent).not.toContain('secret body');
+    expect(error.textContent).toContain('The key was refused');
+    expect(row.querySelector('[data-connection-last-test]')!.textContent).toContain('734ms');
+
+    const button = row.querySelector<HTMLButtonElement>('[data-connection-test-button]')!;
+    await act(async () => { button.click(); });
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('Testing');
+    await act(async () => { button.click(); });
+    expect(testProviderConnection).toHaveBeenCalledTimes(1);
+    await act(async () => { finish({ provider_id: 'edge:gateway', model_id: 'fast', ok: true, checked_at: Date.now(), duration_ms: 212 }); });
+    expect(row.dataset['connectionHealth']).toBe('ok');
+    expect(row.querySelector('[data-connection-error]')).toBeNull();
+    expect(row.querySelector('[data-connection-last-test="ok"]')!.textContent).toContain('Test passed');
+  });
+
+  it('shows the account and a percent or absolute quota, and nothing for an unknown quota', async () => {
+    const codex: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:openai-codex', models: [] };
+    const copilot: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:github-copilot', models: [] };
+    listOAuthMethods.mockResolvedValue([
+      { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
+        account: { state: 'known', id: 'dev@example.test' }, quota: { state: 'known', label: 'Weekly limit', remaining: 38.4, unit: 'percent' } },
+      { id: 'github-copilot', label: 'GitHub Copilot', provider: 'managed:github-copilot', protocol: 'openai', signed_in: true,
+        account: { state: 'known', id: 'octo' }, quota: { state: 'known', label: 'Premium interactions', remaining: 1240, unit: 'count' } },
+      { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: true,
+        account: { state: 'known', id: 'user-1' }, quota: { state: 'unknown' } },
+    ]);
+    listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER, copilot, codex] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const summary = (id: string) => container.querySelector(`[data-connection-row="${id}"] summary`)!;
+    expect(summary('managed:kimi-code').querySelector('[data-connection-account]')!.textContent).toBe('dev@example.test');
+    expect(summary('managed:kimi-code').querySelector('[data-connection-quota="percent"]')!.textContent).toBe('Weekly limit: 38% left');
+    expect(summary('managed:github-copilot').querySelector('[data-connection-quota="count"]')!.textContent).toBe('Premium interactions: 1,240 left');
+    expect(summary('managed:openai-codex').querySelector('[data-connection-quota]')).toBeNull();
+    expect(summary('managed:openai-codex').textContent).not.toMatch(/\b0\b.*left/);
+  });
+
+  it('keeps request identity and image policy behind Advanced', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const advanced = container.querySelector<HTMLElement>('[data-advanced="provider-edge:gateway"]')!;
+    expect(advanced.querySelector('[id^="advanced-"]')!.hasAttribute('hidden')).toBe(true);
+    await act(async () => { advanced.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
+    expect(advanced.querySelector('[id^="advanced-"]')!.hasAttribute('hidden')).toBe(false);
+    expect(advanced.textContent).toContain('Provider request identity');
+  });
+
+  it('opens the add flow on an empty server and lets the person choose API key or account first', async () => {
+    listProviders.mockResolvedValue({ items: [] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-connections-empty]')).not.toBeNull();
+    const picker = container.querySelector<HTMLElement>('[data-connection-method-picker]')!;
+    expect(picker.dataset['connectionMethod']).toBe('api');
+    expect(picker.querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
+    await act(async () => { picker.querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
+    expect(picker.dataset['connectionMethod']).toBe('account');
+    expect(picker.querySelector('[data-provider-protocol]')).toBeNull();
+    expect(picker.querySelector('[data-account-sign-in]')).not.toBeNull();
   });
 });

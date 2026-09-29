@@ -121,8 +121,7 @@ export class OAuthService extends Disposable implements IOAuthService {
   }
 
   async listMethods(): Promise<readonly OAuthMethodStatus[]> {
-    const statuses: OAuthMethodStatus[] = [];
-    for (const method of OAUTH_METHODS) {
+    return Promise.all(OAUTH_METHODS.map(async (method): Promise<OAuthMethodStatus> => {
       let signedIn = false;
       try {
         signedIn = this.providerService.get(method.providerName)?.oauth !== undefined
@@ -130,15 +129,51 @@ export class OAuthService extends Disposable implements IOAuthService {
       } catch {
         signedIn = false;
       }
-      statuses.push({
+      let account: OAuthMethodStatus['account'] = { state: 'unknown' };
+      let quota: OAuthMethodStatus['quota'] = { state: 'unknown' };
+      if (signedIn && method.id === 'kimi-code') {
+        const [user, usage] = await Promise.allSettled([
+          this.getManagedUserInfo(method.providerName),
+          this.getManagedUsage(method.providerName),
+        ]);
+        if (user.status === 'fulfilled' && user.value.kind === 'ok' && user.value.userInfo.userId) {
+          account = { state: 'known', id: user.value.userInfo.username || user.value.userInfo.email || user.value.userInfo.userId };
+        }
+        if (usage.status === 'fulfilled' && usage.value.kind === 'ok') {
+          const row = usage.value.summary ?? usage.value.limits[0];
+          if (row !== undefined && row !== null && Number.isFinite(row.limit) && Number.isFinite(row.used)) {
+            quota = {
+              state: 'known', label: row.name ?? 'Plan quota',
+              remaining: Math.max(0, row.limit - row.used),
+              unit: row.unit ?? 'count',
+              reset_at: row.resetAt,
+            };
+          }
+        }
+      } else if (signedIn && this.toolkit.deviceMethods !== undefined) {
+        try {
+          const details = await this.toolkit.deviceMethods.getAccountDetails(method.providerName);
+          if (details.accountId) account = { state: 'known', id: details.accountId };
+          if (details.quota !== undefined) {
+            quota = { state: 'known', label: details.quota.label,
+              remaining: details.quota.remaining, unit: details.quota.unit,
+              reset_at: details.quota.resetAt };
+          }
+        } catch {
+          account = { state: 'unknown' };
+          quota = { state: 'unknown' };
+        }
+      }
+      return {
         id: method.id,
         label: method.label,
         provider: method.providerName,
         protocol: method.protocol,
         signed_in: signedIn,
-      });
-    }
-    return statuses;
+        account,
+        quota,
+      };
+    }));
   }
 
   async startLogin(

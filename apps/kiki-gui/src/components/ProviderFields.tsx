@@ -13,7 +13,7 @@
  * `modelPatchBody`), so the GUI owns no second copy of the wire contract.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
@@ -23,9 +23,12 @@ import type {
   GenerationParametersPatch,
   GetModelResponse,
   GetProviderResponse,
+  ListProviderHealthResponse,
   ModelCatalogItem,
   ProviderCatalogItem,
+  ProviderConnectionTestResult,
 } from '@kiki/protocol';
+import type { OAuthMethodStatus } from '@kiki/klient';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
@@ -59,17 +62,20 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
-import { PresetGrid } from './PresetGrid';
+import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import {
   API_PROTOCOLS,
   baseUrlRequired,
   connectionFieldIssue,
   draftForPreset,
+  hostLabel,
+  isLocalBaseUrl,
   PROTOCOL_ORDER,
   protocolLabel,
   vendorLabelFor,
   withBaseUrl,
   type ConnectionFieldIssue,
+  type ConnectionKind,
   type ProviderPreset,
 } from './providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -278,14 +284,28 @@ export function ContextStepper({
         onChange={(event) => { commit(Number(event.target.value)); }}
       />
       <StepButton direction={1} label={t('st.stepper.increase')} onStep={() => { commit(shown + 1); }} />
-      <select
-        aria-label={ariaLabel}
-        className={SMALL_INPUT}
-        value={unit}
-        onChange={(event) => { setUnit(event.target.value as ContextUnit); }}
-      >
-        {CONTEXT_UNITS.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
-      </select>
+      {/* Unit switch: the same raised-paper segmented look as the settings
+          pickers, instead of a native select that ignores the theme. */}
+      <div role="group" aria-label={t('st.stepper.unitAria')} data-context-unit
+        className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5">
+        {CONTEXT_UNITS.map((candidate) => {
+          const selected = candidate.id === unit;
+          return (
+            <button
+              key={candidate.id}
+              type="button"
+              aria-pressed={selected}
+              data-context-unit-choice={candidate.id}
+              onClick={() => { setUnit(candidate.id); }}
+              className={`h-6 min-w-7 rounded-[5px] px-1.5 font-mono text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:h-9 ${
+                selected ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+              }`}
+            >
+              {candidate.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -434,6 +454,79 @@ export function ImagePolicyEditor({
   );
 }
 
+// ---- progressive disclosure ----
+
+/**
+ * "Advanced" disclosure for rarely touched fields. The body stays mounted
+ * (only `hidden` toggles), so drafts, dirty flags and field ids survive a
+ * collapse and a search hit can still reach a field inside it.
+ */
+export function AdvancedDisclosure({
+  id,
+  summary,
+  children,
+  defaultOpen = false,
+}: {
+  id: string;
+  /** Short list of what is inside, e.g. "Capabilities · image policy". */
+  summary?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div data-advanced={id} data-open={open ? 'true' : undefined} className="border-t border-hairline pt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={`advanced-${id}`}
+        onClick={() => { setOpen((value) => !value); }}
+        className="-ml-1 flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <DisclosureChevron open={open} className="text-ink-soft" />
+        <span className="text-[12px] font-medium text-ink-soft">{t('st.advanced.disclosure')}</span>
+        {summary !== undefined && !open ? (
+          <span className="min-w-0 truncate text-[12px] text-ink-faint">{summary}</span>
+        ) : null}
+      </button>
+      <div id={`advanced-${id}`} hidden={!open} className="space-y-4 pt-3">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Capabilities that change what the user can do with a model, in reading order. */
+const CAPABILITY_MARKS = [
+  { capability: 'thinking', key: 'st.models.capReasoning' },
+  { capability: 'image_in', key: 'st.models.capVision' },
+  { capability: 'tool_use', key: 'st.models.capTools' },
+] as const;
+
+/**
+ * At most three quiet words for what a model can do — reasoning, vision,
+ * tools — instead of a tag per capability. Everything else stays in the
+ * model's advanced overrides.
+ */
+export function CapabilityMarks({ capabilities }: { capabilities: readonly string[] | undefined }) {
+  const { t } = useI18n();
+  const present = CAPABILITY_MARKS.filter((mark) =>
+    capabilities?.includes(mark.capability) === true
+    || (mark.capability === 'thinking' && capabilities?.includes('always_thinking') === true));
+  if (present.length === 0) return null;
+  return (
+    <span data-capability-marks className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-ink-faint">
+      {present.map((mark, index) => (
+        <span key={mark.capability} data-capability={mark.capability}>
+          {index > 0 ? <span aria-hidden className="mr-1.5">·</span> : null}
+          {t(mark.key)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 // ---- model draft rows ----
 
 function ModelDraftRow({
@@ -521,7 +614,7 @@ function ModelDraftRow({
           disabled={model.remoteId === ''}
           onClick={onSetDefault}
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
-            isDefault ? 'text-accent' : 'text-ink-faint hover:text-ink'
+            isDefault ? 'text-ink' : 'text-ink-faint hover:text-ink'
           }`}
         >
           <Icon name={isDefault ? 'starFilled' : 'star'} />
@@ -542,14 +635,12 @@ function ModelDraftRow({
             </span>
           ) : null}
           <span className="shrink-0 font-mono text-[11px] text-ink-faint">{formatTokens(model.maxContextSize)}</span>
-          {model.capabilities.slice(0, 3).map((capability) => (
-            <span key={capability} className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[11px] text-ink-faint sm:inline">
-              {capability}
+          <span className="hidden sm:inline-flex"><CapabilityMarks capabilities={model.capabilities} /></span>
+          {requestIdentitySummary !== 'inherit' ? (
+            <span className="hidden shrink-0 text-[11px] text-ink-faint sm:inline">
+              {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
             </span>
-          ))}
-          <span className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[11px] text-ink-faint sm:inline">
-            {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
-          </span>
+          ) : null}
           <DisclosureChevron open={open} className="ml-auto text-ink-faint" />
         </button>
         <button
@@ -597,24 +688,16 @@ function ModelDraftRow({
               placeholder={t('st.providers.displayNamePlaceholder')}
             />
           </div>
-          <ContextStepper
-            value={model.maxContextSize}
-            onChange={(maxContextSize) => { onChange({ maxContextSize }); }}
-            ariaLabel={t('st.providers.modelContextAria', { n })}
-          />
           <div className="space-y-1">
-            <p className="text-[11px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
-            <ChipSelect
-              values={model.capabilities}
-              knownOptions={KNOWN_CAPABILITIES}
-              onChange={(capabilities) => { onChange({ capabilities }); }}
-              ariaLabel={t('st.providers.modelCapsAria', { n })}
-              addPlaceholder={t('st.chips.addPlaceholder')}
-              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            <p className={FORM_LABEL}>{t('st.compact.windowLabel')}</p>
+            <ContextStepper
+              value={model.maxContextSize}
+              onChange={(maxContextSize) => { onChange({ maxContextSize }); }}
+              ariaLabel={t('st.providers.modelContextAria', { n })}
             />
           </div>
           <div className="space-y-1">
-            <p className="text-[11px] font-medium text-ink-faint">{t('st.chips.efforts')}</p>
+            <p className={FORM_LABEL}>{t('st.chips.efforts')}</p>
             <ChipSelect
               values={model.supportEfforts}
               knownOptions={KNOWN_EFFORTS}
@@ -624,13 +707,24 @@ function ModelDraftRow({
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
-          <ImagePolicyEditor
-            value={model}
-            onChange={(images) => { onChange(images); }}
-            inheritLabel={t('st.images.inheritProvider')}
-          />
-          {model.id !== '' ? <SavedGenerationParametersEditor scope="model" id={model.id} onSaved={onSaved} /> : null}
-          <div className="border-t border-hairline pt-3">
+          <AdvancedDisclosure id={`draft-model-${index}`} summary={t('st.models.draftAdvancedSummary')}>
+            <div className="space-y-1">
+              <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+              <ChipSelect
+                values={model.capabilities}
+                knownOptions={KNOWN_CAPABILITIES}
+                onChange={(capabilities) => { onChange({ capabilities }); }}
+                ariaLabel={t('st.providers.modelCapsAria', { n })}
+                addPlaceholder={t('st.chips.addPlaceholder')}
+                removeLabel={(value) => t('st.chips.removeAria', { value })}
+              />
+            </div>
+            <ImagePolicyEditor
+              value={model}
+              onChange={(images) => { onChange(images); }}
+              inheritLabel={t('st.images.inheritProvider')}
+            />
+            {model.id !== '' ? <SavedGenerationParametersEditor scope="model" id={model.id} onSaved={onSaved} /> : null}
             <RequestIdentityLayerEditor
               value={model}
               onChange={(identity) => { onChange(identity); }}
@@ -638,7 +732,7 @@ function ModelDraftRow({
               inheritLabel={t('st.requestIdentity.inheritProvider')}
               hint={t('st.models.requestIdentityHint')}
             />
-          </div>
+          </AdvancedDisclosure>
         </div>
       ) : null}
     </div>
@@ -661,6 +755,7 @@ export function ProviderFields({
   catalogModels = [],
   onRefreshed,
   fieldIssue = null,
+  advancedExtra,
 }: {
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
@@ -694,6 +789,8 @@ export function ProviderFields({
   onRefreshed?: () => Promise<void>;
   /** New connections only: the field-level problem the last create attempt found. */
   fieldIssue?: ConnectionFieldIssue | null;
+  /** Saved connections add their request defaults to the advanced block. */
+  advancedExtra?: React.ReactNode;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -778,29 +875,35 @@ export function ProviderFields({
   const protocolChoices = (idLocked || managed ? PROTOCOL_ORDER : API_PROTOCOLS)
     .filter((type) => PROVIDER_WIRE_TYPES.includes(type));
   const protocols = protocolChoices.includes(draft.type) ? protocolChoices : [draft.type, ...protocolChoices];
+  // The new-connection form keeps stable ids (focus-on-error targets them);
+  // every stored editor on the page gets its own, so labels stay unique.
+  const scope = useId();
+  const baseUrlId = idLocked || managed ? `${scope}-base-url` : 'provider-field-base-url';
 
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="min-w-0">
-          <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
-          <input
-            id="provider-field-id"
-            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60 ${idIssue !== null ? 'border-danger/60' : ''}`}
-            value={draft.id}
-            disabled={managed || idLocked}
-            aria-invalid={idIssue !== null || undefined}
-            aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
-            placeholder={idLocked ? undefined : 'my-provider'}
-            onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
-          />
-          <FieldIssue id="provider-field-id-issue" text={idIssue} />
-        </div>
+        {/* A stored connection is named in its row header; its id is fixed. */}
+        {idLocked || managed ? null : (
+          <div className="min-w-0">
+            <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
+            <input
+              id="provider-field-id"
+              className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
+              value={draft.id}
+              aria-invalid={idIssue !== null || undefined}
+              aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
+              placeholder="my-provider"
+              onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+            />
+            <FieldIssue id="provider-field-id-issue" text={idIssue} />
+          </div>
+        )}
         <div className="min-w-0">
           <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
           <div className="mt-1">
             <SearchableSelect
-              id="provider-field-protocol"
+              id={idLocked || managed ? `${scope}-protocol` : 'provider-field-protocol'}
               ariaLabel={t('st.providers.protocol')}
               value={draft.type}
               disabled={managed}
@@ -813,9 +916,9 @@ export function ProviderFields({
         </div>
       </div>
       <div>
-        <label htmlFor="provider-field-base-url" className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
+        <label htmlFor={baseUrlId} className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
         <input
-          id="provider-field-base-url"
+          id={baseUrlId}
           className={`${INPUT} mt-1 ${baseUrlIssue !== null ? 'border-danger/60' : ''}`}
           value={draft.baseUrl}
           aria-invalid={baseUrlIssue !== null || undefined}
@@ -828,18 +931,6 @@ export function ProviderFields({
         />
         <FieldIssue id="provider-field-base-url-issue" text={baseUrlIssue} />
       </div>
-      <RequestIdentityLayerEditor
-        value={draft}
-        onChange={(identity) => { onChange({ ...draft, ...identity }); }}
-        label={t('st.providers.requestIdentity')}
-        inheritLabel={t('st.requestIdentity.inheritGlobal')}
-        hint={t('st.providers.requestIdentityHint')}
-      />
-      <ImagePolicyEditor
-        value={draft}
-        onChange={(images) => { onChange({ ...draft, ...images }); }}
-        inheritLabel={t('st.images.inheritBuiltin')}
-      />
       {managed ? (
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (
@@ -864,18 +955,23 @@ export function ProviderFields({
               ) : null}
             </span>
           </label>
-          <Hint>{apiKeyEnv === undefined ? t('st.providers.keyHint') : t('st.providers.keyEnvHint', { name: apiKeyEnv })}</Hint>
+          {apiKeyEnv !== undefined
+            ? <Hint>{t('st.providers.keyEnvHint', { name: apiKeyEnv })}</Hint>
+            : hasStoredKey ? <Hint>{t('st.providers.keyHint')}</Hint> : null}
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3" data-connection-test>
         <button type="button" className={SECONDARY_BUTTON} disabled={probing} onClick={() => void probe()}>
           {probing ? t('st.fetchModels.working') : t('st.fetchModels.button')}
         </button>
         <div className="min-w-0 flex-1"><FeedbackLine feedback={probeFeedback} /></div>
       </div>
-      <div className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <p className={FORM_LABEL}>{t('st.providers.models')}</p>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className={FORM_LABEL}>
+            {t('st.providers.models')}
+            <span className="ml-1.5 font-normal text-ink-faint">{draft.models.filter((model) => model.remoteId !== '').length}</span>
+          </p>
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, blankModel()] }); }}>{t('st.providers.addModel')}</button>
         </div>
         {idLocked ? (
@@ -927,11 +1023,51 @@ export function ProviderFields({
           />
         ))}
       </div>
+      <AdvancedDisclosure id={`provider-${draft.id || 'new'}`} summary={t('st.providers.advancedSummary')}>
+        <RequestIdentityLayerEditor
+          value={draft}
+          onChange={(identity) => { onChange({ ...draft, ...identity }); }}
+          label={t('st.providers.requestIdentity')}
+          inheritLabel={t('st.requestIdentity.inheritGlobal')}
+          hint={t('st.providers.requestIdentityHint')}
+        />
+        <ImagePolicyEditor
+          value={draft}
+          onChange={(images) => { onChange({ ...draft, ...images }); }}
+          inheritLabel={t('st.images.inheritBuiltin')}
+        />
+        {advancedExtra}
+      </AdvancedDisclosure>
     </div>
   );
 }
 
 // ---- editor for a configured provider ----
+
+/** Shared cache key for `GET /providers:health`; a test result is written back into it. */
+export const PROVIDER_HEALTH_QUERY_KEY = ['provider-health'] as const;
+
+type KnownQuota = Extract<OAuthMethodStatus['quota'], { state: 'known' }>;
+
+/** "Premium interactions: 72% left" / "Chat: 1,240 left". Never called for an unknown quota. */
+export function formatQuota(quota: KnownQuota, locale: string, t: ReturnType<typeof useI18n>['t']): string {
+  const amount = quota.unit === 'percent'
+    ? t('st.connections.quotaPercent', { n: Math.round(quota.remaining) })
+    : t('st.connections.quotaCount', { n: quota.remaining.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') });
+  return t('st.connections.quotaLine', { label: quota.label, amount });
+}
+
+/** A fix the person can act on, keyed by what the server reported (never its raw text). */
+function connectionFixKey(result: ProviderConnectionTestResult | undefined) {
+  if (result?.error_code === 'model_not_configured') return 'st.connections.fixNoModel' as const;
+  const status = result?.http_status;
+  if (status === 401 || status === 403) return 'st.connections.fixAuth' as const;
+  if (status === 404) return 'st.connections.fixNotFound' as const;
+  if (status === 429) return 'st.connections.fixRateLimit' as const;
+  if (status !== undefined && status >= 500) return 'st.connections.fixServer' as const;
+  if (result?.error_code === 'model_unavailable') return 'st.connections.fixModel' as const;
+  return 'st.connections.errorFix' as const;
+}
 
 export function ProviderEditor({
   provider,
@@ -939,6 +1075,10 @@ export function ProviderEditor({
   managed = false,
   modelCount,
   onSaved,
+  accountLabel,
+  account,
+  onSignOut,
+  signingOut = false,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
@@ -947,9 +1087,17 @@ export function ProviderEditor({
   /** Configured models on this connection, shown in the collapsed row. */
   modelCount?: number;
   onSaved: () => Promise<void>;
+  /** Signed-in account name for an OAuth connection ("GitHub Copilot"). */
+  accountLabel?: string;
+  /** The sign-in method's account and quota facts; `unknown` parts are not shown. */
+  account?: Pick<OAuthMethodStatus, 'signed_in' | 'account' | 'quota'>;
+  /** OAuth connections sign out instead of clearing a key. */
+  onSignOut?: () => void;
+  signingOut?: boolean;
 }) {
-  const { t, locale } = useI18n();
+  const { t, locale, time } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
   const [draft, setDraft] = useState(initial);
   const [baseline, setBaseline] = useState(initial);
@@ -963,6 +1111,15 @@ export function ProviderEditor({
     models: ReadonlyMap<string, string>;
   } | null>(null);
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
+  const healthQuery = useQuery({
+    queryKey: PROVIDER_HEALTH_QUERY_KEY,
+    queryFn: () => client.listProviderHealth(),
+    enabled: typeof client.listProviderHealth === 'function',
+    staleTime: 30_000,
+    retry: false,
+  });
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ProviderConnectionTestResult>();
   const catalogModels = useMemo(() => mergeModelCatalogChoices(
     models.filter((model) => model.provider_id === provider.id).map(configuredCatalogChoice),
     (discovered.data?.items.find((group) => group.provider_id === provider.id)?.models ?? []).map(discoveredCatalogChoice),
@@ -1116,42 +1273,123 @@ export function ProviderEditor({
     }
   };
 
-  const statusDot =
-    provider.status === 'connected' ? 'bg-success'
-      : provider.status === 'error' ? 'bg-danger'
-        : 'bg-amber-rule';
-
+  const kind: ConnectionKind = managed ? 'account' : isLocalBaseUrl(provider.base_url) ? 'local' : 'api';
   const vendor = vendorLabelFor(provider.base_url);
-  const requestIdentitySummary = provider.request_identity === undefined
-    ? 'inherit'
-    : (provider.request_identity.preset ?? 'custom_overrides');
-  const requestIdentityFull = requestIdentitySummary === 'inherit'
-    ? t('st.requestIdentity.inheritGlobal')
-    : t(`st.requestIdentity.option.${requestIdentitySummary}`);
+  const host = hostLabel(provider.base_url);
+  const lastFailure = discovered.data?.items.find((group) => group.provider_id === provider.id)?.failure_reason;
+  const count = modelCount ?? models.filter((model) => model.provider_id === provider.id).length;
+  // The explicit connection test is the freshest fact; the last model fetch
+  // and the catalog status only speak when nothing was tested yet.
+  const lastTest = testResult ?? healthQuery.data?.items.find((item) => item.provider_id === provider.id);
+  // Health in words, not only a dot: "needs a key" is the common fix-me state.
+  const needsKey = kind === 'api' && !provider.has_api_key && provider.api_key_env === undefined;
+  const health: 'ok' | 'error' | 'setup' = provider.status === 'unconfigured' || needsKey
+    ? 'setup'
+    : lastTest !== undefined
+      ? (lastTest.ok ? 'ok' : 'error')
+      : provider.status === 'error' || lastFailure !== undefined ? 'error' : 'ok';
+  const healthText = health === 'error'
+    ? t('st.connections.statusError')
+    : health === 'setup'
+      ? (needsKey ? t('st.connections.statusNeedsKey') : t('st.connections.statusSetup'))
+      : t('st.connections.statusOk');
+  const checkedAgo = lastTest === undefined ? undefined : time.relativeTime(new Date(lastTest.checked_at).toISOString());
+  const identity = account?.signed_in === true && account.account.state === 'known' ? account.account.id : undefined;
+  const quota = account?.signed_in === true && account.quota.state === 'known' ? account.quota : undefined;
+  const quotaText = quota === undefined ? undefined : formatQuota(quota, locale, t);
+
+  const runTest = async () => {
+    if (testing) return;
+    setTesting(true);
+    try {
+      const result = await client.testProviderConnection(provider.id);
+      setTestResult(result);
+      queryClient.setQueryData(PROVIDER_HEALTH_QUERY_KEY, (current: ListProviderHealthResponse | undefined) => ({
+        items: [...(current?.items ?? []).filter((item) => item.provider_id !== provider.id), result],
+      }));
+    } catch (error) {
+      setTestResult(undefined);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   return (
-    <details className="group/provider rounded-lg border border-hairline bg-paper px-3 py-2.5 open:pb-3">
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-[13px] font-semibold text-ink">
-        <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${statusDot}`} />
-        {provider.id}
-        <span className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] font-normal text-ink-faint">{provider.type}</span>
-        <span
-          title={`${t('st.providers.requestIdentity')}: ${requestIdentityFull}`}
-          className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] font-normal text-ink-faint"
-        >
-          {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
+    <details
+      data-connection-row={provider.id}
+      data-connection-kind={kind}
+      data-connection-health={health}
+      className="group/provider border-b border-hairline last:border-b-0 [&[open]]:bg-paper"
+    >
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 [&::-webkit-details-marker]:hidden">
+        <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
+          <Icon name={kind === 'account' ? 'agent' : kind === 'local' ? 'system' : 'web'} size={14} />
         </span>
-        {provider.default_model !== undefined ? (
-          <span className="truncate font-mono text-[11px] font-normal text-ink-faint">{provider.default_model}</span>
-        ) : null}
-        {provider.has_api_key ? (
-          <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] font-normal text-ink-faint">{t('st.providers.keyBadge')}</span>
-        ) : null}
-        {dirty ? (
-          <span className="rounded-full border border-amber-rule/60 bg-amber-card px-1.5 py-px text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
-        ) : null}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-[13px] font-medium text-ink">{accountLabel ?? vendor ?? provider.id}</span>
+            {accountLabel !== undefined || vendor !== undefined ? (
+              <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
+            ) : null}
+          </span>
+          <span className="block truncate text-[12px] text-ink-faint">
+            {t(`st.connections.kind.${kind}`)}
+            {identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
+            {host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
+            {' · '}{t('st.connections.modelCount', { count })}
+            {quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
+              title={quota?.reset_at === undefined ? undefined : t('st.connections.quotaResets', { time: time.absoluteTime(quota.reset_at) ?? quota.reset_at })}>{quotaText}</span></> : null}
+          </span>
+        </span>
+        {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        <span data-connection-status={health}
+          title={checkedAgo === undefined ? undefined : t('st.connections.testedAgo', { time: checkedAgo })}
+          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+          health === 'error' ? 'text-danger' : health === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+            health === 'error' ? 'bg-danger' : health === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+          <span className="hidden sm:inline">{healthText}</span>
+          <span className="sr-only sm:hidden">{healthText}</span>
+        </span>
+        <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
-      <div className="mt-4 space-y-4">
+      <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
+        {health === 'error' ? (
+          <div role="alert" data-connection-error className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
+            <p className="text-[12px] font-medium text-danger">
+              {lastTest !== undefined ? t('st.connections.testFailedTitle') : t('st.connections.errorTitle')}
+            </p>
+            <p className="mt-0.5 break-words text-[12px] leading-4 text-ink-soft">
+              {lastTest !== undefined
+                ? (lastTest.error ?? t('st.connections.errorGeneric'))
+                : (lastFailure ?? t('st.connections.errorGeneric'))}
+            </p>
+            <p className="mt-1 text-[12px] leading-4 text-ink-faint">{t(connectionFixKey(lastTest))}</p>
+          </div>
+        ) : null}
+        {health !== 'setup' ? (
+          <div data-connection-health-test className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <button type="button" data-connection-test-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+              disabled={testing || saving} aria-busy={testing} onClick={() => void runTest()}>
+              {testing ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
+              {testing ? t('st.connections.testing') : t('st.connections.test')}
+            </button>
+            <p data-connection-last-test={lastTest === undefined ? 'none' : lastTest.ok ? 'ok' : 'error'} aria-live="polite"
+              className="min-w-0 text-[12px] leading-4 text-ink-faint">
+              {testing ? t('st.connections.testingHint')
+                : lastTest === undefined ? t('st.connections.neverTested')
+                  : <>
+                    <span className={lastTest.ok ? 'text-success' : 'text-danger'}>
+                      {lastTest.ok ? t('st.connections.testOk') : t('st.connections.testFailed')}
+                    </span>
+                    {' · '}{checkedAgo}
+                    {' · '}<span className="tabular-nums">{time.formatDuration(lastTest.duration_ms)}</span>
+                    {lastTest.model_id !== undefined ? <> · <span className="font-mono text-[11.5px]">{lastTest.model_id}</span></> : null}
+                  </>}
+            </p>
+          </div>
+        ) : null}
         <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
           <ProviderFields
             draft={draft}
@@ -1166,40 +1404,35 @@ export function ProviderEditor({
             refreshProviderId={provider.id}
             catalogModels={catalogModels}
             onRefreshed={onSaved}
+            advancedExtra={<SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />}
           />
         </fieldset>
-        <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
-        {/* OAuth-managed providers keep the save button for the editable
-            fields; the credential clear/delete danger zone stays hidden. */}
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className={PRIMARY_BUTTON} disabled={saving || revisions === null || !dirty} onClick={() => void save()}>
             {saving ? t('common.saving') : t('st.providers.save')}
           </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+          {dirty ? <span className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
+          <span className="ml-auto flex flex-wrap items-center gap-2">
+            {managed ? (
+              onSignOut !== undefined ? (
+                <button type="button" className={SECONDARY_BUTTON} disabled={saving || signingOut} onClick={onSignOut}>
+                  {signingOut ? t('st.auth.working') : t('st.connections.signOut')}
+                </button>
+              ) : null
+            ) : (
+              <>
+                {provider.has_api_key ? (
+                  <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('clearKey'); }}>
+                    {t('st.danger.clearKey')}
+                  </button>
+                ) : null}
+                <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('remove'); }}>
+                  {t('st.danger.removeProvider')}
+                </button>
+              </>
+            )}
+          </span>
         </div>
-        {managed ? null : (
-          <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
-            <p className="mb-2 text-[12px] font-medium text-danger">{t('st.danger.title')}</p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={DANGER_GHOST_BUTTON}
-                disabled={saving || !provider.has_api_key}
-                onClick={() => { setConfirming('clearKey'); }}
-              >
-                {t('st.danger.clearKey')}
-              </button>
-              <button
-                type="button"
-                className={DANGER_GHOST_BUTTON}
-                disabled={saving}
-                onClick={() => { setConfirming('remove'); }}
-              >
-                {t('st.danger.removeProvider')}
-              </button>
-            </div>
-          </div>
-        )}
         <FeedbackLine feedback={feedback} />
       </div>
       <ConfirmDialog
@@ -1400,8 +1633,13 @@ export function SavedGenerationParametersEditor({
 
 export function NewProviderWizard({
   onSaved,
+  onAccountChanged,
+  initialMethod = 'api',
 }: {
   onSaved: () => Promise<void>;
+  /** An account sign-in completed or signed out inside the picker. */
+  onAccountChanged?: () => Promise<void> | void;
+  initialMethod?: 'api' | 'account';
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -1468,7 +1706,7 @@ export function NewProviderWizard({
   if (step === 'template') {
     return (
       <div className="space-y-3">
-        <PresetGrid onPick={chooseTemplate} />
+        <ConnectionMethodPicker initialMethod={initialMethod} onPickApi={chooseTemplate} onAccountChanged={onAccountChanged ?? onSaved} />
         <FeedbackLine feedback={feedback} />
       </div>
     );

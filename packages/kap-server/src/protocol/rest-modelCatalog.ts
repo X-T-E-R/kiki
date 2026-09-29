@@ -13,6 +13,8 @@ export {
   importCustomRegistryResponseSchema,
   listCatalogProvidersResponseSchema,
   listDiscoveredModelsResponseSchema,
+  listProviderHealthResponseSchema,
+  providerConnectionTestResultSchema,
   listModelsResponseSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,

@@ -1,9 +1,13 @@
 import { useMemo, useState } from 'react';
 
+import type { I18nKey } from '@kiki/session-core/i18n';
+
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import {
   API_PROTOCOLS,
   PROVIDER_PRESETS,
+  hostLabel,
   presetById,
   protocolLabel,
   type ProviderPreset,
@@ -11,9 +15,20 @@ import {
 } from './providerPresets';
 import { INPUT } from './ui';
 
-const SHORTCUT_IDS = ['openai', 'anthropic', 'gemini', 'deepseek', 'moonshot'] as const;
-const TILE =
-  'group flex min-w-0 rounded-lg border border-hairline bg-paper px-3 py-2.5 text-left transition-colors hover:border-hairline-strong hover:bg-panel focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30';
+/** Vendor-neutral mix: two first-party APIs, a gateway, a local server. */
+const SHORTCUT_IDS = ['openai', 'anthropic', 'gemini', 'deepseek', 'openrouter', 'ollama'] as const;
+
+/** Who speaks each protocol, so the choice is recognizable without vendor cards. */
+const PROTOCOL_HINT_KEYS: Readonly<Record<string, I18nKey>> = {
+  openai: 'st.presets.protocolHint.openai',
+  openai_responses: 'st.presets.protocolHint.openai_responses',
+  anthropic: 'st.presets.protocolHint.anthropic',
+  'google-genai': 'st.presets.protocolHint.google-genai',
+  vertexai: 'st.presets.protocolHint.vertexai',
+};
+
+const ROW =
+  'group flex w-full min-w-0 items-center gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 pointer-coarse:min-h-11';
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[\s_-]/g, '');
@@ -55,44 +70,57 @@ export function PresetGrid({
       {matches.length > 0 ? (
         <section aria-label={t('st.presets.matches')} data-preset-results>
           <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.matches')}</p>
-          <div className={`grid grid-cols-2 gap-2 ${dense ? 'sm:grid-cols-3' : 'sm:grid-cols-3 lg:grid-cols-4'}`}>
+          <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
             {matches.map((preset) => (
-              <button key={preset.id} type="button" data-provider-template={preset.id}
-                onClick={() => { onPick(preset); }} className={`${TILE} flex-col gap-0.5`}>
-                <span className="truncate text-[13px] font-medium text-ink">{preset.label}</span>
-                <span className="truncate text-[11px] text-ink-faint">{protocolLabel(preset.type)}</span>
-              </button>
+              <li key={preset.id}>
+                <button type="button" data-provider-template={preset.id} onClick={() => { onPick(preset); }} className={ROW}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium text-ink">{preset.label}</span>
+                    <span className="block truncate text-[12px] text-ink-faint">
+                      {protocolLabel(preset.type)} · {hostLabel(preset.baseUrl)}
+                    </span>
+                  </span>
+                  <Icon name="arrowRight" size={12} className="text-ink-faint group-hover:text-ink" />
+                </button>
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       ) : (
         <>
           {needle !== '' ? <p className="text-[12px] text-ink-faint">{t('st.presets.empty', { query: query.trim() })}</p> : null}
-          <section aria-label={t('st.presets.protocols')} className="@container">
+          <section aria-label={t('st.presets.protocols')}>
             <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.protocols')}</p>
-            <div className={dense ? 'flex flex-col gap-2' : 'grid grid-cols-1 gap-2 @min-[720px]:grid-cols-5'}>
-              {API_PROTOCOLS.map((type) => (
-                <button key={type} type="button" data-provider-protocol={type}
-                  onClick={() => { onPick(null, type); }}
-                  className={`${TILE} items-center justify-between gap-3 ${dense ? '' : '@min-[720px]:flex-col @min-[720px]:items-start @min-[720px]:justify-center @min-[720px]:gap-0.5'}`}>
-                  <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={protocolLabel(type)}>{protocolLabel(type)}</span>
-                  <span className="shrink-0 font-mono text-[11px] text-ink-faint">{type}</span>
-                </button>
-              ))}
-            </div>
+            <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
+              {API_PROTOCOLS.map((type) => {
+                const hintKey = PROTOCOL_HINT_KEYS[type];
+                return (
+                  <li key={type}>
+                    <button type="button" data-provider-protocol={type} onClick={() => { onPick(null, type); }} className={ROW}>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium text-ink" title={protocolLabel(type)}>{protocolLabel(type)}</span>
+                        {hintKey !== undefined ? (
+                          <span className="block text-[12px] leading-4 text-ink-faint">{t(hintKey)}</span>
+                        ) : null}
+                      </span>
+                      <span className="hidden shrink-0 font-mono text-[11px] text-ink-faint sm:inline">{type}</span>
+                      <Icon name="arrowRight" size={12} className="text-ink-faint group-hover:text-ink" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </section>
           {!dense && needle === '' ? (
-            <section aria-label={t('st.presets.shortcuts')}>
-              <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.shortcuts')}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {shortcuts.map((preset) => (
-                  <button key={preset.id} type="button" data-provider-template={preset.id}
-                    onClick={() => { onPick(preset); }}
-                    className="rounded-full border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
+            <section aria-label={t('st.presets.shortcuts')} className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
+              <span className="mr-1 text-[12px] text-ink-faint">{t('st.presets.shortcuts')}</span>
+              {shortcuts.map((preset) => (
+                <button key={preset.id} type="button" data-provider-template={preset.id}
+                  onClick={() => { onPick(preset); }}
+                  className="h-7 rounded-md px-2 text-[12px] text-ink-soft outline-none transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:h-10">
+                  {preset.label}
+                </button>
+              ))}
             </section>
           ) : null}
         </>

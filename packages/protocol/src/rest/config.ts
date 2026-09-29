@@ -30,6 +30,7 @@ export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema
 
 export const subagentConfigResponseSchema = z.object({
   timeoutMs: z.number().int().nonnegative().optional(),
+  defaultModel: z.string().optional(),
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
@@ -99,6 +100,7 @@ export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
+  fast_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   thinking: z.unknown().optional(),
@@ -135,6 +137,7 @@ export const patchConfigRequestSchema = z.object({
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
+  fast_model: z.string().nullable().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.nullable().optional(),
   thinking: z.unknown().optional(),
@@ -157,6 +160,7 @@ export const patchConfigRequestSchema = z.object({
   background: z.unknown().optional(),
   subagent: z.object({
     timeout_ms: z.number().int().nonnegative().optional(),
+    default_model: z.string().nullable().optional(),
     max_direct_children: z.number().int().nonnegative().optional(),
     max_total_subagents: z.number().int().nonnegative().optional(),
     default_profile: z.string().optional(),

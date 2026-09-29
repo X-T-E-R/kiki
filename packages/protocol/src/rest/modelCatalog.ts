@@ -95,6 +95,23 @@ export const probeProviderResponseSchema = z.discriminatedUnion('ok', [
 ]);
 export type ProbeProviderResponse = z.infer<typeof probeProviderResponseSchema>;
 
+export const providerConnectionTestResultSchema = z.object({
+  provider_id: z.string().min(1),
+  model_id: z.string().min(1).optional(),
+  ok: z.boolean(),
+  checked_at: z.number().int().nonnegative(),
+  duration_ms: z.number().nonnegative(),
+  error_code: z.string().min(1).optional(),
+  http_status: z.number().int().optional(),
+  error: z.string().optional(),
+});
+export type ProviderConnectionTestResult = z.infer<typeof providerConnectionTestResultSchema>;
+
+export const listProviderHealthResponseSchema = z.object({
+  items: z.array(providerConnectionTestResultSchema),
+});
+export type ListProviderHealthResponse = z.infer<typeof listProviderHealthResponseSchema>;
+
 export {
   createModelRequestSchema,
   createProviderRequestSchema,

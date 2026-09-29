@@ -90,6 +90,20 @@ export const oAuthMethodStatusSchema = z.object({
   provider: z.string(),
   protocol: z.string(),
   signed_in: z.boolean(),
+  account: z.discriminatedUnion('state', [
+    z.object({ state: z.literal('known'), id: z.string() }),
+    z.object({ state: z.literal('unknown') }),
+  ]),
+  quota: z.discriminatedUnion('state', [
+    z.object({
+      state: z.literal('known'),
+      label: z.string(),
+      remaining: z.number(),
+      unit: z.enum(['count', 'percent']),
+      reset_at: z.string().optional(),
+    }),
+    z.object({ state: z.literal('unknown') }),
+  ]),
 });
 
 export const authContract = {

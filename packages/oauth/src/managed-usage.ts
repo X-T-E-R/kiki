@@ -98,6 +98,8 @@ export interface UsageRow {
   readonly window?: UsageWindow;
   readonly used: number;
   readonly limit: number;
+  /** Ratio-based quotas are projected to 0–100; older absolute quotas omit this. */
+  readonly unit?: 'percent';
   /** ISO timestamp at which the window resets. */
   readonly resetAt?: string;
 }
@@ -243,6 +245,7 @@ function quotaRow(definition: QuotaRowDefinition, raw: unknown): UsageRow | null
     window: definition.window,
     used: Math.round(ratio * QUOTA_PERCENT),
     limit: QUOTA_PERCENT,
+    unit: 'percent',
     resetAt: quotaResetAt(raw),
   };
 }

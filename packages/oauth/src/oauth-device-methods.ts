@@ -12,9 +12,11 @@ import { createGitHubCopilotMethod, GITHUB_COPILOT_METHOD } from './github-copil
 import { resolveKikiHome } from './home';
 import { OAuthManager, type LoginOptions, type OAuthManagerOptions } from './oauth-manager';
 import type { OAuthDeviceMethod, OAuthMethodDescriptor, OAuthMethodId } from './oauth-method-types';
-import { createOpenAICodexMethod, OPENAI_CODEX_METHOD } from './openai-codex';
+import { createOpenAICodexMethod, openaiCodexAccountId, OPENAI_CODEX_METHOD } from './openai-codex';
 import { FileTokenStorage, type TokenStorage } from './storage';
+import { classifyToken } from './token-state';
 import type { BearerTokenProvider } from './toolkit';
+import { isRecord } from './utils';
 
 export const KIMI_CODE_METHOD: OAuthMethodDescriptor = {
   id: 'kimi-code',
@@ -77,6 +79,37 @@ export interface OAuthDeviceMethodsOptions {
   readonly sleep?: OAuthManagerOptions['sleep'];
   readonly deviceCodeTimeoutMs?: number | undefined;
   readonly disableCrossProcessLock?: boolean | undefined;
+}
+
+export interface OAuthAccountDetails {
+  readonly accountId?: string;
+  readonly quota?: {
+    readonly label: string;
+    readonly remaining: number;
+    readonly unit: 'count' | 'percent';
+    readonly resetAt?: string;
+  };
+}
+
+function copilotQuota(payload: unknown): OAuthAccountDetails['quota'] {
+  if (!isRecord(payload) || !isRecord(payload['quota_snapshots'])) return undefined;
+  const snapshots = payload['quota_snapshots'];
+  for (const [key, label] of [['premium_interactions', 'Premium interactions'], ['chat', 'Chat'], ['completions', 'Completions']] as const) {
+    const row = snapshots[key];
+    if (!isRecord(row)) continue;
+    const remaining = row['remaining'];
+    const percent = row['percent_remaining'];
+    const resetAt = typeof row['reset_date'] === 'string' ? row['reset_date'] : undefined;
+    if (typeof remaining === 'number' && Number.isFinite(remaining) && remaining >= 0
+      && typeof row['entitlement'] === 'number' && row['entitlement'] > 0) {
+      return { label, remaining, unit: 'count', resetAt };
+    }
+    if (row['entitlement'] !== 0 && typeof percent === 'number'
+      && Number.isFinite(percent) && percent >= 0 && percent <= 100) {
+      return { label, remaining: percent, unit: 'percent', resetAt };
+    }
+  }
+  return undefined;
 }
 
 /** Token lifecycle for the device-flow methods, one manager per method. */
@@ -145,6 +178,42 @@ export class OAuthDeviceMethods {
 
   getCachedAccessToken(idOrProvider: string): Promise<string | undefined> {
     return this.manager(idOrProvider).getCachedAccessToken();
+  }
+
+  async getAccountDetails(idOrProvider: string): Promise<OAuthAccountDetails> {
+    const descriptor = oauthMethodFor(idOrProvider);
+    if (descriptor === undefined || !isDeviceOAuthMethod(descriptor.id)) return {};
+    const state = classifyToken(await this.storage.load(storageNameFor(descriptor)));
+    if (state.kind !== 'valid') return {};
+    if (descriptor.id === 'openai-codex') {
+      return { accountId: openaiCodexAccountId(state.token.accessToken) };
+    }
+    if (descriptor.id !== 'github-copilot' || state.token.refreshToken.length === 0) return {};
+    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
+    const request = async (url: string): Promise<unknown> => {
+      const response = await fetchImpl(url, {
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${state.token.refreshToken}`,
+          'User-Agent': 'GitHubCopilotChat/0.35.0',
+          'Editor-Version': 'vscode/1.107.0',
+          'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+          'X-GitHub-Api-Version': '2025-04-01',
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok ? response.json() : undefined;
+    };
+    const [user, usage] = await Promise.allSettled([
+      request('https://api.github.com/user'),
+      request('https://api.github.com/copilot_internal/user'),
+    ]);
+    const account = user.status === 'fulfilled' ? user.value : undefined;
+    return {
+      accountId: isRecord(account) && typeof account['login'] === 'string' && account['login'].length > 0
+        ? account['login'] : undefined,
+      quota: usage.status === 'fulfilled' ? copilotQuota(usage.value) : undefined,
+    };
   }
 
   tokenProvider(idOrProvider: string): BearerTokenProvider {

@@ -21,7 +21,7 @@ import type { ServerConnection } from '@kiki/session-core/settings';
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
-import { CatalogRefreshCard, ModelCatalogCard } from './ModelsSection';
+import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard } from './ModelsSection';
 
 const listDiscoveredModels = vi.fn();
 const refreshAllProviders = vi.fn();
@@ -34,6 +34,8 @@ const setDefaultModel = vi.fn();
 const patchConfig = vi.fn();
 const getModel = vi.fn();
 const updateModel = vi.fn();
+const setSubagentDefaultModel = vi.fn();
+const setFastModel = vi.fn();
 
 const CONNECTION: ServerConnection = { url: 'https://server.example.test/', token: 'test-token' };
 
@@ -50,6 +52,8 @@ vi.mock('../../state/connection', () => ({
       patchConfig,
       getModel,
       updateModel,
+      setSubagentDefaultModel,
+      setFastModel,
     },
     config: CONNECTION,
   }),
@@ -374,6 +378,64 @@ describe('ModelCatalogCard row editor', () => {
  * `display: none` with its draft, baseline and dirty flag intact, and only an
  * explicit Close — confirmed while dirty — drops the draft.
  */
+describe('ModelCatalogCard context window and compaction point', () => {
+  const openEditor = async (container: HTMLDivElement) => {
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    return container.querySelector<HTMLElement>('[data-model-context-fields]')!;
+  };
+  const saveButton = (container: HTMLDivElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!;
+
+  it('keeps the window and the compaction point apart and saves the point as tokens', async () => {
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', loop_control: { autoCompact: '85%' } });
+    const container = await renderCard();
+    const fields = await openEditor(container);
+    expect(fields.textContent).toContain('Context window');
+    expect(fields.textContent).toContain('Automatic compaction point');
+    const point = fields.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
+    // Empty = inherit; the placeholder names what applies instead.
+    expect(point.value).toBe('');
+    expect(point.placeholder).toBe('Default 212.1k (global 85%)');
+    // The verified window presets mark the current 256k (262,144) window.
+    const windowPresets = [...fields.querySelectorAll<HTMLButtonElement>('[data-token-presets="window:kimi-code/kimi-k2"] button')];
+    expect(windowPresets.map((button) => button.textContent)).toEqual(['128k', '200k', '256k', '400k', '500k', '1M']);
+    expect(windowPresets.find((button) => button.getAttribute('aria-pressed') === 'true')?.textContent).toBe('256k');
+
+    await act(async () => { point.focus(); setInputValue(point, '75%'); });
+    await act(async () => { point.blur(); });
+    expect(point.value).toBe('196.6k');
+    await act(async () => { saveButton(container).click(); });
+    expect(updateModel).toHaveBeenLastCalledWith('kimi-code/kimi-k2', { auto_compact: 196_608, base_revision: 'rev-7' });
+  });
+
+  it('offers compaction presets under the model limit and clears the point with null', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, auto_compact: 150_000 });
+    const container = await renderCard();
+    const fields = await openEditor(container);
+    const presets = [...fields.querySelectorAll<HTMLButtonElement>('[data-token-presets="model:kimi-code/kimi-k2"] button')];
+    expect(presets.map((button) => button.textContent)).toEqual(['125k', '150k', '200k']);
+    const current = presets.find((button) => button.textContent === '150k')!;
+    expect(current.getAttribute('aria-pressed')).toBe('true');
+    // Clicking the selected preset again returns the field to "inherit".
+    await act(async () => { current.click(); });
+    await act(async () => { saveButton(container).click(); });
+    expect(updateModel).toHaveBeenLastCalledWith('kimi-code/kimi-k2', { auto_compact: null, base_revision: 'rev-7' });
+  });
+
+  it('picks a window preset into the draft window', async () => {
+    const container = await renderCard();
+    const fields = await openEditor(container);
+    await act(async () => {
+      [...fields.querySelectorAll<HTMLButtonElement>('[data-token-presets="window:kimi-code/kimi-k2"] button')]
+        .find((button) => button.textContent === '1M')!.click();
+    });
+    await act(async () => { saveButton(container).click(); });
+    expect(updateModel).toHaveBeenLastCalledWith('kimi-code/kimi-k2', { max_context_size: 1_000_000, base_revision: 'rev-7' });
+  });
+});
+
 describe('ModelCatalogCard row editor draft retention', () => {
   const editToggle = (container: HTMLElement) => container.querySelector<HTMLButtonElement>(
     'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
@@ -529,5 +591,76 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       process.off('unhandledRejection', onError);
       localStorage.removeItem('kiki.locale');
     }
+  });
+});
+
+describe('GlobalDefaultsCard', () => {
+  async function renderDefaults(): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<MemoryRouter><QueryClientProvider client={client}><I18nProvider><GlobalDefaultsCard /></I18nProvider></QueryClientProvider></MemoryRouter>);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    return container;
+  }
+
+  it('shows the subagent and fast model rows with their meaning and writes each one', async () => {
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', fast_model: 'kimi-code/kimi-k2', subagent: {} });
+    setSubagentDefaultModel.mockResolvedValue(undefined);
+    setFastModel.mockResolvedValue(undefined);
+    const container = await renderDefaults();
+    expect([...container.querySelectorAll<HTMLElement>('[data-default-row]')].map((row) => row.dataset['defaultRow']))
+      .toEqual(['new-session', 'session-title', 'fast', 'subagent']);
+    const subagentRow = container.querySelector('[data-default-row="subagent"]')!;
+    expect(subagentRow.textContent).toContain('only when a subagent has no other pin');
+    expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('when no session-title model is set');
+    // No title model: the title row says the fast model names sessions.
+    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).toContain('Falls back to fast model: kimi-code/kimi-k2');
+    await act(async () => { subagentRow.querySelector<HTMLButtonElement>('#st-default-subagent-model')!.click(); });
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K2'))!;
+    await act(async () => { option.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(setSubagentDefaultModel).toHaveBeenCalledWith('kimi-code/kimi-k2');
+    const fastRow = container.querySelector('[data-default-row="fast"]')!;
+    await act(async () => { fastRow.querySelector<HTMLButtonElement>('#st-default-fast-model')!.click(); });
+    const unset = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Not set'))!;
+    await act(async () => { unset.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(setFastModel).toHaveBeenCalledWith('');
+  });
+});
+
+describe('ModelCatalogCard list and detail hierarchy', () => {
+  it('states the default once and marks capabilities with at most three words', async () => {
+    listModels.mockResolvedValue({ items: [{ ...MODELS[0], capabilities: ['thinking', 'image_in', 'tool_use', 'video_in', 'audio_in'] }] });
+    const container = await renderCard();
+    expect(container.querySelector('[data-default-model-line]')!.textContent).toContain('Kimi K2');
+    // Exactly one visible "Default" statement: the line above the list, not a pill per row and group.
+    expect(container.querySelectorAll('[data-model-row][data-default="true"]')).toHaveLength(1);
+    const marks = container.querySelector('[data-capability-marks]')!;
+    expect([...marks.querySelectorAll('[data-capability]')].map((node) => node.getAttribute('data-capability')))
+      .toEqual(['thinking', 'image_in', 'tool_use']);
+    expect(container.querySelector('[data-model-row]')!.textContent).not.toContain('video_in');
+  });
+
+  it('opens the detail with name, effort and context first and keeps overrides under Advanced', async () => {
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editor = container.querySelector<HTMLElement>('[data-model-row-editor="kimi-code/kimi-k2"]')!;
+    const advanced = editor.querySelector<HTMLElement>('[data-advanced="model-kimi-code/kimi-k2"]')!;
+    const body = advanced.querySelector<HTMLElement>('[id^="advanced-"]')!;
+    expect(body.hidden).toBe(true);
+    expect(body.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
+    expect(body.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]')).not.toBeNull();
+    // Common fields sit outside the disclosure.
+    expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
+    expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
+    expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);
   });
 });

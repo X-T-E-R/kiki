@@ -5,6 +5,7 @@ import {
   IModelCatalogMutationService,
   IOAuthService,
   IProviderDiscoveryService,
+  IProviderHealthService,
   IModelsDevImportService,
   isError2,
   ModelsDevImportErrors,
@@ -28,6 +29,8 @@ import {
   importCustomRegistryResponseSchema,
   listCatalogProvidersResponseSchema,
   listDiscoveredModelsResponseSchema,
+  listProviderHealthResponseSchema,
+  providerConnectionTestResultSchema,
   listModelsResponseSchema,
   listProvidersResponseSchema,
   patchModelRequestSchema,
@@ -373,6 +376,21 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
     listProvidersRoute.handler as Parameters<ModelCatalogRouteHost['get']>[2],
   );
 
+  const healthRoute = defineRoute({
+    method: 'GET',
+    path: '/providers:health',
+    success: { data: listProviderHealthResponseSchema },
+    description: 'Read the last persisted connection tests for unchanged providers; never runs a request',
+    tags: ['providers'],
+  }, async (req, reply) => {
+    const providers = await (await loadCatalog(core)).listProviders();
+    const health = core.accessor.get(IProviderHealthService);
+    const results = await Promise.all(providers.map((provider) => health.latest(provider.id).catch(() => undefined)));
+    reply.send(okEnvelope({ items: results.filter((result) => result !== undefined) }, req.id));
+  });
+  app.get(healthRoute.path, healthRoute.options,
+    healthRoute.handler as Parameters<ModelCatalogRouteHost['get']>[2]);
+
   const createProviderRoute = defineRoute(
     {
       method: 'POST',
@@ -531,27 +549,35 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       path: '/providers/{tail}',
       params: providerActionTailParamSchema,
       body: refreshProviderRequestSchema.optional(),
-      success: { data: refreshProviderModelsResponseSchema },
+      success: { data: z.union([refreshProviderModelsResponseSchema, providerConnectionTestResultSchema]) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
-      description: 'Refresh one provider, optionally using a request-only api_key instead of its configured key.',
+      description: 'Use :refresh to discover models, or :test to send one small real model request and persist its sanitized result. :test uses the saved credentials and does not accept a request-only api_key.',
       tags: ['providers'],
-      operationId: 'refreshProvider',
+      operationId: 'refreshOrTestProvider',
     },
     async (req, reply) => {
       try {
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['refresh'] as const,
+          allowedActions: ['refresh', 'test'] as const,
           resourceLabel: 'provider',
         });
         if (parsed.kind !== 'action') {
           const message =
             parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+          return;
+        }
+        if (parsed.action === 'test') {
+          if (req.body?.api_key !== undefined) {
+            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, ':test only accepts saved credentials', req.id));
+            return;
+          }
+          reply.send(okEnvelope(await core.accessor.get(IProviderHealthService).test(parsed.id), req.id));
           return;
         }
         const result = await (await loadDiscovery(core)).refreshProviderModels({
