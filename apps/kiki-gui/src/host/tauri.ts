@@ -284,6 +284,9 @@ export const tauriHost: TauriHostAdapter = {
   async openSpace(homeId) {
     await invoke('open_space', { homeId });
   },
+  async restartSpace(homeId) {
+    await invoke('restart_space', { homeId });
+  },
   async setTheme(resolved) {
     try {
       await getCurrentWindow().setTheme(resolved);

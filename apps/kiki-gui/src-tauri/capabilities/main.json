@@ -20,6 +20,7 @@
     "allow-desktop-active-space",
     "allow-desktop-space-statuses",
     "allow-switch-space",
+    "allow-restart-space",
     "allow-open-space",
     "allow-list-ssh-profiles",
     "allow-save-ssh-profile",

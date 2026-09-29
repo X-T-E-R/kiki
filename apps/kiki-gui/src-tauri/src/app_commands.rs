@@ -5,6 +5,7 @@ macro_rules! app_commands {
             desktop_active_space,
             desktop_space_statuses,
             switch_space,
+            restart_space,
             open_space,
             list_ssh_profiles,
             save_ssh_profile,

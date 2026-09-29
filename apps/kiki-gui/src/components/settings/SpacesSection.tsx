@@ -170,6 +170,12 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const menuItems = (space: SpaceListItem): SpaceMenuItem[] => [
     ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
     { key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } },
+    ...(desktop && host.restartSpace !== undefined ? [{ key: 'restart', label: t('st.spaces.restartSpace'), run: () => {
+      setFeedback(null);
+      void host.restartSpace?.(space.id)
+        .then(() => { setRestartNote(null); refresh(); })
+        .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
+    } }] : []),
     { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { setDialog({ kind: 'remove', space }); } },
     { key: 'delete', label: t('st.spaces.delete'), danger: true, blockedReason: deleteBlock(space), run: () => { setDialog({ kind: 'delete', space }); } },
   ];

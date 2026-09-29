@@ -30,6 +30,7 @@ const host = {
   spaceStatuses: vi.fn(),
   openSpace: vi.fn(),
   switchSpace: vi.fn(),
+  restartSpace: vi.fn(async () => undefined),
   readDesktopPrefs: vi.fn(async () => null),
   writeDesktopPrefs: vi.fn(async () => undefined),
   revealPath: vi.fn(async () => undefined),
@@ -62,6 +63,7 @@ afterAll(() => { env.IS_REACT_ACT_ENVIRONMENT = false; vi.unstubAllGlobals(); })
 beforeEach(() => {
   for (const fn of [...Object.values(homes), ...Object.values(config), ...Object.values(ssh), getConfig, host.spaceStatuses]) fn.mockReset();
   homes.list.mockResolvedValue(LIST);
+  host.restartSpace.mockClear();
   host.spaceStatuses.mockResolvedValue([
     { homeId: 'main', active: true, hot: true, pendingCount: 0, busyCount: 0 },
     { homeId: 'h-acme', active: false, hot: true, pendingCount: 2, busyCount: 1 },
@@ -130,6 +132,15 @@ describe('SpacesSection in the main space', () => {
     const item = document.querySelector<HTMLButtonElement>('[data-space-menu-item="delete"]')!;
     expect(item.disabled).toBe(true);
     expect(item.textContent).toContain('Sessions are running');
+  });
+
+  it('restarts a subspace from its menu and shows the backend refusal', async () => {
+    host.restartSpace.mockRejectedValueOnce('The space has 1 pending interaction');
+    await render(<SpacesSection />);
+    await click('[data-space-menu="h-acme"]');
+    await click('[data-space-menu-item="restart"]');
+    expect(host.restartSpace).toHaveBeenCalledWith('h-acme');
+    expect(document.body.textContent).toContain('1 pending interaction');
   });
 
   it('deletes only after the exact name is typed', async () => {

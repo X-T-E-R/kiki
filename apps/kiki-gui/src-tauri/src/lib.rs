@@ -946,6 +946,7 @@ struct SpaceBackendState {
     slots: HashMap<String, (DesktopSpace, BackendManager)>,
     attention: HashMap<String, HashSet<String>>,
     busy_counts: HashMap<String, usize>,
+    restarting: HashSet<String>,
     stopping: bool,
 }
 
@@ -969,7 +970,7 @@ impl SpaceBackendManager {
         } else { "main".to_string() };
         Ok(Self { inner: Arc::new(Mutex::new(SpaceBackendState {
             main, mode, active, epoch: 0, slots,
-            attention: HashMap::new(), busy_counts: HashMap::new(), stopping: false,
+            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), stopping: false,
         })) })
     }
 
@@ -1110,6 +1111,35 @@ impl SpaceBackendManager {
         true
     }
 
+    fn restart_space(&self, app: &AppHandle, id: &str) -> Result<(), String> {
+        let space = self.find_space(id)?;
+        let backend = self.backend_for(space)?;
+        {
+            let mut state = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
+            if state.active != "main" || id == "main" {
+                return Err("Only the main space can restart a subspace".to_string());
+            }
+            if state.stopping || !state.restarting.insert(id.to_string()) {
+                return Err("A space restart or shutdown is already in progress".to_string());
+            }
+        }
+        let result = (|| {
+            if !backend.owned_backend_for(OwnedBackendOperation::Restart)? {
+                return Err("The space backend is not running".to_string());
+            }
+            let connection = backend.hot_connection().ok_or("The space backend is still starting")?;
+            let port = connection_port(&connection)?;
+            let response = http_get_body(port, "/api/sessions?include_ephemeral=true", &connection.token, MAX_SESSIONS_RESPONSE_BYTES)
+                .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
+            let (pending, busy) = parse_attention_response(&response)
+                .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
+            restart_space_readiness(busy, pending.len())?;
+            backend.restart(app).map(|_| ()).map_err(|error| error.message)
+        })();
+        if let Ok(mut state) = self.inner.lock() { state.restarting.remove(id); }
+        result
+    }
+
     fn owned_spaces_with_work(&self) -> Result<Vec<String>, String> {
         let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?
             .slots.values().map(|(space, backend)| (space.clone(), backend.clone())).collect::<Vec<_>>();
@@ -1131,6 +1161,14 @@ impl SpaceBackendManager {
             state.slots.values().map(|(_, backend)| backend.clone()).collect::<Vec<_>>()
         }).unwrap_or_default();
         for backend in slots { backend.shutdown(); }
+    }
+}
+
+fn restart_space_readiness(busy: usize, pending: usize) -> Result<(), String> {
+    if busy > 0 || pending > 0 {
+        Err(format!("The space has {busy} running session(s) and {pending} pending interaction(s); finish them before restarting"))
+    } else {
+        Ok(())
     }
 }
 
@@ -1577,6 +1615,13 @@ async fn switch_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, h
         .await.map_err(|error| DesktopStartupFailure::plain(format!("Space startup task failed: {error}")))??;
     reload_space_window(&app).map_err(DesktopStartupFailure::plain)?;
     Ok(space)
+}
+
+#[tauri::command]
+async fn restart_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<(), String> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.restart_space(&app, &home_id))
+        .await.map_err(|error| format!("Space restart task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3076,6 +3121,14 @@ mod tests {
         assert!(requested_home(&["kiki-desktop".into(), "--home".into()]).is_err());
         assert!(requested_home(&["kiki-desktop".into(), "--home".into(), "relative".into()]).is_err());
         assert!(requested_home(&["kiki-desktop".into(), "--home".into(), root.into(), "--home".into(), root.into()]).is_err());
+    }
+
+    #[test]
+    fn space_restart_rejects_busy_and_pending_sessions_with_reasons() {
+        assert!(restart_space_readiness(0, 0).is_ok());
+        assert!(restart_space_readiness(2, 0).unwrap_err().contains("2 running"));
+        assert!(restart_space_readiness(0, 1).unwrap_err().contains("1 pending"));
+        assert!(restart_space_readiness(2, 1).is_err());
     }
 
     #[test]

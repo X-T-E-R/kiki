@@ -140,6 +140,7 @@ interface HostCapabilities {
   switchSpace?: (homeId: string) => Promise<void>;
   /** Windows mode: open (or focus) the space's own window (`open_space`). */
   openSpace?: (homeId: string) => Promise<void>;
+  restartSpace?: (homeId: string) => Promise<void>;
   restartServer?: () => Promise<void>;
   supportsDesktopUpdates?: () => Promise<boolean>;
   checkDesktopUpdate?: () => Promise<DesktopUpdate | null>;
