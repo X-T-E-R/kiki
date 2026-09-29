@@ -21,7 +21,7 @@ import {
 } from '@kiki/node-sdk';
 
 import { createProgram } from './cli/commands';
-import { finalizeHeadlessRun } from './cli/headless-exit';
+import { drainStdio, finalizeHeadlessRun } from './cli/headless-exit';
 import { startupTrace } from './utils/startup-trace';
 import type { CLIOptions } from './cli/options';
 import { OptionConflictError, PromptInputError, resolvePromptInput, validateOptions } from './cli/options';
@@ -184,24 +184,12 @@ function bootstrap(): void {
           }
         })
         .catch(async (error: unknown) => {
-          // Set the failure exit code synchronously, before any `await`. The
-          // terminal `process.exit(1)` below is our intended exit, but it sits
-          // behind `await logStartupFailure(...)`; by the time we reach that
-          // await, the failed run's `finally` cleanup has already torn down its
-          // ref'd handles (sockets, timers, background tasks). If the event loop
-          // drains during the await, Node exits on its own with the DEFAULT code
-          // 0 and `process.exit(1)` never runs — headless (`kimi -p`) failures
-          // would then exit 0 nondeterministically. Setting `process.exitCode`
-          // up front makes that drain-exit report failure too.
           process.exitCode = 1;
           const operation = opts.prompt !== undefined || opts.promptFile !== undefined ? 'run prompt' : 'start shell';
-          await logStartupFailure(operation, error);
-          process.stderr.write(
-            formatStartupError(error, {
-              operation,
-            }),
-          );
+          process.stderr.write(formatStartupError(error, { operation }));
           process.stderr.write(`See log: ${resolveGlobalLogPath(resolveKikiHome())}\n`);
+          await logStartupFailure(operation, error);
+          await drainStdio([process.stdout, process.stderr]);
           process.exit(1);
         });
     },

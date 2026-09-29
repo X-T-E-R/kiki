@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ErrorCodes, KimiError } from '@kiki/node-sdk';
 
 import { validateOptions } from '#/cli/options';
@@ -202,6 +205,21 @@ describe('main entry command handling', () => {
     expect(mocks.finalizeHeadlessRun).not.toHaveBeenCalled();
   });
 
+  it('uses exit code 2 and preserves the IO code when a prompt file is unreadable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kiki-prompt-io-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const opts: CLIOptions = { ...defaultOpts(), promptFile: join(dir, 'missing.txt') };
+    mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'print' });
+    try {
+      expect(await runHandleMainCommand(opts)).toBe(2);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('[ENOENT]'));
+      expect(mocks.runPrompt).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('arms the force-exit fallback at the entrypoint after a completed headless run', async () => {
     const opts: CLIOptions = { ...defaultOpts(), prompt: 'explain the repo' };
     mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'print' });
@@ -227,6 +245,7 @@ describe('main entry command handling', () => {
     mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'print' });
     mocks.runPrompt.mockRejectedValue(new Error('provider failed'));
     mocks.flushDiagnosticLogs.mockImplementation(() => new Promise(() => {}));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null) => {
       throw new ExitCalled(Number(code ?? 0));
     });
@@ -241,8 +260,10 @@ describe('main entry command handling', () => {
         expect(mocks.flushDiagnosticLogs).toHaveBeenCalledTimes(1);
       });
       expect(process.exitCode).toBe(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('provider failed'));
       expect(exitSpy).not.toHaveBeenCalled();
     } finally {
+      stderr.mockRestore();
       exitSpy.mockRestore();
       process.exitCode = originalExitCode;
     }
