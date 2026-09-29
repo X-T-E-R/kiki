@@ -826,8 +826,11 @@ export function ProviderFields({
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
   // Listings never carry the key, so "editing an empty value" is local state.
+  // Replacing a stored key leaves the baseline ('') and `hasStoredKey` as they
+  // were; the editor renews the reveal handle on every save, so a new handle
+  // is the signal that the edit landed and the field returns to masked.
   const [keyEditing, setKeyEditing] = useState(false);
-  useEffect(() => { setKeyEditing(false); }, [baselineApiKey, hasStoredKey, apiKeyEnv]);
+  useEffect(() => { setKeyEditing(false); }, [baselineApiKey, hasStoredKey, apiKeyEnv, revealKey]);
   const queryClient = useQueryClient();
   const [localSuggestions, setLocalSuggestions] = useState<readonly ProviderModelCatalogChoice[]>([]);
   useEffect(() => { setLocalSuggestions([]); }, [draft.baseUrl, draft.apiKey, draft.type]);
@@ -1133,11 +1136,14 @@ export function ProviderEditor({
     provider: string;
     models: ReadonlyMap<string, string>;
   } | null>(null);
-  // The key is fetched only when the user asks to see or copy it; a new
-  // revision makes the field drop any previously revealed copy.
+  // The key is fetched only when the user asks to see or copy it; every save
+  // renews the handle, which drops a revealed copy and ends a key edit even
+  // when the provider revision does not move (replacing one stored key with
+  // another leaves `has_api_key` and a content-hashed revision unchanged).
+  const [keySaves, setKeySaves] = useState(0);
   const revealKey = useCallback(
     async () => (await client.revealSecret({ kind: 'provider_api_key', provider_id: provider.id })).value,
-    [client, provider.id, provider.has_api_key, provider.api_key_env, revisions?.provider],
+    [client, provider.id, provider.has_api_key, provider.api_key_env, revisions?.provider, keySaves],
   );
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
   const healthQuery = useQuery({
@@ -1278,6 +1284,7 @@ export function ProviderEditor({
       const saved = { ...normalized, apiKey: '', clearApiKey: false };
       setDraft(saved);
       setBaseline(saved);
+      setKeySaves((count) => count + 1);
       await onSaved();
       setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: provider.id }) });
     } catch (error) {

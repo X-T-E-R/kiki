@@ -54,8 +54,11 @@ const logoutOAuth = vi.fn(async () => ({ logged_out: true }));
 const reportDirty = vi.fn();
 const revealSecret = vi.fn();
 
-vi.mock('../state/connection', () => ({
-  useConnection: () => ({
+// One client for the whole run, like the app's connection context: a fresh
+// object per render would renew every callback that depends on it.
+vi.mock('../state/connection', () => {
+  let connection: unknown;
+  const build = () => ({
     config: {},
     client: {
       listDiscoveredModels,
@@ -79,8 +82,9 @@ vi.mock('../state/connection', () => ({
       testProviderConnection,
       revealSecret,
     },
-  }),
-}));
+  });
+  return { useConnection: () => (connection ??= build()) };
+});
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
 }));
@@ -298,6 +302,73 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: 'sk-new', base_revision: 'provider-rev-2' });
     // After a save the field returns to the masked, stored state.
     expect(keyInput(container).value).not.toContain('sk-new');
+  });
+
+  it('shows an edited key as saved after the save, and reveals the new value', async () => {
+    // Replacing one stored key with another leaves `has_api_key` and a
+    // content-hashed revision unchanged; the field must still settle.
+    updateProvider.mockResolvedValue({ ...COLON_PROVIDER, revision: 'provider-rev-1' });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    await typeKey(container, 'sk-new');
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: 'sk-new', base_revision: 'provider-rev-1' });
+
+    const field = container.querySelector<HTMLElement>('[data-secret-field]')!;
+    expect(field.dataset['secretMode']).toBe('keep');
+    expect(field.dataset['secretSource']).toBe('kiki');
+    expect(keyInput(container).readOnly).toBe(true);
+    expect(keyInput(container).value).not.toBe('');
+    expect(field.textContent).toContain('Saved in Kiki');
+    expect(field.querySelector('[data-secret-edit]')).not.toBeNull();
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
+
+    revealSecret.mockResolvedValue({ source: 'kiki', value: 'sk-new' });
+    await act(async () => { field.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(keyInput(container).value).toBe('sk-new');
+  });
+
+  it('shows a cleared key as not set after the save, with nothing to reveal', async () => {
+    let provider = COLON_PROVIDER;
+    const { container } = await renderSurface(<></>);
+    const root = roots.at(-1)!;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const render = async () => {
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={client}>
+              <I18nProvider>
+                <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+                  <ProviderEditor provider={provider} models={FAST_MODELS} onSaved={onSaved} />
+                </DirtyGuardContext.Provider>
+              </I18nProvider>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    };
+    const onSaved = async () => {};
+    await render();
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-clear]')!.click(); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: '', base_revision: 'provider-rev-1' });
+    // The catalog refetch after the save is what flips `has_api_key`.
+    provider = { ...provider, has_api_key: false };
+    await render();
+
+    const field = container.querySelector<HTMLElement>('[data-secret-field]')!;
+    expect(field.dataset['secretSource']).toBe('none');
+    expect(field.dataset['secretMode']).toBe('keep');
+    expect(field.textContent).toContain('Not set');
+    expect(keyInput(container).value).toBe('');
+    expect(field.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.disabled).toBe(true);
+    expect(field.querySelector('[data-secret-edit]')).toBeNull();
+    revealSecret.mockClear();
+    await act(async () => { field.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.click(); });
+    expect(revealSecret).not.toHaveBeenCalled();
   });
 
   it('shows an environment key by name, reveals it, and saves a Kiki override', async () => {
