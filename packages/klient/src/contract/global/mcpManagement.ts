@@ -41,10 +41,10 @@ export const globalMcpServerConfigSchema = z.discriminatedUnion('transport', [
 ]);
 
 /**
- * The wire config of a managed/inspected server: mutable entries carry the
- * full config (edit UIs prefill from it); read-only entries are redacted —
+ * The wire config of a managed/inspected server. Listings are redacted —
  * `env` / `headers` values are replaced by the sorted key lists `envKeys` /
- * `headerKeys`. One schema covers both shapes, mirroring the engine's
+ * `headerKeys`; one value is available through the authenticated reveal route.
+ * One schema covers both shapes, mirroring the engine's
  * `McpServerConfig | McpServerConfigView` union.
  */
 export const mcpServerConfigDataSchema = z.discriminatedUnion('transport', [

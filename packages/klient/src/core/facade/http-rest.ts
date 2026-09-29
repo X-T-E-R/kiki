@@ -291,6 +291,11 @@ export interface HttpRestFacade {
     writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
   };
 
+  readonly secrets: {
+    /** Explicit, authenticated reveal of one secret value; bulk reads stay redacted. */
+    reveal(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret>;
+  };
+
   readonly executors: {
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
   };

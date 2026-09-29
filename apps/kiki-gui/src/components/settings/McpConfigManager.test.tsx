@@ -14,15 +14,17 @@ const mcp = vi.hoisted(() => ({
   add: vi.fn(), update: vi.fn(), remove: vi.fn(), test: vi.fn(),
   resetAuth: vi.fn(), listStoredOAuthCredentials: vi.fn(), revealStoredOAuthCredential: vi.fn(), revokeStoredOAuthCredential: vi.fn(),
 }));
+const revealSecret = vi.hoisted(() => vi.fn());
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ klient: { global: { mcp } }, scopeId: 'fixture-server' }),
+  useConnection: () => ({ klient: { global: { mcp } }, client: { revealSecret }, scopeId: 'fixture-server' }),
 }));
+const STORED_HEADERS: Readonly<Record<string, string>> = { Authorization: 'Bearer fixture=old', 'X-Team': 'alpha' };
 
 const remote: McpManagedServer = {
   name: 'remote',
   config: {
     transport: 'http', url: 'https://old.example.test/mcp',
-    headers: { Authorization: 'Bearer fixture=old', 'X-Team': 'alpha' },
+    headerKeys: ['Authorization', 'X-Team'],
   },
   source: 'global', origin: '/tmp/fixture-mcp.json', mutable: true,
 };
@@ -30,7 +32,7 @@ const envRemote: McpManagedServer = {
   ...remote,
   config: {
     transport: 'http', url: 'https://old.example.test/mcp',
-    headers: { Authorization: 'Bearer fixture=old', 'X-Team': 'alpha' },
+    headerKeys: ['Authorization', 'X-Team'],
     bearerTokenEnvVar: 'MCP_TOKEN', auth: 'oauth',
   },
 };
@@ -58,6 +60,10 @@ beforeEach(() => {
   mcp.revealStoredOAuthCredential.mockReset();
   mcp.revokeStoredOAuthCredential.mockReset();
   mcp.update.mockResolvedValue([remote, readOnly]);
+  revealSecret.mockReset();
+  revealSecret.mockImplementation(async (ref: { kind: string; key?: string }) => (
+    ref.kind === 'mcp_bearer_env' ? { source: 'environment', env_name: 'MCP_TOKEN', value: 'env-fixture-token' }
+      : { source: 'kiki', value: STORED_HEADERS[ref.key ?? ''] }));
   mcp.test.mockResolvedValue({ success: true, output: '' });
   mcp.resetAuth.mockResolvedValue(undefined);
   mcp.listStoredOAuthCredentials.mockResolvedValue([]);
@@ -103,6 +109,16 @@ async function change(input: HTMLInputElement | HTMLSelectElement, value: string
   });
 }
 
+const valueInputs = (root: ParentNode) => [...root.querySelectorAll<HTMLInputElement>('[data-secret-field] input')];
+const keyInputs = (root: ParentNode) => [...root.querySelectorAll<HTMLInputElement>('[data-mcp-secret-row] > label input')];
+async function editValue(root: ParentNode, index: number, value: string): Promise<void> {
+  const row = root.querySelectorAll('[data-mcp-secret-row]')[index]!;
+  const edit = row.querySelector<HTMLButtonElement>('[data-secret-edit]');
+  if (edit !== null) await click(edit);
+  await act(async () => { await Promise.resolve(); });
+  await change(row.querySelector<HTMLInputElement>('[data-secret-field] input')!, value);
+}
+
 async function openRemote(container: HTMLDivElement): Promise<HTMLFieldSetElement> {
   await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!);
   return container.querySelector('fieldset')!;
@@ -118,15 +134,17 @@ describe('MCP managed header editor', () => {
     expect(empty.querySelector('input[type="password"]')).toBeNull();
   });
 
-  it('prefills masked rows and sends the same edited draft to test and save', async () => {
+  it('lists header keys masked, reveals a value only on request, and sends the edited draft to test and save', async () => {
     const container = await render();
     const fieldset = await openRemote(container);
-    const values = fieldset.querySelectorAll<HTMLInputElement>('input[type="password"]');
-    expect([...values].map((value) => value.value)).toEqual(['Bearer fixture=old', 'alpha']);
-    expect(container.textContent).not.toContain('Bearer fixture=old');
-    await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Show values')!);
-    expect(fieldset.querySelectorAll('input[type="text"]').length).toBe(2);
-    await change(fieldset.querySelector<HTMLInputElement>('input[type="text"]')!, 'Bearer fixture=new=part');
+    expect(keyInputs(fieldset).map((input) => input.value)).toEqual(['Authorization', 'X-Team']);
+    expect(valueInputs(fieldset).every((input) => !input.value.includes('fixture'))).toBe(true);
+    expect(revealSecret).not.toHaveBeenCalled();
+    await click(fieldset.querySelector('[data-mcp-secret-row="0"] [data-secret-reveal]')!);
+    await act(async () => { await Promise.resolve(); });
+    expect(revealSecret).toHaveBeenCalledWith({ kind: 'mcp_header', server: 'remote', key: 'Authorization', cwd: '/tmp/fixture' });
+    expect(valueInputs(fieldset)[0]!.value).toBe('Bearer fixture=old');
+    await editValue(fieldset, 0, 'Bearer fixture=new=part');
     await click(fieldset.querySelector('[aria-label="Remove header 2"]')!);
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Test connection')!);
     expect(mcp.test).toHaveBeenCalledWith({
@@ -157,9 +175,17 @@ describe('MCP managed header editor', () => {
     const container = await render([envRemote]);
     const fieldset = await openRemote(container);
     const bearer = fieldset.querySelector<HTMLInputElement>('[data-mcp-bearer-env]')!;
-    const authorization = fieldset.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const authorization = valueInputs(fieldset.querySelector('[data-mcp-secret-rows="headers"]')!)[0]!;
     expect(bearer.value).toBe('MCP_TOKEN');
     expect(authorization.disabled).toBe(true);
+    // The env-sourced token is still viewable, read-only.
+    const bearerValue = fieldset.querySelector('[data-mcp-bearer-value]')!;
+    expect(bearerValue.textContent).toContain('From environment variable MCP_TOKEN');
+    expect(bearerValue.querySelector('[data-secret-edit]')).toBeNull();
+    await click(bearerValue.querySelector('[data-secret-reveal]')!);
+    await act(async () => { await Promise.resolve(); });
+    expect(revealSecret).toHaveBeenCalledWith({ kind: 'mcp_bearer_env', server: 'remote', cwd: '/tmp/fixture' });
+    expect(bearerValue.querySelector('input')!.value).toBe('env-fixture-token');
     expect(fieldset.querySelector<HTMLButtonElement>('[aria-label="Remove header 1"]')!.disabled).toBe(true);
     expect(fieldset.textContent).toContain('Authorization: server environment');
     expect(fieldset.textContent).toContain('prevents OAuth from attaching');
@@ -174,11 +200,12 @@ describe('MCP managed header editor', () => {
     const container = await render([envRemote]);
     const fieldset = await openRemote(container);
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Clear env reference')!);
-    const authorization = fieldset.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const authorization = valueInputs(fieldset)[0]!;
     expect(authorization.disabled).toBe(false);
     expect(fieldset.querySelector<HTMLButtonElement>('[aria-label="Remove header 1"]')!.disabled).toBe(false);
     expect(fieldset.textContent).toContain('Authorization: this header');
-    await change(authorization, 'Bearer fixture=new');
+    expect(fieldset.querySelector('[data-mcp-bearer-value]')).toBeNull();
+    await editValue(fieldset, 0, 'Bearer fixture=new');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Test connection')!);
     expect(mcp.test.mock.calls[0]![0].server).toMatchObject({
       bearerTokenEnvVar: undefined, auth: 'oauth',
@@ -197,9 +224,10 @@ describe('MCP managed header editor', () => {
     const fieldset = await openRemote(container);
     await click(fieldset.querySelector('[aria-label="Remove header 2"]')!);
     await click(fieldset.querySelector('[aria-label="Remove header 1"]')!);
-    expect(fieldset.querySelector('input[type="password"]')).toBeNull();
+    expect(valueInputs(fieldset)).toHaveLength(0);
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Add header')!);
-    expect(fieldset.querySelector('input[type="password"]')).not.toBeNull();
+    expect(valueInputs(fieldset)).toHaveLength(1);
+    expect(valueInputs(fieldset)[0]!.type).toBe('password');
     await click(fieldset.querySelector('[aria-label="Remove header 1"]')!);
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
     expect(mcp.update.mock.calls[0]![0].server.headers).toBeUndefined();
@@ -209,9 +237,12 @@ describe('MCP managed header editor', () => {
     const container = await render();
     const fieldset = await openRemote(container);
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Add header')!);
-    await change(fieldset.querySelectorAll<HTMLInputElement>('[role="group"] input:not([type="password"])')[2]!, 'X-Fixture');
-    await change(fieldset.querySelectorAll<HTMLInputElement>('input[type="password"]')[2]!, 'part=one=two');
+    await change(keyInputs(fieldset)[2]!, 'X-Fixture');
+    await change(valueInputs(fieldset)[2]!, 'part=one=two');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    // Untouched saved rows are read back through the reveal route at save time.
+    await act(async () => { await Promise.resolve(); });
+    expect(revealSecret).toHaveBeenCalledTimes(2);
     expect(mcp.update.mock.calls[0]![0].server.headers).toEqual({
       Authorization: 'Bearer fixture=old', 'X-Team': 'alpha', 'X-Fixture': 'part=one=two',
     });
@@ -236,8 +267,9 @@ describe('MCP managed header editor', () => {
   it('rejects duplicate header names differing only in case before testing or saving', async () => {
     const container = await render();
     const fieldset = await openRemote(container);
-    await change(fieldset.querySelectorAll<HTMLInputElement>('[role="group"] input:not([type="password"])')[1]!, 'authorization');
+    await change(keyInputs(fieldset)[1]!, 'authorization');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    await act(async () => { await Promise.resolve(); });
     expect(container.textContent).toContain('Header names must be unique');
     expect(mcp.update).not.toHaveBeenCalled();
   });

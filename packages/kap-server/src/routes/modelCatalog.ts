@@ -362,7 +362,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       path: '/providers',
       success: { data: listProvidersResponseSchema },
       description:
-        'List configured providers, including locally stored inline API keys for editing; env-backed credentials return only their variable names.',
+        'List configured providers. Key values are never included: a saved key reports has_api_key, an env-backed key its variable name; POST /secrets:reveal returns a value on request.',
       tags: ['providers'],
     },
     async (req, reply) => {
@@ -608,7 +608,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       description:
-        'Get one configured provider with its revision, inline API key for editing or env variable name for env-backed credentials.',
+        'Get one configured provider with its revision; key values are redacted to has_api_key or the env variable name (POST /secrets:reveal returns one on request).',
       tags: ['providers'],
       operationId: 'getProvider',
     },

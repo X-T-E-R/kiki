@@ -13,7 +13,7 @@ const recordSchema = z.object({ provider_id: z.string(), env: z.string(), bindin
 const documentSchema = z.object({ schema_version: z.literal('1'), slots: z.record(z.string(), recordSchema) }).strict();
 type RecordEntry = z.infer<typeof recordSchema>;
 
-/** Only this Kiki-owned document is eligible for GUI reveal. CLI secrets and process env are never read by this store. */
+/** The Kiki-owned credential document. CLI secrets and process env are never read by this store. */
 export class NbSearchManagedCredentials {
   constructor(private readonly storage: IFileSystemStorageService) {}
 

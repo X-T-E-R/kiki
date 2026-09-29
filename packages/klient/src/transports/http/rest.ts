@@ -315,6 +315,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
     },
 
+    secrets: {
+      reveal: (ref) => transport.json('/secrets:reveal', { method: 'POST', body: { ref } }),
+    },
+
     executors: {
       list: () => transport.json('/executors'),
     },

@@ -304,7 +304,6 @@ describe('server-v2 /api model/provider catalog', () => {
         base_url: 'https://api.example.test/v1',
         default_model: 'k2',
         request_identity: { overrides: { client: { user_agent: 'host' } } },
-        api_key: 'sk-test',
         has_api_key: true,
         status: 'connected',
         models: ['k2', 'turbo'],
@@ -326,11 +325,12 @@ describe('server-v2 /api model/provider catalog', () => {
       base_url: 'https://api.example.test/v1',
       default_model: 'k2',
       request_identity: { overrides: { client: { user_agent: 'host' } } },
-      api_key: 'sk-test',
       has_api_key: true,
       status: 'connected',
       models: ['k2', 'turbo'],
     });
+    expect(single.body.data).not.toHaveProperty('api_key');
+    expect(JSON.stringify(list.body)).not.toContain('sk-test');
     expect(typeof single.body.data?.['revision']).toBe('string');
 
     const noKey = await getJson<Record<string, unknown>>('/api/providers/openai');

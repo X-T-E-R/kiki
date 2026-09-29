@@ -30,7 +30,6 @@ export const ReviewerCategorySchema = z.enum([
 export const PermissionReviewerConfigSchema = z.object({
   backend: z.enum(['model', 'jev']).default('model'),
   model: z.string().min(1).optional(),
-  jevConsent: z.boolean().default(false),
   apiKey: z.string().min(1).optional(),
   timeoutMs: z.number().int().min(100).max(30_000).optional(),
   allowThreshold: z.number().min(0.5).max(1).default(0.9),

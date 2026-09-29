@@ -121,12 +121,13 @@ export const agentsConfigResponseSchema = z.object({
 export const permissionReviewerResponseSchema = z.object({
   backend: z.enum(['model', 'jev']),
   model: z.string().optional(),
-  jevConsent: z.boolean(),
   timeoutMs: z.number().int().optional(),
   allowThreshold: z.number(),
   denyThreshold: z.number(),
   categories: z.array(z.string()),
   hasApiKey: z.boolean(),
+  apiKeySource: z.enum(['kiki', 'environment', 'none']).optional(),
+  apiKeyEnv: z.string().optional(),
 });
 
 export const permissionConfigResponseSchema = z.object({
@@ -141,8 +142,7 @@ export const permissionConfigPatchSchema = z.object({
   reviewer: z.object({
     backend: z.enum(['model', 'jev']).optional(),
     model: z.string().min(1).optional(),
-    jev_consent: z.boolean().optional(),
-    api_key: z.string().min(1).optional(),
+    api_key: z.string().min(1).nullable().optional(),
     timeout_ms: z.number().int().min(100).max(30_000).optional(),
     allow_threshold: z.number().min(0.5).max(1).optional(),
     deny_threshold: z.number().min(0.5).max(1).optional(),

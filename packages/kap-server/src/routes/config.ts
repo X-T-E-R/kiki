@@ -36,6 +36,7 @@ import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { configResponseSchema, patchConfigRequestSchema } from '../protocol/rest-config';
+import { REVIEWER_API_KEY_ENV } from './secrets';
 import type { ConfigResponse } from '../protocol/rest-config';
 
 type ProviderResponse = ConfigResponse['providers'][string];
@@ -68,7 +69,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       method: 'GET',
       path: '/config',
       success: { data: configResponseSchema },
-      description: 'Get the global Kiki configuration, including stored provider API keys for local editing; other secrets are redacted.',
+      description: 'Get the global Kiki configuration with every secret redacted to its source; values are only returned by POST /secrets:reveal.',
       tags: ['config'],
     },
     async (req, reply) => {
@@ -122,6 +123,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }
         delete camelPatch['yolo'];
+        await clearReviewerApiKey(config, camelPatch);
         if (camelPatch[NB_SEARCH_SECTION] !== undefined || camelPatch[NB_SEARCH_SOURCE_SECTION] !== undefined) {
           const write = nbSearchWrites.then(async () => {
             const nbSections: Record<string, unknown> = {};
@@ -257,6 +259,22 @@ function sendMigrationFailure(req: { id: string }, reply: { send(payload: unknow
     conflict ? 'Config changed; preview again before continuing.' : 'Migration failed; inspect the configuration and backup before retrying.', req.id));
 }
 
+async function clearReviewerApiKey(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+  const permission = patch['permission'];
+  if (!isPlainObject(permission) || !isPlainObject(permission['reviewer']) || permission['reviewer']['apiKey'] !== null) return;
+  const { reviewer: rawReviewer, ...permissionPatch } = permission;
+  const { apiKey: _cleared, ...reviewerPatch } = rawReviewer as Record<string, unknown>;
+  const current = config.inspect<Record<string, unknown>>('permission').userValue;
+  const currentReviewer = isPlainObject(current) && isPlainObject(current['reviewer']) ? current['reviewer'] : {};
+  const { apiKey: _stored, ...keptReviewer } = currentReviewer;
+  await config.replace('permission', {
+    ...(isPlainObject(current) ? current : {}),
+    ...permissionPatch,
+    reviewer: { ...keptReviewer, ...reviewerPatch },
+  }, ConfigTarget.User);
+  delete patch['permission'];
+}
+
 function isSubagentDefaultModelClear(value: unknown): value is Record<string, unknown> {
   return isPlainObject(value) && value['defaultModel'] === null;
 }
@@ -292,9 +310,17 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       if (isPlainObject(publicValue)) {
         const reviewer = isPlainObject(publicValue['reviewer']) ? publicValue['reviewer'] : undefined;
         const secret = isPlainObject(value['reviewer']) ? value['reviewer'] : undefined;
+        const { jevConsent: _legacyConsent, ...reviewerPublic } = reviewer ?? {};
+        const saved = typeof secret?.['apiKey'] === 'string';
+        const fromEnv = !saved && (process.env[REVIEWER_API_KEY_ENV]?.trim() ?? '') !== '';
         wire['permission'] = reviewer === undefined ? publicValue : {
           ...publicValue,
-          reviewer: { ...reviewer, hasApiKey: typeof secret?.['apiKey'] === 'string' },
+          reviewer: {
+            ...reviewerPublic,
+            hasApiKey: saved || fromEnv,
+            apiKeySource: saved ? 'kiki' : fromEnv ? 'environment' : 'none',
+            ...(fromEnv ? { apiKeyEnv: REVIEWER_API_KEY_ENV } : {}),
+          },
         };
       }
     } else {
@@ -322,7 +348,6 @@ function toProviderResponses(value: unknown): Record<string, ProviderResponse> {
       type: typeof provider.type === 'string' ? provider.type : '',
       base_url: nonEmpty(provider.baseUrl),
       default_model: nonEmpty(provider.defaultModel),
-      api_key: key.api_key,
       api_key_env: key.api_key_env,
       has_api_key: key.api_key !== undefined || key.api_key_env !== undefined || provider.oauth !== undefined,
     };

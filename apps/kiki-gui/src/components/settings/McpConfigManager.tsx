@@ -20,11 +20,11 @@ import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '..
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 import { CapabilityIcon } from '../capabilities/CapabilityIcon';
 import { Disclosure, StatusDot, Tag } from '../capabilities/primitives';
+import { McpBearerValue, McpSecretRows, mcpSecretLines, mcpSecretRows, type McpSecretRow } from './McpSecretRows';
 
 /**
- * Read-only entries reach us redacted (`envKeys` / `headerKeys` instead of the
- * values), so secrets can only be carried forward for the writable entries the
- * editor actually opens.
+ * Listings arrive redacted (`envKeys` / `headerKeys`); an older server may
+ * still send the values, which are then carried without a reveal round-trip.
  */
 function mcpSecretMap(
   config: McpManagedServerConfig | undefined,
@@ -35,9 +35,17 @@ function mcpSecretMap(
   return value as Readonly<Record<string, string>> | undefined;
 }
 
-function mcpDraft(entry?: McpManagedServer): McpEditorDraft {
+function mcpSecretKeys(config: McpManagedServerConfig, field: 'envKeys' | 'headerKeys'): readonly string[] | undefined {
+  const value = (config as unknown as Record<string, unknown>)[field];
+  return Array.isArray(value) ? value as readonly string[] : undefined;
+}
+
+/** The editor draft: the shared text draft plus per-row secret state. */
+type McpDraft = McpEditorDraft & { readonly envRows: readonly McpSecretRow[]; readonly headerRows: readonly McpSecretRow[] };
+
+function mcpDraft(entry?: McpManagedServer): McpDraft {
   if (entry === undefined) {
-    return { name: '', transport: 'stdio', command: '', args: '', env: '', url: '', headers: '', bearerTokenEnvVar: '' };
+    return { name: '', transport: 'stdio', command: '', args: '', env: '', url: '', headers: '', bearerTokenEnvVar: '', envRows: [], headerRows: [] };
   }
   const config = entry.config;
   return {
@@ -46,13 +54,13 @@ function mcpDraft(entry?: McpManagedServer): McpEditorDraft {
     transport: config.transport,
     command: config.transport === 'stdio' ? config.command : '',
     args: config.transport === 'stdio' ? (config.args ?? []).join('\n') : '',
-    env: entry.mutable && config.transport === 'stdio'
-      ? Object.entries(mcpSecretMap(config, 'env') ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
-      : '',
+    env: '',
     url: config.transport === 'stdio' ? '' : config.url,
-    headers: entry.mutable && config.transport !== 'stdio'
-      ? Object.entries(mcpSecretMap(config, 'headers') ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
-      : '',
+    headers: '',
+    envRows: entry.mutable && config.transport === 'stdio'
+      ? mcpSecretRows(mcpSecretKeys(config, 'envKeys'), mcpSecretMap(config, 'env')) : [],
+    headerRows: entry.mutable && config.transport !== 'stdio'
+      ? mcpSecretRows(mcpSecretKeys(config, 'headerKeys'), mcpSecretMap(config, 'headers')) : [],
     bearerTokenEnvVar: entry.mutable && config.transport !== 'stdio' ? config.bearerTokenEnvVar ?? '' : '',
     auth: entry.mutable && config.transport !== 'stdio' ? config.auth : undefined,
   };
@@ -124,7 +132,7 @@ export function McpConfigManager({
   /** Runtime status, tools and restart; absent → configuration only. */
   runtime?: McpRuntimeView;
 }) {
-  const { klient, scopeId } = useConnection();
+  const { klient, client, scopeId } = useConnection();
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const testRevision = useRef(0);
@@ -132,16 +140,15 @@ export function McpConfigManager({
   const revealRevision = useRef(0);
   const [revealedUrl, setRevealedUrl] = useState<{ scopeId: typeof scopeId; credentialId: string; url: string | null } | null>(null);
   const [revealErrorId, setRevealErrorId] = useState<string | null>(null);
-  const [draft, setDraftState] = useState<McpEditorDraft | null>(null);
+  const [draft, setDraftState] = useState<McpDraft | null>(null);
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(mcpDraft(draft.original));
   useDirtyReporter(`mcp-editor:${scopeId}:${cwd}`, dirty);
   const guard = useDirtyGuard();
-  const switchDraft = (next: McpEditorDraft | null) => {
-    const apply = () => { setDraft(next); setShowHeaders(false); };
+  const switchDraft = (next: McpDraft | null) => {
+    const apply = () => { setDraft(next); };
     if (dirty && guard?.confirmDiscard !== undefined) guard.confirmDiscard(`mcp-editor:${scopeId}:${cwd}`, apply);
     else apply();
   };
-  const [showHeaders, setShowHeaders] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -152,7 +159,7 @@ export function McpConfigManager({
   const [pendingDelete, setPendingDelete] = useState<McpManagedServer | null>(null);
   const [pendingReset, setPendingReset] = useState<McpManagedServer | null>(null);
   const [pendingStoredReset, setPendingStoredReset] = useState<StoredOAuthCredential | null>(null);
-  const setDraft = (next: SetStateAction<McpEditorDraft | null>) => {
+  const setDraft = (next: SetStateAction<McpDraft | null>) => {
     testRevision.current++;
     setTesting(false);
     setFeedback(null);
@@ -165,7 +172,6 @@ export function McpConfigManager({
     setRevealedUrl(null);
     setRevealErrorId(null);
     setDraftState(null);
-    setShowHeaders(false);
     setTesting(false);
     setResetting(false);
     setPendingReset(null);
@@ -192,28 +198,28 @@ export function McpConfigManager({
   const oldOAuthTargetChanged = draft !== null && oldOAuthTarget !== undefined && canResetOAuth(oldOAuthTarget) &&
     (draft.name.trim() !== oldOAuthTarget.name || draft.transport !== oldOAuthTarget.config.transport ||
       (draft.transport !== 'stdio' && oldOAuthTarget.config.transport !== 'stdio' && draft.url !== oldOAuthTarget.config.url));
-  const headerRows = draft?.headers ? draft.headers.split(/\r?\n/u) : [];
   const bearerRefActive = draft !== null && draft.transport !== 'stdio' && draft.bearerTokenEnvVar.trim() !== '';
-  const hasAuthorizationHeader = headerRows.some((line) => {
-    const separator = line.indexOf('=');
-    return separator > 0 && line.slice(0, separator).trim().toLowerCase() === 'authorization';
-  });
-  const editHeader = (index: number, field: 'key' | 'value', value: string) => {
-    setDraft((current) => {
-      if (current === null) return null;
-      const rows = current.headers.split(/\r?\n/u);
-      const separator = rows[index]!.indexOf('=');
-      const key = separator < 0 ? rows[index]! : rows[index]!.slice(0, separator);
-      const entryValue = separator < 0 ? '' : rows[index]!.slice(separator + 1);
-      rows[index] = field === 'key' ? `${value}=${entryValue}` : `${key}=${value}`;
-      return { ...current, headers: rows.join('\n') };
-    });
-  };
+  const hasAuthorizationHeader = (draft?.headerRows ?? []).some((row) => row.key.trim().toLowerCase() === 'authorization');
+  // Saved values are read under the name the entry was listed with, so a
+  // renamed draft still carries them forward.
+  const originalName = draft?.original?.mutable === true ? draft.original.name : undefined;
+  const revealMcp = (kind: 'mcp_env' | 'mcp_header') => originalName === undefined ? undefined
+    : async (key: string) => (await client.revealSecret({ kind, server: originalName, key, cwd: scope })).value;
+  const revealEnv = revealMcp('mcp_env');
+  const revealHeader = revealMcp('mcp_header');
+  const revealBearer = originalName === undefined || draft?.original?.config.transport === 'stdio'
+    || draft?.original?.config.bearerTokenEnvVar === undefined ? undefined
+    : async () => (await client.revealSecret({ kind: 'mcp_bearer_env', server: originalName, cwd: scope })).value;
 
-  const draftConfig = (): McpServerConfig | null => {
+  const draftConfig = async (): Promise<McpServerConfig | null> => {
     if (draft === null) return null;
     try {
-      return mcpConfigFromDraft(draft);
+      const noValue = async () => undefined;
+      return mcpConfigFromDraft({
+        ...draft,
+        env: await mcpSecretLines(draft.envRows, revealEnv ?? noValue),
+        headers: await mcpSecretLines(draft.headerRows, revealHeader ?? noValue),
+      });
     } catch (error) {
       const key = error instanceof Error ? error.message as I18nKey : 'st.mcp.urlInvalid';
       setFeedback({ tone: 'error', text: t(key) });
@@ -233,7 +239,7 @@ export function McpConfigManager({
     setSaving(true);
     setFeedback(null);
     try {
-      const config = draftConfig();
+      const config = await draftConfig();
       if (config === null) return;
       const original = draft.original;
       // A rename cannot be expressed as one write: add the new identity first,
@@ -268,8 +274,8 @@ export function McpConfigManager({
     setTesting(true);
     setFeedback(null);
     try {
-      const config = draftConfig();
-      if (config === null) return;
+      const config = await draftConfig();
+      if (config === null || testRevision.current !== revision) return;
       // Probes the draft as typed — nothing has to be saved first.
       const result = await klient.global.mcp.test({ server: klientMcpServer(config, name), cwd: scope });
       if (testRevision.current === revision) {
@@ -410,8 +416,7 @@ export function McpConfigManager({
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.transport')}
               <select className={INPUT} value={draft.transport} onChange={(event) => {
-                setDraft({ ...draft, transport: event.target.value as McpTransport, headers: '', env: '', bearerTokenEnvVar: '', auth: undefined });
-                setShowHeaders(false);
+                setDraft({ ...draft, transport: event.target.value as McpTransport, headerRows: [], envRows: [], bearerTokenEnvVar: '', auth: undefined });
               }}>
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
@@ -425,16 +430,12 @@ export function McpConfigManager({
                 {t('st.mcp.command')}
                 <input className={`${INPUT} font-mono`} value={draft.command} onChange={(event) => { setDraft({ ...draft, command: event.target.value }); }} />
               </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1 text-[11px] font-medium text-ink-soft">
-                  {t('st.mcp.args')}
-                  <textarea className={`${INPUT} min-h-24 font-mono`} value={draft.args} onChange={(event) => { setDraft({ ...draft, args: event.target.value }); }} placeholder={t('st.mcp.argsPlaceholder')} />
-                </label>
-                <label className="space-y-1 text-[11px] font-medium text-ink-soft">
-                  {t('st.mcp.env')}
-                  <textarea className={`${INPUT} min-h-24 font-mono`} value={draft.env} onChange={(event) => { setDraft({ ...draft, env: event.target.value }); }} placeholder={t('st.mcp.envPlaceholder')} />
-                </label>
-              </div>
+              <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+                {t('st.mcp.args')}
+                <textarea className={`${INPUT} min-h-20 font-mono`} value={draft.args} onChange={(event) => { setDraft({ ...draft, args: event.target.value }); }} placeholder={t('st.mcp.argsPlaceholder')} />
+              </label>
+              <McpSecretRows kind="env" rows={draft.envRows} reveal={revealEnv}
+                onChange={(envRows) => { setDraft({ ...draft, envRows }); }} />
             </div>
           ) : (
             <div className="space-y-3">
@@ -442,8 +443,7 @@ export function McpConfigManager({
                 {t('st.mcp.url')}
                 <input className={`${INPUT} font-mono`} value={draft.url} onChange={(event) => {
                   if (event.target.value !== draft.url) {
-                    setDraft({ ...draft, url: event.target.value, headers: '', bearerTokenEnvVar: '', auth: undefined });
-                    setShowHeaders(false);
+                    setDraft({ ...draft, url: event.target.value, headerRows: [], bearerTokenEnvVar: '', auth: undefined });
                   }
                 }} placeholder="https://mcp.example.com" spellCheck={false} />
               </label>
@@ -456,46 +456,19 @@ export function McpConfigManager({
                   <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft({ ...draft, bearerTokenEnvVar: '' }); }}>{t('st.mcp.clearBearerEnv')}</button>
                 ) : null}
                 <Hint>{t('st.mcp.bearerEnvHint')}</Hint>
+                {bearerRefActive && revealBearer !== undefined && draft.original?.config.transport !== 'stdio'
+                  && draft.bearerTokenEnvVar.trim() === draft.original?.config.bearerTokenEnvVar ? (
+                  <McpBearerValue label={t('st.secret.bearerValue')} envName={draft.bearerTokenEnvVar.trim()} reveal={revealBearer} />
+                ) : null}
                 <p role="status" className="border-l-2 border-accent pl-2 text-[11px] text-ink-soft">
                   {t(bearerRefActive ? 'st.mcp.authSourceEnv' : hasAuthorizationHeader ? 'st.mcp.authSourceHeader' : 'st.mcp.authSourceOAuth')}
                 </p>
                 {draft.auth === 'oauth' ? <Hint>{t('st.mcp.oauthConfigured')}</Hint> : null}
               </div>
-              <div className="space-y-2" role="group" aria-label={t('st.mcp.headers')}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-medium text-ink-soft">{t('st.mcp.headers')}</p>
-                    <Hint>{t('st.mcp.headersHint')}</Hint>
-                  </div>
-                  {headerRows.length > 0 ? (
-                    <button type="button" className={SECONDARY_BUTTON} aria-pressed={showHeaders} onClick={() => { setShowHeaders((shown) => !shown); }}>
-                      {t(showHeaders ? 'st.mcp.hideHeaders' : 'st.mcp.showHeaders')}
-                    </button>
-                  ) : null}
-                </div>
-                {headerRows.map((line, index) => {
-                  const separator = line.indexOf('=');
-                  const key = separator < 0 ? line : line.slice(0, separator);
-                  const value = separator < 0 ? '' : line.slice(separator + 1);
-                  const overridden = bearerRefActive && key.trim().toLowerCase() === 'authorization';
-                  return (
-                    <div key={index} className="grid min-w-0 grid-cols-1 gap-2 rounded-lg border border-hairline bg-panel p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
-                      <label className="min-w-0 space-y-1 text-[11px] font-medium text-ink-soft">
-                        {t('st.mcp.headerName')} {index + 1}
-                        <input className={`${INPUT} font-mono`} value={key} disabled={overridden} onChange={(event) => { editHeader(index, 'key', event.target.value); }} spellCheck={false} autoComplete="off" />
-                      </label>
-                      <label className="min-w-0 space-y-1 text-[11px] font-medium text-ink-soft">
-                        {t('st.mcp.headerValue')} {index + 1}
-                        <input className={`${INPUT} font-mono`} type={showHeaders ? 'text' : 'password'} value={value} disabled={overridden} onChange={(event) => { editHeader(index, 'value', event.target.value); }} spellCheck={false} autoComplete="off" />
-                      </label>
-                      <button type="button" className={SECONDARY_BUTTON} disabled={overridden} aria-label={`${t('st.mcp.removeHeader')} ${index + 1}`} onClick={() => {
-                        setDraft({ ...draft, headers: headerRows.filter((_, row) => row !== index).join('\n') });
-                      }}>{t('st.mcp.removeHeader')}</button>
-                      {overridden ? <div className="sm:col-span-3"><Hint>{t('st.mcp.headerOverridden')}</Hint></div> : null}
-                    </div>
-                  );
-                })}
-                <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft({ ...draft, headers: draft.headers === '' ? '=' : `${draft.headers}\n=` }); }}>{t('st.mcp.addHeader')}</button>
+              <div>
+                <McpSecretRows kind="headers" rows={draft.headerRows} reveal={revealHeader}
+                  disabledKey={bearerRefActive ? 'authorization' : undefined} disabledHint={t('st.mcp.headerOverridden')}
+                  onChange={(headerRows) => { setDraft({ ...draft, headerRows }); }} />
               </div>
             </div>
           )}

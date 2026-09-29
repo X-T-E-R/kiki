@@ -539,7 +539,7 @@ function throwReadOnlyMcpServer(entry: McpRegistryEntry): void {
 function toManagedServer(entry: McpRegistryEntry): McpManagedServer {
   return {
     name: entry.name,
-    config: entry.mutable ? entry.config : toMcpServerConfigView(entry.config),
+    config: toMcpServerConfigView(entry.config),
     source: entry.source,
     origin: entry.origin,
     mutable: entry.mutable,

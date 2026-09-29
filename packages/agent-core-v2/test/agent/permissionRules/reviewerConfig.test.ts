@@ -16,11 +16,12 @@ describe('reviewer configuration', () => {
         allow_threshold: 0.92, deny_threshold: 0.91, categories: ['no_secret_egress'],
       },
     }));
-    expect(parsed.reviewer).toMatchObject({ backend: 'jev', jevConsent: true, apiKey: 'test-key', timeoutMs: 4200 });
+    expect(parsed.reviewer).toMatchObject({ backend: 'jev', apiKey: 'test-key', timeoutMs: 4200 });
+    expect(parsed.reviewer).not.toHaveProperty('jevConsent');
     const encoded = permissionToToml(parsed, {}) as Record<string, unknown>;
     const separated = splitConfigCredentials({ permission: encoded });
     expect(separated.config).toMatchObject({ permission: { reviewer: {
-      backend: 'jev', jev_consent: true, timeout_ms: 4200,
+      backend: 'jev', timeout_ms: 4200,
     } } });
     expect(JSON.stringify(separated.config)).not.toContain('test-key');
     expect(separated.credentials).toMatchObject({ permission: { reviewer: { api_key: 'test-key' } } });

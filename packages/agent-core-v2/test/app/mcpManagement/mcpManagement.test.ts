@@ -322,7 +322,7 @@ describe('McpManagementService', () => {
       expect(added).toEqual([
         {
           name: 'alpha',
-          config: { transport: 'stdio', command: 'npx', env: { TOKEN: 'abc' } },
+          config: { transport: 'stdio', command: 'npx', envKeys: ['TOKEN'] },
           source: 'global',
           origin: join(home, 'mcp.json'),
           mutable: true,
@@ -581,7 +581,7 @@ describe('McpManagementService', () => {
   });
 
   describe('redaction', () => {
-    it('redacts secret values of read-only entries while mutable entries keep full values', async () => {
+    it('redacts secret values of every entry, including mutable ones', async () => {
       pluginEntries = [
         {
           name: 'plugin-demo:api',
@@ -611,7 +611,8 @@ describe('McpManagementService', () => {
 
       const mutable = list.find((entry) => entry.name === 'alpha');
       expect(mutable).toMatchObject({ mutable: true, source: 'global' });
-      expect(mutable?.config).toMatchObject({ headers: { Authorization: 'Bearer secret' } });
+      expect(mutable?.config).toMatchObject({ headerKeys: ['Authorization'] });
+      expect(JSON.stringify(mutable?.config)).not.toContain('Bearer secret');
 
       const got = await management.getServer('plugin-demo:api');
       expect(got.config).not.toHaveProperty('env');

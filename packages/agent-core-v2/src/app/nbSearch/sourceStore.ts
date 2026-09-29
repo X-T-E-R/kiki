@@ -36,6 +36,8 @@ export interface ManagedCredentialView {
   readonly source: 'environment' | 'local' | 'managed' | 'none';
   readonly version: string;
   readonly binding_version: string;
+  /** Variable the effective value is read from when it does not come from the managed store. */
+  readonly env_name?: string;
   readonly value?: string;
 }
 
@@ -55,11 +57,12 @@ export const INbSearchSourceStore: ServiceIdentifier<INbSearchSourceStore> =
  * empty canonical document in Kiki storage, with Kiki-owned default job paths;
  * explicit Kiki canonical path settings still take precedence over defaults.
  *
- * Credential precedence is a single ordered chain: process environment, then
- * the local nb-search CLI file, then Kiki-managed values. A managed value only
- * enters a slot no earlier layer supplies. An unreadable managed document, or a
- * stored slot whose binding no longer matches, drops only the affected managed
- * credential and reports it; the base source and unrelated lanes stay available.
+ * Credential precedence is a single ordered chain: a Kiki-managed value the
+ * user saved wins, then the process environment, then the local nb-search CLI
+ * file. Saving a value in Kiki is how the user overrides an environment or CLI
+ * credential. An unreadable managed document, or a stored slot whose binding no
+ * longer matches, drops only the affected managed credential and reports it;
+ * the base source and unrelated lanes stay available.
  *
  * An invalid or unreadable local CLI secrets file is ignored the same way: the
  * source stays available, no managed value is substituted for a slot the file
@@ -100,13 +103,15 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       const other = config.credential_slots[id];
       return other !== undefined && nbSearchEnvironmentName(source.env, other.env) === normalized;
     }) ?? false;
-    const sourceName = fromProcess ? 'environment'
-      : managedAlias ? 'managed'
+    const sourceName = fromManaged || managedAlias ? 'managed'
+      : fromProcess ? 'environment'
         : Object.keys(source.env).some((key) => nbSearchEnvironmentName(source.env, key) === normalized) ? 'local' : 'none';
+    const effective = sourceName === 'none' ? undefined : source.env[name];
     return {
       instance_id: instanceId, slot_id: slotId, stored: entry !== undefined, active: matches && fromManaged && sourceName === 'managed',
       source: sourceName, version, binding_version: managedBindingVersion(config, slotId, source.env),
-      value: reveal && matches ? entry!.value : undefined,
+      ...(sourceName === 'environment' || sourceName === 'local' ? { env_name: name } : {}),
+      value: !reveal ? undefined : effective ?? (matches ? entry!.value : undefined),
     };
   }
 
@@ -308,7 +313,9 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       }
       const name = nbSearchEnvironmentName(env, slot.env);
       if (['NB_SEARCH_CONFIG', 'NB_SEARCH_HOME', 'NB_SEARCH_JOBS_ROOT', 'NB_SEARCH_RETENTION_HOURS', 'NB_SEARCH_LOG_LEVEL'].includes(name.toUpperCase())) continue;
-      if (Object.keys(copy).some((key) => nbSearchEnvironmentName(copy, key) === name)) continue;
+      for (const key of Object.keys(copy)) {
+        if (key !== slot.env && nbSearchEnvironmentName(copy, key) === name) delete copy[key];
+      }
       Object.defineProperty(copy, slot.env, { value: entry.value, enumerable: true, configurable: true, writable: true });
       injected.push(slot.env);
       managedSlots.push(slotId);

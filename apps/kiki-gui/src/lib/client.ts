@@ -4,7 +4,7 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, revealedSecretSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
 import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
@@ -1290,6 +1290,11 @@ export class KikiClient {
 
   async readNbSearchCredential(instanceId: string, reveal = false): Promise<NbSearchManagedCredentialView> {
     return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.readCredential(instanceId, reveal)));
+  }
+
+  /** `POST /api/secrets:reveal` — one secret value with its source, fetched only on explicit request. */
+  async revealSecret(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret> {
+    return revealedSecretSchema.parse(await this.run(this.rest.secrets.reveal(ref)));
   }
 
   async writeNbSearchCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<NbSearchManagedCredentialView> {

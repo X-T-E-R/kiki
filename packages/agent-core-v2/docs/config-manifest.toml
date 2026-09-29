@@ -479,7 +479,6 @@ reuse_local_config = true
 # [permission.reviewer]
   # backend: "model" | "jev" (default: "model")
   # model: string
-  # jev_consent: boolean (default: false)
   # api_key: string
   # timeout_ms: integer
   # allow_threshold: number (default: 0.9)

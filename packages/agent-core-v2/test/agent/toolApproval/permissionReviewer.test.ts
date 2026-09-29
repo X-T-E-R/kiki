@@ -142,7 +142,7 @@ describe('permission reviewer', () => {
       expect(init?.body).not.toContain(secret);
       return { ok: true, json: async () => ({ answers: { policy_compliance: { type: 'noul', noul: 0.99 } } }) } as Response;
     }) as unknown as typeof fetch;
-    const jev = dependencies({ backend: 'jev', jevConsent: true, categories: ['policy_compliance'], allowThreshold: 0.9, denyThreshold: 0.9 }, { fetcher, apiKey: 'test-key' });
+    const jev = dependencies({ backend: 'jev', categories: ['policy_compliance'], allowThreshold: 0.9, denyThreshold: 0.9 }, { fetcher, apiKey: 'test-key' });
     expect(await reviewPermission(jev, edit, 'sensitive-file', {})).toMatchObject({ backend: 'jev' });
     expect(modelPayload).not.toContain(secret);
     expect(modelPayload).not.toContain('abc123');
@@ -167,8 +167,8 @@ describe('permission reviewer', () => {
     expect(await reviewPermission(timed, context, 'ask', {})).toBeUndefined();
   });
 
-  it('requires Jev consent and key; validates every noul before approving or denying', async () => {
-    const reviewer = { backend: 'jev', jevConsent: true, allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance', 'no_secret_egress'] };
+  it('calls Jev once selected with a key; validates every noul before approving or denying', async () => {
+    const reviewer = { backend: 'jev', allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance', 'no_secret_egress'] };
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ Authorization: 'Bearer test-key' });
       const payload = JSON.parse(init?.body as string) as { questions: Record<string, unknown>; state: unknown };
@@ -181,7 +181,7 @@ describe('permission reviewer', () => {
     }) as unknown as typeof fetch;
     expect(await reviewPermission(dependencies(reviewer, { fetcher, apiKey: 'test-key' }), context, 'ask', {})).toMatchObject({ outcome: 'allow', backend: 'jev' });
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(await reviewPermission(dependencies({ ...reviewer, jevConsent: false }, { fetcher, apiKey: 'test-key' }), context, 'ask', {})).toBeUndefined();
+    expect(await reviewPermission(dependencies(reviewer, { fetcher, apiKey: '' }), context, 'ask', {})).toBeUndefined();
     expect(fetcher).toHaveBeenCalledOnce();
     const missing = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { policy_compliance: { type: 'noul', noul: 0.98 } } }) } as Response)) as unknown as typeof fetch;
     expect(await reviewPermission(dependencies(reviewer, { fetcher: missing, apiKey: 'test-key' }), context, 'ask', {})).toBeUndefined();

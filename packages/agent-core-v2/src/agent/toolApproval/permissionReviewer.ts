@@ -238,7 +238,7 @@ async function reviewWithJev(
   signal: AbortSignal,
   fetcher: typeof fetch,
 ): Promise<ReviewerVerdict | undefined> {
-  if (!config.jevConsent || !apiKey) return undefined;
+  if (!apiKey) return undefined;
   const questions = Object.fromEntries(config.categories.map((category) => [category, {
     type: 'noul', instructions: QUESTIONS[category],
   }]));

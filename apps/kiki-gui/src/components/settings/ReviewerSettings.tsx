@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -8,6 +8,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { SearchableSelect } from '../SearchableSelect';
 import { INPUT } from '../ui';
+import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { SectionCard } from './SectionCard';
 import { SETTINGS_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
 
@@ -16,16 +17,15 @@ type Category = typeof CATEGORIES[number];
 interface ReviewerDraft {
   backend: 'model' | 'jev';
   model: string;
-  jevConsent: boolean;
   timeoutMs: string;
   allowThreshold: string;
   denyThreshold: string;
   categories: Category[];
-  apiKey: string;
+  apiKey: SecretDraft;
 }
 const DEFAULT_DRAFT: ReviewerDraft = {
-  backend: 'model', model: '', jevConsent: false, timeoutMs: '8000',
-  allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES], apiKey: '',
+  backend: 'model', model: '', timeoutMs: '8000',
+  allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES], apiKey: KEEP_SECRET,
 };
 function reviewerFromConfig(permission: unknown): ReviewerDraft {
   const root = permission !== null && typeof permission === 'object' ? permission as Record<string, unknown> : {};
@@ -34,14 +34,13 @@ function reviewerFromConfig(permission: unknown): ReviewerDraft {
   return {
     backend: reviewer['backend'] === 'jev' ? 'jev' : 'model',
     model: typeof reviewer['model'] === 'string' ? reviewer['model'] : '',
-    jevConsent: reviewer['jevConsent'] === true,
     timeoutMs: String(reviewer['timeoutMs'] ?? DEFAULT_DRAFT.timeoutMs),
     allowThreshold: String(reviewer['allowThreshold'] ?? DEFAULT_DRAFT.allowThreshold),
     denyThreshold: String(reviewer['denyThreshold'] ?? DEFAULT_DRAFT.denyThreshold),
     categories: Array.isArray(reviewer['categories'])
       ? CATEGORIES.filter((category) => (reviewer['categories'] as unknown[]).includes(category))
       : [...CATEGORIES],
-    apiKey: '',
+    apiKey: KEEP_SECRET,
   };
 }
 function valid(draft: ReviewerDraft): boolean {
@@ -49,13 +48,16 @@ function valid(draft: ReviewerDraft): boolean {
   const allow = Number(draft.allowThreshold);
   const deny = Number(draft.denyThreshold);
   return (draft.backend !== 'model' || draft.model.trim() !== '')
-    && (draft.backend !== 'jev' || draft.jevConsent)
     && Number.isInteger(timeout) && timeout >= 100 && timeout <= 30_000
     && allow >= 0.5 && allow <= 1 && deny >= 0.5 && deny <= 1
     && draft.categories.length > 0;
 }
 
-/** Server-wide reviewer configuration; the API stores secrets and echoes only hasApiKey. */
+/**
+ * Server-wide reviewer configuration. Choosing Jev is the consent to send the
+ * reviewer input to TypeSafe. The API echoes only the key's source; the value
+ * is fetched through the reveal route when the user asks to see it.
+ */
 export function ReviewerSettings() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -67,12 +69,14 @@ export function ReviewerSettings() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
-  const hasKey = configQuery.data?.permission?.reviewer?.hasApiKey === true;
+  const reviewerEcho = configQuery.data?.permission?.reviewer;
+  const keySource = reviewerEcho?.apiKeySource ?? (reviewerEcho?.hasApiKey === true ? 'kiki' : 'none');
   useEffect(() => {
     if (!configQuery.data || dirty) return;
     const next = reviewerFromConfig(configQuery.data.permission);
     setBaseline(next); setDraft(next);
   }, [configQuery.data, dirty]);
+  const revealKey = useCallback(async () => (await client.revealSecret({ kind: 'reviewer_api_key' })).value, [client]);
   const modelOptions = useMemo(() => buildCatalogModelOptions(modelsQuery.data?.items ?? [], t), [modelsQuery.data, t]);
   const update = (patch: Partial<ReviewerDraft>) => { setDraft((current) => ({ ...current, ...patch })); setFeedback(null); };
   const save = async () => {
@@ -82,8 +86,8 @@ export function ReviewerSettings() {
       const echoed = await client.patchConfig({
         permission: { reviewer: {
           backend: draft.backend, model: draft.model.trim() || undefined,
-          jev_consent: draft.jevConsent,
-          api_key: draft.apiKey.trim() || undefined,
+          api_key: draft.apiKey.mode === 'clear' ? null
+            : draft.apiKey.mode === 'set' && draft.apiKey.value.trim() !== '' ? draft.apiKey.value.trim() : undefined,
           timeout_ms: Number(draft.timeoutMs),
           allow_threshold: Number(draft.allowThreshold), deny_threshold: Number(draft.denyThreshold),
           categories: draft.categories,
@@ -112,16 +116,10 @@ export function ReviewerSettings() {
             allowCustomValue ariaLabel={t('st.reviewer.model')} emptyText={t('st.reviewer.modelEmpty')}
             buttonClassName={`${SETTINGS_SELECT_TRIGGER} min-w-56`}
             onChange={(model) => update({ model })} />
-        </div> : <div className="space-y-3 border-l-2 border-hairline pl-3">
-          <label className="flex max-w-[62ch] cursor-pointer items-start gap-2.5 text-[13px] leading-snug text-ink"><input type="checkbox" checked={draft.jevConsent}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
-            onChange={(event) => update({ jevConsent: event.target.checked })} />{t('st.reviewer.jevConsent')}</label>
-          <label className="block max-w-md space-y-1.5"><span className="block text-[13px] font-medium text-ink">{t('st.reviewer.key')}</span>
-            <input type="password" autoComplete="off" className={`${INPUT} text-[13px]`} value={draft.apiKey}
-              placeholder={hasKey ? t('st.reviewer.keyStored') : undefined}
-              onChange={(event) => update({ apiKey: event.target.value })} />
-          </label>
-          <Hint>{t('st.reviewer.keyHint')}</Hint>
+        </div> : <div className="max-w-xl border-l-2 border-hairline pl-3" data-reviewer-jev>
+          <SecretField id="reviewer-api-key" label={t('st.reviewer.key')} source={keySource}
+            envName={reviewerEcho?.apiKeyEnv} draft={draft.apiKey} onChange={(apiKey) => update({ apiKey })}
+            reveal={keySource === 'none' ? undefined : revealKey} hint={t('st.reviewer.keyHint')} />
         </div>}
         <div className="grid gap-3 sm:grid-cols-3">
           {(['timeoutMs', 'allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">

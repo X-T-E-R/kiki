@@ -70,6 +70,9 @@ export type IconName =
   | 'dot'
   | 'ring'
   | 'partial'
+  | 'eye'
+  | 'eyeOff'
+  | 'copy'
   // Places and relations
   | 'board'
   | 'usage'
@@ -270,6 +273,25 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="4.5" cy="12.2" r="1.3" />
       <circle cx="11.5" cy="6.2" r="1.3" />
       <path d="M4.5 5.1v5.8M11.5 7.5c0 2.2-2 2.9-7 3.4" />
+    </>
+  ),
+  // Secret-field controls: show / hide a value, copy it.
+  eye: (
+    <>
+      <path d="M1.8 8S4.2 3.6 8 3.6 14.2 8 14.2 8 11.8 12.4 8 12.4 1.8 8 1.8 8z" />
+      <circle cx="8" cy="8" r="2" />
+    </>
+  ),
+  eyeOff: (
+    <>
+      <path d="M6.3 4c.5-.2 1.1-.4 1.7-.4 3.8 0 6.2 4.4 6.2 4.4a11 11 0 0 1-1.6 2.1M10 11.8a4.8 4.8 0 0 1-2 .6C4.2 12.4 1.8 8 1.8 8a11 11 0 0 1 2.3-2.8" />
+      <path d="M6.6 6.6a2 2 0 0 0 2.8 2.8M2.5 2.5l11 11" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.6" />
+      <path d="M10.5 5.5V4.1a1.6 1.6 0 0 0-1.6-1.6H4.1a1.6 1.6 0 0 0-1.6 1.6v4.8a1.6 1.6 0 0 0 1.6 1.6h1.4" />
     </>
   ),
   // An arrow leaving a line: a session another session started.

@@ -14,9 +14,9 @@ export type GlobalMcpServerConfig = McpServerConfig & { readonly name: string };
 export interface McpManagedServer {
   readonly name: string;
   /**
-   * Mutable (user-level) entries carry the full config so edit UIs can
-   * prefill values; read-only entries are redacted to sorted key lists
-   * (`envKeys` / `headerKeys`) and never disclose secret values.
+   * Every entry is redacted to sorted key lists (`envKeys` / `headerKeys`);
+   * secret values are only returned by the explicit, authenticated reveal
+   * route, one value per request.
    */
   readonly config: McpServerConfig | McpServerConfigView;
   readonly source: McpServerSource;

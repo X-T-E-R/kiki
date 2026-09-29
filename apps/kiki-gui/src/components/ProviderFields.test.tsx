@@ -51,6 +51,7 @@ const listProviderHealth = vi.fn(async (): Promise<{ items: unknown[] }> => ({ i
 const testProviderConnection = vi.fn();
 const logoutOAuth = vi.fn(async () => ({ logged_out: true }));
 const reportDirty = vi.fn();
+const revealSecret = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
@@ -75,6 +76,7 @@ vi.mock('../state/connection', () => ({
       logoutOAuth,
       listProviderHealth,
       testProviderConnection,
+      revealSecret,
     },
   }),
 }));
@@ -109,7 +111,6 @@ const COLON_PROVIDER: ProviderCatalogItem = {
   type: 'openai',
   base_url: 'https://edge.example.test/v1',
   default_model: 'fast',
-  api_key: 'sk-stored',
   has_api_key: true,
   status: 'connected',
   models: ['fast'],
@@ -192,6 +193,7 @@ beforeEach(() => {
   getAuth.mockReset().mockResolvedValue({ ready: true, providers_count: 2 });
   getOAuthStatus.mockReset().mockResolvedValue(null);
   reportDirty.mockClear();
+  revealSecret.mockReset().mockResolvedValue({ source: 'kiki', value: 'sk-stored' });
 });
 
 afterEach(async () => {
@@ -253,6 +255,16 @@ function setSelectValue(select: HTMLSelectElement, value: string): void {
   select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+/** The provider key field; a stored key has to be opened for editing first. */
+function keyInput(container: ParentNode): HTMLInputElement {
+  return container.querySelector<HTMLInputElement>('[data-secret-field] input')!;
+}
+async function typeKey(container: ParentNode, value: string): Promise<void> {
+  const edit = container.querySelector<HTMLButtonElement>('[data-secret-field] [data-secret-edit]');
+  if (edit !== null) await act(async () => { edit.click(); });
+  await act(async () => { setInputValue(keyInput(container), value); });
+}
+
 function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
   const button = [...container.querySelectorAll('button')].find(
     (candidate) => candidate.textContent === text,
@@ -262,16 +274,16 @@ function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
 }
 
 describe('ProviderEditor save channel', () => {
-  it('prefills, reveals, edits, and clears a stored key without replacing it when unchanged', async () => {
+  it('masks a stored key, reveals it on request, and only sends a changed key', async () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    expect(key.value).toBe('sk-stored');
+    expect(keyInput(container).value).not.toContain('sk-stored');
+    expect(container.textContent).toContain('Saved in Kiki');
+    expect(revealSecret).not.toHaveBeenCalled();
     expect(buttonByText(container, 'Save provider').disabled).toBe(true);
-    await act(async () => { buttonByText(container, 'Show').click(); });
-    expect(key.type).toBe('text');
-    expect(key.value).toBe('sk-stored');
-    await act(async () => { buttonByText(container, 'Hide').click(); });
-    expect(key.type).toBe('password');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(revealSecret).toHaveBeenCalledWith({ kind: 'provider_api_key', provider_id: COLON_PROVIDER.id });
+    expect(keyInput(container).value).toBe('sk-stored');
 
     const url = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
     await act(async () => { setInputValue(url, 'https://edge-2.example.test/v1'); });
@@ -279,32 +291,27 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
       base_url: 'https://edge-2.example.test/v1', base_revision: 'provider-rev-1',
     });
-    expect(key.value).toBe('sk-stored');
 
-    await act(async () => { setInputValue(key, 'sk-new'); });
+    await typeKey(container, 'sk-new');
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: 'sk-new', base_revision: 'provider-rev-2' });
-    expect(key.value).toBe('sk-new');
-
-    await act(async () => { setInputValue(key, ''); });
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: '', base_revision: 'provider-rev-2' });
-    expect(key.value).toBe('');
+    // After a save the field returns to the masked, stored state.
+    expect(keyInput(container).value).not.toContain('sk-new');
   });
 
-  it('shows an environment source without exposing its value and saves an inline override', async () => {
-    const envProvider: ProviderCatalogItem = {
-      ...COLON_PROVIDER, api_key: undefined, api_key_env: 'OPENAI_API_KEY',
-    };
+  it('shows an environment key by name, reveals it, and saves a Kiki override', async () => {
+    const envProvider: ProviderCatalogItem = { ...COLON_PROVIDER, has_api_key: true, api_key_env: 'OPENAI_API_KEY' };
+    revealSecret.mockResolvedValue({ source: 'environment', env_name: 'OPENAI_API_KEY', value: 'sk-from-env' });
     const container = await renderEditor(envProvider, FAST_MODELS, false, async () => {});
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    expect(key.value).toBe('');
-    expect(key.placeholder).toContain('OPENAI_API_KEY');
-    expect(container.textContent).toContain('Using OPENAI_API_KEY');
-    await act(async () => { setInputValue(key, 'sk-inline'); });
+    expect(container.textContent).toContain('From environment variable OPENAI_API_KEY');
+    expect(container.querySelector('[data-secret-clear]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(keyInput(container).value).toBe('sk-from-env');
+    await typeKey(container, 'sk-inline');
+    expect(container.textContent).toContain('Saving stores this value in Kiki and uses it instead');
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenCalledWith(envProvider.id, { api_key: 'sk-inline', base_revision: 'provider-rev-1' });
-    expect(key.value).toBe('sk-inline');
   });
 
   it('saves provider defaults as a scoped sparse patch and clears only the selected field', async () => {
@@ -324,10 +331,9 @@ describe('ProviderEditor save channel', () => {
   it('probes with a changed unsaved key but uses the stored key when untouched', async () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, undefined);
-    await act(async () => { setInputValue(key, 'sk-draft'); });
+    await typeKey(container, 'sk-draft');
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, 'sk-draft');
     expect(updateProvider).not.toHaveBeenCalled();
@@ -337,11 +343,8 @@ describe('ProviderEditor save channel', () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const url = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(async () => {
-      setInputValue(url, 'https://edge-2.example.test/v1');
-      setInputValue(key, 'YOUR_API_KEY');
-    });
+    await act(async () => { setInputValue(url, 'https://edge-2.example.test/v1'); });
+    await typeKey(container, 'YOUR_API_KEY');
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).not.toHaveBeenCalled();
     expect(updateProvider).not.toHaveBeenCalled();
@@ -351,7 +354,7 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
       base_url: 'https://edge-2.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
     });
-    await act(async () => { setInputValue(key, 'sk-next'); });
+    await typeKey(container, 'sk-next');
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, 'sk-next');
   });
@@ -359,13 +362,12 @@ describe('ProviderEditor save channel', () => {
   it('never sends a draft key to the saved protocol while the draft protocol is unsaved', async () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
     // Stored editors scope their field ids so several can share the page.
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Protocol"]')!.click(); });
     const anthropic = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
       .find((option) => option.textContent?.includes('Anthropic Messages'))!;
     await act(async () => { anthropic.click(); });
-    await act(async () => { setInputValue(key, 'YOUR_API_KEY'); });
+    await typeKey(container, 'YOUR_API_KEY');
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Save this connection first');
@@ -378,24 +380,19 @@ describe('ProviderEditor save channel', () => {
     expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, undefined);
   });
 
-  it('keeps the stored key editable in place and clears it only through a named confirmation', async () => {
+  it('clears a stored key in the field as a pending change that saves "" and can be undone', async () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    expect(key.value).toBe('sk-stored');
-    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
-
-    await act(async () => { buttonByText(container, 'Clear stored API key').click(); });
-    const dialog = container.querySelector<HTMLElement>('[role="alertdialog"]')!;
-    expect(dialog.getAttribute('aria-label')).toBe('Clear the stored API key?');
-    expect(dialog.textContent).toContain(COLON_PROVIDER.id);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-clear]')!.click(); });
+    expect(container.textContent).toContain('Will be removed when you save');
     expect(updateProvider).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-undo]')!.click(); });
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
 
-    await act(async () => { buttonByText(dialog, 'Clear key').click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-secret-clear]')!.click(); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
       api_key: '', base_revision: 'provider-rev-1',
     });
-    expect(key.value).toBe('');
-    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it('keeps provider A draft and baseline through provider B save and real query invalidation', async () => {
@@ -410,12 +407,9 @@ describe('ProviderEditor save channel', () => {
     const second = editors[1]!;
     await act(async () => { for (const editor of editors) editor.open = true; });
     const baseUrl = [...first.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
-    const apiKey = first.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(async () => {
-      setInputValue(baseUrl, 'https://draft.example.test/v1');
-      setInputValue(apiKey, 'YOUR_API_KEY');
-      second.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click();
-    });
+    await act(async () => { setInputValue(baseUrl, 'https://draft.example.test/v1'); });
+    await typeKey(first, 'YOUR_API_KEY');
+    await act(async () => { second.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
     const name = second.querySelector<HTMLInputElement>('input[aria-label="Model 1 display name"]')!;
     await act(async () => { setInputValue(name, 'Changed elsewhere'); });
     await act(async () => { buttonByText(second, 'Save provider').click(); });
@@ -423,7 +417,7 @@ describe('ProviderEditor save channel', () => {
 
     expect(listModels.mock.calls.length).toBeGreaterThan(1);
     expect(baseUrl.value).toBe('https://draft.example.test/v1');
-    expect(apiKey.value).toBe('YOUR_API_KEY');
+    expect(keyInput(first).value).toBe('YOUR_API_KEY');
     expect(buttonByText(first, 'Save provider').disabled).toBe(false);
     expect(reportDirty.mock.calls.findLast(([id]) => id === 'provider:edge:gateway')).toEqual(['provider:edge:gateway', true]);
     expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(3);
@@ -502,10 +496,8 @@ describe('ProviderEditor save channel', () => {
     const dangling = { ...COLON_PROVIDER, default_model: 'removed-alias' };
     const container = await renderEditor(dangling, FAST_MODELS, false, async () => {});
     const baseUrl = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
-    await act(async () => {
-      setInputValue(baseUrl, 'https://repaired.example.test/v1');
-      setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY');
-    });
+    await act(async () => { setInputValue(baseUrl, 'https://repaired.example.test/v1'); });
+    await typeKey(container, 'YOUR_API_KEY');
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
       base_url: 'https://repaired.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',

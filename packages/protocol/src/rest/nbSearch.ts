@@ -37,6 +37,8 @@ export const nbSearchManagedCredentialViewSchema = z.object({
   source: z.enum(['environment', 'local', 'managed', 'none']),
   version: z.string(),
   binding_version: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Variable the effective value is read from when `source` is not `managed`. */
+  env_name: z.string().optional(),
   value: z.string().optional(),
 }).strict();
 export type NbSearchManagedCredentialView = z.infer<typeof nbSearchManagedCredentialViewSchema>;

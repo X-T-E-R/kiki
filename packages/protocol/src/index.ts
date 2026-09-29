@@ -46,6 +46,7 @@ export * from './rest/modelCatalog';
 export * from './rest/config';
 export * from './rest/modelGenerationMigration';
 export * from './rest/nbSearch';
+export * from './rest/secrets';
 export * from './rest/agentProfile';
 export * from './rest/executor';
 export * from './rest/ssh';

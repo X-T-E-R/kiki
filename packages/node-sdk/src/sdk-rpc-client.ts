@@ -2805,9 +2805,8 @@ function withoutEngineSessionStarted(client: TelemetryClient): TelemetryClient {
 
 /**
  * v1's `toManagedServerInfo` over the engine's managed view: flatten the
- * config to the top level (mutable entries carry the full values, read-only
- * entries the redacted `envKeys` / `headerKeys` lists) and tag it with the
- * source metadata.
+ * config to the top level (secret values arrive redacted as `envKeys` /
+ * `headerKeys` lists) and tag it with the source metadata.
  */
 function toManagedServerInfo(server: McpManagedServer): McpManagedServerInfo {
   return {

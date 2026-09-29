@@ -13,7 +13,7 @@
  * `modelPatchBody`), so the GUI owns no second copy of the wire contract.
  */
 
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
@@ -80,6 +80,7 @@ import {
 } from './providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
+import { SecretField, type SecretDraft } from './settings/SecretField';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 /**
@@ -739,6 +740,21 @@ function ModelDraftRow({
   );
 }
 
+/**
+ * The provider draft keeps its wire shape (`apiKey` + `clearApiKey`, with the
+ * stored key never in the baseline); these two map it onto the shared secret
+ * field's keep / set / clear draft.
+ */
+function providerSecretDraft(draft: ProviderDraft, baselineApiKey: string, editing: boolean): SecretDraft {
+  if (draft.clearApiKey) return { mode: 'clear' };
+  return draft.apiKey === baselineApiKey && !editing ? { mode: 'keep' } : { mode: 'set', value: draft.apiKey };
+}
+
+function withProviderSecret(draft: ProviderDraft, next: SecretDraft, baselineApiKey: string): ProviderDraft {
+  if (next.mode === 'clear') return { ...draft, apiKey: baselineApiKey, clearApiKey: true };
+  return { ...draft, apiKey: next.mode === 'set' ? next.value : baselineApiKey, clearApiKey: false };
+}
+
 // ---- shared field set (wizard + editor) ----
 
 export function ProviderFields({
@@ -756,6 +772,7 @@ export function ProviderFields({
   onRefreshed,
   fieldIssue = null,
   advancedExtra,
+  revealKey,
 }: {
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
@@ -791,14 +808,18 @@ export function ProviderFields({
   fieldIssue?: ConnectionFieldIssue | null;
   /** Saved connections add their request defaults to the advanced block. */
   advancedExtra?: React.ReactNode;
+  /** Fetches the effective key (saved or environment) on explicit request. */
+  revealKey?: () => Promise<string | undefined>;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const idIssue = fieldIssue?.field === 'id' ? issueText(locale, fieldIssue.issue) : null;
   const baseUrlIssue = fieldIssue?.field === 'baseUrl' ? issueText(locale, fieldIssue.issue) : null;
   const [probing, setProbing] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
+  // Listings never carry the key, so "editing an empty value" is local state.
+  const [keyEditing, setKeyEditing] = useState(false);
+  useEffect(() => { setKeyEditing(false); }, [baselineApiKey, hasStoredKey, apiKeyEnv]);
   const queryClient = useQueryClient();
   const [localSuggestions, setLocalSuggestions] = useState<readonly ProviderModelCatalogChoice[]>([]);
   useEffect(() => { setLocalSuggestions([]); }, [draft.baseUrl, draft.apiKey, draft.type]);
@@ -935,29 +956,18 @@ export function ProviderFields({
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (
         <div>
-          <label className={FORM_LABEL}>{t('st.providers.apiKey')}
-            <span className="mt-1 flex items-center gap-2 font-normal">
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                autoComplete="new-password"
-                className={`${INPUT} min-w-0 flex-1`}
-                value={draft.apiKey}
-                disabled={draft.clearApiKey}
-                onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
-                placeholder={apiKeyEnv === undefined
-                  ? (hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew'))
-                  : t('st.providers.keyEnv', { name: apiKeyEnv })}
-              />
-              {draft.apiKey !== '' ? (
-                <button type="button" className={SECONDARY_BUTTON} onClick={() => { setShowApiKey((value) => !value); }}>
-                  {showApiKey ? t('st.providers.hideKey') : t('st.providers.showKey')}
-                </button>
-              ) : null}
-            </span>
-          </label>
-          {apiKeyEnv !== undefined
-            ? <Hint>{t('st.providers.keyEnvHint', { name: apiKeyEnv })}</Hint>
-            : hasStoredKey ? <Hint>{t('st.providers.keyHint')}</Hint> : null}
+          <SecretField
+            label={t('st.providers.apiKey')}
+            source={apiKeyEnv !== undefined ? 'environment' : hasStoredKey ? 'kiki' : 'none'}
+            envName={apiKeyEnv}
+            draft={providerSecretDraft(draft, baselineApiKey, keyEditing)}
+            onChange={(next) => {
+              setKeyEditing(next.mode === 'set');
+              onChange(withProviderSecret(draft, next, baselineApiKey));
+            }}
+            reveal={revealKey}
+            placeholder={hasStoredKey || apiKeyEnv !== undefined ? undefined : t('st.providers.keyNew')}
+          />
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3" data-connection-test>
@@ -1105,11 +1115,17 @@ export function ProviderEditor({
   const [directoryModels, setDirectoryModels] = useState<readonly CatalogModelItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [confirming, setConfirming] = useState<'remove' | 'clearKey' | null>(null);
+  const [confirming, setConfirming] = useState<'remove' | null>(null);
   const [revisions, setRevisions] = useState<{
     provider: string;
     models: ReadonlyMap<string, string>;
   } | null>(null);
+  // The key is fetched only when the user asks to see or copy it; a new
+  // revision makes the field drop any previously revealed copy.
+  const revealKey = useCallback(
+    async () => (await client.revealSecret({ kind: 'provider_api_key', provider_id: provider.id })).value,
+    [client, provider.id, provider.has_api_key, provider.api_key_env, revisions?.provider],
+  );
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
   const healthQuery = useQuery({
     queryKey: PROVIDER_HEALTH_QUERY_KEY,
@@ -1244,11 +1260,9 @@ export function ProviderEditor({
         mutationSucceeded = true;
         setRevisions({ provider: updatedProvider.revision, models: revisionMap });
       }
-      const saved = {
-        ...normalized,
-        apiKey: normalized.clearApiKey ? '' : normalized.apiKey,
-        clearApiKey: false,
-      };
+      // The saved key is not kept in the draft: the listing never carries it,
+      // and the field fetches it again through the reveal route on request.
+      const saved = { ...normalized, apiKey: '', clearApiKey: false };
       setDraft(saved);
       setBaseline(saved);
       await onSaved();
@@ -1399,6 +1413,7 @@ export function ProviderEditor({
             baselineBaseUrl={baseline.baseUrl}
             baselineType={baseline.type}
             apiKeyEnv={provider.api_key_env}
+            revealKey={provider.has_api_key || provider.api_key_env !== undefined ? revealKey : undefined}
             managed={managed}
             idLocked
             refreshProviderId={provider.id}
@@ -1421,11 +1436,6 @@ export function ProviderEditor({
               ) : null
             ) : (
               <>
-                {provider.has_api_key ? (
-                  <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('clearKey'); }}>
-                    {t('st.danger.clearKey')}
-                  </button>
-                ) : null}
                 <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('remove'); }}>
                   {t('st.danger.removeProvider')}
                 </button>
@@ -1443,15 +1453,6 @@ export function ProviderEditor({
         confirmLabel={t('st.confirm.removeAction')}
         busy={saving}
         onConfirm={() => { setConfirming(null); void remove(); }}
-        onCancel={() => { setConfirming(null); }}
-      />
-      <ConfirmDialog
-        open={confirming === 'clearKey'}
-        title={t('st.confirm.clearKeyTitle')}
-        body={t('st.confirm.clearKeyBody', { id: provider.id })}
-        confirmLabel={t('st.confirm.clearKeyAction')}
-        busy={saving}
-        onConfirm={() => { setConfirming(null); void save({ clearApiKey: true, apiKey: '' }); }}
         onCancel={() => { setConfirming(null); }}
       />
     </details>

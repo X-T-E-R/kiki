@@ -219,7 +219,6 @@ export function toProtocolProvider(
     defaults: parametersToWire(provider.defaults),
     request_identity: requestIdentityToWire(provider.requestIdentity),
     images: imagePolicyToWire(provider.images),
-    api_key: key.api_key,
     api_key_env: key.api_key_env,
     has_api_key: credential.hasApiKey,
     status: credential.hasApiKey || credential.hasOAuthToken ? 'connected' : 'unconfigured',
