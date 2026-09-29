@@ -82,7 +82,7 @@ describe('SettingsNav grouped tree', () => {
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'connection']);
     expect(leaves(1)).toEqual(['ai', 'agents', 'subagents']);
-    expect(leaves(2)).toEqual(['sessions', 'permissions', 'tasks']);
+    expect(leaves(2)).toEqual(['sessions', 'memory', 'permissions', 'tasks']);
     expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
     expect(leaves(4)).toEqual(['workspaces', 'ssh', 'developer', 'labs', 'about']);
   });
@@ -94,8 +94,9 @@ describe('SettingsNav grouped tree', () => {
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
     expect(active.map((button) => button.textContent)).toEqual(['Skills']);
-    // Selection is a raised sheet, never an accent fill.
-    expect(active[0]!.className).toContain('shadow-[var(--kiki-sheet-shadow)]');
+    // Selection is a tinted row with a narrow inset mark, not an accent fill.
+    expect(active[0]!.className).toContain('bg-selected');
+    expect(active[0]!.className).toContain('shadow-[inset_2px_0_0_var(--color-selected-ink)]');
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
     const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
