@@ -139,11 +139,8 @@ export const tauriHost: TauriHostAdapter = {
   },
   onNotificationClick,
   async setUnreadBadge(count) {
-    // macOS and Linux draw the count on the dock / launcher icon. Windows has
-    // no count badge; its taskbar overlay is owned by the native space
-    // identity (`set_space_identity`), so the page leaves it alone.
     try {
-      await getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
+      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))) });
     } catch {
       return;
     }

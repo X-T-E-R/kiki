@@ -946,6 +946,7 @@ struct SpaceBackendState {
     attention: HashMap<String, HashSet<String>>,
     busy_counts: HashMap<String, usize>,
     restarting: HashSet<String>,
+    unread_count: usize,
     stopping: bool,
 }
 
@@ -969,7 +970,7 @@ impl SpaceBackendManager {
         } else { "main".to_string() };
         Ok(Self { inner: Arc::new(Mutex::new(SpaceBackendState {
             main, mode, active, epoch: 0, slots,
-            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), stopping: false,
+            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), unread_count: 0, stopping: false,
         })) })
     }
 
@@ -1067,6 +1068,7 @@ impl SpaceBackendManager {
         if state.epoch != epoch {
             return Err(DesktopStartupFailure::plain("A newer space switch replaced this request".to_string()));
         }
+        if state.active != id { state.unread_count = 0; }
         state.active = id.to_string();
         Ok(space)
     }
@@ -1534,6 +1536,18 @@ fn desktop_space_statuses(manager: State<'_, SpaceBackendManager>) -> Result<Vec
     manager.space_statuses()
 }
 
+#[tauri::command]
+fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32) -> Result<(), String> {
+    let (space, total) = {
+        let mut state = manager.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
+        state.unread_count = n as usize;
+        let space = state.slots.get(&state.active).ok_or("Active space is unavailable")?.0.clone();
+        (space, combined_space_attention(state.unread_count, &state.active, &state.attention))
+    };
+    set_unread_overlay(&app, &space, total);
+    Ok(())
+}
+
 #[cfg(windows)]
 fn space_overlay_icon(space: &DesktopSpace, pending: usize) -> Option<Image<'static>> {
     if space.home_id == "main" && pending == 0 { return None; }
@@ -1572,16 +1586,30 @@ fn space_overlay_icon(space: &DesktopSpace, pending: usize) -> Option<Image<'sta
     Some(Image::new_owned(rgba, 16, 16))
 }
 
+fn combined_space_attention(current: usize, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
+    attention.iter().filter(|(id, _)| id.as_str() != active)
+        .fold(current, |sum, (_, sessions)| sum.saturating_add(sessions.len()))
+}
+
+fn set_unread_overlay(app: &AppHandle, space: &DesktopSpace, total: usize) {
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(windows)]
+        let _ = window.set_overlay_icon(space_overlay_icon(space, total));
+        #[cfg(not(windows))]
+        let _ = window.set_badge_count((total > 0).then_some(total.min(i64::MAX as usize) as i64));
+        #[cfg(not(windows))]
+        let _ = space;
+    }
+}
+
 fn set_space_identity(app: &AppHandle, space: &DesktopSpace) {
     let title = if space.home_id == "main" { "Kiki".to_string() } else { format!("Kiki · {}", space.name) };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&title);
-        #[cfg(windows)]
         if let Some(manager) = app.try_state::<SpaceBackendManager>() {
             if let Ok(state) = manager.inner.lock() {
-                let pending = state.attention.iter().filter(|(id, _)| state.mode == WindowMode::Windows || *id != &state.active)
-                    .map(|(_, sessions)| sessions.len()).sum();
-                let _ = window.set_overlay_icon(space_overlay_icon(space, pending));
+                let total = combined_space_attention(state.unread_count, &state.active, &state.attention);
+                set_unread_overlay(app, space, total);
             }
         }
     }
@@ -3222,6 +3250,18 @@ mod tests {
         assert!(restart_space_readiness(2, 0).unwrap_err().contains("2 running"));
         assert!(restart_space_readiness(0, 1).unwrap_err().contains("1 pending"));
         assert!(restart_space_readiness(2, 1).is_err());
+    }
+
+    #[test]
+    fn unread_overlay_adds_only_other_spaces_and_clears_at_zero() {
+        let attention = HashMap::from([
+            ("main".to_string(), HashSet::from(["a".to_string()])),
+            ("child".to_string(), HashSet::from(["b".to_string(), "c".to_string()])),
+        ]);
+        assert_eq!(combined_space_attention(3, "main", &attention), 5);
+        assert_eq!(combined_space_attention(0, "child", &attention), 1);
+        assert_eq!(combined_space_attention(0, "main", &HashMap::new()), 0);
+        assert_eq!(combined_space_attention(usize::MAX, "main", &attention), usize::MAX);
     }
 
     #[test]

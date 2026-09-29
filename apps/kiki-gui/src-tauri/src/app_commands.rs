@@ -4,6 +4,7 @@ macro_rules! app_commands {
             desktop_connection,
             desktop_active_space,
             desktop_space_statuses,
+            set_unread_count,
             switch_space,
             restart_space,
             open_space,
