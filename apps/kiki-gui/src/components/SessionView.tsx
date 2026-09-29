@@ -28,7 +28,7 @@ import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
 import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
-import { RightRail } from './RightRail';
+import { RightRail } from './rail-variants/RailSwitch';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
