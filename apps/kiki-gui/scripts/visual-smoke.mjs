@@ -344,10 +344,15 @@ async function main() {
   process.exitCode = failed.length > 0 ? 1 : 0;
 }
 
-// Hard watchdog: never outlive the budget (unref'd so a clean run exits).
-setTimeout(() => {
-  console.error(`[smoke] run exceeded ${RUN_TIMEOUT_MS}ms — exiting`);
-  process.exit(2);
-}, RUN_TIMEOUT_MS).unref();
+export { SCENARIOS };
 
-await main();
+// Importing this module (the registry test) must not build or launch Chromium.
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  // Hard watchdog: never outlive the budget (unref'd so a clean run exits).
+  setTimeout(() => {
+    console.error(`[smoke] run exceeded ${RUN_TIMEOUT_MS}ms — exiting`);
+    process.exit(2);
+  }, RUN_TIMEOUT_MS).unref();
+
+  await main();
+}

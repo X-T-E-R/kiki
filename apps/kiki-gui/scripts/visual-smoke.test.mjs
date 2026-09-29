@@ -1,28 +1,25 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const SCRIPTS = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(SCRIPTS, '..');
-const source = readFileSync(join(SCRIPTS, 'visual-smoke.mjs'), 'utf8');
-const names = [...source.matchAll(/^    name: '([^']+)',$/gm)].map((match) => match[1]);
+import { SCENARIOS } from './visual-smoke.mjs';
 
-// Keep the smoke registry honest without importing the runner (which would
-// build the app and launch Chromium as a module side effect).
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+// Keep the smoke registry honest without duplicating its entry count here.
+// visual-smoke.mjs guards its executable path, so importing the registry does
+// not build the app or launch Chromium.
 test('every smoke registry entry has a fixture scenario', () => {
-  assert.equal(names.length, 12);
-  assert.equal(new Set(names).size, names.length);
-  for (const name of names) {
-    const fixture = name === 'hero-shell-zh'
-      ? 'hero-shell'
-      : name === 'search-s4'
-        ? 'search'
-        : name;
+  assert.ok(SCENARIOS.length > 0);
+  assert.equal(new Set(SCENARIOS.map((entry) => entry.name)).size, SCENARIOS.length);
+  for (const entry of SCENARIOS) {
+    assert.equal(typeof entry.run, 'function', `${entry.name} has no run`);
+    const fixture = entry.fixture ?? entry.name;
     assert.ok(
       existsSync(join(ROOT, 'fixtures', `${fixture}.scenario.mjs`)),
-      `missing fixture for smoke scenario ${name}: ${fixture}`,
+      `missing fixture for smoke scenario ${entry.name}: ${fixture}`,
     );
   }
 });
