@@ -627,7 +627,7 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'composer.contextMenuAria': '输入操作',
   'contextMenu.cut': '剪切',
   'contextMenu.copy': '复制',
-  'contextMenu.paste': '粘贴为纯文本',
+  'contextMenu.paste': '粘贴',
   'contextMenu.selectAll': '全选',
   'undo.title': '撤销最后一轮？',
   'undo.bodyNamed': '将从“{title}”中移除最近一条用户消息和 kiki 的回复。更早的轮次会保留。',

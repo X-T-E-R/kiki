@@ -462,9 +462,11 @@ export function Composer({
   ).sendShortcut;
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Custom right-click menu for the input (cut/copy/paste-as-plain-text/select-all).
+  // Custom right-click menu for the input (cut / copy / paste / select all).
+  // Pasted images take the Ctrl+V attachment path (`addFiles`, bound below).
+  const pasteFilesRef = useRef<(files: File[]) => void>(() => undefined);
   const { onContextMenu: onComposerContextMenu, menu: composerContextMenu } =
-    useComposerContextMenu({ textareaRef, onChange });
+    useComposerContextMenu({ textareaRef, onChange, onPasteFiles: (files) => { pasteFilesRef.current(files); } });
   // Event handlers can run several times before a controlled prop rerender.
   // Keep a synchronous attachment baseline alongside the rendered value so
   // same-tick paste/drop batches reserve against one another.
@@ -1157,6 +1159,10 @@ export function Composer({
     }
     if (images.length > 0) addImageFiles(images);
     if (uploads.length > 0) addUploadFiles(uploads);
+  };
+  pasteFilesRef.current = (files) => {
+    if (queueEditing) return;
+    addFiles(readyAttachmentFiles(files));
   };
 
   /**
@@ -1941,7 +1947,10 @@ export function Composer({
             </div>
           ) : null}
 
-          <div className="relative px-3.5 pt-3">
+          {/* Right-click anywhere on the input area (textarea or its padding)
+              opens the composer menu. */}
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- context menu only; the textarea is the keyboard target */}
+          <div className="relative px-3.5 pt-3" onContextMenu={onComposerContextMenu}>
             {menu !== null ? (
               <div
                 data-composer-menu
@@ -2005,7 +2014,6 @@ export function Composer({
               onSelect={(event) => {
                 lastCursorRef.current = event.currentTarget.selectionStart;
               }}
-              onContextMenu={onComposerContextMenu}
               onBlur={(event) => {
                 setMenu(null);
                 // Redundant arming path for engines that DO fire focusout on

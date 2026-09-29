@@ -628,7 +628,7 @@ export const en = {
   'composer.contextMenuAria': 'Input actions',
   'contextMenu.cut': 'Cut',
   'contextMenu.copy': 'Copy',
-  'contextMenu.paste': 'Paste as plain text',
+  'contextMenu.paste': 'Paste',
   'contextMenu.selectAll': 'Select all',
   'undo.title': 'Undo the last turn?',
   'undo.bodyNamed':

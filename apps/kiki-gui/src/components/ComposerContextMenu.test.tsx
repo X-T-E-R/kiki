@@ -43,13 +43,14 @@ function mockClipboard(nextRead = '') {
   return { clipboard, written };
 }
 
-function Harness({ onPaste }: { onPaste?: (text: string) => void }) {
+function Harness({ onPaste, onPasteFiles }: { onPaste?: (text: string) => void; onPasteFiles?: (files: File[]) => void }) {
   const [value, setValue] = useState('hello world');
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const { onContextMenu, menu } = useComposerContextMenu({
     textareaRef: ref,
     onChange: setValue,
     onPastePlainText: onPaste,
+    onPasteFiles,
   });
   return (
     <>
@@ -65,7 +66,7 @@ function Harness({ onPaste }: { onPaste?: (text: string) => void }) {
   );
 }
 
-async function mount(onPaste?: (text: string) => void) {
+async function mount(onPaste?: (text: string) => void, onPasteFiles?: (files: File[]) => void) {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -73,7 +74,7 @@ async function mount(onPaste?: (text: string) => void) {
   await act(async () => {
     root.render(
       <I18nProvider>
-        <Harness onPaste={onPaste} />
+        <Harness onPaste={onPaste} onPasteFiles={onPasteFiles} />
       </I18nProvider>,
     );
   });
@@ -102,7 +103,7 @@ describe('useComposerContextMenu', () => {
     const menu = container.querySelector('[data-composer-context-menu]');
     expect(menu).not.toBeNull();
     const labels = Array.from(menu!.querySelectorAll('[role="menuitem"]')).map((el) => el.textContent);
-    expect(labels).toEqual(['Cut', 'Copy', 'Paste as plain text', 'Select all']);
+    expect(labels).toEqual(['Cut', 'Copy', 'Paste', 'Select all']);
 
     const cut = menu!.querySelector('[data-menu-action="cut"]') as HTMLButtonElement;
     const copy = menu!.querySelector('[data-menu-action="copy"]') as HTMLButtonElement;
@@ -162,6 +163,44 @@ describe('useComposerContextMenu clipping behaviours', () => {
     await act(async () => { paste.click(); await Promise.resolve(); await Promise.resolve(); });
 
     expect(container.querySelector('textarea')!.value).toBe('hello PASTED');
+  });
+
+  it('paste hands clipboard images to the attachment path and inserts the text', async () => {
+    const { clipboard } = mockClipboard('');
+    const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' });
+    const items = [
+      { types: ['image/png'], getType: vi.fn(() => Promise.resolve(png)) },
+      // jsdom's Blob lacks text(); the engine's clipboard blobs have it.
+      { types: ['text/plain'], getType: vi.fn(() => Promise.resolve({ text: () => Promise.resolve('caption') })) },
+    ];
+    Object.assign(clipboard, { read: vi.fn(() => Promise.resolve(items)) });
+    const onPasteFiles = vi.fn();
+    const { container } = await mount(undefined, onPasteFiles);
+    await openMenu(container, 11, 11);
+
+    const paste = container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
+    await act(async () => { paste.click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(onPasteFiles).toHaveBeenCalledTimes(1);
+    const [files] = onPasteFiles.mock.calls[0] as [File[]];
+    expect(files.map((file) => [file.name, file.type])).toEqual([['image.png', 'image/png']]);
+    expect(container.querySelector('textarea')!.value).toBe('hello worldcaption');
+    expect(clipboard.readText).not.toHaveBeenCalled();
+  });
+
+  it('falls back to readText when the rich read is refused', async () => {
+    const { clipboard } = mockClipboard('plain');
+    Object.assign(clipboard, { read: vi.fn(() => Promise.reject(new Error('denied'))) });
+    const onPasteFiles = vi.fn();
+    const { container } = await mount(undefined, onPasteFiles);
+    await openMenu(container, 0, 5);
+
+    const paste = container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
+    await act(async () => { paste.click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
+
+    expect(onPasteFiles).not.toHaveBeenCalled();
+    expect(container.querySelector('textarea')!.value).toBe('plain world');
   });
 
   it('select-all selects the whole value', async () => {

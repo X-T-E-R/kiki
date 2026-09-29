@@ -8,9 +8,13 @@
  *     (a secure context). When it is not, we let the browser's native menu
  *     through so its Paste keeps working over the editable text.
  *   - Cut / Copy are disabled when there is no non-empty selection.
- *   - Paste reads only `navigator.clipboard.readText()` and inserts verbatim;
- *     a failed read falls back to `document.execCommand('paste')`, and if that
- *     fails too, the native menu surface is gone so we do nothing further.
+ *   - Paste reads `navigator.clipboard.read()` when the engine has it: image
+ *     items go to `onPasteFiles` (the same attachment path as Ctrl+V), text
+ *     is inserted as plain text. Without `read()`, or when it is denied, it
+ *     falls back to `readText()`, then to `document.execCommand('paste')`;
+ *     if all fail the native menu surface is gone, so nothing further runs.
+ *     Desktop (WebView2 / WKWebView) exposes both async reads; no clipboard
+ *     plugin is involved, so the engine may ask the user once for access.
  *
  * The menu is wired to the textarea's onContextMenu only. The "blank chrome"
  * of the composer borders the textarea, but right-click target-less whitespace
@@ -49,12 +53,15 @@ export function useComposerContextMenu({
   textareaRef,
   onChange,
   onPastePlainText,
+  onPasteFiles,
 }: {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   /** Controlled value setter — paste/cut must route through it so React re-renders. */
   onChange: (next: string) => void;
   /** Plain-text paste of an already-read clipboard string (integration seam + tests). */
   onPastePlainText?: (text: string) => void;
+  /** Clipboard images, as files; absent leaves images out of the menu's paste. */
+  onPasteFiles?: (files: File[]) => void;
 }) {
   const { t } = useI18n();
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
@@ -143,6 +150,34 @@ export function useComposerContextMenu({
     return true;
   }, [textareaRef, anchor]);
 
+  /**
+   * Rich read: image items become files, the first text/plain item the text.
+   * Null when the engine has no `read()` or refuses it (caller falls back).
+   */
+  const readClipboardItems = async (): Promise<{ text: string; files: File[] } | null> => {
+    if (typeof navigator.clipboard?.read !== 'function') return null;
+    try {
+      const items = await navigator.clipboard.read();
+      const files: File[] = [];
+      let text = '';
+      for (const item of items) {
+        const imageType = item.types.find((type) => type.startsWith('image/'));
+        if (imageType !== undefined) {
+          const blob = await item.getType(imageType);
+          const ext = imageType.slice('image/'.length).replace('jpeg', 'jpg').replace(/\+.*$/, '');
+          files.push(new File([blob], `image.${ext}`, { type: imageType }));
+          continue;
+        }
+        if (text === '' && item.types.includes('text/plain')) {
+          text = await (await item.getType('text/plain')).text();
+        }
+      }
+      return { text, files };
+    } catch {
+      return null;
+    }
+  };
+
   const readClipboard = async (): Promise<string> => {
     if (typeof navigator.clipboard?.readText === 'function') {
       try {
@@ -200,12 +235,14 @@ export function useComposerContextMenu({
 
   const handlePaste = useCallback(async () => {
     if (anchor === null) return;
-    const text = await readClipboard();
+    const rich = onPasteFiles !== undefined ? await readClipboardItems() : null;
+    const text = rich !== null ? rich.text : await readClipboard();
     const el = restoreSelection();
     if (el === null) {
       closeMenu();
       return;
     }
+    if (rich !== null && rich.files.length > 0) onPasteFiles?.(rich.files);
     if (text !== '') {
       if (onPastePlainText !== undefined) {
         onPastePlainText(text);
@@ -217,7 +254,7 @@ export function useComposerContextMenu({
       }
     }
     closeMenu();
-  }, [anchor, closeMenu, readClipboard, restoreSelection, onPastePlainText]);
+  }, [anchor, closeMenu, readClipboard, readClipboardItems, restoreSelection, onPastePlainText, onPasteFiles]);
 
   const handleSelectAll = useCallback(() => {
     const el = restoreSelection();
@@ -225,12 +262,17 @@ export function useComposerContextMenu({
     closeMenu();
   }, [restoreSelection, closeMenu]);
 
-  const onContextMenu = (event: MouseEvent<HTMLTextAreaElement>) => {
+  const onContextMenu = (event: MouseEvent<HTMLElement>) => {
     // Without the clipboard API the native menu is the only working Paste —
     // let it through instead of showing a menu whose paste can do nothing.
     if (!clipboardOk) return;
+    // The card's blank chrome routes here too; the menu always acts on the
+    // textarea. Controls inside the card keep their own (native) menu.
+    const el = textareaRef.current;
+    if (el === null || el.disabled) return;
+    const target = event.target as HTMLElement;
+    if (target !== el && target.closest('button, a, input, [role="menu"], [role="dialog"], [role="listbox"]') !== null) return;
     event.preventDefault();
-    const el = event.currentTarget;
     const start = el.selectionStart ?? 0;
     const end = el.selectionEnd ?? 0;
     setAnchor({
