@@ -156,10 +156,12 @@ async function assembleSnapshotFromLease(
   const { meta, session } = snapState.captured;
   const subagentCandidates = [...snapState.subagents];
   const subagentIds = subagentCandidates.map((subagent) => subagent.id);
+  const toolCallCounts = broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds);
+  void broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds).catch(() => undefined);
   const subagents = enrichSnapshotSubagents(
     subagentCandidates,
     meta.agents,
-    await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
+    toolCallCounts,
   );
   const status = snapState.status;
 

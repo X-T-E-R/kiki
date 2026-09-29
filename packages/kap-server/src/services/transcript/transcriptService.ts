@@ -89,6 +89,8 @@ const DEFAULT_TOOL_CALL_COUNT_MAX_FILES = 64;
 const DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES = 256;
 const DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES = 8 << 20;
 const DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES = 64 << 10;
+const VERIFIED_WIRE_RECEIPT_CACHE_MAX_ENTRIES = 512;
+const VERIFIED_WIRE_RECEIPT_CACHE_MAX_BYTES = 1 << 20;
 const COLD_SNAPSHOT_CACHE_TTL_MS = 15_000;
 const COLD_SNAPSHOT_CACHE_MAX_BYTES = 4 << 20;
 const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
@@ -174,6 +176,7 @@ interface ColdSnapshotStats {
 interface MaterializedAgentToolCallState {
   readonly toolFrameIdsByTurn: Map<string, Set<string>>;
   toolCallCount: number;
+  known: boolean;
 }
 
 interface PersistedToolCallState {
@@ -191,10 +194,23 @@ interface ToolCallReadResult {
   readonly error?: unknown;
 }
 
+interface WireFileInfo {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+interface VerifiedWireReceipt {
+  readonly fingerprint: string;
+  readonly receipt: Buffer;
+  readonly bytes: number;
+}
+
 interface ToolCallCountCandidate {
   readonly agentId: string;
   readonly wirePath: string;
   fingerprint?: string;
+  info?: WireFileInfo;
   size?: number;
   cached?: MaterializedAgentToolCallState;
   reason?: 'budget' | 'missing' | 'failed';
@@ -227,6 +243,13 @@ interface TranscriptProjectionCheckpoint {
 interface ColdSnapshotFlight {
   readonly controller: AbortController;
   readonly promise: Promise<AgentTranscriptSnapshot | undefined>;
+  waiters: number;
+  settled: boolean;
+}
+
+interface WireReceiptVerificationFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<boolean>;
   waiters: number;
   settled: boolean;
 }
@@ -292,6 +315,10 @@ export class TranscriptService {
   private readonly toolCallCountLimits: Required<TranscriptToolCallCountLimits>;
   private readonly persistedToolCallStates = new Map<string, PersistedToolCallState>();
   private persistedToolCallStateWeight = 0;
+  private readonly resolvedToolCallCounts = new Map<string, Map<string, number>>();
+  private readonly verifiedWireReceipts = new Map<string, VerifiedWireReceipt>();
+  private verifiedWireReceiptBytes = 0;
+  private readonly verifiedWireReceiptFlights = new Map<string, WireReceiptVerificationFlight>();
   private readonly persistedToolCallReads = new Map<string, Promise<ToolCallReadResult>>();
   private readonly persistedToolCallPins = new Map<string, number>();
   private readonly toolCallCountReader: NonNullable<TranscriptServiceDeps['toolCallCountReader']>;
@@ -914,18 +941,31 @@ export class TranscriptService {
   ): ReadonlyMap<string, number> {
     const result = new Map<string, number>();
     const entry = this.live.get(sessionId);
-    if (entry === undefined) return result;
+    const resolved = this.resolvedToolCallCounts.get(sessionId);
+    if (entry === undefined) {
+      for (const agentId of new Set(agentIds)) {
+        const count = resolved?.get(agentId);
+        if (count !== undefined) result.set(agentId, count);
+      }
+      return result;
+    }
     for (const agentId of new Set(agentIds)) {
       if (entry.unavailableAgents.has(agentId)) continue;
       if (!this.isTranscriptLiveCoverageVerified(sessionId, agentId)) continue;
-      if (entry.agentHistory.get(agentId)?.status !== 'complete') continue;
-      const state = entry.agentToolCallStates.get(agentId);
-      if (state !== undefined) {
-        result.set(agentId, state.toolCallCount);
-        continue;
+      if (entry.agentHistory.get(agentId)?.status === 'complete') {
+        const state = entry.agentToolCallStates.get(agentId);
+        if (state?.known === true) {
+          result.set(agentId, state.toolCallCount);
+          continue;
+        }
+        const transcript = entry.store.getAgent(agentId);
+        if (transcript !== undefined) {
+          result.set(agentId, countToolCallFrames(transcript.getItems()));
+          continue;
+        }
       }
-      const transcript = entry.store.getAgent(agentId);
-      if (transcript !== undefined) result.set(agentId, countToolCallFrames(transcript.getItems()));
+      const count = resolved?.get(agentId);
+      if (count !== undefined) result.set(agentId, count);
     }
     return result;
   }
@@ -946,7 +986,7 @@ export class TranscriptService {
       if (history !== undefined) {
         if (history.status !== 'complete') continue;
         const state = entry?.agentToolCallStates.get(agentId);
-        if (state !== undefined) {
+        if (state?.known === true) {
           counts.set(agentId, state.toolCallCount);
           continue;
         }
@@ -961,9 +1001,15 @@ export class TranscriptService {
       }
       candidateAgentIds.push(agentId);
     }
-    if (candidateAgentIds.length === 0) return counts;
+    if (candidateAgentIds.length === 0) {
+      this.rememberToolCallCounts(sessionId, counts);
+      return counts;
+    }
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
-    if (summary === undefined) return counts;
+    if (summary === undefined) {
+      this.rememberToolCallCounts(sessionId, counts);
+      return counts;
+    }
     const candidates: ToolCallCountCandidate[] = candidateAgentIds.map((agentId) => ({
       agentId,
       wirePath: join(
@@ -981,17 +1027,14 @@ export class TranscriptService {
         const info = await stat(candidate.wirePath);
         if (!Number.isSafeInteger(info.size) || info.size < 0) {
           candidate.reason = 'failed';
+          this.forgetToolCallCount(sessionId, candidate.agentId);
           continue;
         }
-        if (!await this.hasVerifiedWireReceipt(candidate.wirePath, info.size)) {
-          candidate.reason = 'failed';
-          this.deletePersistedToolCallState(candidate.wirePath);
-          continue;
-        }
+        candidate.info = info;
         candidate.size = info.size;
         candidate.fingerprint = fileFingerprint(info);
         const cached = this.persistedToolCallStates.get(candidate.wirePath);
-        if (cached?.fingerprint === candidate.fingerprint) {
+        if (cached?.fingerprint === candidate.fingerprint && cached.state.known) {
           candidate.cached = cached.state;
           this.pinPersistedToolCallState(candidate.wirePath);
         } else if (cached !== undefined) {
@@ -1000,6 +1043,7 @@ export class TranscriptService {
       } catch (error) {
         candidate.reason = (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'failed';
         this.deletePersistedToolCallState(candidate.wirePath);
+        this.forgetToolCallCount(sessionId, candidate.agentId);
         this.logToolCallCountFailure(sessionId, candidate.agentId, error);
       }
     }
@@ -1009,20 +1053,24 @@ export class TranscriptService {
       for (const candidate of candidates) {
         let persisted = candidate.cached;
         if (persisted === undefined && candidate.reason === undefined) {
-          if (remainingFiles <= 0 || candidate.size === undefined) {
+          if (remainingFiles <= 0 || candidate.size === undefined || candidate.info === undefined) {
             candidate.reason = 'budget';
           } else {
-            remainingFiles -= 1;
-            if (candidate.size > remainingBytes) {
+            const verificationBytes = candidate.size;
+            const countBytes = persisted === undefined ? candidate.size : 0;
+            if (verificationBytes > remainingBytes ||
+                countBytes > remainingBytes - verificationBytes) {
               candidate.reason = 'budget';
             } else {
-              remainingBytes -= candidate.size;
+              remainingFiles -= 1;
+              remainingBytes -= verificationBytes + countBytes;
               const read = await this.readPersistedToolCallState(
                 candidate.wirePath,
                 candidate.fingerprint as string,
                 candidate.size,
                 candidate.agentId,
                 sessionId,
+                candidate.info,
               );
               if (read.known) {
                 persisted = read.state;
@@ -1035,14 +1083,31 @@ export class TranscriptService {
                 }
               } else {
                 candidate.reason = read.reason ?? 'failed';
+                this.deletePersistedToolCallState(candidate.wirePath);
+                if (candidate.reason !== 'budget') this.forgetToolCallCount(sessionId, candidate.agentId);
               }
+            }
+          }
+        } else if (candidate.reason === undefined && candidate.size !== undefined && candidate.info !== undefined) {
+          if (remainingFiles <= 0 || candidate.size > remainingBytes) {
+            candidate.reason = 'budget';
+          } else {
+            remainingFiles -= 1;
+            remainingBytes -= candidate.size;
+            if (!await this.hasVerifiedWireReceipt(candidate.wirePath, candidate.info)) {
+              candidate.reason = 'failed';
+              this.deletePersistedToolCallState(candidate.wirePath);
+              this.forgetToolCallCount(sessionId, candidate.agentId);
+              persisted = undefined;
             }
           }
         }
         if (persisted !== undefined) {
           this.touchPersistedToolCallState(candidate.wirePath);
           const live = entry?.agentToolCallStates.get(candidate.agentId);
-          counts.set(candidate.agentId, mergeToolCallCount(persisted, live));
+          const count = mergeToolCallCount(persisted, live);
+          counts.set(candidate.agentId, count);
+          this.rememberToolCallCount(sessionId, candidate.agentId, count);
         }
       }
     } finally {
@@ -1050,7 +1115,28 @@ export class TranscriptService {
         if (candidate.cached !== undefined) this.unpinPersistedToolCallState(candidate.wirePath);
       }
     }
+    this.rememberToolCallCounts(sessionId, counts);
     return counts;
+  }
+
+  private rememberToolCallCounts(sessionId: string, counts: ReadonlyMap<string, number>): void {
+    for (const [agentId, count] of counts) this.rememberToolCallCount(sessionId, agentId, count);
+  }
+
+  private rememberToolCallCount(sessionId: string, agentId: string, count: number): void {
+    let counts = this.resolvedToolCallCounts.get(sessionId);
+    if (counts === undefined) {
+      counts = new Map();
+      this.resolvedToolCallCounts.set(sessionId, counts);
+    }
+    counts.set(agentId, count);
+  }
+
+  private forgetToolCallCount(sessionId: string, agentId: string): void {
+    const counts = this.resolvedToolCallCounts.get(sessionId);
+    if (counts === undefined) return;
+    counts.delete(agentId);
+    if (counts.size === 0) this.resolvedToolCallCounts.delete(sessionId);
   }
 
   private dispatchToolCallCount(
@@ -1081,15 +1167,21 @@ export class TranscriptService {
     fileSize: number,
     agentId: string,
     sessionId: string,
+    info?: WireFileInfo,
   ): Promise<ToolCallReadResult> {
     const key = `${wirePath}\\0${fingerprint}`;
     const existing = this.persistedToolCallReads.get(key);
     if (existing !== undefined) return existing;
-    const read = this.scanPersistedToolCallState(wirePath, fingerprint, fileSize, agentId);
+    const read = (async (): Promise<ToolCallReadResult> => {
+      if (info !== undefined && !await this.hasVerifiedWireReceipt(wirePath, info)) {
+        return { fingerprint, weight: fileSize, known: false, reason: 'failed' };
+      }
+      return this.scanPersistedToolCallState(wirePath, fingerprint, fileSize, agentId);
+    })();
     this.persistedToolCallReads.set(key, read);
     try {
       const result = await read;
-      if (!result.known && result.reason === 'failed') {
+      if (!result.known && result.reason === 'failed' && result.error !== undefined) {
         this.logToolCallCountFailure(sessionId, agentId, result.error);
       }
       return result;
@@ -1107,6 +1199,7 @@ export class TranscriptService {
     const state: MaterializedAgentToolCallState = {
       toolFrameIdsByTurn: new Map(),
       toolCallCount: 0,
+      known: true,
     };
     const adapter = new TranscriptWireAdapter(agentId);
     const acceptedDurableFacts = new Set<string>();
@@ -1432,35 +1525,139 @@ export class TranscriptService {
 
   private async hasVerifiedWireReceipt(
     wirePath: string,
-    wireSize: number,
+    wireInfo: WireFileInfo,
     signal?: AbortSignal,
+  ): Promise<boolean> {
+    const key = `${wirePath}\0${fileFingerprint(wireInfo)}`;
+    let flight = this.verifiedWireReceiptFlights.get(key);
+    if (flight !== undefined && !flight.controller.signal.aborted) {
+      return this.awaitWireReceiptVerification(flight, signal);
+    }
+    const controller = new AbortController();
+    let created!: WireReceiptVerificationFlight;
+    const promise = Promise.resolve()
+      .then(() => this.verifyWireReceipt(wirePath, wireInfo, controller.signal))
+      .finally(() => {
+        created.settled = true;
+        if (this.verifiedWireReceiptFlights.get(key) === created) {
+          this.verifiedWireReceiptFlights.delete(key);
+        }
+      });
+    created = { controller, promise, waiters: 0, settled: false };
+    this.verifiedWireReceiptFlights.set(key, created);
+    return this.awaitWireReceiptVerification(created, signal);
+  }
+
+  private async awaitWireReceiptVerification(
+    flight: WireReceiptVerificationFlight,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    signal?.throwIfAborted();
+    flight.waiters += 1;
+    let onAbort: (() => void) | undefined;
+    try {
+      if (signal === undefined) return await flight.promise;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(signal.reason ?? new DOMException('The wire receipt verification was aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return await Promise.race([flight.promise, aborted]);
+    } finally {
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort(
+          new DOMException('No wire receipt verification readers remain', 'AbortError'),
+        );
+      }
+    }
+  }
+
+  private async verifyWireReceipt(
+    wirePath: string,
+    wireInfo: WireFileInfo,
+    signal: AbortSignal,
   ): Promise<boolean> {
     const receiptPath = join(dirname(wirePath), WIRE_TRANSCRIPT_RECEIPT_KEY);
     let bytes: Buffer;
     try {
       bytes = await readFile(receiptPath, { signal });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.deleteVerifiedWireReceipt(wirePath);
+        return false;
+      }
       throw error;
     }
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     let receipt: ReturnType<typeof parseWireTranscriptReceipt>;
     try {
       receipt = parseWireTranscriptReceipt(JSON.parse(bytes.toString('utf8')));
     } catch {
+      receipt = undefined;
+    }
+    if (receipt?.state !== 'sealed' || !receipt.trusted || receipt.wire?.size !== wireInfo.size) {
+      this.deleteVerifiedWireReceipt(wirePath);
       return false;
     }
-    if (receipt?.state !== 'sealed' || !receipt.trusted || receipt.wire?.size !== wireSize) return false;
+    const fingerprint = fileFingerprint(wireInfo);
+    const cached = this.verifiedWireReceipts.get(wirePath);
+    if (cached?.fingerprint === fingerprint && cached.receipt.equals(bytes)) {
+      this.touchVerifiedWireReceipt(wirePath);
+      return true;
+    }
     const digest = await digestWireBytes(createReadStream(wirePath, { signal }));
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     if (digest.size === 0 || !digest.endsWithNewline ||
-        digest.size !== receipt.wire.size || digest.sha256 !== receipt.wire.sha256) return false;
+        digest.size !== receipt.wire.size || digest.sha256 !== receipt.wire.sha256) {
+      this.deleteVerifiedWireReceipt(wirePath);
+      return false;
+    }
     const currentReceipt = await readFile(receiptPath, { signal }).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw error;
     });
-    signal?.throwIfAborted();
-    return currentReceipt !== undefined && bytes.equals(currentReceipt);
+    signal.throwIfAborted();
+    const after = await stat(wirePath).catch(() => undefined);
+    if (currentReceipt === undefined || !bytes.equals(currentReceipt) ||
+        after === undefined || fileFingerprint(after) !== fingerprint) {
+      this.deleteVerifiedWireReceipt(wirePath);
+      return false;
+    }
+    this.admitVerifiedWireReceipt(wirePath, { fingerprint, receipt: bytes, bytes: bytes.byteLength });
+    return true;
+  }
+
+  private touchVerifiedWireReceipt(wirePath: string): void {
+    const entry = this.verifiedWireReceipts.get(wirePath);
+    if (entry === undefined) return;
+    this.verifiedWireReceipts.delete(wirePath);
+    this.verifiedWireReceipts.set(wirePath, entry);
+  }
+
+  private deleteVerifiedWireReceipt(wirePath: string): void {
+    const entry = this.verifiedWireReceipts.get(wirePath);
+    if (entry === undefined) return;
+    this.verifiedWireReceipts.delete(wirePath);
+    this.verifiedWireReceiptBytes -= entry.bytes;
+  }
+
+  private admitVerifiedWireReceipt(wirePath: string, entry: VerifiedWireReceipt): void {
+    if (entry.bytes > VERIFIED_WIRE_RECEIPT_CACHE_MAX_BYTES) {
+      this.deleteVerifiedWireReceipt(wirePath);
+      return;
+    }
+    this.deleteVerifiedWireReceipt(wirePath);
+    this.verifiedWireReceipts.set(wirePath, entry);
+    this.verifiedWireReceiptBytes += entry.bytes;
+    while (this.verifiedWireReceipts.size > VERIFIED_WIRE_RECEIPT_CACHE_MAX_ENTRIES ||
+           this.verifiedWireReceiptBytes > VERIFIED_WIRE_RECEIPT_CACHE_MAX_BYTES) {
+      const oldest = this.verifiedWireReceipts.keys().next().value;
+      if (oldest === undefined) break;
+      this.deleteVerifiedWireReceipt(oldest);
+    }
   }
 
   private async hasVerifiedLiveEpoch(sessionId: string, agentId: string): Promise<boolean> {
@@ -1502,7 +1699,7 @@ export class TranscriptService {
     let info = await stat(wirePath).catch(() => undefined);
     signal.throwIfAborted();
     const bounded = limits !== undefined;
-    const sealed = !bounded && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info.size, signal);
+    const sealed = !bounded && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
     const liveVerified = !bounded && !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
     if (liveVerified) info = await stat(wirePath).catch(() => undefined);
     const verified = sealed || liveVerified;
@@ -1612,7 +1809,7 @@ export class TranscriptService {
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
       const snapshot = transcript.snapshot();
       const stillVerified = verified && (sealed
-        ? await this.hasVerifiedWireReceipt(wirePath, info!.size, signal)
+        ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
         : await this.hasVerifiedLiveEpoch(sessionId, agentId));
       const after = stillVerified ? await stat(wirePath).catch(() => undefined) : undefined;
       const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
@@ -1758,12 +1955,27 @@ export class TranscriptService {
 
   dispose(): void {
     this.eventLoopDelay.disable();
+    this.clearVerifiedWireReceipts();
+    this.resolvedToolCallCounts.clear();
     for (const key of this.coldSnapshotCache.keys()) this.deleteColdSnapshotCache(key);
     for (const sessionId of this.live.keys()) this.dropSession(sessionId);
   }
 
+  private clearVerifiedWireReceipts(): void {
+    for (const flight of this.verifiedWireReceiptFlights.values()) {
+      if (!flight.settled) flight.controller.abort(
+        new DOMException('Transcript service is disposing', 'AbortError'),
+      );
+    }
+    this.verifiedWireReceiptFlights.clear();
+    this.verifiedWireReceipts.clear();
+    this.verifiedWireReceiptBytes = 0;
+  }
+
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
+    this.clearVerifiedWireReceipts();
+    this.resolvedToolCallCounts.delete(sessionId);
     this.opsListeners.delete(sessionId);
     for (const key of this.unverifiedResident.keys()) {
       if (key.startsWith(`${sessionId}\0`)) this.deleteUnverifiedResident(key);
@@ -1797,6 +2009,7 @@ function toolCallStateFromSnapshot(
   const toolCallState: MaterializedAgentToolCallState = {
     toolFrameIdsByTurn: new Map(),
     toolCallCount: 0,
+    known: snapshot.toolCallCountKnown !== false,
   };
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
@@ -1823,6 +2036,7 @@ function applyToolCallOps(
         toolCallState.toolFrameIdsByTurn.set(turnId, frameIds);
       }
       toolCallState.toolCallCount = replacement.toolCallCount;
+      toolCallState.known = replacement.known;
     } else if (op.op === 'frame.upsert') {
       if (op.frame.kind === 'tool') {
         addToolFrame(toolCallState, op.turnId, op.stepId, op.frame.frameId);

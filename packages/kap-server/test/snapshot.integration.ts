@@ -160,7 +160,16 @@ describe('server-v2 snapshot route enrichment', () => {
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
       ]),
     };
-    const getTranscriptToolCallCounts = vi.fn(async () => new Map([['agent-1', 3]]));
+    let releaseCounts!: () => void;
+    let signalCountsStarted!: () => void;
+    let blockCounts = true;
+    const countsGate = new Promise<void>((resolve) => { releaseCounts = resolve; });
+    const countsStarted = new Promise<void>((resolve) => { signalCountsStarted = resolve; });
+    const getTranscriptToolCallCounts = vi.fn(async () => {
+      signalCountsStarted();
+      if (blockCounts) await countsGate;
+      return new Map([['agent-1', 3]]);
+    });
     const getMaterializedTranscriptToolCallCounts = vi
       .fn<() => ReadonlyMap<string, number>>()
       .mockReturnValueOnce(new Map([['agent-1', 2]]))
@@ -253,7 +262,22 @@ describe('server-v2 snapshot route enrichment', () => {
       return sessionSnapshotResponseSchema.parse(body.data);
     };
 
-    const compact = await invoke('transcript');
+    let compactSettled = false;
+    const compactPromise = invoke('transcript').then((value) => {
+      compactSettled = true;
+      return value;
+    });
+    await countsStarted;
+    const settledBeforeCounts = await Promise.race([
+      compactPromise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => { resolve(false); }, 100);
+      }),
+    ]);
+    blockCounts = false;
+    releaseCounts();
+    expect(settledBeforeCounts && compactSettled).toBe(true);
+    const compact = await compactPromise;
     expect(compact.messages).toEqual({ items: [], has_more: false });
     expect(compact.session.message_count).toBe(1);
     expect(compact.in_flight_turn).toMatchObject({
@@ -280,11 +304,11 @@ describe('server-v2 snapshot route enrichment', () => {
         thinking_effort: 'high',
         subagent_phase: 'working',
         label: 'Research API limits',
-        tool_call_count: 3,
+        tool_call_count: 2,
       }),
     ]);
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
-    expect(getMaterializedTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
     expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
     expect(loadParts).not.toHaveBeenCalled();
 
@@ -315,7 +339,7 @@ describe('server-v2 snapshot route enrichment', () => {
         parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
         label: 'Research API limits',
-        tool_call_count: 3,
+        tool_call_count: undefined,
         swarm_index: 0,
         run_in_background: false,
       }),
@@ -338,6 +362,7 @@ describe('server-v2 snapshot route enrichment', () => {
       output_preview: 'Stored summary',
       tool_call_count: 0,
     });
+    getMaterializedTranscriptToolCallCounts.mockReturnValueOnce(new Map([['agent-1', 3]]));
     getTranscriptToolCallCounts.mockResolvedValueOnce(new Map([['agent-1', 3]]));
     const measured = await invoke('transcript');
     expect(measured.subagents?.[0]?.tool_call_count).toBe(3);
@@ -1413,6 +1438,7 @@ describe('server-v2 session operation lease', () => {
         };
       },
       getTranscriptToolCallCounts: async () => new Map<string, number>(),
+      getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
     };
 
     const outcome = assembleSnapshot(server!.core, broadcaster as never, sessionId, 'transcript').then(

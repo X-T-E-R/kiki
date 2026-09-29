@@ -68,6 +68,7 @@ import { AppendLogStore } from '../../../agent-core-v2/src/persistence/backends/
 import { noopTelemetryService } from '../../../agent-core-v2/src/app/telemetry/telemetry';
 import { noopLogger, registerTestAgentWire, stubAgentWire } from '../../../agent-core-v2/test/wire/stubs';
 import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes } from '../../../agent-core-v2/src/wire/transcriptReceipt';
+import * as transcriptReceipt from '../../../agent-core-v2/src/wire/transcriptReceipt';
 
 vi.mock('node:fs/promises', { spy: true });
 
@@ -1090,6 +1091,52 @@ describe('TranscriptService live integration', () => {
       expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(0);
       expect(materialize).not.toHaveBeenCalled();
     } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] memoizes sealed receipt verification without rehashing an unchanged wire', async () => {
+    const home = await seedWireHomeWithTool();
+    const digest = vi.spyOn(transcriptReceipt, 'digestWireBytes');
+    let service: TranscriptService | undefined;
+    try {
+      service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+      });
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(1);
+      const firstHashes = digest.mock.calls.length;
+      expect(firstHashes).toBeGreaterThan(0);
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(1);
+      expect(digest.mock.calls.length).toBe(firstHashes);
+    } finally {
+      service?.dispose();
+      digest.mockRestore();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('[STAT-R1] rejects a sealed wire before hashing when validation plus replay exceeds the byte budget', async () => {
+    const home = await seedWireHomeWithTool();
+    const digest = vi.spyOn(transcriptReceipt, 'digestWireBytes');
+    const metrics = { reads: 0, bytes: 0 };
+    let service: TranscriptService | undefined;
+    try {
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const wireSize = (await fsPromises.readFile(wirePath)).byteLength;
+      service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
+        toolCallCountLimits: { maxBytesPerRequest: wireSize, maxFilesPerRequest: 8 },
+        toolCallCountReader: measuredReader(metrics),
+      });
+      expect((await service.getAgentToolCallCounts('s1', ['main'])).has('main')).toBe(false);
+      expect(digest).not.toHaveBeenCalled();
+      expect(metrics.reads).toBe(0);
+      expect(metrics.bytes).toBe(0);
+    } finally {
+      service?.dispose();
+      digest.mockRestore();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
