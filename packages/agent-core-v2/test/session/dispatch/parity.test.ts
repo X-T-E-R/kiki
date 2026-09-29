@@ -1506,7 +1506,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
     const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\n---\nFILE ROLE');
     Object.defineProperty(runtime, 'fs', { value: {
-      realpath: async (path: string) => path.replace(/\\\\/g, '/').replace(/^E:/i, 'e:'), readText,
+      realpath: async (path: string) => path.replace(/\\/g, '/').replace(/^E:/i, 'e:'), readText,
     } });
     const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
     expect(result.isError).not.toBe(true);
