@@ -87,6 +87,7 @@ const STABLE_SESSION_MS = 60_000;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 10_000;
 const MEMORY_PRESSURE_BACKOFF_MS = 6 * 60 * 60_000;
+const DESKTOP_BUNDLED_ENV = 'KIKI_DESKTOP_BUNDLED';
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_TIMEOUT_MS = 30 * 60_000;
 const ORPHAN_LOCK_GRACE_MS = 250;
@@ -310,6 +311,12 @@ export class SearchWorkerHost {
     if (this.worker !== null) return Promise.resolve();
     if (this.exiting) {
       return Promise.reject(new SearchWorkerError('disposed', 'search worker is disposed'));
+    }
+    if (process.env[DESKTOP_BUNDLED_ENV] === '1') {
+      return Promise.reject(new SearchWorkerError(
+        'runtime-unavailable',
+        'global search worker is disabled in the bundled desktop runtime',
+      ));
     }
     if (this.spawnPromise !== null) return this.spawnPromise;
     const wait = this.nextRetryAfter - Date.now();

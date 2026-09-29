@@ -3000,6 +3000,23 @@ describe('search worker host (stage 4)', () => {
     expect(worker.resourceLimits?.maxOldGenerationSizeMb).toBe(1024);
   });
 
+  it('keeps the bundled desktop runtime usable without starting global search', async () => {
+    const previous = process.env['KIKI_DESKTOP_BUNDLED'];
+    process.env['KIKI_DESKTOP_BUNDLED'] = '1';
+    try {
+      const host = new SearchWorkerHost({
+        dir: join(home!, 'search-index'),
+        log: noopLog,
+      });
+      hosts.push(host);
+      await expect(host.ensureOpen()).rejects.toMatchObject({ code: 'runtime-unavailable' });
+      expect((host as unknown as { worker: Worker | null }).worker).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env['KIKI_DESKTOP_BUNDLED'];
+      else process.env['KIKI_DESKTOP_BUNDLED'] = previous;
+    }
+  });
+
   it('backs off for hours after worker memory pressure instead of restarting the rebuild loop', async () => {
     const host = new SearchWorkerHost({
       dir: join(home!, 'search-index'),
