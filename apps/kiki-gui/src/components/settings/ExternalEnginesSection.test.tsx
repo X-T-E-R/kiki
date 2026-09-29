@@ -7,14 +7,19 @@ import type { ExecutorCatalogItem } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { engineHealth, ExternalEnginesList } from './ExternalEnginesSection';
 
-const { client } = vi.hoisted(() => ({ client: { listExecutors: vi.fn(), checkExecutor: vi.fn() } }));
+const { client } = vi.hoisted(() => ({ client: {
+  listExecutors: vi.fn(), checkExecutor: vi.fn(), patchConfig: vi.fn(),
+} }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }), useOptionalConnection: () => ({ client }) }));
 
 const codex: ExecutorCatalogItem = {
   id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', status: 'ready', version: '0.158.0',
   model_binding: 'mapped', thinking_binding: 'mapped',
   capabilities: { prompt_deliveries: ['append', 'replace', 'preamble'], steer: 'native', permission: { via: 'turn_param', trust_engine_settings: false }, thinking_binding: true },
-  connection: { command: 'codex.exe', source: 'desktop', login_command: ['codex', 'login'], login_status: 'unknown', default_args: ['app-server'] },
+  connection: {
+    command: 'codex.exe', source: 'desktop', login_command: ['codex', 'login'], login_status: 'unknown',
+    home_env: 'CODEX_HOME', override: { args: [], env_keys: [] }, default_args: ['app-server'],
+  },
 };
 const gemini: ExecutorCatalogItem = {
   id: 'gemini-acp', label: 'Gemini CLI', protocol: 'acp-v1', status: 'unavailable', model_binding: 'unavailable', thinking_binding: 'unavailable',
@@ -27,6 +32,7 @@ const settle = async () => { for (let i = 0; i < 5; i++) await act(async () => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  client.patchConfig.mockResolvedValue({});
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div'); document.body.append(container);
@@ -37,6 +43,16 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 async function render() {
   const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider>));
+  await settle();
+}
+
+async function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(element.constructor.prototype, 'value')?.set ??
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await settle();
 }
 
@@ -51,6 +67,60 @@ describe('external engines connection kind', () => {
     expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-summary]')?.textContent).toContain('Sign-in unknown');
     expect(container.querySelector('[data-engine-row="gemini-acp"]')?.getAttribute('data-engine-health')).toBe('missing');
     expect(container.querySelector('[data-engine-row="gemini-acp"] [data-engine-missing]')?.textContent).toContain('npm i -g @google/gemini-cli');
+  });
+
+  it('keeps engine overrides collapsed, validates through preflight, and rejects relative paths', async () => {
+    client.listExecutors.mockResolvedValue({ items: [codex] });
+    client.checkExecutor.mockResolvedValue({
+      id: 'codex-app-server', status: 'ready', version: '0.158.0', command: 'codex.exe',
+      resolved_args: ['app-server'], login_status: 'logged_in', diagnostics: [],
+    });
+    await render();
+    const row = container.querySelector<HTMLElement>('[data-engine-row="codex-app-server"]')!;
+    row.querySelector<HTMLElement>('summary')!.click();
+    await settle();
+    const advanced = row.querySelector<HTMLDetailsElement>('[data-engine-advanced]')!;
+    const binPath = row.querySelector<HTMLInputElement>('[data-engine-override="bin-path"]')!;
+    expect(advanced.open).toBe(false);
+    expect(binPath.placeholder).toBe('Auto-detected: codex.exe');
+
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-validate]')!.click());
+    await settle();
+    expect(client.checkExecutor).toHaveBeenCalledWith('codex-app-server');
+    expect(row.querySelector('[data-engine-advanced] [data-feedback-tone="success"]')?.textContent).toContain('Check passed');
+
+    advanced.querySelector<HTMLElement>('summary')!.click();
+    await setValue(binPath, 'relative/codex.exe');
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-save]')!.click());
+    await settle();
+    expect(client.patchConfig).not.toHaveBeenCalled();
+    expect(row.querySelector('[data-engine-advanced] [data-feedback-tone="error"]')?.textContent).toContain('absolute path');
+  });
+
+  it('saves overrides, reruns the check, and surfaces a missing-program reason', async () => {
+    client.listExecutors.mockResolvedValue({ items: [codex] });
+    client.checkExecutor.mockResolvedValue({
+      id: 'codex-app-server', status: 'unavailable', command: 'C:/missing/codex.exe',
+      resolved_args: [], login_status: 'unknown',
+      diagnostics: [{ severity: 'error', message: 'C:/missing/codex.exe was not found.' }],
+    });
+    await render();
+    const row = container.querySelector<HTMLElement>('[data-engine-row="codex-app-server"]')!;
+    row.querySelector<HTMLElement>('summary')!.click();
+    await settle();
+    const advanced = row.querySelector<HTMLDetailsElement>('[data-engine-advanced]')!;
+    advanced.querySelector<HTMLElement>('summary')!.click();
+    await setValue(row.querySelector<HTMLInputElement>('[data-engine-override="bin-path"]')!, 'C:/missing/codex.exe');
+
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-save]')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      agent_executor_overrides: {
+        'codex-app-server': { bin_path: 'C:/missing/codex.exe', home_dir: null, args: [], env: undefined },
+      },
+    });
+    expect(client.checkExecutor).toHaveBeenCalledWith('codex-app-server');
+    expect(row.querySelector('[data-engine-advanced] [data-feedback-tone="error"]')?.textContent).toContain('was not found');
   });
 
   it('runs the descriptor preflight and shows its result and diagnostics', async () => {

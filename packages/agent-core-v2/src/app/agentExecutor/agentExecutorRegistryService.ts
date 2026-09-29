@@ -35,6 +35,12 @@ import {
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 import type { NegotiatedExecutorCapabilities } from './capabilities';
 import {
+  AGENT_EXECUTOR_OVERRIDES_SECTION,
+  applyExecutorOverride,
+  AgentExecutorOverrideSchema,
+  type AgentExecutorOverridesConfig,
+} from './executorOverrides';
+import {
   AGENT_EXECUTORS_SECTION,
   type AgentExecutorConfig,
   type AgentExecutorsConfig,
@@ -77,7 +83,15 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const entry = this.config.get<AgentExecutorsConfig | undefined>(
       AGENT_EXECUTORS_SECTION,
     )?.[id] ?? BUILTIN_AGENT_EXECUTORS[id];
-    return entry === undefined ? undefined : descriptorFromConfig(id, entry);
+    if (entry === undefined) return undefined;
+    const raw = this.config.get<AgentExecutorOverridesConfig | undefined>(
+      AGENT_EXECUTOR_OVERRIDES_SECTION,
+    )?.[id];
+    const parsed = raw === undefined ? undefined : AgentExecutorOverrideSchema.safeParse(raw);
+    return applyExecutorOverride(
+      descriptorFromConfig(id, entry),
+      parsed?.success === true ? parsed.data : undefined,
+    );
   }
 
   list(): readonly AgentExecutorDescriptor[] {
@@ -275,6 +289,7 @@ function descriptorFromConfig(
     auth: config.auth,
     args: [...config.args],
     env: config.env,
+    homeEnv: config.homeEnv,
     startupTimeoutMs: config.startupTimeoutMs,
     shutdownGraceMs: config.shutdownGraceMs,
     modelBinding: config.modelBinding,

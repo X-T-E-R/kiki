@@ -10,6 +10,7 @@ import type {
   AgentExecutorDescriptor,
   AgentExecutorSourceProbe,
 } from './agentExecutor';
+import { executorProcessEnv } from './executorOverrides';
 
 interface ProbeResult {
   readonly available: boolean;
@@ -72,7 +73,7 @@ async function probeDescriptorCommand(
     processService,
     descriptor.command,
     descriptor.versionProbe?.args ?? ['--version'],
-    descriptor.env,
+    executorProcessEnv(descriptor),
   );
   return [{
     id: 'command',
@@ -113,7 +114,7 @@ async function probeSource(
       processService,
       command,
       descriptor.versionProbe?.args ?? ['--version'],
-      descriptor.env,
+      executorProcessEnv(descriptor),
     ),
   })));
   const available = candidates.filter((candidate) => candidate.probe.available && candidate.probe.code === 0);
@@ -161,7 +162,7 @@ async function probeNodeScript(
     processService,
     node,
     [script, ...descriptor.versionProbe?.args ?? ['--version']],
-    descriptor.env,
+    executorProcessEnv(descriptor),
   );
   const version = firstLine(probe.output);
   if (!probe.available || probe.code !== 0) {

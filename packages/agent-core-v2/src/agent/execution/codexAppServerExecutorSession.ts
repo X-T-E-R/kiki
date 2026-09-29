@@ -13,6 +13,7 @@ import {
 } from '@kiki/codex-client';
 
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import {
   agentExecutorBindingFingerprint,
@@ -129,8 +130,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         {
           id: context.descriptor.id,
           command: requiredCommand(context),
-          args: [...context.descriptor.launchArgs ?? [], ...context.descriptor.args],
-          env: context.descriptor.env === undefined ? undefined : { ...context.descriptor.env },
+          args: executorLaunchArgs(context.descriptor, [...context.descriptor.launchArgs ?? [], ...context.descriptor.args]),
+          env: executorProcessEnv(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',

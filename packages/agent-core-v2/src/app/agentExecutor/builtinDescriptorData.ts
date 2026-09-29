@@ -5,6 +5,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     label: 'Grok Build',
     protocol: 'acp-v1',
     command: 'grok',
+    homeEnv: 'GROK_HOME',
     args: ['--no-auto-update', 'agent', 'stdio'],
     startupTimeoutMs: 70_000,
     shutdownGraceMs: 3_000,
@@ -24,6 +25,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-30.1',
   },
   'codex-app-server': {
+    homeEnv: 'CODEX_HOME',
     label: 'Codex',
     protocol: 'codex-app-server',
     sources: [
@@ -65,6 +67,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-31.1',
   },
   'codex-acp': {
+    homeEnv: 'CODEX_HOME',
     label: 'Codex ACP',
     protocol: 'acp-v1',
     command: 'codex-acp',
@@ -83,6 +86,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-31.1',
   },
   'cursor-acp': {
+    homeEnv: 'CURSOR_CONFIG_DIR',
     label: 'Cursor',
     protocol: 'acp-v1',
     sources: [
@@ -110,6 +114,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-31.1',
   },
   'claude-acp': {
+    homeEnv: 'CLAUDE_CONFIG_DIR',
     label: 'Claude Code',
     protocol: 'acp-v1',
     programLabel: 'claude-agent-acp',
@@ -145,6 +150,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     label: 'Gemini CLI',
     protocol: 'acp-v1',
     command: 'gemini',
+    homeEnv: 'GEMINI_CLI_HOME',
     args: ['--acp'],
     diagnostics: [
       { kind: 'flag', args: ['--help'], stable: '--acp', fallback: '--experimental-acp',
@@ -169,6 +175,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
       yolo: 'yolo',
     },
     command: 'kimi',
+    homeEnv: 'KIMI_CODE_HOME',
     args: ['acp'],
     diagnostics: [{ kind: 'version', min: '0.37.0',
       warning: 'Kimi Code 0.37+ has a reported ACP MCP-injection regression; verify startup before relying on this harness.',
@@ -182,6 +189,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     label: 'OpenCode',
     protocol: 'acp-v1',
     command: 'opencode',
+    homeEnv: 'XDG_DATA_HOME',
     args: ['acp'],
     diagnostics: [{ kind: 'message', severity: 'info', message: 'OpenCode uses the existing vendor login and configuration.' }],
     shutdownGraceMs: 3_000,

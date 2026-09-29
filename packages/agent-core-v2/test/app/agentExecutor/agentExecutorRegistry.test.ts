@@ -18,10 +18,19 @@ import {
 import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
+  AGENT_EXECUTORS_SECTION,
   AgentExecutorsConfigSchema,
   agentExecutorsFromToml,
   agentExecutorsToToml,
 } from '#/app/agentExecutor/configSection';
+import {
+  AGENT_EXECUTOR_OVERRIDES_SECTION,
+  AgentExecutorOverrideSchema,
+  AgentExecutorOverridesSchema,
+  agentExecutorOverridesFromToml,
+  agentExecutorOverridesToToml,
+  executorProcessEnv,
+} from '#/app/agentExecutor/executorOverrides';
 import type { IDisposable } from '#/_base/di/lifecycle';
 
 const processService = { _serviceBrand: undefined } as unknown as IHostProcessService;
@@ -35,7 +44,7 @@ function configWith(value: unknown): IConfigService {
     onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
     onDidSectionChange: Event.None as IConfigService['onDidSectionChange'],
     onDidChangeDiagnostics: Event.None as IConfigService['onDidChangeDiagnostics'],
-    get: <T>() => value as T,
+    get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? value as T : undefined as T,
     inspect: () => ({
       value: undefined,
       defaultValue: undefined,
@@ -123,9 +132,9 @@ describe('AgentExecutorRegistryService', () => {
 
   it('exposes negotiated capabilities only for the matching executor revision and binary version', () => {
     let command = 'test-acp';
-    const config = { ...configWith({}), get: <T>() => ({ test: {
+    const config = { ...configWith({}), get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? ({ test: {
       protocol: 'acp-v1', command, args: [],
-    } }) as T };
+    } }) as T : undefined as T };
     const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
     registry.recordNegotiated('test', '1.0', { models: ['one'], resume: true });
     expect(registry.negotiated('test', '1.0')).toEqual({ models: ['one'], resume: true });
@@ -399,6 +408,61 @@ describe('AgentExecutorRegistryService', () => {
       permission: { config_id: 'mode', trust_engine_settings: true },
       diagnostics: [{ kind: 'message', severity: 'info', message: 'Check config' }],
     } });
+  });
+
+  it('validates and round-trips agent executor launch overrides', () => {
+    const toml = {
+      'codex-acp': {
+        bin_path: 'C:/tools/codex.exe',
+        home_dir: 'C:/codex-home',
+        env: { CODEX_TOKEN: 'fixture-token' },
+        args: ['--profile', 'fixture'],
+      },
+    };
+    const runtime = AgentExecutorOverridesSchema.parse(agentExecutorOverridesFromToml(toml));
+
+    expect(runtime).toEqual({
+      'codex-acp': {
+        binPath: 'C:/tools/codex.exe',
+        homeDir: 'C:/codex-home',
+        env: { CODEX_TOKEN: 'fixture-token' },
+        args: ['--profile', 'fixture'],
+      },
+    });
+    expect(agentExecutorOverridesToToml(runtime)).toEqual(toml);
+    expect(AgentExecutorOverrideSchema.safeParse({ binPath: 'x', unsupported: true }).success).toBe(false);
+    expect(AgentExecutorOverridesSchema.safeParse({ 'codex-acp': { env: { TOKEN: 1 } } }).success).toBe(false);
+  });
+
+  it('maps an override home and environment into the executor process environment', () => {
+    const config = {
+      ...configWith({
+        custom: {
+          protocol: 'acp-v1',
+          command: 'custom-agent',
+          args: [],
+          env: { BASE: 'base' },
+          home_env: 'CUSTOM_HOME',
+        },
+      }),
+      get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION
+        ? ({ custom: {
+          protocol: 'acp-v1', command: 'custom-agent', args: [],
+          env: { BASE: 'base' }, homeEnv: 'CUSTOM_HOME',
+        } }) as T
+        : domain === AGENT_EXECUTOR_OVERRIDES_SECTION
+          ? ({ custom: {
+            homeDir: 'C:/custom-home', env: { BASE: 'override', TOKEN: 'fixture-token' },
+          } }) as T
+          : undefined as T,
+    };
+    const descriptor = new AgentExecutorRegistryService(config, processService, fs, bootstrap).get('custom')!;
+
+    expect(executorProcessEnv(descriptor)).toEqual({
+      CUSTOM_HOME: 'C:/custom-home',
+      BASE: 'override',
+      TOKEN: 'fixture-token',
+    });
   });
 
   it('accepts the Claude credential descriptor and round-trips its TOML keys', () => {

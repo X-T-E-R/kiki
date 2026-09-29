@@ -26,6 +26,14 @@ export const executorCredentialSourceSchema = z.enum([
 ]);
 export type ExecutorCredentialSource = z.infer<typeof executorCredentialSourceSchema>;
 
+export const executorOverrideSchema = z.object({
+  bin_path: z.string().optional(),
+  home_dir: z.string().optional(),
+  args: z.array(z.string()),
+  env_keys: z.array(z.string()),
+});
+export type ExecutorOverride = z.infer<typeof executorOverrideSchema>;
+
 export const executorCatalogItemSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -46,6 +54,9 @@ export const executorCatalogItemSchema = z.object({
     /** Which credential the engine already has: a CLI login, an API key, a token, a settings `env` entry, or `apiKeyHelper`. */
     credential_source: executorCredentialSourceSchema.optional(),
     credential_detail: z.string().optional(),
+    /** Environment variable the engine's own configuration directory is published under, when it has one. */
+    home_env: z.string().optional(),
+    override: executorOverrideSchema.optional(),
     default_args: z.array(z.string()),
   }).optional(),
   default_profile: z.boolean().optional(),

@@ -18,6 +18,8 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
+import { AGENT_EXECUTORS_SECTION } from '#/app/agentExecutor/configSection';
+import { AGENT_EXECUTOR_OVERRIDES_SECTION } from '#/app/agentExecutor/executorOverrides';
 import {
   AgentExecutorPreflightService,
   IAgentExecutorPreflightService,
@@ -34,14 +36,16 @@ import {
 class FakeProcessService implements IHostProcessService {
   declare readonly _serviceBrand: undefined;
   readonly calls: string[] = [];
+  readonly options: HostProcessOptions[] = [];
   readonly outputs = new Map<string, { readonly output: string; readonly code?: number }>();
 
   async spawn(
     command: string,
     args: readonly string[] = [],
-    _options?: HostProcessOptions,
+    options?: HostProcessOptions,
   ): Promise<IHostProcess> {
     const key = [command, ...args].join(' ');
+    this.options.push(options ?? {});
     this.calls.push(key);
     const fixture = this.outputs.get(key);
     if (fixture === undefined) throw new Error('missing');
@@ -139,7 +143,7 @@ describe('AgentExecutorPreflightService', () => {
     services.set(IBootstrapService, bootstrap());
     services.set(IConfigService, {
       _serviceBrand: undefined,
-      get: () => undefined,
+      get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? undefined : undefined,
     } as unknown as IConfigService);
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     services.set(
@@ -233,7 +237,7 @@ describe('AgentExecutorPreflightService', () => {
     processService.outputs.set('C:/alt/codex.exe --version', { output: 'codex-cli 0.150.0' });
     services.set(IConfigService, {
       _serviceBrand: undefined,
-      get: () => ({
+      get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? {
         selected: {
           protocol: 'codex-app-server',
           sources: [
@@ -244,7 +248,7 @@ describe('AgentExecutorPreflightService', () => {
           versionProbe: { args: ['--version'] },
           args: [],
         },
-      }),
+      } : undefined,
     } as unknown as IConfigService);
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
@@ -262,10 +266,10 @@ describe('AgentExecutorPreflightService', () => {
   it('reports a custom executor with descriptor-only diagnostics and no id branch', async () => {
     services.set(IConfigService, {
       _serviceBrand: undefined,
-      get: () => ({ 'new-acp': {
+      get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? { 'new-acp': {
         protocol: 'acp-v1', command: 'new-agent', args: ['acp'],
         diagnostics: [{ kind: 'message', severity: 'info', message: 'Custom agent ready.' }],
-      } }),
+      } } : undefined,
     } as unknown as IConfigService);
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
@@ -273,6 +277,89 @@ describe('AgentExecutorPreflightService', () => {
     const [result] = await services.get(IAgentExecutorPreflightService).run(['new-acp']);
     expect(result).toMatchObject({ id: 'new-acp', status: 'ready', version: 'new-agent 1.0',
       resolvedArgs: ['acp'], diagnostics: [{ severity: 'info', message: 'Custom agent ready.' }] });
+  });
+
+  it('uses an explicit binary override instead of auto-discovery', async () => {
+    services.set(IHostFileSystem, fsWith(['C:/tools/custom-gemini.exe']));
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: (domain: string) => domain === AGENT_EXECUTOR_OVERRIDES_SECTION ? {
+        'gemini-acp': { binPath: 'C:/tools/custom-gemini.exe' },
+      } : undefined,
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+    processService.outputs.set('C:/tools/custom-gemini.exe --version', { output: 'gemini 1.0.0' });
+    processService.outputs.set('C:/tools/custom-gemini.exe --help', { output: '--acp' });
+
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['gemini-acp']);
+
+    expect(result).toMatchObject({
+      status: 'ready',
+      command: 'C:/tools/custom-gemini.exe',
+      selectedSource: 'override',
+      version: 'gemini 1.0.0',
+    });
+    expect(processService.calls).toContain('C:/tools/custom-gemini.exe --version');
+    expect(processService.calls).toContain('C:/tools/custom-gemini.exe --help');
+    expect(processService.calls).not.toContain('gemini --version');
+    expect(processService.calls).not.toContain('gemini --help');
+  });
+
+  it('does not fall back when an explicit binary override is missing', async () => {
+    services.set(IHostFileSystem, fsWith([]));
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: (domain: string) => domain === AGENT_EXECUTOR_OVERRIDES_SECTION ? {
+        'gemini-acp': { binPath: 'C:/missing/custom-gemini.exe' },
+      } : undefined,
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['gemini-acp']);
+
+    expect(result).toMatchObject({ status: 'unavailable', command: '' });
+    expect(result?.selectedSource).toBeUndefined();
+    expect(result?.sources).toEqual([
+      expect.objectContaining({ id: 'override', available: false }),
+    ]);
+    expect(result?.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: 'error', message: 'No configured executable source is available.' }),
+    ]));
+    expect(processService.calls).not.toContain('gemini --version');
+  });
+
+  it('passes a configured home and extra environment into every probe', async () => {
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: (domain: string) => domain === AGENT_EXECUTOR_OVERRIDES_SECTION ? {
+        'gemini-acp': { homeDir: 'C:/gemini-home', env: { GEMINI_TOKEN: 'fixture-token' } },
+      } : undefined,
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+    processService.outputs.set('gemini --version', { output: 'gemini 1.0.0' });
+    processService.outputs.set('gemini --help', { output: '--acp' });
+
+    await services.get(IAgentExecutorPreflightService).run(['gemini-acp']);
+
+    expect(processService.options.filter((options) => options.env !== undefined)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ env: { GEMINI_CLI_HOME: 'C:/gemini-home', GEMINI_TOKEN: 'fixture-token' } }),
+      ]),
+    );
+  });
+
+  it('leaves probe environment undefined without an override', async () => {
+    processService.outputs.set('gemini --version', { output: 'gemini 1.0.0' });
+    processService.outputs.set('gemini --help', { output: '--acp' });
+
+    await services.get(IAgentExecutorPreflightService).run(['gemini-acp']);
+
+    expect(processService.options.filter((options) => Object.hasOwn(options, 'env'))).toEqual(
+      expect.arrayContaining([expect.objectContaining({ env: undefined })]),
+    );
   });
 
   it('resolves sources lazily and stops after the first available source', async () => {
@@ -293,7 +380,7 @@ describe('AgentExecutorPreflightService', () => {
   it('probes only an explicitly selected source during runtime resolution', async () => {
     services.set(IConfigService, {
       _serviceBrand: undefined,
-      get: () => ({
+      get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? {
         selected: {
           protocol: 'codex-app-server',
           sources: [
@@ -304,7 +391,7 @@ describe('AgentExecutorPreflightService', () => {
           versionProbe: { args: ['--version'] },
           args: [],
         },
-      }),
+      } : undefined,
     } as unknown as IConfigService);
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     processService.outputs.set('C:/alt/codex.exe --version', { output: 'codex-cli 0.150.0' });
@@ -334,7 +421,7 @@ describe('AgentExecutorPreflightService', () => {
     } as unknown as IHostFileSystem);
     services.set(IConfigService, {
       _serviceBrand: undefined,
-      get: () => ({
+      get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? {
         selected: {
           protocol: 'codex-app-server',
           sources: [{
@@ -345,7 +432,7 @@ describe('AgentExecutorPreflightService', () => {
           versionProbe: { args: ['--version'] },
           args: [],
         },
-      }),
+      } : undefined,
     } as unknown as IConfigService);
     services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     processService.outputs.set(

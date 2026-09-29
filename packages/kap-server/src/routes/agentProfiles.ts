@@ -9,6 +9,7 @@ import {
   IAgentExecutorRegistry,
   IAgentExecutorPreflightService,
   IBootstrapService,
+  EXECUTOR_OVERRIDE_SOURCE_ID,
   executorCapabilities,
   expandExecutorText,
   IConfigService,
@@ -878,6 +879,20 @@ function scopedBindingDiagnosticCode(
   }
 }
 
+function executorOverrideProjection(descriptor: AgentExecutorDescriptor) {
+  const explicit = descriptor.sources?.find((source) => source.id === EXECUTOR_OVERRIDE_SOURCE_ID);
+  const binPath = explicit === undefined ? undefined
+    : explicit.kind === 'node-script' || explicit.kind === 'explicit-path' ? explicit.path
+      : explicit.kind === 'path-lookup' ? explicit.command
+        : undefined;
+  return {
+    bin_path: binPath,
+    home_dir: descriptor.homeDir,
+    args: [...descriptor.extraArgs ?? []],
+    env_keys: Object.keys(descriptor.env ?? {}),
+  };
+}
+
 async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
   check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
   const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id).catch(() => undefined);
@@ -914,6 +929,8 @@ async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IA
       install_hint: descriptor.installHint === undefined ? undefined : expandExecutorText(descriptor.installHint, bootstrap),
       login_command: descriptor.loginCommand,
       api_key_env: descriptor.apiKeyEnv,
+      home_env: descriptor.homeEnv,
+      override: executorOverrideProjection(descriptor),
       login_status: check?.loginStatus ?? 'unknown' as const,
       credential_source: check?.credentialSource,
       credential_detail: check?.credentialDetail,

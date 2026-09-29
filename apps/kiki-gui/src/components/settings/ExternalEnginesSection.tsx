@@ -10,7 +10,7 @@ import type { ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
-import { SECONDARY_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from './profileEditor/engines';
 
 /** Row health in words: ready, needs attention (warnings / signed out), not found, not checked. */
@@ -238,6 +238,197 @@ function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckR
     </div>
   );
 }
+type EngineOverride = NonNullable<NonNullable<ExecutorCatalogItem['connection']>['override']>;
+
+interface OverrideForm {
+  readonly binPath: string;
+  readonly homeDir: string;
+  readonly extraArgs: string;
+  readonly envText: string;
+}
+
+function overrideForm(override: EngineOverride | undefined): OverrideForm {
+  return {
+    binPath: override?.bin_path ?? '',
+    homeDir: override?.home_dir ?? '',
+    extraArgs: (override?.args ?? []).join(' '),
+    envText: '',
+  };
+}
+
+/** A path that carries a separator must be absolute; a bare command name is looked up on PATH. */
+export function relativeOverridePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  const absolute = trimmed.startsWith('/') || trimmed.startsWith('\\\\') ||
+    /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('~');
+  const pathLike = /[\\/]/.test(trimmed) || /^[A-Za-z]:/.test(trimmed) ||
+    /%[^%]+%/.test(trimmed) || trimmed.includes('${');
+  return pathLike && !absolute;
+}
+
+/** `KEY=VALUE` per line; an empty value means "remove this variable". */
+export function parseOverrideEnvText(text: string):
+  | { readonly ok: true; readonly patch: Record<string, string | null> }
+  | { readonly ok: false; readonly line: string } {
+  const patch: Record<string, string | null> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('#')) continue;
+    const at = line.indexOf('=');
+    if (at <= 0) return { ok: false, line };
+    const key = line.slice(0, at).trim();
+    if (key.length === 0) return { ok: false, line };
+    const value = line.slice(at + 1).trim();
+    patch[key] = value.length === 0 ? null : value;
+  }
+  return { ok: true, patch };
+}
+
+/**
+ * Per-engine launch overrides, collapsed by default. They are stored in
+ * `[agent_executor_overrides.<id>]` and used by both the check and the launch,
+ * so a user can move a vendor CLI, relocate its configuration directory, add
+ * flags or add variables without editing the descriptor.
+ */
+function overrideCheckFeedback(result: ExecutorCheckResult, t: ReturnType<typeof useI18n>['t']): Feedback {
+  const diagnostic = result.diagnostics.find((item) => item.severity === 'error') ??
+    result.diagnostics.find((item) => item.severity === 'warning');
+  if (diagnostic !== undefined) return {
+    tone: diagnostic.severity === 'warning' ? 'info' : 'error',
+    text: diagnostic.message,
+  };
+  const missing = result.requirements?.find((requirement) => requirement.status !== 'ok');
+  if (missing !== undefined) return {
+    tone: 'error',
+    text: `${missing.label}: ${missing.status === 'missing' ? 'not found' : 'check failed'}`,
+  };
+  return { tone: 'success', text: t('st.engines.checkedOk') };
+}
+
+function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined> }) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const override = item.connection?.override;
+  const homeEnv = item.connection?.home_env;
+  const savedKey = `${override?.bin_path ?? ''}\u0000${override?.home_dir ?? ''}\u0000${(override?.args ?? []).join(' ')}`;
+  const [loadedKey, setLoadedKey] = useState(savedKey);
+  const [form, setForm] = useState<OverrideForm>(() => overrideForm(override));
+  const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  if (loadedKey !== savedKey) {
+    setLoadedKey(savedKey);
+    setForm(overrideForm(override));
+  }
+  const envKeys = override?.env_keys ?? [];
+
+  const save = async () => {
+    if (relativeOverridePath(form.binPath) || relativeOverridePath(form.homeDir)) {
+      setFeedback({ tone: 'error', text: t('st.engines.override.absolute') });
+      return;
+    }
+    const env = parseOverrideEnvText(form.envText);
+    if (!env.ok) {
+      setFeedback({ tone: 'error', text: t('st.engines.override.envInvalid', { line: env.line }) });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await client.patchConfig({
+        agent_executor_overrides: {
+          [item.id]: {
+            bin_path: form.binPath.trim().length === 0 ? null : form.binPath.trim(),
+            home_dir: form.homeDir.trim().length === 0 ? null : form.homeDir.trim(),
+            args: form.extraArgs.trim().length === 0 ? [] : form.extraArgs.trim().split(/\s+/),
+            env: Object.keys(env.patch).length === 0 ? undefined : env.patch,
+          },
+        },
+      });
+      setForm((current) => ({ ...current, envText: '' }));
+      await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
+      const result = await onCheck();
+      if (result !== undefined) setFeedback(overrideCheckFeedback(result, t));
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const validate = async () => {
+    if (relativeOverridePath(form.binPath) || relativeOverridePath(form.homeDir)) {
+      setFeedback({ tone: 'error', text: t('st.engines.override.absolute') });
+      return;
+    }
+    setValidating(true);
+    setFeedback(null);
+    try {
+      const result = await onCheck();
+      if (result !== undefined) setFeedback(overrideCheckFeedback(result, t));
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  return (
+    <details data-engine-advanced className="border-t border-hairline pt-3 [&[open]]:space-y-3">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
+        <DisclosureChevron open={false} className="text-ink-faint" />
+        {t('st.engines.advanced')}
+      </summary>
+      <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.hint')}</p>
+      <div className="space-y-1">
+        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-bin`}>{t('st.engines.override.binPath')}</label>
+        <input id={`${item.id}-bin`} data-engine-override="bin-path" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+          value={form.binPath} spellCheck={false} disabled={saving}
+          placeholder={program === undefined ? t('st.engines.override.binPathPlaceholder') : t('st.engines.override.autoDetected', { value: program })}
+          onChange={(event) => { setForm({ ...form, binPath: event.target.value }); }} />
+        <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.binPathHint')}</p>
+      </div>
+      {homeEnv === undefined ? null : (
+        <div className="space-y-1">
+          <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-home`}>{t('st.engines.override.homeDir', { env: homeEnv })}</label>
+          <input id={`${item.id}-home`} data-engine-override="home-dir" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+            value={form.homeDir} spellCheck={false} disabled={saving} placeholder={t('st.engines.override.homeDirPlaceholder', { env: homeEnv })}
+            onChange={(event) => { setForm({ ...form, homeDir: event.target.value }); }} />
+          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.homeDirHint', { env: homeEnv })}</p>
+        </div>
+      )}
+      <div className="space-y-1">
+        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-args`}>{t('st.engines.override.args')}</label>
+        <input id={`${item.id}-args`} data-engine-override="args" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+          value={form.extraArgs} spellCheck={false} disabled={saving}
+          onChange={(event) => { setForm({ ...form, extraArgs: event.target.value }); }} />
+        <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.argsHint')}</p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-env`}>{t('st.engines.override.env')}</label>
+        <textarea id={`${item.id}-env`} data-engine-override="env" rows={3} spellCheck={false} disabled={saving}
+          className={`${INPUT} min-w-0 font-mono text-[11.5px]`} placeholder={'KEY=VALUE'}
+          value={form.envText} onChange={(event) => { setForm({ ...form, envText: event.target.value }); }} />
+        <p className="text-[12px] leading-4 text-ink-faint">
+          {t('st.engines.override.envHint', { keys: envKeys.length === 0 ? t('st.engines.override.envNone') : envKeys.join(', ') })}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" data-engine-override-validate className={SECONDARY_BUTTON} disabled={saving || validating} aria-busy={validating}
+          onClick={() => void validate()}>
+          {validating ? t('st.engines.override.validating') : t('st.engines.override.validate')}
+        </button>
+        <button type="button" data-engine-override-save className={SECONDARY_BUTTON} disabled={saving || validating} aria-busy={saving}
+          onClick={() => void save()}>
+          {saving ? t('st.engines.override.saving') : t('st.engines.override.save')}
+        </button>
+        <span className="text-[12px] text-ink-faint">{t('st.engines.override.recheck')}</span>
+      </div>
+      <FeedbackLine feedback={feedback} />
+    </details>
+  );
+}
+
 
 function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const { client } = useConnection();
@@ -265,8 +456,8 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const caps = item.capabilities;
   const setup = check?.requirements !== undefined && check.requirements.length > 0;
 
-  const runCheck = async () => {
-    if (checking) return;
+  const runCheck = async (): Promise<ExecutorCheckResult | undefined> => {
+    if (checking) return undefined;
     setChecking(true);
     setFeedback(null);
     try {
@@ -275,8 +466,10 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
       setCheckedAt(new Date().toISOString());
       // GET serves the last check's sign-in result for 60s; let the profile
       // editor's engine picker see it too.
+      return result;
       await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
     } catch (error) {
+      return undefined;
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setChecking(false);
@@ -422,6 +615,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.integrations')}</p>
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.integrationsBody')}</p>
           {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
+        <EngineOverrides item={item} program={program} onCheck={runCheck} />
         </div>
         <FeedbackLine feedback={feedback} />
       </div>

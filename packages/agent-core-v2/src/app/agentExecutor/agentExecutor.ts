@@ -138,6 +138,17 @@ export interface AgentExecutorDescriptor {
         readonly args: readonly string[] };
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Environment variable that names this engine's own configuration
+   * directory, when the engine has one. A user-configured `homeDir` is
+   * published under it for both the check and the launch, so the engine reads
+   * the same settings either way.
+   */
+  readonly homeEnv?: string;
+  /** User-configured configuration directory for this engine, from `[agent_executor_overrides]`. */
+  readonly homeDir?: string;
+  /** User-configured launch flags, appended after the descriptor's own. */
+  readonly extraArgs?: readonly string[];
   readonly startupTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly modelBinding?: string;

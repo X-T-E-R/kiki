@@ -17,6 +17,7 @@ import {
   credentialFromClaudeCliStatus,
   scanClaudeCredentials,
 } from './claudeCredentials';
+import { executorEnvLookup, executorLaunchArgs, executorProcessEnv } from './executorOverrides';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
@@ -107,12 +108,13 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     if (descriptor.sources !== undefined) return this.#discovered(id);
     const command = descriptor.command ?? '';
     const versionArgs = descriptor.versionProbe?.args ?? ['--version'];
-    const probe = await this.#probe(command, versionArgs);
+    const launchEnv = executorProcessEnv(descriptor);
+    const probe = await this.#probe(command, versionArgs, launchEnv);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
     if (!probe.available) diagnostics.push(error(`${command} is not installed or not executable.`));
     else if (probe.code !== 0) diagnostics.push(warning(`${command} ${versionArgs.join(' ')} exited with code ${probe.code}.`));
     const version = firstLine(probe.output);
-    const rules = await this.#diagnostics(descriptor, version, probe.available);
+    const rules = await this.#diagnostics(descriptor, version, probe.available, command);
     diagnostics.push(...rules.diagnostics);
     const loginStatus = probe.available && probe.code === 0 ? await this.#auth(descriptor) : { loginStatus: 'unknown' as const };
     const program = programRequirement(descriptor, probe.available ? probe.code === 0 ? 'ok' : 'failed' : 'missing',
@@ -136,7 +138,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
-    const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined);
+    const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined, selected?.command);
     diagnostics.push(...rules.diagnostics);
     const failed = selected === undefined
       ? sources.find((source) => !source.available && source.command !== undefined) : undefined;
@@ -155,7 +157,12 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     );
   }
 
-  async #diagnostics(descriptor: AgentExecutorDescriptor, version?: string, available = true): Promise<{
+  async #diagnostics(
+    descriptor: AgentExecutorDescriptor,
+    version?: string,
+    available = true,
+    command = descriptor.command,
+  ): Promise<{
     readonly diagnostics: AgentExecutorPreflightDiagnostic[];
     readonly resolvedArgs: readonly string[];
     readonly requirements: AgentExecutorRequirement[];
@@ -175,7 +182,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         diagnostics.push(present ? info(message) : { severity: rule.absentSeverity, message });
       }
       if (rule.kind === 'dependency') {
-        const probe = await this.#probe(rule.command, rule.args);
+        const probe = await this.#probe(rule.command, rule.args, executorProcessEnv(descriptor));
         if (!probe.available) diagnostics.push(error(rule.unavailable));
         else if (probe.code !== 0) diagnostics.push(warning(rule.failed.replaceAll('{code}', String(probe.code))));
         requirements.push({
@@ -188,8 +195,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
           installHint: rule.installHint === undefined ? undefined : expandExecutorText(rule.installHint, this.bootstrap),
         });
       }
-      if (rule.kind === 'flag' && descriptor.command !== undefined) {
-        const probe = await this.#probe(descriptor.command, rule.args);
+      if (rule.kind === 'flag' && command !== undefined) {
+        const probe = await this.#probe(command, rule.args, executorProcessEnv(descriptor));
         const hasFlag = (flag: string): boolean => probe.output.split(/\s+/).includes(flag);
         if (probe.available && hasFlag(rule.stable)) diagnostics.push(info(rule.stableMessage));
         else if (probe.available && hasFlag(rule.fallback)) {
@@ -202,7 +209,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         diagnostics.push(parsed !== null && gte(parsed, rule.min) ? warning(rule.warning) : info(rule.normal));
       }
     }
-    return { diagnostics, resolvedArgs, requirements };
+    return { diagnostics, resolvedArgs: executorLaunchArgs(descriptor, resolvedArgs), requirements };
   }
 
   async #auth(descriptor: AgentExecutorDescriptor, command = descriptor.command): Promise<CredentialResolution> {
@@ -211,7 +218,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       if (command === undefined) return { loginStatus: 'unknown' };
       const client = new CodexAppServerClient(this.processService, {
         id: descriptor.id, command, args: descriptor.args,
-        env: descriptor.env === undefined ? undefined : { ...descriptor.env },
+        env: executorProcessEnv(descriptor),
         startupTimeoutMs: 12_000, requestTimeoutMs: 12_000,
       });
       try {
@@ -227,9 +234,9 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         await client.shutdown().catch(() => undefined);
       }
     }
-    if (auth?.kind === 'claude-credentials') return this.#claudeCredentials(auth);
+    if (auth?.kind === 'claude-credentials') return this.#claudeCredentials(descriptor, auth);
     if (auth?.kind !== 'command-json') return { loginStatus: 'unknown' };
-    const probe = await this.#probe(auth.command, auth.args);
+    const probe = await this.#probe(auth.command, auth.args, executorProcessEnv(descriptor));
     if (!probe.available || probe.code === -1) return { loginStatus: 'unknown' };
     try {
       const data: unknown = JSON.parse(probe.output);
@@ -242,14 +249,13 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 
   async #claudeCredentials(
+    descriptor: AgentExecutorDescriptor,
     auth: { readonly command: string; readonly args: readonly string[] },
   ): Promise<CredentialResolution> {
-    const configDir = claudeConfigDir(
-      { get: (name) => this.bootstrap.getEnv(name) },
-      this.bootstrap.osHomeDir,
-    );
+    const lookup = executorEnvLookup(descriptor, (name) => this.bootstrap.getEnv(name));
+    const configDir = claudeConfigDir({ get: lookup }, this.bootstrap.osHomeDir);
     const local = await scanClaudeCredentials({
-      env: { get: (name) => this.bootstrap.getEnv(name) },
+      env: { get: lookup },
       readText: async (path) => {
         try {
           return await this.fs.readText(path);
@@ -260,7 +266,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       settingsPaths: claudeSettingsPaths(configDir),
     });
     if (local.source !== 'none') return { loginStatus: 'logged_in', source: local.source, detail: local.detail };
-    const probe = await this.#probe(auth.command, auth.args);
+    const probe = await this.#probe(auth.command, auth.args, executorProcessEnv(descriptor));
     if (!probe.available || probe.code === -1) {
       return { loginStatus: 'unknown', source: 'unknown' };
     }
@@ -271,13 +277,14 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       : { loginStatus: 'logged_in', source: remote.source, detail: remote.detail };
   }
 
-  async #probe(command: string, args: readonly string[]): Promise<CommandProbe> {
+  async #probe(command: string, args: readonly string[], env?: Record<string, string>): Promise<CommandProbe> {
     let child: IHostProcess;
     try {
       child = await this.processService.spawn(command, args, {
         shell: false,
         windowsHide: true,
         mergeStderr: false,
+        env,
       });
     } catch {
       return { available: false, output: '' };

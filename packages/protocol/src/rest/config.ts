@@ -253,6 +253,8 @@ export const patchConfigRequestSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  /** Per-engine launch overrides keyed by executor id; a null value removes a field. */
+  agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
   retry: z.unknown().optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
 });

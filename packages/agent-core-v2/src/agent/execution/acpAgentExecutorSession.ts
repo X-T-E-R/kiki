@@ -16,6 +16,7 @@ import {
 } from '@kiki/acp-client';
 
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import {
   agentExecutorBindingFingerprint,
@@ -131,7 +132,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           id: context.descriptor.id,
           command: requiredCommand(context),
           args: resolveAcpProcessArgs(context),
-          env: context.descriptor.env === undefined ? undefined : { ...context.descriptor.env },
+          env: executorProcessEnv(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',
@@ -679,9 +680,9 @@ export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly s
   const permissionArgs = [...context.descriptor.launchArgs ?? [],
     ...mode === undefined || declared?.flag === undefined ? []
       : [declared.flag, declared[mode === 'review' ? 'review' : mode] ?? declared.manual]];
-  if (context.descriptor.modelBinding !== 'argv') return [...permissionArgs, ...context.descriptor.args];
+  if (context.descriptor.modelBinding !== 'argv') return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
   const model = context.binding.modelAlias;
-  if (model === undefined) return [...permissionArgs, ...context.descriptor.args];
+  if (model === undefined) return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
   if (model.length === 0) {
     throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'External argv model cannot be empty');
   }
@@ -703,7 +704,7 @@ export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly s
       `External executor "${context.descriptor.id}" model_args must contain exactly one {model} placeholder`,
     );
   }
-  return [...permissionArgs, ...modelArgs, ...context.descriptor.args];
+  return executorLaunchArgs(context.descriptor, [...permissionArgs, ...modelArgs, ...context.descriptor.args]);
 }
 
 function isTerminalTurnState(state: NonNullable<Turn['state']>): boolean {
