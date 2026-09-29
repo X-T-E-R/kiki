@@ -629,7 +629,8 @@ body[data-pane-resizing='true'] {
 /* ---- conversation shell (/new + /s/:id layout route) ---- */
 /* One width axis for the whole conversation column: the transcript content
  * column, the composer card, and the dock cards (queue strip) all read
- * --kiki-chat-content-width (the historical 760px shared cap). Declared on
+ * --kiki-chat-content-width (the historical 760px shared cap), and no row
+ * inside the transcript sets a narrower measure of its own. Declared on
  * the shell root because the transcript and the composer seat are sibling
  * subtrees; every consumer carries a `760px` fallback so the width stays
  * sane on any surface rendered outside the shell. */
@@ -1226,8 +1227,9 @@ input[data-add-search]:focus-visible {
  * size, with Chinese falling through to the UI sans faces (a Song face at
  * this size reads thin and spotty on Windows) rather than the display
  * stack's Song fallbacks. Code, tables and chrome inside keep their own
- * families. The measure caps running text only; fences and tables may use
- * the full column. */
+ * families. Prose takes the full transcript column like every other row:
+ * the column (--kiki-chat-content-width) is the one measure, so answers,
+ * bubbles, activity rows and cards all end on the same right edge. */
 .kiki-prose,
 .thinking-row {
   --kiki-prose-font: 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC', 'Hiragino Sans GB',
@@ -1247,10 +1249,6 @@ input[data-add-search]:focus-visible {
 .kiki-prose-tail {
   font-size: inherit;
   line-height: inherit;
-}
-.kiki-prose .kiki-md :is(p, ul, ol, blockquote, h1, h2, h3, h4),
-.kiki-prose-tail {
-  max-width: 40em;
 }
 .kiki-prose :is(button, input, kbd, [data-row-actions]) {
   font-family: var(--font-sans);
@@ -1479,9 +1477,13 @@ input[data-add-search]:focus-visible {
  * warm accent wash; gated off under prefers-reduced-motion. */
 .thinking-row {
   position: relative;
-  overflow: hidden;
   font-family: var(--kiki-prose-font);
   font-optical-sizing: auto;
+}
+/* Only the streaming sweep needs clipping; a settled row keeps the shared
+ * activity-row bleed, so its hover wash and right edge match its neighbours. */
+.thinking-row[data-streaming='true'] {
+  overflow: hidden;
 }
 .thinking-row[data-streaming='true']::after {
   content: '';

@@ -178,12 +178,15 @@ export function ActivityRow({
       )}
     </>
   );
-  // Top-level rows bleed 8px past the content column's left edge (34px back
-  // over the 26px gutter). A nested row sits on the read-run spine instead:
-  // its wash starts one pixel right of the spine and never crosses it.
-  const bleed = nested
+  // Top-level rows bleed 8px past the content column on both sides (34px
+  // back over the 26px gutter on the left, 8px out on the right) so the
+  // row's last column ends on the column edge with the prose and bubbles;
+  // a row with trailing controls keeps them inside the column instead.
+  // A nested row sits on the read-run spine instead: its wash starts one
+  // pixel right of the spine and never crosses it.
+  const bleed = `${nested
     ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]'
-    : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]';
+    : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
   const shell = `group/act flex min-h-[26px] items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row title={title} className={`anim-enter ${className}`} {...attrs}>
