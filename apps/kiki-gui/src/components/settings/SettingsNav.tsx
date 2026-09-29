@@ -125,10 +125,8 @@ export function SettingsNavTree({
         data-settings-nav-leaf={id}
         aria-current={active === id ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`flex h-8 items-center rounded-md px-2 text-left text-[13px] transition-colors ${
-          active === id
-            ? 'bg-selected font-medium text-ink shadow-[inset_2px_0_0_var(--color-selected-ink)]'
-            : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+        className={`row-interactive flex h-8 items-center px-2.5 text-left text-[13px] ${
+          active === id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
         {t(labelKey)}
@@ -170,7 +168,7 @@ export function SettingsNavTree({
                           onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
                           onAfterNavigate?.();
                         }}
-                        className="flex h-7 items-center rounded-md pl-5 pr-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                        className="row-interactive flex h-7 items-center pl-5 pr-2 text-left text-[12px] text-ink-soft hover:text-ink"
                       >
                         {t(sub.labelKey)}
                       </button>

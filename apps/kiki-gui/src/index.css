@@ -587,17 +587,58 @@ body[data-pane-resizing='true'] {
   background-color: rgb(var(--kiki-shadow-ink) / 0.22);
 }
 
-/* Inspector peek: hovering an agent surface (card, pane, tree row) marks its
- * tree row — the neutral hover wash and an ink tick — without retargeting the
- * rail. Pinning (click / keyboard focus) is what switches the inspector. */
-.agent-tree-row[data-agent-peek] {
-  background-color: color-mix(in srgb, var(--color-ink) 4%, transparent);
-  box-shadow: inset 2px 0 0 var(--color-ink-faint);
+/* ---- interactive rows ----
+ * One rule for every list row you can open: the sidebar's sessions and nav,
+ * the settings nav, the inspector's agent roster. Each state has one signal,
+ * and none of them moves or covers the row's content:
+ *   hover / peek    a light ink wash, nothing else.
+ *   selected        (aria-current) the selected wash plus a short mark in the
+ *                   row's left padding, inset from the corners so the radius
+ *                   never cuts it and clear of the status-mark column.
+ *   focus-visible   a 2px accent ring drawn inside the row, so a scrolling
+ *                   list never crops it.
+ * A row that can be selected keeps at least 8px of left padding. Inspector
+ * peek (hovering an agent's card or pane) uses the hover wash, without
+ * retargeting the rail. */
+.row-interactive {
+  position: relative;
+  border-radius: 6px;
 }
-
 @media (prefers-reduced-motion: no-preference) {
-  .agent-tree-row[data-agent-peek] {
-    transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
+  .row-interactive {
+    transition: background-color var(--kiki-motion-quick) ease-out, color var(--kiki-motion-quick) ease-out;
+  }
+}
+@media (hover: hover) {
+  .row-interactive:not([aria-current]):hover {
+    background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
+  }
+}
+.row-interactive[data-agent-peek]:not([aria-current]) {
+  background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
+}
+.row-interactive[aria-current] {
+  background-color: var(--color-selected);
+}
+.row-interactive[aria-current]::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 2px;
+  width: 3px;
+  border-radius: 999px;
+  background-color: var(--color-selected-ink);
+  pointer-events: none;
+}
+.row-interactive:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+@media (forced-colors: active) {
+  .row-interactive[aria-current]::before {
+    forced-color-adjust: none;
+    background-color: Highlight;
   }
 }
 

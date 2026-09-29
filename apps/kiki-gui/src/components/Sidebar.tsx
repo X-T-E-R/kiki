@@ -255,8 +255,8 @@ function PrimaryNav({
                 {...item.hook}
                 aria-current={current ? 'page' : undefined}
                 onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-                className={`flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] transition-colors duration-150 ${
-                  current ? 'bg-selected font-medium text-ink' : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                className={`row-interactive flex h-8 w-full items-center gap-2.5 px-2 text-left text-[13px] ${
+                  current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
                 }`}
               >
                 <span className={current ? 'text-selected-ink' : 'text-ink-faint'}><Icon /></span>
@@ -1055,10 +1055,8 @@ export function Sidebar({
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => navigate('/settings')}
-          className={`flex h-9 w-full min-w-0 items-center gap-2.5 rounded-lg pr-10 pl-2 text-left text-[13px] transition-colors ${
-            location.pathname.startsWith('/settings')
-              ? 'bg-selected font-medium text-ink'
-              : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink'
+          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2.5 pr-10 pl-2 text-left text-[13px] ${
+            location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
           <span className={location.pathname.startsWith('/settings') ? 'text-selected-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
@@ -1309,9 +1307,9 @@ function SessionRow({
         aria-current={active ? 'page' : undefined}
         aria-label={nestedName}
         title={nestedName}
-        className={`flex w-full gap-2 rounded-lg py-1.5 pr-2 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${
           nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
-        } ${active ? 'bg-selected shadow-[inset_2px_0_0_var(--color-selected-ink)]' : 'hover:bg-ink/[0.04]'}`}
+        }`}
       >
         <span className="flex h-[19px] w-[7px] shrink-0 items-center">
           <StatusMark session={session} state={rowState} />

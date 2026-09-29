@@ -232,7 +232,7 @@ function RosterSummary({
 }
 
 const ROW_BUTTON =
-  'agent-tree-row flex min-w-0 flex-1 items-start rounded-lg py-1.5 pr-2 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+  'agent-tree-row row-interactive -ml-1 flex min-w-0 flex-1 items-start py-1.5 pr-2 pl-1 text-left';
 
 /**
  * One agent: a fold toggle (only when it has agents under it), the status
@@ -358,7 +358,7 @@ function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group
       data-roster-done-group
       aria-expanded={row.open}
       onClick={onToggle}
-      className="flex h-8 w-full items-center rounded-lg pr-2 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+      className="row-interactive flex h-8 w-full items-center pr-2 text-left text-[12.5px] text-ink-soft hover:text-ink"
     >
       <span className="flex w-6 shrink-0 justify-center"><DisclosureChevron open={row.open} /></span>
       <span className={RAIL_MARK}><LifeMark markId="roster-done-group" life="done" still /></span>

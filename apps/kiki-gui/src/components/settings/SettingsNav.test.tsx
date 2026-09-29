@@ -94,9 +94,9 @@ describe('SettingsNav grouped tree', () => {
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
     expect(active.map((button) => button.textContent)).toEqual(['Skills']);
-    // Selection is a tinted row with a narrow inset mark, not an accent fill.
-    expect(active[0]!.className).toContain('bg-selected');
-    expect(active[0]!.className).toContain('shadow-[inset_2px_0_0_var(--color-selected-ink)]');
+    // Selection is the shared row rule (selected wash + inset mark from
+    // .row-interactive[aria-current]), not an accent fill.
+    expect(active[0]!.classList.contains('row-interactive')).toBe(true);
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
     const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
