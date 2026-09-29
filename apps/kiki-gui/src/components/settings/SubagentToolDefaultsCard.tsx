@@ -21,6 +21,17 @@ import { SettingsSelect } from './SettingsPrimitives';
 import { useDirtyReporter } from '../dirtyGuard';
 
 /** Edits server board opt-ins independently of the subagent profile and run settings. */
+/** A tool group as wrapped name chips: scannable, and one name never breaks across lines. */
+function ToolNameList({ names }: { names: readonly string[] }) {
+  return (
+    <ul className="flex max-w-[26rem] flex-wrap gap-1">
+      {names.map((name) => (
+        <li key={name} className="rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[11px] leading-5 text-ink">{name}</li>
+      ))}
+    </ul>
+  );
+}
+
 export function SubagentToolDefaultsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -106,7 +117,7 @@ export function SubagentToolDefaultsCard() {
                 {SUBAGENT_OPT_IN_TOOL_NAMES.map((name) => (
                   <tr key={name} data-tool-row={name} className="border-t border-hairline">
                     <td className="py-2 pr-3 font-mono text-[11.5px] text-ink">{name}</td>
-                    <td className="py-2 pr-3 text-ink-soft">{t('st.subagentTools.defaultOptIn')}</td>
+                    <td className="py-2 pr-3 text-ink-soft sm:whitespace-nowrap">{t('st.subagentTools.defaultOptIn')}</td>
                     <td className="py-2 pr-3">
                       <label className="flex items-center gap-1.5">
                         <input type="checkbox" data-server-allow={name} checked={serverAllowed.includes(name)}
@@ -135,12 +146,12 @@ export function SubagentToolDefaultsCard() {
                   </tr>
                 ))}
                 <tr className="border-t border-hairline" data-tool-row="__default_allowed__">
-                  <td className="max-w-60 py-2 pr-3 font-mono text-[11.5px] text-ink">{SUBAGENT_DEFAULT_ALLOWED_TOOL_NAMES.join(', ')}</td>
+                  <td className="py-2 pr-3"><ToolNameList names={SUBAGENT_DEFAULT_ALLOWED_TOOL_NAMES} /></td>
                   <td className="py-2 pr-3 text-ink-soft">{t('st.subagentTools.defaultAllowed')}</td>
                   <td className="py-2 text-[11px] text-ink-soft" colSpan={selectedProfile !== undefined ? 2 : 1}>{t('st.subagentTools.defaultAllowedHint')}</td>
                 </tr>
                 <tr className="border-t border-hairline" data-tool-row="__main_only__">
-                  <td className="max-w-60 py-2 pr-3 font-mono text-[11.5px] text-ink">{SUBAGENT_MAIN_ONLY_TOOL_NAMES.join(', ')}</td>
+                  <td className="py-2 pr-3"><ToolNameList names={SUBAGENT_MAIN_ONLY_TOOL_NAMES} /></td>
                   <td className="py-2 pr-3 text-ink-soft">{t('st.subagentTools.defaultMainOnly')}</td>
                   <td className="py-2 text-[11px] text-ink-soft" colSpan={selectedProfile !== undefined ? 2 : 1}>{t('st.subagentTools.mainOnlyHint')}</td>
                 </tr>
