@@ -574,6 +574,8 @@ class FixtureServer {
     this.sockets.clear();
     this.files.clear();
     this.lastSearchBody = null;
+    this.searchRetries = 0;
+    this.searchRecovered = false;
     this.lastFileUpload = null;
     this.lastFsWrite = null;
     this.oauthOverride = null;
@@ -2228,6 +2230,31 @@ class FixtureServer {
       files[filePath] = next;
       this.lastFsWrite = { path: filePath, content };
       return this.envelope(res, { written: true, path: filePath });
+    }
+    // A scenario's `searchOutage: { reason }` answers like kap-server with the
+    // indexer down (e.g. `memory_budget` after repeated OOM exits); the retry
+    // route counts calls and, with `recoverOnRetry`, brings the index back.
+    if (path === '/search/retry' && method === 'POST') {
+      this.searchRetries = (this.searchRetries ?? 0) + 1;
+      if (this.scenario?.data.searchOutage?.recoverOnRetry === true) this.searchRecovered = true;
+      return this.envelope(res, { retried: true });
+    }
+    const outage = this.searchRecovered === true ? undefined : this.scenario?.data.searchOutage;
+    if (path === '/search' && method === 'POST' && outage !== undefined) {
+      this.lastSearchBody = body ?? null;
+      return this.envelope(res, {
+        items: [],
+        has_more: false,
+        index_state: {
+          state: 'unavailable',
+          reason: outage.reason,
+          stale: true,
+          indexed_sessions: outage.indexedSessions ?? 0,
+          total_sessions: this.sessions.size,
+          documents: 0,
+        },
+        source: 'index',
+      });
     }
     // Global full-text search — hits are scenario-seeded and substring-matched.
     if (path === '/search' && method === 'POST') {

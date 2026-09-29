@@ -28,6 +28,7 @@ import { NbSearchLanesTab } from './nbSearch/NbSearchLanesTab';
 import { NbSearchFetchTab } from './nbSearch/NbSearchFetchTab';
 import { NbSearchProvidersTab } from './nbSearch/NbSearchProvidersTab';
 import { NbSearchAdvancedTab, type TestRun } from './nbSearch/NbSearchAdvancedTab';
+import { SearchIndexStatusCard } from './SearchIndexStatusCard';
 import { NbSearchActionBar } from './nbSearch/NbSearchActionBar';
 
 function resolveTabFromLocation(
@@ -442,6 +443,7 @@ export function NbSearchSection() {
         aria-labelledby="nb-search-tab-advanced"
         className={activeTab === 'advanced' ? 'space-y-4' : 'hidden'}
       >
+        {activeTab === 'advanced' ? <SearchIndexStatusCard /> : null}
         <NbSearchAdvancedTab
           execution={draft.nbSearch.execution}
           testRun={testRun}
