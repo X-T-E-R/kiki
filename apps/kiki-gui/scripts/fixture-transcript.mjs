@@ -462,6 +462,9 @@ export class TranscriptProjector {
       snapshot,
       seq: seedSnapshot?.seq ?? 0,
       journal: [],
+      // `turn.cancel` facts recorded before the turn ends, keyed by turnId —
+      // the mirror of the transcript wire adapter's cancelRequests.
+      cancelRequests: new Map(),
       live: { turnId: undefined, stepId: undefined, stepOrdinal: 1, promptId: undefined, userMessageId: undefined, assistantMessageId: undefined },
     };
     this.agents.set(agentId, agent);
@@ -546,6 +549,18 @@ export class TranscriptProjector {
     let projected;
 
     switch (type) {
+      case 'turn.cancel': {
+        // Mirror the wire adapter: an explicit stop is remembered against its
+        // turn so `turn.ended` can say who ended it (user vs engine abort).
+        const cancelTurnId = payload.turnId === undefined && payload.turn_id === undefined
+          ? agent.live.turnId
+          : turnIdOf(payload);
+        if (cancelTurnId !== undefined && payload.target !== 'queued') {
+          agent.cancelRequests.set(cancelTurnId, payload.reason === 'user_cancelled' ? 'user' : 'aborted');
+        }
+        projected = undefined;
+        break;
+      }
       case 'turn.started': {
         const turnId = turnIdOf(payload);
         const stepId = stepIdOf(turnId, 1);
@@ -666,6 +681,16 @@ export class TranscriptProjector {
         const existing = findTurn(agent.snapshot, turnId);
         const state =
           payload.reason === 'cancelled' ? 'cancelled' : payload.reason === 'failed' ? 'failed' : 'completed';
+        // Why a cancelled turn ended: the wire says `user_cancelled` for an
+        // explicit stop, otherwise whatever `turn.cancel` recorded first.
+        const cancellation = state !== 'cancelled'
+          ? undefined
+          : payload.interruptReason === 'user_cancelled'
+            ? 'user'
+            : payload.interruptReason === 'aborted'
+              ? 'aborted'
+              : agent.cancelRequests.get(turnId) ?? 'unknown';
+        agent.cancelRequests.delete(turnId);
         const ops = [];
         for (const step of existing?.steps ?? []) {
           for (const frame of step.frames) {
@@ -701,6 +726,7 @@ export class TranscriptProjector {
               endedAt: at,
               durationMs: payload.durationMs,
               usage: payload.usage,
+              cancellation,
               error: payload.error?.message ?? payload.error,
             },
           },

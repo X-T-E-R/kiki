@@ -3088,7 +3088,9 @@ class FixtureServer {
         if (session.scriptRunning) {
           this.emit(session.record.id, {
             type: 'turn.ended',
-            payload: { turnId: 1, reason: 'cancelled' },
+            // The engine names an explicit stop on the wire; the transcript
+            // projector turns it into the turn tail's `cancellation: user`.
+            payload: { turnId: 1, reason: 'cancelled', interruptReason: 'user_cancelled' },
           });
         }
         this.emit(session.record.id, { type: 'prompt.aborted', payload: { promptId, abortedAt: now() } });
