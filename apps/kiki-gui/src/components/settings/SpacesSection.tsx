@@ -92,10 +92,10 @@ function WindowModeCard({ sub }: { sub: boolean }) {
               const selected = prefs.windowMode === option.value;
               return (
                 <label key={option.value} data-space-window-choice={option.value}
-                  className={`cursor-pointer rounded-lg p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent/50 ${selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03] hover:bg-ink/[0.05]'}`}>
+                  className={`cursor-pointer rounded-lg p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-selected-ink/50 ${selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03] hover:bg-ink/[0.05]'}`}>
                   <span className="flex items-start gap-2">
                     <input type="radio" name="space-window-mode" checked={selected} onChange={() => { choose(option.value); }}
-                      className="mt-0.5 accent-[var(--color-accent)]" />
+                      className="mt-0.5 accent-[var(--color-selected-ink)]" />
                     <span>
                       <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>
                       <span className="mt-0.5 block text-[12px] text-ink-faint">{t(option.descKey)}</span>

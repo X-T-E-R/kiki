@@ -100,7 +100,7 @@ function Slider({ id, value, min, max, step, onChange, format }: {
         step={step}
         value={value}
         onChange={(event) => { onChange(Number(event.target.value)); }}
-        className="w-40 accent-[var(--color-accent)]"
+        className="w-40 accent-[var(--color-selected-ink)]"
         aria-valuetext={format(value)}
       />
       <span className="w-11 text-right text-[12px] text-ink-faint tabular-nums">{format(value)}</span>

@@ -509,7 +509,7 @@ export function ApprovalCard({
                   checked={forSession}
                   disabled={submitting !== null}
                   onChange={(event) => { setForSession(event.target.checked); }}
-                  className="h-3.5 w-3.5 accent-accent"
+                  className="h-3.5 w-3.5 accent-[var(--color-selected-ink)]"
                 />
                 {t('ia.remember', { tool: block.request.tool_name })}
               </label>

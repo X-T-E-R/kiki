@@ -152,7 +152,7 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
                 checked={removeWorktree === remove}
                 disabled={busy}
                 onChange={() => { setRemoveWorktree(remove); }}
-                className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+                className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
               />
               {t(remove ? 'ephemeral.endWorktreeRemove' : 'ephemeral.endWorktreeKeep')}
             </label>

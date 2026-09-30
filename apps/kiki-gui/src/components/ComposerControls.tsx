@@ -250,7 +250,7 @@ function Switch({ on }: { on: boolean }) {
   return (
     <span
       aria-hidden
-      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors duration-150 ${on ? 'bg-accent' : 'bg-hairline-strong'}`}
+      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors duration-150 ${on ? 'bg-selected-ink' : 'bg-hairline-strong'}`}
     >
       <span
         className={`absolute top-0.5 h-3 w-3 rounded-full bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.2)] transition-[left] duration-150 motion-reduce:transition-none ${on ? 'left-3.5' : 'left-0.5'}`}

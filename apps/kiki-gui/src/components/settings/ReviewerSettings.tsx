@@ -133,7 +133,7 @@ export function ReviewerSettings() {
         </div>
         <fieldset className="space-y-1"><legend className="mb-1.5 text-[13px] font-medium text-ink">{t('st.reviewer.categories')}</legend>
           {CATEGORIES.map((category) => <label key={category} className="flex min-h-7 cursor-pointer items-center gap-2.5 text-[13px] text-ink">
-            <input type="checkbox" className="h-4 w-4 accent-[var(--color-accent)]" checked={draft.categories.includes(category)} onChange={(event) => update({
+            <input type="checkbox" className="h-4 w-4 accent-[var(--color-selected-ink)]" checked={draft.categories.includes(category)} onChange={(event) => update({
               categories: event.target.checked ? [...draft.categories, category] : draft.categories.filter((item) => item !== category),
             })} />{t(`st.reviewer.category.${category}` as I18nKey)}</label>)}
         </fieldset>

@@ -105,7 +105,7 @@ function Checkbox({ checked, disabled, label, onChange, dataBlock, mono = false 
 }) {
   return <label data-executor-prompt-block={dataBlock} data-checked={checked ? 'true' : undefined}
     className={`flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-1.5 text-[12.5px] text-ink hover:bg-ink/[0.03] ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}>
-    <input type="checkbox" className="h-4 w-4 shrink-0 accent-[var(--color-accent)]" checked={checked} disabled={disabled}
+    <input type="checkbox" className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]" checked={checked} disabled={disabled}
       onChange={(event) => onChange(event.target.checked)} />
     <span className={`min-w-0 truncate ${mono ? 'font-mono text-[12px]' : ''}`}>{label}</span>
   </label>;

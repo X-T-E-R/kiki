@@ -80,7 +80,7 @@ export function WorktreeArchiveDialog({
           checked={removeWorktree}
           disabled={busy}
           onChange={(event) => { setRemoveWorktree(event.target.checked); }}
-          className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
         />
         <span className="min-w-0">
           <span className="block text-[13px] text-ink">{t('worktree.archiveRemove')}</span>

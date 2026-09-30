@@ -147,7 +147,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
           <div className="flex flex-wrap gap-x-6 gap-y-1" role="group" aria-label={t('st.notify.scenes')}>
             {SCENES.map((scene) => (
               <label key={scene} className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-[13px] text-ink">
-                <input type="checkbox" data-notify-scene={scene} className="h-4 w-4 accent-[var(--color-accent)]"
+                <input type="checkbox" data-notify-scene={scene} className="h-4 w-4 accent-[var(--color-selected-ink)]"
                   checked={channel.scenes[scene]} disabled={save.saving}
                   onChange={(event) => { writeChannel(`scene.${scene}`, { scenes: { ...channel.scenes, [scene]: event.target.checked } }); }} />
                 {t(`st.notify.scene.${scene}`)}

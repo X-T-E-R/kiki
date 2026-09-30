@@ -94,7 +94,7 @@ export function InstalledList({
       <EmptyNote
         title={t('cap.plugins.noneInstalled')}
         body={t('cap.plugins.noneInstalledBody')}
-        action={<button type="button" className="text-[13px] font-medium text-accent-ink hover:underline" onClick={onAdd}>{t('cap.plugins.addFromSource')}</button>}
+        action={<button type="button" className="text-[13px] font-medium text-selected-ink hover:underline" onClick={onAdd}>{t('cap.plugins.addFromSource')}</button>}
       />
     );
   }
@@ -105,7 +105,7 @@ export function InstalledList({
       {groups.map((group) => (
         <section key={group.id} data-installed-group={group.id} aria-labelledby={group.id === 'all' ? undefined : `installed-group-${group.id}`}>
           {group.id !== 'all' ? (
-            <h2 id={`installed-group-${group.id}`} className={`mb-1 flex items-center gap-1.5 px-2 text-[12px] font-medium ${group.id === 'attention' ? 'text-danger' : group.id === 'updates' ? 'text-accent-ink' : 'text-ink-soft'}`}>
+            <h2 id={`installed-group-${group.id}`} className={`mb-1 flex items-center gap-1.5 px-2 text-[12px] font-medium ${group.id === 'attention' ? 'text-danger' : group.id === 'updates' ? 'text-selected-ink' : 'text-ink-soft'}`}>
               {t(GROUP_KEYS[group.id])}
               <span className="font-normal tabular-nums text-ink-faint">{group.plugins.length}</span>
             </h2>
@@ -217,7 +217,7 @@ function InstalledRow({
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
             <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>{plugin.displayName}</span>
-            <span className="shrink-0"><Tag tone={origin === 'official' ? 'accent' : 'faint'}>{t(ORIGIN_KEYS[origin])}</Tag></span>
+            <span className="shrink-0"><Tag>{t(ORIGIN_KEYS[origin])}</Tag></span>
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-2">
             {broken ? <span className="shrink-0"><Tag tone="danger">{t('cap.state.error')}</Tag></span> : null}
@@ -230,7 +230,7 @@ function InstalledRow({
           type="button"
           onClick={() => { onUpdate(update); }}
           data-plugin-update={plugin.id}
-          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
+          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
           {update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.action.update')}
         </button>

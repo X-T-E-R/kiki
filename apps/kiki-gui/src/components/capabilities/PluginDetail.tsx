@@ -135,7 +135,7 @@ export function PluginDetail({
             {update !== undefined ? (
               <>
                 {version !== undefined ? ' · ' : null}
-                <span className="font-medium text-accent-ink" data-plugin-update-state={update.via}>
+                <span className="font-medium text-selected-ink" data-plugin-update-state={update.via}>
                   {update.branch !== undefined && update.version !== undefined
                     ? t('cap.update.branch', { branch: update.branch, version: update.version })
                     : update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.detail.updateAvailable')}
@@ -230,7 +230,7 @@ export function PluginDetail({
                 { label: t('cap.detail.source'), value: installed?.originalSource ?? catalogSource ?? '—', mono: true },
                 ...(info?.root !== undefined ? [{ label: t('cap.detail.location'), value: info.root, mono: true }] : []),
                 ...(info?.installedAt !== undefined ? [{ label: t('cap.detail.installedAt'), value: new Date(info.installedAt).toLocaleString(locale === 'zh' ? 'zh-CN' : undefined) }] : []),
-                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <a className="text-accent-ink hover:underline" href={subject.entry.homepage} target="_blank" rel="noopener noreferrer">{subject.entry.homepage}</a> }] : []),
+                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <a className="text-selected-ink hover:underline" href={subject.entry.homepage} target="_blank" rel="noopener noreferrer">{subject.entry.homepage}</a> }] : []),
               ]}
             />
             {installed !== undefined ? (

@@ -226,7 +226,7 @@ export function AppearanceSection() {
                 const next = Number(event.target.value);
                 setTweak('radius', next === RADIUS_DEFAULT ? undefined : next);
               }}
-              className="w-40 accent-[var(--color-accent)]"
+              className="w-40 accent-[var(--color-selected-ink)]"
             />
             <span className="w-10 text-right text-[12px] text-ink-faint tabular-nums">{tweaks.radius ?? RADIUS_DEFAULT}px</span>
           </SettingField>

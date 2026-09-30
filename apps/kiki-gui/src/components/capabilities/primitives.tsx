@@ -108,7 +108,7 @@ export function CapabilityRow({
 
 /** Inline tag: text colour only, no fill (baseline §4.2 rule 5). */
 export function Tag({ children, tone = 'faint' }: { readonly children: ReactNode; readonly tone?: 'faint' | 'accent' | 'danger' | 'warn' | 'success' }) {
-  const color = tone === 'accent' ? 'text-accent-ink'
+  const color = tone === 'accent' ? 'text-selected-ink'
     : tone === 'danger' ? 'text-danger'
       : tone === 'warn' ? 'text-amber-ink'
         : tone === 'success' ? 'text-success'

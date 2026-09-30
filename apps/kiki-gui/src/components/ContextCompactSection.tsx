@@ -315,11 +315,11 @@ export function ContextCompactSection({
             style={{ left: `calc(${pct(bounds.floor, usable)} - 8px)`, width: `calc(${pct(span, usable)} + 16px)` }}
           />
         )}
-        {/* Thumb: ink at rest; the accent ring is the only orange on the card. */}
+        {/* Thumb: ink at rest; keyboard focus draws the ink-blue ring. */}
         <span
           aria-hidden
           data-compact-thumb
-          className={`pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-panel transition-shadow duration-[var(--kiki-motion-quick)] peer-hover:shadow-[0_0_0_4px_rgb(var(--kiki-shadow-ink)/0.08)] peer-focus-visible:shadow-[0_0_0_3px_var(--color-panel),0_0_0_5px_var(--color-accent)] ${
+          className={`pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-panel transition-shadow duration-[var(--kiki-motion-quick)] peer-hover:shadow-[0_0_0_4px_rgb(var(--kiki-shadow-ink)/0.08)] peer-focus-visible:shadow-[0_0_0_3px_var(--color-panel),0_0_0_5px_var(--color-selected-ink)] ${
             bounds.locked ? 'bg-ink-faint' : 'bg-ink'
           }`}
           style={{ left: pct(point, usable) }}

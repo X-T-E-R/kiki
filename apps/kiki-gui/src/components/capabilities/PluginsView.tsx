@@ -188,7 +188,7 @@ export function PluginsView({
               {t('cap.plugins.allShelves')}
             </button>
           ) : attention > 0 && !filtering ? (
-            <button type="button" className={`${QUIET_BUTTON} -ml-2 text-accent-ink`} onClick={() => { onRoute({ view: 'installed' }); }} data-plugins-attention>
+            <button type="button" className={`${QUIET_BUTTON} -ml-2 text-selected-ink hover:text-selected-ink`} onClick={() => { onRoute({ view: 'installed' }); }} data-plugins-attention>
               {tp('cap.plugins.attention', attention)}
               <Icon name="arrowRight" size={14} />
             </button>
@@ -305,7 +305,7 @@ function CatalogShelfSection({
             installed={plugin}
             hasUpdate={update !== undefined}
             badge={relevant.has(entry.id) && id === 'featured' && entry.installed === undefined
-              ? <Tag tone="accent">{t('cap.plugins.relevant')}</Tag>
+              ? <Tag>{t('cap.plugins.relevant')}</Tag>
               : entry.tier === 'third-party' ? <Tag tone="warn">{t('cap.tier.thirdParty')}</Tag> : undefined}
             onOpen={() => { onOpen(entry.id); }}
             onInstall={() => { onInstall(entry); }}

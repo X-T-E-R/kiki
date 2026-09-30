@@ -142,7 +142,7 @@ export function GeneralSection() {
                         name="close-behavior"
                         checked={selected}
                         onChange={() => { updateDesktop({ closeToTray: option.closeToTray }); }}
-                        className="mt-0.5 accent-[var(--color-accent)]"
+                        className="mt-0.5 accent-[var(--color-selected-ink)]"
                       />
                       <span>
                         <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>

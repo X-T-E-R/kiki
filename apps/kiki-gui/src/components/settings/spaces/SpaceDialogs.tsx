@@ -187,7 +187,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
             const isTarget = mode === target;
             return (
               <div key={mode} data-space-credentials-mode={mode}
-                className={`rounded-lg p-3 ${isTarget ? 'bg-panel shadow-[var(--kiki-sheet-shadow)] ring-1 ring-accent/40' : 'bg-ink/[0.03]'}`}>
+                className={`rounded-lg p-3 ${isTarget ? 'bg-panel shadow-[var(--kiki-sheet-shadow)] ring-1 ring-selected-ink/40' : 'bg-ink/[0.03]'}`}>
                 <p className={`text-[13px] font-medium ${isTarget ? 'text-ink' : 'text-ink-soft'}`}>{t(mode === 'shared' ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
                 <p className="mt-0.5 text-[12px] text-ink-faint">{t(mode === 'shared' ? 'st.spaces.credSharedDesc' : 'st.spaces.credIsolatedDesc')}</p>
               </div>
@@ -204,7 +204,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
                 <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.copySsh', { name: space.name })}</p>
                 {hosts.length > 1 ? (
                   <label className="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft">
-                    <input type="checkbox" data-space-copy-ssh-all checked={allSelected} className="accent-[var(--color-accent)]"
+                    <input type="checkbox" data-space-copy-ssh-all checked={allSelected} className="accent-[var(--color-selected-ink)]"
                       onChange={() => { setSelected(allSelected ? new Set() : new Set(hosts.map(targetKey))); }} />
                     {t('st.spaces.copySshAll')}
                   </label>
@@ -222,7 +222,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
                       <li key={key}>
                         <label className="flex min-h-11 cursor-pointer items-center gap-2.5 px-3 py-2">
                           <input type="checkbox" data-space-copy-ssh-host={host.hostId} checked={selected.has(key)}
-                            onChange={() => { toggle(key); }} className="shrink-0 accent-[var(--color-accent)]" />
+                            onChange={() => { toggle(key); }} className="shrink-0 accent-[var(--color-selected-ink)]" />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[13px] text-ink">{host.name}</span>
                             {host.workspaceId !== undefined || host.name !== host.hostId ? (

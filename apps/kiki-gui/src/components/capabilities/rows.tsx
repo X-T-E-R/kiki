@@ -49,7 +49,7 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
         {skillGroupId(skill.source) === 'plugin' ? (
           <Link
             to={{ pathname: '/settings/plugins', search: location.search }}
-            className="shrink-0 text-[10px] font-medium text-accent hover:underline"
+            className="shrink-0 text-[11px] font-medium text-selected-ink hover:underline"
           >
             {t('st.plugins.manageLink')}
           </Link>

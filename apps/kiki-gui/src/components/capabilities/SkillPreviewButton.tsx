@@ -17,7 +17,7 @@ export function SkillPreviewButton({ skill, onOpen }: {
         else preview?.openFile(skill.path);
         onOpen?.();
       }}
-      className="mt-2 border-t border-hairline pt-2 text-[11px] font-medium text-accent hover:underline cursor-pointer disabled:cursor-default disabled:text-ink-faint"
+      className="mt-2 border-t border-hairline pt-2 text-[11px] font-medium text-selected-ink hover:underline cursor-pointer disabled:cursor-default disabled:text-ink-faint"
     >
       {t('agentPanel.viewSkillMd')}
     </button>

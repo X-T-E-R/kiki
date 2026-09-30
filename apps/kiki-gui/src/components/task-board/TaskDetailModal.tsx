@@ -307,7 +307,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                               onChange={() => setSelectedSessionIds((current) => checked
                                 ? current.filter((id) => id !== session.id)
                                 : [...current, session.id])}
-                              className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+                              className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
                             />
                             <span className="min-w-0 flex-1 truncate">{session.title}</span>
                           </label>
