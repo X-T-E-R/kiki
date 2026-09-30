@@ -277,6 +277,9 @@ test('shardScanKeys is bounded, key-only and resumes partition-affinity keys', a
     const expected = ['a', 'b', 'c', 'é'].map((suffix) => `${partition}/${suffix}`);
     await db.partitionBatch(partition, expected.map((key) => ({ op: 'set', key, value: { body: 'value' } })));
     await db.set(keyOnShard('other', 1, 4), { body: 'other' });
+    assert.deepEqual(await db.partitionMget(partition, [expected[1]!, `${partition}/missing`, expected[0]!]),
+      [{ body: 'value' }, undefined, { body: 'value' }]);
+    await assert.rejects(db.partitionMget(partition, ['another/key']), /does not belong/);
     const first = await db.shardScanKeys(2, { gte: `${partition}/`, lt: `${partition}0`, count: 2 });
     assert.deepEqual(first, expected.slice(0, 2));
     assert.deepEqual(await db.shardScanKeys(2, { gt: first.at(-1), lt: `${partition}0`, count: 2 }), expected.slice(2));

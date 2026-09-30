@@ -256,6 +256,14 @@ export class ClusterDb<V = unknown> {
     return this.reader(this.router.shardFor(partitionKey), (db) => db.get(key));
   }
 
+  /** Fetch partition-owned keys from one validated shard view, in input order. */
+  async partitionMget(partitionKey: string, keys: readonly string[]): Promise<(V | undefined)[]> {
+    this.ensureOpen();
+    for (const key of keys) ClusterDb.assertPartitionOwns(partitionKey, key);
+    if (keys.length === 0) return [];
+    return this.reader(this.router.shardFor(partitionKey), (db) => db.mget(keys));
+  }
+
   /** Scan a partition-owned prefix on the partition's shard. */
   async partitionPrefix(partitionKey: string, prefix: string, limit = Infinity): Promise<ScanEntry<V>[]> {
     this.ensureOpen();
