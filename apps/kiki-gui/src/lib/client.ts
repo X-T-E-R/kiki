@@ -1676,6 +1676,13 @@ export class KikiClient {
     return this.run(this.rest.executors.list());
   }
 
+  /** One page of cross-thread messages (`GET /threads/messages`); an empty page may still carry a cursor. */
+  listThreadMessages(
+    query: import('@kiki/protocol').ListThreadMessagesQuery,
+  ): Promise<import('@kiki/protocol').ListThreadMessagesResponse> {
+    return this.run(() => this.rest.threads.messages(query));
+  }
+
   /**
    * `GET /executors/{id}` — one engine's declared capabilities and connection.
    * The klient REST facade only exposes `list`, so this goes through the

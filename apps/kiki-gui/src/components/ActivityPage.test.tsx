@@ -3,6 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
@@ -10,6 +11,9 @@ import { markSessionSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/se
 
 import { I18nProvider } from '../i18n';
 import { ActivityPage } from './ActivityPage';
+
+const { client } = vi.hoisted(() => ({ client: { listThreadMessages: vi.fn() } }));
+vi.mock('../state/connection', () => ({ useConnection: () => ({ client }), useOptionalConnection: () => ({ client }) }));
 
 const mounts: { container: HTMLDivElement; root: Root }[] = [];
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -44,22 +48,24 @@ function session(patch: Partial<Session> & { id: string }): Session {
   } as Session;
 }
 
-async function render(sessions: readonly Session[]) {
+async function render(sessions: readonly Session[], path = '/activity') {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mounts.push({ container, root });
   await act(async () => {
     root.render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={[path]}>
         <I18nProvider>
           <ActivityPage
             sessions={sessions}
-            workspaceOptions={[{ id: 'ws-1', name: 'fixture' }]}
+            workspaceOptions={[{ id: 'ws-1', name: 'fixture' }, { id: 'ws-2', name: 'other' }]}
             onToggleSidebar={() => {}}
           />
         </I18nProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
   return container;
@@ -123,5 +129,39 @@ describe('ActivityPage', () => {
     expect(sessionSeenSnapshot()['ask']).toBeUndefined();
     expect(page.querySelector('[data-activity-group="unread"]')).toBeNull();
     expect(page.querySelector('[data-activity-item="ask"]')).not.toBeNull();
+  });
+
+  it('lists thread messages across workspaces, follows empty pages, and scopes by workspace', async () => {
+    const endpoint = (session_id: string, workspace_id: string, extra: { deleted?: boolean } = {}) => ({
+      ref: { host_id: 'h', workspace_id, session_id }, title: `T ${session_id}`, deleted: extra.deleted ?? false, archived: false,
+    });
+    client.listThreadMessages.mockReset();
+    client.listThreadMessages
+      .mockResolvedValueOnce({ items: [], next_cursor: 'c1', incomplete: 'scan_budget' })
+      .mockResolvedValueOnce({ items: [
+        { message_id: 'm1', source: { kind: 'thread', thread: endpoint('a', 'ws-1') }, target: endpoint('b', 'ws-2'),
+          content: 'Contract ready\nsecond line', accepted_at: Date.parse('2026-01-01T00:00:00Z'), target_seq: 3, delivery: 'delivered' },
+        { message_id: 'm2', source: { kind: 'thread', thread: endpoint('b', 'ws-2') }, target: endpoint('gone', 'ws-1', { deleted: true }),
+          content: 'Ping', accepted_at: Date.parse('2026-01-01T00:00:00Z') - 1, target_seq: 4, delivery: 'undeliverable', reason: 'thread closed' },
+      ] });
+    const page = await render([], '/activity?view=comms');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(client.listThreadMessages.mock.calls.map(([query]) => query)).toEqual([{ cursor: undefined }, { cursor: 'c1' }]);
+    expect(page.querySelector('[data-activity-view-option="comms"]')?.getAttribute('aria-pressed')).toBe('true');
+    const first = page.querySelector('[data-activity-comms-item="m1"]')!;
+    expect(first.textContent).toContain('Contract ready');
+    expect(first.textContent).not.toContain('second line');
+    expect(first.querySelector('[data-comms-jump="m1"]')).not.toBeNull();
+    const second = page.querySelector('[data-activity-comms-item="m2"]')!;
+    expect(second.textContent).toContain('Deleted thread');
+    expect(second.textContent).toContain('Not delivered: thread closed');
+    expect(second.querySelector('[data-comms-jump]')).toBeNull();
+    expect(second.querySelector('[data-comms-endpoint="gone"]')).toBeNull();
+
+    client.listThreadMessages.mockResolvedValue({ items: [] });
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-scope-option="ws-2"]')?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(client.listThreadMessages).toHaveBeenLastCalledWith({ workspace_id: 'ws-2', cursor: undefined });
+    expect(page.querySelector('[data-activity-comms-empty]')?.textContent).toContain('No thread in this workspace');
   });
 });

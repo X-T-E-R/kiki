@@ -15,7 +15,9 @@
  *                         same as its card in the timeline
  *   7. Background tasks   running shells and jobs, latest output line, Stop
  *   8. Recent activity    files touched, recent commands
- *   9. Memory             reserved slot (`memory` prop)
+ *   9. Thread messages    main only: what this session exchanged with other
+ *                         threads, grouped by peer (comms/InspectorComms.tsx)
+ *  10. Memory             reserved slot (`memory` prop)
  *   tail                  Session (folded)
  *
  * Colour is spent on purpose: accent for what needs the user, green for what
@@ -47,6 +49,7 @@ import { useI18n } from '../i18n';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
 import { pushToast } from '../lib/toasts';
 import { AgentPanelContainer } from './AgentPanelContainer';
+import { InspectorComms } from './comms/InspectorComms';
 import { AgentRoster, RAIL_MARK, RailCrumbs } from './agent-panel/InspectorAgents';
 import { InspectorNeedsYou } from './agent-panel/InspectorNeedsYou';
 import { InspectorNow, InspectorRecent, NowAction, pendingBlocks } from './agent-panel/InspectorNow';
@@ -637,6 +640,8 @@ export function RightRail({
           />
         </RailSection>
       ) : null}
+
+      {focusedAgentId === MAIN_AGENT_ID && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
 
       <InspectorRecent blocks={state.blocks} onOpenFile={onOpenFile} />
 

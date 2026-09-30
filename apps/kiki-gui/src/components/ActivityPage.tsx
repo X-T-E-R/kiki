@@ -15,9 +15,13 @@
  * Order inside each group is deliberate and stated in the group header:
  * blocked rows oldest-wait-first (the longest-stuck run is the most expensive
  * to leave), finished rows newest-first (an inbox reads down).
+ *
+ * A second view (`?view=comms`, components/comms/ActivityComms.tsx) lists
+ * recent cross-thread messages, scoped by the shared `?workspace=` control.
  */
 
 import { useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import type { Session } from '@kiki/protocol';
 import {
@@ -32,12 +36,17 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../i18n';
+import { ActivityComms } from './comms/ActivityComms';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { LifeMark } from './LifeMark';
-import { PageHeader } from './PageChrome';
+import { PageHeader, useWorkspaceScope } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
+import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
 import { pushToast } from '../lib/toasts';
+
+/** Inbox (needs you + finished) or the cross-thread message log; `?view=comms`. */
+type ActivityView = 'inbox' | 'comms';
 
 /** Live seen-marks: the list repaints the moment a session is opened. */
 export function useSessionSeen() {
@@ -183,6 +192,17 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
     () => new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name])),
     [workspaceOptions],
   );
+  const [params, setParams] = useSearchParams();
+  const view: ActivityView = params.get('view') === 'comms' ? 'comms' : 'inbox';
+  const { scope, setScope } = useWorkspaceScope(workspaceOptions);
+  const chooseView = (next: ActivityView) => {
+    const updated = new URLSearchParams(params);
+    if (next === 'inbox') {
+      updated.delete('view');
+      updated.delete('workspace');
+    } else updated.set('view', next);
+    setParams(updated, { replace: true });
+  };
   const open = (href: string) => { void navigate(href); };
   // Only the finished drain can be cleared: a blocked session stays until it
   // is answered, so "read" would be a lie there.
@@ -191,11 +211,38 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
     pushToast({ tone: 'success', text: t('activity.markAllReadDone') });
   };
   return (
-    <div data-activity-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+    <div data-activity-page data-activity-view={view} className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} />
+      {/* The view switch sits on the header's left edge, the scope (comms
+          only) right after it — the /cron and /board scope-bar rhythm. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 pb-2 lg:px-6">
+        <div role="group" aria-label={t('activity.viewAria')} data-activity-views
+          className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+          {(['inbox', 'comms'] as const).map((candidate) => (
+            <button
+              key={candidate}
+              type="button"
+              data-activity-view-option={candidate}
+              aria-pressed={view === candidate}
+              onClick={() => { chooseView(candidate); }}
+              className={segmentClass(view === candidate, 'h-7 px-2.5 text-[13px]')}
+            >
+              {t(candidate === 'inbox' ? 'activity.view.inbox' : 'activity.view.comms')}
+            </button>
+          ))}
+        </div>
+        {view === 'comms' && workspaceOptions.length > 1 ? (
+          <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} dataAttribute="data-activity-scope" />
+        ) : null}
+      </div>
       {/* The list starts on the header's own left edge (a reading column, not a
           centred card) so the page title and the first row share one margin. */}
       <div data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-1 pb-8 lg:px-3">
+        {view === 'comms' ? (
+          <div className="flex w-full max-w-[680px] flex-col gap-3 pt-1">
+            <ActivityComms workspaceId={scope} workspaceNames={workspaceNames} onOpen={open} />
+          </div>
+        ) : (
         <div className="flex w-full max-w-[680px] flex-col gap-3 pt-1">
           <InboxGroup
             hook={{ 'data-activity-group': 'needs-you' }}
@@ -230,6 +277,7 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
             </div>
           ) : null}
         </div>
+        )}
       </div>
     </div>
   );

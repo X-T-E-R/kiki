@@ -38,6 +38,7 @@ import { useI18n } from '../../i18n';
 import { useLayoutPreferences, usePaneResize } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { AgentPanelContainer } from '../AgentPanelContainer';
+import { InspectorComms } from '../comms/InspectorComms';
 import { AgentRoster, RAIL_MARK, RailCrumbs } from '../agent-panel/InspectorAgents';
 import { InspectorNow, NowAction, pendingBlocks } from '../agent-panel/InspectorNow';
 import { Icon } from '../icons';
@@ -641,6 +642,7 @@ export function DefaultRail({
       <div data-inspector-tail className={`space-y-1 ${SECTION}`}>
         <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
         <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
+        {focusedAgentId === MAIN_AGENT_ID && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
         {memory !== undefined ? (
           <RailSection title={memory.title} count={memory.count} data-inspector-memory="">
             {memory.content}

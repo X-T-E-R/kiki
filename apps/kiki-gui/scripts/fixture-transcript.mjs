@@ -1486,6 +1486,11 @@ export function seedMessages(projector, messages, options = {}) {
           message.id,
         ),
         prompt,
+        // A delivered peer prompt is enqueued under the mailbox message id
+        // (threadCommunicationService), so its turn header carries it.
+        ...(message.metadata?.origin?.kind === 'peer_thread'
+          ? { message: { messageId: message.id, role: 'user', revision: 0, provenance: { source: 'engine' } } }
+          : {}),
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         startedAt: message.created_at,
         endedAt: message.created_at,

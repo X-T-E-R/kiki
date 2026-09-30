@@ -1921,6 +1921,35 @@ class FixtureServer {
       setTimeout(() => this.envelope(res, result), delay);
       return;
     }
+    // kap-server `GET /threads/messages`: scenario `threadMessages` (newest
+    // first, wire shape). Filters mirror the route; pages are `limit` rows and
+    // a scenario `threadMessagesEmptyPages` count prepends scan-budget pages
+    // (empty, with a cursor) so the reader's "an empty page is not the end"
+    // path is exercised.
+    if (path === '/threads/messages' && method === 'GET') {
+      const workspaceId = query.get('workspace_id') ?? undefined;
+      const sessionId = query.get('session_id') ?? undefined;
+      const peerId = query.get('peer_session_id') ?? undefined;
+      const limit = Math.min(100, Math.max(1, Number(query.get('limit') ?? 50) || 50));
+      const cursor = query.get('cursor') ?? undefined;
+      const all = (this.scenario?.data.threadMessages ?? []).filter((item) => {
+        const source = item.source.kind === 'thread' ? item.source.thread.ref : undefined;
+        const ends = [source, item.target.ref].filter(Boolean);
+        if (workspaceId !== undefined && !ends.some((ref) => ref.workspace_id === workspaceId)) return false;
+        if (sessionId !== undefined && !ends.some((ref) => ref.session_id === sessionId)) return false;
+        if (peerId !== undefined && !ends.some((ref) => ref.session_id === peerId)) return false;
+        return true;
+      });
+      const empties = this.scenario?.data.threadMessagesEmptyPages ?? 0;
+      const [kind, value] = (cursor ?? 'e:0').split(':');
+      if (kind === 'e' && Number(value) < empties) {
+        return this.envelope(res, { items: [], next_cursor: `e:${Number(value) + 1}`, incomplete: 'scan_budget' });
+      }
+      const offset = kind === 'o' ? Number(value) : 0;
+      const items = all.slice(offset, offset + limit);
+      const next = offset + limit < all.length ? `o:${offset + limit}` : undefined;
+      return this.envelope(res, { items: structuredClone(items), next_cursor: next });
+    }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
     }
