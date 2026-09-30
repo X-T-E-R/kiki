@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { load } from 'js-yaml';
+import { tokenize } from '@kiki/minidb';
 import { createDecorator } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -280,14 +281,22 @@ export class MemoryStore implements IMemoryStore {
   }
 
   async search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive = false): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]> {
-    const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (!terms.length || terms.length > 10 || query.length > 200) return [];
+    const normalized = query.toLowerCase().trim();
+    if (!normalized || query.length > 200 || normalized.split(/\s+/).length > 10) return [];
+    const terms = [...new Set(tokenize(normalized))];
     const lists = await Promise.all(scopes.map((scope) => this.list(scope, includeInactive)));
-    return lists.flatMap((entries, index) => entries.map((entry) => ({ ...entry, scope: scopes[index]! })))
-      .filter((entry) => (type === undefined || entry.type === type) && (includeInactive || entry.status === 'active'))
-      .filter((entry) => terms.every((term) => entry.title.toLowerCase().includes(term) || entry.body.toLowerCase().includes(term)))
-      .map((entry) => ({ ...entry, score: terms.reduce((sum, term) => sum + (entry.title.toLowerCase().includes(term) ? 2 : 0) + (entry.body.toLowerCase().includes(term) ? 1 : 0), 0) }))
-      .sort((a, b) => b.score - a.score || b.updated.localeCompare(a.updated)).slice(0, 20);
+    const entries = lists.flatMap((list, index) => list.map((entry) => ({ ...entry, scope: scopes[index]! })))
+      .filter((entry) => (type === undefined || entry.type === type) && (includeInactive || entry.status === 'active'));
+    const hits = entries.map((entry) => {
+      const title = entry.title.toLowerCase();
+      const body = entry.body.toLowerCase();
+      const matched = terms.filter((term) => title.includes(term) || body.includes(term));
+      const titleHits = matched.filter((term) => title.includes(term)).length;
+      return { ...entry, score: matched.length + titleHits / (terms.length + 1) };
+    }).filter((entry) => entry.score > 0);
+    const result = hits.length > 0 ? hits : entries.filter((entry) => entry.title.toLowerCase().includes(normalized))
+      .map((entry) => ({ ...entry, score: 1 }));
+    return result.toSorted((a, b) => b.score - a.score || b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id)).slice(0, 20);
   }
 
   private async commit(base: string, key: string, before: { key: string; text: string } | undefined, after: string | undefined, action: string, id: string, writer: MemoryWriter, operationId: string = randomUUID()): Promise<string> {

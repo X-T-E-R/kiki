@@ -13,6 +13,7 @@ export interface IAgentMemorySnapshot {
   get(): Promise<string>;
   getSessionEntries(): Promise<readonly string[]>;
   liveSessionEntries(): Promise<readonly MemoryEntry[]>;
+  resolveReferences(text: string): Promise<readonly string[]>;
   invalidate(): void;
 }
 export const IAgentMemorySnapshot = createDecorator<IAgentMemorySnapshot>('agentMemorySnapshot');
@@ -53,6 +54,45 @@ export class AgentMemorySnapshot implements IAgentMemorySnapshot {
       return entries.filter((entry) => entry.status === 'active' && entry.source.session === this.session.sessionId)
         .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 20);
     } catch { return []; }
+  }
+
+  async resolveReferences(text: string): Promise<readonly string[]> {
+    if (this.agent.agentId !== 'main') return [];
+    const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
+    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off') return [];
+    const ids = [...new Set([...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[1]!))].slice(0, 20);
+    if (ids.length === 0) return [];
+    let store: IMemoryStore;
+    try { store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore)); }
+    catch { return ids.map((id) => `- [${id}] (unavailable)`); }
+    const scopes: MemoryScope[] = [{ kind: 'workspace', workspaceId: this.session.workspaceId }, { kind: 'global' }];
+    const lookup = async (id: string) => {
+      for (const scope of scopes) {
+        const entry = await store.get(scope, id);
+        if (entry !== undefined) return { entry, scope };
+      }
+      return undefined;
+    };
+    return Promise.all(ids.map(async (id) => {
+      try {
+        let current = await lookup(id);
+        const visited = new Set<string>();
+        for (let hop = 0; hop < 20; hop++) {
+          if (current === undefined) return `- [${id}] (unavailable)`;
+          const { entry, scope } = current;
+          if (visited.has(entry.id)) return `- [${id}] (unavailable: supersession cycle)`;
+          visited.add(entry.id);
+          const label = id === entry.id ? `[${id}]` : `[${id}] → [${entry.id}]`;
+          if (entry.status === 'archived') return `- ${label} ${entry.title} (withdrawn)`;
+          if (entry.status === 'pending') return `- ${label} (pending; not active)`;
+          if (entry.status === 'active') return `- ${label} ${entry.title}`;
+          if (entry.superseded_by === undefined || !/^m_[a-zA-Z0-9_]+$/.test(entry.superseded_by)) return `- ${label} (superseded; replacement unavailable)`;
+          const next = await store.get(scope, entry.superseded_by);
+          current = next === undefined ? undefined : { entry: next, scope };
+        }
+        return `- [${id}] (unavailable: supersession chain limit)`;
+      } catch { return `- [${id}] (unavailable)`; }
+    }));
   }
 
   invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }

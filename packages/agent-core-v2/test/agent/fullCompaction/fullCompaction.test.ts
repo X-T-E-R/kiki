@@ -3504,6 +3504,42 @@ describe('FullCompaction', () => {
     `);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each(['summarize', 'relay'] as const)('resolves directive and decision memory references into the %s handoff', async (strategy) => {
+    const references = vi.fn(async () => ['- [m_original] → [m_current] Current user preference', '- [m_revoked] Old preference (withdrawn)']);
+    const ctx = testAgent(
+      sessionServices((reg) => {
+        reg.definePartialInstance(ISessionTodoService, {
+          getTodos: () => [], getNotes: () => ({ notes: { goal: 'finish task', directives: 'Follow [m_original]', decided: 'Check [m_revoked]' },
+            meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0 } }),
+          setCompactionDirectives: () => {},
+        });
+      }),
+      agentService(IAgentMemorySnapshot, { _serviceBrand: undefined, get: async () => 'frozen memory', getSessionEntries: async () => [],
+        liveSessionEntries: async () => [], resolveReferences: references, invalidate: () => {} }),
+    );
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES, tools: ['HistoryRead', 'HistorySearch', 'TodoList'] });
+    const registry = ctx.get(IAgentToolRegistryService);
+    const read = registry.register(mcpTool('HistoryRead', {}), { source: 'builtin' });
+    const search = registry.register(mcpTool('HistorySearch', {}), { source: 'builtin' });
+    try {
+      ctx.appendExchange(1, 'old request', 'old answer', 20);
+      ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'notes-call', name: 'TodoList', arguments: '{}' }] });
+      ctx.appendExchange(2, 'recent request', 'recent answer', 80);
+      ctx.mockNextResponse({ type: 'text', text: 'Compacted task.' });
+      const compactor = ctx.get(IAgentFullCompactionService);
+      expect(compactor.begin({ source: 'manual', strategy })).toBe(true);
+      await compactor.compacting!.promise;
+      expect(references).toHaveBeenCalledWith('Follow [m_original]\nCheck [m_revoked]');
+      const summary = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
+      expect(messageText(summary)).toContain('Referenced memory (live):\n- [m_original] → [m_current] Current user preference\n- [m_revoked] Old preference (withdrawn)');
+      if (strategy === 'relay') expect(ctx.llmCalls).toHaveLength(0);
+      await ctx.expectResumeMatches();
+    } finally {
+      read.dispose();
+      search.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('hands summarized directives to the notes service after the window switch', async () => {
     const recorded: string[] = [];
     const ctx = testAgent(sessionServices((reg) => {

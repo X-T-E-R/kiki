@@ -76,7 +76,10 @@ Verify with `kiki --version` in a new terminal. See [Installation](https://x-t-e
 ## Finding things again
 
 - **Session history for the agent.** `HistorySearch`, `HistoryRead`, and `HistoryList` let the agent search earlier messages and tool output, read an exact turn or step, and browse a session's turns, including text from before a compaction. By default they look at the current session and agent, and can be widened to the workspace.
-- **Memory.** Memory is on by default. The agent saves user preferences, feedback, verified project facts, and reference pointers to a global or per-workspace store with `MemoryWrite`, and finds them again with `MemorySearch` and `MemoryRead`. Settings → Memory lets you review entries, require approval, or switch memory off for a workspace.
+- **Memory.** Memory is on by default. The agent saves user preferences, feedback, verified project facts, and reference pointers to a global or per-workspace store with `MemoryWrite`, and finds them again with `MemorySearch` and `MemoryRead`. Search accepts partial term matches, including Chinese phrases without spaces. Settings → Memory lets you review entries, require approval, or switch memory off for a workspace.
+
+  In the main agent's `TodoList` notes, `directives` and `decided` can reference a memory as `[m_id]`. At compaction, the handoff includes its current title, follows replacements, and marks archived entries as withdrawn. Resolving these references does not rewrite the saved notes or frozen system prompt.
+
 - **Search in the sidebar.** Session titles are always searchable. Full-text search over conversation content is available in the CLI server; in the bundled desktop app it is an experimental opt-in (Settings → Search & retrieval) because the first index build can take 20–30 minutes and needs at least 2 GB of free disk space.
 - **Web search and fetch.** Search and page fetches run on named lanes you can inspect. GitHub repository search works without a key, and multiple keys for a provider rotate across calls.
 

@@ -1,8 +1,6 @@
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
 import { isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
-import { coveredMessageIndex } from './freshEligibility';
-import type { NotesMeta, TodoNotes } from '#/session/todo/todoNotes';
-import { renderTodoNotes } from '#/session/todo/todoNotes';
+import { coveredMessageIndex, renderTodoNotes, type NotesMeta, type TodoNotes } from '#/session/todo/todoNotes';
 import type { TodoItem } from '#/session/todo/todoItem';
 import { renderTodoList } from '#/session/todo/todoItem';
 
@@ -16,6 +14,7 @@ export interface RelayInput {
   readonly meta?: NotesMeta;
   readonly todos: readonly TodoItem[];
   readonly memoryEntries?: readonly string[];
+  readonly memoryReferences?: readonly string[];
   readonly estimateText: (text: string) => number;
 }
 
@@ -120,8 +119,9 @@ export function renderUserInputSinceNotes(input: RelayInput): { text: string; co
 export function renderStandingDirectives(input: RelayInput): string {
   const directives = input.notes?.directives?.trim() || '(none recorded in notes)';
   const memory = input.memoryEntries?.length ? `\nMemory written in this session (live):\n${input.memoryEntries.join('\n')}` : '';
+  const references = input.memoryReferences?.length ? `\nReferenced memory (live):\n${input.memoryReferences.join('\n')}` : '';
   return [
-    `## Standing directives\n${directives}${memory}`,
+    `## Standing directives\n${directives}${memory}${references}`,
     renderUserInputSinceNotes(input).text,
     'Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.',
   ].join('\n\n');

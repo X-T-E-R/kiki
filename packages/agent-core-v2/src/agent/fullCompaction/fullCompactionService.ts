@@ -752,12 +752,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       };
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
-      const memoryEntries = (await this.memorySnapshot.liveSessionEntries()).map((entry) => `- [${entry.id}] ${entry.title}`);
+      const [liveEntries, memoryReferences] = await Promise.all([
+        this.memorySnapshot.liveSessionEntries(),
+        this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
+      ]);
+      const memoryEntries = liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`);
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
         notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
-        estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries,
+        estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries, memoryReferences,
       };
       let relaySummary: string | undefined;
       let renderFailed = false;

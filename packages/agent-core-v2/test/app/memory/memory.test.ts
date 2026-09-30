@@ -115,11 +115,11 @@ describe('memory persistence and snapshot', () => {
     const review = await execute('Review language');
     const pending = JSON.parse(review.output as string) as { id: string; status: string };
     expect(pending.status).toBe('pending');
-    expect(await store.search([workspace], 'Review language')).toHaveLength(0);
+    expect((await store.search([workspace], 'Review language')).map((entry) => entry.id)).toEqual([receipt.id]);
     const context = { turnId: 3, toolCallId: 'tool-memory-2', signal: new AbortController().signal };
     const search = searchTool.resolveExecution({ query: 'Review language', include_superseded: true });
     if (!('execute' in search)) throw new Error('Search was rejected');
-    expect(JSON.parse((await search.execute(context)).output as string)).toEqual([]);
+    expect((JSON.parse((await search.execute(context)).output as string) as { id: string }[]).map((hit) => hit.id)).toEqual([receipt.id]);
     const read = readTool.resolveExecution({ id: pending.id });
     if (!('execute' in read)) throw new Error('Read was rejected');
     expect(JSON.parse((await read.execute(context)).output as string)).toEqual([{ id: pending.id, missing: true }]);
@@ -186,7 +186,7 @@ describe('memory persistence and snapshot', () => {
     expect(missed).toBe(true);
   });
 
-  it('searches the requested scopes without matching only one of several terms', async () => {
+  it('keeps search scoped while accepting partial query matches', async () => {
     const { store } = start();
     await create(store, workspace, 'Use pnpm in this workspace.');
     await create(store, global, 'Reply in Chinese.');
@@ -328,7 +328,16 @@ describe('memory persistence and snapshot', () => {
     const agent = session.createChild(LifecycleScope.Agent, 'main', { seeds: [
       [IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: 'sessions/disabled/main' })],
     ] });
-    expect(await agent.accessor.get(IAgentMemorySnapshot).get()).toBe('');
+    const snapshot = agent.accessor.get(IAgentMemorySnapshot);
+    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.resolveReferences('[m_test]')).toEqual([]);
+    settings = MemoryConfigSchema.parse({ enabled: true });
+    expect(await snapshot.resolveReferences('no references')).toEqual([]);
+    expect(await snapshot.resolveReferences('[m_test]')).toEqual(['- [m_test] (unavailable)']);
+    const child = session.createChild(LifecycleScope.Agent, 'child', { seeds: [
+      [IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', agentScope: 'sessions/disabled/child' })],
+    ] });
+    expect(await child.accessor.get(IAgentMemorySnapshot).resolveReferences('[m_test]')).toEqual([]);
   });
 
   it('freezes a disabled or enabled memory view until explicit invalidation', async () => {
@@ -363,5 +372,108 @@ describe('memory persistence and snapshot', () => {
     const variables = systemPromptVars({ agentsMd: 'example instructions', memory: '' }, { skillActive: false });
     const template = applySystemPromptFields(undefined);
     expect(renderPrompt(template, variables)).toBe(renderPrompt(template.replace('${memory}', ''), variables));
+  });
+});
+
+describe('memory recall and live references', () => {
+  it('recalls Chinese model feedback and English subagent feedback with partial terms', async () => {
+    const { store } = start();
+    const pin = await store.put({ action: 'create', scope: workspace, type: 'feedback', title: '模型选择',
+      body: 'Grok 不可用时直接 pin grok-4.7，不换 Opus', reason: 'User instruction', source });
+    const delegation = await store.put({ action: 'create', scope: workspace, type: 'feedback', title: 'Delegation',
+      body: '主控不亲自写代码，交给 subagent', reason: 'User instruction', source });
+    expect((await store.search([workspace], 'grok pin 模型'))[0]?.id).toBe(pin.entry.id);
+    expect((await store.search([workspace], 'subagent')).map((hit) => hit.id)).toEqual([delegation.entry.id]);
+    expect((await store.search([workspace], '不可用模型选择'))[0]?.id).toBe(pin.entry.id);
+    expect(await store.search([global], 'grok pin 模型')).toEqual([]);
+  });
+
+  it('ranks distinct term coverage before title boosts, does not count repetitions, and filters inactive types', async () => {
+    const { store } = start();
+    const save = (title: string, body: string, type: 'project' | 'feedback' = 'project') =>
+      store.put({ action: 'create', scope: workspace, type, title, body, reason: 'test', source });
+    const partial = await save('alpha', 'other');
+    const complete = await save('Combined terms', 'alpha beta');
+    const title = await save('alpha beta', 'other', 'feedback');
+    const archived = await save('Archived', 'alpha beta');
+    await store.put({ action: 'archive', scope: workspace, id: archived.entry.id, expectedRevision: archived.entry.revision,
+      title: archived.entry.title, body: archived.entry.body, type: 'project', reason: 'withdrawn', source });
+    const hits = await store.search([workspace], 'alpha beta');
+    expect(hits.map((hit) => hit.id)).toEqual([title.entry.id, complete.entry.id, partial.entry.id]);
+    expect((await store.search([workspace], 'alpha alpha beta')).map((hit) => ({ id: hit.id, score: hit.score })))
+      .toEqual(hits.map((hit) => ({ id: hit.id, score: hit.score })));
+    expect((await store.search([workspace], 'alpha beta', 'feedback')).map((hit) => hit.id)).toEqual([title.entry.id]);
+    expect((await store.search([workspace], 'alpha beta', undefined, true)).map((hit) => hit.id)).toContain(archived.entry.id);
+    expect(await store.search([workspace], ' ')).toEqual([]);
+    expect(await store.search([workspace], 'x'.repeat(201))).toEqual([]);
+  });
+
+  it('falls back to title substring for terms outside the tokenizer and never drops filters', async () => {
+    const { store } = start();
+    const saved = await store.put({ action: 'create', scope: global, title: 'résumé conventions', body: 'plain text', type: 'reference', reason: 'test', source });
+    const symbol = await store.put({ action: 'create', scope: global, title: '✓ approved', body: 'plain text', type: 'reference', reason: 'test', source });
+    expect((await store.search([global], 'résumé'))[0]?.id).toBe(saved.entry.id);
+    expect((await store.search([global], '✓')).map((hit) => hit.id)).toEqual([symbol.entry.id]);
+    expect(await store.search([global], '✓', 'feedback')).toEqual([]);
+  });
+
+  it('resolves current titles and supersession chains without mutating the frozen prefix', async () => {
+    const { store, snapshot } = start();
+    const original = await create(store, global);
+    const frozen = await snapshot.get();
+    const first = await store.put({ action: 'supersede', scope: global, id: original.entry.id, expectedRevision: original.entry.revision,
+      title: 'Intermediate preference', body: 'Use the new procedure.', type: 'project', reason: 'test', source });
+    const latest = await store.put({ action: 'supersede', scope: global, id: first.entry.id, expectedRevision: first.entry.revision,
+      title: 'Current preference', body: 'Latest procedure.', type: 'project', reason: 'test', source });
+    expect(await snapshot.resolveReferences(`[${original.entry.id}] [${original.entry.id}]`))
+      .toEqual([`- [${original.entry.id}] → [${latest.entry.id}] Current preference`]);
+    const updated = await store.put({ action: 'update', scope: global, id: latest.entry.id, expectedRevision: latest.entry.revision,
+      title: 'Edited preference', body: latest.entry.body, type: 'project', reason: 'edit', source });
+    expect(await snapshot.resolveReferences(`[${original.entry.id}]`))
+      .toEqual([`- [${original.entry.id}] → [${latest.entry.id}] Edited preference`]);
+    await store.put({ action: 'archive', scope: global, id: updated.entry.id, expectedRevision: updated.entry.revision,
+      title: updated.entry.title, body: updated.entry.body, type: 'project', reason: 'withdrawn', source });
+    expect(await snapshot.resolveReferences(`[${original.entry.id}]`))
+      .toEqual([`- [${original.entry.id}] → [${latest.entry.id}] Edited preference (withdrawn)`]);
+    expect(await snapshot.get()).toBe(frozen);
+  });
+
+  it('marks missing, pending and cyclic references without promoting them to active instructions', async () => {
+    const { store, snapshot } = start();
+    const pending = await store.put({ action: 'create', scope: workspace, title: 'Private pending title', body: 'not approved', type: 'feedback', reason: 'test', source, pending: true });
+    expect(await snapshot.resolveReferences(`[m_missing] [${pending.entry.id}]`))
+      .toEqual(['- [m_missing] (unavailable)', `- [${pending.entry.id}] (pending; not active)`]);
+    const saved = (await create(store)).entry;
+    vi.spyOn(store, 'get').mockImplementation(async (_scope, id) => ({ ...saved, id, status: 'superseded', superseded_by: id }));
+    expect(await snapshot.resolveReferences(`[${saved.id}]`)).toEqual([`- [${saved.id}] (unavailable: supersession cycle)`]);
+  });
+
+  it('stops broken or overlong supersession chains and never follows replacements into another scope', async () => {
+    const { store, snapshot } = start();
+    const saved = (await create(store)).entry;
+    const read = vi.spyOn(store, 'get').mockImplementation(async (scope, id) => {
+      if (id === saved.id) return { ...saved, status: 'superseded', superseded_by: 'm_replacement' };
+      return scope.kind === 'global' ? { ...saved, id, title: 'Other scope replacement' } : undefined;
+    });
+    expect(await snapshot.resolveReferences(`[${saved.id}]`)).toEqual([`- [${saved.id}] (unavailable)`]);
+    expect(read.mock.calls).toEqual([[workspace, saved.id], [workspace, 'm_replacement']]);
+    read.mockClear();
+    read.mockImplementation(async (_scope, id) => ({ ...saved, id, status: 'superseded', superseded_by: `${id}_next` }));
+    expect(await snapshot.resolveReferences(`[${saved.id}]`)).toEqual([`- [${saved.id}] (unavailable: supersession chain limit)`]);
+    expect(read).toHaveBeenCalledTimes(21);
+    read.mockImplementation(async () => { throw new Error('Storage unavailable'); });
+    expect(await snapshot.resolveReferences(`[${saved.id}]`)).toEqual([`- [${saved.id}] (unavailable)`]);
+  });
+
+  it('caps unique references and does no store reads when memory is disabled', async () => {
+    const { store, snapshot } = start();
+    const read = vi.spyOn(store, 'get');
+    const text = Array.from({ length: 25 }, (_, index) => `[m_test_${index}]`).join(' ');
+    expect(await snapshot.resolveReferences(text)).toHaveLength(20);
+    expect(read).toHaveBeenCalledTimes(40);
+    read.mockClear();
+    settings = MemoryConfigSchema.parse({ enabled: false });
+    expect(await snapshot.resolveReferences(text)).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
   });
 });
