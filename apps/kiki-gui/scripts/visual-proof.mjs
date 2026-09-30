@@ -4012,16 +4012,26 @@ async function scenarioSearch() {
   await page.waitForSelector('[data-search-messages] [data-search-result]', { timeout: 5000 });
   await page.waitForSelector('[data-sidebar-filter-chip="ws"]', { timeout: 2000 });
   await page.waitForSelector('[data-search-scope]', { timeout: 2000 });
-  const scoped = await control({ action: 'state' });
-  if (scoped.data?.last_search?.workspace_id !== 'wd_fixture_000000000000') {
-    throw new Error(`scoped search did not send workspace_id: ${JSON.stringify(scoped.data?.last_search)}`);
+  // The content layer debounces before it re-queries with the scope, so wait
+  // for the scoped request instead of reading whatever landed last.
+  let scopedSearch;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    scopedSearch = (await control({ action: 'state' })).data?.last_search;
+    if (scopedSearch?.workspace_id === 'wd_fixture_000000000000') break;
+    await page.waitForTimeout(100);
+  }
+  if (scopedSearch?.workspace_id !== 'wd_fixture_000000000000') {
+    throw new Error(`scoped search did not send workspace_id: ${JSON.stringify(scopedSearch)}`);
+  }
+  if (scopedSearch.query !== 'persimmon') {
+    throw new Error(`scoped search sent the wrong query: ${JSON.stringify(scopedSearch)}`);
   }
   await shot('search-scoped');
   await page.click('[data-sidebar-filter-clear="ws"]');
 
   // Empty state; Esc clears the query.
   await fillSidebarSearch('zzzznothing');
-  await page.waitForSelector('text=Nothing matches', { timeout: 5000 });
+  await waitForText(S.sidebarNoMatches);
   await shot('search-empty');
   await page.focus('[data-search-box]');
   await page.keyboard.press('Escape');
