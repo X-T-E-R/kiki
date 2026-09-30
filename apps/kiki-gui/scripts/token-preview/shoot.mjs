@@ -30,6 +30,7 @@ const list = (v, all) => (v ? v.split(',') : all);
 const TOKENS = list(process.env.ONLY_TOKENS, ['current', 'p923', 'a', 'b', 'c']);
 const PAGES = {
   session: { path: '/s/session_fixture_act_approval', ready: '[data-session-row]' },
+  composer: { path: '/s/session_fixture_act_done', ready: '[data-session-row]' },
   new: { path: '/new', ready: '[data-session-row]' },
   activity: { path: '/activity', ready: '[data-activity-page]' },
   settings: { path: '/settings/general', ready: '[data-settings-nav-tree]' },
@@ -62,6 +63,14 @@ try {
     await sleep(300);
   }
   const browser = await chromium.launch({ args: ['--no-proxy-server'] });
+  // Warm-up: vite transforms the module graph on the first load; a shot taken
+  // during that load comes out blank.
+  {
+    const warm = await browser.newPage();
+    await warm.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded', timeout: 240_000 });
+    await warm.waitForSelector('[data-session-row]', { timeout: 240_000 });
+    await warm.close();
+  }
   for (const locale of LOCALES) for (const theme of THEMES) for (const width of WIDTHS) {
     const ctx = await browser.newContext({ viewport: { width, height: width > 500 ? 900 : 844 }, reducedMotion: 'reduce' });
     await ctx.addInitScript(([th, lc]) => {

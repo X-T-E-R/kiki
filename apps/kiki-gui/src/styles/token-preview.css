@@ -11,8 +11,8 @@
  * properties) still wins over all of it.
  *
  *   p923  the pre-9.23 palette, for the comparison the user asked for
- *   a     纸与朱 Paper & vermilion: 9.23 paper, canvas one half-step back,
- *         one warm accent that also marks "you are here"
+ *   a     纸与墨青 Paper & ink-blue: 9.23 paper, canvas a half-step back;
+ *         ink-blue marks "you are here", vermilion marks "needs you"
  *   b     石与橙 Stone & signal: a cool neutral ground so the orange signal
  *         and the teal "here" separate by hue, not only by weight
  *   c     砂与陶 Sand & clay: keeps today's tan frame, desaturated, with a
@@ -68,10 +68,11 @@
 }
 
 /* ---- a: 纸与墨青 Paper & ink-blue ----
- * The 9.23 paper as the sheet, the canvas one half-step darker so panes still
+ * The 9.23 paper as the sheet, the canvas a half-step darker so panes still
  * separate. Two hues with one job each: ink-blue says "you are here" (the
- * selected row, section heads), vermilion says "needs you". Nothing else is
- * colored. */
+ * selected row, keyboard focus, a switch that is on), vermilion says "needs
+ * you" (waiting marks, approval words, the one primary button). Section
+ * heads stay neutral. */
 :root[data-kiki-tokens='a'] {
   --color-canvas: #f3f0e9;
   --color-paper: #fbfaf6;
@@ -85,7 +86,7 @@
   --color-accent-deep: #9c3012;
   --color-accent-ink: #9c3012;
   --color-accent-soft: #f8e3d8;
-  --color-section-ink: #2c4a60;
+  --color-section-ink: #4b453e;
   --color-selected: #dfe8f0;
   --color-selected-ink: #1d4d6d;
   --color-attention: #b33a12;
@@ -112,7 +113,7 @@
   --color-accent-ink: #f5946b;
   --color-accent-soft: #3a2218;
   --color-on-accent: #2a1206;
-  --color-section-ink: #a3c3d9;
+  --color-section-ink: #bab3a7;
   --color-selected: #1c2b36;
   --color-selected-ink: #8fc6ea;
   --color-attention: #ff8f5e;
@@ -122,6 +123,24 @@
   --color-amber-ink: #e3a64a;
   --color-bubble-user: #25231e;
   --kiki-sheet-shadow: 0 0 0 1px rgb(236 232 224 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+}
+
+/* A's two role moves that are not a token value: keyboard focus and a switch
+ * that is on are "where you are / what you chose", so they take ink-blue;
+ * vermilion stays for "needs you" and the one primary button. The spec asks
+ * the implementer to make these changes in the components themselves. */
+:root[data-kiki-tokens='a'] :focus-visible {
+  outline-color: var(--color-selected-ink);
+}
+:root[data-kiki-tokens='a'] .row-interactive:focus-visible {
+  outline-color: var(--color-selected-ink);
+}
+:root[data-kiki-tokens='a'] [role='switch'][aria-checked='true'] {
+  background-color: var(--color-selected);
+  --tw-ring-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
+}
+:root[data-kiki-tokens='a'] [role='switch'][aria-checked='true'] > span {
+  background-color: var(--color-selected-ink);
 }
 
 /* ---- b: 石与橙 Stone & signal ----
