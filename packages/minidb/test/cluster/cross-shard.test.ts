@@ -267,3 +267,35 @@ test('a failed unique createIndex rolls back the shards it already created on', 
     await rmrf(dir);
   }
 });
+
+
+test('shardScanKeys is bounded, key-only and resumes partition-affinity keys', async () => {
+  const dir = await tmpDir('minidb-keyscan-');
+  const db = await ClusterDb.open({ dir, shardCount: 4, valueCodec: 'json', valueMode: 'disk' });
+  try {
+    const partition = keyOnShard('partition', 2, 4);
+    const expected = ['a', 'b', 'c', 'é'].map((suffix) => `${partition}/${suffix}`);
+    await db.partitionBatch(partition, expected.map((key) => ({ op: 'set', key, value: { body: 'value' } })));
+    await db.set(keyOnShard('other', 1, 4), { body: 'other' });
+    const first = await db.shardScanKeys(2, { gte: `${partition}/`, lt: `${partition}0`, count: 2 });
+    assert.deepEqual(first, expected.slice(0, 2));
+    assert.deepEqual(await db.shardScanKeys(2, { gt: first.at(-1), lt: `${partition}0`, count: 2 }), expected.slice(2));
+    assert.deepEqual(await db.shardScanKeys(2, { gte: `${partition}/`, lt: `${partition}0`, reverse: true }), [...expected].reverse());
+    await assert.rejects(db.shardScanKeys(-1), RangeError);
+    await assert.rejects(db.shardScanKeys(4), RangeError);
+  } finally {
+    await db.close();
+    await rmrf(dir);
+  }
+  const miniDir = await tmpDir('minidb-keyonly-');
+  const mini = await MiniDb.open({ dir: miniDir, valueCodec: 'json', valueMode: 'disk' });
+  try {
+    await mini.set('é', { body: 'value' });
+    const store = mini['store'];
+    store.materialize = () => { throw new Error('scanKeys must not materialize values'); };
+    assert.deepEqual(mini.scanKeys({ gte: 'é', count: 1 }), ['é']);
+  } finally {
+    await mini.close();
+    await rmrf(miniDir);
+  }
+});

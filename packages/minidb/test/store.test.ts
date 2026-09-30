@@ -242,3 +242,43 @@ test('bulkLoadRefsAsync pauses active expiry: a TTL expiring mid-load cannot div
     s.close();
   }
 });
+
+
+test('rawKeys bounds, reverse, offset and expiry match range order', () => {
+  const s = new Store({ activeExpireIntervalMs: 0 });
+  for (const key of ['a', 'b', 'c', 'd', 'e']) s.set(key, B(key));
+  const options = [
+    { gt: 'a', lt: 'e' }, { gte: 'b', lte: 'd', reverse: true },
+    { gt: 'b', lte: 'e', count: 2 }, { lt: 'e', reverse: true, offset: 1, count: 2 },
+  ];
+  for (const opts of options) {
+    assert.deepEqual([...s.rawKeys(opts)], s.order.range(opts).map((entry) => entry.key));
+  }
+  s.set('c', B('expired'), Date.now() - 1);
+  assert.deepEqual([...s.rawKeys({ reverse: true })], ['e', 'd', 'b', 'a']);
+  s.close();
+});
+
+test('rawKeys large range with early break visits only requested entries', () => {
+  const s = new Store({ activeExpireIntervalMs: 0 });
+  for (let i = 0; i < 100_000; i++) s.set(String(i).padStart(6, '0'), B('v'));
+  let visited = 0;
+  const iterate = s.order.iterate.bind(s.order);
+  s.order.iterate = function* (opts) {
+    for (const entry of iterate(opts)) { visited++; yield entry; }
+  };
+  s.order.range = () => { throw new Error('eager range must not be used'); };
+  for (const reverse of [false, true]) {
+    visited = 0;
+    const keys: string[] = [];
+    for (const key of s.rawKeys({ gte: '000010', lt: '099990', reverse })) {
+      keys.push(key);
+      if (keys.length === 5) break;
+    }
+    assert.equal(visited, 5);
+    assert.deepEqual(keys, reverse
+      ? ['099989', '099988', '099987', '099986', '099985']
+      : ['000010', '000011', '000012', '000013', '000014']);
+  }
+  s.close();
+});

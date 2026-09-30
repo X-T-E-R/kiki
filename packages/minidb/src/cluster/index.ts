@@ -30,6 +30,7 @@
 // keys through an explicit partition key. Batches validate every key before
 // committing one atomic WAL frame on the partition's shard.
 
+import type { RangeOptions } from '../skiplist.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BatchInputOp, IndexDef, IndexInfo, MiniDb, QueryOptions, ScanEntry, SetOptions } from '../index.js';
@@ -271,6 +272,17 @@ export class ClusterDb<V = unknown> {
   }
 
   // ---- scans ----------------------------------------------------------------
+
+  /** Key-only scan of one shard, including partition-affinity keys. No global
+   *  merge or value decoding. Continue using the last key as gt (lt in reverse).
+   *  Pages are live reads, not a pinned cross-page snapshot. */
+  async shardScanKeys(shardId: number, opts: RangeOptions<string> = {}): Promise<string[]> {
+    this.ensureOpen();
+    if (!Number.isInteger(shardId) || shardId < 0 || shardId >= this.shardCount) {
+      throw new RangeError('Invalid shard id');
+    }
+    return this.reader(shardId, (db) => db.scanKeys(opts));
+  }
 
   /** Merged scan over all shards, sorted by key bytes. Hash sharding means
    *  every range scan fans out to all shards; entries are materialized,

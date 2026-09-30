@@ -107,6 +107,11 @@ export class ReadPath<V> {
     return left > 0 ? left : -2;
   }
 
+  scanKeys(opts: RangeOptions<string> = {}): string[] {
+    this.deps.ensureOpen();
+    return Array.from(this.deps.store().rawKeys(canonRange(opts)), (key) => fromKStr(key).toString());
+  }
+
   scan(opts: RangeOptions<string> = {}): ScanEntry<V>[] {
     this.deps.ensureOpen();
     const count = (opts as { limit?: number }).limit ?? Infinity;

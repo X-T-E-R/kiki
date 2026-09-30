@@ -356,7 +356,7 @@ export class Store {
    *  (no buffer copies in memory mode, no positioned reads in disk mode).
    *  Expired records are lazily reaped, exactly as in scan(). */
   *rawKeys(opts: RangeOptions<string> = {}): Generator<string> {
-    for (const n of this.order.range(opts) as Iterable<RangeEntry<string, string>>) {
+    for (const n of this.order.iterate(opts)) {
       if (!this.getRecord(n.key)) continue;
       yield n.key;
     }
