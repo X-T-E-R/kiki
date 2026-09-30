@@ -6556,4 +6556,5 @@ export const zh = {
   'st.nbSearch.filter.ready': '就绪',
   'st.nbSearch.providers.noMatchTitle': '没有匹配的提供商',
   'usage.pricing.noMatchTitle': '没有匹配的模型',
+  'cap.skills.noMatchTitle': '没有匹配的技能',
 };

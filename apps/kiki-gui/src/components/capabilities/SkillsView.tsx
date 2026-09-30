@@ -1,29 +1,34 @@
 /**
- * Skills — built to hold a hundred. The search field and a compact source
- * filter share one line and stay put; below, skills group by where they come
- * from. Every group folds (built-in starts folded under All) and shows its
- * first GROUP_PREVIEW skills until "Show all". Rows are dense single lines:
- * name, the slash command when there is one, and the description; a row
- * opens its SKILL.md in the preview panel. Groups past the viewport skip
- * layout and paint (`content-visibility: auto`), so a long catalog renders
- * in segments without a virtual list.
+ * Skills — built to hold a hundred. The shared settings list pattern does the
+ * work: one toolbar with search, a chip per source and the density switch;
+ * below, skills group by where they come from and every group folds (the fold
+ * is remembered on this device). A search narrows every group at once and
+ * unfolds them. Rows open their SKILL.md in the preview panel. Long groups
+ * window inside ListBody, so a large catalog stays cheap to render.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { SkillDescriptor } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
-import { groupSkills, type SkillGroupId } from '../../lib/capabilities';
+import { SKILL_GROUP_ORDER, skillGroupId, type SkillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
-import { Icon } from '../icons';
 import { useMediaPreview } from '../mediaPreviewContext';
-import { EmptyNote, QUIET_BUTTON, SearchField, Tag } from './primitives';
-
-/** Skills a group shows before "Show all". */
-export const GROUP_PREVIEW = 8;
+import {
+  groupItems,
+  LIST_ROW_HEIGHT,
+  ListBody,
+  ListEmpty,
+  ListGroup,
+  ListToolbar,
+  useListView,
+  type ListDensity,
+  type ListFilterSpec,
+} from '../settings/list';
+import { EmptyNote, Tag } from './primitives';
 
 const GROUP_TITLE_KEYS = {
   plugin: 'cap.group.plugin',
@@ -43,9 +48,6 @@ const SOURCE_LABEL_KEYS = {
   other: 'cap.skills.source.other',
 } as const;
 
-/** Folded until opened, when nothing narrows the list. */
-const START_FOLDED: ReadonlySet<SkillGroupId> = new Set(['builtin']);
-
 export function SkillsView({
   workspaceId,
   onOpenPlugin,
@@ -55,67 +57,45 @@ export function SkillsView({
   readonly onOpenPlugin?: (pluginId: string) => void;
 }) {
   const { client } = useConnection();
-  const { t, tp } = useI18n();
+  const { t } = useI18n();
   const preview = useMediaPreview();
-  const [query, setQuery] = useState('');
-  const [source, setSource] = useState<'all' | SkillGroupId>('all');
-  // Explicit user choices; absent means "the default for this group".
-  const [folded, setFolded] = useState<ReadonlyMap<SkillGroupId, boolean>>(new Map());
-  const [expanded, setExpanded] = useState<ReadonlySet<SkillGroupId>>(new Set());
   const skillsQuery = useQuery({
     queryKey: ['workspace-skills', workspaceId],
     queryFn: () => client.listWorkspaceSkills(workspaceId),
     enabled: workspaceId !== '',
     staleTime: 60_000,
   });
-  const allSkills = skillsQuery.data?.skills;
-  const allGroups = useMemo(() => groupSkills(allSkills ?? [], ''), [allSkills]);
-  const groups = useMemo(
-    () => groupSkills(allSkills ?? [], query).filter((group) => source === 'all' || group.id === source),
-    [allSkills, query, source],
-  );
-  const searching = query.trim() !== '';
-  const narrowed = searching || source !== 'all';
-  const total = allSkills?.length ?? 0;
-  const shown = groups.reduce((sum, group) => sum + group.skills.length, 0);
+  const allSkills = useMemo(() => skillsQuery.data?.skills ?? [], [skillsQuery.data]);
 
-  const isFolded = (id: SkillGroupId) => (narrowed ? false : folded.get(id) ?? START_FOLDED.has(id));
-  const toggleFold = (id: SkillGroupId) => {
-    setFolded((current) => new Map(current).set(id, !isFolded(id)));
-  };
+  const keyOf = (skill: SkillDescriptor) => `${skill.source}:${skill.path}`;
+  const textOf = (skill: SkillDescriptor) => [skill.name, skill.description];
+  const filters = useMemo<readonly ListFilterSpec<SkillDescriptor>[]>(() => {
+    const present = new Set(allSkills.map((skill) => skillGroupId(skill.source)));
+    return SKILL_GROUP_ORDER.filter((id) => present.has(id)).map((id) => ({
+      id, label: t(SOURCE_LABEL_KEYS[id]), test: (skill: SkillDescriptor) => skillGroupId(skill.source) === id,
+    }));
+  }, [allSkills, t]);
+  const view = useListView({ listId: 'cap-skills', items: allSkills, keyOf, textOf, filters });
+  const groups = useMemo(
+    () => groupItems(allSkills, view.visible, (skill) => {
+      const id = skillGroupId(skill.source);
+      return [{ key: id, label: t(GROUP_TITLE_KEYS[id]) }];
+    }, SKILL_GROUP_ORDER),
+    [allSkills, view.visible, t],
+  );
+
   const open = (skill: SkillDescriptor) => {
     if (skill.source === 'builtin') preview?.openBuiltinSkill(skill.name);
     else preview?.openFile(skill.path);
   };
 
+  // The capabilities page scrolls its own container, not the settings pane;
+  // re-anchor the sticky toolbar to its padding.
   return (
-    <div className="min-w-0 space-y-5" data-skills-view>
-      <div className="flex flex-col gap-2 min-[720px]:flex-row min-[720px]:items-center">
-        <div className="min-w-0 flex-1">
-          <SearchField value={query} onChange={setQuery} placeholder={t('cap.skills.searchCount', { count: total })} ariaLabel={t('cap.skills.search')} />
-        </div>
-        {allGroups.length > 1 ? (
-          <label className="flex h-10 shrink-0 items-center gap-2 rounded-[10px] bg-ink/[0.04] pl-3 pr-2 text-[13px] text-ink-soft focus-within:ring-1 focus-within:ring-hairline-strong">
-            <span className="text-ink-faint">{t('cap.skills.sourceFilter')}</span>
-            <select
-              value={source}
-              onChange={(event) => { setSource(event.target.value as 'all' | SkillGroupId); }}
-              data-skills-source={source}
-              className="min-w-0 cursor-pointer bg-transparent pr-1 text-[13px] font-medium text-ink outline-none"
-            >
-              <option value="all">{t('cap.skills.sourceAll')} · {total}</option>
-              {allGroups.map((group) => (
-                <option key={group.id} value={group.id}>{t(SOURCE_LABEL_KEYS[group.id])} · {group.skills.length}</option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-      </div>
-
-      {searching && allSkills !== undefined ? (
-        <p className="text-[12px] text-ink-faint tabular-nums" role="status" data-skills-result-count>
-          {tp('cap.skills.matches', shown, { total })}
-        </p>
+    <div className="min-w-0 space-y-3 [&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8" data-skills-view>
+      {allSkills.length > 0 ? (
+        <ListToolbar view={view} total={allSkills.length} filters={filters}
+          searchLabel={t('cap.skills.search')} searchPlaceholder={t('cap.skills.searchCount', { count: allSkills.length })} />
       ) : null}
 
       {workspaceId === '' ? (
@@ -124,74 +104,28 @@ export function SkillsView({
         <p className="text-[13px] text-ink-faint" role="status">{t('cap.loadingSkills')}</p>
       ) : skillsQuery.isError ? (
         <InlineError error={skillsQuery.error} />
-      ) : groups.length === 0 ? (
-        <EmptyNote
-          title={narrowed ? t('cap.emptyFilter', { query: query.trim() }) : t('cap.skills.none')}
-          body={narrowed ? undefined : t('cap.skills.noneBody')}
-        />
+      ) : allSkills.length === 0 ? (
+        <ListEmpty kind="none" title={t('cap.skills.none')} body={t('cap.skills.noneBody')} />
+      ) : view.visible.length === 0 ? (
+        <ListEmpty kind="no-match" title={t('cap.skills.noMatchTitle')}
+          body={view.query.trim() !== '' ? t('cap.emptyFilter', { query: view.query.trim() }) : undefined}
+          onClear={view.clear} />
       ) : (
-        <div className="space-y-4">
-          {groups.map((group) => {
-            const isOpen = !isFolded(group.id);
-            const all = searching || expanded.has(group.id) || group.skills.length <= GROUP_PREVIEW + 2;
-            const visible = all ? group.skills : group.skills.slice(0, GROUP_PREVIEW);
-            const bodyId = `skills-group-body-${group.id}`;
-            return (
-              <section
-                key={group.id}
-                id={`skills-group-${group.id}`}
-                data-skills-group={group.id}
-                data-open={isOpen ? 'true' : 'false'}
-                className="min-w-0 [contain-intrinsic-size:auto_320px] [content-visibility:auto]"
-              >
-                <button
-                  type="button"
-                  aria-expanded={isOpen}
-                  aria-controls={bodyId}
-                  data-skills-fold={group.id}
-                  onClick={() => { toggleFold(group.id); }}
-                  className="flex min-h-9 w-full items-center gap-2 border-b border-hairline pb-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-                >
-                  <span aria-hidden className={`flex text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${isOpen ? 'rotate-90' : ''}`}>
-                    <Icon name="chevron" size={12} />
-                  </span>
-                  <span className="text-[13px] font-medium text-ink">{t(GROUP_TITLE_KEYS[group.id])}</span>
-                  <span className="text-[12px] text-ink-faint tabular-nums">{group.skills.length}</span>
-                  {!isOpen ? (
-                    <span className="ms-2 min-w-0 flex-1 truncate text-[12px] text-ink-faint">
-                      {group.skills.slice(0, 5).map((skill) => skill.name).join(', ')}
-                    </span>
-                  ) : null}
-                </button>
-                {isOpen ? (
-                  <div id={bodyId}>
-                    <ul className="grid grid-cols-1 gap-x-6 pt-1 min-[900px]:grid-cols-2">
-                      {visible.map((skill) => (
-                        <SkillRow
-                          key={`${skill.source}:${skill.path}`}
-                          skill={skill}
-                          canPreview={preview !== null}
-                          onOpen={() => { open(skill); }}
-                          onOpenPlugin={group.id === 'plugin' ? onOpenPlugin : undefined}
-                        />
-                      ))}
-                    </ul>
-                    {!all ? (
-                      <button
-                        type="button"
-                        className={`${QUIET_BUTTON} mt-1 -ml-1`}
-                        data-skills-show-all={group.id}
-                        onClick={() => { setExpanded((current) => new Set(current).add(group.id)); }}
-                      >
-                        {t('cap.skills.showAll', { count: group.skills.length })}
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </section>
-            );
-          })}
-        </div>
+        groups.map((group) => (
+          <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
+            folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}>
+            <ListBody items={group.items} keyOf={keyOf} density={view.density} label={group.label}
+              renderRow={(skill) => (
+                <SkillRow
+                  skill={skill}
+                  density={view.density}
+                  canPreview={preview !== null}
+                  onOpen={() => { open(skill); }}
+                  onOpenPlugin={group.key === 'plugin' ? onOpenPlugin : undefined}
+                />
+              )} />
+          </ListGroup>
+        ))
       )}
     </div>
   );
@@ -202,36 +136,48 @@ function pluginIdFromPath(path: string): string | undefined {
   return match?.[1];
 }
 
-/** One dense line: name · slash tag · description, then a plugin link when it has one. */
+/** One row: name · slash tag · description, then a plugin link when it has one. */
 function SkillRow({
   skill,
+  density,
   canPreview,
   onOpen,
   onOpenPlugin,
 }: {
   readonly skill: SkillDescriptor;
+  readonly density: ListDensity;
   readonly canPreview: boolean;
   readonly onOpen: () => void;
   readonly onOpenPlugin?: (pluginId: string) => void;
 }) {
   const { t } = useI18n();
   const pluginId = onOpenPlugin === undefined ? undefined : pluginIdFromPath(skill.path);
-  const body = (
-    <>
+  const compact = density === 'compact';
+  const tag = skill.prompt_command === true ? (
+    <Tag tone="accent">/{skill.name}{skill.argument_hint !== undefined ? ` ${skill.argument_hint}` : ''}</Tag>
+  ) : skill.disable_model_invocation === true ? (
+    <Tag>{t('cap.skills.manualOnly')}</Tag>
+  ) : null;
+  const description = skill.description === '' ? skill.path : skill.description;
+  const body = compact ? (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
       <span className="shrink-0 truncate text-[13px] font-medium text-ink max-w-[45%]">{skill.name}</span>
-      {skill.prompt_command === true ? (
-        <Tag tone="accent">/{skill.name}{skill.argument_hint !== undefined ? ` ${skill.argument_hint}` : ''}</Tag>
-      ) : skill.disable_model_invocation === true ? (
-        <Tag>{t('cap.skills.manualOnly')}</Tag>
-      ) : null}
-      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint" title={skill.description}>
-        {skill.description === '' ? skill.path : skill.description}
+      {tag}
+      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+    </span>
+  ) : (
+    <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0 truncate text-[13px] font-medium text-ink max-w-[45%]">{skill.name}</span>
+        {tag}
       </span>
-    </>
+      <span className="min-w-0 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+    </span>
   );
   return (
-    <li
-      className="group flex min-h-9 min-w-0 items-center gap-2 rounded-md px-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-within:bg-ink/[0.04] pointer-coarse:min-h-11"
+    <div
+      className="group flex min-w-0 items-center gap-2 px-3 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]"
+      style={{ minHeight: LIST_ROW_HEIGHT[density] }}
       data-skill-row={skill.name}
       data-skill-source={skill.source}
     >
@@ -245,7 +191,7 @@ function SkillRow({
           {body}
         </button>
       ) : (
-        <span className="flex min-w-0 flex-1 items-center gap-2">{body}</span>
+        body
       )}
       {pluginId !== undefined && onOpenPlugin !== undefined ? (
         <button
@@ -258,6 +204,6 @@ function SkillRow({
           {pluginId}
         </button>
       ) : null}
-    </li>
+    </div>
   );
 }

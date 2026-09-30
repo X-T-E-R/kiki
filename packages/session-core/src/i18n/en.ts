@@ -6619,4 +6619,5 @@ export const en = {
   'st.nbSearch.filter.ready': 'Ready',
   'st.nbSearch.providers.noMatchTitle': 'No providers match',
   'usage.pricing.noMatchTitle': 'No models match',
+  'cap.skills.noMatchTitle': 'No skills match',
 } as const;

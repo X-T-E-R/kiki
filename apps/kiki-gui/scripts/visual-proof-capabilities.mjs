@@ -206,20 +206,17 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
   }
 
   async function skillsAtScale(tag) {
-    await go('/capabilities?tab=skills', '[data-skills-group="project"] [data-skill-row]');
-    const projectRows = await page.locator('[data-skills-group="project"] [data-skill-row]').count();
-    if (projectRows !== 8) throw new Error(`project group must preview 8 of 28 skills, saw ${projectRows}`);
-    if (await page.locator('[data-skills-group="builtin"]').getAttribute('data-open') !== 'false') throw new Error('built-in skills must start folded');
+    await go('/capabilities?tab=skills', '[data-list-group="project"] [data-skill-row]');
+    const projectRows = await page.locator('[data-list-group="project"] [data-skill-row]').count();
+    if (projectRows !== 28) throw new Error(`project group must list all 28 skills, saw ${projectRows}`);
     await expectNoOverflow(`skills many ${tag}`);
     await styledShot(`cap-skills-many-${tag}`);
-    await page.locator('[data-skills-show-all="project"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('[data-skills-group="project"] [data-skill-row]').length === 28);
-    await page.locator('[data-skills-fold="plugin"]').click();
-    await page.locator('[data-skills-fold="builtin"]').click();
-    await page.locator('[data-skills-group="project"]').scrollIntoViewIfNeeded();
+    await page.locator('[data-list-group-toggle="plugin"]').click();
+    await page.locator('[data-list-group-toggle="builtin"]').click();
+    await page.locator('[data-list-group="project"]').scrollIntoViewIfNeeded();
     await styledShot(`cap-skills-many-expanded-${tag}`);
     await page.locator('[data-skills-view] input[type="search"]').fill('incident');
-    await page.waitForSelector('[data-skills-result-count]', { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelector('[data-list-count]')?.textContent?.includes(' of '), { timeout: 5000 });
     await page.evaluate(() => { document.querySelector('[data-skills-view]')?.scrollIntoView(); });
     await styledShot(`cap-skills-many-search-${tag}`);
   }

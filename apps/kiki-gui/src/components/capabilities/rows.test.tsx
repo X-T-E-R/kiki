@@ -9,7 +9,8 @@ import { MediaPreviewProvider } from '../mediaPreview';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SkillCard } from './rows';
-import { GROUP_PREVIEW, SkillsView } from './SkillsView';
+import { SkillsView } from './SkillsView';
+import { resetListPrefsCache } from '../settings/list';
 
 const client = vi.hoisted(() => ({
   readHostFile: vi.fn<(path: string) => Promise<string>>(),
@@ -158,6 +159,8 @@ describe('SkillsView at scale', () => {
 
   async function renderView() {
     localStorage.setItem('kiki.locale', 'en');
+    localStorage.removeItem('kiki.settingsLists');
+    resetListPrefsCache();
     client.listWorkspaceSkills.mockResolvedValue({ skills: many });
     await act(async () => {
       root.render(
@@ -176,19 +179,16 @@ describe('SkillsView at scale', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
     }
   }
-  const rows = (group: string) => container.querySelectorAll(`[data-skills-group="${group}"] [data-skill-row]`).length;
+  const rows = (group: string) => container.querySelectorAll(`[data-list-group="${group}"] [data-skill-row]`).length;
 
-  it('previews each group, folds built-ins, and expands on demand', async () => {
+  it('lists every skill in foldable source groups', async () => {
     await renderView();
-    expect(rows('project')).toBe(GROUP_PREVIEW);
-    expect(container.querySelector('[data-skills-group="builtin"]')?.getAttribute('data-open')).toBe('false');
-    expect(rows('builtin')).toBe(0);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-show-all="project"]')!.click(); });
     expect(rows('project')).toBe(30);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-fold="project"]')!.click(); });
+    expect(rows('builtin')).toBe(12);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-list-group-toggle="project"]')!.click(); });
     expect(rows('project')).toBe(0);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-skills-fold="builtin"]')!.click(); });
-    expect(rows('builtin')).toBe(GROUP_PREVIEW);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-list-group-toggle="project"]')!.click(); });
+    expect(rows('project')).toBe(30);
   });
 
   it('searches across folded groups and says how many match', async () => {
@@ -199,6 +199,6 @@ describe('SkillsView at scale', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     expect(rows('builtin')).toBe(3);
-    expect(container.querySelector('[data-skills-result-count]')?.textContent).toBe('3 of 43 skills match');
+    expect(container.querySelector('[data-list-count]')?.textContent).toBe('3 of 43');
   });
 });
