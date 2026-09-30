@@ -68,9 +68,9 @@ Klient 提供 `global.threads.hostId`、`list`、`read`、`send`、`wait`、`get
 
 工作区覆盖值会跨重启保留。清除后恢复全局设置；启用的覆盖值也不能绕过已关闭的全局配置节。
 
-沟通记录通过 `GET /api/threads/messages`、`global.threads.messages` 和 `rest.threads.messages` 读取，见[规范读取契约](../zh/server/rest-api.md#沟通记录)。`RuntimeThreadMailboxStore` 将派生的全局、会话、工作区索引指针与 peer 接收记录放在同一个目标分区、同一个原子 WAL 批次中，用 group / order 复合索引读取。查询解析当前投递文档，不复制正文日志，也不恢复冷会话。邮箱使用磁盘模式的 value，保留历史不会把所有消息正文载入内存；键和索引元数据仍驻留内存。回填使用持久分页检查点；peer 终态记录不再按 512 条规则淘汰。已淘汰的更早历史不会从 wire 恢复。服务检查仍存在的两端元数据，包含已归档会话，达到扫描预算后明确返回续页游标（500 条候选或 2 MiB 正文阈值，每批最多 20 条后检查）。`HistorySearch` 的 peer 范围复用词法匹配，在此视图上提供有界扫描续页。Room 只是预留的来源判别字段；接入房间日志另行实施。
+沟通记录通过 `GET /api/threads/messages`、`global.threads.messages` 和 `rest.threads.messages` 读取，见[规范读取契约](../zh/server/rest-api.md#沟通记录)。`RuntimeThreadMailboxStore` 将派生的全局、会话、工作区索引指针与 peer 接收记录放在同一个目标分区、同一个原子 WAL 批次中，用 group / order 复合索引读取。查询解析当前投递文档，不复制正文日志，也不恢复冷会话。邮箱使用磁盘模式的 value，保留历史不会把所有消息正文载入内存；键和索引元数据仍驻留内存。正常接收和 legacy 导入均在同一分区批次维护非 external 消息指针，包括中断导入后已存在消息的补齐。物理 `peer_history_v1` projection 不变：完整 v2 标记直接复用且不扫描；完整 v1 只证明 peer_thread 覆盖，不证明 room 覆盖。剩余缺口通过有界 shard-local key-only 扫描，只解码 message key，只写缺失或不匹配的指针。既有全局检查点和 v1 peer-only 覆盖继承；新检查点在修复批次成功后按消息工作量、时间或 shard 完成记录 shard/key 进度。消息和指针读取按分区合批，避免重复 shard 校验。Fsync 保持 `always`。peer 终态记录不再按 512 条规则淘汰。已淘汰的更早历史不会从 wire 恢复。服务检查仍存在的两端元数据，包含已归档会话，达到扫描预算后明确返回续页游标（500 条候选或 2 MiB 正文阈值，每批最多 20 条后检查）。`HistorySearch` 的 peer 范围复用词法匹配，在此视图上提供有界扫描续页。Room 唤醒回执归属于接收方历史；完整讨论仍以独立房间日志为事实源。
 
-邮箱初始化和历史回填按 runtime epoch 单飞运行，不归属于第一个 RPC 调用者。调用超时或取消只停止该调用者的等待；失去 owner 身份或关闭 store 会取消共享工作，并等待它结束后再释放数据库锁。普通邮箱初始化安装历史索引定义，但不等待回填。历史读取等待回填，回填保留持久分页检查点，并按分区批量写入。第一次成功的邮箱调用和第一次成功的历史读取分别记录自己的热调用 epoch：冷调用的默认单次预算为 20 秒，热调用为 10 秒，总重试期限为单次预算的两倍。`KIKI_THREAD_MAILBOX_TIMEOUT_MS` 同时覆盖这两个单次默认值。期限错误包含方法、等待阶段、runtime 角色、就绪状态、epoch 和最后一次重试代码，不表示某个 shard 锁的持有者。
+邮箱初始化和历史回填按 runtime epoch 单飞运行，不归属于第一个 RPC 调用者。调用超时或取消只停止该调用者的等待；失去 owner 身份或关闭 store 会取消共享工作，并等待它结束后再释放数据库锁。普通邮箱初始化安装历史索引定义，但不等待回填。历史读取触发共享修复但不等待，并返回覆盖状态。不完整读取绑定覆盖代次；指针修复批次、完成和重开不完整覆盖会使旧分页失效。room 修复期间 peer-only 读取保留继承的完整 v1 代次。修复失败保持 incomplete/error，重开后从最后持久检查点重试。新建邮箱可直接完整，因为所有 producer 写入路径事务性维护指针。第一次成功的邮箱调用和第一次成功的历史读取分别记录自己的热调用 epoch：冷调用的默认单次预算为 20 秒，热调用为 10 秒，总重试期限为单次预算的两倍。`KIKI_THREAD_MAILBOX_TIMEOUT_MS` 同时覆盖这两个单次默认值。期限错误包含方法、等待阶段、runtime 角色、就绪状态、epoch 和最后一次重试代码，不表示某个 shard 锁的持有者。
 
 ## 区分 GUI、服务端和客户端
 
