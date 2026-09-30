@@ -44,11 +44,12 @@ To permanently replace the default main agent's configuration, there is one spec
 
 ## Customization mechanism map
 
-Kiki has six customization mechanisms, each owning one concern. Decide what you want to change first, then pick the mechanism:
+Kiki separates customization mechanisms by concern. Decide what you want to change first, then pick the mechanism:
 
 | What you want to change | Use |
 | --- | --- |
-| An agent's identity, system prompt, tools, or model | **Profile files** (this page and [Agents and Sub-Agents](./agents.md)) |
+| A reusable identity and private memory across conversations | [Personas, Bots, and rooms](./personas.md) |
+| An agent's execution instructions, tools, permissions, or model | **Profile files** (this page and [Agents and Sub-Agents](./agents.md)) |
 | One named passage inside the built-in prompts (e.g. language rules, tool descriptions) | [Prompt field overrides](./prompt-fields.md) |
 | Expertise or workflows the agent invokes automatically when relevant | [Agent Skills](./skills.md) |
 | Prompt snippets you trigger yourself with `/name` | [Custom prompt commands](./skills.md#custom-prompt-commands) |

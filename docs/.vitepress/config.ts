@@ -118,6 +118,7 @@ const config = withMermaid(defineConfig({
               text: '定制',
               items: [
                 { text: 'Agent profile 概念与设计', link: '/zh/customization/agent-profiles' },
+                { text: '角色、Bot 与房间', link: '/zh/customization/personas' },
                 { text: 'Agent 与 subagent', link: '/zh/customization/agents' },
                 { text: 'Agent Skills', link: '/zh/customization/skills' },
                 { text: 'Plugins', link: '/zh/customization/plugins' },
@@ -228,6 +229,7 @@ const config = withMermaid(defineConfig({
               text: 'Customization',
               items: [
                 { text: 'Agent profiles: concepts', link: '/en/customization/agent-profiles' },
+                { text: 'Personas, Bots, and rooms', link: '/en/customization/personas' },
                 { text: 'Agents and Subagents', link: '/en/customization/agents' },
                 { text: 'Agent Skills', link: '/en/customization/skills' },
                 { text: 'Plugins', link: '/en/customization/plugins' },

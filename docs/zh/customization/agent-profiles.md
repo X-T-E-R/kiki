@@ -44,11 +44,12 @@ Kiki 按作用域发现 profile 文件，作用域越具体，优先级越高：
 
 ## 定制机制地图
 
-Kiki 有六种定制机制，各管一件事。先想清楚要改什么，再选机制：
+Kiki 的定制机制各管一件事。先想清楚要改什么，再选机制：
 
 | 想改什么 | 用什么 |
 | --- | --- |
-| agent 的身份、系统提示词、可用工具、模型 | **Profile 文件**（本页与 [Agent 与 subagent](./agents.md)） |
+| 跨会话复用的身份与私有记忆 | [角色、Bot 与房间](./personas.md) |
+| Agent 的执行指令、可用工具、权限、模型 | **Profile 文件**（本页与 [Agent 与 subagent](./agents.md)） |
 | 内置提示词里的一段具名文本（如语言要求、工具描述） | [Prompt 字段覆写](./prompt-fields.md) |
 | 让 agent 在需要时自动调用的专业知识或工作流 | [Agent Skills](./skills.md) |
 | 自己用 `/名字` 主动触发的提示片段 | [提示命令](./skills.md#自定义提示命令) |
