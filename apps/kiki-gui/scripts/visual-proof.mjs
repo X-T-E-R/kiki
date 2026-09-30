@@ -182,6 +182,7 @@ const SOURCES = {
   fetchModelsButton: { key: 'st.fetchModels.button' },
   requestIdentityLabel: { key: 'st.section.identity' },
   saveProvider: { key: 'st.providers.save' },
+  providerApiKey: { key: 'st.providers.apiKey' },
   oauthCancel: { key: 'st.oauth.cancel' },
   technicalDetails: { key: 'st.namedAgents.technicalDetails' },
   dirtyDiscard: { key: 'st.dirty.leaveConfirm' },
@@ -202,9 +203,13 @@ const SOURCES = {
   nbSearchReady: { key: 'st.nbSearch.stateReady' },
   nbSearchDegraded: { key: 'st.nbSearch.stateDegraded' },
   nbSearchUnconfigured: { key: 'st.nbSearch.stateUnconfigured' },
-  nbSearchManagedHide: { key: 'st.providers.hideKey' },
+  // The source line under a stored secret on the shared secret field.
+  secretSourceKiki: { key: 'st.secret.source.kiki' },
+  secretSourceNone: { key: 'st.secret.source.none' },
   loadMore: { key: 'sidebar.loadMore' },
   searchLoadMore: { key: 'sidebar.searchLoadMore' },
+  // The sidebar's "no content hits" line, with the query this walk types.
+  sidebarNoMatches: { key: 'sidebar.results.none', params: { query: 'zzzznothing' } },
   workspaceFilterAll: { key: 'sidebar.workspaceAll' },
   groupPinned: { key: 'sidebar.groupPinned' },
   groupByTime: { key: 'sidebar.groupByTime' },
@@ -219,6 +224,22 @@ const SOURCES = {
   workspaceRenameTitle: { key: 'st.workspaces.renameTitle' },
   removeButton: { key: 'st.workspaces.remove' },
   save: { key: 'common.save' },
+  // The dirty-form discard button (settings cards and the profile editor).
+  discardChanges: { key: 'st.advanced.discard' },
+  // Unsent selection notes fold into one pill; `.one`/`.other` on the count.
+  notesPillOne: { key: 'composer.notes.pill', count: 1 },
+  notesPillTwo: { key: 'composer.notes.pill', count: 2 },
+  // A settled stretch of process rows folds into one line naming its steps.
+  foldWorked: { key: 'transcript.fold.worked' },
+  foldSteps2: { key: 'transcript.fold.steps', count: 2 },
+  foldSteps3: { key: 'transcript.fold.steps', count: 3 },
+  foldSteps6: { key: 'transcript.fold.steps', count: 6 },
+  foldNotes1: { key: 'transcript.fold.notes', count: 1 },
+  // Appearance › the prose font select: its label (the trigger's aria name)
+  // and the two presets the walk picks between.
+  proseFontLabel: { key: 'st.appearance.prose' },
+  proseSans: { key: 'st.appearance.prose.sans' },
+  proseSerif: { key: 'st.appearance.prose.serif' },
   // The queue row's resting count comes from the composer's queue stack.
   onePromptQueued: { key: 'composer.queueStack.count', count: 1 },
   twoPromptsQueued: { key: 'composer.queueStack.count', count: 2 },
@@ -347,13 +368,6 @@ const LITERALS = {
   modelProfileLabel: { en: 'model profile', zh: '模型设置' },
   swarmTitlePrefix: { en: 'Swarm mode', zh: '集群模式' },
   goalActive: { en: 'goal · active', zh: '目标 · 进行中' },
-  // The nb-search credential card these name no longer exists; see the
-  // settings-nbsearch walk, which needs its own rewrite.
-  nbSearchManagedStored: { en: 'Saved on this server', zh: '已保存在此服务器' },
-  nbSearchManagedEmpty: { en: 'No Kiki-managed value saved', zh: '尚无 Kiki 管理的凭据' },
-  nbSearchManagedReveal: { en: 'Reveal saved value', zh: '查看已存值' },
-  nbSearchManagedSave: { en: 'Save / overwrite', zh: '保存／覆写' },
-  nbSearchManagedClear: { en: 'Clear saved value', zh: '清除已存值' },
 };
 
 function buildStrings(locale) {
