@@ -634,6 +634,35 @@ describe('streamWireRecords', () => {
 });
 
 describe('streamWireRecordsAwaited', () => {
+  it('charges batch read-ahead to the physical byte budget and resumes without losing records', async () => {
+    const records = Array.from({ length: 9 }, (_, index) => ({ type: 'metadata', index, text: 'f'.repeat(1 << 20) }));
+    const raw = `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+    await withWireFile(raw, async (wirePath) => {
+      const visited: number[] = [];
+      let offset = 0;
+      let ordinal = 0;
+      let complete = false;
+      let calls = 0;
+      while (!complete) {
+        const read = await streamWireRecordsAwaited(wirePath, { maxBytes: 8 << 20, maxRecords: 50_000,
+          chunkBytes: 64 << 10, startByteOffset: offset, startRecordOrdinal: ordinal,
+          onRecord: async (record, span) => {
+            expect(span.ordinal).toBe(visited.length);
+            visited.push(record['index'] as number);
+          } });
+        expect(read.bytesRead).toBeLessThanOrEqual(8 << 20);
+        expect(read.nextByteOffset).toBeGreaterThan(offset);
+        offset = read.nextByteOffset;
+        ordinal += read.recordCount;
+        complete = read.complete;
+        if (++calls > 3) throw new Error('Reader failed to progress');
+      }
+      expect(calls).toBe(2);
+      expect(visited).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(offset).toBe(Buffer.byteLength(raw));
+    });
+  });
+
   it('awaits each callback in source order across several bounded batches', async () => {
     const records = Array.from({ length: 300 }, (_, index) => ({ type: 'metadata', index, text: '中'.repeat(50) }));
     await withWireFile(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`, async (wirePath) => {

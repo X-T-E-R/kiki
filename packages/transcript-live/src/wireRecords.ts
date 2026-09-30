@@ -219,12 +219,11 @@ export async function streamWireRecordsAwaited(
     ...options, onRecord: () => undefined,
   });
   let nextByteOffset = optionalLimit(options.startByteOffset) ?? 0;
-  const startByteOffset = nextByteOffset;
   let recordCount = 0;
   let bytesRead = 0;
   for (;;) {
     options.signal?.throwIfAborted();
-    if (byteBudget !== undefined && nextByteOffset - startByteOffset >= byteBudget) {
+    if (byteBudget !== undefined && bytesRead >= byteBudget) {
       return { recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: 'byte_budget' };
     }
     if (recordBudget !== undefined && recordCount >= recordBudget) {
@@ -234,7 +233,7 @@ export async function streamWireRecordsAwaited(
     let batchBytes = 0;
     const read = await streamWireRecords(wirePath, {
       chunkBytes: options.chunkBytes,
-      maxBytes: byteBudget === undefined ? undefined : byteBudget - (nextByteOffset - startByteOffset),
+      maxBytes: byteBudget === undefined ? undefined : byteBudget - bytesRead,
       maxRecords: recordBudget === undefined ? BATCH_RECORDS : Math.min(BATCH_RECORDS, recordBudget - recordCount),
       maxLineBytes: options.maxLineBytes,
       startByteOffset: nextByteOffset,
