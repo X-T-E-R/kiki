@@ -14,6 +14,8 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from './profileEditor/engines';
+import { ANTIGRAVITY_ID, AntigravitySetup } from './AntigravitySetup';
+import { HARNESS_CAPABILITIES } from '../harness/HarnessMark';
 
 /** Row health in words: ready, needs attention (warnings / signed out), not found, not checked. */
 export type EngineHealth = 'ready' | 'warning' | 'missing' | 'unknown';
@@ -457,6 +459,9 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const loginCommand = connection?.login_command?.join(' ');
   const caps = item.capabilities;
   const setup = check?.requirements !== undefined && check.requirements.length > 0;
+  // Kiki installs and signs in Antigravity's ACP CLI itself; the generic
+  // "copy this command" guide would show a sentence as a command.
+  const antigravity = item.id === ANTIGRAVITY_ID;
 
   const runCheck = async (): Promise<ExecutorCheckResult | undefined> => {
     if (checking) return undefined;
@@ -468,11 +473,11 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
       setCheckedAt(new Date().toISOString());
       // GET serves the last check's sign-in result for 60s; let the profile
       // editor's engine picker see it too.
-      return result;
       await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
+      return result;
     } catch (error) {
-      return undefined;
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      return undefined;
     } finally {
       setChecking(false);
     }
@@ -510,8 +515,10 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/engine:rotate-90" />
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
-        {setup ? <EngineSetup check={check!} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
-        {health === 'missing' && !setup ? (
+        {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
+          ideDetected={check?.diagnostics.some((diagnostic) => diagnostic.message.includes('Antigravity IDE')) === true} /> : null}
+        {setup && !antigravity ? <EngineSetup check={check!} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
+        {health === 'missing' && !setup && !antigravity ? (
           <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
             <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
             {connection?.install_hint !== undefined ? (
@@ -548,7 +555,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
             {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
             <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
           </Fact>
-          {health === 'missing' || setup ? null : <Fact label={t('st.engines.login')} dataFact="login">
+          {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
             <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
             {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
               {t(credentialKey)}
@@ -596,8 +603,17 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
                 {caps.permission.trust_engine_settings ? <span className="text-ink-faint"> · {t('st.engines.permissionTrust')}</span> : null}
               </>}
             </Fact>
+            {caps?.negotiated !== undefined ? (
+              <Fact label={t('st.engines.cap.handshake')} dataFact="cap-handshake">
+                {caps.negotiated.agent_version !== undefined ? <span className="font-mono text-[12px]">{caps.negotiated.agent_version}</span> : null}
+                <span className="block text-[12px] text-ink-soft">
+                  {HARNESS_CAPABILITIES.filter(({ key }) => caps.negotiated?.[key] === true).map(({ label }) => t(label)).join(' · ')
+                    || t('st.engines.cap.handshakeNone')}
+                </span>
+              </Fact>
+            ) : null}
           </dl>
-          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.capsDeclared')}</p>
+          <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
         </div>
         {localSessionEngine(item.id) !== undefined ? (
           <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
