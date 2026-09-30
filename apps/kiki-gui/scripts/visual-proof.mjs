@@ -1336,8 +1336,9 @@ async function scenarioDraftFlow() {
 /**
  * composer-modes — the composer's own walker, run in light and dark at 1440
  * and 390: the ＋ menu, the Mode menu (exactly Normal / Plan / Goal, plan
- * gate nested under Plan), the mode chip with ✕, the permission menu, and
- * the "Needs you" tray above the composer. Then the /new hero and the
+ * gate nested under Plan), the mode chip with ✕, the permission menu, and the
+ * "Needs you" card that takes the composer over (the walk releases it back to
+ * the input before touching the menus). Then the /new hero and the
  * onboarding wizard's permissions step in dark.
  */
 async function scenarioComposerModes() {
@@ -1345,6 +1346,12 @@ async function scenarioComposerModes() {
     await page.waitForSelector('[data-needs-you-tray]', { timeout: 10_000 });
     await page.waitForTimeout(400);
     await shot(`composer-tray-${suffix}`);
+    // Pending approvals take the composer over, hiding the toolbar behind
+    // the card's "back to input" affordance.
+    if (!(await page.locator('[data-add-menu-trigger]').isVisible())) {
+      await page.locator('[data-needs-you-back]').click();
+      await page.locator('[data-add-menu-trigger]').waitFor({ state: 'visible', timeout: 5000 });
+    }
     await page.locator('[data-add-menu-trigger]').click();
     await page.waitForSelector('[data-add-menu-mode]', { timeout: 5000 });
     await page.waitForTimeout(250);
