@@ -45,6 +45,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   class StubSessionController {
     readonly sessionId: string;
     readonly subscribe = () => () => {};
+    readonly subscribeInterruptedPrompt = () => () => {};
     readonly getState: () => ReturnType<typeof actual.createViewState>;
 
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
