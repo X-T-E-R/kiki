@@ -64,8 +64,9 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
 import { resumeLocalSession } from './localSessionResume';
+import { registerAntigravityRoutes } from './antigravity';
 
-interface AgentProfilesRouteHost {
+export interface AgentProfilesRouteHost {
   get(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
@@ -129,6 +130,7 @@ function projectLocalSession(summary: LocalSessionSummary) {
  *  named disable state; PATCH borrows the addressed workspace's validated common-field / raw-file
  *  writer and echoes the authoritative post-reload profile. */
 export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Scope): void {
+  registerAntigravityRoutes(app, core);
   const capabilitiesRoute = defineRoute({
     method: 'GET',
     path: '/agents/capabilities',
@@ -570,6 +572,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           main: req.body.main,
           executor: req.body.executor,
           executorPrompt: req.body.executor_prompt,
+          allowKikiSubagents: req.body.allow_kiki_subagents,
           modelAlias: req.body.pinned_model_alias,
           thinkingEffort: req.body.thinking_effort,
           allowedModels: req.body.allowed_models,
@@ -816,6 +819,7 @@ function toNamedAgentProfile(
         ? undefined
         : { ...profile.executorOptions },
     executor_prompt: profile.executorPrompt,
+    allow_kiki_subagents: profile.allowKikiSubagents,
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     allowed_models: profile.allowedModels === undefined ? undefined : [...profile.allowedModels],
@@ -1078,7 +1082,10 @@ async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IA
         const observed = registry.negotiated!(descriptor.id, selected?.version)!;
         return { models: observed.models, thinking_levels: observed.thinkingLevels,
           auth_methods: observed.authMethods, resume: observed.resume, load: observed.load,
-          permission_modes: observed.permissionModes };
+          permission_modes: observed.permissionModes, agent_version: observed.agentVersion,
+          image: observed.image, audio: observed.audio, fork: observed.fork,
+          native_steering: observed.nativeSteering, question_form: observed.questionForm,
+          plan_approval: observed.planApproval };
       })(),
     },
     connection: {

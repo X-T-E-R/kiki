@@ -6,6 +6,7 @@ export interface McpSeat {
   readonly sessionId: string;
   readonly delegationToken: string;
   readonly workspacePath?: string;
+  readonly harnessAgentId?: string;
 }
 
 export interface SeatResolver {

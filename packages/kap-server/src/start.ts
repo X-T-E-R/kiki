@@ -116,6 +116,7 @@ import {
   type SeatResolver,
 } from './mcp/seatResolver';
 import { ExternalDelegationProcedureHost } from './procedures/externalDelegationHost';
+import { registerHarnessMcpBridge } from './mcp/harnessBridge';
 import {
   createSeatKlientDelegationAuth,
   registerSeatKlientDelegationRoutes,
@@ -726,7 +727,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
         })
       : undefined;
   seatResolver = createCompositeSeatResolver(
-    createCompositeSeatResolver(runtimeSeatResolver, opts.mcpSeatResolver),
+    createCompositeSeatResolver(
+      exposureClass === 'loopback' ? registerHarnessMcpBridge(core, app) : undefined,
+      createCompositeSeatResolver(runtimeSeatResolver, opts.mcpSeatResolver),
+    ),
     envSeatResolver,
   );
   const externalDelegationHost = new ExternalDelegationProcedureHost(core);

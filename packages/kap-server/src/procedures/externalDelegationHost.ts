@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   ISessionExternalDelegationService,
+  IAgentProfileService,
   type ExternalAuthority,
   type ExternalDispatchView,
   type ExternalEventPage,
@@ -36,6 +37,7 @@ export interface ExternalDelegationSeatAuthority {
   readonly principalId: string;
   readonly sessionId: string;
   readonly workspacePath?: string;
+  readonly harnessAgentId?: string;
 }
 
 export class ExternalDelegationProcedureHost {
@@ -51,7 +53,11 @@ export class ExternalDelegationProcedureHost {
     const canonicalInput = procedure.inputSchema.parse(input) as DelegationProcedureInput<Name>;
     return withSessionOperation(this.core, seat.sessionId, async (session) => {
       if (session === undefined) throw new Error('Session does not exist.');
-      await ensureMainAgent(session);
+      const main = await ensureMainAgent(session);
+      if (seat.harnessAgentId !== undefined &&
+          (seat.harnessAgentId !== main.id || main.accessor.get(IAgentProfileService).data().allowKikiSubagents !== true)) {
+        throw new Error('Kiki harness delegation is disabled for this main profile');
+      }
       const service = session.accessor.get(ISessionExternalDelegationService);
       const output = await execute(service, authorityFor(seat), seat, name, canonicalInput, signal);
       return procedure.outputSchema.parse(output) as DelegationProcedureOutput<Name>;
