@@ -90,6 +90,20 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## 连续性提醒词表
+
+`TodoList` 可用时，Kiki 会提醒 Agent 把持续有效的指示写入工作笔记，并在需要时核对早先的对话。提醒追加到对话历史尾部，不会自动保存记忆或修改系统提示词。笔记提醒也适用于默认的总结压缩策略。进度提醒连续未获回应时，间隔从 10 条 Assistant 消息退避到 20、40 条；写入待办或笔记都会重置退避。
+
+内置词表覆盖中英文，可在 `config.toml` 中分别覆盖：
+
+```toml
+[loop_control.directive_cues]
+instructions = ["always", "never", "以后", "不要"]
+history = ["as I said", "earlier", "之前", "我说过"]
+```
+
+提供的列表会替换默认列表，而不是追加。空列表关闭该类关键词匹配。匹配是不区分大小写的子串匹配，并非语义分类；以 steer 方式插入运行中任务的纠正，即使不含关键词，也可触发记录指示提醒。记录指示和回看历史提醒各自每轮最多一次。记忆关闭时，提醒只建议写工作笔记，不建议调用 `MemoryWrite`。
+
 ## 供应商凭证
 
 供应商凭证——Kiki 调用各供应商时使用的 API 密钥——存放在 `~/.kiki/credentials/credentials.toml`（覆盖数据目录时为 `$KIKI_HOME/credentials/credentials.toml`）。普通配置仍留在 `config.toml`；凭证值保持原来的 TOML 路径，供应商的 `api_key` 只是从 `config.toml` 的 `[providers."<name>"]` 表移到这里的同名表下。

@@ -16,6 +16,11 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IConfigService } from '#/app/config/config';
+import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
+import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
+import { PromptSteered } from '#/agent/prompt/promptService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { ISessionTodoService } from './sessionTodo';
 import { readTodoState, todoKey, ToolsUpdateStore, type TodoState } from './todoOps';
@@ -179,6 +184,9 @@ export class SessionTodoService extends Service implements ISessionTodoService {
   private activateAgent(handle: IAgentScopeHandle): void {
     const initial = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
     this.lastKnownTodos.set(handle.id, { items: initial.items, rev: initial.notesMeta?.rev });
+    this.trackAgentBinding(handle.id, handle.accessor.get(IEventBus).subscribe(PromptSteered, (event) => {
+      this.reminderTrackers.get(handle.id)?.steer(event.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n'));
+    }));
     this.trackAgentBinding(
       handle.id,
       handle.accessor.get(IEventBus).subscribe(ContextUndone, () => {
@@ -193,22 +201,23 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     );
   }
 
-  private staleReminder(handle: IAgentScopeHandle): string | undefined {
+  private staleReminder(handle: IAgentScopeHandle) {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     const toolPolicy = handle.accessor.get(IAgentToolPolicyService);
     const state = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
     const compact = handle.accessor.get(IAgentFullCompactionService);
-    const strategy = compact.getContextStrategy();
-    const notesEnabled = strategy.shadow || strategy.strategy !== 'summarize';
-    const counting = notesEnabled ? handle.accessor.get(IAgentTokenCountingService) : undefined;
-    return this.reminderTrackers.get(handle.id)?.reminder({
+    const counting = handle.accessor.get(IAgentTokenCountingService);
+    const config = handle.accessor.get(IConfigService);
+    const settings = config.get<MemoryConfig>(MEMORY_SECTION);
+    return this.reminderTrackers.get(handle.id)?.evaluate({
       active: toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin'),
-      history: memory.get(), todos: state.items, notesEnabled, notesMeta: state.notesMeta,
-      threshold: notesEnabled ? compact.getAutoCompact().tokens : undefined,
-      currentTokens: counting?.get().size,
-      epoch: notesEnabled ? handle.accessor.get(IAgentStateService).get(contextWindowEpochKey) : undefined,
+      history: memory.get(), todos: state.items, notes: state.notes, notesMeta: state.notesMeta,
+      threshold: compact.getAutoCompact().tokens, currentTokens: counting.get().size,
+      epoch: handle.accessor.get(IAgentStateService).get(contextWindowEpochKey),
       remindedEpoch: state.remindedEpoch,
-      estimateMessage: counting === undefined ? undefined : (message) => counting.estimateMessage(message),
+      cues: config.get<LoopControl>(LOOP_CONTROL_SECTION).directiveCues,
+      memoryAvailable: handle.id === MAIN_AGENT_ID && memoryEnabled(settings, handle.accessor.get(ISessionContext).workspaceId) && settings.approval !== 'off',
+      estimateMessage: (message) => counting.estimateMessage(message),
       onNearWindow: (epoch) => { void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_reminder', value: epoch })); },
     });
   }

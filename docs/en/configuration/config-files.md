@@ -90,6 +90,20 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## Continuity reminder cues
+
+With `TodoList` available, Kiki reminds the agent to preserve standing instructions in working notes and to check earlier conversation when needed. These reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Notes reminders also apply to the default summarization strategy. Progress reminders back off from 10 to 20 to 40 assistant messages when unanswered; writing either todos or notes resets the backoff.
+
+The built-in cues cover Chinese and English. Override either list in `config.toml`:
+
+```toml
+[loop_control.directive_cues]
+instructions = ["always", "never", "以后", "不要"]
+history = ["as I said", "earlier", "之前", "我说过"]
+```
+
+Each supplied list replaces its defaults, rather than extending them. An empty list disables that category's keyword matching. Matching is case-insensitive substring matching, not semantic classification; running-task corrections delivered as steer input can still trigger an instruction reminder without matching a keyword. Instruction and history reminders are each limited to once per turn. When memory is disabled, reminders suggest working notes without suggesting `MemoryWrite`.
+
 ## Provider credentials
 
 Provider credentials — the API keys Kiki uses to call each provider — are stored in `~/.kiki/credentials/credentials.toml` (`$KIKI_HOME/credentials/credentials.toml` when you override the data directory). Ordinary configuration stays in `config.toml`; credential values keep the TOML paths they had there, so a provider's `api_key` simply moves out of its `[providers."<name>"]` table in `config.toml` and into the same table here.

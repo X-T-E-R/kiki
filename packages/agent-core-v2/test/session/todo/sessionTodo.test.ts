@@ -33,6 +33,12 @@ import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 
 import { stubWireJournal } from '../../wire/stubs';
+import { IConfigService } from '#/app/config/config';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { PromptSteered } from '#/agent/prompt/promptService';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { TodoReminderResult } from '#/session/todo/todoListReminder';
 
 interface FakeAgent {
   readonly handle: IAgentScopeHandle;
@@ -54,6 +60,8 @@ const noopBlob: IAgentBlobService = {
 function makeFakeAgent(
   agentId: string,
   reminders = new Map<string, () => string | undefined>(),
+  history: ContextMessage[] = Array.from({ length: 10 }, () => ({ role: 'assistant', content: [], toolCalls: [] })),
+  currentTokens = 1_000,
 ): FakeAgent {
   const registeredTools: string[] = [];
   const registeredVariants: string[] = [];
@@ -73,9 +81,9 @@ function makeFakeAgent(
 
   const injectorStub = {
     _serviceBrand: undefined,
-    register: (variant: string, provider: () => string | undefined) => {
+    register: (variant: string, provider: () => TodoReminderResult | undefined) => {
       registeredVariants.push(variant);
-      reminders.set(variant, provider);
+      reminders.set(variant, () => provider()?.content);
       return toDisposable(() => { reminders.delete(variant); });
     },
   };
@@ -86,7 +94,7 @@ function makeFakeAgent(
 
   const memoryStub = {
     _serviceBrand: undefined,
-    get: () => Array.from({ length: 10 }, () => ({ role: 'assistant', content: [], toolCalls: [] })),
+    get: () => history,
   };
 
   const profileStub = {
@@ -116,7 +124,10 @@ function makeFakeAgent(
       if (id === IAgentContextMemoryService) return memoryStub as unknown as T;
       if (id === IAgentProfileService) return profileStub as unknown as T;
       if (id === IAgentToolPolicyService) return profileStub as unknown as T;
-      if (id === IAgentFullCompactionService) return { getContextStrategy: () => ({ strategy: 'summarize', source: 'default', shadow: false }) } as unknown as T;
+      if (id === IAgentFullCompactionService) return { getAutoCompact: () => ({ tokens: 100_000 }), getContextStrategy: () => ({ strategy: 'summarize', source: 'default', shadow: false }) } as unknown as T;
+      if (id === IAgentTokenCountingService) return { get: () => ({ size: currentTokens }), estimateMessage: () => 1 } as unknown as T;
+      if (id === IConfigService) return { get: (section: string) => section === 'memory' ? { enabled: true, approval: 'auto', workspaces: {} } : {} } as unknown as T;
+      if (id === ISessionContext) return { workspaceId: 'test-workspace' } as unknown as T;
       if (id === IEventBus) return eventBus as unknown as T;
       if (id === IWireService) return ix.get(IWireService) as unknown as T;
       if (id === IEventDispatcher) return dispatcher as unknown as T;
@@ -206,6 +217,32 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 }
 
 describe('SessionTodoService', () => {
+  it('injects T2 under the default summarize strategy and persists its epoch latch', () => {
+    const reminders = new Map<string, () => string | undefined>();
+    const main = makeFakeAgent('main', reminders, [], 86_000);
+    makeTodoService(makeLifecycleStub([main.handle]).service);
+    const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
+    expect(provider()).toContain('The context window will be renewed soon');
+    expect(provider()).toBeUndefined();
+    expect(main.journal.some((record) => record.type === 'tools.update_store' &&
+      (record as { key?: string; value?: number }).key === 'todo_reminder' &&
+      (record as { value?: number }).value === 0)).toBe(true);
+  });
+
+  it('reminds on a keyword-free PromptSteered only after its input materializes', async () => {
+    const history: ContextMessage[] = [];
+    const reminders = new Map<string, () => string | undefined>();
+    const main = makeFakeAgent('main', reminders, history);
+    makeTodoService(makeLifecycleStub([main.handle]).service);
+    const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
+    const content = [{ type: 'text' as const, text: 'The blue option is correct.' }];
+    await main.dispatcher.dispatch(new PromptSteered({ activePromptId: 'active', promptIds: ['steer'], content, steeredAt: new Date().toISOString() }));
+    expect(provider()).toBeUndefined();
+    history.push({ role: 'user', content, toolCalls: [], origin: { kind: 'user' }, source: { turnId: 424 } });
+    expect(provider()).toContain('standing instruction');
+    expect(provider()).toBeUndefined();
+  });
+
   it('saves summarized directives as an undoable notes update and covers the new summary watermark', async () => {
     const main = makeFakeAgent('main');
     const service = makeTodoService(makeLifecycleStub([main.handle]).service);

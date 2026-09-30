@@ -171,3 +171,121 @@ describe('todoListStaleReminder', () => {
     ).toBeDefined();
   });
 });
+
+function user(text: string, turnId: number): ContextMessage {
+  return { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin: { kind: 'user' }, source: { turnId } };
+}
+function injected(result: NonNullable<ReturnType<TodoListReminderTracker['evaluate']>>): ContextMessage {
+  return { role: 'user', content: [{ type: 'text', text: result.content }], toolCalls: [],
+    origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: result.disclosure } };
+}
+const freshMeta = { rev: 1, hash: 'test', writtenTurn: 1, writtenStep: 't1.0', windowEpoch: 1, coveredMessageId: 'compaction_summary' };
+const baseReminder = { active: true, todos: [], epoch: 0 };
+
+describe('event-driven continuity reminders', () => {
+  it.each(['以后直接 pin 模型', 'Always use the selected model'])('recognizes default instruction cues: %s', (text) => {
+    const tracker = new TodoListReminderTracker();
+    const history = [user(text, 1)];
+    expect(tracker.evaluate({ ...baseReminder, history })?.disclosure.triggers).toEqual(['E1']);
+    expect(tracker.evaluate({ ...baseReminder, history: [...history, user(text, 1)] })).toBeUndefined();
+  });
+
+  it('filters synthetic inputs and honors cue overrides, including empty lists', () => {
+    const tracker = new TodoListReminderTracker();
+    expect(tracker.evaluate({ ...baseReminder, history: [user('ordinary request', 1)] })).toBeUndefined();
+    expect(tracker.evaluate({ ...baseReminder, history: [user('Always use it', 2)], cues: { instructions: [] } })).toBeUndefined();
+    expect(tracker.evaluate({ ...baseReminder, history: [{ ...user('Always use it', 3), origin: { kind: 'injection', variant: 'test' } }] })).toBeUndefined();
+    expect(tracker.evaluate({ ...baseReminder, history: [user('special cue', 4)], cues: { instructions: ['special cue'] }, memoryAvailable: false })?.content).not.toContain('MemoryWrite');
+  });
+
+  it('keeps event E1 available beyond six turns, deduplicates replay and restores undo', () => {
+    const tracker = new TodoListReminderTracker();
+    const history: ContextMessage[] = [];
+    for (let turn = 1; turn <= 6; turn++) {
+      history.push(user('Never change models', turn));
+      const result = tracker.evaluate({ ...baseReminder, history })!;
+      expect(result.disclosure.triggers).toEqual(['E1']);
+      history.push(injected(result));
+    }
+    const beforeLast = history.slice(0, -2);
+    tracker.steer('The blue option is correct.');
+    history.push(user('The blue option is correct.', 7));
+    const steer = tracker.evaluate({ ...baseReminder, history })!;
+    expect(steer.disclosure.triggers).toEqual(['E1']);
+    history.push(injected(steer));
+    expect(tracker.evaluate({ ...baseReminder, history })).toBeUndefined();
+    expect(new TodoListReminderTracker().evaluate({ ...baseReminder, history })).toBeUndefined();
+    expect(tracker.evaluate({ ...baseReminder, history: [...beforeLast, user('Never change models', 8)] })?.disclosure.triggers).toEqual(['E1']);
+    expect(tracker.evaluate({ ...baseReminder, epoch: 1, history: [user('Never change models', 9)] })?.disclosure.triggers).toEqual(['P1', 'E1']);
+  });
+
+  it('gates E2 to post-renewal windows and only once per turn, with configurable history cues', () => {
+    expect(new TodoListReminderTracker().evaluate({ ...baseReminder, history: [user('as I said', 1)] })).toBeUndefined();
+    const tracker = new TodoListReminderTracker();
+    const input = { ...baseReminder, epoch: 1, notes: { goal: 'current' }, notesMeta: freshMeta };
+    const history = [user('as I said', 2)];
+    const result = tracker.evaluate({ ...input, history })!;
+    expect(result.disclosure.triggers).toEqual(['E2']);
+    history.push(injected(result), user('as I said', 2));
+    expect(tracker.evaluate({ ...input, history })).toBeUndefined();
+    history.push(user('custom history', 3));
+    expect(tracker.evaluate({ ...input, history, cues: { history: ['custom history'] } })?.disclosure.triggers).toEqual(['E2']);
+  });
+
+  it('fires P1 from a nonempty handoff even when compaction already updated the notes watermark', () => {
+    const summary = (block: string): ContextMessage => ({ role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' },
+      content: [{ type: 'text', text: `## Standing directives\nAlready saved\n\n## User input since notes\n${block}\n\nTreat Standing directives and User input since notes as in force.` }] });
+    const input = { ...baseReminder, epoch: 1, notes: { directives: 'Already saved' }, notesMeta: freshMeta };
+    expect(new TodoListReminderTracker().evaluate({ ...input, history: [summary('(none)')] })).toBeUndefined();
+    const tracker = new TodoListReminderTracker();
+    const history = [summary('- t424 (user): directly pin the model')];
+    const result = tracker.evaluate({ ...input, history })!;
+    expect(result.disclosure.triggers).toEqual(['P1']);
+    history.push(injected(result));
+    expect(tracker.evaluate({ ...input, history })).toBeUndefined();
+    expect(new TodoListReminderTracker().evaluate({ ...input, history })).toBeUndefined();
+  });
+
+  it('merges at most three triggers in priority order and suppresses unavailable memory hints', () => {
+    const history = [...Array.from({ length: 10 }, assistantMessage), user('Always do it as I said', 424)];
+    const tracker = new TodoListReminderTracker();
+    const input = { ...baseReminder, history, epoch: 1,
+      threshold: 100_000, currentTokens: 86_000, estimateMessage: () => 1_000, memoryAvailable: false };
+    const result = tracker.evaluate(input)!;
+    expect(result.disclosure).toEqual({ kind: 'renew', triggers: ['T2', 'P1', 'E1'], epoch: 1, userTurn: 't424' });
+    expect(result.content.match(/Do not mention this reminder/g)).toHaveLength(1);
+    expect(result.content).toContain('There are 1 user inputs since notes');
+    expect(result.content).not.toContain('MemoryWrite');
+    history.push(injected(result));
+    expect(tracker.evaluate(input)).toBeUndefined();
+    expect(new TodoListReminderTracker().evaluate(input)).toBeUndefined();
+  });
+
+  it('backs off progress 10 to 20 to 40 and notes-only writes reset it', () => {
+    const tracker = new TodoListReminderTracker();
+    const history: ContextMessage[] = [];
+    const positions: number[] = [];
+    for (let step = 1; step <= 100; step++) {
+      history.push(assistantMessage());
+      const result = tracker.evaluate({ ...baseReminder, history });
+      if (result) { positions.push(step); history.push(injected(result)); }
+    }
+    expect(positions).toEqual([10, 20, 40, 60, 100]);
+    history.push({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'notes', name: 'TodoList', arguments: JSON.stringify({ notes: { next: 'continue' } }) }] });
+    expect(tracker.evaluate({ ...baseReminder, history })).toBeUndefined();
+    history.push(...Array.from({ length: 9 }, assistantMessage));
+    expect(tracker.evaluate({ ...baseReminder, history })).toBeUndefined();
+    history.push(assistantMessage());
+    expect(tracker.evaluate({ ...baseReminder, history })?.disclosure.triggers).toEqual(['T0']);
+  });
+
+  it('T2 is below-threshold silent, latched locally while durable writes settle, and replay-safe', () => {
+    const tracker = new TodoListReminderTracker();
+    const input = { ...baseReminder, epoch: 1, notes: { goal: 'ready' }, notesMeta: freshMeta, threshold: 100_000, history: [] as ContextMessage[] };
+    expect(tracker.evaluate({ ...input, currentTokens: 84_999 })).toBeUndefined();
+    const result = tracker.evaluate({ ...input, currentTokens: 85_000 })!;
+    expect(result.disclosure.triggers).toEqual(['T2']);
+    expect(tracker.evaluate({ ...input, currentTokens: 86_000 })).toBeUndefined();
+    expect(new TodoListReminderTracker().evaluate({ ...input, history: [injected(result)], currentTokens: 86_000 })).toBeUndefined();
+  });
+});
