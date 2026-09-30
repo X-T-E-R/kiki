@@ -548,22 +548,22 @@ describe('SessionController pipeline', () => {
     expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
     controller.setFocusedAgent('focused-child');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'focused-child': 'delta', 'cold-child': 'turn',
+      '*': 'turn', main: 'off', 'focused-child': 'delta', 'cold-child': 'turn',
     });
     releaseFirst();
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(1);
     releaseSecond();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'focused-child': 'delta',
+      '*': 'turn', main: 'off', 'focused-child': 'delta',
     });
     const releaseLate = controller.subscribeAgent('late-child', vi.fn());
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'focused-child': 'delta', 'late-child': 'turn',
+      '*': 'turn', main: 'off', 'focused-child': 'delta', 'late-child': 'turn',
     });
     controller.setFocusedAgent('late-child');
     releaseLate();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'late-child': 'delta',
+      '*': 'turn', main: 'off', 'late-child': 'delta',
     });
     expect(socket.unsubscribe).not.toHaveBeenCalled();
     controller.close();
@@ -610,7 +610,7 @@ describe('SessionController pipeline', () => {
     expect(socket.subscribe).toHaveBeenCalledWith(
       'session_test',
       expect.any(Object),
-      { '*': 'turn', main: 'delta', 'child-1': 'delta' },
+      { '*': 'turn', main: 'off', 'child-1': 'delta' },
     );
     controller.close();
   });
@@ -1223,11 +1223,11 @@ describe('SessionController transcript authority', () => {
     controller.retainAgentView('left', 'child-1', 'delta');
     controller.retainAgentView('right', 'child-2', 'delta');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
+      '*': 'turn', main: 'off', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
     });
     controller.releaseAgentView('left');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'legacy-child': 'delta', 'child-2': 'delta',
+      '*': 'turn', main: 'off', 'legacy-child': 'delta', 'child-2': 'delta',
     });
     controller.setFocusedAgent(undefined);
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {

@@ -115,7 +115,8 @@ class KlientHttpConnection {
   ) {
     this.terminals = new TerminalHttpConnection(scope, opts.enableTerminals === true, (frame) => this.send(frame));
     this.sessionViews = new SessionViewHttpConnection(opts.sessionViewBroadcaster,
-      (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error));
+      (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
+      { core: scope, service: opts.sessionViewTranscriptService });
     this.heartbeat = setInterval(() => {
       if (Date.now() - this.lastInboundAt > 30_000) { socket.terminate(); this.dispose(); return; }
       this.send({ type: 'ping', data: { nonce: String(Date.now()), heartbeatMs: 10_000 } });

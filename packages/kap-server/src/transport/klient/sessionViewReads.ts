@@ -1,7 +1,11 @@
 import { MAIN_AGENT_ID } from '@kiki/agent-core-v2';
 import {
+  AgentTranscript,
   filterOpsForGrade,
   paginateTurns,
+  redactSnapshotForGrade,
+  type TranscriptGrade,
+  type TranscriptResetEvent,
   type TranscriptAttachment,
   type TranscriptDetailListResponse,
   type TranscriptOpsCatchupResponse,
@@ -11,6 +15,32 @@ import {
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
+
+export async function readColdSessionViewBaseline(
+  service: TranscriptService,
+  sessionId: string,
+  agentId: string,
+  grade: Exclude<TranscriptGrade, 'off'>,
+  signal: AbortSignal,
+): Promise<TranscriptResetEvent | undefined> {
+  const source = await service.readColdSnapshot(sessionId, agentId, undefined, signal);
+  if (source === undefined) return undefined;
+  signal.throwIfAborted();
+  const transcript = new AgentTranscript(agentId);
+  transcript.apply([{ op: 'reset', agentId, snapshot: source }]);
+  const snapshot = redactSnapshotForGrade(grade, transcript.snapshot({
+    tailTurns: 20,
+    globalWindow: {
+      taskLimit: 64, attachmentLimit: 64, promptLimit: 64,
+      taskOutputTailChars: 1024, attachmentSourceBytes: 2048, promptContentBytes: 4096,
+    },
+  }));
+  return {
+    type: 'transcript.reset', session_id: sessionId, agent_id: agentId,
+    snapshot, grade, cursor: { seq: 0, epoch: `cold:${sessionId}:${agentId}` },
+    coverage: coverageForItems(snapshot.items, snapshot.hasMoreOlder ?? false, source.toolCallCountKnown === true),
+  };
+}
 
 export class TranscriptDetailCursorError extends Error {
   constructor() {

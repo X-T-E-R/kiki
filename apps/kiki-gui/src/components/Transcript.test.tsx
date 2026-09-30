@@ -850,6 +850,22 @@ describe('live and event chrome', () => {
     expect(container.textContent).toContain('A blank page');
   });
 
+  it('does not certify an unverified empty cold read as a blank session', async () => {
+    const retry = vi.fn();
+    const { root, container } = makeRoot();
+    await renderSettled(root, <Transcript
+      state={transcriptState([], { historyCoverageKind: 'unknown', hasMoreHistory: true })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
+    />);
+    expect(container.textContent).not.toContain('A blank page');
+    expect(container.querySelector('[data-transcript-loading]')).toBeNull();
+    const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
+    expect(button).toBeDefined();
+    await act(async () => { click(button!); });
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it('offers retry for a failed transcript before a baseline arrives', async () => {
     const retry = vi.fn();
     const { root, container } = makeRoot();

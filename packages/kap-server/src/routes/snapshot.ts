@@ -6,8 +6,12 @@ import {
 import {
   ensureMainAgent,
   IAgentProfileService,
+  IAtomicDocumentStore,
   ISessionContext,
+  ISessionIndex,
+  ISessionManager,
   ISessionMetadata,
+  type SessionMeta,
   IWorkspaceService,
   type AgentMeta,
   type IAgentScopeHandle,
@@ -101,6 +105,46 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
     },
   );
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
+}
+
+export async function assembleBrowseSnapshot(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+): Promise<SessionSnapshotResponse> {
+  if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
+    return assembleSnapshot(core, broadcaster, sessionId, 'transcript');
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
+  const meta = await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
+    `sessions/${summary.workspaceId}/${sessionId}`, 'state.json',
+  );
+  if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
+  const cursor = await broadcaster.getCursor(sessionId);
+  const workspace = await core.accessor.get(IWorkspaceService).get(summary.workspaceId);
+  const subagents: SnapshotSubagent[] = Object.entries(meta.agents ?? {})
+    .filter(([id]) => id !== 'main')
+    .map(([id, agent]) => ({
+      id, agent_id: id, session_id: sessionId, kind: 'subagent',
+      description: resolveSubagentDisplayName(subagentUserLabel(agent), agent.displayName, id),
+      status: agent.status ?? 'running', live: false,
+      created_at: new Date(meta.createdAt).toISOString(),
+      completed_at: agent.completedAt === undefined ? undefined : new Date(agent.completedAt).toISOString(),
+      profile: agent.displayName, label: subagentUserLabel(agent),
+      parent_agent_id: subagentParentAgentId(agent),
+      model: agent.model, thinking_effort: agent.thinkingEffort,
+      output_preview: agent.resultSummary?.slice(0, 2048), stop_reason: agent.error?.slice(0, 2048),
+      tool_call_count: agent.toolCallCount,
+    }));
+  return {
+    as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
+    session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
+      { ...resolveSessionFacts(core, sessionId, summary.usage),
+        agentConfig: { model: meta.agents?.['main']?.model ?? '' } }, cursor.seq),
+    messages: { items: [], has_more: false }, in_flight_turn: null,
+    subagents, pending_approvals: [], pending_questions: [],
+  };
 }
 
 export async function assembleSnapshot(

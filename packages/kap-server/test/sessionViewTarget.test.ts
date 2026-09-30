@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
-import { TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
+import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { SessionViewTarget } from '../src/transport/klient/sessionViewTarget';
 import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
 import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
+import { readColdSessionViewBaseline } from '../src/transport/klient/sessionViewReads';
 
 function durable(seq: number) {
   return { type: 'turn.ended', session_id: 's1', seq, epoch: 'session-epoch', timestamp: '2026-01-01T00:00:00.000Z', payload: { type: 'turn.ended' } };
@@ -92,5 +93,138 @@ describe('SessionViewTarget', () => {
     expect(broadcaster.getBufferedSince).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('projects only the requested cold child and cancels detached reads (%s)', async (detach) => {
+    const manager = { get: vi.fn(() => undefined), resume: vi.fn(), acquire: vi.fn(), onDidCreateSession: vi.fn(() => ({ dispose: vi.fn() })) };
+    const core = { accessor: { get: () => manager } };
+    let resolveRead: ((snapshot: unknown) => void) | undefined;
+    let readSignal: AbortSignal | undefined;
+    const service = {
+      readColdRoster: vi.fn(async () => Array.from({ length: 456 }, (_, i) => ({ agentId: `agent-${i}`, type: 'sub' }))),
+      readColdSnapshot: vi.fn((_sessionId, _agentId, _query, signal: AbortSignal) => {
+        readSignal = signal;
+        return new Promise((resolve) => { resolveRead = resolve; });
+      }),
+    };
+    const broadcaster = { subscribe: vi.fn(), unsubscribe: vi.fn(), getCursor: vi.fn(async () => ({ seq: 7, epoch: 'cold-session' })) };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: core as never, service: service as never });
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1,
+      transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 0 }, transcriptGrades: { '*': 'turn', main: 'off', 'agent-27': 'delta' } } } });
+    await vi.waitFor(() => expect(resolveRead).toBeDefined());
+    if (detach) connection.receive({ type: 'view_detach', id: 'v1' });
+    resolveRead!({ ...new AgentTranscript('agent-27').snapshot(), toolCallCountKnown: true });
+    await vi.waitFor(() => {
+      if (detach) expect(readSignal?.aborted).toBe(true);
+      else expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(service.readColdSnapshot).toHaveBeenCalledExactlyOnceWith('s1', 'agent-27', undefined, expect.any(AbortSignal));
+    expect(broadcaster.subscribe).not.toHaveBeenCalled();
+    expect(manager.resume).not.toHaveBeenCalled();
+    expect(manager.acquire).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
+    if (detach) expect(send).not.toHaveBeenCalled();
+    else expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      type: 'transcript', event: expect.objectContaining({ agent_id: 'agent-27', coverage: expect.objectContaining({ kind: 'full' }) }),
+    }) }));
+    connection.dispose();
+  });
+
+  it.each(['upgrade', 'detach', 'dispose', 'failure'])('waits for activation settlement and handles %s without reviving old views', async (outcome) => {
+    let activate!: (event: { sessionId: string }) => void;
+    let settle!: () => void;
+    let fail!: (error: Error) => void;
+    let live = false;
+    const listenerDispose = vi.fn();
+    const manager = {
+      get: () => live ? {} : undefined,
+      onDidCreateSession: (callback: typeof activate) => { activate = callback; return { dispose: listenerDispose }; },
+      whenResumeSettled: vi.fn(() => new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; })),
+    };
+    const service = {
+      readColdRoster: vi.fn(async () => [{ agentId: 'main', type: 'main' }]),
+      readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: true })),
+    };
+    const broadcaster = {
+      subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
+      getCursor: vi.fn(async () => ({ seq: 7, epoch: 'journal-epoch' })),
+      getBufferedSince: vi.fn(async () => ({ events: [], resyncRequired: false, currentSeq: 7, epoch: 'journal-epoch' })),
+      flushTranscriptSeed: vi.fn(async () => {}),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => manager } } as never, service: service as never });
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1,
+      transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7, epoch: 'journal-epoch' }, transcriptGrades: { main: 'delta' },
+        transcriptSince: { main: { seq: 0, epoch: 'cold:s1:main' } } } } });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      type: 'ready', currentSessionCursor: { seq: 7, epoch: 'journal-epoch' },
+    }) })));
+    send.mockClear();
+    live = true;
+    activate({ sessionId: 's1' });
+    expect(broadcaster.subscribe).not.toHaveBeenCalled();
+    if (outcome === 'detach') connection.receive({ type: 'view_detach', id: 'v1' });
+    if (outcome === 'dispose') connection.dispose();
+    if (outcome === 'failure') fail(new Error('restore failed'));
+    else settle();
+    if (outcome === 'upgrade') {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'resyncRequired' }) })));
+      expect(broadcaster.subscribe).toHaveBeenCalledExactlyOnceWith('s1', expect.any(SessionViewTarget), undefined,
+        { main: 'delta' }, { deferTranscriptReset: true, transcriptSince: undefined });
+      expect(broadcaster.flushTranscriptSeed).toHaveBeenCalledOnce();
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(broadcaster.subscribe).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+    if (outcome === 'failure') expect(errors).toHaveBeenCalledWith('v1', expect.objectContaining({ message: 'restore failed' }));
+    else expect(errors).not.toHaveBeenCalled();
+    connection.dispose();
+    expect(listenerDispose).toHaveBeenCalled();
+  });
+
+  it('discards a superseded cold generation even when its read ignores cancellation', async () => {
+    let finishFirst!: (snapshot: unknown) => void;
+    const readSignals: AbortSignal[] = [];
+    const service = {
+      readColdRoster: vi.fn(async () => []),
+      readColdSnapshot: vi.fn((_session, agent, _query, signal: AbortSignal) => {
+        readSignals.push(signal);
+        if (agent === 'old-child') return new Promise((resolve) => { finishFirst = resolve; });
+        return Promise.resolve({ ...new AgentTranscript(agent).snapshot(), toolCallCountKnown: true });
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const broadcaster = { getCursor: vi.fn(async () => ({ seq: 0, epoch: '' })), unsubscribe: vi.fn() };
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    const attach = (generation: number, agentId: string) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 0 }, transcriptGrades: { [agentId]: 'delta' } },
+    } });
+    attach(1, 'old-child');
+    await vi.waitFor(() => expect(finishFirst).toBeDefined());
+    attach(2, 'new-child');
+    expect(readSignals[0]?.aborted).toBe(true);
+    finishFirst(new AgentTranscript('old-child').snapshot());
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready', generation: 2 }) })));
+    expect(send.mock.calls.every(([frame]) => frame.data.generation === 2)).toBe(true);
+    expect(errors).not.toHaveBeenCalled();
+    connection.dispose();
+  });
+
+  it('keeps an unverified empty cold baseline unknown instead of certifying a blank session', async () => {
+    const service = { readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: false })) };
+    const event = await readColdSessionViewBaseline(service as never, 's1', 'main', 'delta', new AbortController().signal);
+    expect(event).toMatchObject({ cursor: { seq: 0, epoch: 'cold:s1:main' }, coverage: { kind: 'unknown', hasMoreOlder: true } });
   });
 });

@@ -3813,7 +3813,15 @@ export function Transcript({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
-        <p className="text-[13px] text-ink-faint">{t('transcript.blank')}</p>
+        <p className="text-[13px] text-ink-faint" title={state.historyCoverageKind === 'unknown' ? t('transcript.historyUnverifiedHint') : undefined}>
+          {t(state.historyCoverageKind === 'unknown' ? 'transcript.historyPartial' : 'transcript.blank')}
+        </p>
+        {state.historyCoverageKind === 'unknown' ? (
+          <button type="button" onClick={() => { if (onRetryLoad !== undefined) onRetryLoad(); else void onLoadOlder(); }}
+            className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint hover:text-ink-soft">
+            {t('common.retry')}
+          </button>
+        ) : null}
       </div>
     );
   }
