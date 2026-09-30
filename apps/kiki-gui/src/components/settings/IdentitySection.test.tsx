@@ -25,7 +25,6 @@ const api = {
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client: { requestIdentity: api, getConfig: async () => ({}), patchConfig: async () => ({}) } }),
-  useOptionalConnection: () => ({ client: { requestIdentity: api } }),
 }));
 
 const AT = '2026-09-30T00:00:00.000Z';

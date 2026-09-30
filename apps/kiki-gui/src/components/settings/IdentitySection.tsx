@@ -16,7 +16,7 @@ import type {
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { useConnection, useOptionalConnection } from '../../state/connection';
+import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -56,13 +56,12 @@ function useIdentityCatalog() {
   return useQuery({ queryKey: REQUEST_IDENTITY_QUERY_KEY, queryFn: () => client.requestIdentity.get(), staleTime: 10_000 });
 }
 
-/** Custom identities for the layer pickers on the provider and model editors; empty when offline. */
+/** Custom identities for the layer pickers on the provider and model editors; empty until the catalog loads. */
 export function useCustomIdentityChoices(): readonly { id: string; label: string }[] {
-  const connection = useOptionalConnection();
+  const { client } = useConnection();
   const query = useQuery({
     queryKey: REQUEST_IDENTITY_QUERY_KEY,
-    queryFn: () => connection!.client.requestIdentity.get(),
-    enabled: connection !== null,
+    queryFn: () => client.requestIdentity.get(),
     staleTime: 30_000,
   });
   return useMemo(

@@ -14,7 +14,6 @@ const patchConfig = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client: { getConfig, patchConfig } }),
-  useOptionalConnection: () => null,
 }));
 
 const CONFIG = {
