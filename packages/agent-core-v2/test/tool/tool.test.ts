@@ -34,6 +34,7 @@ import {
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS, SUBAGENT_SECTION } from '#/session/subagent/configSection';
+import { roleBindingAdvisories } from '#/session/subagent/modelConstraints';
 import { Error2, ErrorCodes } from '#/errors';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
@@ -208,6 +209,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       readonly modelAlias?: string;
       readonly thinkingLevel: string;
       readonly allowParentNotify?: boolean;
+      readonly bindingAdvisories?: NonNullable<ProfileData['bindingAdvisories']>;
     }
   >();
   const handles = new Map<string, IAgentScopeHandle>();
@@ -366,6 +368,16 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
         modelAlias: input.binding?.model,
         thinkingLevel: input.binding?.thinking ?? 'off',
         allowParentNotify: input.binding?.allowParentNotify,
+        bindingAdvisories: roleBindingAdvisories({
+          model: input.binding?.model ?? '',
+          requestedModel: input.binding?.bindingSelection?.model?.requestedValue,
+          thinking: input.binding?.thinking,
+          requestedThinking: input.binding?.bindingSelection?.thinking?.requestedValue,
+          constraints: input.binding?.resolvedProfile,
+          ruleSource: `profile:${profileName}`,
+          modelValueSource: input.binding?.bindingSelection?.model?.source ?? 'profile-default',
+          thinkingValueSource: input.binding?.bindingSelection?.thinking?.source,
+        }),
       });
       const createdHandle = handle(agentId);
       handles.set(agentId, createdHandle);
@@ -1183,16 +1195,22 @@ describe('AgentRun tool execution contract', () => {
     const lifecycle = createAgentLifecycleStub();
     const base = allowlistCatalog(['explore']);
     const cheap = normalizeAgentProfile({ name: 'explore', modelAlias: 'provider/fast', thinkingEffort: 'max',
-      allowedModels: ['provider/fast', 'mock-model'], systemPrompt: () => '' });
+      preferredModels: ['provider/fast', 'mock-model'], systemPrompt: () => '' });
     const catalog = { ...base, get: (name: string) => name === 'explore' ? cheap : base.get(name), list: () => [cheap] };
     const context = createAgentToolContext(lifecycle,
       { initialConfig: { models: POOL_MODEL_ENTRIES } }, sessionService(ISessionAgentProfileCatalog, catalog));
-    expect(agentTool(context).description).toContain('Model aliases available across the targets above: mock-model, provider/fast');
-    expect(agentTool(context).description).not.toContain('provider/smart');
+    expect(agentTool(context).description).toContain('Model aliases available across the targets above: mock-model, provider/fast, provider/smart');
     const overridden = await executeAgentTool(context, {
       prompt: 'Inspect the fixture', description: 'Inspect fixture', profile: 'explore', model_alias: 'provider/smart',
     });
     expect(overridden.isError).not.toBe(true);
+    const advisoryLine = String(overridden.output).split('\n').find((line) => line.startsWith('binding_advisories: '));
+    expect(advisoryLine).toBeDefined();
+    expect(JSON.parse(advisoryLine!.slice('binding_advisories: '.length))).toContainEqual(expect.objectContaining({
+      code: 'model_not_preferred',
+      ruleSource: 'profile:explore.preferred_models',
+      requestedValue: 'provider/smart',
+    }));
     expect(lifecycle.create).toHaveBeenLastCalledWith(expect.objectContaining({
       binding: expect.objectContaining({
         model: 'provider/smart',
