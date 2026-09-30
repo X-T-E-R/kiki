@@ -176,6 +176,19 @@ describe('RoomPage', () => {
     if (code.startsWith('auth.') || code === 'provider.connection_error') expect(line).toContain('example-provider');
   });
 
+  it('preserves a provider quota diagnostic instead of treating every HTTP 403 as a missing login', async () => {
+    rooms.log.mockResolvedValue({ entries: [{
+      id: 'quota-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
+      text: 'Provider rejected the request',
+      data: { memberId: 'lin-lan', reason_code: 'provider.auth_error', reason: 'Weekly usage limit reached' },
+    }] });
+    const container = await renderRoom();
+    const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
+    expect(line).toContain('Weekly usage limit reached');
+    expect(line).toContain('模型设置');
+    expect(line).not.toContain('未登录');
+  });
+
   it('keeps the reason from legacy wake failures without promising automatic retries', async () => {
     rooms.log.mockResolvedValue({ entries: [{
       id: 'legacy-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',

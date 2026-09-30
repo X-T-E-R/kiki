@@ -430,7 +430,6 @@ function systemLine(entry: Extract<RoomLogEntry, { kind: 'system' }>, t: ReturnT
         case 'auth.login_required':
         case 'auth.token_missing':
         case 'auth.token_unauthorized':
-        case 'provider.auth_error':
           return t('room.system.wakeLoginRequired', { name, provider });
         case 'provider.connection_error':
           return t('room.system.wakeConnectionFailed', { name, provider });
