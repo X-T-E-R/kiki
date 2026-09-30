@@ -84,6 +84,8 @@ export const ErrorCode = {
   SSH_HOST_NOT_FOUND: 40424,
   /** persona id does not exist */
   PERSONA_NOT_FOUND: 40425,
+  /** request identity profile or release track does not exist */
+  REQUEST_IDENTITY_NOT_FOUND: 40426,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -176,6 +178,8 @@ export const ErrorCode = {
   PERSONA_ALREADY_EXISTS: 40945,
   /** persona revision changed since it was read */
   PERSONA_REVISION_CONFLICT: 40946,
+  /** request identity is still referenced, or its checked update changed */
+  REQUEST_IDENTITY_CONFLICT: 40947,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -271,6 +275,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.MEMORY_NOT_FOUND]: 'memory.not_found',
   [ErrorCode.SSH_HOST_NOT_FOUND]: 'ssh.host_not_found',
   [ErrorCode.PERSONA_NOT_FOUND]: 'persona.not_found',
+  [ErrorCode.REQUEST_IDENTITY_NOT_FOUND]: 'request_identity.not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',
@@ -319,6 +324,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.MEMORY_REVISION_CONFLICT]: 'memory.revision_conflict',
   [ErrorCode.PERSONA_ALREADY_EXISTS]: 'persona.already_exists',
   [ErrorCode.PERSONA_REVISION_CONFLICT]: 'persona.revision_conflict',
+  [ErrorCode.REQUEST_IDENTITY_CONFLICT]: 'request_identity.conflict',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

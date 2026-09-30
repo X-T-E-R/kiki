@@ -431,6 +431,20 @@ export interface HttpRestFacade {
     writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
   };
 
+  /** `/request-identity/*`: identity profiles, client release tracks, usage and recent requests. Mutations return the full catalog. */
+  readonly requestIdentity: {
+    get(): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    preview(body: import('@kiki/protocol').RequestIdentityPreviewRequest): Promise<import('@kiki/protocol').RequestIdentityPreview>;
+    duplicateProfile(from: string, label?: string): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    updateProfile(id: string, draft: import('@kiki/protocol').RequestIdentityProfileDraft): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    deleteProfile(id: string): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    checkTrack(track: import('@kiki/protocol').RequestIdentityTrackId, source: import('@kiki/protocol').RequestIdentityUpdateSource): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    applyTrack(track: import('@kiki/protocol').RequestIdentityTrackId, version: string): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    trackAction(track: import('@kiki/protocol').RequestIdentityTrackId, action: 'dismiss' | 'rollback' | 'reset'): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    pinTrack(track: import('@kiki/protocol').RequestIdentityTrackId, pinned: boolean): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+    setManifestUrl(url: string | null): Promise<import('@kiki/protocol').RequestIdentityCatalog>;
+  };
+
   readonly notifications: {
     getSettings(): Promise<NotificationSettings>;
     updateSettings(settings: NotificationGlobalSettings): Promise<NotificationSettings>;

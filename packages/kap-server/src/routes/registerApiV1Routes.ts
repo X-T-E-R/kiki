@@ -34,6 +34,7 @@ import { registerMetaRoute } from './meta';
 import { registerMemoryRoutes } from './memory';
 import { registerModelCatalogRoutes } from './modelCatalog';
 import { registerNbSearchRoutes } from './nbSearch';
+import { registerRequestIdentityRoutes } from './requestIdentity';
 import { registerSecretsRoutes } from './secrets';
 import { registerNotificationRoutes } from './notifications';
 import type { NotificationService } from '../services/notifications/notificationService';
@@ -180,6 +181,7 @@ export async function registerApiV1Routes(
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
       registerHomesRoutes(apiV1 as unknown as Parameters<typeof registerHomesRoutes>[0], core);
       registerNbSearchRoutes(apiV1 as unknown as Parameters<typeof registerNbSearchRoutes>[0], core);
+      registerRequestIdentityRoutes(apiV1 as unknown as Parameters<typeof registerRequestIdentityRoutes>[0], core);
       registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);
       registerNotificationRoutes(apiV1 as unknown as Parameters<typeof registerNotificationRoutes>[0], opts.notifications);
       registerModelCatalogRoutes(

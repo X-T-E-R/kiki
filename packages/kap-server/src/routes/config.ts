@@ -11,6 +11,7 @@ import {
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
@@ -28,6 +29,7 @@ import {
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
+  resolveRequestIdentityLayers,
   type RequestIdentityPolicy,
 } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
@@ -105,6 +107,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         );
         delete camelPatch['replaceDomains'];
         delete camelPatch[REQUEST_IDENTITY_SECTION];
+        if (requestIdentity !== undefined && requestIdentity !== null) {
+          await core.accessor.get(IRequestIdentityCatalog).ready;
+          resolveRequestIdentityLayers(requestIdentityFromWire(requestIdentity));
+        }
         const subagent = camelPatch[SUBAGENT_SECTION];
         const requestedModels = [
           [FAST_MODEL_SECTION, camelPatch[FAST_MODEL_SECTION]],

@@ -424,6 +424,19 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
     },
 
+    requestIdentity: {
+      get: () => transport.json('/request-identity'),
+      preview: (body) => transport.json('/request-identity/preview', { method: 'POST', body }),
+      duplicateProfile: (from, label) => transport.json('/request-identity/profiles', { method: 'POST', body: { from, label } }),
+      updateProfile: (id, draft) => transport.json(`/request-identity/profiles/${encodeURIComponent(id)}`, { method: 'PUT', body: draft }),
+      deleteProfile: (id) => transport.json(`/request-identity/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      checkTrack: (track, source) => transport.json(`/request-identity/tracks/${track}/check`, { method: 'POST', body: { source } }),
+      applyTrack: (track, version) => transport.json(`/request-identity/tracks/${track}/apply`, { method: 'POST', body: { version } }),
+      trackAction: (track, action) => transport.json(`/request-identity/tracks/${track}/${action}`, { method: 'POST', body: {} }),
+      pinTrack: (track, pinned) => transport.json(`/request-identity/tracks/${track}/pin`, { method: 'PUT', body: { pinned } }),
+      setManifestUrl: (url) => transport.json('/request-identity/manifest', { method: 'PUT', body: { url } }),
+    },
+
     notifications: {
       getSettings: () => transport.json('/notifications/settings'),
       updateSettings: (settings) => transport.json('/notifications/settings', { method: 'PUT', body: settings }),
