@@ -46,7 +46,7 @@ The following combinations are rejected at startup:
 
 - `--continue` and `--session` are mutually exclusive — both mean "resume a previous session"
 - `--yolo` and `--auto` are mutually exclusive — the two permission modes cannot be combined
-- `--prompt` and `--prompt-file` cannot be combined; neither works with `--yolo`, `--auto`, or `--plan` — non-interactive mode uses `auto` permission by default
+- `--prompt` and `--prompt-file` cannot be combined; neither works with `--yolo`, `--auto`, or `--plan`. Prompt runs preserve the session's permission mode unless `--permission-mode` is supplied; a fresh session defaults to `auto` unless configured otherwise. An override on a resumed session is restored on exit.
 - `--output-format` requires `--prompt` or `--prompt-file`
 
 When resuming a session, you can override its saved permission or plan mode by adding `--auto`, `--yolo`, or `--plan`. For example, `kiki --continue --auto` resumes the latest session and switches it to auto permission mode.

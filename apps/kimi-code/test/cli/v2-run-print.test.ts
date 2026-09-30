@@ -319,7 +319,10 @@ describe('runV2Print', () => {
     }
   }, 60_000);
 
-  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'] as const)('cancels and restores a resumed agent once on %s', async (signal) => {
+  it.each((['SIGINT', 'SIGTERM', 'SIGHUP'] as const).flatMap((signal) => [
+    { signal, permissionMode: undefined },
+    { signal, permissionMode: 'auto' as const },
+  ]))('cancels and restores a resumed agent once on $signal with permission override $permissionMode', async ({ signal, permissionMode }) => {
     const { app, agent, agentServices, appServices } = makeFakeHarness();
     mocks.bootstrap.mockReturnValue({ app });
     mocks.ensureMainAgent.mockResolvedValue(agent);
@@ -342,7 +345,7 @@ describe('runV2Print', () => {
     loop.cancelFromUser.mockImplementation(() => finish());
     const handlers = new Map<NodeJS.Signals, () => Promise<void>>();
     const exit = vi.fn();
-    const run = runV2Print(opts({ session: 'ses_v2' }) as never, 'test', {
+    const run = runV2Print(opts({ session: 'ses_v2', permissionMode }) as never, 'test', {
       stdout: writer(), stderr: writer(),
       process: { once: (name, fn) => handlers.set(name, fn), off: (name) => handlers.delete(name), exit },
     });
@@ -352,7 +355,7 @@ describe('runV2Print', () => {
     await Promise.all([terminate(), terminate()]);
     await rejected;
     expect(exit).toHaveBeenCalledExactlyOnceWith(signal === 'SIGINT' ? 130 : signal === 'SIGHUP' ? 129 : 143);
-    expect(permission.setMode.mock.calls).toEqual([['auto'], ['manual']]);
+    expect(permission.setMode.mock.calls).toEqual(permissionMode === undefined ? [['manual']] : [['auto'], ['manual']]);
     expect(loop.cancelFromUser).toHaveBeenCalledOnce();
     expect(app.dispose).toHaveBeenCalledOnce();
     expect(handlers.size).toBe(0);

@@ -46,7 +46,7 @@ kiki <subcommand> [options]
 
 - `--continue` 与 `--session` 互斥——两者都表示"恢复历史会话"
 - `--yolo` 和 `--auto` 互斥——两种权限模式互斥
-- `--prompt` 与 `--prompt-file` 互斥，两者都不能与 `--yolo`、`--auto` 或 `--plan` 同时使用——非交互模式固定使用 `auto` 权限
+- `--prompt` 与 `--prompt-file` 互斥，两者都不能与 `--yolo`、`--auto` 或 `--plan` 同时使用。非交互运行保留会话的权限模式，除非显式提供 `--permission-mode`；新会话在没有其他配置时默认使用 `auto`。恢复会话时的临时覆盖会在退出时还原。
 - `--output-format` 需要同时提供 `--prompt` 或 `--prompt-file`
 
 恢复会话时，可以通过 `--auto`、`--yolo` 或 `--plan` 覆盖原会话保存的权限或计划模式。例如，`kiki --continue --auto` 会恢复最近会话并切换到 auto 权限模式。
