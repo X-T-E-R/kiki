@@ -265,6 +265,7 @@ describe('RoomPage', () => {
     expect(container.querySelector('[data-room-queued]')?.textContent).toBe('后端线程 正忙，结束后回复');
     expect(container.querySelector('[data-room-member="sess_backend"] [data-room-member-status]')?.textContent).toBe('正忙，结束后回复');
     expect(container.querySelector('[data-room-input]')?.getAttribute('placeholder')).toContain('@ 谁就唤醒谁');
+    expect(container.querySelector('[data-room-input]')?.getAttribute('placeholder')).toContain('不 @ 交给主持人');
     const toggle = container.querySelector<HTMLInputElement>('[data-room-member="sess_tests"] input[type="checkbox"]')!;
     expect(toggle.checked).toBe(false);
     await act(async () => { toggle.click(); });

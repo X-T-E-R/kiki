@@ -29,7 +29,7 @@ export function RoomComposer({
 }: {
   readonly roomName: string;
   readonly hostName: string;
-  /** A thread host is not woken by unmentioned messages; the placeholder says so. */
+  /** True when a thread hosts the room; thread-host rooms use their own placeholder copy. */
   readonly hostIsThread?: boolean;
   readonly members: readonly RoomComposerMember[];
   readonly sending: boolean;

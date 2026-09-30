@@ -233,33 +233,38 @@ async function eventually(predicate: () => boolean): Promise<void> {
 }
 
 describe('RoomService', () => {
-  it('keeps unmentioned thread messages for the next wake and advances since without echoing its own speech', async () => {
+  it('wakes the thread host for a message that mentions no one and keeps other threads for their next wake', async () => {
     const { service, calls, release, room: personas } = setup();
     await personas;
     const room = await service.createFromThreads({ id: 'thread-room', name: 'Thread room', workspace: '/classification', sessionIds: ['thread-a', 'thread-b'] });
     expect(room.members).toEqual(['thread-a', 'thread-b'].map((sessionId) => ({ kind: 'thread', sessionId, muted: false, joinedAt: expect.any(String), queueWhenBusy: true })));
     await service.postUserMessage(room.id, { text: 'Not mentioned yet' });
     await service.postBotMessage(room.id, { sessionId: 'thread-a', toolCallId: 'untargeted', text: 'Member broadcast' });
-    await service.drain(room.id);
-    expect(calls).toHaveLength(0);
-    await service.postUserMessage(room.id, { text: '@thread-b Please review' });
     await eventually(() => calls.length === 1);
-    expect(calls[0]!.target).toMatchObject({ sessionId: 'thread-b', workspaceId: 'workspace' });
+    expect(calls[0]!.target).toMatchObject({ sessionId: 'thread-a', workspaceId: 'workspace' });
     expect(calls[0]!.content).toContain('Not mentioned yet');
-    expect(calls[0]!.content).toContain('Member broadcast');
-    expect(calls[0]!.content).toContain('Ordinary assistant text is NOT posted');
-    expect(calls[0]!.content).toContain('ThreadSend({room: "thread-room"');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((call) => call.target.sessionId)).toEqual(['thread-a']);
     release(calls[0]!.id);
+    await service.drain(room.id);
+    await service.postUserMessage(room.id, { text: '@thread-b Please review' });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.target).toMatchObject({ sessionId: 'thread-b', workspaceId: 'workspace' });
+    expect(calls[1]!.content).toContain('Not mentioned yet');
+    expect(calls[1]!.content).toContain('Member broadcast');
+    expect(calls[1]!.content).toContain('Ordinary assistant text is NOT posted');
+    expect(calls[1]!.content).toContain('ThreadSend({room: "thread-room"');
+    release(calls[1]!.id);
     await service.drain(room.id);
     const cursor = (await service.get(room.id))!.cursors['thread-b'];
     await service.postBotMessage(room.id, { sessionId: 'thread-b', toolCallId: 'own', text: 'My own speech' });
     await service.postBotMessage(room.id, { sessionId: 'thread-a', toolCallId: 'targeted', text: 'Next item', mentions: ['thread-b'] });
-    await eventually(() => calls.length === 2);
-    expect(calls[1]!.content).toContain(`since="${cursor}"`);
-    expect(calls[1]!.content).toContain('Next item');
-    expect(calls[1]!.content).not.toContain('Not mentioned yet');
-    expect(calls[1]!.content).not.toContain('My own speech');
-    release(calls[1]!.id);
+    await eventually(() => calls.length === 3);
+    expect(calls[2]!.content).toContain(`since="${cursor}"`);
+    expect(calls[2]!.content).toContain('Next item');
+    expect(calls[2]!.content).not.toContain('Not mentioned yet');
+    expect(calls[2]!.content).not.toContain('My own speech');
+    release(calls[2]!.id);
     await service.drain(room.id);
   });
   it('delivers to each thread member on its own lane and records joins and leaves', async () => {
@@ -281,6 +286,46 @@ describe('RoomService', () => {
     expect((await service.get(room.id))!.host).toBe('thread-b');
     for (const call of calls) release(call.id);
     await service.drain(room.id);
+  });
+
+  it('wakes exactly the mentioned thread and not the unmentioned thread host', async () => {
+    const { service, calls, release, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'mention-room', name: 'Mentions', workspace: '/classification', sessionIds: ['thread-a', 'thread-b'] });
+    expect(room.host).toBe('thread-a');
+    await service.postUserMessage(room.id, { text: '@thread-b Please review the contract' });
+    await eventually(() => calls.length === 1);
+    expect(calls[0]!.target).toMatchObject({ sessionId: 'thread-b', workspaceId: 'workspace' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((call) => call.target.sessionId)).toEqual(['thread-b']);
+
+    await service.postUserMessage(room.id, { text: '@thread-a you own this room' });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.target).toMatchObject({ sessionId: 'thread-a' });
+    for (const call of calls) release(call.id);
+    await service.drain(room.id);
+  });
+
+  it('leaves an unmentioned user message unwoken when the room has no host member', async () => {
+    const { service, calls, seedRoom, room: roomPromise } = setup();
+    const room = await roomPromise;
+    await seedRoom({ ...room, host: 'ghost-persona' });
+    const posted = await service.postUserMessage(room.id, { text: 'Anyone here?' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toHaveLength(0);
+    expect((await service.log(room.id)).entries.some((entry) => entry.kind === 'message' && entry.id === posted.id)).toBe(true);
+  });
+
+  it('keeps an unmentioned user message unwoken when the host is muted', async () => {
+    const { service, calls, room: roomPromise } = setup();
+    const room = await roomPromise;
+    const muted = await service.update(room.id, {
+      members: room.members.flatMap((member) => member.kind === 'persona' ? [{ kind: 'persona' as const, personaId: member.personaId, muted: true }] : []),
+    });
+    expect(muted.host).toBe(room.host);
+    await service.postUserMessage(room.id, { text: 'Anyone awake?' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toHaveLength(0);
   });
 
   it('keeps persisted usage visible when member sessions are cold', async () => {
@@ -406,6 +451,24 @@ describe('RoomService', () => {
     await eventually(() => calls.length === 1);
     expect(calls[0]!.target.sessionId).toContain('_charlie_');
     release(calls[0]!.id);
+    await service.drain(room.id);
+  });
+
+  it('keeps the persona host as the unmentioned fallback and wakes only mentioned personas', async () => {
+    const { service, calls, release, room: roomPromise } = setup();
+    const room = await roomPromise;
+    await service.postUserMessage(room.id, { text: '@Bravo please check the changelog' });
+    await eventually(() => calls.length === 1);
+    expect(calls[0]!.target.sessionId).toContain('_bravo_');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((call) => call.target.sessionId)).toEqual([room.members[1]!.sessionId]);
+    release(calls[0]!.id);
+    await service.drain(room.id);
+
+    await service.postUserMessage(room.id, { text: 'Thanks — who signs off?' });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.target.sessionId).toContain('_alpha_');
+    release(calls[1]!.id);
     await service.drain(room.id);
   });
 

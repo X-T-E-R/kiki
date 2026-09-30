@@ -6259,8 +6259,8 @@ export const en = {
   'room.joined': 'Added to {name}',
   'room.threadSender': 'Room {name}',
   'comms.fromRoom': 'Room',
-  'room.placeholderThreadHost': 'Message {name}… @ a member to wake them; unmentioned messages wait for each member’s next wake',
-  'room.emptyLogThreadHost': 'No messages in this room yet. @ a member to wake them; unmentioned messages reach members the next time they are woken.',
+  'room.placeholderThreadHost': 'Message {name}… @ a member to wake them; without @ it goes to the room host',
+  'room.emptyLogThreadHost': 'No messages in this room yet. @ a member to wake them; without @ it goes to the room host.',
   'room.threadWorking': 'Working',
   'room.threadsHint': 'Only top-level threads with thread communication on can join.',
 

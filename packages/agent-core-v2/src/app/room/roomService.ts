@@ -383,7 +383,7 @@ export class RoomService extends Disposable implements IRoomService {
     for (const member of members) {
       if (member.kind !== 'thread') continue;
       await this.appendSystem(room.id, 'member_joined', `${member.sessionId} joined the room.`, { memberId: member.sessionId, kind: 'thread' });
-      await this.remindThread(member.sessionId, `Joined room "${room.name}" (${room.id}). You will be woken when mentioned; to speak there, use ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions are unchanged.`, 'room_joined');
+      await this.remindThread(member.sessionId, `Joined room "${room.name}" (${room.id}). You are woken when mentioned, and a message that mentions no one goes to the room host. To speak there, use ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions are unchanged.`, 'room_joined');
     }
   }
 
@@ -1158,7 +1158,7 @@ function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, mem
     return `[${entry.id} ${author}]${mentions} ${entry.text}${attachments}`;
   }).join('\n');
   return {
-    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Ordinary assistant text is NOT posted to this room. To speak in the room, use ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions use member ids: ${escapeXml(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map((candidate) => label(roomMemberId(candidate))).join('; '))}. Unmentioned members are not woken. Your existing workspace and permissions are unchanged.` : 'Only SendMessage posts your speech to this room.'}`,
+    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Ordinary assistant text is NOT posted to this room. To speak in the room, use ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions use member ids: ${escapeXml(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map((candidate) => label(roomMemberId(candidate))).join('; '))}. A message that mentions no one goes to the room host. Your existing workspace and permissions are unchanged.` : 'Only SendMessage posts your speech to this room.'}`,
     cursor: after.at(-1)?.id,
   };
 }
@@ -1166,7 +1166,7 @@ function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, mem
 function resolveUserTargets(room: RoomDocument, mentions: readonly string[]): readonly RoomMember[] {
   if (mentions.length > 0) return room.members.filter((member) => mentions.includes(roomMemberId(member)));
   const host = room.members.find((member) => roomMemberId(member) === room.host);
-  return host === undefined || host.muted || host.kind === 'thread' ? [] : [host];
+  return host === undefined || host.muted ? [] : [host];
 }
 
 function resolveBotTargets(room: RoomDocument, sender: RoomMember, mentions: readonly string[]): readonly RoomMember[] {

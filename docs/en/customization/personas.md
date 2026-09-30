@@ -60,14 +60,14 @@ A session's `delivery` is either `reply` or `message`. In message mode, only suc
 Create a room with two to six members, a classification workspace, and a host. Persona members get dedicated message-mode sessions. The API also accepts existing threads (`kind: "thread"`); these reuse their own sessions, workspaces, and permissions, require `[threadCommunication] enabled = true`, and cannot be subagents. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add threads from the **Threads** tab under **Add member**, or choose **Open a room with these threads** on a thread link. Scheduling has three rules:
 
 1. A user mention wakes the named members; `@everyone` selects all members.
-2. A user message without mentions goes to a persona host. A thread host is not independently woken without a mention.
+2. A user message without mentions goes to the host, whether the host is a persona or a thread.
 3. A Bot message wakes only the members it mentions. A message with no mentions does not continue the discussion.
 
 Members run sequentially, so later speakers receive earlier speakers' results. Muted members are skipped by Bot mentions and host fallback, but an explicit user mention still wakes them. Each member sees the messages since its last wake, excluding its own already-recorded output.
 
 The budget limits member messages after each user message (12 by default). When exhausted, discussion pauses; **Continue** resets the budget and resumes retained work. **Pause** cancels queued wakes but allows the active turn to finish. **Stop all** also interrupts an active persona turn, never an original thread task; completed actions are not undone. Persona-only rooms retain user interruption steering, while mixed rooms retain queued work. At most one room question is shown at a time; later questions queue.
 
-Thread members default to `queueWhenBusy: true`: room input waits for their current turn to finish instead of steering it. Cold threads resume in their own workspaces. Unmentioned messages are included in their next since catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room.
+Thread members default to `queueWhenBusy: true`: room input waits for their current turn to finish instead of steering it. Cold threads resume in their own workspaces. For every member other than the host, unmentioned messages are included in their next since catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room.
 
 Renaming, changing the host, muting, and workspace classification never rewrite member system prompts or permissions. Removing a thread leaves a system record in its session and preserves the room log; it does not archive the original thread. Creation requires two to six members, but leaving can reduce a room below two. Free discussion and room-scoped `HistorySearch` are not part of this release.
 
