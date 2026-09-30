@@ -1429,8 +1429,8 @@ async function scenarioComposerModes() {
   await wizard.waitFor({ timeout: 10_000 });
   await page.waitForTimeout(450);
   await shot('composer-onboarding-welcome-dark-1440');
-  // Walk forward until the permissions step (welcome → appearance → model →
-  // workspace → permissions); a step count would break when a step is added.
+  // Walk forward until the permissions step; a step count would break when a
+  // step is added.
   for (let step = 0; step < 6 && await wizard.locator('[data-permission-choice]').count() === 0; step += 1) {
     await wizard.locator('button[data-autofocus]').last().click();
     await page.waitForTimeout(350);
@@ -4724,17 +4724,16 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(250);
 
   await wizardButton(S.onboardingSaveNext).click();
-  await wizard().locator('[data-workspace-choice]').first().waitFor({ timeout: 5000 });
+  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
   // Saved + advanced: going Back shows the persisted connection read-out.
   await wizardButton(S.onboardingBack).click();
   await waitForText(S.onboardingReady);
   await shot('onboarding-3-model-saved');
   await wizardButton(S.onboardingNext).click();
-  // Workspace step (new): let Kiki create one.
-  await wizard().locator('[data-workspace-choice="auto"]').click();
-  await shot('onboarding-4-workspace');
-  await wizardButton(S.onboardingNext).click();
   await waitForText(S.onboardingRecommended);
+  if (await wizard().locator('[data-workspace-choice]').count() !== 0) {
+    throw new Error('onboarding must not ask for a workspace');
+  }
   // Fresh runs preselect auto, and every wire mode is offered.
   const checked = await wizard().locator('[data-permission-choice][aria-checked="true"]').getAttribute('data-permission-choice');
   if (checked !== 'auto') throw new Error(`permissions step must preselect auto, saw "${checked}"`);

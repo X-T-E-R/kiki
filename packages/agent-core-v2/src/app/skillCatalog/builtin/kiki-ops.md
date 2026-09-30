@@ -45,7 +45,7 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 
 ## First-run and guided setup
 
-The GUI wizard already covers language, theme, a model connection, workspace, and default permission mode (recommends `auto`), then offers starter prompts such as "Set up web search". A setup request usually means finishing what is missing.
+The GUI wizard already covers language, theme, a model connection, and default permission mode (recommends `auto`), then offers starter prompts such as "Set up web search". A setup request usually means finishing what is missing.
 
 1. Detect what is done (provider, default model, permission mode, search lane) and say it in one line.
 2. Ask one question at a time, about the most important gap, with a default ("Kimi sign-in is quickest; use it?"). Keep answers already given.

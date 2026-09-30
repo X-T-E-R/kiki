@@ -1,10 +1,11 @@
 /**
- * OnboardingWizard — the first-run setup dialog, five steps that each say
+ * OnboardingWizard — the first-run setup dialog, four steps that each say
  * one thing: welcome (language), make it yours (theme, palette, an optional
  * background picture), connect a model (OAuth sign-in or a
- * streamlined API-key form), where Kiki works (workspace), and how much it
- * may do on its own (default permission mode).
-
+ * streamlined API-key form), and how much it may do on its own (default
+ * permission mode). There is no workspace question: /new already defaults to
+ * the most recent workspace, else a fresh folder in Kiki Home.
+ *
  * Finish lands on the /new hero with an empty composer; the hero's starter
  * chips offer first prompts, nothing is prefilled or sent for the user.
  *
@@ -27,7 +28,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
-import { readNewSessionDraft, writeNewSessionDraft } from '@kiki/session-core/composer';
 import { errorText, issueText, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
@@ -42,7 +42,6 @@ import {
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 
-import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
@@ -50,7 +49,7 @@ import { useConnection } from '../state/connection';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import { Dialog } from './Dialog';
 import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
-import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, needsProviderSetup } from './NewSessionDraft';
+import { needsProviderSetup } from './NewSessionDraft';
 import {
   API_PROTOCOLS,
   baseUrlRequired,
@@ -74,19 +73,15 @@ import { Wordmark } from './Wordmark';
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'appearance', 'model', 'workspace', 'permissions'] as const;
+const STEPS = ['welcome', 'appearance', 'model', 'permissions'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
   appearance: 'onboarding.step.appearance',
   model: 'onboarding.step.model',
-  workspace: 'onboarding.step.workspace',
   permissions: 'onboarding.step.permissions',
 } as const;
-
-/** Where Kiki works: written into the /new draft on finish. */
-type WorkspaceChoice = 'folder' | 'auto' | 'chat';
 
 /**
  * The auto-popup rule: only while the server provably has nothing to answer
@@ -177,38 +172,6 @@ const CHOICE_CARD =
   'flex w-full items-start gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const CHOICE_CARD_SELECTED = 'bg-paper shadow-[var(--kiki-sheet-shadow)]';
 const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
-
-/** A radio card: label + one honest line (workspace choice). */
-function ChoiceCard({
-  label,
-  line,
-  selected,
-  onSelect,
-  ...rest
-}: {
-  readonly label: string;
-  readonly line: string;
-  readonly selected: boolean;
-  readonly onSelect: () => void;
-  readonly 'data-workspace-choice'?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onSelect}
-      {...rest}
-      className={`${CHOICE_CARD} ${selected ? CHOICE_CARD_SELECTED : CHOICE_CARD_IDLE}`}
-    >
-      <ChoiceMark selected={selected} />
-      <span className="min-w-0">
-        <span className={`block text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{label}</span>
-        <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">{line}</span>
-      </span>
-    </button>
-  );
-}
 
 /** One permission-mode radio row: the mode label plus its one-line meaning. */
 function PermissionOption({
@@ -465,11 +428,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     () => readSettings().defaultPermissionMode,
   );
   const [permissionBusy, setPermissionBusy] = useState(false);
-  const host = useHost();
-  const [workspaceChoice, setWorkspaceChoice] = useState<WorkspaceChoice>('auto');
-  const [workspaceFolder, setWorkspaceFolder] = useState('');
-  const workspaceTouched = useRef(false);
-  const workspaceFolderInvalid = workspaceChoice === 'folder' && !isAbsoluteCwdPath(workspaceFolder.trim());
   const [permissionFeedback, setPermissionFeedback] = useState<Feedback>(null);
 
   const authQuery = useQuery({ queryKey: ['auth'], queryFn: () => client.getAuth(), staleTime: 10_000 });
@@ -651,18 +609,13 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return;
     }
     if (step === 'model' && await saveProvider()) {
-      setStep('workspace');
-      return;
-    }
-    if (step === 'workspace' && !workspaceFolderInvalid) {
       setStep('permissions');
     }
   };
 
-  // Finish: land on the /new hero with an empty composer. The workspace
-  // choice is written into the /new draft (folder → cwd, auto → automatic
-  // creation, chat → automatic creation too: a session needs a home, and a
-  // Kiki Home folder is the "just chat" answer). Nothing is sent or prefilled.
+  // Finish: land on the /new hero with an empty composer. The /new draft is
+  // left alone, so its own target default applies (most recent workspace,
+  // else a new folder in Kiki Home). Nothing is sent or prefilled.
   const finish = async () => {
     if (finishing) return;
     setFinishing(true);
@@ -671,14 +624,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return;
     }
     markOnboardingCompleted();
-    const previous = readNewSessionDraft();
-    // An untouched workspace step keeps /new's own default (most recent
-    // workspace, else automatic creation); only an explicit pick writes.
-    if (workspaceTouched.current) writeNewSessionDraft(
-      workspaceChoice === 'folder' && isAbsoluteCwdPath(workspaceFolder.trim())
-        ? { ...previous, workspaceId: undefined, cwd: workspaceFolder.trim() }
-        : { ...previous, workspaceId: AUTO_WORKSPACE_ID, cwd: undefined },
-    );
     onClose();
     navigate('/new');
   };
@@ -796,55 +741,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           </div>
         ) : null}
 
-        {step === 'workspace' ? (
-          <div className="mt-3 space-y-3">
-            <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.workspace.body')}</p>
-            <div role="radiogroup" aria-label={t('onboarding.step.workspace')} className="space-y-2">
-              {(['folder', 'auto', 'chat'] as const).map((choice) => (
-                <ChoiceCard
-                  key={choice}
-                  data-workspace-choice={choice}
-                  label={t(`onboarding.workspace.${choice}`)}
-                  line={t(`onboarding.workspace.${choice}Line`)}
-                  selected={workspaceChoice === choice}
-                  onSelect={() => {
-                    workspaceTouched.current = true;
-                    setWorkspaceChoice(choice);
-                  }}
-                />
-              ))}
-            </div>
-            {workspaceChoice === 'folder' ? (
-              <div className="flex flex-wrap items-center gap-2">
-                {host.pickDirectory !== undefined ? (
-                  <button
-                    type="button"
-                    className={SECONDARY_BUTTON}
-                    onClick={() => {
-                      void host.pickDirectory?.().then((picked) => {
-                        if (picked !== null && picked !== undefined) setWorkspaceFolder(picked);
-                      }).catch(() => undefined);
-                    }}
-                  >
-                    {t('new.browse')}
-                  </button>
-                ) : null}
-                <input
-                  type="text"
-                  value={workspaceFolder}
-                  onChange={(event) => { setWorkspaceFolder(event.target.value); }}
-                  aria-label={t('new.cwdAria')}
-                  placeholder={t('new.cwdPlaceholder')}
-                  className={`${INPUT} min-w-0 flex-1 font-mono`}
-                />
-                {workspaceFolder.trim() !== '' && workspaceFolderInvalid ? (
-                  <p role="alert" className="w-full text-[12px] text-danger">{t('new.cwdInvalid')}</p>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
         {step === 'permissions' ? (
           <div className="mt-3 space-y-4">
             <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.permissions.body')}</p>
@@ -900,7 +796,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <button
               type="button"
               data-autofocus
-              disabled={savingProvider || (step === 'workspace' && workspaceFolderInvalid)}
+              disabled={savingProvider}
               onClick={() => void goNext()}
               className={step === 'model' && modelSkipping
                 ? 'rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'

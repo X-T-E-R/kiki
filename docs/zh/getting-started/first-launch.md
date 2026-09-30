@@ -42,7 +42,7 @@ kiki -c
 如果想连接 Anthropic、OpenAI、Google 等平台，直接编辑 `~/.kiki/config.toml` 配置 API 密钥。详见[平台与模型](../configuration/providers.md)。全部配置项的完整参考见[配置文件](../configuration/config-files.md)、[环境变量](../configuration/env-vars.md)和[配置覆盖](../configuration/overrides.md)。
 :::
 
-在桌面应用和浏览器界面中，首次启动会打开一个可选的设置向导，共四步：选择语言与主题；用 API 密钥（最通用）连接模型，或用 Kimi Code、GitHub Copilot、ChatGPT（Codex）账号登录；选择 Kiki 在哪里工作（选一个文件夹、让 Kiki 新建工作区，或只聊天）；选择新会话的默认权限模式（推荐「自动」）。模型步骤中的 API 密钥模板按厂商、网关和本地服务分组。连接后可在 **设置 → 模型与提供商 → 可用模型** 搜索并星标新会话默认使用的模型。每一步都可以跳过，之后在设置中补完；设置中的 **重新进入引导** 可以再走一遍。完成后会打开一个输入框为空的新会话，下方的起步建议可以帮你填入第一条消息，你发送之前什么都不会发出。之后想配置搜索、MCP 或自己的智能体角色，用 `/kiki-ops` 问 Kiki 即可；模型选择方式见 [Agent 与 subagent](../customization/agents.md#内置-subagent)。
+在桌面应用和浏览器界面中，首次启动会打开一个可选的设置向导，共三步：选择语言与主题；用 API 密钥（最通用）连接模型，或用 Kimi Code、GitHub Copilot、ChatGPT（Codex）账号登录；选择新会话的默认权限模式（推荐「自动」）。向导不询问工作目录：新会话默认使用最近的工作区，没有时在 Kiki 主目录里新建一个文件夹。模型步骤中的 API 密钥模板按厂商、网关和本地服务分组。连接后可在 **设置 → 模型与提供商 → 可用模型** 搜索并星标新会话默认使用的模型。每一步都可以跳过，之后在设置中补完；设置中的 **重新进入引导** 可以再走一遍。完成后会打开一个输入框为空的新会话，下方的起步建议可以帮你填入第一条消息，你发送之前什么都不会发出。之后想配置搜索、MCP 或自己的智能体角色，用 `/kiki-ops` 问 Kiki 即可；模型选择方式见 [Agent 与 subagent](../customization/agents.md#内置-subagent)。
 
 ## 你的第一次对话
 

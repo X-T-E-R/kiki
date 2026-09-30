@@ -5,7 +5,7 @@
  * (shouldOfferOnboarding), the four-step walk, the save semantics of every
  * advance ("Save & continue" persists the provider form; finish persists the
  * permission default), exit-and-re-entry state, and the finish hand-off
- * (/new hero with the chosen workspace, nothing prefilled or sent).
+ * (/new hero with its own target default, nothing prefilled or sent).
  */
 
 import { act } from 'react';
@@ -262,25 +262,24 @@ describe('manual re-entry channel', () => {
   });
 });
 
-/** Welcome → appearance → model → (skip) → workspace → (next) → approvals. */
+/** Welcome → appearance → model → (skip) → approvals. */
 async function toPermissionsStep(): Promise<void> {
   await toModelStep();
   await click(buttonByText('Skip for now'));
-  await click(buttonByText('Next'));
 }
 
 describe('OnboardingWizard', () => {
   it('opens on the welcome step with the language pick', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
-    expect(dialog().textContent).toContain('Step 1 of 5');
+    expect(dialog().textContent).toContain('Step 1 of 4');
     expect(dialog().textContent).toContain('Language');
   });
 
   it('makes it yours: theme, palette and an optional picture, all applied at once', async () => {
     await mount();
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 2 of 5');
+    expect(dialog().textContent).toContain('Step 2 of 4');
     expect(dialog().textContent).toContain('Make it yours');
     expect(dialog().textContent).not.toMatch(/token|skin/i);
     await click(dialog().querySelector('[data-onboarding-appearance] [data-theme-choice="dark"]')!);
@@ -296,10 +295,10 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('Settings › Appearance');
   });
 
-  it('walks forward and back through all five steps', async () => {
+  it('walks forward and back through all four steps', async () => {
     await mount();
     await toModelStep();
-    expect(dialog().textContent).toContain('Step 3 of 5');
+    expect(dialog().textContent).toContain('Step 3 of 4');
     // One entry: choose API key or account first, then protocol or method.
     expect(dialog().querySelectorAll('[data-connection-choice]')).toHaveLength(2);
     expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
@@ -310,15 +309,11 @@ describe('OnboardingWizard', () => {
     expect(dialog().querySelector('[data-provider-protocol]')).toBeNull();
 
     await click(buttonByText('Skip for now'));
-    expect(dialog().textContent).toContain('Step 4 of 5');
-    expect(dialog().textContent).toContain('Where should Kiki work?');
-
-    await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 5 of 5');
+    expect(dialog().textContent).toContain('Step 4 of 4');
     expect(dialog().textContent).toContain('How much should Kiki do on its own?');
 
     await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 4 of 5');
+    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
   it('uses the selected account method rather than implicitly signing in with Kimi', async () => {
@@ -335,7 +330,7 @@ describe('OnboardingWizard', () => {
     await toModelStep();
     await click(buttonByText('Skip for now'));
     expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 4 of 5');
+    expect(dialog().textContent).toContain('Step 4 of 4');
   });
 
   it('keeps the advance as Next while adding another provider to an existing connection', async () => {
@@ -351,7 +346,7 @@ describe('OnboardingWizard', () => {
     await click(dialog().querySelector('[data-connection-choice="account"]')!);
     expect(dialog().querySelector('[data-account-sign-in]')).not.toBeNull();
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 4 of 5');
+    expect(dialog().textContent).toContain('Step 4 of 4');
     expect(createProvider).not.toHaveBeenCalled();
   });
 
@@ -370,7 +365,7 @@ describe('OnboardingWizard', () => {
     expect(body['models']).toEqual([
       expect.objectContaining({ remote_id: 'kimi-for-coding' }),
     ]);
-    expect(dialog().textContent).toContain('Step 4 of 5');
+    expect(dialog().textContent).toContain('Step 4 of 4');
   });
 
   it('Test connection probes the unsaved form values and fills suggestions', async () => {
@@ -415,7 +410,7 @@ describe('OnboardingWizard', () => {
     await flush();
     expect(createProvider).not.toHaveBeenCalled();
     expect(dialog().textContent).toContain('Model IDs cannot be empty.');
-    expect(dialog().textContent).toContain('Step 3 of 5');
+    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
   it('a protocol card derives the connection name from the Base URL, and keeps it editable', async () => {
@@ -524,7 +519,7 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('A model provider is connected');
     await click(buttonByText('Next'));
     expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain('Step 4 of 5');
+    expect(dialog().textContent).toContain('Step 4 of 4');
   });
 
   it('offers every permission mode, recommends auto, and finish writes it to the server config', async () => {
@@ -559,39 +554,21 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('finishes on the /new hero with the picked workspace choice and no prefill', async () => {
+  it('finishes on the /new hero without touching the /new target or draft', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toModelStep();
-    await click(buttonByText('Skip for now'));
-    await click(dialog().querySelector('[data-workspace-choice="chat"]')!);
-    await click(buttonByText('Next'));
+    await toPermissionsStep();
+    expect(dialog().querySelector('[data-workspace-choice]')).toBeNull();
     await click(buttonByText('Start'));
     await flush();
     expect(createSession).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('/new');
     expect(readDraft('new')).toBe('');
-    expect(readNewSessionDraft().workspaceId).toBe('__auto__');
+    // No workspace step: /new keeps its own default (recent workspace, else Kiki Home).
+    expect(readNewSessionDraft().workspaceId).toBeUndefined();
+    expect(readNewSessionDraft().cwd).toBeUndefined();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  it('writes a chosen folder into the /new draft and blocks a relative path', async () => {
-    await mount();
-    await toModelStep();
-    await click(buttonByText('Skip for now'));
-    await click(dialog().querySelector('[data-workspace-choice="folder"]')!);
-    const next = buttonByText('Next') as HTMLButtonElement;
-    expect(next.disabled).toBe(true);
-    await typeInto(inputByPlaceholder('Absolute path to the project folder'), 'relative/dir');
-    expect(next.disabled).toBe(true);
-    await typeInto(inputByPlaceholder('Absolute path to the project folder'), 'C:/proj');
-    expect(next.disabled).toBe(false);
-    await click(next);
-    await click(buttonByText('Start'));
-    await flush();
-    expect(readNewSessionDraft().cwd).toBe('C:/proj');
-    expect(navigate).toHaveBeenCalledWith('/new');
   });
 
   it('never overwrites a /new draft the user already typed', async () => {
