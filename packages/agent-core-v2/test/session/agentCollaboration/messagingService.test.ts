@@ -464,6 +464,32 @@ describe('agent collaboration safe-boundary delivery', () => {
     }
   });
 
+  it('does not block a completion sender while an external main is busy with its native loop idle', async () => {
+    const target = agentHandle('main', { executorId: 'grok-acp' });
+    target.setRunning(true);
+    const loop = target.handle.accessor.get(IAgentLoopService);
+    vi.spyOn(loop, 'status').mockReturnValue({ state: 'idle', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false });
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    const observed = vi.spyOn(target.execution, 'settled').mockReturnValue(settled);
+    const dispatch = dispatchHarness(async (child, request, options) => ({ child,
+      request: request as DispatchRun['request'], started: target.execution.run(request as DispatchRun['request'], { signal: options.signal }) }));
+    const service = messagingService(mailboxStore(tempDir()), lifecycleHarness([target.handle]).service,
+      sessionContext(), metadataHarness({ main: { type: 'main', executor: 'grok-acp' } }), dispatch);
+    try {
+      const accepted = await service.send({ sourceAgentId: 'agent-child', sourceTaskName: 'worker', targetAgentId: 'main',
+        targetTaskName: 'root', content: 'child completed', idempotencyKey: 'external-parent-completion', idleWake: 'parent' });
+      expect(accepted.delivery).toBe('queued');
+      await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce());
+      expect(target.remoteRequests).toEqual([]);
+      target.setRunning(false);
+      release();
+      await vi.waitFor(() => expect(target.remoteRequests).toHaveLength(1));
+      expect(target.remoteRequests[0]).toMatchObject({ kind: 'mailbox', prompt: expect.stringContaining('child completed') });
+      expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+    } finally { release(); service.dispose(); }
+  });
+
   it('wakes an idle main agent and starts a real mailbox-triggered run', async () => {
     const ctx = createTestAgent();
     const main: IAgentScopeHandle = {

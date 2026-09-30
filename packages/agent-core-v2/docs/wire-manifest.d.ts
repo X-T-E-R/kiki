@@ -604,6 +604,7 @@ interface ProfileBindPayload {
   executorProtocol?: string;
   executorOptions?: Record<string, string | number | boolean>;
   executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
+  allowKikiSubagents?: boolean;
   executorDescriptorRevision?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});

@@ -53,6 +53,7 @@ export * from './rest/nbSearch';
 export * from './rest/secrets';
 export * from './rest/agentProfile';
 export * from './rest/executor';
+export * from './rest/antigravity';
 export * from './rest/ssh';
 export * from './rest/terminal';
 export * from './rest/connection';

@@ -51,6 +51,7 @@ async function openWithScriptedAgent(
     sessionRef?: unknown;
     systemPromptOverride?: string;
     requireResume?: boolean;
+    onFork?: import('../src/types').AcpOpenSessionOptions['onFork'];
   },
 ) {
   const { child, toAgent, fromAgent } = scriptedChild();
@@ -68,6 +69,7 @@ async function openWithScriptedAgent(
       sessionRef: options.sessionRef as never,
       systemPromptOverride: options.systemPromptOverride,
       requireResume: options.requireResume,
+      onFork: options.onFork,
     });
     return { client, history, opened };
   } catch (error) {
@@ -259,4 +261,50 @@ describe('AcpProcessClient session capability negotiation', () => {
       await client.shutdown();
     }
   });
+});
+
+
+describe('ACP fork isolation', () => {
+  const point = { version: 1, messageId: 'kiki-message-2', messageFingerprint: `sha256:${'a'.repeat(64)}`, messageOccurrence: 2 };
+  const sessionRef = { executorId: 'fixture', version: 1, ref: { sessionId: 'source-session', kikiFork: { point } } };
+
+  it('forks at the donor AIR point, persists the new reference before resuming, and never resumes the source', async () => {
+    const saved: unknown[] = [];
+    const { client, history, opened } = await openWithScriptedAgent({
+      capabilities: { sessionCapabilities: { fork: {}, resume: {} } },
+    }, { sessionRef, onFork: async (ref) => { saved.push(ref); } });
+    try {
+      expect(history.methods).toEqual(['initialize', 'session/fork', 'session/resume']);
+      expect(history.sessionForkParams[0]).toEqual({ sessionId: 'source-session', cwd: 'C:/workspace', _meta: { jetbrains: { air: { fork: point } } } });
+      expect(history.sessionForkParams[0]).not.toHaveProperty('mcpServers');
+      expect(history.sessionResumeParams[0]).toMatchObject({ sessionId: 'forked-session', mcpServers: [] });
+      expect(opened.sessionRef.ref).toEqual({ sessionId: 'forked-session' });
+      expect(saved).toEqual([opened.sessionRef]);
+    } finally { await client.shutdown(); }
+  });
+
+  it('passes MCP servers at fork creation when the harness cannot resume the new session', async () => {
+    const { client, history, opened } = await openWithScriptedAgent({ capabilities: { sessionCapabilities: { fork: {} } } }, { sessionRef });
+    try {
+      expect(history.methods).toEqual(['initialize', 'session/fork']);
+      expect(history.sessionForkParams[0]).toMatchObject({ sessionId: 'source-session', mcpServers: [] });
+      expect(opened.sessionId).toBe('forked-session');
+    } finally { await client.shutdown(); }
+  });
+
+  it('opens a fresh session instead of reusing the source when fork is not advertised', async () => {
+    const { client, history, opened } = await openWithScriptedAgent({ capabilities: { loadSession: true, sessionCapabilities: { resume: {} } } }, { sessionRef });
+    try {
+      expect(history.methods).toEqual(['initialize', 'session/new']);
+      expect(opened.mode).toBe('new');
+    } finally { await client.shutdown(); }
+  });
+
+  it('persists the fork even when subsequent resume fails', async () => {
+    const saved: unknown[] = [];
+    await expect(openWithScriptedAgent({ capabilities: { sessionCapabilities: { fork: {}, resume: {} } }, resume: 'unknown_session' }, {
+      sessionRef, onFork: async (ref) => { saved.push(ref); },
+    })).rejects.toThrow();
+    expect(saved).toEqual([{ executorId: 'fixture', version: 1, ref: { sessionId: 'forked-session' } }]);
+  }, 15_000);
 });

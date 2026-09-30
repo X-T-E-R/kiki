@@ -1,6 +1,23 @@
 import type { AgentExecutorsConfig } from './configSection';
 
 export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
+  'antigravity-acp': {
+    label: 'Google Antigravity ACP', protocol: 'acp-v1', homeEnv: 'GEMINI_HOME',
+    sources: [
+      { id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' },
+      { id: 'kiki-managed', kind: 'glob', pattern: '${KIKI_HOME}/tools/antigravity-acp/*/*/agy_acp_server.*' },
+      { id: 'codeg-managed', kind: 'glob', pattern: '${LOCALAPPDATA}/app.codeg/acp-binaries/antigravity-acp/*/*/agy_acp_server.exe' },
+      { id: 'path', kind: 'path-lookup', command: 'agy_acp_server', requiredBasename: 'agy_acp_server' },
+    ],
+    args: process.platform === 'linux' ? ['--uid='] : [],
+    startupTimeoutMs: 150_000, shutdownGraceMs: 3_000,
+    modelBinding: 'session_config', modelConfigCategory: 'model', supportsMcp: true,
+    mcpTransports: ['stdio', 'http', 'sse'], defaultProfile: true,
+    permission: { via: 'config_option', configId: 'mode', manual: 'default', auto: 'auto_edit', yolo: 'yolo' },
+    installHint: 'Install Google Antigravity ACP CLI through the Antigravity executor binary cache (default 1.2.1); the Antigravity IDE is not an ACP CLI.',
+    diagnostics: [{ kind: 'message', severity: 'info', message: 'Antigravity ACP uses its own settings.json and Google sign-in; use the executor login flow before starting a session.' }],
+    revision: '2026-09-30.1',
+  },
   'grok-acp': {
     label: 'Grok Build',
     protocol: 'acp-v1',

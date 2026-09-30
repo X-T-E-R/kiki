@@ -13,6 +13,9 @@ import {
 } from '@kiki/codex-client';
 
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { acquireHarnessMcp } from './harnessMcpLease';
+import { codexAttachments, externalAttachments } from './externalAttachments';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
@@ -116,6 +119,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   #settled: Promise<void> = Promise.resolve();
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
+  #harnessMcp: HarnessMcpLease | undefined;
 
   constructor(
     private context: AgentExecutorContext,
@@ -234,7 +238,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin);
+    await recorder.begin(prompt, origin, externalAttachments(request));
 
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
@@ -257,7 +261,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     try {
       handle = await this.#client.startTurn({
         threadId: opened.threadId,
-        input: [{ type: 'text', text: remotePrompt }],
+        input: [{ type: 'text', text: remotePrompt }, ...codexAttachments(externalAttachments(request))],
         model: this.context.binding.modelAlias,
         effort: this.context.binding.thinkingLevel === 'off'
           ? undefined
@@ -374,8 +378,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     }
     this.#shutdown = true;
     this.cancel(reason);
-    await Promise.all([this.settled(), this.#client.shutdown(reason)]);
-    this.#runtimeLease.dispose();
+    try {
+      await Promise.all([this.settled(), this.#client.shutdown(reason)]);
+    } finally {
+      this.#harnessMcp?.dispose();
+      this.#runtimeLease.dispose();
+    }
   }
 
   async #completeTurn(
@@ -487,6 +495,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     if (this.#threadId !== undefined) return { threadId: this.#threadId, mode: 'live' };
+    this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     if (
       state.executorId !== undefined &&
       (state.executorId !== this.context.descriptor.id ||
@@ -511,6 +520,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           cwd: roots.workDir,
           approvalPolicy: this.#approvalPolicy(),
           sandbox: 'workspace-write',
+          config: this.#mcpConfig(),
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
@@ -540,10 +550,21 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       approvalPolicy: this.#approvalPolicy(),
       sandbox: 'workspace-write',
+      config: this.#mcpConfig(),
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
     return started;
+  }
+
+  #mcpConfig(): Readonly<Record<string, unknown>> | undefined {
+    const server = this.#harnessMcp?.server;
+    if (server === undefined || 'type' in server) return undefined;
+    return { mcp_servers: { [server.name]: {
+      command: server.command,
+      args: server.args,
+      env: Object.fromEntries(server.env.map(({ name, value }) => [name, value])),
+    } } };
   }
 
   #instructions(): Readonly<Record<string, string>> {

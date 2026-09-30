@@ -32,6 +32,7 @@ export interface InProcessAgentHistory {
   readonly sessionNewParams: unknown[];
   readonly sessionResumeParams: unknown[];
   readonly sessionLoadParams: unknown[];
+  readonly sessionForkParams: unknown[];
   cancelCount: number;
 }
 
@@ -77,6 +78,7 @@ export function createInProcessScriptedAgent(
     sessionNewParams: [],
     sessionResumeParams: [],
     sessionLoadParams: [],
+    sessionForkParams: [],
     cancelCount: 0,
   };
   let settlePrompt: ((stopReason: StopReason) => void) | undefined;
@@ -98,6 +100,11 @@ export function createInProcessScriptedAgent(
       history.methods.push('session/new');
       history.sessionNewParams.push(params);
       return { sessionId, configOptions };
+    })
+    .onRequest(methods.agent.session.fork, ({ params }) => {
+      history.methods.push('session/fork');
+      history.sessionForkParams.push(params);
+      return { sessionId: 'forked-session', configOptions };
     })
     .onRequest(methods.agent.session.resume, ({ params }) => {
       history.methods.push('session/resume');

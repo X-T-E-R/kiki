@@ -6,6 +6,8 @@ export const AcpClientErrorCode = {
   InvalidSessionRef: 'executor.invalid_session_ref',
   ProtocolError: 'executor.protocol_error',
   SessionOpenFailed: 'executor.session_open_failed',
+  SessionFailed: 'executor.session_failed',
+  AuthenticationRequired: 'executor.authentication_required',
   SpawnFailed: 'executor.spawn_failed',
   StartupTimeout: 'executor.startup_timeout',
 } as const;

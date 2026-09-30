@@ -23,6 +23,7 @@ import {
   type NormalizedExecutorEvent,
 } from '#/events';
 import { parseExecutorSessionRefEnvelope } from '#/session-ref';
+import { airSessionFailure } from '#/session-failure';
 import { StderrRingBuffer } from '#/stderr-ring';
 import type {
   AcpClientOptions,
@@ -253,6 +254,7 @@ export class AcpProcessClient {
   #startupInFlight = false;
   #loadReplayCount = 0;
   #protocolFailure: AcpProtocolError | undefined;
+  #steeringDetached = false;
 
   constructor(
     processService: HostProcessServiceLike,
@@ -308,6 +310,12 @@ export class AcpProcessClient {
       Date.now() +
       (this.#descriptor.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
     let lastError: unknown;
+    const persistFork = options.onFork;
+    const onFork = async (ref: ExecutorSessionRefEnvelope): Promise<void> => {
+      try { await persistFork?.(ref); }
+      catch (error) { throw new AcpClientError(AcpClientErrorCode.InvalidSessionRef, 'Cannot persist the forked ACP session reference', { cause: error }); }
+      options = { ...options, sessionRef: ref };
+    };
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         if (options.signal?.aborted === true) {
@@ -318,7 +326,7 @@ export class AcpProcessClient {
           );
         }
         try {
-          return await this.#startOnce(options, deadline);
+          return await this.#startOnce({ ...options, onFork }, deadline);
         } catch (error) {
           lastError = error;
           await this.#cleanupTransport(false);
@@ -430,11 +438,12 @@ export class AcpProcessClient {
         deadline,
         signal,
       );
-      return configOptions.map((candidate) =>
+      const updated = configOptions.map((candidate) =>
         candidate.id === selection.configId
           ? { ...candidate, currentValue: selection.value } as SessionConfigOption
           : candidate,
       );
+      return option?.category === 'model' ? grokModelOptions(updated, modelOption?._meta?.['kiki.models']) : updated;
     }
     const configRequest: SetSessionConfigOptionRequest =
       typeof selection.value === 'boolean'
@@ -481,6 +490,14 @@ export class AcpProcessClient {
       );
     }
 
+    for (const attachment of request.attachments ?? []) {
+      if (attachment.type === 'image' && session.capabilities.promptCapabilities?.image !== true && this.#descriptor.id !== 'grok-acp') {
+        throw new AcpProtocolError('ACP harness does not support image attachments');
+      }
+      if (attachment.type === 'audio' && session.capabilities.promptCapabilities?.audio !== true) {
+        throw new AcpProtocolError('ACP harness does not support audio attachments');
+      }
+    }
     const queue = new AsyncQueue<NormalizedExecutorEvent>(MAX_EVENT_BACKLOG);
     const requestController = new AbortController();
     let resolveSettled!: () => void;
@@ -508,7 +525,7 @@ export class AcpProcessClient {
           methods.agent.session.prompt,
           {
             sessionId: session.sessionId,
-            prompt: [{ type: 'text', text: request.prompt }],
+            prompt: [{ type: 'text', text: request.prompt }, ...request.attachments ?? []],
           },
           { cancellationSignal: requestController.signal },
         );
@@ -518,6 +535,8 @@ export class AcpProcessClient {
             throw this.#disconnectError('ACP connection closed during prompt');
           }),
         ]);
+        const sessionFailure = airSessionFailure(response._meta);
+        if (sessionFailure !== undefined) throw sessionFailure;
         queue.close();
         if (
           this.#state === 'prompting' &&
@@ -554,6 +573,28 @@ export class AcpProcessClient {
       completion,
       cancel: (reason?: unknown) => this.cancel(reason),
     };
+  }
+
+  async steer(prompt: readonly import('@agentclientprotocol/sdk').ContentBlock[]): Promise<boolean> {
+    const active = this.#activeTurn;
+    const connection = this.#connection;
+    const session = this.#openResult;
+    const steering = objectValue(session?.initialize._meta?.['steering']);
+    if (active === undefined || active.signal.aborted || connection === undefined || session === undefined ||
+        steering?.['supported'] !== true || this.#steeringDetached) return false;
+    const response = await connection.agent.request('_session/steering', {
+      sessionId: session.sessionId,
+      prompt,
+      _meta: { steering: { idleBehavior: 'promptRequired' } },
+    }, { cancellationSignal: active.signal });
+    const outcome = objectValue(response)?.['outcome'];
+    if (outcome === 'injected') return true;
+    if (outcome === 'promptRequired') return false;
+    if (outcome === 'startedNewTurn') {
+      this.#steeringDetached = true;
+      return true;
+    }
+    throw new AcpProtocolError('ACP steering returned an unknown consumption outcome');
   }
 
   async cancel(reason: unknown = new Error('ACP turn cancelled')): Promise<boolean> {
@@ -664,6 +705,11 @@ export class AcpProcessClient {
     app.onNotification(methods.client.session.update, ({ params }) => {
       this.#handleSessionUpdate(params);
     });
+    if (this.#descriptor.id === 'grok-acp') {
+      for (const method of ['_x.ai/session_notification', '_x.ai/session/update']) {
+        app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params); });
+      }
+    }
     app.onNotification<unknown>(
       UNKNOWN_UPDATE_METHOD,
       (params) => params,
@@ -702,6 +748,27 @@ export class AcpProcessClient {
       }
     });
 
+    app.onRequest(methods.client.elicitation.create, async (context) => {
+      const handler = this.#options.elicitationHandler;
+      if (handler === undefined || context.params.mode !== 'form') return { action: 'decline' };
+      const signal = this.#activeTurn === undefined ? context.signal
+        : AbortSignal.any([context.signal, this.#activeTurn.signal]);
+      if (signal.aborted) return { action: 'cancel' };
+      return handler(context.params, { signal });
+    });
+
+    app.onRequest('_x.ai/exit_plan_mode', (input: unknown) => {
+      const value = objectValue(input);
+      if (value === undefined || typeof value['sessionId'] !== 'string') throw new AcpProtocolError('Invalid Grok plan approval request');
+      return { sessionId: value['sessionId'], toolCallId: typeof value['toolCallId'] === 'string' ? value['toolCallId'] : undefined,
+        plan: typeof value['planContent'] === 'string' ? value['planContent'].slice(0, 262_144) : '' };
+    }, async (context) => {
+      const handler = this.#options.planApprovalHandler;
+      const signal = this.#activeTurn === undefined ? context.signal : AbortSignal.any([context.signal, this.#activeTurn.signal]);
+      if (handler === undefined || signal.aborted) return { outcome: 'keep_planning', feedback: '' };
+      return handler(context.params, { signal });
+    });
+
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin),
       Readable.toWeb(validatedInput) as unknown as ReadableStream<Uint8Array>,
@@ -716,11 +783,14 @@ export class AcpProcessClient {
       clientCapabilities: {
         plan: {},
         session: { configOptions: { boolean: {} } },
+        ...(this.#options.elicitationHandler === undefined ? {} : { elicitation: { form: {} } }),
+        _meta: { jetbrains: { air: { version: 1, capabilities: ['sessionFailure'] } } },
       },
       clientInfo: {
         name: this.#descriptor.clientName ?? 'kiki-acp-client',
         version: '0.0.1',
       },
+      _meta: { steering: { supported: true } },
     };
     const initialize = await this.#requestDuringStartup(
       connection.agent.request(methods.agent.initialize, initializeRequest),
@@ -804,10 +874,36 @@ export class AcpProcessClient {
       ),
       mcpServers: options.mcpServers === undefined ? [] : [...options.mcpServers],
     };
-    const priorSessionId =
+    let priorSessionId =
       options.sessionRef === undefined
         ? undefined
         : sessionIdFromEnvelope(options.sessionRef, this.#descriptor.id);
+    const pendingFork = objectValue(options.sessionRef?.ref['kikiFork']);
+    if (pendingFork !== undefined && priorSessionId !== undefined) {
+      if (pendingFork['handoff'] === true || this.#capabilities.sessionCapabilities?.fork === undefined || this.#capabilities.sessionCapabilities?.fork === null) {
+        priorSessionId = undefined;
+      } else {
+        const point = objectValue(pendingFork['point']);
+        if (point === undefined || typeof point['messageId'] !== 'string' || typeof point['messageFingerprint'] !== 'string') throw new AcpProtocolError('Invalid persisted ACP fork point');
+        const canResume = this.#capabilities.sessionCapabilities?.resume !== undefined && this.#capabilities.sessionCapabilities?.resume !== null;
+        const forked = await this.#requestDuringStartup(connection.agent.request(methods.agent.session.fork, {
+          sessionId: priorSessionId, cwd: options.cwd,
+          ...(canResume ? {} : { mcpServers: common.mcpServers }),
+          _meta: { jetbrains: { air: { fork: point } } },
+        }), deadline, options.signal);
+        await options.onFork?.({ executorId: this.#descriptor.id, version: SESSION_REF_VERSION, ref: { sessionId: forked.sessionId } });
+        const resumed = canResume
+          ? await this.#requestDuringStartup(connection.agent.request(methods.agent.session.resume, {
+            ...common, sessionId: forked.sessionId,
+          }), deadline, options.signal) : forked;
+        return {
+          sessionId: forked.sessionId, mode: 'resume',
+          configOptions: sessionConfigOptionsFromResponse(resumed),
+          currentModeId: resumed.modes?.currentModeId,
+          availableModes: resumed.modes?.availableModes.map((mode) => mode.id),
+        };
+      }
+    }
 
     if (
       priorSessionId !== undefined &&
@@ -1123,7 +1219,8 @@ export class AcpProcessClient {
   #decorateError(error: unknown, fallback: AcpClientErrorCode): AcpClientError {
     if (error instanceof AcpClientError) return error;
     const message = error instanceof Error ? error.message : String(error);
-    return new AcpClientError(fallback, message, {
+    return new AcpClientError(error instanceof RequestError && error.code === RequestError.authRequired().code
+      ? AcpClientErrorCode.AuthenticationRequired : fallback, message, {
       cause: error,
       details: { stderrTail: this.stderrTail() },
     });
@@ -1151,7 +1248,7 @@ export class AcpProcessClient {
 export function sessionConfigOptionsFromResponse(value: unknown): SessionConfigOption[] {
   const record = objectValue(value);
   const standard = record?.['configOptions'];
-  if (Array.isArray(standard)) return standard as SessionConfigOption[];
+  if (Array.isArray(standard) && standard.length > 0) return standard as SessionConfigOption[];
   const meta = objectValue(record?.['_meta']);
   const sessionConfig = objectValue(meta?.['x.ai/sessionConfig']);
   const rawOptions = sessionConfig?.['options'];
@@ -1193,7 +1290,37 @@ export function sessionConfigOptionsFromResponse(value: unknown): SessionConfigO
     directOptions.push(choice);
     if (item['selected'] === true) existing.currentValue = valueId;
   }
-  return options;
+  for (const option of options) {
+    if (option.type === 'select' && option.currentValue === '') {
+      const first = option.options[0];
+      if (first !== undefined && 'value' in first) option.currentValue = first.value;
+    }
+  }
+  return grokModelOptions(options, objectValue(record?.['models'])?.['availableModels']);
+}
+
+export function grokModelOptions(options: readonly SessionConfigOption[], rawModels: unknown): SessionConfigOption[] {
+  const model = options.find((option) => option.category === 'model' && option._meta?.['kiki.transport'] === 'session/set_model');
+  if (model === undefined || model.type !== 'select' || !Array.isArray(rawModels)) return [...options];
+  const models = rawModels.slice(0, 1024).map(objectValue).filter((value) => value !== undefined);
+  const selected = models.find((value) => value['modelId'] === model.currentValue || value['id'] === model.currentValue);
+  const meta = objectValue(selected?.['_meta']);
+  const result = options.filter((option) => option.category !== 'thought_level').map((option) => option.id === model.id
+    ? { ...option, _meta: { ...option._meta, 'kiki.models': rawModels } } : option);
+  if (meta?.['supportsReasoningEffort'] === false) return result;
+  const rawEfforts = meta?.['reasoningEfforts'];
+  if (!Array.isArray(rawEfforts)) return [...result, ...options.filter((option) => option.category === 'thought_level')];
+  const choices = rawEfforts.flatMap((value) => {
+    const effort = objectValue(value);
+    return typeof effort?.['id'] === 'string' ? [{ value: effort['id'], name: typeof effort['label'] === 'string' ? effort['label'] : effort['id'], description: typeof effort['description'] === 'string' ? effort['description'] : undefined }] : [];
+  });
+  const prior = options.find((option) => option.category === 'thought_level');
+  const current = typeof meta?.['reasoningEffort'] === 'string' ? meta['reasoningEffort']
+    : typeof prior?.currentValue === 'string' && choices.some((choice) => choice.value === prior.currentValue) ? prior.currentValue : choices[0]?.value;
+  if (current === undefined) return result;
+  if (!choices.some((choice) => choice.value === current)) choices.unshift({ value: current, name: current, description: undefined });
+  return [...result, { id: 'reasoning_effort', name: 'Reasoning effort', category: 'thought_level', type: 'select', currentValue: current,
+    options: choices, _meta: { 'kiki.transport': 'session/set_model' } }];
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

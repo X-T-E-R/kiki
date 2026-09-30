@@ -2,6 +2,10 @@ import { AcpClientError } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
+  AcpElicitationHandler,
+  AcpElicitationRequest,
+  AcpElicitationResponse,
+  AcpPlanApprovalHandler,
   AcpPermissionDecision,
   AcpPermissionHandler,
   AcpSessionConfigOption,
@@ -66,6 +70,7 @@ import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { ISessionQuestionService, type QuestionResult } from '#/session/question/question';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -82,6 +87,9 @@ interface FakeHarnessOptions {
   readonly goal?: GoalSnapshot | null;
   readonly prior?: ReturnType<typeof stateHarness>['prior'];
   readonly approval?: () => Promise<ApprovalResponse>;
+  readonly elicitation?: AcpElicitationRequest;
+  readonly questionResponse?: QuestionResult;
+  readonly planApproval?: Parameters<AcpPlanApprovalHandler>[0];
   readonly permissionSignal?: AbortController;
   readonly loadReplayObserved?: boolean;
   readonly permissionSurface?: boolean;
@@ -193,6 +201,10 @@ function createHarness(options: FakeHarnessOptions = {}) {
   const opens: AcpOpenSessionOptions[] = [];
   const selections: Array<{ configId: string; value: string | boolean }> = [];
   const permissionDecisions: AcpPermissionDecision[] = [];
+  const elicitationDecisions: AcpElicitationResponse[] = [];
+  const planDecisions: Awaited<ReturnType<AcpPlanApprovalHandler>>[] = [];
+  const question = { _serviceBrand: undefined, request: vi.fn(async () => options.questionResponse ?? null) };
+  const approvalRequests: unknown[] = [];
   const state = stateHarness(options.prior);
   const wire = {
     _serviceBrand: undefined,
@@ -228,7 +240,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
   } as unknown as IAgentContextMemoryService;
   const approval = {
     _serviceBrand: undefined,
-    request: async () => {
+    request: async (request: unknown) => {
+      approvalRequests.push(request);
       if (options.approval === undefined) throw new Error('no approval consumer');
       return options.approval();
     },
@@ -293,6 +306,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [IWireService, wire],
     [IAgentContextMemoryService, contextMemory],
     [ISessionApprovalService, approval],
+    [ISessionQuestionService, question],
     [ISessionInteractionService, interaction],
     [ISessionMcpHandle, mcpHandle],
     [IAgentRuntimeService, runtime],
@@ -301,6 +315,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
+  let elicitationHandler: AcpElicitationHandler | undefined;
+  let planHandler: AcpPlanApprovalHandler | undefined;
   let configured = options.sessionConfigOptions === undefined
     ? configOptions(options.permissionSurface !== false)
     : [...options.sessionConfigOptions];
@@ -375,6 +391,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
         );
         permissionDecisions.push(decision);
       }
+      if (options.elicitation !== undefined) elicitationDecisions.push(await elicitationHandler!(options.elicitation, { signal: request.signal }));
+      if (options.planApproval !== undefined) planDecisions.push(await planHandler!(options.planApproval, { signal: request.signal }));
       const result: AcpTurnResult = {
         response: { stopReason: 'end_turn', usage: options.completionUsage },
         session: openResult(),
@@ -448,8 +466,10 @@ function createHarness(options: FakeHarnessOptions = {}) {
   }
   const createSession = (context: AgentExecutorContext) => new AcpAgentExecutorSession(
     context,
-    (_process, handler) => {
+    (_process, handler, elicitation, planApproval) => {
       permissionHandler = handler;
+      elicitationHandler = elicitation;
+      planHandler = planApproval;
       return client;
     },
   );
@@ -469,6 +489,10 @@ function createHarness(options: FakeHarnessOptions = {}) {
     opens,
     selections,
     permissionDecisions,
+    elicitationDecisions,
+    planDecisions,
+    question,
+    approvalRequests,
     interaction,
     pendingTurns,
     runtime,
@@ -2050,5 +2074,46 @@ describe('ACP external executor', () => {
     await expect(run.completion).resolves.toEqual({ summary: '', usage: undefined });
 
     expect(harness.usageRecords[0]?.[3]).toMatchObject({ usageKnown: false });
+  });
+});
+
+
+describe('ACP product interaction mapping', () => {
+  it('routes a blocking form through the durable question service with the active turn and remote tool identity', async () => {
+    const harness = createHarness({ executorId: 'codex-acp', questionResponse: { Strategy: 'Safe' }, elicitation: {
+      mode: 'form', sessionId: 'remote-2', toolCallId: 'ask-1', message: 'Pick a strategy', requestedSchema: {
+        type: 'object', required: ['strategy'], properties: { strategy: { type: 'string', title: 'Strategy', oneOf: [{ const: 'safe', title: 'Safe' }, { const: 'fast', title: 'Fast' }] } },
+      },
+    } });
+    try {
+      const handle = await harness.session.run({ kind: 'prompt', prompt: 'Plan the task' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.question.request).toHaveBeenCalledWith({ turnId: handle.turn.id,
+        toolCallId: expect.stringContaining('ask-1'), questions: [{ question: 'Strategy', body: undefined,
+          options: [{ label: 'Safe' }, { label: 'Fast' }], multiSelect: false, otherLabel: undefined }] },
+      { signal: expect.any(AbortSignal), agentId: 'external-agent' });
+      expect(harness.elicitationDecisions).toEqual([{ action: 'accept', content: { strategy: 'safe' } }]);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('does not approve an elicitation addressed to a different remote session', async () => {
+    const harness = createHarness({ elicitation: { mode: 'form', sessionId: 'unrelated', message: 'Approve', requestedSchema: { type: 'object', properties: {} } } });
+    try {
+      const handle = await harness.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.elicitationDecisions).toEqual([{ action: 'decline' }]);
+      expect(harness.question.request).not.toHaveBeenCalled();
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('maps Grok plan approval into the existing plan-review card and uses the donor outcome field', async () => {
+    const harness = createHarness({ executorId: 'grok-acp', planApproval: { sessionId: 'remote-2', toolCallId: 'exit-plan', plan: '# Plan\n- Inspect' },
+      approval: async () => ({ decision: 'approved' }) });
+    try {
+      const handle = await harness.session.run({ kind: 'prompt', prompt: 'Plan' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.approvalRequests.at(-1)).toMatchObject({ turnId: handle.turn.id, display: { kind: 'plan_review', plan: '# Plan\n- Inspect' } });
+      expect(harness.planDecisions).toEqual([{ outcome: 'approved', feedback: '' }]);
+    } finally { await harness.session.shutdown(); }
   });
 });

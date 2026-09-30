@@ -115,6 +115,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly executor?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: ExecutorPrompt;
+  readonly allowKikiSubagents?: boolean;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

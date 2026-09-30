@@ -89,6 +89,8 @@ import {
 } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { externalAcpForkRecords } from './internal/externalFork';
 import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalog';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
 import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
@@ -974,7 +976,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           sourceSessionId: sourceId,
           agentId,
           targetSessionId: targetCtx.sessionId,
-          records: slicedRecords,
+          records: externalAcpForkRecords(
+            slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId),
+            (id) => this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutorRegistry).get(id)?.protocol === 'acp-v1'),
+            agentId === MAIN_AGENT_ID && opts.throughUserMessage === true,
+          ),
         });
         retainedAgentIds.push(agentId);
       }

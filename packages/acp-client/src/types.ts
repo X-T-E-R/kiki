@@ -95,6 +95,7 @@ export interface AcpOpenSessionOptions {
   readonly sessionRef?: ExecutorSessionRefEnvelope;
   /** Fail instead of creating a new session if the supplied reference cannot be resumed or loaded. */
   readonly requireResume?: boolean;
+  readonly onFork?: (ref: ExecutorSessionRefEnvelope) => Promise<void>;
   readonly configOptions?: readonly AcpSessionConfigSelection[];
   readonly modeId?: string;
   /**
@@ -148,15 +149,32 @@ export interface AcpClientLogger {
   error?(message: string, details?: Readonly<Record<string, unknown>>): void;
 }
 
+export type AcpElicitationRequest = import('@agentclientprotocol/sdk').CreateElicitationRequest;
+export type AcpElicitationResponse = import('@agentclientprotocol/sdk').CreateElicitationResponse;
+export type AcpElicitationHandler = (
+  request: AcpElicitationRequest,
+  context: { readonly signal: AbortSignal },
+) => Promise<AcpElicitationResponse>;
+
+export type AcpPlanApprovalHandler = (
+  request: { readonly sessionId: string; readonly toolCallId?: string; readonly plan: string },
+  context: { readonly signal: AbortSignal },
+) => Promise<{ readonly outcome: 'approved' | 'abandoned' | 'keep_planning'; readonly feedback: string }>;
+
 export interface AcpClientOptions {
+  readonly planApprovalHandler?: AcpPlanApprovalHandler;
   readonly permissionHandler?: AcpPermissionHandler;
+  readonly elicitationHandler?: AcpElicitationHandler;
   readonly logger?: AcpClientLogger;
   readonly platform?: NodeJS.Platform;
   readonly onStateChange?: (status: AcpClientStatus) => void;
 }
 
+export type AcpPromptContent = import('@agentclientprotocol/sdk').ContentBlock;
+
 export interface AcpTurnRequest {
   readonly prompt: string;
+  readonly attachments?: readonly import('@agentclientprotocol/sdk').ContentBlock[];
   readonly signal: AbortSignal;
   readonly session: AcpOpenSessionOptions;
 }

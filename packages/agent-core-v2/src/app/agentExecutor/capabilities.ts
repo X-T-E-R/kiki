@@ -10,6 +10,13 @@ export interface ExecutorCapabilities {
 }
 
 export interface NegotiatedExecutorCapabilities {
+  readonly agentVersion?: string;
+  readonly image?: boolean;
+  readonly audio?: boolean;
+  readonly fork?: boolean;
+  readonly nativeSteering?: boolean;
+  readonly questionForm?: boolean;
+  readonly planApproval?: boolean;
   readonly models?: readonly string[];
   readonly thinkingLevels?: readonly string[];
   readonly authMethods?: readonly string[];

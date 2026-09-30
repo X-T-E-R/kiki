@@ -11,6 +11,8 @@ import { CapabilityErrors } from '#/app/capability/errors';
 import { CronErrors } from '#/app/cron/errors';
 import { DebugErrors } from '#/debug/errors';
 import { EventErrors } from '#/app/event/errors';
+import { ExecutorErrors } from '#/app/agentExecutor/errors';
+export { ExecutorErrors } from '#/app/agentExecutor/errors';
 import { FileErrors } from '#/app/file/fileService';
 import { FsErrors } from '#/workspace/workspaceFs/internal/errors';
 import { FullCompactionErrors } from '#/agent/fullCompaction/errors';
@@ -91,6 +93,7 @@ export const ErrorCodes = {
   ...CapabilityErrors.codes,
   ...CronErrors.codes,
   ...DebugErrors.codes,
+  ...ExecutorErrors.codes,
   ...FileErrors.codes,
   ...FsErrors.codes,
   ...FullCompactionErrors.codes,

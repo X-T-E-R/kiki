@@ -101,6 +101,7 @@ export const namedAgentProfileSchema = z.object({
   executor_protocol: z.string().optional(),
   executor_options: requestParamsSchema.optional(),
   executor_prompt: executorPromptSchema.optional(),
+  allow_kiki_subagents: z.boolean().optional(),
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
   /** Role-level model recommendations (soft; `["*"]` normalizes to absent). */
@@ -461,6 +462,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   main: z.boolean().nullable().optional(),
   executor: z.string().trim().min(1).nullable().optional(),
   executor_prompt: executorPromptSchema.nullable().optional(),
+  allow_kiki_subagents: z.boolean().nullable().optional(),
   pinned_model_alias: modelAliasSchema.nullable().optional(),
   thinking_effort: optionalProfileStringSchema,
   allowed_models: profileStringListSchema,
@@ -489,6 +491,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.main !== undefined ||
     value.executor !== undefined ||
     value.executor_prompt !== undefined ||
+    value.allow_kiki_subagents !== undefined ||
     value.pinned_model_alias !== undefined ||
     value.thinking_effort !== undefined ||
     value.allowed_models !== undefined ||

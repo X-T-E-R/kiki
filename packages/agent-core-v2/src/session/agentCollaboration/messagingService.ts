@@ -256,7 +256,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     }
     if (executionState !== 'idle' && executionState !== 'running') return false;
     if (executionState === 'running') {
-      if (loop.status().state !== 'running') return false;
+      if (!this.isExternalExecutor(handle) && loop.status().state !== 'running') return false;
       await loop.settled();
       await execution.settled();
       if (this.hasMessage(handle, message.messageId)) return false;

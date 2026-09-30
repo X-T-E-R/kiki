@@ -28,6 +28,7 @@ import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 import {
   ExecutorPlanRemove,
@@ -118,11 +119,11 @@ export class ExternalTurnRecorder {
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
-  async begin(prompt: string, origin: PromptOrigin): Promise<void> {
+  async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = []): Promise<void> {
     await this.#dispatcher.dispatch(
       new TurnPrompt({
         turnId: this.turnId,
-        input: [{ type: 'text', text: prompt }],
+        input: [{ type: 'text', text: prompt }, ...attachments],
         origin,
       }),
     );
@@ -184,6 +185,9 @@ export class ExternalTurnRecorder {
         await this.#runtimeUpdate('config', boundedUnknown(event.configOptions));
         return;
       case 'session.info':
+        if (this.agent.id === 'main' && event.title?.trim()) {
+          await this.agent.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(event.title.trim().slice(0, 100));
+        }
         await this.#runtimeUpdate(
           'session',
           boundedUnknown({ title: event.title, meta: event.meta }),
@@ -203,6 +207,10 @@ export class ExternalTurnRecorder {
         this.losses.add('unknown_update_dropped');
         await this.#runtimeUpdate('unknown', { updateType: event.updateType });
     }
+  }
+
+  async reportedUsage(value: unknown): Promise<void> {
+    await this.#runtimeUpdate('usage', boundedUnknown({ source: 'prompt_response', reported: value }));
   }
 
   async complete(finishReason?: string, usage?: TokenUsage): Promise<void> {

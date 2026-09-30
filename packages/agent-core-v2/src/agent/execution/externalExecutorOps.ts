@@ -187,7 +187,7 @@ export const externalExecutorKey = defineState(
     sessionEpoch: event.sessionEpoch,
     profileDeliveredSessionId: event.profileDeliveredSessionId,
     profileDelivery: event.profileDelivery,
-    lastCumulativeUsage: event.lastCumulativeUsage ?? state.lastCumulativeUsage,
+    lastCumulativeUsage: event.lastCumulativeUsage ?? (event.sessionEpoch === state.sessionEpoch ? state.lastCumulativeUsage : undefined),
   }))
   .on(ExecutorTurnMetadata, () => {})
   .on(ExecutorHintDelivery, () => {})

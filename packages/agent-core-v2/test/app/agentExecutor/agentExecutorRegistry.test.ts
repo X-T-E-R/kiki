@@ -106,7 +106,11 @@ describe('AgentExecutorRegistryService', () => {
     expect(BUILTIN_AGENT_EXECUTORS['pi-acp']?.supportsMcp).toBe(false);
     expect(BUILTIN_AGENT_EXECUTORS['qoder-acp']?.command).toBe('qodercli');
     expect(BUILTIN_AGENT_EXECUTORS['hermes-acp']).toBeUndefined();
-    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']).toBeUndefined();
+    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']).toMatchObject({
+      protocol: 'acp-v1', homeEnv: 'GEMINI_HOME', args: [],
+      sources: expect.arrayContaining([{ id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' }]),
+    });
+    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.sources).not.toContainEqual(expect.objectContaining({ command: 'antigravity' }));
   });
 
   it('rejects unknown executor ids instead of falling back to native', () => {

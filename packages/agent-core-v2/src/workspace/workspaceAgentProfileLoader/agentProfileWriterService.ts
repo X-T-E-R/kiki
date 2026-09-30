@@ -70,6 +70,7 @@ const TOP_LEVEL_KEYS = new Set([
   'main',
   'executor',
   'executorPrompt',
+  'allowKikiSubagents',
   'modelAlias',
   'thinkingEffort',
   'allowedModels',
@@ -245,6 +246,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     }
     if (request.executorPrompt !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'executor_prompt', request.executorPrompt);
+    }
+    if (request.allowKikiSubagents !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'allow_kiki_subagents', request.allowKikiSubagents);
     }
     if (request.allowedModels !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_models', request.allowedModels);
@@ -495,6 +499,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     issues.push({ path: 'main', message: 'main must be boolean or null' });
   }
   validateOptionalString(request.executor, 'executor', issues);
+  if (request.allowKikiSubagents !== undefined && request.allowKikiSubagents !== null && typeof request.allowKikiSubagents !== 'boolean') {
+    issues.push({ path: 'allowKikiSubagents', message: 'allowKikiSubagents must be boolean or null' });
+  }
   if (request.executorPrompt !== undefined && request.executorPrompt !== null) {
     const parsed = executorPromptSchema.safeParse(request.executorPrompt);
     if (!parsed.success) issues.push({ path: 'executorPrompt', message: parsed.error.message });
@@ -563,6 +570,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.main,
     request.executor,
     request.executorPrompt,
+    request.allowKikiSubagents,
     request.modelAlias,
     request.thinkingEffort,
     request.allowedModels,

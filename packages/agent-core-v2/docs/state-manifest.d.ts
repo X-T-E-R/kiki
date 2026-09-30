@@ -1819,6 +1819,7 @@ export interface AgentStateSnapshot {
         append?: string;
       }>;
     };
+    readonly allowKikiSubagents?: boolean;
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
@@ -2194,6 +2195,7 @@ export interface AgentStateSnapshot {
             append?: string;
           }>;
         };
+        readonly allowKikiSubagents?: boolean;
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
         readonly allowedModels?: readonly string[];
@@ -2365,6 +2367,7 @@ export interface AgentStateSnapshot {
           append?: string;
         }>;
       };
+      readonly allowKikiSubagents?: boolean;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -2587,6 +2590,7 @@ export interface AgentStateSnapshot {
               append?: string;
             }>;
           };
+          readonly allowKikiSubagents?: boolean;
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];
@@ -2686,6 +2690,7 @@ export interface AgentStateSnapshot {
               append?: string;
             }>;
           };
+          readonly allowKikiSubagents?: boolean;
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
@@ -3073,6 +3078,7 @@ export interface AgentStateSnapshot {
                 append?: string;
               }>;
             };
+            readonly allowKikiSubagents?: boolean;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
             readonly allowedModels?: readonly string[];
@@ -3239,6 +3245,7 @@ export interface AgentStateSnapshot {
               append?: string;
             }>;
           };
+          readonly allowKikiSubagents?: boolean;
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];

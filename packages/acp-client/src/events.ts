@@ -62,7 +62,10 @@ export function mapAcpSessionNotification(
 ): { readonly sessionId: string; readonly event: NormalizedExecutorEvent } {
   const notification = object(input, 'session/update params');
   const sessionId = string(notification['sessionId'], 'session/update.sessionId')!;
-  return { sessionId, event: mapAcpSessionUpdate(notification['update']) };
+  const update = object(notification['update'], 'session/update.update');
+  return { sessionId, event: update['sessionUpdate'] === 'auto_compact_completed'
+    ? { type: 'context.compacted', threadId: sessionId }
+    : mapAcpSessionUpdate(update) };
 }
 
 export function mapAcpSessionUpdate(input: unknown): NormalizedExecutorEvent {
@@ -141,6 +144,12 @@ export function mapAcpSessionUpdate(input: unknown): NormalizedExecutorEvent {
       title: string(update['title'], 'update.title', true),
       meta: update['_meta'],
     };
+  }
+  if (updateType === 'image_dropped') {
+    return { type: 'session.info', meta: { imageDropped: {
+      reason: typeof update['reason'] === 'string' ? update['reason'].slice(0, 1024) : undefined,
+      notes: Array.isArray(update['notes']) ? update['notes'].filter((note) => typeof note === 'string').slice(0, 16) : [],
+    } } };
   }
   if (updateType === 'usage_update') {
     const used = update['used'];

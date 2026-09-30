@@ -48,6 +48,9 @@ import {
 } from './configSection';
 import { MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, type ManagedAdapterState } from './managedAdapterRegistry';
 import { wrapWindowsNodeShims } from './windowsNodeShim';
+import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
+import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
+import { join } from 'pathe';
 
 const NATIVE_DESCRIPTOR: AgentExecutorDescriptor = {
   id: 'native',
@@ -284,6 +287,16 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   }
 
   async #withManagedSource(descriptor: AgentExecutorDescriptor): Promise<AgentExecutorDescriptor> {
+    if (descriptor.id === 'antigravity-acp') {
+      const state = await this.documents?.get<AntigravityCacheState>(ANTIGRAVITY_CACHE_SCOPE, descriptor.id);
+      if (state?.activeVersion !== undefined && descriptor.sources?.some((source) => source.id === 'kiki-managed')) {
+        const release = antigravityRelease(state.activeVersion, this.bootstrap.platform, this.bootstrap.arch);
+        const path = join(antigravityCacheRoot(this.bootstrap.homeDir), release.version, release.platform, release.entry);
+        return { ...descriptor, sources: descriptor.sources.map((source) => source.id === 'kiki-managed'
+          ? { id: source.id, kind: 'explicit-path', path } : source) };
+      }
+      return descriptor;
+    }
     const state = await this.documents?.get<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, descriptor.id);
     return withManagedAdapterSource(descriptor, this.bootstrap.homeDir, state);
   }

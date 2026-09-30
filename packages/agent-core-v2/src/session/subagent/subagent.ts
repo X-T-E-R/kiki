@@ -7,7 +7,7 @@ import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import type { Hooks } from '#/hooks';
 
 export type AgentRunRequest =
-  | { readonly kind: 'prompt'; readonly prompt: string; readonly origin?: PromptOrigin }
+  | { readonly kind: 'prompt'; readonly prompt: string; readonly input?: readonly import('#/kosong/contract/message').ContentPart[]; readonly origin?: PromptOrigin }
   | { readonly kind: 'mailbox'; readonly prompt: string; readonly message: ContextMessage }
   | { readonly kind: 'retry'; readonly trigger?: string };
 

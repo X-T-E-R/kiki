@@ -79,6 +79,7 @@ export interface ProfileData extends AgentConfigData {
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
+  readonly allowKikiSubagents?: boolean;
   readonly executorDescriptorRevision?: string;
   readonly agentsMdPaths?: readonly string[];
   readonly activeToolNames?: readonly string[];
@@ -132,6 +133,7 @@ export interface ProfileBindingSnapshot {
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
+  readonly allowKikiSubagents?: boolean;
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;

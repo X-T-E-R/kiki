@@ -10,6 +10,13 @@ export const executorCapabilitiesSchema = z.object({
   model_binding: z.string().optional(),
   thinking_binding: z.boolean(),
   negotiated: z.object({
+    agent_version: z.string().optional(),
+    image: z.boolean().optional(),
+    audio: z.boolean().optional(),
+    fork: z.boolean().optional(),
+    native_steering: z.boolean().optional(),
+    question_form: z.boolean().optional(),
+    plan_approval: z.boolean().optional(),
     models: z.array(z.string()).optional(),
     thinking_levels: z.array(z.string()).optional(),
     auth_methods: z.array(z.string()).optional(),

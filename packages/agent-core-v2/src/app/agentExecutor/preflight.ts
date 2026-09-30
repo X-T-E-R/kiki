@@ -138,6 +138,10 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
+    if (id === 'antigravity-acp' && selected === undefined && (diagnostics.some((diagnostic) => diagnostic.message.includes('Antigravity IDE')) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
+      return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。')], undefined, sources, undefined,
+        [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
+    }
     const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined, selected?.command);
     diagnostics.push(...rules.diagnostics);
     const failed = selected === undefined

@@ -319,7 +319,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       agentId === 'main'
         ? undefined
         : opts.delegator?.kind === 'external'
-          ? undefined
+          ? this.get('main')?.accessor.get(IAgentProfileService).data().allowKikiSubagents === true ? 'main' : undefined
           : opts.delegator?.kind === 'agent'
             ? opts.delegator.agentId
             : 'main';

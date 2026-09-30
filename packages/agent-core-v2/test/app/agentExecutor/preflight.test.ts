@@ -154,6 +154,17 @@ describe('AgentExecutorPreflightService', () => {
 
   afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
 
+  it('reports just the IDE/ACP distinction when only Antigravity IDE is installed', async () => {
+    services.set(IHostFileSystem, fsWith(['C:/tools/antigravity.EXE']));
+    const result = await services.get(IAgentExecutorPreflightService).run(['antigravity-acp']);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.diagnostics).toHaveLength(1);
+    expect(result[0]?.diagnostics[0]?.message).toContain('这是 Antigravity IDE，不是 ACP CLI');
+    expect(result[0]?.diagnostics[0]?.message).toContain('ANTIGRAVITY_ACP_PATH');
+    expect(result[0]?.diagnostics[0]?.message).toContain('1.2.1');
+    expect(processService.calls.some((call) => call.includes('antigravity'))).toBe(false);
+  });
+
   it('probes every builtin harness and selects discovered sources plus the Gemini fallback', async () => {
     processService.outputs.set('grok --version', { output: 'grok 1.0.13' });
     processService.outputs.set('codex-acp --version', { output: 'codex-acp 1.7.0' });
@@ -170,6 +181,7 @@ describe('AgentExecutorPreflightService', () => {
     const results = await services.get(IAgentExecutorPreflightService).run();
 
     expect([
+      'antigravity-acp',
       'claude-acp',
       'cline-acp',
       'codebuddy-acp',

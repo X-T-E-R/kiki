@@ -430,6 +430,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorProtocol: snapshot.executorProtocol,
         executorOptions: snapshot.executorOptions,
         executorPrompt: snapshot.executorPrompt,
+        allowKikiSubagents: snapshot.allowKikiSubagents,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
         thinkingEffortAdjusted: snapshot.thinkingEffortAdjusted,
@@ -847,6 +848,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
       executorPrompt: profile.executorPrompt,
+      allowKikiSubagents: profile.allowKikiSubagents,
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: thinkingLevel,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
@@ -1627,6 +1629,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           ? undefined
           : { ...this.profileState.executorOptions },
       executorPrompt: this.profileState.executorPrompt,
+      allowKikiSubagents: this.profileState.allowKikiSubagents,
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,
       effectiveThinkingLevel: thinking.effective,

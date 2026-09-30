@@ -108,15 +108,21 @@ async function probeSource(
   const selectedCommands = source.kind === 'glob' && !exhaustive
     ? [commands.toSorted(compareExecutorBinaryPaths).at(-1)!]
     : commands;
-  const candidates = await Promise.all(selectedCommands.map(async (command) => ({
-    command,
-    probe: await probeCommand(
-      processService,
-      command,
-      descriptor.versionProbe?.args ?? ['--version'],
-      executorProcessEnv(descriptor),
-    ),
-  })));
+  const candidates = await Promise.all(selectedCommands.map(async (command) => {
+    if (descriptor.id === 'antigravity-acp') {
+      const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
+      const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
+      if (ide || !await isFile(fs, sibling)) return { command, probe: {
+        available: false, code: undefined,
+        output: ide ? '这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1）。'
+          : 'Antigravity ACP installation is incomplete: localharness_external is missing.',
+      } };
+      const cachedVersion = basename(dirname(dirname(command)));
+      return { command, probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' } };
+    }
+    return { command, probe: await probeCommand(processService, command,
+      descriptor.versionProbe?.args ?? ['--version'], executorProcessEnv(descriptor)) };
+  }));
   const available = candidates.filter((candidate) => candidate.probe.available && candidate.probe.code === 0);
   if (available.length === 0) {
     const first = candidates[0];
@@ -126,9 +132,10 @@ async function probeSource(
       available: false,
       command: first?.command,
       version: firstLine(first?.probe.output ?? ''),
-      diagnostic: first?.probe.available === true
-        ? `version probe exited with code ${String(first.probe.code)}`
-        : 'not found or not executable',
+      diagnostic: descriptor.id === 'antigravity-acp' && first?.probe.output
+        ? first.probe.output : first?.probe.available === true
+          ? `version probe exited with code ${String(first.probe.code)}`
+          : 'not found or not executable',
     };
   }
   const selected = source.kind === 'glob' && exhaustive

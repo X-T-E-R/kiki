@@ -1,9 +1,15 @@
+import { randomUUID } from 'node:crypto';
+
 import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
   AcpClientError,
   type AcpOpenSessionOptions,
   type AcpOpenSessionResult,
+  type AcpPlanApprovalHandler,
+  type AcpElicitationHandler,
+  type AcpElicitationRequest,
+  type AcpElicitationResponse,
   type AcpPermissionOption,
   type AcpPermissionRequest,
   type AcpProcessClient as AcpProcessClientType,
@@ -17,6 +23,10 @@ import {
 } from '@kiki/acp-client';
 
 import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
+import { antigravityProcessService } from '#/app/agentExecutor/antigravityProcess';
+import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { acquireHarnessMcp } from './harnessMcpLease';
+import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -40,6 +50,9 @@ import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { ISessionApprovalService } from '#/session/approval/approval';
+import { ISessionQuestionService } from '#/session/question/question';
+import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
+import { acpFormFields, acpFormResponse } from './acpElicitation';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -73,6 +86,7 @@ interface AcpClientLike {
   startTurn(
     request: Parameters<AcpProcessClientType['startTurn']>[0],
   ): Promise<AcpTurnHandle<NormalizedExecutorEvent>>;
+  steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean>;
   cancel(reason?: unknown): Promise<boolean>;
   shutdown(reason?: unknown): Promise<void>;
 }
@@ -121,6 +135,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #settled: Promise<void> = Promise.resolve();
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
+  #harnessMcp: HarnessMcpLease | undefined;
 
   constructor(
     private context: AgentExecutorContext,
@@ -130,7 +145,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         request: AcpPermissionRequest,
         options: { readonly signal: AbortSignal; readonly options: readonly AcpPermissionOption[] },
       ) => Promise<{ readonly outcome: 'selected' | 'cancelled'; readonly optionId?: string }>,
-    ) => AcpClientLike = (processService, permissionHandler) =>
+      elicitationHandler: AcpElicitationHandler,
+      planApprovalHandler: AcpPlanApprovalHandler,
+    ) => AcpClientLike = (processService, permissionHandler, elicitationHandler, planApprovalHandler) =>
       new AcpProcessClient(
         processService,
         {
@@ -142,7 +159,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',
         },
-        { permissionHandler },
+        { permissionHandler,
+          elicitationHandler: ['codex-acp', 'deepseek-acp'].includes(context.descriptor.id) ? elicitationHandler : undefined,
+          planApprovalHandler: context.descriptor.id === 'grok-acp' ? planApprovalHandler : undefined },
       ),
   ) {
     const runtime = context.agent.accessor.get(IAgentRuntimeService);
@@ -162,10 +181,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
     this.#spawnPermissionMode = this.#permissionMode.mode;
+    const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
+      () => context.agent.accessor.get(IBootstrapService));
     this.#client = clientFactory(
-      wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
-        () => context.agent.accessor.get(IBootstrapService)),
+      context.descriptor.id === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
+        context.agent.accessor.get(IBootstrapService)) : processes,
       (request, options) => this.#requestPermission(request, options),
+      (request, options) => this.#requestElicitation(request, options.signal),
+      (request, options) => this.#requestPlanApproval(request, options.signal),
     );
   }
 
@@ -192,7 +215,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
       : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
     const sessionOptions = await this.#sessionOptions(options.signal);
-    const opened = await this.#client.openSession(sessionOptions).catch((error: unknown) => {
+    const opened = await this.#client.openSession({ ...sessionOptions, onFork: async (sessionRef) => {
+      const prior = this.#states.get(externalExecutorKey);
+      await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+        executorId: this.context.descriptor.id, descriptorRevision: this.context.descriptor.revision,
+        bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding), sessionRef,
+        sessionEpoch: (prior.sessionEpoch ?? 0) + 1,
+        profileDelivery: prior.profileDelivery,
+      }));
+      await this.#dispatcher.flush();
+    } }).catch((error: unknown) => {
       if (error instanceof AcpClientError && typeof error.details?.['resumeSupported'] === 'boolean' &&
           typeof error.details['loadSupported'] === 'boolean') {
         this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
@@ -217,7 +249,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
         thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
         authMethods: opened.initialize.authMethods?.map((method) => method.id),
-        resume: opened.capabilities.sessionCapabilities?.resume != null,
+        agentVersion: opened.initialize.agentInfo?.version,
+        image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
+        audio: opened.capabilities.promptCapabilities?.audio === true,
+        fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
+        nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
+        questionForm: ['codex-acp', 'deepseek-acp'].includes(this.context.descriptor.id),
+        planApproval: this.context.descriptor.id === 'grok-acp',
+        resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
         load: opened.capabilities.loadSession === true,
         permissionModes: opened.availableModes,
       },
@@ -280,7 +319,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin);
+    await recorder.begin(prompt, origin, externalAttachments(request));
 
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);
@@ -308,6 +347,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     try {
       handle = await this.#client.startTurn({
         prompt: remotePrompt,
+        attachments: acpAttachments(externalAttachments(request)),
         signal: controller.signal,
         session: sessionOptions,
       });
@@ -387,6 +427,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return { state: 'idle' };
   }
 
+  async steer(message: ContextMessage): Promise<boolean> {
+    const active = this.#active;
+    if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
+    const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    return this.#client.steer([
+      { type: 'text', text },
+      ...acpAttachments(message.content.filter((part) => part.type !== 'text')),
+    ]);
+  }
+
   updateBinding(binding: AgentExecutorContext['binding']): void {
     if (this.#active !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP binding cannot change during a turn');
     this.context = { ...this.context, binding };
@@ -412,8 +462,12 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     this.#shutdown = true;
     this.cancel(reason);
-    await Promise.all([this.settled(), this.#client.shutdown(reason)]);
-    this.#runtimeLease.dispose();
+    try {
+      await Promise.all([this.settled(), this.#client.shutdown(reason)]);
+    } finally {
+      this.#harnessMcp?.dispose();
+      this.#runtimeLease.dispose();
+    }
   }
 
   async #completeTurn(
@@ -441,6 +495,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     try {
       const completed = await handle.completion;
       await pump;
+      if (completed.response._meta?.['usage'] !== undefined) await recorder.reportedUsage(completed.response._meta['usage']);
       const turnResult = turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
         const accounted = usageFromAcp(
@@ -532,12 +587,22 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     const systemPrompt = this.context.binding.systemPrompt;
+    const servers = this.context.descriptor.supportsMcp === false
+      ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
+        (name) => process.env[name], this.context.descriptor.mcpTransports);
+    if (this.context.binding.allowKikiSubagents === true) {
+      this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
+      if (this.#harnessMcp !== undefined) {
+        if (servers.some((server) => server.name === this.#harnessMcp!.server.name)) {
+          throw new Error2(ErrorCodes.CONFIG_INVALID, 'The reserved Kiki harness MCP name is already configured');
+        }
+        servers.push(this.#harnessMcp.server);
+      }
+    }
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
-      mcpServers: this.context.descriptor.supportsMcp === false
-        ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
-          (name) => process.env[name], this.context.descriptor.mcpTransports),
+      mcpServers: servers,
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
@@ -635,6 +700,61 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const id = Math.max(modelNextId, this.#nextReservedTurnId ?? modelNextId);
     this.#nextReservedTurnId = id + 1;
     return id;
+  }
+
+  async #requestPlanApproval(request: Parameters<AcpPlanApprovalHandler>[0], signal: AbortSignal): ReturnType<AcpPlanApprovalHandler> {
+    const active = this.#permissionContext;
+    if (active === undefined || signal.aborted || request.sessionId !== this.#client.status().sessionId) return { outcome: 'keep_planning', feedback: '' };
+    const approvalId = `grok-plan:${randomUUID()}`;
+    const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
+      id: approvalId, agentId: this.context.agent.id, turnId: active.turn.id,
+      toolCallId: request.toolCallId === undefined ? undefined : active.recorder.toolCallId(request.toolCallId),
+      toolName: 'Exit plan mode', action: 'Review external plan', display: { kind: 'plan_review', plan: request.plan },
+    }), signal);
+    if (response === undefined || response.decision === 'cancelled') {
+      this.#interaction.cancelPendingForTurn(active.turn.id);
+      return { outcome: 'keep_planning', feedback: '' };
+    }
+    const feedback = response.feedback?.trim().slice(0, 16_384) ?? '';
+    if (response.decision === 'approved') return { outcome: 'approved', feedback };
+    if (response.selectedLabel === 'Reject and Exit') return { outcome: 'abandoned', feedback };
+    if (feedback.length > 0) await this.context.agent.accessor.get(IAgentCollaborationMessagingService).send({
+      sourceAgentId: this.context.agent.id, sourceTaskName: 'user', senderKind: 'user',
+      targetAgentId: this.context.agent.id, targetTaskName: this.context.agent.id, idleWake: 'parent',
+      content: `Revise the plan according to this feedback:\n\n${feedback}`,
+      idempotencyKey: `${approvalId}:feedback`,
+    });
+    return { outcome: 'keep_planning', feedback };
+  }
+
+  async #requestElicitation(request: AcpElicitationRequest, signal: AbortSignal): Promise<AcpElicitationResponse> {
+    const active = this.#permissionContext;
+    if (active === undefined || signal.aborted) return { action: 'cancel' };
+    if (request.mode !== 'form' || ('sessionId' in request && request.sessionId !== this.#client.status().sessionId)) return { action: 'decline' };
+    const fields = acpFormFields(request);
+    if (fields === undefined) return { action: 'decline' };
+    const toolCallId = 'toolCallId' in request && typeof request.toolCallId === 'string' ? active.recorder.toolCallId(request.toolCallId) : undefined;
+    if (fields.length === 0 || request._meta?.['codex_approval_kind'] === 'mcp_tool_call') {
+      if (fields.some((field) => field.key !== 'persist' || field.schema['type'] !== 'boolean')) return { action: 'decline' };
+      const persist = fields.some((field) => field.key === 'persist');
+      const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
+        agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
+        toolName: 'External approval', action: request.message,
+        display: { kind: 'external_permission', summary: request.message, detail: request,
+          options: [{ id: 'accept', label: 'Accept', kind: 'allow_once' },
+            ...persist ? [{ id: 'accept_always', label: 'Accept for this session', kind: 'allow_always' }] : [],
+            { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
+      }), signal);
+      if (response === undefined || response.decision === 'cancelled') {
+        this.#interaction.cancelPendingForTurn(active.turn.id);
+        return { action: 'cancel' };
+      }
+      return response.decision === 'approved' ? { action: 'accept', content: persist ? { persist: response.selectedOptionId === 'accept_always' } : {} } : { action: 'decline' };
+    }
+    const result = await this.context.agent.accessor.get(ISessionQuestionService).request({
+      turnId: active.turn.id, toolCallId, questions: fields.map((field) => field.question),
+    }, { signal, agentId: this.context.agent.id });
+    return signal.aborted ? { action: 'cancel' } : acpFormResponse(request, fields, result);
   }
 
   async #requestPermission(

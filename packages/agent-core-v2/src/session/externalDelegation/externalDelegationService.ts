@@ -1304,6 +1304,19 @@ export class SessionExternalDelegationService
       await this.captureTranscriptEnd(doc, dispatch, terminalBoundary);
       await published;
       await this.persist();
+      const main = this.agents.get(MAIN_AGENT_ID);
+      if (dispatch.target === 'named' && dispatch.agentId !== undefined &&
+          main?.accessor.get(IAgentProfileService).data().allowKikiSubagents === true) {
+        await this.messaging.send({
+          sourceAgentId: dispatch.agentId,
+          sourceTaskName: dispatch.taskName ?? dispatch.agentId,
+          targetAgentId: MAIN_AGENT_ID,
+          targetTaskName: 'root',
+          content: `Kiki delegation ${dispatchId} ${status}.\n${(dispatch.result ?? dispatch.error ?? '').slice(0, 8192)}\nUse kiki_result for the complete receipt.`,
+          idempotencyKey: `harness-completion:${dispatchId}`,
+          idleWake: 'parent',
+        });
+      }
     })();
     this.terminalizations.set(dispatchId, terminalization);
     void terminalization.then(

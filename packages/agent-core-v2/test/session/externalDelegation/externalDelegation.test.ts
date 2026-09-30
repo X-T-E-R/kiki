@@ -622,6 +622,28 @@ describe('SessionExternalDelegationService', () => {
     expect(runAgentIds).toEqual(['external-child']);
   });
 
+  it.each([true, false])('returns a nonblocking dispatch and sends completion to its original main only when the opt-in remains %s', async (enabled) => {
+    const mainProfile = handles.get('main')!.accessor.get(IAgentProfileService);
+    const binding = mainProfile.data();
+    const current = vi.spyOn(mainProfile, 'data').mockReturnValue({ ...binding, allowKikiSubagents: true });
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'named', taskName: 'harness_child', profileName: 'coder', message: 'work' });
+    expect(dispatch.status).toBe('queued');
+    expect(sentMessages).toEqual([]);
+    current.mockReturnValue({ ...binding, allowKikiSubagents: enabled });
+    completions[0]!.resolve({ summary: 'final receipt' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+      if (enabled) expect(sentMessages).toHaveLength(1);
+    });
+    if (enabled) {
+      expect(sentMessages[0]).toMatchObject({ sourceAgentId: 'external-child', targetAgentId: 'main', targetTaskName: 'root',
+        idempotencyKey: `harness-completion:${dispatch.dispatchId}`, idleWake: 'parent', content: expect.stringContaining('final receipt') });
+      await service.result({ authority, dispatchId: dispatch.dispatchId });
+      expect(sentMessages).toHaveLength(1);
+    } else expect(sentMessages).toEqual([]);
+  });
+
   it('queues idempotent mailbox messages only for an owned named child', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({

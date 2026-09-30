@@ -29,6 +29,15 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('keeps Kiki harness delegation opt-in and preserves explicit false', () => {
+    expect(parse('---\nname: solo\ndescription: d\n---\nbody\n').allowKikiSubagents).toBeUndefined();
+    for (const flag of [true, false]) {
+      const def = parse(`---\nname: solo\ndescription: d\nallow_kiki_subagents: ${flag}\n---\nbody\n`);
+      expect(def.allowKikiSubagents).toBe(flag);
+      expect(agentProfileFromFile(def, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).allowKikiSubagents).toBe(flag);
+    }
+    expect(() => parse('---\nname: solo\ndescription: d\nallow_kiki_subagents: "true"\n---\nbody\n')).toThrow(/boolean/);
+  });
   it('accepts token-only profile and model-profile auto_compact values', () => {
     const def = parse('---\nname: solo\ndescription: d\nauto_compact: 400000\nmodel_profiles:\n  - alias: opus\n    auto_compact: 300000\n---\nbody\n');
     expect(def.autoCompact).toBe(400_000);
@@ -133,10 +142,10 @@ body
     ).toThrow(/"executor".*required/);
   });
 
-  it('rejects external executors on main profiles', () => {
-    expect(() =>
-      parse('---\nname: solo\ndescription: d\nmain: true\nexecutor: grok-acp\n---\n\nbody\n'),
-    ).toThrow(/unsupported for main/);
+  it('admits an external main without implicitly granting Kiki subagent delegation', () => {
+    const profile = parse('---\nname: solo\ndescription: d\nmain: true\nexecutor: grok-acp\n---\n\nbody\n');
+    expect(profile).toMatchObject({ main: true, executor: 'grok-acp' });
+    expect(profile.allowKikiSubagents).toBeUndefined();
   });
 
   it('preserves explicit main: false separately from omission', () => {
