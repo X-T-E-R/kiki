@@ -6,7 +6,7 @@
  * Boots the fixture server (scenario `appearance-bg`) and its own vite, then
  * drives the real GUI: no background, a picture at three strengths, the
  * example pack (light picture, dark video), the settings page, the pack list,
- * the onboarding "Make it yours" step, and a loud 4K picture and a short video
+ * the onboarding welcome page's appearance rows, and a loud 4K picture and a short video
  * generated for the proof (fixtures/appearance-media). Light and dark, 1440
  * and 390, locale from KIKI_PROOF_LOCALE (en default). Screenshots land in
  * .tmp/appearance2/ (gitignored).
@@ -472,7 +472,7 @@ async function scenarioSettingsPage(page) {
 }
 
 /**
- * The onboarding "Make it yours" step, replayed from Settings › About: pick
+ * The onboarding welcome page's appearance rows, replayed from Settings › About: pick
  * dark, a palette, add a picture and lower its strength — each choice must
  * land in the real settings (no preview-only state) — then move on.
  */
@@ -485,7 +485,6 @@ async function scenarioOnboarding(page) {
     await open(page, '/settings/about', 'text=Replay setup wizard');
     await page.getByRole('button', { name: 'Replay setup wizard', exact: true }).click();
     await wizard.waitFor({ timeout: 10_000 });
-    await wizard.getByRole('button', { name: 'Next', exact: true }).click();
     await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
     await page.waitForTimeout(400);
   };
@@ -521,7 +520,7 @@ async function scenarioOnboarding(page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await wizard.getByRole('button', { name: 'Next', exact: true }).click();
   await wizard.locator('[data-onboarding-appearance]').waitFor({ state: 'detached', timeout: 5000 });
-  check(true, 'onboarding: Next leaves the appearance step');
+  check(true, 'onboarding: Next leaves the welcome page');
   await page.keyboard.press('Escape');
   await page.evaluate(() => { localStorage.removeItem('kiki.skin'); localStorage.removeItem('kiki.background'); });
 }

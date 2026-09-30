@@ -1,9 +1,8 @@
 /**
- * OnboardingWizard — the first-run setup dialog, four steps that each say
- * one thing: welcome (language), make it yours (theme, palette, an optional
- * background picture), connect a model (OAuth sign-in or a
- * streamlined API-key form), and how much it may do on its own (default
- * permission mode). There is no workspace question: /new already defaults to
+ * OnboardingWizard — the first-run setup dialog, steps that each say one
+ * thing: welcome (language, theme, palette, an optional background picture —
+ * all applied live), connect a model (OAuth sign-in or a streamlined API-key
+ * form), and how much it may do on its own (default permission mode). There is no workspace question: /new already defaults to
  * the most recent workspace, else a fresh folder in Kiki Home.
  *
  * Finish lands on the /new hero with an empty composer; the hero's starter
@@ -48,7 +47,7 @@ import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permission
 import { useConnection } from '../state/connection';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import { Dialog } from './Dialog';
-import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
+import { OnboardingAppearanceStep, OnboardingRow } from './OnboardingAppearanceStep';
 import { needsProviderSetup } from './NewSessionDraft';
 import {
   API_PROTOCOLS,
@@ -73,12 +72,11 @@ import { Wordmark } from './Wordmark';
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'appearance', 'model', 'permissions'] as const;
+const STEPS = ['welcome', 'model', 'permissions'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
-  appearance: 'onboarding.step.appearance',
   model: 'onboarding.step.model',
   permissions: 'onboarding.step.permissions',
 } as const;
@@ -128,7 +126,7 @@ function StepDots({ step }: { step: OnboardingStep }) {
           aria-hidden
           className={`h-1.5 rounded-full transition-all ${
             dotIndex === index
-              ? 'w-5 bg-accent'
+              ? 'w-5 bg-selected-ink'
               : dotIndex < index
                 ? 'w-1.5 bg-ink-faint'
                 : 'w-1.5 bg-hairline-strong'
@@ -142,25 +140,16 @@ function StepDots({ step }: { step: OnboardingStep }) {
   );
 }
 
-function PreferenceRow({ label, labelId, children }: { readonly label: string; readonly labelId: string; readonly children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-      <span id={labelId} className="text-[13px] text-ink">{label}</span>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
-    </div>
-  );
-}
-
 /**
- * Selection mark shared by the radio cards: an empty ring at rest, an ink
- * check on the raised sheet once chosen — state, not accent.
+ * Selection mark shared by the radio cards: an empty ring at rest, an
+ * ink-blue check once chosen — "this is the current choice", never the accent.
  */
 function ChoiceMark({ selected }: { readonly selected: boolean }) {
   return (
     <span
       aria-hidden
       className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors ${
-        selected ? 'bg-ink text-paper' : 'ring-1 ring-inset ring-hairline-strong'
+        selected ? 'bg-selected-ink text-paper' : 'ring-1 ring-inset ring-hairline-strong'
       }`}
     >
       {selected ? <Icon name="check" size={12} /> : null}
@@ -170,7 +159,7 @@ function ChoiceMark({ selected }: { readonly selected: boolean }) {
 
 const CHOICE_CARD =
   'flex w-full items-start gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
-const CHOICE_CARD_SELECTED = 'bg-paper shadow-[var(--kiki-sheet-shadow)]';
+const CHOICE_CARD_SELECTED = 'bg-selected';
 const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
 
 /** One permission-mode radio row: the mode label plus its one-line meaning. */
@@ -205,7 +194,7 @@ function PermissionOption({
             {t(`composer.perm.${mode}`)}
           </span>
           {recommended ? (
-            <span className="text-[11px] font-medium text-accent-ink">
+            <span className="rounded-[4px] bg-ink/[0.06] px-1.5 py-px text-[11px] font-medium text-ink-soft">
               {t('onboarding.permissions.recommended')}
             </span>
           ) : null}
@@ -601,10 +590,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
 
   const goNext = async () => {
     if (step === 'welcome') {
-      setStep('appearance');
-      return;
-    }
-    if (step === 'appearance') {
       setStep('model');
       return;
     }
@@ -679,20 +664,24 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
 
         {step === 'welcome' ? (
-          <div className="mt-3 space-y-4">
+          <div className="mt-3" data-onboarding-welcome>
             <p className="text-[12px] leading-relaxed text-ink-soft">{t('onboarding.welcome.body')}</p>
-            <PreferenceRow label={t('st.language.title')} labelId="onboarding-language-label">
-              <SettingsSegmented<Locale>
-                ariaLabelledBy="onboarding-language-label"
-                value={locale}
-                onChange={(choice) => { setLocale(choice); }}
-                choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
-              />
-            </PreferenceRow>
+            <div className="mt-4">
+              <OnboardingRow label={t('st.language.title')} labelId="onboarding-language-label">
+                <SettingsSegmented<Locale>
+                  ariaLabelledBy="onboarding-language-label"
+                  value={locale}
+                  onChange={(choice) => { setLocale(choice); }}
+                  choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
+                />
+              </OnboardingRow>
+              <div className="border-t border-hairline pt-3.5">
+                <OnboardingAppearanceStep />
+              </div>
+            </div>
+            <p className="mt-1 text-[12px] text-ink-faint">{t('onboarding.appearance.later')}</p>
           </div>
         ) : null}
-
-        {step === 'appearance' ? <OnboardingAppearanceStep /> : null}
 
         {step === 'model' ? (
           <div className="mt-3 space-y-4">
@@ -732,7 +721,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               <button
                 type="button"
                 onClick={() => { setAddingProvider(true); }}
-                className="text-[12px] font-medium text-accent-ink underline-offset-2 transition-colors hover:underline"
+                className="text-[12px] font-medium text-selected-ink underline-offset-2 transition-colors hover:underline focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 {t('onboarding.model.addAnother')}
               </button>

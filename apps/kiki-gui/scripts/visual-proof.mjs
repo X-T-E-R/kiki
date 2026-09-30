@@ -4678,15 +4678,14 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(450);
   await shot('onboarding-1-welcome');
 
-  // Welcome → "Make it yours" (theme, palette, picture) → model.
-  await wizardButton(S.onboardingNext).click();
+  // Welcome (language + theme, palette, picture on one page) → model.
   await wizard().locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   await wizardButton(S.onboardingNext).click();
   await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
   await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
   await shot('onboarding-2-model-light');
   await shot('onboarding-2-model');
-  // Back to the appearance step for the theme, then forward again.
+  // Back to the welcome page for the theme, then forward again.
   await wizardButton(S.onboardingBack).click();
   await wizardButton(job().view.locale === 'zh' ? '暗色' : 'Dark').click();
   await wizardButton(S.onboardingNext).click();
