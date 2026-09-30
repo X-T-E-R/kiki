@@ -154,7 +154,7 @@ describe('AgentExecutorPreflightService', () => {
 
   afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
 
-  it('probes all eight harnesses and selects discovered sources plus the Gemini fallback', async () => {
+  it('probes every builtin harness and selects discovered sources plus the Gemini fallback', async () => {
     processService.outputs.set('grok --version', { output: 'grok 1.0.13' });
     processService.outputs.set('codex-acp --version', { output: 'codex-acp 1.7.0' });
     processService.outputs.set('codex --version', { output: 'codex 0.1.0' });
@@ -169,7 +169,22 @@ describe('AgentExecutorPreflightService', () => {
 
     const results = await services.get(IAgentExecutorPreflightService).run();
 
-    expect(results).toHaveLength(8);
+    expect([
+      'claude-acp',
+      'cline-acp',
+      'codebuddy-acp',
+      'codex-acp',
+      'codex-app-server',
+      'cursor-acp',
+      'deepseek-acp',
+      'gemini-acp',
+      'grok-acp',
+      'kimi-acp',
+      'openclaw-acp',
+      'opencode-acp',
+      'pi-acp',
+      'qoder-acp',
+    ]).toEqual(results.map((result) => result.id).sort());
     expect(results.find((result) => result.id === 'codex-app-server')).toMatchObject({
       selectedSource: 'env',
       command: 'C:/tools/codex.exe',
@@ -181,13 +196,22 @@ describe('AgentExecutorPreflightService', () => {
     });
     expect(results.find((result) => result.id === 'kimi-acp')?.diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ severity: 'warning', message: expect.stringContaining('0.37+') }),
+        expect.objectContaining({
+          severity: 'warning',
+          message: 'Kimi Code 0.37–0.38 rejects ACP stdio MCP servers. MCP forwarding is off until a working version is verified.',
+        }),
       ]),
     );
     expect(processService.calls).toEqual(expect.arrayContaining([
       'codex-acp --version',
       'codex --version',
       'gemini --help',
+      'openclaw --version',
+      'cline --version',
+      'codebuddy --version',
+      'pi-acp --version',
+      'deepseek-acp --version',
+      'qodercli --version',
     ]));
   });
 
