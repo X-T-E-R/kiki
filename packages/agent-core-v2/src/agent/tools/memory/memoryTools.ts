@@ -55,7 +55,7 @@ export class MemoryWriteTool implements IMemoryWriteTool {
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId },
           pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review',
         });
-        return { output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: parsed.data.scope, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId }) };
+        return { output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: parsed.data.scope, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: `Reference it in TodoList notes.directives as [${result.entry.id}] if it constrains the current task.` }) };
       } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
     } };
   }

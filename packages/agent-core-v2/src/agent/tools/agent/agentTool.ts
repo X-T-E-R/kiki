@@ -89,6 +89,11 @@ import {
   compactRouteDescriptions,
 } from './subagentDescription';
 
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+
 import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.md?raw';
 import AGENT_BACKGROUND_DESCRIPTION from './agent-background-enabled.md?raw';
 import AGENT_DESCRIPTION_BASE from './agent.md?raw';
@@ -126,6 +131,9 @@ export class SubagentTool implements ISubagentTool {
     @ILogService private readonly log: ILogService,
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly models: IModelService,
+    @ISessionTodoService private readonly todos: ISessionTodoService,
+    @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.canRunInBackground = () =>
@@ -275,8 +283,26 @@ export class SubagentTool implements ISubagentTool {
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy),
+      execute: async (ctx) => this.withStandingDirectives(await this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy)),
     };
+  }
+
+  private directiveEpoch: number | undefined;
+  private directiveEchoes = 0;
+
+  private async withStandingDirectives(result: ExecutableToolResult): Promise<ExecutableToolResult> {
+    if (result.isError || (this.directiveEpoch === this.states.get(contextWindowEpochKey) && this.directiveEchoes >= 3)) return result;
+    const directives = this.todos.getNotes(this.callerAgentId).notes?.directives?.trim();
+    const text = directives || (await this.memorySnapshot.liveSessionEntries())
+      .filter((entry) => entry.type === 'feedback')
+      .map((entry) => `[${entry.id}] ${entry.title}`).join('; ');
+    if (!text) return result;
+    const epoch = this.states.get(contextWindowEpochKey);
+    if (epoch !== this.directiveEpoch) { this.directiveEpoch = epoch; this.directiveEchoes = 0; }
+    if (this.directiveEchoes >= 3) return result;
+    this.directiveEchoes++;
+    const suffix = `\n\nStanding directives in effect: ${text.slice(0, 300)}`;
+    return { ...result, output: typeof result.output === 'string' ? result.output + suffix : [...result.output, { type: 'text', text: suffix }] };
   }
 
   private defaultDispatchSelection(): {

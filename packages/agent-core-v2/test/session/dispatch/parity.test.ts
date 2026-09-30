@@ -11,6 +11,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -81,6 +82,9 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
   type DispatchUsageView,
@@ -1098,6 +1102,12 @@ function createLane(
     scope: (key?: string) => `agent/main/${key ?? ''}`,
   });
   ix.stub(IAgentTaskService, taskService);
+  ix.stub(ISessionTodoService, { getNotes: () => ({}) });
+  ix.stub(IExternalHooksRunnerService, { fireAndForgetTrigger: async () => [] });
+  ix.stub(IAgentMemorySnapshot, { liveSessionEntries: async () => [] });
+  const callerStates = handles.get('main')!.accessor.get(IAgentStateService);
+  callerStates.contributeState(contextWindowEpochKey);
+  ix.set(IAgentStateService, callerStates);
   ix.stub(IAgentProfileService, handles.get('main')!.accessor.get(IAgentProfileService));
   ix.stub(IAgentPermissionModeService, handles.get('main')!.accessor.get(IAgentPermissionModeService));
   ix.stub(IAgentRuntimeService, runtimeService);
@@ -1234,6 +1244,43 @@ describe('AgentRun and dispatch parity golden', () => {
 
   afterEach(() => {
     disposables.dispose();
+  });
+
+  it('echoes only successful parent directives, clips at 300 characters and caps each epoch at three', async () => {
+    const lane = createLane(disposables, 'internal');
+    let directives: string | undefined = 'x'.repeat(350);
+    lane.ix.stub(ISessionTodoService, { getNotes: () => ({ notes: { directives } }) });
+    for (let index = 0; index < 4; index++) {
+      const result = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
+      expect(result.isError).not.toBe(true);
+      if (index < 3) expect(String(result.output).split('Standing directives in effect: ')[1]).toBe('x'.repeat(300));
+      else expect(String(result.output)).not.toContain('Standing directives in effect:');
+      await complete(lane, index);
+    }
+    expect(lane.context([...lane.handles.keys()].find((id) => id !== 'main')!)).not.toContain('x'.repeat(300));
+    lane.ix.get(IAgentStateService).set(contextWindowEpochKey, 1);
+    const failed = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'unknown' });
+    expect(failed.isError).toBe(true);
+    expect(String(failed.output)).not.toContain('Standing directives in effect:');
+    directives = undefined;
+    const empty = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
+    expect(String(empty.output)).not.toContain('Standing directives in effect:');
+    await complete(lane, 4);
+    directives = 'Keep the selected model';
+    const renewed = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
+    expect(String(renewed.output)).toContain('Standing directives in effect: Keep the selected model');
+    await complete(lane, 5);
+  });
+
+  it('echoes live session feedback when task directives are absent', async () => {
+    const lane = createLane(disposables, 'internal');
+    lane.ix.stub(IAgentMemorySnapshot, { liveSessionEntries: async () => [{
+      id: 'm_feedback', type: 'feedback', title: 'Keep the selected model', body: 'body', status: 'active', pinned: false,
+      created: 'now', updated: 'now', source: { writer: 'agent', session: 'session_test' }, reason: 'test', revision: 'r1',
+    }] });
+    const result = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
+    expect(String(result.output)).toContain('Standing directives in effect: [m_feedback] Keep the selected model');
+    await complete(lane, 0);
   });
 
   it('binds an inherit profile to the caller model and current effective effort', async () => {

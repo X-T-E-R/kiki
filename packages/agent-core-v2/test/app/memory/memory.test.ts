@@ -107,8 +107,9 @@ describe('memory persistence and snapshot', () => {
       return execution.execute({ turnId: 3, toolCallId: 'tool-memory-1', signal: new AbortController().signal });
     };
     const auto = await execute(args.title);
-    const receipt = JSON.parse(auto.output as string) as { id: string; operation_id: string; status: string };
+    const receipt = JSON.parse(auto.output as string) as { id: string; operation_id: string; status: string; reference_hint: string };
     expect(receipt.status).toBe('active');
+    expect(receipt.reference_hint).toBe(`Reference it in TodoList notes.directives as [${receipt.id}] if it constrains the current task.`);
     expect((await store.get(workspace, receipt.id))?.source).toMatchObject({ writer: 'agent', turn: 3, session: 'session_one' });
     settings = MemoryConfigSchema.parse({ enabled: true, approval: 'review' });
     const review = await execute('Review language');
