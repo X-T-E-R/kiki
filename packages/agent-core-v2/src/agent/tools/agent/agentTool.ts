@@ -75,6 +75,7 @@ import {
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   ISubagentTool,
+  INHERIT_MODEL_ALIAS_UNAVAILABLE,
   mainProfileSubagentNotice,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -232,6 +233,9 @@ export class SubagentTool implements ISubagentTool {
   }
 
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
+    if (args.model_alias?.trim() === 'inherit') {
+      return { output: INHERIT_MODEL_ALIAS_UNAVAILABLE, isError: true };
+    }
     const capturedLaunchPolicy = this.dispatch.readLaunchPolicy(this.callerAgentId);
     const admission = evaluateDispatchAdmission(capturedLaunchPolicy, args.resume?.trim() ? 'resume' : 'spawn');
     if (!admission.allowed) return { output: admission.reason!, isError: true };

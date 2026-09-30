@@ -5,6 +5,8 @@ import { agentNameIssue } from '#/session/agentCollaboration/directChildren';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const RESUMED_LABEL = 'subagent';
+export const INHERIT_MODEL_ALIAS_UNAVAILABLE =
+  'AgentRun does not accept model_alias: "inherit". Specify a concrete model name, or omit model_alias to use the target default model.';
 
 export const SubagentToolInputSchema = z.preprocess(
   (input) => {
@@ -66,15 +68,18 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Omit to use the target default model. Set model_alias to "inherit" to explicitly bind the caller\'s current model and effective thinking effort (unless effort or profile thinking_effort is pinned). Other aliases must resolve to a configured model; no silent caller-model fallback.',
+        'Omit to use the target default model, or specify a concrete configured model name. AgentRun does not accept "inherit"; no silent caller-model fallback.',
       ),
     effort: z
       .string()
       .trim()
       .min(1)
       .optional()
-      .describe('Omit to use the target default thinking effort; with model_alias: inherit, it follows the caller unless the target pins thinking_effort. An explicit effort overrides that default and must be supported by the target.'),
+      .describe('Omit to use the target default thinking effort. An explicit effort overrides that default and must be supported by the target.'),
   }).superRefine((args, ctx) => {
+    if (args.model_alias === 'inherit') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: INHERIT_MODEL_ALIAS_UNAVAILABLE, path: ['model_alias'] });
+    }
     if (args.profile_file !== undefined && (args.profile !== undefined || args.route !== undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profile_file is mutually exclusive with profile and route' });
     }

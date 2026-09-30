@@ -228,7 +228,7 @@ export function resolveInheritedModelAlias(
 }
 
 export const SUBAGENT_MODEL_UNBOUND_HINT =
-  'Pin model_alias on the agent profile (or its route or the caller lease), pass model_alias with the dispatch, or configure [subagent].default_model. Subagents do not inherit the caller\'s model unless model_alias is explicitly set to inherit.';
+  'Pin model_alias on the agent profile (or its route or the caller lease), pass a concrete model name as model_alias with the dispatch, or configure [subagent].default_model. AgentRun does not accept model_alias: "inherit"; caller inheritance must be configured by the profile, route, or caller lease.';
 
 export function subagentModelUnboundMessage(target?: SubagentBindingTarget): string {
   const named =
@@ -291,7 +291,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. Set model_alias to inherit explicitly (in a profile, route, caller lease, or AgentRun) to use your current bound model and effective thinking effort; an explicit effort or profile thinking_effort pin takes priority. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
   );
   return lines.join('\n');
 }
