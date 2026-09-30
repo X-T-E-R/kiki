@@ -287,6 +287,7 @@ Multiple instances can run concurrently under the same home: each registers itse
 | `--debug-endpoints` | Mount `/api/debug/*` debug routes (default off) |
 | `--dangerous-bypass-auth` | Disable bearer token auth for all REST and WebSocket routes, allowing Kiki GUI to connect without a token; use only in trusted networks or behind your own auth proxy |
 | `--no-open` | Do not open the browser automatically once ready |
+| `--idle-exit <duration>` | Exit after no GUI leases or busy sessions remain for this duration; accepts integer `ms`, `s`, `m`, or `h` (for example `30m`). Omitted by default, so the foreground server stays running |
 
 `kiki web` binds to the local loopback address by default and prints the bearer token in the startup banner; Kiki GUI authenticates automatically via the `#token=` URL fragment.
 
