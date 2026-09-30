@@ -36,6 +36,7 @@ import { createModelsPageWalker } from './visual-proof-models-page.mjs';
 import { createSettingsIaWalker } from './visual-proof-settings-ia.mjs';
 import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
+import { createExternalMainWalker } from './visual-proof-external-main.mjs';
 
 /**
  * Scenarios whose walk exercises the transcript list (streaming, folding,
@@ -64,6 +65,7 @@ const MATRIX = {
   'models-page-empty': ['theme', 'width'],
   'native-ssh': ['theme', 'width'],
   'profile-editor': ['theme', 'width'],
+  'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
   skins: ['theme'],
   worktrees: ['theme', 'width'],
@@ -4241,6 +4243,14 @@ async function scenarioProfileEditor() {
   await walk();
 }
 
+/** External harness as main: sessions, profile switch, Antigravity (scripts/visual-proof-external-main.mjs). */
+async function scenarioExternalMain() {
+  const walk = createExternalMainWalker({
+    page, shot, view: job().view, webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 /** Settings › Models & providers (scripts/visual-proof-models-page.mjs). */
 const modelsPageWalker = () => createModelsPageWalker({
   page, shot, resizeViewport, setProofTheme, view: job().view,
@@ -5074,6 +5084,7 @@ const BODIES = [
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['external-harness', scenarioExternalHarness],
+  ['external-main', scenarioExternalMain],
   ['reconnect', scenarioReconnect],
   ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],

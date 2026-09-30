@@ -93,6 +93,7 @@ import { handleContextStrategy, resetContextStrategy } from './fixture-context-s
 import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
+import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
 import { handleSpaces, spaceConfig, spaceConfigWrite, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
 
@@ -803,9 +804,12 @@ class FixtureServer {
     const items = structuredClone(this.scenario?.data.executors ?? [
       { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
     ]);
-    return items.map((item) => item.connection !== undefined && this.executorLogin?.[item.id] !== undefined
-      ? { ...item, connection: { ...item.connection, login_status: this.executorLogin[item.id] } }
-      : item);
+    return items.map((item) => {
+      const login = item.id === 'antigravity-acp' ? antigravityLogin(this) ?? this.executorLogin?.[item.id] : this.executorLogin?.[item.id];
+      return item.connection !== undefined && login !== undefined
+        ? { ...item, connection: { ...item.connection, login_status: login } }
+        : item;
+    });
   }
 
   agentProfilesWithDisabled(workspaceId) {
@@ -1599,6 +1603,8 @@ class FixtureServer {
   route(res, path, query, body, method) {
     // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
     if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
+    // Antigravity ACP binary cache + sign-in (scripts/fixture-antigravity.mjs).
+    if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body)) return;
     // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
     if ((path.startsWith('/homes') || path === '/config/overrides:remove') && handleSpaces(this, res, path, method, body)) return;
     const sessions = [...this.sessions.values()];
@@ -2016,7 +2022,7 @@ class FixtureServer {
       if (item === undefined) return this.envelope(res, null, 40404, 'Executor not found');
       if (executorMatch[2] === undefined && method === 'GET') return this.envelope(res, item);
       if (executorMatch[2] !== undefined && method === 'POST') {
-        const seeded = this.scenario?.data.executorChecks?.[executorId];
+        const seeded = (executorId === 'antigravity-acp' ? antigravityCheck(this) : undefined) ?? this.scenario?.data.executorChecks?.[executorId];
         const result = seeded !== undefined ? { id: executorId, ...structuredClone(seeded) } : {
           id: executorId,
           status: item.status === 'ready' ? 'ready' : 'unavailable',
