@@ -1,6 +1,6 @@
 /**
  * RowActions — hover-revealed per-message operations (liveagent's
- * RowActions.tsx pattern): copy on every message row, edit-resend on settled
+ * RowActions.tsx pattern): copy and copy-link on every message row, edit-resend on settled
  * user messages, regenerate on the latest completed turn's final assistant
  * reply, fork on either anchor. Buttons hide until the row is hovered or
  * focused-within; touch layouts (`hover: none`) always show them.
@@ -10,14 +10,36 @@
  * and warns that attachments are not carried over by a full-replacement edit.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { Icon } from './icons';
+
+/**
+ * The in-app deep link to a message row, in the `?block=` shape SessionView's
+ * locator reads. Provided by the Transcript that owns the rows (it knows the
+ * session and agent); absent, rows offer no link.
+ */
+export const MessageLinkContext = createContext<((blockId: string) => string) | undefined>(undefined);
+
+export function useMessageLink(): ((blockId: string) => string) | undefined {
+  return useContext(MessageLinkContext);
+}
+
+/** `/s/{id}?block=…`, or the agent tab's route for a child timeline. */
+export function messageLinkHref(sessionId: string, agentId: string, blockId: string): string {
+  const base = agentId === 'main'
+    ? `/s/${sessionId}`
+    : `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
+  return `${base}?${new URLSearchParams({ block: blockId }).toString()}`;
+}
 
 export interface MessageRowActionsProps {
   /** Copy target; the copy button renders only when this is a non-empty string. */
   copyText?: string;
+  /** In-app link to this message (`/s/{id}?block={blockId}`); renders "link" when set. */
+  linkHref?: string;
   canEdit?: boolean;
   canRegenerate?: boolean;
   canFork?: boolean;
@@ -64,6 +86,7 @@ function ActionButton({
 
 export function MessageRowActions({
   copyText,
+  linkHref,
   canEdit = false,
   canRegenerate = false,
   canFork = false,
@@ -74,11 +97,24 @@ export function MessageRowActions({
   onFork,
 }: MessageRowActionsProps) {
   const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'text' | 'link' | null>(null);
   const showCopy = copyText !== undefined && copyText !== '';
-  if (!showCopy && !canEdit && !canRegenerate && !canFork) return null;
+  const showLink = linkHref !== undefined && linkHref !== '';
+  if (!showCopy && !showLink && !canEdit && !canRegenerate && !canFork) return null;
   const visibility =
     'opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+  const copy = (what: 'text' | 'link', text: string) => {
+    void copyTextToClipboard(text)
+      .then(() => {
+        setCopied(what);
+        setTimeout(() => { setCopied(null); }, 1400);
+      })
+      .catch(() => undefined);
+  };
+  const copyClass = (what: 'text' | 'link') =>
+    `rounded px-1 py-px font-mono text-[10px] transition-colors ${
+      copied === what ? 'text-success' : 'text-ink-faint hover:text-ink'
+    }`;
   return (
     <span
       data-row-actions
@@ -94,20 +130,22 @@ export function MessageRowActions({
           data-row-action="copy"
           title={t('transcript.copyTitle')}
           aria-label={t('transcript.copyTitle')}
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(copyText)
-              .then(() => {
-                setCopied(true);
-                setTimeout(() => { setCopied(false); }, 1400);
-              })
-              .catch(() => undefined);
-          }}
-          className={`rounded px-1 py-px font-mono text-[10px] transition-colors ${
-            copied ? 'text-success' : 'text-ink-faint hover:text-ink'
-          }`}
+          onClick={() => { copy('text', copyText); }}
+          className={copyClass('text')}
         >
-          {copied ? <Icon name="check" size={12} /> : t('transcript.copy')}
+          {copied === 'text' ? <Icon name="check" size={12} /> : t('transcript.copy')}
+        </button>
+      ) : null}
+      {showLink ? (
+        <button
+          type="button"
+          data-row-action="link"
+          title={t('transcript.copyLinkTitle')}
+          aria-label={t('transcript.copyLinkTitle')}
+          onClick={() => { copy('link', linkHref); }}
+          className={copyClass('link')}
+        >
+          {copied === 'link' ? <Icon name="check" size={12} /> : t('transcript.copyLink')}
         </button>
       ) : null}
       {canEdit && onEdit !== undefined ? (

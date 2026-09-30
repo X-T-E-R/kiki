@@ -1025,6 +1025,8 @@ export const en = {
   'transcript.historyUnverifiedHint': 'Earlier messages may be missing. This view is not a complete record.',
   'transcript.copyTitle': 'Copy markdown',
   'transcript.copy': 'copy',
+  'transcript.copyLink': 'link',
+  'transcript.copyLinkTitle': 'Copy a link to this message',
   'transcript.edit': 'edit',
   'transcript.editTitle': 'Edit this message and resend it',
   'transcript.editSubmit': 'Resend',

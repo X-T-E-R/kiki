@@ -80,6 +80,7 @@ import {
   TurnTailLine,
   type TranscriptRowActions,
 } from './Transcript';
+import { messageLinkHref } from './RowActions';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -1419,11 +1420,11 @@ describe('message row actions', () => {
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rows).toHaveLength(4);
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link', 'edit', 'fork']);
     // An older assistant row copies but never regenerates.
-    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
-    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'fork']);
-    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork']);
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'link']);
+    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'link', 'edit', 'fork']);
+    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'link', 'regenerate', 'fork']);
   });
 
   it('hides edit/fork on a user row without a wire identity', async () => {
@@ -1438,7 +1439,7 @@ describe('message row actions', () => {
       rowActions,
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link']);
   });
 
   it('omits queued prompts until they start while keeping blocked prompts visible', async () => {
@@ -1511,7 +1512,7 @@ describe('message row actions', () => {
       rowActions,
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link', 'edit', 'fork']);
   });
 
   it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
@@ -1520,9 +1521,22 @@ describe('message row actions', () => {
       assistantBlock('assistant-m2-0', 'answer'),
     ]);
     const rows = [...container.querySelectorAll('[data-block-id]')];
-    expect(rowActionButtons(rows[0]!)).toEqual([]);
-    // The assistant copy button survives without row actions.
-    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link']);
+    // Copy and link are not mutations: they survive without row actions.
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'link']);
+  });
+
+  it('copies a ?block= deep link to the message, in the shape the session route reads', async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const container = await renderTranscript([
+      userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
+      assistantBlock('assistant-m2-0', 'answer'),
+    ]);
+    const link = container.querySelector<HTMLButtonElement>('[data-block-id="assistant-m2-0"] [data-row-action="link"]')!;
+    await act(async () => { click(link); });
+    expect(writeText).toHaveBeenCalledWith('/s/session_test?block=assistant-m2-0');
+    expect(messageLinkHref('session_x', 'agent/1', 'user-m1')).toBe('/s/session_x/agent/agent%2F1?block=user-m1');
   });
 
   it('edits inline: prefilled editor submits through onEditMessage', async () => {

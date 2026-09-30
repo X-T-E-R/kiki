@@ -151,7 +151,7 @@ import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
-import { MessageRowActions, UserMessageEditor } from './RowActions';
+import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
@@ -290,6 +290,7 @@ const UserMessage = memo(function UserMessage({
 }) {
   const { t, time } = useI18n();
   const outcomeActions = usePromptOutcomeActions();
+  const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
   const { contentRef, contentId, isOverflowing, expanded, toggle } =
     useCollapsibleOverflow<HTMLDivElement>(block.text);
@@ -338,14 +339,15 @@ const UserMessage = memo(function UserMessage({
           peer-thread messages); the time and row actions stay quiet until
           hover/focus so the bubble reads as the user's own voice. */}
       <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
-        {rowActions !== undefined && !editing ? (
+        {(rowActions !== undefined || messageLink !== undefined) && !editing ? (
           <MessageRowActions
             copyText={typedText}
+            linkHref={messageLink?.(block.id)}
             canEdit={canMutate}
             canFork={canMutate}
-            disabled={rowActions.disabled}
+            disabled={rowActions?.disabled}
             onEdit={() => { setEditing(true); }}
-            onFork={() => { rowActions.onFork(block); }}
+            onFork={() => { rowActions?.onFork(block); }}
           />
         ) : null}
         {senderLabel !== undefined ? (
@@ -457,6 +459,7 @@ const AssistantMessage = memo(function AssistantMessage({
   annotations?: readonly TimelineAnnotation[];
 }) {
   const { t, time } = useI18n();
+  const messageLink = useMessageLink();
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
@@ -511,6 +514,7 @@ const AssistantMessage = memo(function AssistantMessage({
         <MessageRowActions
           framed
           copyText={block.text}
+          linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
           canFork={rowActions !== undefined && isLatestFinal}
           disabled={rowActions?.disabled ?? false}
@@ -2578,6 +2582,14 @@ export function Transcript({
       },
     };
   }, [readOnly, sessionIdForLocate, rowActions?.disabled, agentId]);
+  // "link" on a message row copies the same `?block=` deep link this
+  // session's route resolves through locateInTimeline.
+  const messageLink = useMemo(
+    () => (sessionIdForLocate === undefined
+      ? undefined
+      : (blockId: string) => messageLinkHref(sessionIdForLocate, agentId, blockId)),
+    [sessionIdForLocate, agentId],
+  );
   const timelineBlocks = useMemo(
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
@@ -3526,6 +3538,7 @@ export function Transcript({
 
   return (
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
+    <MessageLinkContext.Provider value={messageLink}>
     <FindRevealContext.Provider value={findReveal}>
     <div className="relative min-h-0 flex-1" onKeyDown={handleFindKeyDown}>
       <div
@@ -3648,6 +3661,7 @@ export function Transcript({
       ) : null}
     </div>
     </FindRevealContext.Provider>
+    </MessageLinkContext.Provider>
     </PromptOutcomeActionsContext.Provider>
   );
 }

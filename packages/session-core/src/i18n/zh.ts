@@ -1020,6 +1020,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'transcript.historyUnverifiedHint': '较早消息可能缺失，当前视图不代表完整记录。',
   'transcript.copyTitle': '复制 Markdown',
   'transcript.copy': '复制',
+  'transcript.copyLink': '链接',
+  'transcript.copyLinkTitle': '复制指向此消息的链接',
   'transcript.edit': '编辑',
   'transcript.editTitle': '编辑此消息并重新发送',
   'transcript.editSubmit': '重发',
