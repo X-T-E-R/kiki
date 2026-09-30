@@ -1832,6 +1832,21 @@ describe('Composer slash skill catalog', () => {
     expect(without.container.querySelector('[data-composer-menu]')?.textContent).not.toContain('/btw');
   });
 
+  it('drops /btw with /fork when the external engine refused forking', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [] });
+    const { container } = await renderComposer({
+      value: '/',
+      sessionId: 'session_live',
+      onSideQuestion: vi.fn(),
+      engine: { label: 'Codex', fork: false, images: true },
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    await openSlashMenu(container);
+    const menu = container.querySelector('[data-composer-menu]')?.textContent ?? '';
+    expect(menu).not.toContain('/btw');
+    expect(menu).not.toContain('/fork');
+  });
+
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onSend = vi.fn();
