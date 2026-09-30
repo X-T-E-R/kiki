@@ -60,6 +60,7 @@ export type LoopRecordedEvent =
         readonly output: string | readonly ContentPart[];
         readonly isError?: boolean;
         readonly note?: string;
+        readonly errorCode?: string;
       };
       readonly parentUuid?: string;
     };

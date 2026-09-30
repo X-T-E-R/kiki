@@ -10,6 +10,7 @@
 import { memo, useMemo, useState, type ReactNode } from 'react';
 
 import type { ToolInputDisplay } from '@kiki/protocol';
+import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
@@ -147,6 +148,14 @@ export function toolErrorFullText(block: ToolBlock): string | undefined {
   // Only text or structured error payloads carry a readable failure.
   if (typeof output !== 'string' && (typeof output !== 'object' || output === null)) return undefined;
   return describeError(output);
+}
+
+/** The translated sentence for a failure the engine reported with a stable code. */
+export function toolErrorCodeText(block: ToolBlock, t: Translate): string | undefined {
+  if (block.errorCode === undefined) return undefined;
+  const key = `tc.errorCode.${block.errorCode}` as I18nKey;
+  const text = t(key);
+  return text === key ? undefined : text;
 }
 
 export function toolErrorSummary(block: ToolBlock): string | undefined {
@@ -389,7 +398,10 @@ export const ToolCard = memo(function ToolCard({
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
   const memoryRow = isMemoryToolName(block.name);
-  const errorSummary = toolErrorSummary(block);
+  // A failure with a known code reads in the user's words; the engine's own
+  // text stays in the tooltip.
+  const codedError = block.status === 'error' ? toolErrorCodeText(block, t) : undefined;
+  const errorSummary = codedError ?? toolErrorSummary(block);
   const errorTitle = toolErrorFullText(block) ?? errorSummary;
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';

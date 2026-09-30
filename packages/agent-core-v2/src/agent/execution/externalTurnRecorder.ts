@@ -406,6 +406,7 @@ export class ExternalTurnRecorder {
         note: event.rawOutput === undefined
           ? 'External tool output summarized from external executor content'
           : undefined,
+        errorCode: isError ? event.errorCode : undefined,
       },
       parentUuid: `${this.stepId}:tool:${event.toolCallId}`,
     });

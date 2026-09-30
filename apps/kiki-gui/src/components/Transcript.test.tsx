@@ -1392,6 +1392,17 @@ describe('explicit unknown timing', () => {
     expect(container.querySelector('[data-outcome="failed"]')).not.toBeNull();
   });
 
+  it('reads a coded Codex MCP refusal in product words and keeps the engine text in the tooltip', async () => {
+    const engineText = 'MCP tool call requires approval, but approval policy is never';
+    const coded = await renderToolCard(toolBlock({ toolCallId: 't-coded', name: 'kiki-harness/kiki_list', status: 'error', isError: true,
+      output: engineText, errorCode: 'codex_mcp_approval_denied' }));
+    expect(coded.textContent).toContain('Codex did not run this MCP tool');
+    expect(coded.querySelector(`[title="${engineText}"]`)).not.toBeNull();
+    const unknown = await renderToolCard(toolBlock({ toolCallId: 't-uncoded', status: 'error', isError: true,
+      output: 'boom', errorCode: 'some_future_code' }));
+    expect(unknown.textContent).toContain('boom');
+  });
+
   it('never shows the legacy 0-start sentinel duration as runtime', async () => {
     const container = await renderToolCard(
       toolBlock({ toolCallId: 't-zero', startedAt: 0, durationMs: 5_000 }),

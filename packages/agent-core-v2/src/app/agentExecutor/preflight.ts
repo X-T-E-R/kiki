@@ -9,7 +9,7 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 
-import { IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
+import { ANTIGRAVITY_IDE_NOT_ACP, IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
 import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
 import {
   claudeConfigDir,
@@ -23,6 +23,8 @@ export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
 
 export interface AgentExecutorPreflightDiagnostic {
+  /** Stable machine-readable reason; clients translate by code, never by message text. */
+  readonly code?: string;
   readonly severity: AgentExecutorPreflightSeverity;
   readonly message: string;
 }
@@ -130,7 +132,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     const diagnostics: AgentExecutorPreflightDiagnostic[] = sources.map((source) =>
       source.available
         ? info(`Source ${source.id}: ${sourceLocation(source)}${source.version === undefined ? '' : ` (${source.version})`}`)
-        : (selected === undefined ? warning : info)(`Source ${source.id}: ${source.diagnostic ?? 'unavailable'}`));
+        : { ...(selected === undefined ? warning : info)(`Source ${source.id}: ${source.diagnostic ?? 'unavailable'}`), code: source.diagnosticCode });
     if (descriptor.source !== undefined && selected === undefined) {
       diagnostics.unshift(error(`Configured source "${descriptor.source}" is unavailable.`));
     } else if (selected === undefined) {
@@ -138,8 +140,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
-    if (id === 'antigravity-acp' && selected === undefined && (diagnostics.some((diagnostic) => diagnostic.message.includes('Antigravity IDE')) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
-      return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。')], undefined, sources, undefined,
+    if (id === 'antigravity-acp' && selected === undefined && (sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
+      return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。', ANTIGRAVITY_IDE_NOT_ACP)], undefined, sources, undefined,
         [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
     }
     const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined, selected?.command);
@@ -385,8 +387,8 @@ function warning(message: string): AgentExecutorPreflightDiagnostic {
   return { severity: 'warning', message };
 }
 
-function error(message: string): AgentExecutorPreflightDiagnostic {
-  return { severity: 'error', message };
+function error(message: string, code?: string): AgentExecutorPreflightDiagnostic {
+  return { code, severity: 'error', message };
 }
 
 registerScopedService(

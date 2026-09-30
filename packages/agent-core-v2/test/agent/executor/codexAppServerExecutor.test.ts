@@ -133,12 +133,13 @@ function createHarness(options: HarnessOptions = {}) {
       }
     },
   } as unknown as IEventDispatcher;
+  const loopEvents: unknown[] = [];
   const memory = {
     _serviceBrand: undefined,
     get: () => options.history ?? [],
     append: () => {},
     appendObservable: () => {},
-    appendLoopEvent: () => {},
+    appendLoopEvent: (event: unknown) => { loopEvents.push(event); },
   } as unknown as IAgentContextMemoryService;
   const pendingTurns = new Set<number>();
   const interaction = {
@@ -376,6 +377,7 @@ function createHarness(options: HarnessOptions = {}) {
     usage,
     modelCatalog,
     memory,
+    loopEvents,
     approval,
     dispatcher,
     usageRecords,
@@ -846,6 +848,22 @@ describe('Codex app-server external executor', () => {
     expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({
       losses: expect.arrayContaining(['unknown_update_dropped']),
     });
+    await harness.session.shutdown();
+  });
+
+  it('keeps a coded Codex tool failure on the durable tool result', async () => {
+    const harness = createHarness({ turnEvents: [
+      { type: 'tool.call', toolCallId: 'mcp-1', title: 'kiki-harness/kiki_list', kind: 'mcp', status: 'inProgress', rawInput: {} },
+      { type: 'tool.update', toolCallId: 'mcp-1', status: 'failed', rawOutput: { message: 'denied' }, errorCode: 'codex_mcp_approval_denied' },
+      { type: 'tool.call', toolCallId: 'cmd-1', title: 'ls', kind: 'command', status: 'inProgress', rawInput: {} },
+      { type: 'tool.update', toolCallId: 'cmd-1', status: 'completed', rawOutput: 'ok', errorCode: 'ignored_on_success' },
+    ] });
+    const handle = await harness.session.run({ kind: 'prompt', prompt: 'list' }, { signal: new AbortController().signal });
+    await handle.completion;
+    const results = harness.loopEvents.filter((event) => (event as { type: string }).type === 'tool.result') as { result: { isError?: boolean; errorCode?: string } }[];
+    expect(results.map((event) => [event.result.isError, event.result.errorCode])).toEqual([
+      [true, 'codex_mcp_approval_denied'], [false, undefined],
+    ]);
     await harness.session.shutdown();
   });
 

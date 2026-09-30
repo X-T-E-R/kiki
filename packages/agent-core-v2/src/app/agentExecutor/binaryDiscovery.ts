@@ -5,10 +5,11 @@ import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
-import type {
-  AgentExecutorBinarySource,
-  AgentExecutorDescriptor,
-  AgentExecutorSourceProbe,
+import {
+  ANTIGRAVITY_IDE_NOT_ACP,
+  type AgentExecutorBinarySource,
+  type AgentExecutorDescriptor,
+  type AgentExecutorSourceProbe,
 } from './agentExecutor';
 import { executorProcessEnv } from './executorOverrides';
 
@@ -132,6 +133,8 @@ async function probeSource(
       available: false,
       command: first?.command,
       version: firstLine(first?.probe.output ?? ''),
+      diagnosticCode: descriptor.id === 'antigravity-acp' && first?.command !== undefined &&
+        stripExecutableExtension(basename(first.command)).toLowerCase() === 'antigravity' ? ANTIGRAVITY_IDE_NOT_ACP : undefined,
       diagnostic: descriptor.id === 'antigravity-acp' && first?.probe.output
         ? first.probe.output : first?.probe.available === true
           ? `version probe exited with code ${String(first.probe.code)}`

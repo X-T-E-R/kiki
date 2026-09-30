@@ -1719,6 +1719,7 @@ export class TranscriptWireAdapter {
       state: isError ? 'error' : 'done',
       output,
       error: isError && typeof output === 'string' ? output : undefined,
+      errorCode: isError ? stringOf(result?.['errorCode']) : undefined,
       endedAt: isoOf(time),
     };
     this.storeTool(toolCallId, { ...hit, frame });

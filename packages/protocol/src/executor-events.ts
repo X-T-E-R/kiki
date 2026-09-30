@@ -34,6 +34,8 @@ export type NormalizedExecutorEvent =
       readonly status?: string;
       readonly rawInput?: unknown;
       readonly rawOutput?: unknown;
+      /** Stable reason for a failed call, set when the engine's refusal has a known meaning. */
+      readonly errorCode?: string;
       readonly content?: readonly unknown[];
       readonly locations?: readonly unknown[];
     }

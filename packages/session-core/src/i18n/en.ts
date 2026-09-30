@@ -1429,6 +1429,7 @@ export const en = {
   'tc.input': 'Input',
   'tc.output': 'Output',
   'tc.outputError': ' · error',
+  'tc.errorCode.codex_mcp_approval_denied': 'Codex did not run this MCP tool: it needs approval, and in Full access mode Codex does not ask. Switch to Ask every time or Auto to run it.',
   'tc.noInput': '(no input)',
   'tc.truncated': '… (truncated)',
   'tc.exit': 'exit {code}',

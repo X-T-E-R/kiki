@@ -108,6 +108,8 @@ export interface ToolCallFrame {
   readonly output?: unknown;
   readonly display?: unknown;
   readonly error?: string;
+  /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */
+  readonly errorCode?: string;
   /**
    * Raw argument text accumulated from `tool.call.delta`. `input` is the
    * parsed object; this is the verbatim source text, kept after

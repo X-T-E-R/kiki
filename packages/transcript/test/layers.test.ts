@@ -698,6 +698,16 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('carries an error code from a failed durable tool result onto the frame', () => {
+    const failed = records.map((record) => record['event'] !== undefined && (record['event'] as { type?: string }).type === 'tool.result'
+      ? { ...record, event: { type: 'tool.result', toolCallId: 'call-1', result: { output: 'denied', isError: true, errorCode: 'codex_mcp_approval_denied' } } }
+      : record);
+    const frame = replay(failed).getTurn('t0')?.steps[0]?.frames.find((candidate) => candidate.kind === 'tool');
+    expect(frame).toMatchObject({ state: 'error', error: 'denied', errorCode: 'codex_mcp_approval_denied' });
+    const ok = replay(records).getTurn('t0')?.steps[0]?.frames.find((candidate) => candidate.kind === 'tool');
+    expect(ok && 'errorCode' in ok ? ok.errorCode : undefined).toBeUndefined();
+  });
+
   it('preserves projected agent references when a durable tool result replaces the frame', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

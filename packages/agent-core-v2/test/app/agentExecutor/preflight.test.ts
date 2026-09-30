@@ -162,7 +162,14 @@ describe('AgentExecutorPreflightService', () => {
     expect(result[0]?.diagnostics[0]?.message).toContain('这是 Antigravity IDE，不是 ACP CLI');
     expect(result[0]?.diagnostics[0]?.message).toContain('ANTIGRAVITY_ACP_PATH');
     expect(result[0]?.diagnostics[0]?.message).toContain('1.2.1');
+    expect(result[0]?.diagnostics[0]?.code).toBe('antigravity_ide_not_acp');
     expect(processService.calls.some((call) => call.includes('antigravity'))).toBe(false);
+  });
+
+  it('gives no IDE code when neither the IDE nor the ACP CLI is installed', async () => {
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['antigravity-acp']);
+    expect(result?.status).toBe('unavailable');
+    expect(result?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp')).toBe(false);
   });
 
   it('probes every builtin harness and selects discovered sources plus the Gemini fallback', async () => {

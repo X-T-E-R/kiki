@@ -226,7 +226,24 @@ function completedEvents(
     status: terminalStatus(item),
     rawInput: started.rawInput,
     rawOutput: item['aggregatedOutput'] ?? item['result'] ?? item['error'] ?? item['changes'],
+    errorCode: toolErrorCode(type, item),
   }];
+}
+
+/** Codex refused an MCP call that needs approval because the thread's approval policy is `never`. */
+export const CODEX_MCP_APPROVAL_DENIED = 'codex_mcp_approval_denied';
+
+/**
+ * Codex reports this refusal only as text (`codex-rs/core/src/mcp_tool_call.rs`,
+ * `request_mcp_tool_user_approval`); the adapter is the one place that reads
+ * it, so every consumer downstream sees a stable code instead.
+ */
+function toolErrorCode(type: string, item: Readonly<Record<string, unknown>>): string | undefined {
+  if (type !== 'mcpToolCall') return undefined;
+  const error = item['error'];
+  const message = typeof error === 'object' && error !== null ? optionalString((error as Record<string, unknown>)['message']) : undefined;
+  return message !== undefined && /requires approval, but approval policy is never/i.test(message)
+    ? CODEX_MCP_APPROVAL_DENIED : undefined;
 }
 
 function unknownItemEvent(

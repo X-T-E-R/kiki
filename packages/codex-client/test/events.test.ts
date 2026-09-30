@@ -34,6 +34,19 @@ describe('Codex notification mapping', () => {
     ]);
   });
 
+  it('codes a Codex MCP approval refusal and leaves other MCP failures uncoded', () => {
+    const completed = (error: unknown) => mapCodexNotification('item/completed', {
+      item: { id: 'mcp-1', type: 'mcpToolCall', server: 'kiki-harness', tool: 'kiki_list', status: 'failed', error },
+    }).events[0];
+    expect(completed({ message: 'MCP tool call requires approval, but approval policy is never' }))
+      .toMatchObject({ type: 'tool.update', status: 'failed', errorCode: 'codex_mcp_approval_denied' });
+    expect(completed({ message: 'tool crashed' })).toMatchObject({ status: 'failed', errorCode: undefined });
+    expect(mapCodexNotification('item/completed', {
+      item: { id: 'cmd-1', type: 'commandExecution', command: 'x', status: 'failed',
+        error: { message: 'requires approval, but approval policy is never' } },
+    }).events[0]).toMatchObject({ errorCode: undefined });
+  });
+
   it('drops completed user echoes and maps completed agent messages', () => {
     expect(mapCodexNotification('item/completed', {
       threadId: 'thread-1',

@@ -317,6 +317,7 @@ export type AgentTranscriptFrame =
       output?: unknown;
       display?: unknown;
       error?: string;
+      errorCode?: string;
       inputText?: string;
       startedAt?: string;
       endedAt?: string;

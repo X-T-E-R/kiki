@@ -167,6 +167,8 @@ export interface ToolBlock {
   readonly status: ToolStatus;
   readonly output: unknown;
   readonly isError: boolean | undefined;
+  /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */
+  readonly errorCode?: string;
   /**
    * Epoch ms when the call started, taken from the tool frame's real
    * `startedAt` only — never from step/turn boundaries. `undefined` means the

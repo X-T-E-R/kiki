@@ -516,7 +516,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
         {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
-          ideDetected={check?.diagnostics.some((diagnostic) => diagnostic.message.includes('Antigravity IDE')) === true} /> : null}
+          ideDetected={check?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
         {setup && !antigravity ? <EngineSetup check={check!} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
         {health === 'missing' && !setup && !antigravity ? (
           <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">

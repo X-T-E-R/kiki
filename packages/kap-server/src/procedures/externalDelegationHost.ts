@@ -379,6 +379,7 @@ function publicExecutorEvent(event: NormalizedExecutorEvent): NormalizedExecutor
         status: event.status,
         rawInput: event.rawInput,
         rawOutput: event.rawOutput,
+        errorCode: event.errorCode,
         content: event.content,
         locations: event.locations,
       };

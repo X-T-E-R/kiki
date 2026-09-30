@@ -91,7 +91,7 @@ export const executorCheckResponseSchema = z.object({
   login_status: z.enum(['logged_in', 'logged_out', 'unknown']),
   credential_source: executorCredentialSourceSchema.optional(),
   credential_detail: z.string().optional(),
-  diagnostics: z.array(z.object({ severity: z.enum(['info', 'warning', 'error']), message: z.string() })),
+  diagnostics: z.array(z.object({ code: z.string().optional(), severity: z.enum(['info', 'warning', 'error']), message: z.string() })),
   /** Setup order: declared dependencies first, then the launched program. */
   requirements: z.array(executorRequirementSchema).optional(),
 });

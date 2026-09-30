@@ -171,6 +171,7 @@ export const toolCallFrameSchema = z.object({
   output: z.unknown().optional(),
   display: z.unknown().optional(),
   error: z.string().optional(),
+  errorCode: z.string().optional(),
   inputText: z.string().optional(),
   progress: toolFrameProgressSchema.optional(),
   startedAt: z.string().optional(),

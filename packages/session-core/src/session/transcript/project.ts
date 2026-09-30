@@ -2417,6 +2417,7 @@ export function agentTranscriptToBlocks(
               status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
               isError: frame.state === 'error',
+              errorCode: frame.errorCode,
               startedAt,
               durationMs:
                 startedAt !== undefined && endedAt !== undefined

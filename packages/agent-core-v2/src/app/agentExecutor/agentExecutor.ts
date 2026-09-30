@@ -56,7 +56,12 @@ export interface AgentExecutorSourceProbe {
   readonly launchArgs?: readonly string[];
   readonly version?: string;
   readonly diagnostic?: string;
+  /** Stable reason code for `diagnostic`, e.g. {@link ANTIGRAVITY_IDE_NOT_ACP}. */
+  readonly diagnosticCode?: string;
 }
+
+/** The Antigravity IDE was found where the Antigravity ACP CLI was expected. */
+export const ANTIGRAVITY_IDE_NOT_ACP = 'antigravity_ide_not_acp';
 
 export type AgentExecutorOptionValue = string | number | boolean;
 export type AgentExecutorOptions = Readonly<
