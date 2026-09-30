@@ -4,9 +4,9 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
-import { useDirtyReporter } from '../../dirtyGuard';
-import { Hint } from '../../controls';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { FeedbackLine, Hint } from '../../controls';
+import { SettingsDraftFooter } from '../SettingsPrimitives';
+import { useSavedTick } from '../useSavedTick';
 import { writeScope } from './profileDraft';
 
 /**
@@ -28,9 +28,9 @@ export function RawPanel({ profile, writable, onSaved, reloadToken }: {
   const [baseline, setBaseline] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, pingSaved] = useSavedTick();
+  // Read-only files never report dirty; the footer (writable only) owns the reporter otherwise.
   const dirty = writable && text !== null && baseline !== null && text !== baseline;
-  useDirtyReporter(`agent-raw:${profile.source_file ?? 'none'}`, dirty);
 
   useEffect(() => {
     if (profile.source_file === undefined) return;
@@ -45,12 +45,12 @@ export function RawPanel({ profile, writable, onSaved, reloadToken }: {
 
   const save = async () => {
     if (!writable || text === null || profile.workspace_id === undefined) return;
-    setSaving(true); setError(null); setSaved(false);
+    setSaving(true); setError(null);
     try {
       const updated = await client.updateNamedAgentProfile(profile.name, {
         scope: writeScope(profile), workspace_id: profile.workspace_id, source_file: profile.source_file, raw_text: text,
       });
-      setBaseline(text); setSaved(true);
+      setBaseline(text); pingSaved();
       onSaved(updated);
     } catch (reason) {
       setError(errorText(locale, reason));
@@ -67,18 +67,11 @@ export function RawPanel({ profile, writable, onSaved, reloadToken }: {
     <p className="text-[12px] text-ink-faint">{t(writable ? 'st.profiles.rawHint' : 'st.profiles.rawReadOnly')}</p>
     {text === null && error === null ? <Hint>{t('st.namedAgents.rawLoading')}</Hint> : null}
     {text !== null ? <textarea aria-label={t('st.profiles.rawLabel', { file: profile.source_file })} spellCheck={false}
-      readOnly={!writable} value={text} onChange={(event) => { setText(event.target.value); setSaved(false); }}
-      className="min-h-[24rem] flex-1 resize-none rounded-lg border border-hairline bg-paper p-3 font-mono text-[12px] leading-relaxed text-ink outline-none focus:border-accent" /> : null}
-    {error !== null ? <p role="alert" data-raw-error className="whitespace-pre-wrap text-[12px] text-danger">{error}</p> : null}
-    {writable ? <div className="flex flex-wrap items-center gap-2">
-      <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving} onClick={() => void save()}>
-        {saving ? t('common.saving') : t('st.namedAgents.saveRaw')}
-      </button>
-      <button type="button" className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={() => { setText(baseline); setError(null); }}>
-        {t('st.advanced.discard')}
-      </button>
-      {saved && !dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.namedAgents.rawSaved')}</span> : null}
-      {dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
-    </div> : null}
+      readOnly={!writable} value={text} onChange={(event) => { setText(event.target.value); }}
+      className="min-h-[24rem] flex-1 resize-none rounded-lg border border-hairline bg-paper p-3 font-mono text-[12px] leading-relaxed text-ink outline-none focus:border-selected-ink" /> : null}
+    {error !== null ? <div data-raw-error className="whitespace-pre-wrap"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
+    {writable ? <SettingsDraftFooter id={`agent-raw:${profile.source_file}`} dirty={dirty} saving={saving} saved={saved}
+      saveLabel={t('st.namedAgents.saveRaw')} onSave={() => void save()}
+      onDiscard={() => { setText(baseline); setError(null); }} /> : null}
   </div>;
 }

@@ -1,125 +1,70 @@
-import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { errorText } from '@kiki/session-core/i18n';
 import { writeSettings } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '../../lib/client';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { SMALL_INPUT } from '../ui';
+import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle } from '../controls';
 import { SectionCard } from './SectionCard';
 import { DependentField, SettingField } from './fields';
-import { SettingsDraftFooter } from './SettingsPrimitives';
+import { CommitInput } from './SettingsPrimitives';
 import { mergeConfigEcho } from './configEcho';
-import { useSavedTick } from './useSavedTick';
+import { useInstantSave } from './useInstantSave';
 
+const DEFAULT_TIMEOUT_MS = 60_000;
+const MIN_TIMEOUT_S = 5;
+
+/**
+ * Plan defaults for new sessions. Every control saves itself: the switches on
+ * change, the timeout on blur or Enter, with one status line for the card.
+ */
 export function PlanSettings() {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [defaultPlanMode, setDefaultPlanMode] = useState(false);
-  const [planGate, setPlanGate] = useState<'free' | 'gated'>('free');
-  const [planGateTimeoutS, setPlanGateTimeoutS] = useState('60');
-  const [timeoutTouched, setTimeoutTouched] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const [saved, ping] = useSavedTick();
+  const save = useInstantSave();
   const configQuery = useQuery({
     queryKey: ['config'],
     queryFn: () => client.getConfig(),
     staleTime: 60_000,
   });
 
-  const syncFromConfig = useCallback((config: KikiConfigResponse | undefined) => {
-    if (config === undefined) return;
-    setDefaultPlanMode(config.default_plan_mode === true);
-    setPlanGate(config.plan?.gate === 'gated' ? 'gated' : 'free');
-    setPlanGateTimeoutS(String((config.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
-  }, []);
+  const config = configQuery.data;
+  const defaultPlanMode = config?.default_plan_mode === true;
+  const gated = config?.plan?.gate === 'gated';
+  const timeoutSeconds = String((config?.plan?.enterApprovalTimeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000);
 
-  const timeoutBaseline = String((configQuery.data?.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000);
-  const timeoutDirty = timeoutTouched && planGateTimeoutS !== timeoutBaseline;
-  useEffect(() => { if (!timeoutTouched) syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig, timeoutTouched]);
-
-  const saveEcho = (echoed: KikiConfigResponse): KikiConfigResponse => {
-    const merged = mergeConfigEcho(
-      queryClient.getQueryData<KikiConfigResponse>(['config']) ?? configQuery.data,
-      echoed,
-    );
+  // Controls show the server's value, so a failed write leaves them where they were.
+  const patch = (body: Parameters<typeof client.patchConfig>[0]) => save.run(async () => {
+    const echoed = await client.patchConfig(body);
+    const merged = mergeConfigEcho(queryClient.getQueryData<KikiConfigResponse>(['config']) ?? config, echoed);
     queryClient.setQueryData(['config'], merged);
-    setDefaultPlanMode(merged.default_plan_mode === true);
-    setPlanGate(merged.plan?.gate === 'gated' ? 'gated' : 'free');
-    if (!timeoutTouched) setPlanGateTimeoutS(String((merged.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
     return merged;
-  };
+  });
 
   const applyDefaultPlanMode = async (enabled: boolean) => {
-    setDefaultPlanMode(enabled);
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ default_plan_mode: enabled });
-      const merged = saveEcho(echoed);
-      writeSettings({ defaultPlanMode: merged.default_plan_mode === true });
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      syncFromConfig(configQuery.data);
-    } finally {
-      setSaving(false);
+    if (await patch({ default_plan_mode: enabled })) {
+      const merged = queryClient.getQueryData<KikiConfigResponse>(['config']);
+      writeSettings({ defaultPlanMode: merged?.default_plan_mode === true });
     }
   };
 
-  const applyPlanGate = async (gate: 'free' | 'gated') => {
-    setPlanGate(gate);
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ plan: { gate } });
-      saveEcho(echoed);
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      syncFromConfig(configQuery.data);
-    } finally {
-      setSaving(false);
-    }
+  const timeoutIssue = (text: string): string | null => {
+    const seconds = Number(text);
+    return text !== '' && Number.isFinite(seconds) && seconds >= MIN_TIMEOUT_S ? null : t('st.defaults.planGateTimeoutInvalid');
   };
 
-  const commitPlanGateTimeout = async () => {
-    const ms = Math.round(Number(planGateTimeoutS) * 1000);
-    if (!Number.isFinite(ms) || ms < 5000) {
-      setFeedback({ tone: 'error', text: t('st.defaults.planGateTimeoutInvalid') });
-      return;
-    }
-    if (!timeoutDirty) return;
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ plan: { enter_approval_timeout_ms: ms } });
-      saveEcho(echoed);
-      setTimeoutTouched(false);
-      setPlanGateTimeoutS(String((echoed.plan?.enterApprovalTimeoutMs ?? ms) / 1000));
-      ping();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const gated = planGate === 'gated';
+  const locked = save.saving || configQuery.isPending || configQuery.isError;
   return (
     <SectionCard id="st-card-defaults" title={t('st.plan.title')} effect="newSessions">
       <div data-plan-settings className="space-y-1">
-        <fieldset disabled={saving || configQuery.isPending || configQuery.isError} className="min-w-0 space-y-1 disabled:opacity-60">
+        <fieldset disabled={locked} className="min-w-0 space-y-1 disabled:opacity-60">
           <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
               layout="row"
               label={t('st.defaults.planMode')}
               checked={defaultPlanMode}
-              disabled={saving}
+              disabled={locked}
               onChange={(checked) => void applyDefaultPlanMode(checked)}
             />
             <Hint>{t('st.defaults.planModeHint')}</Hint>
@@ -129,34 +74,29 @@ export function PlanSettings() {
               layout="row"
               label={t('st.defaults.planGate')}
               checked={gated}
-              disabled={saving}
-              onChange={(checked) => void applyPlanGate(checked ? 'gated' : 'free')}
+              disabled={locked}
+              onChange={(checked) => void patch({ plan: { gate: checked ? 'gated' : 'free' } })}
             />
             <Hint>{t('st.defaults.planGateHint')}</Hint>
           </div>
           {/* The timeout only means something while approval is required. */}
-          <DependentField when={gated || timeoutDirty}>
+          <DependentField when={gated}>
             <SettingField label={t('st.defaults.planGateTimeout')} htmlFor="plan-gate-timeout" help={t('st.defaults.planGateTimeoutHint')}>
-              <input
+              <CommitInput
                 id="plan-gate-timeout"
-                type="number"
-                min={5}
-                step={1}
-                disabled={saving || !gated}
-                className={`${SMALL_INPUT} w-24 tabular-nums`}
-                value={planGateTimeoutS}
-                onChange={(event) => { setPlanGateTimeoutS(event.target.value); setTimeoutTouched(true); }}
-                onKeyDown={(event) => { if (event.key === 'Enter') void commitPlanGateTimeout(); }}
+                className="w-24 text-right"
+                inputMode="numeric"
+                disabled={locked}
+                value={timeoutSeconds}
+                validate={timeoutIssue}
+                onCommit={(text) => { void patch({ plan: { enter_approval_timeout_ms: Math.round(Number(text) * 1000) } }); }}
               />
             </SettingField>
-            <SettingsDraftFooter id="plan-gate-timeout" dirty={timeoutDirty} saving={saving}
-              onSave={() => void commitPlanGateTimeout()}
-              onDiscard={() => { setPlanGateTimeoutS(timeoutBaseline); setTimeoutTouched(false); setFeedback(null); }} />
           </DependentField>
         </fieldset>
-        <SavedTick show={saved && !timeoutDirty && feedback?.tone !== 'error'} />
+        <SaveStatus saving={save.saving} saved={save.saved} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
+        <FeedbackLine feedback={save.error} />
       </div>
     </SectionCard>
   );

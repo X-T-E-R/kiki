@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
@@ -18,12 +18,12 @@ import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../.
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
-import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
-import { CommitInput } from './SettingsPrimitives';
+import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
+import { CommitInput, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
-import { useDirtyReporter } from '../dirtyGuard';
 
 export function ConnectionSection() {
   const host = useHost();
@@ -42,15 +42,21 @@ export function ConnectionSection() {
   // Inline editing: the page owns the (url, token) pair, so the value is
   // edited where it is shown instead of behind disconnect → connect screen.
   const [urlDraft, setUrlDraft] = useState(config.url);
-  const [tokenDraft, setTokenDraft] = useState(config.token);
-  const [showToken, setShowToken] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState<SecretDraft>(KEEP_SECRET);
   useEffect(() => {
     setUrlDraft(config.url);
-    setTokenDraft(config.token);
+    setTokenDraft(KEEP_SECRET);
   }, [config.url, config.token]);
-  const draftsDirty =
-    urlDraft.trim() !== config.url.trim() || tokenDraft.trim() !== config.token.trim();
-  useDirtyReporter('connection-endpoint', draftsDirty);
+  const nextToken = tokenDraft.mode === 'set' ? tokenDraft.value.trim()
+    : tokenDraft.mode === 'clear' ? '' : config.token.trim();
+  const draftsDirty = urlDraft.trim() !== config.url.trim() || nextToken !== config.token.trim();
+  const applyDrafts = () => {
+    if (!draftsDirty) return;
+    applyConnection({ url: urlDraft.trim(), token: nextToken });
+  };
+  const discardDrafts = () => { setUrlDraft(config.url); setTokenDraft(KEEP_SECRET); };
+  // The token lives in this browser, so revealing it is a local read.
+  const revealToken = useCallback(async () => config.token, [config.token]);
 
   // Validated by CommitInput before this runs.
   const saveRequestTimeout = (seconds: number) => {
@@ -125,15 +131,11 @@ export function ConnectionSection() {
             </button>
           </div>
           {!isSsh ? <form
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!draftsDirty) return;
-              applyConnection({ url: urlDraft.trim(), token: tokenDraft.trim() });
-            }}
+            className="space-y-4"
+            onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
           >
-            <div>
-              <label htmlFor="st-conn-url" className="mb-1 block text-[11px] font-medium text-ink-soft">{t('connect.serverUrl')}</label>
+            <div className="space-y-1.5">
+              <label htmlFor="st-conn-url" className="block text-[13px] font-medium text-ink">{t('connect.serverUrl')}</label>
               <input
                 id="st-conn-url"
                 className={`${INPUT} font-mono`}
@@ -142,33 +144,19 @@ export function ConnectionSection() {
                 spellCheck={false}
               />
             </div>
-            <div>
-              <label htmlFor="st-conn-token" className="mb-1 block text-[11px] font-medium text-ink-soft">{t('connect.token')}</label>
-              <div className="flex gap-2">
-                <input
-                  id="st-conn-token"
-                  type={showToken ? 'text' : 'password'}
-                  className={`${INPUT} min-w-0 flex-1 font-mono`}
-                  value={tokenDraft}
-                  onChange={(event) => { setTokenDraft(event.target.value); }}
-                  spellCheck={false}
-                />
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
-                  onClick={() => { setShowToken((value) => !value); }}
-                >
-                  {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
-                </button>
-              </div>
-              <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">{t('st.conn.tokenHint')}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button type="submit" className={PRIMARY_BUTTON} disabled={!draftsDirty}>{t('st.conn.apply')}</button>
-              <button type="button" className={SECONDARY_BUTTON} disabled={!draftsDirty} onClick={() => { setUrlDraft(config.url); setTokenDraft(config.token); }}>{t('st.advanced.discard')}</button>
-              <span className="text-[11px] leading-snug text-ink-faint">{t('st.conn.applyHint')}</span>
-            </div>
+            <SecretField
+              id="st-conn-token"
+              label={t('connect.token')}
+              source={config.token === '' ? 'none' : 'kiki'}
+              sourceText={t('st.conn.tokenHint')}
+              clearable={false}
+              draft={tokenDraft}
+              onChange={setTokenDraft}
+              reveal={config.token === '' ? undefined : revealToken}
+            />
+            <SettingsDraftFooter id="connection-endpoint" dirty={draftsDirty} saveLabel={t('st.conn.apply')}
+              onSave={applyDrafts} onDiscard={discardDrafts} />
+            {draftsDirty ? <Hint>{t('st.conn.applyHint')}</Hint> : null}
           </form> : null}
         </div>
       </SectionCard>
@@ -199,7 +187,7 @@ export function ConnectionSection() {
           <p className="text-[12.5px] text-ink-soft">
             {t('st.conn.ownedBody')}
           </p>
-          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || restarting} onClick={() => { setConfirmRestart(true); }}>
+          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || restarting} onClick={() => { setConfirmRestart(true); }}>
             {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
           </button>
           {!isDesktop ? <Hint>{t('st.conn.browserHint')}</Hint> : null}

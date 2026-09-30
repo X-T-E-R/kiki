@@ -122,7 +122,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
     {warnings > 0 ? <p data-team-warnings className="inline-flex items-center gap-1.5 text-[12px] text-amber-ink">
       <Icon name="warning" size={12} />{tp('st.profiles.teamWarnings', warnings)}
     </p> : null}
-    <div className="-mx-1 overflow-x-auto px-1">
+    <div className="overflow-x-auto px-1">
       <table className="w-full min-w-[640px] table-fixed border-separate border-spacing-0 text-left text-[13px] max-sm:min-w-0 max-sm:table-auto" data-team-table>
         <thead className="max-sm:hidden">
           <tr className="text-[11.5px] font-medium text-ink-faint">

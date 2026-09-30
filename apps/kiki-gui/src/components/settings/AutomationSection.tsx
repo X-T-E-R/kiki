@@ -247,7 +247,7 @@ function HooksCard() {
           {/* The editor switch shares the Add rule row, so it reads as a second way to edit the same list. */}
           <div className="flex flex-wrap items-center gap-3">
             {!advanced ? <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button> : null}
-            <button type="button" data-hooks-editor-switch className="ml-auto text-[12px] font-medium text-accent-ink hover:underline" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
+            <button type="button" data-hooks-editor-switch className="ml-auto inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
           </div>
           <SettingsDraftFooter saved={justSaved} id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
             onDiscard={() => { const json = JSON.stringify(configQuery.data?.hooks ?? [], null, 2); setDraft(json); try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); } setDirty(false); setFeedback(null); }} />

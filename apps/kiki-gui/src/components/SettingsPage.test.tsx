@@ -357,10 +357,13 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/connection');
     const card = container.querySelector('#st-card-conn-server')!;
     const token = card.querySelector<HTMLInputElement>('#st-conn-token')!;
-    expect(token.value).toBe('saved-token');
-    expect(token.type).toBe('password');
+    // Stored and masked: the field never carries the value until asked.
+    expect(token.value).not.toContain('saved-token');
+    expect(token.readOnly).toBe(true);
     await click(card.querySelector('[aria-label="Show Bearer token"]')!);
-    expect(token.type).toBe('text');
+    expect(token.value).toBe('saved-token');
+    await click(card.querySelector('[data-secret-edit]')!);
+    expect(token.readOnly).toBe(false);
     await setInput(token, 'replacement-token');
     await act(async () => {
       card.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -368,8 +371,6 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(connectionMock.applyConnection).toHaveBeenCalledWith({
       url: 'http://127.0.0.1:8080', token: 'replacement-token',
     });
-    await click(card.querySelector('[aria-label="Hide Bearer token"]')!);
-    expect(token.type).toBe('password');
   });
 
   it('mounts the mcp leaf with a status line and timeouts', async () => {

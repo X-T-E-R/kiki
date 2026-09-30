@@ -123,6 +123,15 @@ async function setInputValue(input: HTMLInputElement, value: string): Promise<vo
   });
 }
 
+async function commitInput(input: HTMLInputElement): Promise<void> {
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 function gateSwitch(container: HTMLDivElement): HTMLElement {
   const row = [...container.querySelectorAll('label')].find(
     (label) => label.textContent === 'Require approval when the model changes plan mode',
@@ -151,13 +160,12 @@ describe('PlanSettings plan gate defaults', () => {
     expect(patchConfig).toHaveBeenCalledWith({ plan: { gate: 'free' } });
   });
 
-  it('saves the timeout on explicit Save, not on blur', async () => {
+  it('saves the timeout when the field commits (Enter or blur), like the other number fields', async () => {
     const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '30');
     expect(patchConfig).not.toHaveBeenCalled();
-    const save = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
-    await click(save);
+    await commitInput(input);
     expect(patchConfig).toHaveBeenCalledWith({ plan: { enter_approval_timeout_ms: 30_000 } });
   });
 
@@ -165,8 +173,7 @@ describe('PlanSettings plan gate defaults', () => {
     const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '3');
-    const save = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
-    await click(save);
+    await commitInput(input);
     expect(patchConfig).not.toHaveBeenCalled();
     expect(container.textContent).toContain('at least 5 seconds');
     expect(input.value).toBe('3');
