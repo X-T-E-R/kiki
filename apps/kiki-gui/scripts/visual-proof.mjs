@@ -959,9 +959,30 @@ async function scenarioGoalQueue() {
 
 async function scenarioToolPipeline() {
   await selectSession('Fixture: tool pipeline');
-  // Default: nothing folds. The journaled Read → Edit → Write chain stays in
-  // place, one quiet line per action that names its file.
-  await page.locator('[role="log"] [data-tool-id]').nth(2).waitFor({ timeout: 10_000 });
+  // The journaled Read → Edit → Write chain is settled process between two
+  // messages, so it folds into one line that counts what happened.
+  const settledFold = page.locator('[role="log"] [data-history-fold]').first();
+  await settledFold.waitFor({ timeout: 10_000 });
+  const settledText = await settledFold.innerText();
+  for (const expected of [S.foldWorked, S.foldSteps3]) {
+    if (!settledText.includes(expected)) {
+      throw new Error(`settled chain line must read "${expected}", saw "${settledText}"`);
+    }
+  }
+  if (await page.locator('[role="log"] [data-history-fold-members]').count() !== 0) {
+    throw new Error('folded history rendered its members before expansion');
+  }
+  if (await page.locator('[role="log"] [data-tool-id]').count() !== 0) {
+    throw new Error('folded history rendered its tool rows before expansion');
+  }
+  await shot('tool-pipeline-folded-history');
+  // Opening it lays the original rows back down, one quiet line per action.
+  await settledFold.locator('[data-activity-toggle]').first().click();
+  await page.locator('[role="log"] [data-history-fold-members]').waitFor({ timeout: 5000 });
+  const settledRows = page.locator('[role="log"] [data-history-fold-members] [data-tool-id]');
+  if (await settledRows.count() !== 3) {
+    throw new Error(`expected 3 unfolded tool rows, saw ${await settledRows.count()}`);
+  }
   if (await page.locator('[role="log"] [data-read-run]').count() !== 0) {
     throw new Error('settled actions were folded although fold-steps is off by default');
   }
@@ -974,6 +995,9 @@ async function scenarioToolPipeline() {
   await sendPrompt('Run the tool sequences.');
   // Pending approval remains a visible boundary; its resolution moves to history.
   await waitForText(S.approvalNeeded);
+  // The tray promotes the decision to its current item a beat after the
+  // timeline records it, and only then does y/n answer it.
+  await page.locator('[data-needs-you-tray] [data-tray-current]').waitFor({ timeout: 10_000 });
   await approveViaKeyboard();
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
@@ -983,27 +1007,53 @@ async function scenarioToolPipeline() {
   if (await page.locator('[role="log"] [data-read-run]').count() !== 0) {
     throw new Error('live actions were folded although fold-steps is off by default');
   }
-  const history = page.locator('[role="log"] [data-history-line]');
-  await history.getByText(S.approved, { exact: true }).waitFor();
+  // The finished turn's process settles into one line per run; the gated
+  // boundary is the run holding the resolved approval, which the fold counts
+  // as a note beside its steps. Rows the reader is still looking at are held
+  // open, so return to the end of the log first.
+  await page.evaluate(() => {
+    const log = document.querySelector('[role="log"]');
+    if (log !== null) log.scrollTop = log.scrollHeight;
+  });
+  await page.waitForTimeout(600);
+  const boundaryFold = page.locator('[role="log"] [data-history-fold]')
+    .filter({ hasText: S.foldNotes1 }).first();
+  await boundaryFold.waitFor({ timeout: 10_000 });
+  const boundaryText = await boundaryFold.innerText();
+  if (!boundaryText.includes(S.foldWorked) || !boundaryText.includes(S.foldSteps2)) {
+    throw new Error(`the gated boundary must fold its two steps, saw "${boundaryText}"`);
+  }
+  await boundaryFold.locator('[data-activity-toggle]').first().click();
+  await page.locator('[role="log"] [data-history-fold-members]').first().waitFor({ timeout: 5000 });
+  const history = page.locator('[role="log"] [data-history-fold-members] [data-history-line]');
+  await history.getByText(S.approved, { exact: true }).waitFor({ timeout: 10_000 });
   if ((await history.boundingBox())?.height > 40) throw new Error('resolved approval must stay a compact timeline row');
   // One verb per row: the label names the action, so the detail never
   // repeats it ("Read read C:/…").
   const doubled = await page.locator('[role="log"] [data-tool] [data-activity-toggle]').evaluateAll((rows) =>
     rows.map((row) => row.textContent ?? '').filter((text) => /^(Read|Edit|Write|Glob)\s*(read|edit|write|list)\b/i.test(text.trim())));
   if (doubled.length > 0) throw new Error(`tool rows repeat their verb: ${doubled.slice(0, 2).join(' | ')}`);
-  console.log('[check] default timeline keeps every action in place; approval resolution is one compact row');
+  console.log('[check] settled runs fold into counted lines; approval resolution is one compact row');
   await shot('tool-pipeline-live');
   // Keyboard focus lands visibly on a timeline row.
   await page.locator('[role="log"] [data-tool] [data-activity-toggle]').last().focus();
   await page.waitForTimeout(200);
   await shot('tool-pipeline-focus');
-  // Opt-in fold: only the ≥3 pure-read stretch collapses, and its line names
-  // the objects it looked at. Expanded members keep their wash inside the spine.
+  // Opt-in read fold: inside an opened run, only the ≥3 pure-read stretch
+  // collapses, and its line names the objects it looked at.
   await page.evaluate(() => {
     const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
     localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, foldSteps: true }));
     window.dispatchEvent(new StorageEvent('storage', { key: 'kiki.settings', storageArea: localStorage }));
   });
+  // The live sequence is its own settled run: open it to reach the read fold.
+  const sequenceFold = page.locator('[role="log"] [data-history-fold]')
+    .filter({ hasText: S.foldSteps6 }).first();
+  await sequenceFold.waitFor({ timeout: 10_000 });
+  if (await sequenceFold.getAttribute('data-history-fold-open') === null) {
+    await sequenceFold.locator('[data-activity-toggle]').first().click();
+    await page.waitForTimeout(400);
+  }
   const run = page.locator('[role="log"] [data-read-run]').first();
   await run.waitFor({ timeout: 10_000 });
   const runText = (await run.textContent()) ?? '';
@@ -3097,11 +3147,16 @@ async function scenarioInjectionLanes() {
   for (const leaked of ['cron-fire', 'SKILL.md', 'Continue toward the goal', 'Earlier context summarized']) {
     if (bubbleText.includes(leaked)) throw new Error(`injection leaked into the user bubble: ${leaked}`);
   }
-  // cron + compaction + non-slash skill + goal continuation: four left-lane
-  // system rows, all collapsed (bodies hidden until expanded).
+  // cron + compaction + goal continuation are system rows; a non-slash skill
+  // activation is its own left-lane row. All four stay collapsed (bodies
+  // hidden until expanded).
   const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
-  if ((await systemRows.count()) !== 4) {
-    throw new Error(`expected 4 system rows, saw ${await systemRows.count()}`);
+  if ((await systemRows.count()) !== 3) {
+    throw new Error(`expected 3 system rows, saw ${await systemRows.count()}`);
+  }
+  const skillRows = page.locator('[role="log"] [data-block-id^="skill-"]');
+  if ((await skillRows.count()) !== 1) {
+    throw new Error(`expected 1 skill row, saw ${await skillRows.count()}`);
   }
   if ((await page.locator('text=Continue toward the goal').count()) !== 0) {
     throw new Error('collapsed injection body rendered before expansion');
@@ -4128,8 +4183,17 @@ async function scenarioContextRing() {
     return arc === null ? null : getComputedStyle(arc).stroke;
   });
   console.log(`[check] warn arc stroke: ${warnArc}`);
-  // d9a441 (--color-amber-rule in the warm-editorial tokens)
-  const AMBER = 'rgb(217, 164, 65)';
+  // The arc paints the token layer (ContextMeter's LEVEL_STROKE), so resolve
+  // the token in this page instead of copying the hex it happens to hold.
+  const tokenColor = (name) => page.evaluate((cssVar) => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${cssVar})`;
+    document.body.appendChild(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    return value;
+  }, name);
+  const AMBER = await tokenColor('--color-amber-rule');
   if (warnArc !== AMBER) throw new Error(`expected amber warn arc, saw ${warnArc}`);
   await shot('context-ring-warn');
 
@@ -4176,7 +4240,7 @@ async function scenarioContextRing() {
     return arc === null ? null : getComputedStyle(arc).stroke;
   });
   console.log(`[check] danger arc stroke: ${dangerArc}`);
-  const RED = 'rgb(180, 35, 24)'; // --color-danger #b42318
+  const RED = await tokenColor('--color-danger'); // --color-danger in the token layer
   if (dangerArc !== RED) throw new Error(`expected red danger arc, saw ${dangerArc}`);
   await shot('context-ring-danger');
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
