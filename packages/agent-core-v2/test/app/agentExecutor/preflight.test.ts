@@ -527,7 +527,7 @@ describe('AgentExecutorPreflightService', () => {
       preparePromptConfiguration: async () => false,
       getSystemPrompt: () => '',
     });
-    services.stub(IAgentStateService, { contributeState: () => ({ dispose: () => {} }) });
+    services.stub(IAgentStateService, { get: () => ({}), contributeState: () => ({ dispose: () => {} }) });
     services.stub(IAgentLoopService, {});
     services.stub(IAgentPromptService, {});
     services.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
