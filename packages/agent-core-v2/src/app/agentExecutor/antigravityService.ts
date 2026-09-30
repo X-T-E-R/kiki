@@ -1,3 +1,4 @@
+/* oxlint-disable typescript-eslint/no-unsafe-declaration-merging -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
 import { AcpLoginHelper, rebuildLoopbackRedirect } from '@kiki/acp-client';
 import { join } from 'pathe';
@@ -6,12 +7,14 @@ import { rcompare, valid } from 'semver';
 import { createDecorator } from '#/_base/di/instantiation';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IEventService } from '#/app/event/event';
+import { Event2 } from '#/app/event/event2';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { installBinaryArchive } from '#/os/backends/node-local/binaryArchive';
+import { installBinaryArchive, type BinaryArchiveProgress } from '#/os/backends/node-local/binaryArchive';
 import { antigravityAuthSettings, type AntigravityAuthMethod } from '#/os/backends/node-local/antigravitySettings';
 
 import { IAgentExecutorRegistry } from './agentExecutor';
@@ -28,6 +31,30 @@ export interface AntigravityStatus {
   readonly phase: 'idle' | 'installing' | 'failed';
   readonly error?: string;
 }
+/**
+ * One step of an Antigravity ACP CLI install, published on the global event
+ * bus in order: `download` (repeated, with byte counts), `extract`, `activate`,
+ * then exactly one terminal `done` or `failed`.
+ */
+export type AntigravityInstallProgress = { readonly installId: string; readonly version: string } & (
+  | BinaryArchiveProgress
+  | { readonly stage: 'activate' }
+  | { readonly stage: 'done' }
+  | { readonly stage: 'failed'; readonly error: string; readonly timedOut: boolean }
+);
+
+/** Global bus fact carrying {@link AntigravityInstallProgress}. */
+export class AntigravityInstallProgressed extends Event2<{ readonly payload: AntigravityInstallProgress }> {
+  static override readonly type = 'event.executor.antigravity_install_progress';
+  static override readonly schema = undefined;
+}
+export interface AntigravityInstallProgressed {
+  readonly payload: AntigravityInstallProgress;
+}
+
+/** How long the archive download may take before the install fails as timed out. */
+export const ANTIGRAVITY_INSTALL_TIMEOUT_MS = 10 * 60_000;
+
 export type AntigravityLoginStart = { readonly alreadySignedIn: true } | {
   readonly alreadySignedIn: false;
   readonly handle: string;
@@ -64,7 +91,12 @@ export class AntigravityService implements IAntigravityService {
     @IHostProcessService private readonly processes: IHostProcessService,
     @IAtomicTomlDocumentStore private readonly documents: IAtomicTomlDocumentStore,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
+    @IEventService private readonly events?: IEventService,
   ) {}
+
+  private publish(progress: AntigravityInstallProgress): void {
+    this.events?.publish(new AntigravityInstallProgressed({ payload: progress }));
+  }
 
   async status(): Promise<AntigravityStatus> {
     const release = antigravityRelease(ANTIGRAVITY_VERSION, this.bootstrap.platform, this.bootstrap.arch);
@@ -87,19 +119,26 @@ export class AntigravityService implements IAntigravityService {
   install(version = ANTIGRAVITY_VERSION): Promise<AntigravityStatus> {
     if (this.installing !== undefined) throw invalid('An Antigravity installation is already running');
     const release = antigravityRelease(version, this.bootstrap.platform, this.bootstrap.arch);
+    const installId = randomUUID();
+    const tag = { installId, version: release.version };
     const work = (async () => {
       try {
         this.failure = undefined;
         if (!await this.complete(release.version)) {
           const directory = this.directory(release.version);
           await this.fs.remove(directory).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
-          await installBinaryArchive({ url: release.url, directory, entry: release.entry, requiredSibling: release.requiredSibling });
+          await installBinaryArchive({ url: release.url, directory, entry: release.entry, requiredSibling: release.requiredSibling,
+            timeoutMs: ANTIGRAVITY_INSTALL_TIMEOUT_MS, onProgress: (progress) => { this.publish({ ...tag, ...progress }); } });
         }
+        this.publish({ ...tag, stage: 'activate' });
         await this.documents.set(ANTIGRAVITY_CACHE_SCOPE, 'antigravity-acp', { activeVersion: release.version });
       } catch (error) {
         this.failure = error instanceof Error ? error.message : String(error);
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || (error.cause as { name?: string } | undefined)?.name === 'TimeoutError');
+        this.publish({ ...tag, stage: 'failed', error: this.failure, timedOut });
         throw error;
       } finally { this.installing = undefined; }
+      this.publish({ ...tag, stage: 'done' });
       return this.status();
     })();
     this.installing = work;

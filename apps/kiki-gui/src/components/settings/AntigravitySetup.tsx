@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AntigravityLoginStartResponse, AntigravityStatusResponse } from '@kiki/protocol';
+import type { KlientEventPayloads } from '@kiki/klient';
+import { formatBytes } from '@kiki/session-core/composer/media';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../host';
@@ -25,6 +27,31 @@ export function antigravityVersionValid(value: string): boolean {
   return /^1\.\d+\.\d+$/.test(value.trim());
 }
 
+export type InstallProgressEvent = KlientEventPayloads['executors.antigravityInstallProgress'];
+
+/** What the install bar shows: the stage in progress and, while downloading, how far. */
+export interface InstallProgressView {
+  readonly installId: string;
+  readonly stage: 'download' | 'extract' | 'activate';
+  readonly receivedBytes: number;
+  readonly totalBytes?: number;
+}
+
+/**
+ * Folds pushed install steps into the bar. Only the install this card started
+ * (by version) is shown; a step from another install id replaces an older one,
+ * and terminal steps clear the bar — the request's own reply reports them.
+ */
+export function reduceInstallProgress(current: InstallProgressView | null, event: InstallProgressEvent, version: string | null): InstallProgressView | null {
+  if (version === null || event.version !== version) return current;
+  if (event.stage === 'done' || event.stage === 'failed') return current?.installId === event.installId || current === null ? null : current;
+  if (event.stage === 'download') {
+    return { installId: event.installId, stage: 'download', receivedBytes: event.receivedBytes, totalBytes: event.totalBytes };
+  }
+  return { installId: event.installId, stage: event.stage, receivedBytes: current?.installId === event.installId ? current.receivedBytes : 0,
+    totalBytes: current?.installId === event.installId ? current.totalBytes : undefined };
+}
+
 /** Seconds left on a sign-in, never negative. */
 export function secondsLeft(pending: { startedAt: number; expires_in_secs: number }, now: number): number {
   return Math.max(0, Math.ceil(pending.expires_in_secs - (now - pending.startedAt) / 1000));
@@ -42,7 +69,7 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
   ideDetected: boolean;
   onChanged: () => void;
 }) {
-  const { client } = useConnection();
+  const { client, klient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const binaries = useQuery({
@@ -52,6 +79,18 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
     retry: false,
   });
   const [installing, setInstalling] = useState<string | null>(null);
+  const [progress, setProgress] = useState<InstallProgressView | null>(null);
+  // The pushed failure says whether the download ran out of time; the HTTP reply does not.
+  const timedOutRef = useRef(false);
+  useEffect(() => {
+    if (installing === null) { setProgress(null); return; }
+    timedOutRef.current = false;
+    const subscription = klient.events.on('executors.antigravityInstallProgress', (event) => {
+      if (event.stage === 'failed' && event.version === installing) timedOutRef.current = event.timedOut;
+      setProgress((current) => reduceInstallProgress(current, event, installing));
+    });
+    return () => { subscription.dispose(); };
+  }, [klient, installing]);
   const [activating, setActivating] = useState<string | null>(null);
   const [customVersion, setCustomVersion] = useState('');
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -69,14 +108,15 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
     onChanged();
   };
   const install = async (version?: string) => {
-    setInstalling(version ?? status?.release.version ?? '');
+    setInstalling((version ?? status?.release.version ?? '').trim());
     setFeedback(null);
     try {
       const next = await client.installAntigravityBinary(version);
       apply(next);
       setCustomVersion('');
     } catch (error) {
-      setFeedback({ tone: 'error', text: t('st.antigravity.installFailed', { detail: errorText(locale, error) }) });
+      setFeedback({ tone: 'error', text: timedOutRef.current ? t('st.antigravity.installTimedOut')
+        : t('st.antigravity.installFailed', { detail: errorText(locale, error) }) });
     } finally { setInstalling(null); }
   };
   const activate = async (version: string) => {
@@ -133,11 +173,11 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
                 <span>{t('st.antigravity.ideFound')}</span>
               </p>
             ) : null}
-            {status !== undefined && !installed.includes(status.release.version) ? (
+            {installing !== null ? <InstallProgressBar version={installing} progress={progress} /> : null}
+            {status !== undefined && !installed.includes(status.release.version) && installing !== status.release.version ? (
               <button type="button" data-antigravity-install className={`${programDone ? SECONDARY_BUTTON : PRIMARY_BUTTON} inline-flex items-center gap-1.5`}
-                disabled={busy} aria-busy={installing === status.release.version} onClick={() => void install()}>
-                {installing === status.release.version ? <Spinner /> : null}
-                {installing === status.release.version ? t('st.antigravity.installing') : t('st.antigravity.install', { version: status.release.version })}
+                disabled={busy} onClick={() => void install()}>
+                {t('st.antigravity.install', { version: status.release.version })}
               </button>
             ) : null}
             {status !== undefined ? (
@@ -336,6 +376,39 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
         <button type="button" data-antigravity-restart className={SECONDARY_BUTTON} disabled={working !== null}
           onClick={() => { setPending(null); void start(); }}>{t('st.antigravity.startAgain')}</button>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The running install, drawn from pushed steps: bytes while downloading
+ * (indeterminate when the size is unknown), then unpack and activate. Ink
+ * blue marks the current work; nothing here asks the user for anything.
+ */
+function InstallProgressBar({ version, progress }: { version: string; progress: InstallProgressView | null }) {
+  const { t } = useI18n();
+  const total = progress?.stage === 'download' ? progress.totalBytes : undefined;
+  const received = progress?.receivedBytes ?? 0;
+  const percent = progress === null ? undefined : progress.stage !== 'download' ? 100
+    : total === undefined ? undefined : Math.min(100, Math.round((received / total) * 100));
+  const line = progress === null ? t('st.antigravity.progress.starting', { version })
+    : progress.stage === 'download'
+      ? total === undefined ? t('st.antigravity.progress.downloadingUnknown', { received: formatBytes(received) })
+        : t('st.antigravity.progress.downloading', { received: formatBytes(received), total: formatBytes(total) })
+      : t(progress.stage === 'extract' ? 'st.antigravity.progress.extracting' : 'st.antigravity.progress.activating');
+  return (
+    <div data-antigravity-progress={progress?.stage ?? 'starting'} className="max-w-[28rem] space-y-1">
+      <div role="progressbar" aria-label={t('st.antigravity.progress.label', { version })}
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-valuetext={line}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-hairline">
+        <div className={`h-full rounded-full bg-selected-ink transition-[width] duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+          percent === undefined ? 'w-1/3 animate-pulse motion-reduce:animate-none' : ''}`}
+          style={percent === undefined ? undefined : { width: `${percent}%` }} />
+      </div>
+      <p aria-live="polite" className="flex items-center justify-between gap-3 text-[12px] leading-4 text-ink-soft">
+        <span>{line}</span>
+        {percent !== undefined && progress?.stage === 'download' ? <span className="tabular-nums text-ink-faint">{percent}%</span> : null}
+      </p>
     </div>
   );
 }

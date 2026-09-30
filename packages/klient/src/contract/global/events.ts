@@ -50,6 +50,7 @@ export interface KlientEventPayloads {
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'kosong.changed': CatalogChangedPayload;
   'search.indexStateChanged': z.infer<typeof searchIndexStateSchema>;
+  'executors.antigravityInstallProgress': z.infer<typeof antigravityInstallProgressSchema>;
 }
 
 export type KlientEventName = keyof KlientEventPayloads;
@@ -99,11 +100,29 @@ export const searchIndexStateSchema = z.object({
     'corrupt_rebuilding', 'sqlite_unavailable', 'runtime_disabled']).optional(),
 });
 
+/**
+ * One step of an Antigravity ACP CLI install, in order: `download` (repeated,
+ * byte counts rising), `extract`, `activate`, then one terminal `done` or
+ * `failed`. `installId` ties the steps of one install together.
+ */
+const installTag = { installId: z.string().min(1), version: z.string().min(1) };
+export const antigravityInstallProgressSchema = z.discriminatedUnion('stage', [
+  z.object({ ...installTag, stage: z.literal('download'), receivedBytes: z.number().nonnegative(), totalBytes: z.number().positive().optional() }),
+  z.object({ ...installTag, stage: z.literal('extract') }),
+  z.object({ ...installTag, stage: z.literal('activate') }),
+  z.object({ ...installTag, stage: z.literal('done') }),
+  z.object({ ...installTag, stage: z.literal('failed'), error: z.string(), timedOut: z.boolean() }),
+]);
+
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
   'search.indexStateChanged': {
     kind: 'bus', type: 'event.search.index_state_changed',
     schema: searchIndexStateSchema,
+  },
+  'executors.antigravityInstallProgress': {
+    kind: 'bus', type: 'event.executor.antigravity_install_progress',
+    schema: antigravityInstallProgressSchema,
   },
   'config.changed': {
     kind: 'emitter',

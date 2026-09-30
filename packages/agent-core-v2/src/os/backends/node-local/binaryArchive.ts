@@ -9,11 +9,19 @@ import { open as openZip, type Entry, type ZipFile } from 'yauzl';
 const ARCHIVE_LIMIT = 1024 * 1024 * 1024;
 const EXTRACTED_LIMIT = 4 * ARCHIVE_LIMIT;
 
+export type BinaryArchiveProgress =
+  | { readonly stage: 'download'; readonly receivedBytes: number; readonly totalBytes?: number }
+  | { readonly stage: 'extract' };
+
 export interface BinaryArchiveInstall {
   readonly url: string;
   readonly directory: string;
   readonly entry: string;
   readonly requiredSibling: string;
+  /** Called at each stage; download reports are throttled to about one per percent. */
+  readonly onProgress?: (progress: BinaryArchiveProgress) => void;
+  /** Download deadline, covering the response and its whole body; defaults to ten minutes. */
+  readonly timeoutMs?: number;
 }
 
 export async function installBinaryArchive(options: BinaryArchiveInstall): Promise<string> {
@@ -21,20 +29,32 @@ export async function installBinaryArchive(options: BinaryArchiveInstall): Promi
   const archive = `${staging}.zip`;
   await mkdir(dirname(staging), { recursive: true });
   try {
-    const response = await fetch(options.url, { signal: AbortSignal.timeout(10 * 60_000) });
+    const response = await fetch(options.url, { signal: AbortSignal.timeout(options.timeoutMs ?? 10 * 60_000) });
     if (!response.ok || response.body === null) throw new Error(`Binary download failed (HTTP ${response.status})`);
     const source = new URL(response.url);
     if (source.protocol !== 'https:' || source.hostname !== 'dl.google.com') throw new Error('Unexpected binary download origin');
     const hash = createHash('sha256');
+    const length = Number(response.headers.get('content-length'));
+    const totalBytes = Number.isFinite(length) && length > 0 ? length : undefined;
+    const step = totalBytes === undefined ? 1024 * 1024 : Math.max(64 * 1024, Math.floor(totalBytes / 100));
     let downloaded = 0;
+    let reported = 0;
+    const report = options.onProgress;
+    report?.({ stage: 'download', receivedBytes: 0, totalBytes });
     await pipeline(Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>), new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         downloaded += chunk.length;
         if (downloaded > ARCHIVE_LIMIT) { callback(new Error('Binary archive exceeds the download limit')); return; }
         hash.update(chunk);
+        if (report !== undefined && downloaded - reported >= step) {
+          reported = downloaded;
+          report({ stage: 'download', receivedBytes: downloaded, totalBytes });
+        }
         callback(null, chunk);
       },
     }), createWriteStream(archive, { flags: 'wx' }));
+    if (reported !== downloaded) report?.({ stage: 'download', receivedBytes: downloaded, totalBytes });
+    report?.({ stage: 'extract' });
     await mkdir(staging);
     await extractBinaryZip(archive, staging);
     for (const name of [options.entry, options.requiredSibling]) {

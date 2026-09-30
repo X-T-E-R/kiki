@@ -1791,7 +1791,8 @@ export class KikiClient {
   /** Download + unpack a 1.x release (`version` absent = the default release) into Kiki's cache. */
   installAntigravityBinary(version?: string): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
     // The route answers after the download and unpack finish.
-    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/install', { body: version === undefined ? {} : { version }, timeoutMs: 10 * 60_000 });
+    // A minute past the server's download deadline, so its timeout reply (and pushed failure) arrives first.
+    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/install', { body: version === undefined ? {} : { version }, timeoutMs: 11 * 60_000 });
   }
 
   activateAntigravityBinary(version: string): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
