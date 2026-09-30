@@ -95,9 +95,17 @@ describe('buildSlashItems', () => {
     expect(names).toContain('plan');
     expect(names).toContain('goal');
     expect(names).toContain('new');
+    expect(names).not.toContain('btw');
     expect(names).not.toContain('fork');
     expect(names).not.toContain('undo');
     expect(names).not.toContain('compact');
+  });
+
+  it('offers /btw once a session exists', () => {
+    const items = buildSlashItems([], { hasSession: true });
+    const match = resolveSlashCommand(items, '/btw what does this flag do?');
+    expect(match?.item.action).toBe('btw');
+    expect(match?.args).toBe('what does this flag do?');
   });
 
   it('reserves builtin action names and keeps same-name skills selectable', () => {

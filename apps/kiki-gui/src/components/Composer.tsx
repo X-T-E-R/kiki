@@ -116,10 +116,16 @@ import {
 
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
+/** `/btw` is listed only where a side question can be opened (not in a side agent's own composer). */
+function withoutUnhandledActions(items: readonly SlashItem[], canAskSideQuestion: boolean): readonly SlashItem[] {
+  return canAskSideQuestion ? items : items.filter((item) => item.action !== 'btw');
+}
+
 const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
   plan: 'composer.slash.plan',
   goal: 'composer.slash.goal',
   new: 'composer.slash.new',
+  btw: 'composer.slash.btw',
   fork: 'composer.slash.fork',
   undo: 'composer.slash.undo',
   compact: 'composer.slash.compact',
@@ -203,7 +209,8 @@ export interface ComposerEngine {
 
 /** `/fork` leaves the slash menu when the engine's handshake refused forking. */
 function withoutRefusedActions<T extends { readonly kind: string; readonly action?: string }>(items: T[], engine: ComposerEngine | undefined): T[] {
-  return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || item.action !== 'fork') : items;
+  // A side question (/btw) is a fork of the main agent, refused with it.
+  return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || (item.action !== 'fork' && item.action !== 'btw')) : items;
 }
 
 const PERSONA_OPTION_PREFIX = 'persona:';
@@ -280,6 +287,7 @@ export function Composer({
   onChangeAttachments,
   onActivateSkill,
   onSessionAction,
+  onSideQuestion,
   onCompactContext,
   onChangeModel,
   onChangeAgentProfile,
@@ -412,6 +420,8 @@ export function Composer({
   onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
   /** Session-scoped shortcuts (/fork, /undo, /compact). */
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
+  /** `/btw [question]`: open a side question beside the session; the text, when given, is sent to it. */
+  onSideQuestion?: (question?: string) => void;
   /** The context meter's click target (asks the session to compact). */
   onCompactContext?: () => void;
   /** Model picked in the panel; a bound agent rebinds on the server, so the
@@ -801,8 +811,8 @@ export function Composer({
   }, [slashMenuOpen, skillCatalogReady, skillsQuery.isStale, skillsQuery.isFetching, skillsQuery.refetch]);
 
   const slashItems = useMemo(
-    () => withoutRefusedActions(buildSlashItems(skills, { hasSession: sessionId !== undefined }), engine),
-    [skills, sessionId, engine],
+    () => withoutUnhandledActions(withoutRefusedActions(buildSlashItems(skills, { hasSession: sessionId !== undefined }), engine), onSideQuestion !== undefined),
+    [skills, sessionId, engine, onSideQuestion],
   );
   const skillMenuItems = useMemo(() => slashItems.filter((item) => item.kind === 'skill'), [slashItems]);
   const filteredSlashItems = useMemo(() => {
@@ -1119,6 +1129,9 @@ export function Composer({
         break;
       case 'new':
         void navigate('/new');
+        break;
+      case 'btw':
+        onSideQuestion?.();
         break;
       case 'fork':
       case 'undo':
@@ -1438,6 +1451,13 @@ export function Composer({
             sendPrompt(classified.args, { goalObjective: classified.args });
             return;
           }
+          // `/btw <question>` goes to a side agent; the main turn never sees it.
+          if (classified.item.action === 'btw' && classified.args !== '' && onSideQuestion !== undefined) {
+            recordSubmission();
+            onChange('');
+            onSideQuestion(classified.args);
+            return;
+          }
           // Prose after a client shortcut (`/plan do it`) is a message, not a
           // command — only a bare action token runs the shortcut.
           if (classified.args === '') {
@@ -1499,7 +1519,7 @@ export function Composer({
           return;
         }
         setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);
-        submitWithSlashItems(withoutRefusedActions(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), engine), true);
+        submitWithSlashItems(withoutUnhandledActions(withoutRefusedActions(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), engine), onSideQuestion !== undefined), true);
       });
       return;
     }

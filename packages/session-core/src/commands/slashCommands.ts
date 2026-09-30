@@ -6,7 +6,8 @@
  *     session, `GET /workspaces/{id}/skills` on /new); submitting one calls
  *     `POST …/skills/{name}:activate` once a session exists.
  *   - `action` — a client-side shortcut that maps to a real GUI action
- *     (toggle plan mode, open the goal popover, fork/undo/compact, /new).
+ *     (toggle plan mode, open the goal popover, a /btw side question,
+ *     fork/undo/compact, /new).
  *
  * A draft that starts with `/` but matches no entry is still just text — the
  * server never sees an invented command. The composer intercepts such sends
@@ -17,7 +18,7 @@ import type { SkillDescriptor } from '@kiki/protocol';
 
 import { isAppRouteLink } from '../composer/threadRefs';
 
-export type SlashActionId = 'plan' | 'goal' | 'new' | 'fork' | 'undo' | 'compact';
+export type SlashActionId = 'plan' | 'goal' | 'new' | 'btw' | 'fork' | 'undo' | 'compact';
 
 export interface SlashItem {
   kind: 'skill' | 'action';
@@ -45,6 +46,7 @@ const SLASH_ACTIONS: readonly SlashActionSpec[] = [
   { id: 'plan', name: 'plan', description: 'Toggle plan mode for the next prompt', needsSession: false },
   { id: 'goal', name: 'goal', description: 'Set the goal objective', needsSession: false },
   { id: 'new', name: 'new', description: 'Start a new session', needsSession: false },
+  { id: 'btw', name: 'btw', description: 'Ask a side question without interrupting this session', needsSession: true },
   { id: 'fork', name: 'fork', description: 'Fork this session into a copy', needsSession: true },
   { id: 'undo', name: 'undo', description: 'Undo the last turn', needsSession: true },
   { id: 'compact', name: 'compact', description: 'Compact older context into a summary', needsSession: true },

@@ -217,6 +217,7 @@ function Header({
   onToggleSidebar,
   onRenameSession,
   onSessionAction,
+  onSideQuestion,
   view,
   onView,
   onDelivery,
@@ -238,6 +239,7 @@ function Header({
   onToggleSidebar: () => void;
   onRenameSession: (title: string) => Promise<void>;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  onSideQuestion?: () => void;
   view: TimelineView;
   onView: (view: TimelineView) => void;
   onDelivery: (delivery: 'reply' | 'message') => void;
@@ -315,6 +317,7 @@ function Header({
             onBeginRename={() => { setRenaming(true); }}
             onAction={onSessionAction}
             canFork={!harnessDenies(harness, 'fork')}
+            onSideQuestion={harnessDenies(harness, 'fork') ? undefined : onSideQuestion}
             leading={(close) => (
               <>
                 {botPersonaId !== undefined ? (
@@ -523,6 +526,7 @@ export function SessionActionsMenu({
   onToggleTerminal,
   onBeginRename,
   onAction,
+  onSideQuestion,
   leading,
   canFork = true,
 }: {
@@ -533,6 +537,8 @@ export function SessionActionsMenu({
   onToggleTerminal: () => void;
   onBeginRename: () => void;
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  /** Opens a `/btw` side question beside the conversation; the row is hidden without it. */
+  onSideQuestion?: () => void;
   /** Session-mode rows (view, delivery) above the actions; `close` dismisses the menu. */
   leading?: (close: () => void) => ReactNode;
 }) {
@@ -619,6 +625,21 @@ export function SessionActionsMenu({
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
+          {onSideQuestion !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-side-question
+              className={`${itemClass} flex items-center justify-between gap-3`}
+              onClick={() => {
+                setOpen(false);
+                onSideQuestion();
+              }}
+            >
+              <span>{t('menu.sideQuestion')}</span>
+              <span className="font-mono text-[12px] text-ink-faint">/btw</span>
+            </button>
+          ) : null}
           {canFork ? (
             <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('fork'); }}>
               {t('menu.fork')}
@@ -2452,6 +2473,36 @@ export function SessionView({
     },
     [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
   );
+  // `/btw` and the header's "Side question": fork a tool-less side agent from
+  // the main context and open it as a preview tab beside the conversation, so
+  // the main turn keeps running untouched. The tab carries its own composer;
+  // a question typed after `/btw` is sent to it straight away.
+  const [sideQuestionPending, setSideQuestionPending] = useState(false);
+  const startSideQuestion = useCallback((question?: string) => {
+    if (sideQuestionPending) return;
+    setSideQuestionPending(true);
+    void (async () => {
+      try {
+        const agentId = await client.startSideQuestion(sessionId);
+        const title = t('btw.tabTitle');
+        if (previewRef.current !== null) {
+          previewRef.current.openAgentPanel(agentId, title);
+          if (overlayRailOpenRef.current) setRailOpen(false);
+          focusAgentTabWhenMounted(agentId);
+        } else {
+          void navigate(agentDetailPath(sessionId, agentId));
+        }
+        const text = question?.trim() ?? '';
+        if (text !== '') {
+          await client.sendAgentMessage(sessionId, agentId, text, undefined, `btw-${agentId}-1`);
+        }
+      } catch (error) {
+        pushToast({ tone: 'error', text: t('btw.failed', { detail: sessionActionErrorText(locale, error) }) });
+      } finally {
+        setSideQuestionPending(false);
+      }
+    })();
+  }, [client, locale, navigate, sessionId, sideQuestionPending, t]);
   // Route-shell seams for the agent workspace: back-to-session and the
   // route-level agent open (no preview interception — the spawn jump-back).
   const openSession = useCallback(() => {
@@ -3119,6 +3170,7 @@ export function SessionView({
             onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
+            onSideQuestion={composerEngine?.fork === false ? undefined : startSideQuestion}
             onCompactContext={handleCompactContext}
             onChangeModel={handleModelChange}
             onChangeAgentProfile={handleAgentProfileChange}
@@ -3316,6 +3368,7 @@ export function SessionView({
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
             onSessionAction={runSessionAction}
+            onSideQuestion={() => { startSideQuestion(); }}
             view={timelineView} onView={setTimelineView}
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
             botPersonaId={botPersonaId}

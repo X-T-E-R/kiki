@@ -942,6 +942,12 @@ class FixtureServer {
     }
   }
 
+  /** A side-agent frame: its own transcript only, no main-session bookkeeping. */
+  emitSideFrame(session, agentId, frame, extras) {
+    const stamped = { ...frame, agentId, payload: { type: frame.type, ...frame.payload, agentId, sessionId: session.record.id } };
+    this.emitTranscriptFromFrame(session, stamped, extras);
+  }
+
   emitTranscriptFromFrame(session, frame, extras = {}) {
     const active = session.activePrompt;
     const merged = {
@@ -2880,6 +2886,32 @@ class FixtureServer {
       const items = slice.slice(0, pageSize);
       const hasMore = slice.length > pageSize;
       return this.envelope(res, { items, has_more: hasMore });
+    }
+    if (tail === '/prompts' && body !== undefined && (session.sideAgents ?? []).includes(body.agent_id)) {
+      // A `/btw` side agent answers on its own transcript; the main turn,
+      // queue and busy state never see it.
+      const agentId = body.agent_id;
+      const promptId = body.prompt_id ?? nextId('msg');
+      const createdAt = now();
+      const text = (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+      const reply = this.scenario?.data.btwReply ?? 'Answered from the conversation so far; the main turn keeps running.';
+      const turnId = (session.sideTurns ??= {})[agentId] = (session.sideTurns[agentId] ?? 0) + 1;
+      const extras = { promptId, userMessageId: promptId, content: body.content };
+      this.emitTranscriptFromFrame(session, { type: 'prompt.submitted', agentId, payload: { type: 'prompt.submitted', agentId, promptId, userMessageId: promptId, content: body.content, createdAt } }, extras);
+      void (async () => {
+        await sleep(120);
+        const frames = [
+          { type: 'turn.started', payload: { turnId, origin: { kind: 'user' }, prompt: text } },
+          { type: 'turn.step.started', payload: { turnId, step: 1 } },
+          ...Array.from({ length: Math.ceil(reply.length / 32) }, (_, index) => ({ type: 'assistant.delta', offset: index * 32, payload: { turnId, delta: reply.slice(index * 32, index * 32 + 32) } })),
+          { type: 'turn.ended', payload: { turnId, reason: 'completed', durationMs: 900 } },
+        ];
+        for (const frame of frames) {
+          await sleep(20);
+          this.emitSideFrame(session, agentId, frame, extras);
+        }
+      })();
+      return this.envelope(res, { prompt_id: promptId, user_message_id: promptId, status: 'running', content: body.content, created_at: createdAt });
     }
     if (tail === '/prompts' && body !== undefined) {
       // v2 currently uses one stable id for the prompt, user message, and

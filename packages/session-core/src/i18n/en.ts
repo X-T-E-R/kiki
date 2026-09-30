@@ -607,6 +607,7 @@ export const en = {
   // ---- session menu / dialogs ----
   'menu.restore': 'Restore',
   'menu.fork': 'Fork session',
+  'menu.sideQuestion': 'Side question',
   'menu.export': 'Export archive…',
   'menu.compact': 'Compact context',
   'menu.undo': 'Undo last turn…',
@@ -673,6 +674,8 @@ export const en = {
   'action.undoDoneSession': 'Last turn removed.',
   'action.forkDoneSession': 'Forked — opened the copy.',
   'action.forkFailed': 'Fork failed: {detail}',
+  'btw.tabTitle': 'Side question',
+  'btw.failed': 'Could not start a side question: {detail}',
   'action.exportFailed': 'Export failed: {detail}',
   'action.compactFailed': 'Compact failed: {detail}',
   'action.undoFailed': 'Undo failed: {detail}',
@@ -1041,6 +1044,7 @@ export const en = {
   'composer.slash.goal': 'Set the goal objective',
   'composer.slash.new': 'Start a new session',
   'composer.slash.fork': 'Fork this session into a copy',
+  'composer.slash.btw': 'Ask a side question without interrupting this session',
   'composer.slash.undo': 'Undo the last turn',
   'composer.slash.compact': 'Compact older context into a summary',
 

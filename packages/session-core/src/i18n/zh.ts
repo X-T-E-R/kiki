@@ -598,6 +598,7 @@ export const zh = {
   // ---- session menu / dialogs ----
   'menu.restore': '恢复',
   'menu.fork': '复刻会话',
+  'menu.sideQuestion': '侧问',
   'menu.export': '导出归档…',
   'menu.compact': '压缩上下文',
   'menu.undo': '撤销最后一轮…',
@@ -661,6 +662,8 @@ export const zh = {
   'action.undoDoneSession': '已移除最后一轮。',
   'action.forkDoneSession': '已分叉 — 正在打开副本。',
   'action.forkFailed': '复刻失败：{detail}',
+  'btw.tabTitle': '侧问',
+  'btw.failed': '无法开始侧问：{detail}',
   'action.exportFailed': '导出失败：{detail}',
   'action.compactFailed': '压缩失败：{detail}',
   'action.undoFailed': '撤销失败：{detail}',
@@ -1028,6 +1031,7 @@ export const zh = {
   'composer.slash.goal': '设置目标',
   'composer.slash.new': '开始新会话',
   'composer.slash.fork': '将此会话复刻为副本',
+  'composer.slash.btw': '顺带问一句，不打断当前会话',
   'composer.slash.undo': '撤销最后一轮',
   'composer.slash.compact': '将更早的上下文压缩为摘要',
 

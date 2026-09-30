@@ -117,7 +117,12 @@ export class FixtureKlient {
           procedure.scope === 'agent' &&
           procedure.service === 'agentPlanService' &&
           procedure.method === 'status';
-        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus) {
+        // `/btw`: the side-agent fork plus the metadata read its first send uses.
+        const sessionSideQuestion =
+          procedure.scope === 'session' &&
+          ((procedure.service === 'sessionBtwService' && procedure.method === 'start') ||
+            (procedure.service === 'sessionMetadata' && procedure.method === 'read'));
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !sessionSideQuestion) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -197,6 +202,28 @@ export class FixtureKlient {
     switch (key) {
       case 'agentPlanService.status':
         return null;
+      case 'sessionBtwService.start': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        session.sideAgents ??= [];
+        const agentId = `btw-${session.sideAgents.length + 1}`;
+        session.sideAgents.push(agentId);
+        return agentId;
+      }
+      case 'sessionMetadata.read': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const agents = { main: { type: 'main' } };
+        for (const id of session.sideAgents ?? []) agents[id] = { type: 'sub', parentAgentId: 'main', displayName: 'btw', executor: 'native' };
+        return {
+          id: session.record.id,
+          title: session.record.title,
+          createdAt: Date.parse(session.record.created_at) || Date.now(),
+          updatedAt: Date.parse(session.record.updated_at) || Date.now(),
+          archived: session.record.archived === true,
+          agents,
+        };
+      }
       case 'agentPanelService.read': {
         const [query] = args;
         const session = query.session_id === undefined ? undefined : server.sessions.get(query.session_id);

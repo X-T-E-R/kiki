@@ -93,6 +93,18 @@ describe('session header overflow menu', () => {
     ]);
   });
 
+  it('offers a side question above fork when the session can ask one', () => {
+    const onSideQuestion = vi.fn();
+    const { container } = actionsMenu({ onSideQuestion });
+    click(container.querySelector('button[aria-haspopup="menu"]'));
+    const item = container.querySelector('[data-side-question]');
+    expect(item?.textContent).toBe('Side question/btw');
+    expect(item?.nextElementSibling?.textContent).toBe('Fork session');
+    click(item);
+    expect(onSideQuestion).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
   it('drops the terminal item when the server has no terminal capability', () => {
     const { container } = actionsMenu({ terminalAvailable: false });
     click(container.querySelector('button[aria-haspopup="menu"]'));

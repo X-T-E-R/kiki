@@ -1268,6 +1268,15 @@ export class KikiClient {
     return this.run(this.klient.session(sessionId).agent(agentId).stopTask({ taskId }));
   }
 
+  /**
+   * Fork a side agent (`/btw`) from the main agent's current context. The
+   * side agent has no tools and answers from what the conversation already
+   * holds; the main turn is not interrupted. Resolves to the new agent id.
+   */
+  startSideQuestion(sessionId: string): Promise<string> {
+    return this.run(() => this.klient.session(sessionId).btw.start());
+  }
+
   async sendAgentMessage(
     sessionId: string,
     agentId: string,

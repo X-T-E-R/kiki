@@ -1797,6 +1797,41 @@ describe('Composer slash skill catalog', () => {
     expect(container.querySelector('[data-composer-menu]')).not.toBeNull();
   });
 
+  it('routes /btw with a question to the side-question handler, never the main send', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [] });
+    const onSend = vi.fn();
+    const onSideQuestion = vi.fn();
+    const onChange = vi.fn();
+    const { container } = await renderComposer({
+      value: '/btw what does --frozen-lockfile do?',
+      sessionId: 'session_live',
+      onSend,
+      onSideQuestion,
+      onChange,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSideQuestion).toHaveBeenCalledExactlyOnceWith('what does --frozen-lockfile do?');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledWith('');
+  });
+
+  it('lists /btw only where a side question can be opened', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [] });
+    const withHandler = await renderComposer({ value: '/', sessionId: 'session_live', onSideQuestion: vi.fn() });
+    for (let index = 0; index < 8; index += 1) await settle();
+    await openSlashMenu(withHandler.container);
+    expect(withHandler.container.querySelector('[data-composer-menu]')?.textContent).toContain('/btw');
+
+    const without = await renderComposer({ value: '/', sessionId: 'session_live' });
+    for (let index = 0; index < 8; index += 1) await settle();
+    await openSlashMenu(without.container);
+    expect(without.container.querySelector('[data-composer-menu]')?.textContent).not.toContain('/btw');
+  });
+
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onSend = vi.fn();
