@@ -79,6 +79,8 @@ import type {
 } from '@kiki/agent-core-v2/app/plugin/types';
 import type { CapabilityStatus } from '@kiki/agent-core-v2/app/capability/types';
 import type {
+  ListThreadMessagesInput,
+  ListThreadMessagesResult,
   ListThreadsInput,
   ListThreadsResult,
   ReadThreadInput,
@@ -306,6 +308,7 @@ export interface GlobalHostFsFacade {
 }
 
 export interface GlobalThreadsFacade {
+  messages(input?: ListThreadMessagesInput): Promise<ListThreadMessagesResult>;
   hostId(): Promise<string>;
   list(input?: ListThreadsInput): Promise<ListThreadsResult>;
   read(input: ReadThreadInput): Promise<ReadThreadResult>;
@@ -691,6 +694,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     },
 
     threads: {
+      messages: (input) => call('threadCommunicationService', 'listMessages', [input]) as Promise<ListThreadMessagesResult>,
       hostId: () => call('threadCommunicationService', 'hostId', []) as Promise<string>,
       list: (input) =>
         call('threadCommunicationService', 'listThreads', [input]) as Promise<ListThreadsResult>,

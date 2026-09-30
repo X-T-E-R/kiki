@@ -627,3 +627,20 @@ describe('native HTTP response lifecycle', () => {
     expect(new TextDecoder().decode((await channel.rest.filesystem.readHostFileBytes('/document.json')).bytes)).toBe(document);
   });
 });
+
+describe('communication history REST', () => {
+  it('preserves workspace, pair and cursor filters on the typed read endpoint', async () => {
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/threads/messages');
+      expect(Object.fromEntries(url.searchParams)).toEqual({ workspace_id: 'ws-a', session_id: 'a',
+        peer_session_id: 'b', cursor: 'page-2', limit: '1' });
+      return envelope({ items: [], next_cursor: 'page-3', incomplete: 'scan_budget' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      expect(await channel.rest.threads.messages({ workspace_id: 'ws-a', session_id: 'a',
+        peer_session_id: 'b', cursor: 'page-2', limit: 1 })).toEqual({ items: [], next_cursor: 'page-3', incomplete: 'scan_budget' });
+    } finally { await channel.close(); }
+  });
+});

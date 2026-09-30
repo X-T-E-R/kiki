@@ -66,6 +66,8 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
 
+只检索跨线程消息时，使用 `HistorySearch({"query":"交接","scope":"peer"})`。它搜索当前工作区内的双向往来，也可指定经批准访问的 `workspace_id`；可选 `session_id` 限定一个会话。Peer 检索复用既有词法匹配模式，但始终按最新时间优先排列：省略 `sort` 或使用 `"newest"`。它排除子 Agent 和普通用户输入，不接受 `source: "transcript"`；指定 Agent 时只接受 `agent_id: "main"`。结果来源为 `source: "mailbox"`，命中带有 `communication` 元数据，包含消息身份、两端和投递状态，不会编造会话轮次号或 HistoryRead ref。完整正文和导航身份见[沟通记录 REST 读取](../server/rest-api.md#沟通记录)。部分页或空页应使用 `next_cursor` 继续读取；此视图覆盖邮箱仍保留的记录，不包含旧版本已淘汰的更早消息。
+
 ## 网络类
 
 两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。

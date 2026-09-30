@@ -62,6 +62,7 @@ describe('server-v2 OpenAPI', () => {
     expect(paths['/api/files']).toBeDefined();
     expect(paths['/api/sessions/{session_id}/fs/{*}']).toBeDefined();
     expect(paths['/api/threads']).toBeDefined();
+    expect(paths['/api/threads/messages']).toBeDefined();
     expect(paths['/api/threads:read']).toBeDefined();
     expect(paths['/api/threads:send']).toBeDefined();
     expect(paths['/api/threads:wait']).toBeDefined();

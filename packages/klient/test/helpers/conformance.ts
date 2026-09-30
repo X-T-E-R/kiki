@@ -159,6 +159,8 @@ export function defineKlientConformance(
         });
         expect(sent.messageId.length).toBeGreaterThan(0);
         expect(['pending', 'delivered', 'undeliverable']).toContain(sent.delivery);
+        await expect(target.klient.global.threads.messages({ workspaceId: targetRef.workspaceId,
+          sessionId: destination.id, peerSessionId: source.id, limit: 1 })).resolves.toMatchObject({ items: [] });
         await expect(
           target.klient.global.threads.send({
             target: { ...targetRef, hostId: 'another-host' },

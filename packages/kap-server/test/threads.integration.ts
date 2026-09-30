@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { Error2, ErrorCodes, IThreadCommunicationService, type Scope } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, IThreadCommunicationService, IThreadMailboxStore, IHistoryArchive,
+  type Scope, type ThreadRef } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ErrorCode } from '../src/protocol/error-codes';
@@ -55,6 +56,7 @@ function makeService(): IThreadCommunicationService {
   return {
     _serviceBrand: undefined,
     hostId: 'host-a',
+    listMessages: vi.fn(async () => ({ items: [] })),
     listThreads: vi.fn(async () => ({ threads: [] })),
     readThread: vi.fn(async (input) => ({ thread: input.thread, turns: [] })),
     sendMessage: vi.fn(async () => ({
@@ -132,6 +134,7 @@ describe('peer-thread routes', () => {
     });
     const { routes, route } = setup(service);
     expect(routes.map((item) => `${item.method} ${item.path}`)).toEqual([
+      'get /threads/messages',
       'get /threads',
       'post /threads::read',
       'post /threads::send',
@@ -234,6 +237,62 @@ describe('peer-thread routes', () => {
     raw.emit('close');
     await pending;
     expect(response.send).not.toHaveBeenCalled();
+  });
+
+  it('reads durable communication over authenticated REST and peer-only history search', { timeout: 30_000 }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kap-peer-history-'));
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+      const base = `http://127.0.0.1:${server.port}`;
+      const service = server.core.accessor.get(IThreadCommunicationService);
+      const mailbox = server.core.accessor.get(IThreadMailboxStore);
+      const create = async (): Promise<ThreadRef> => {
+        const response = await fetch(`${base}/api/sessions`, { method: 'POST',
+          headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify({ metadata: { cwd: home } }) });
+        const body = await response.json() as { code: number; data: { id: string; workspace_id: string } };
+        expect(body.code).toBe(0);
+        return { hostId: service.hostId, workspaceId: body.data.workspace_id, sessionId: body.data.id };
+      };
+      const [source, target] = await Promise.all([create(), create()]);
+      const accepted = await mailbox.acceptMessage({ producer: { kind: 'peer_thread', source }, target,
+        content: 'contract handoff needle', idempotencyKey: 'peer-one' });
+      const claim = await mailbox.claimNext({ target, consumerId: 'test', leaseMs: 10_000 });
+      expect(await mailbox.acknowledgeDelivery(claim!)).toBe(true);
+      const failed = await mailbox.acceptMessage({ producer: { kind: 'peer_thread', source: target }, target: source,
+        content: 'needle delivery failure', idempotencyKey: 'peer-two' });
+      const failureClaim = await mailbox.claimNext({ target: source, consumerId: 'test', leaseMs: 10_000 });
+      expect(await mailbox.markUndeliverable(failureClaim!, 'target closed')).toBe(true);
+      await mailbox.acceptMessage({ producer: { kind: 'external_client' }, target, content: 'needle ordinary prompt', idempotencyKey: 'external' });
+      const get = async (query: string) => (await fetch(`${base}/api/threads/messages?${query}`, {
+        headers: authHeaders(server!),
+      })).json();
+      const first = await get(`session_id=${source.sessionId}&peer_session_id=${target.sessionId}&limit=1`);
+      expect(first.code).toBe(0);
+      expect(first.data.items).toHaveLength(1);
+      expect(first.data.items[0].source.kind).toBe('thread');
+      const second = await get(`session_id=${source.sessionId}&peer_session_id=${target.sessionId}&limit=1&cursor=${encodeURIComponent(first.data.next_cursor)}`);
+      expect(second.code).toBe(0);
+      expect(new Set([first.data.items[0].message_id, second.data.items[0].message_id])).toEqual(new Set([accepted.message.messageId, failed.message.messageId]));
+      expect(second.data.next_cursor).toBeUndefined();
+      expect((await get('workspace_id=unrelated')).data.items).toEqual([]);
+      expect((await get('peer_session_id=missing')).code).toBe(ErrorCode.VALIDATION_FAILED);
+      const badCursor = await get(`session_id=${target.sessionId}&cursor=${encodeURIComponent(first.data.next_cursor)}`);
+      expect(badCursor.code).toBe(ErrorCode.THREAD_CURSOR_INVALID);
+      const unauthorized = await fetch(`${base}/api/threads/messages`);
+      expect(unauthorized.status).toBe(401);
+      const archive = server.core.accessor.get(IHistoryArchive);
+      const search1 = await archive.search({ query: 'needle', peer: true, mode: 'literal', workspaceId: source.workspaceId, pageSize: 1 });
+      const search2 = await archive.search({ query: 'needle', peer: true, mode: 'literal', workspaceId: source.workspaceId, pageSize: 1, pageToken: search1.pageToken });
+      expect(search1.source).toBe('mailbox');
+      expect([search1.items[0]?.communication?.messageId, search2.items[0]?.communication?.messageId].toSorted()).toEqual([accepted.message.messageId, failed.message.messageId].toSorted());
+      expect(search2.hasMore).toBe(false);
+      expect((await archive.search({ query: 'ordinary prompt', peer: true, workspaceId: source.workspaceId, pageSize: 5 })).items).toEqual([]);
+      expect((await archive.search({ query: 'needle', peer: true, workspaceId: 'unrelated', pageSize: 5 })).items).toEqual([]);
+    } finally {
+      await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it('stops real server-side polling when the HTTP client disconnects', { timeout: 15_000 }, async () => {

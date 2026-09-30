@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises';
 
 import {
   IHistoryArchive,
+  IThreadCommunicationService,
   type HistoryHit,
   type HistorySearchPage,
   type Scope,
@@ -267,6 +268,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
     },
     search: async ({
       query,
+      peer,
       mode,
       workspaceId,
       sessionId,
@@ -285,6 +287,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
     }) => {
       signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
+      if (peer === true) return peerSearch(getCore().accessor.get(IThreadCommunicationService), {
+        query, mode, workspaceId, sessionId, role, after, before, pageSize, pageToken, signal,
+      });
       let unavailablePage: HistorySearchPage | undefined;
       const indexedPhrases = source !== 'transcript' && sessionId === undefined &&
         (mode === 'auto' || mode === 'all' || mode === 'any');
@@ -366,4 +371,42 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
     },
   };
   return [[IHistoryArchive, archive]];
+}
+
+async function peerSearch(service: IThreadCommunicationService, input: FallbackInput & {
+  readonly workspaceId: string;
+  readonly pageToken?: string;
+  readonly signal?: AbortSignal;
+}): Promise<HistorySearchPage> {
+  const plan = planHistoryQuery(input.query, input.mode ?? 'auto');
+  const items: HistoryHit[] = [];
+  let cursor = input.pageToken;
+  let scanned = 0;
+  let bytes = 0;
+  let more = false;
+  while (items.length < input.pageSize && scanned < 200 && bytes < (2 << 20)) {
+    input.signal?.throwIfAborted();
+    const page = await service.listMessages({ workspaceId: input.workspaceId, sessionId: input.sessionId, cursor, limit: 1 });
+    scanned++;
+    cursor = page.nextCursor;
+    more = cursor !== undefined;
+    for (const message of page.items) {
+      bytes += Buffer.byteLength(message.content);
+      if (input.role !== undefined && input.role !== 'user' ||
+          input.after !== undefined && message.acceptedAt < input.after ||
+          input.before !== undefined && message.acceptedAt >= input.before) continue;
+      const match = matchHistoryText(message.content, plan);
+      if (match === undefined) continue;
+      const { content, ...communication } = message;
+      items.push({ sessionId: message.target.ref.sessionId, agentId: 'main', role: 'user',
+        time: message.acceptedAt, snippet: makeSnippet(content, match.matched[0] ?? input.query),
+        matched: match.matched, communication });
+    }
+    if (!more || page.incomplete !== undefined) break;
+  }
+  const incomplete = more && items.length < input.pageSize ? 'scan_budget' : undefined;
+  return { items, hasMore: more, pageToken: cursor, incomplete, source: 'mailbox',
+    indexState: { state: 'ready' }, continuation: more ? 'scan' : undefined,
+    coverage: { complete: incomplete === undefined, domain: 'full_text',
+      gaps: incomplete === undefined ? [] : ['scan_budget'], scanned: { bytes, records: scanned } } };
 }

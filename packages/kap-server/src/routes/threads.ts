@@ -14,6 +14,8 @@ import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
+  listThreadMessagesQuerySchema,
+  listThreadMessagesResponseSchema,
   listThreadsQuerySchema,
   listThreadsResponseSchema,
   readThreadRequestSchema,
@@ -94,6 +96,28 @@ export function registerThreadsRoutes(
   shutdownSignal?: AbortSignal,
 ): void {
   const service = core.accessor.get(IThreadCommunicationService);
+
+  const messages = defineRoute({
+    method: 'GET', path: '/threads/messages', querystring: listThreadMessagesQuerySchema,
+    success: { data: listThreadMessagesResponseSchema }, errors: threadErrors,
+    description: 'Read newest-first cross-thread communication without resuming sessions', tags: ['threads'],
+  }, async (req, reply) => {
+    try {
+      const query = req.query;
+      const page = await service.listMessages({ workspaceId: query.workspace_id, sessionId: query.session_id,
+        peerSessionId: query.peer_session_id, cursor: query.cursor, limit: query.limit });
+      reply.send(okEnvelope({ items: page.items.map((message) => ({
+        message_id: message.messageId,
+        source: message.source.kind === 'thread' ? { kind: 'thread' as const,
+          thread: { ...message.source.thread, ref: toRefWire(message.source.thread.ref) } } :
+          { kind: 'room' as const, room_id: message.source.roomId },
+        target: { ...message.target, ref: toRefWire(message.target.ref) },
+        content: message.content, accepted_at: message.acceptedAt, target_seq: message.targetSeq,
+        delivery: message.delivery, reason: message.reason,
+      })), next_cursor: page.nextCursor, incomplete: page.incomplete }, req.id));
+    } catch (error) { reply.send(mapError(error, req.id)); }
+  });
+  app.get(messages.path, messages.options, messages.handler as never);
 
   const list = defineRoute(
     {

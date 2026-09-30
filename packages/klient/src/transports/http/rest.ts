@@ -409,6 +409,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
     },
 
+    threads: {
+      messages: (query, options) => transport.json('/threads/messages', {
+        query, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+    },
+
     search: {
       messages: (body, options) => transport.json('/search', {
         method: 'POST',

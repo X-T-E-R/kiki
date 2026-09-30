@@ -118,7 +118,30 @@ export const waitThreadsResultSchema = z.object({
   timedOut: z.boolean(),
 });
 
+export const threadMessageEndpointSchema = z.object({
+  ref: threadRefSchema, title: z.string().optional(), deleted: z.boolean(), archived: z.boolean(),
+});
+export const threadCommunicationMessageSchema = z.object({
+  messageId: z.string(),
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
+    z.object({ kind: z.literal('room'), roomId: z.string() }),
+  ]),
+  target: threadMessageEndpointSchema, content: z.string(), acceptedAt: z.number(), targetSeq: z.number(),
+  delivery: z.enum(['pending', 'delivered', 'undeliverable']), reason: z.string().optional(),
+});
+export const listThreadMessagesInputSchema = z.object({
+  workspaceId: z.string().trim().min(1).optional(), sessionId: z.string().trim().min(1).optional(),
+  peerSessionId: z.string().trim().min(1).optional(), cursor: z.string().min(1).max(4096).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+}).strict().refine((input) => input.peerSessionId === undefined || input.sessionId !== undefined);
+export const listThreadMessagesResultSchema = z.object({
+  items: z.array(threadCommunicationMessageSchema), nextCursor: z.string().optional(),
+  incomplete: z.literal('scan_budget').optional(),
+});
+
 export const threadsContract = {
+  listMessages: { input: z.tuple([listThreadMessagesInputSchema.optional()]), output: listThreadMessagesResultSchema },
   hostId: { input: z.tuple([]), output: z.string().min(1) },
   listThreads: {
     input: z.tuple([listThreadsInputSchema.optional()]),

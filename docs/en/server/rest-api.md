@@ -255,6 +255,26 @@ The peer-thread endpoints support cross-session collaboration: a thread is addre
 | `PUT /api/workspaces/{workspace_id}/thread-communication` | Persist the workspace's enable/disable override |
 | `DELETE /api/workspaces/{workspace_id}/thread-communication` | Clear the override |
 
+#### Communication history
+
+`GET /api/threads/messages` reads accepted cross-thread messages without resuming sessions. It excludes ordinary user input, external REST/Klient sends, and parent–subagent exchanges. Reads remain available for archived sessions and when new peer sends are disabled.
+
+| Query parameter | Meaning |
+| --- | --- |
+| `workspace_id` | Match either surviving endpoint in this workspace; omit for all workspaces |
+| `session_id` | Read this session's sent and received messages |
+| `peer_session_id` | Narrow to one pair; requires `session_id` |
+| `limit` | Page size, default 50, range 1–100 |
+| `cursor` | Opaque continuation; repeat the same workspace/session/pair filters |
+
+The standard envelope's `data` is `{ items, next_cursor?, incomplete? }`. Each item has `message_id`, `source: { kind: "thread", thread: { ref, title?, deleted, archived } }`, `target: { ref, title?, deleted, archived }`, `content`, `accepted_at` (Unix milliseconds), `target_seq`, `delivery`, and optional `reason`. References use the host/workspace/session triple. The source union reserves `{ kind: "room", room_id }`; room messages are not included yet. Pages are newest-first, with stable message-ID ordering for equal timestamps. A scan-budget page can contain no items and still have `next_cursor`; continue until the cursor is absent. Changed filters return `40931` (`thread.cursor_invalid`), and a missing selected session returns `40421` (`thread.not_found`).
+
+`delivery` is `pending`, `delivered`, or `undeliverable`. Delivered means the input was handed to the target prompt, not that the target finished answering. A rejected send before mailbox acceptance, such as an unknown target, creates no communication record. Use `message_id` as the target prompt's navigation identity; `target_seq` is a mailbox sequence, not a transcript turn number. A deleted endpoint has `deleted: true`; the record stays visible from the surviving side and disappears from this view when neither side survives.
+
+Klient provides `klient.rest.threads.messages(query, options)` with these snake_case wire shapes. `klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` provides the same read using camelCase shapes over HTTP, IPC, and memory transports.
+
+Peer messages are no longer evicted by the mailbox's former 512-message limit. The first upgraded mailbox owner resumes a checkpointed backfill of records still present in the mailbox; messages already evicted by older versions are not reconstructed from session wires. Restart older processes sharing the same Kiki home before relying on the new retention behavior.
+
 ### File system
 
 In-session file operations go through `POST /api/sessions/{session_id}/fs:{action}` with JSON bodies; actions are `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`. In addition:

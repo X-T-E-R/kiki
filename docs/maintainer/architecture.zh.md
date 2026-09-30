@@ -68,6 +68,8 @@ Klient 提供 `global.threads.hostId`、`list`、`read`、`send`、`wait`、`get
 
 工作区覆盖值会跨重启保留。清除后恢复全局设置；启用的覆盖值也不能绕过已关闭的全局配置节。
 
+沟通记录通过 `GET /api/threads/messages`、`global.threads.messages` 和 `rest.threads.messages` 读取，见[规范读取契约](../zh/server/rest-api.md#沟通记录)。`RuntimeThreadMailboxStore` 将派生的全局、会话、工作区索引指针与 peer 接收记录放在同一个目标分区、同一个原子 WAL 批次中，用 group / order 复合索引读取。查询解析当前投递文档，不复制正文日志，也不恢复冷会话。回填使用持久分页检查点；peer 终态记录不再按 512 条规则淘汰。已淘汰的更早历史不会从 wire 恢复。服务检查仍存在的两端元数据，包含已归档会话，达到扫描预算后明确返回续页游标（500 条候选或 2 MiB 正文阈值，每批最多 20 条后检查）。`HistorySearch` 的 peer 范围复用词法匹配，在此视图上提供有界扫描续页。Room 只是预留的来源判别字段；接入房间日志另行实施。
+
 ## 区分 GUI、服务端和客户端
 
 GUI 和 TUI 会话视图通过共享 session-core 集成消费 Klient 的会话视图/命令契约，daemon 负责引擎执行。既有通用 REST 路由、终端/全局 WebSocket 流量及非交互 SDK 链路仍然存在；统一会话接线不表示所有历史传输或 SDK 入口都已删除。

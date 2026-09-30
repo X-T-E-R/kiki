@@ -108,3 +108,42 @@ export const threadWorkspaceOverrideResponseSchema = z.object({
 export type ThreadWorkspaceOverrideResponse = z.infer<
   typeof threadWorkspaceOverrideResponseSchema
 >;
+
+export const threadMessageEndpointSchema = z.object({
+  ref: threadRefSchema,
+  title: z.string().optional(),
+  deleted: z.boolean(),
+  archived: z.boolean(),
+});
+
+export const threadCommunicationMessageSchema = z.object({
+  message_id: z.string(),
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
+    z.object({ kind: z.literal('room'), room_id: z.string() }),
+  ]),
+  target: threadMessageEndpointSchema,
+  content: z.string(),
+  accepted_at: z.number(),
+  target_seq: z.number().int().nonnegative(),
+  delivery: z.enum(['pending', 'delivered', 'undeliverable']),
+  reason: z.string().optional(),
+});
+
+export const listThreadMessagesQuerySchema = z.object({
+  workspace_id: z.string().trim().min(1).optional(),
+  session_id: z.string().trim().min(1).optional(),
+  peer_session_id: z.string().trim().min(1).optional(),
+  cursor: z.string().min(1).max(4096).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+}).strict().refine((input) => input.peer_session_id === undefined || input.session_id !== undefined, {
+  message: 'peer_session_id requires session_id',
+});
+export type ListThreadMessagesQuery = z.infer<typeof listThreadMessagesQuerySchema>;
+
+export const listThreadMessagesResponseSchema = z.object({
+  items: z.array(threadCommunicationMessageSchema),
+  next_cursor: z.string().optional(),
+  incomplete: z.literal('scan_budget').optional(),
+});
+export type ListThreadMessagesResponse = z.infer<typeof listThreadMessagesResponseSchema>;

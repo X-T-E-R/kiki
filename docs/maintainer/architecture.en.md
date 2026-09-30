@@ -68,6 +68,8 @@ Klient exposes `global.threads.hostId`, `list`, `read`, `send`, `wait`, `getWork
 
 Workspace overrides persist across restarts. Clearing one restores the global setting; an enabled override cannot bypass a globally disabled section.
 
+Communication history uses `GET /api/threads/messages`, `global.threads.messages`, and `rest.threads.messages`; see the [canonical read contract](../en/server/rest-api.md#communication-history). `RuntimeThreadMailboxStore` stores derived global/session/workspace index pointers in the same target partition and atomic WAL batch as each peer acceptance, with one compound index over group/order. Reads resolve the current delivery document, never a copied content log, and never resume cold sessions. Backfill uses durable page checkpoints; peer terminal rows no longer use the 512-row pruning rule. Already-pruned historical messages are not recovered from wire. The service checks surviving endpoint metadata, includes archived sessions, and serves explicit scan-budget continuations (500 candidate rows or a 2 MiB text threshold, checked between batches of at most 20). `HistorySearch` peer scope reuses lexical matching over this view with bounded scan continuations. Room is a reserved source discriminant only; adapting room logs is separate work.
+
 ## Separate the GUI, server, and clients
 
 GUI and TUI session views consume the Klient session-view/command contract through shared session-core integration. The daemon owns engine execution. Existing general REST routes, terminal/global WebSocket traffic, and the non-interactive SDK path still exist; unified session wiring does not mean every historical transport or SDK entry has been removed.

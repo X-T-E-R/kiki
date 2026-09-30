@@ -427,6 +427,11 @@ export interface HttpRestFacade {
     ): Promise<FsSearchResponse>;
   };
 
+  readonly threads: {
+    messages(query?: import('@kiki/protocol').ListThreadMessagesQuery,
+      options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListThreadMessagesResponse>;
+  };
+
   readonly search: {
     messages(
       body: HttpRestSearchMessagesBody,

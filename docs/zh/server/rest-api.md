@@ -255,6 +255,26 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | `PUT /api/workspaces/{workspace_id}/thread-communication` | 持久化该工作区的启用 / 禁用覆盖值 |
 | `DELETE /api/workspaces/{workspace_id}/thread-communication` | 清除覆盖值 |
 
+#### 沟通记录
+
+`GET /api/threads/messages` 读取已接收的跨线程消息，不会恢复会话。它不包含普通用户输入、外部 REST / Klient 发送，以及父级与子 Agent 的往来。已归档的会话和关闭新 peer 发送后的既有记录仍可读取。
+
+| 查询参数 | 含义 |
+| --- | --- |
+| `workspace_id` | 匹配任一仍存在的工作区内端点；省略时查询全部工作区 |
+| `session_id` | 读取这个会话发出和收到的消息 |
+| `peer_session_id` | 限定一对线程；必须同时提供 `session_id` |
+| `limit` | 每页条数，默认 50，范围 1–100 |
+| `cursor` | 不透明续页游标；续页时重复相同的工作区、会话和对方筛选条件 |
+
+标准 envelope 的 `data` 为 `{ items, next_cursor?, incomplete? }`。每条消息包含 `message_id`、`source: { kind: "thread", thread: { ref, title?, deleted, archived } }`、`target: { ref, title?, deleted, archived }`、`content`、`accepted_at`（Unix 毫秒时间戳）、`target_seq`、`delivery` 和可选的 `reason`。引用使用主机、工作区、会话三元组。来源联合类型预留了 `{ kind: "room", room_id }`，当前尚不包含房间消息。记录按最新时间优先排列；同时间戳按稳定的消息 ID 排序。达到扫描预算时，空页也可能带 `next_cursor`，应继续读取直到没有游标。续页改动筛选条件返回 `40931`（`thread.cursor_invalid`）；选中的会话不存在时返回 `40421`（`thread.not_found`）。
+
+`delivery` 为 `pending`、`delivered` 或 `undeliverable`。Delivered 表示输入已交给对方 prompt，不代表对方已完成回复。邮箱接收前被拒绝的发送，例如目标不存在，不会生成沟通记录。导航时用 `message_id` 定位对方 prompt；`target_seq` 是邮箱序号，不是会话轮次号。已删除的端点标记为 `deleted: true`，另一侧仍存在时记录保留；两侧都删除后，记录从这个视图中消失。
+
+Klient 提供 `klient.rest.threads.messages(query, options)`，参数和结果沿用上述 snake_case 形状。`klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` 以 camelCase 形状提供同一读取能力，支持 HTTP、IPC 和内存传输。
+
+Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首个邮箱 owner 会按持久检查点回填仍在邮箱中的记录；旧版本已淘汰的消息不会从会话 wire 重建。依赖新保留规则前，应重启共享同一 Kiki home 的旧进程。
+
 ### 文件系统
 
 会话内文件操作为 `POST /api/sessions/{session_id}/fs:{action}`，动作包括 `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`，请求体为 JSON。另有：

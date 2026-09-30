@@ -867,3 +867,12 @@ const _warningEvent: AssertWire<typeof warningEventSchema, WarningEvent> = true;
 // and `agentStatusUpdatedEventSchema`: they are deliberately `z.looseObject`s
 // (index signature breaks both-ways assignability) — `permission.approval.*`
 // is not part of the protocol event union at all.
+
+const _listThreadMessagesInput: AssertWire<
+  typeof import('../src/contract/global/threads.js').listThreadMessagesInputSchema,
+  import('@kiki/agent-core-v2/app/threadCommunication/threadCommunication').ListThreadMessagesInput
+> = true;
+const _listThreadMessagesResult: AssertWire<
+  typeof import('../src/contract/global/threads.js').listThreadMessagesResultSchema,
+  import('@kiki/agent-core-v2/app/threadCommunication/threadCommunication').ListThreadMessagesResult
+> = true;
