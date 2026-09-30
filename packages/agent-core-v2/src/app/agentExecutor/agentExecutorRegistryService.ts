@@ -317,6 +317,7 @@ function descriptorFromConfig(
     permission: config.permission,
     promptDeliveries: config.promptDeliveries,
     supportsMcp: config.supportsMcp,
+    mcpTransports: config.mcpTransports,
     defaultProfile: config.defaultProfile,
     installHint: config.installHint,
     programLabel: config.programLabel,

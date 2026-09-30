@@ -161,6 +161,8 @@ export interface AgentExecutorDescriptor {
   readonly permission?: AgentExecutorPermission;
   readonly promptDeliveries?: readonly ExecutorPromptDelivery[];
   readonly supportsMcp?: boolean;
+  /** Only forward transports accepted by this ACP harness; absent allows every ACP transport. */
+  readonly mcpTransports?: readonly ('stdio' | 'http' | 'sse')[];
   readonly defaultProfile?: boolean;
   readonly installHint?: string;
   readonly loginCommand?: readonly string[];

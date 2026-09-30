@@ -30,6 +30,15 @@ describe('ACP session MCP forwarding', () => {
     ]);
   });
 
+  it('restricts DeepSeek to stdio and HTTP without forwarding SSE', () => {
+    const servers = acpMcpServers(view({
+      local: { config: { transport: 'stdio', command: 'mcp' } },
+      http: { config: { transport: 'http', url: 'https://mcp.example/rpc' } },
+      sse: { config: { transport: 'sse', url: 'https://mcp.example/events' } },
+    }), '/work', () => undefined, ['stdio', 'http']);
+    expect(servers.map((server) => server.name)).toEqual(['local', 'http']);
+  });
+
   it('omits disabled, filtered, unsupported-runtime and host-auth servers', () => {
     const servers = acpMcpServers(view({
       disabled: { config: { transport: 'stdio', command: 'x', enabled: false } },

@@ -9,12 +9,14 @@ export function acpMcpServers(
   view: McpConnectionView,
   cwd: string,
   envLookup: (name: string) => string | undefined,
+  allowedTransports?: readonly ('stdio' | 'http' | 'sse')[],
 ): AcpMcpServer[] {
   const servers: AcpMcpServer[] = [];
   for (const entry of view.list()) {
     if (entry.status === 'disabled' || entry.status === 'removed') continue;
     const config = view.configOf(entry.name);
     if (config === undefined || config.enabled === false) continue;
+    if (allowedTransports !== undefined && !allowedTransports.includes(config.transport)) continue;
     if (config.enabledTools !== undefined || config.disabledTools !== undefined) continue;
     if (config.transport === 'stdio') {
       if (config.executor === 'kaos' || config.runtime_id !== undefined) continue;

@@ -521,7 +521,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: this.context.descriptor.supportsMcp === false
-        ? [] : acpMcpServers(mcp.connectionManager, roots.workDir, (name) => process.env[name]),
+        ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
+          (name) => process.env[name], this.context.descriptor.mcpTransports),
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined

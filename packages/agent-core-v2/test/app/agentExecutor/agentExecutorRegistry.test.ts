@@ -17,6 +17,7 @@ import {
   descriptorRevisionFromConfig,
 } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
+import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
   AGENT_EXECUTORS_SECTION,
@@ -95,6 +96,17 @@ describe('AgentExecutorRegistryService', () => {
       descriptor: { id: 'native', protocol: 'native', revision: 'native' },
       options: {},
     });
+  });
+
+  it('admits the six verified ACP command descriptors and excludes unsafe install families', () => {
+    expect(AgentExecutorsConfigSchema.safeParse(BUILTIN_AGENT_EXECUTORS).success).toBe(true);
+    expect(['openclaw-acp', 'cline-acp', 'codebuddy-acp', 'pi-acp', 'deepseek-acp', 'qoder-acp']
+      .every((id) => BUILTIN_AGENT_EXECUTORS[id]?.protocol === 'acp-v1')).toBe(true);
+    expect(BUILTIN_AGENT_EXECUTORS['openclaw-acp']?.supportsMcp).toBe(false);
+    expect(BUILTIN_AGENT_EXECUTORS['pi-acp']?.supportsMcp).toBe(false);
+    expect(BUILTIN_AGENT_EXECUTORS['qoder-acp']?.command).toBe('qodercli');
+    expect(BUILTIN_AGENT_EXECUTORS['hermes-acp']).toBeUndefined();
+    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']).toBeUndefined();
   });
 
   it('rejects unknown executor ids instead of falling back to native', () => {
@@ -590,7 +602,7 @@ describe('AgentExecutorRegistryService', () => {
     ])).toEqual(['C:/a/codex.exe', 'C:/b/codex.exe']);
   });
 
-  it('provides the eight trusted external harness descriptors by default', () => {
+  it('provides the trusted external harness descriptors by default', () => {
     services.set(IConfigService, configWith({}));
     services.set(
       IAgentExecutorRegistry,
@@ -617,6 +629,9 @@ describe('AgentExecutorRegistryService', () => {
       'kimi-acp',
       'opencode-acp',
     ]);
+    expect(registry.list().map((entry) => entry.id)).toEqual(expect.arrayContaining([
+      'openclaw-acp', 'cline-acp', 'codebuddy-acp', 'pi-acp', 'deepseek-acp', 'qoder-acp',
+    ]));
     expect(resolvePromptDelivery(registry.get('grok-acp')!, { executorPrompt: undefined }))
       .toEqual({ requested: 'replace', actual: 'replace', downgraded: false });
     expect(resolvePromptDelivery(registry.get('claude-acp')!, { executorPrompt: undefined }))
