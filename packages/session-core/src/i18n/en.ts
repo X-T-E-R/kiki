@@ -1428,7 +1428,7 @@ export const en = {
   'tc.input': 'Input',
   'tc.output': 'Output',
   'tc.outputError': ' · error',
-  'tc.errorCode.codex_mcp_approval_denied': 'Codex did not run this MCP tool: it needs approval, and in Full access mode Codex does not ask. Kiki’s own tools are not affected; to run this one, switch to Ask every time or Auto.',
+  'tc.errorCode.codex_mcp_approval_denied': 'Codex did not run it: this MCP tool needs approval, and Full access does not ask. Kiki’s own tools are not affected; to run this one, switch to Ask every time or Auto.',
   'tc.noInput': '(no input)',
   'tc.truncated': '… (truncated)',
   'tc.exit': 'exit {code}',

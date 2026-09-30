@@ -402,7 +402,11 @@ export const ToolCard = memo(function ToolCard({
   // text stays in the tooltip.
   const codedError = block.status === 'error' ? toolErrorCodeText(block, t) : undefined;
   const errorSummary = codedError ?? toolErrorSummary(block);
-  const errorTitle = toolErrorFullText(block) ?? errorSummary;
+  const engineError = toolErrorFullText(block);
+  const errorTitle = codedError === undefined ? engineError ?? errorSummary
+    : engineError === undefined ? codedError : `${codedError}
+
+${engineError}`;
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
   const keepCommandSummary = hasCommandSummary(block, summary);
@@ -432,7 +436,7 @@ export const ToolCard = memo(function ToolCard({
   const target = keepCommandSummary ? (
     <span className="font-mono">{summary}</span>
   ) : errorSummary !== undefined ? (
-    <span title={errorTitle} className="font-mono">{errorSummary}</span>
+    <span title={errorTitle} className={codedError === undefined ? 'font-mono' : undefined}>{errorSummary}</span>
   ) : block.status === 'stopped' ? (
     <span
       title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}

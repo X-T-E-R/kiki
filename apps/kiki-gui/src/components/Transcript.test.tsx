@@ -1396,8 +1396,9 @@ describe('explicit unknown timing', () => {
     const engineText = 'MCP tool call requires approval, but approval policy is never';
     const coded = await renderToolCard(toolBlock({ toolCallId: 't-coded', name: 'kiki-harness/kiki_list', status: 'error', isError: true,
       output: engineText, errorCode: 'codex_mcp_approval_denied' }));
-    expect(coded.textContent).toContain('Codex did not run this MCP tool');
-    expect(coded.querySelector(`[title="${engineText}"]`)).not.toBeNull();
+    expect(coded.textContent).toContain('Codex did not run it');
+    const titled = [...coded.querySelectorAll('[title]')].map((element) => element.getAttribute('title') ?? '');
+    expect(titled.some((title) => title.startsWith('Codex did not run it') && title.endsWith(engineText))).toBe(true);
     const unknown = await renderToolCard(toolBlock({ toolCallId: 't-uncoded', status: 'error', isError: true,
       output: 'boom', errorCode: 'some_future_code' }));
     expect(unknown.textContent).toContain('boom');

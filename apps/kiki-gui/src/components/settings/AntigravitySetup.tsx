@@ -178,7 +178,7 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
                 ))}
               </ul>
             ) : null}
-            {!programDone && ideDetected ? (
+            {!programDone && ideDetected && installing === null ? (
               <p role="alert" data-antigravity-ide className="flex max-w-[60ch] gap-1.5 text-[12px] leading-4 text-amber-ink">
                 <Icon name="warning" size={12} className="mt-0.5 shrink-0 text-amber-rule" />
                 <span>{t('st.antigravity.ideFound')}</span>

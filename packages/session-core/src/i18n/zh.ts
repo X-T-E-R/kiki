@@ -1411,7 +1411,7 @@ export const zh = {
   'tc.input': '输入',
   'tc.output': '输出',
   'tc.outputError': ' · 错误',
-  'tc.errorCode.codex_mcp_approval_denied': 'Codex 没有运行这个 MCP 工具：它需要审批，而「完全放行」模式下 Codex 不会询问。Kiki 自己的工具不受影响；要运行这个工具，请切到「每步询问」或「自动」。',
+  'tc.errorCode.codex_mcp_approval_denied': 'Codex 没有运行：这个 MCP 工具需要审批，「完全放行」下 Codex 不会询问。Kiki 自己的工具不受影响；要运行它，请切到「每步询问」或「自动」。',
   'tc.noInput': '（无输入）',
   'tc.truncated': '…（已截断）',
   'tc.exit': '退出码 {code}',
