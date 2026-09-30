@@ -1,0 +1,22 @@
+[
+  { "id": "zh01", "query": "冷建", "mode": "terms", "language": "zh" },
+  { "id": "zh02", "query": "召回", "mode": "terms", "language": "zh" },
+  { "id": "zh03", "query": "熔断", "mode": "terms", "language": "zh" },
+  { "id": "zh04", "query": "写者", "mode": "terms", "language": "zh" },
+  { "id": "zh05", "query": "权限", "mode": "terms", "language": "zh" },
+  { "id": "zh06", "query": "分页", "mode": "terms", "language": "zh" },
+  { "id": "zh07", "query": "子进程", "mode": "terms", "language": "zh" },
+  { "id": "zh08", "query": "海量", "mode": "terms", "language": "zh" },
+  { "id": "zh09", "query": "健康检查", "mode": "terms", "language": "zh" },
+  { "id": "zh10", "query": "索引", "mode": "literal", "language": "zh" },
+  { "id": "en01", "query": "SearchIndexStatusCard", "mode": "literal", "language": "other" },
+  { "id": "en02", "query": "SqliteSearchHost", "mode": "terms", "language": "other" },
+  { "id": "en03", "query": "trigram", "mode": "terms", "language": "other" },
+  { "id": "en04", "query": "wal_stuck", "mode": "literal", "language": "other" },
+  { "id": "en05", "query": "index_subagents", "mode": "literal", "language": "other" },
+  { "id": "en06", "query": "memory_budget", "mode": "literal", "language": "other" },
+  { "id": "en07", "query": "quick_check", "mode": "literal", "language": "other" },
+  { "id": "en08", "query": "P95", "mode": "terms", "language": "other" },
+  { "id": "en09", "query": "fts5", "mode": "terms", "language": "other" },
+  { "id": "en10", "query": "WS", "mode": "literal", "language": "other" }
+]
