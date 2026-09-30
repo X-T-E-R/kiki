@@ -1769,24 +1769,19 @@ export function SessionView({
     retry: false,
   });
 
+  const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
+  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
   const sessionModel = state.model;
-  const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
+  const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
   const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
-  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel);
+  const catalogItem = harness === undefined
+    ? (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel) : undefined;
   const supportedEfforts = catalogItem?.support_efforts;
-  // Keep the local choice through delayed bindings and catalog changes. The
-  // Composer diagnoses incompatibility without destroying the saved value.
-  const effectiveEffort = effortOverride ?? resolveSelectedEffort(
+  const effectiveEffort = effortOverride ?? (harness === undefined ? resolveSelectedEffort(
     supportedEfforts,
     effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
-  );
-
-  // The live main-agent binding, from the snapshot's agent_config echo.
-  const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
-  // An external engine bound as main: what its handshake agreed to gates the
-  // entries it cannot serve and feeds the quiet engine line in the header.
-  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
+  ) : state.thinkingEffort);
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);

@@ -13,6 +13,7 @@ import type {
 } from '#/agent/contextMemory/types';
 import { promptMetadataTextFromSkill, renderUserSlashSkillPrompt } from './prompt';
 import { promptMetadataTextFromContentParts } from '#/agent/prompt/promptMetadataText';
+import { promptLaunchFailure } from '#/agent/prompt/promptFailure';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Service } from '#/_base/di/service';
 import { ErrorCodes, Error2 } from '#/errors';
@@ -177,7 +178,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     }
     const turn = await handle.launched;
     if (turn === undefined && handle.state !== 'blocked') {
-      throw new Error2(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
+      throw promptLaunchFailure(handle);
     }
     return {
       turn_id: turn?.id,

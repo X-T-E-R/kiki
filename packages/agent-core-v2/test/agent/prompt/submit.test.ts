@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { PromptCompleted } from '#/agent/prompt/promptService';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentGoalService } from '#/agent/goal/goal';
@@ -304,6 +305,8 @@ describe('prompt submit', () => {
       event.block = true;
       await next();
     });
+    let completed: PromptCompleted | undefined;
+    ctx.get(IEventBus).subscribe(PromptCompleted, (event) => { completed = event; });
     const receipt = await prompts.submitAndWait({ input: [{ type: 'text', text: 'hello' }] });
     expect(receipt.state).toBe(state);
     expect(receipt.turnId).toBeUndefined();
@@ -316,6 +319,9 @@ describe('prompt submit', () => {
       expect(receipt.result).toBeUndefined();
     }
     expect(ctx.llmCalls).toHaveLength(0);
+    expect(completed).toMatchObject({ reason: state, error: state === 'failed'
+      ? { message: 'launch hook failed', details: { reason_code: 'internal' }, cause: { message: 'inner failure' } }
+      : undefined });
   });
 
   it('waits for its queued prompt rather than the preceding turn', async () => {

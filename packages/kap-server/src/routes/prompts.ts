@@ -52,6 +52,7 @@ import {
 import { turnAbortResponseSchema } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
+import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -836,7 +837,7 @@ export function projectPromptHandle(handle: PromptHandle) {
 
 export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][number]) {
   if (prompt.state === 'failed' || prompt.state === 'cancelled') {
-    throw new Error2(ErrorCodes.INTERNAL, `Prompt ${prompt.id} ${prompt.state} before launch; inspect prompt completion events`);
+    throw promptLaunchFailure(prompt);
   }
   const status = prompt.state === 'running' || prompt.state === 'steered'
     ? 'running'

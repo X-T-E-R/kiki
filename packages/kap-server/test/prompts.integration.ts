@@ -523,6 +523,9 @@ describe('server-v2 /api prompts', () => {
       skills: skills ? [{ name: 'kiki-ops' }] : undefined,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(50001);
+    expect(submitted.body.msg).toContain('model unavailable');
+    expect(submitted.body.msg).toContain('[internal]');
+    expect(submitted.body.msg).toContain('credentials, model and permission settings');
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
     bind.mockRestore();

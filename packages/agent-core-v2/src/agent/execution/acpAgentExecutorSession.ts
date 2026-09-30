@@ -1028,6 +1028,9 @@ function resolveSelectConfig(
     throw new Error2(
       ErrorCodes.MODEL_NOT_FOUND,
       `External ACP ${label} "${value}" is unavailable in config "${option.id}"`,
+      { details: { reason_code: `executor_${label.replaceAll(' ', '_')}_unavailable`,
+        config_id: option.id, requested_value: value, available_values: values,
+        hint: `Select an executor-advertised ${label} (${values.join(', ')}), or leave it unpinned to use the executor default.` } },
     );
   }
   return { option, selection: { configId: option.id, value } };

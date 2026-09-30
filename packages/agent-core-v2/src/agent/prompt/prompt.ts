@@ -82,6 +82,7 @@ export interface PromptSnapshot {
   readonly message: ContextMessage;
   readonly appendTiming?: DeferredAppendTiming;
   readonly revision?: number;
+  readonly error?: import('#/_base/errors/serialize').ErrorPayload;
 }
 
 export interface PromptHandle extends PromptSnapshot {

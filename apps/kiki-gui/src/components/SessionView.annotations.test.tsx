@@ -6,17 +6,18 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { readComposerState, resetComposerMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
+import { clearComposerState, readComposerState, resetComposerMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
 
-const { seat, submit } = vi.hoisted(() => ({
+const { seat, submit, fixture } = vi.hoisted(() => ({
+  fixture: { external: false },
   seat: { composer: null as unknown },
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; input?: { model?: string; thinking?: string; permissionMode?: string }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
     steered: [] as string[],
   },
 }));
@@ -25,7 +26,7 @@ vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
     sessionView: () => ({}),
-    getConfig: () => Promise.resolve({}),
+    getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
   };
   const registry = {
@@ -52,16 +53,17 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
       const state = actual.createViewState(sessionId);
+      if (fixture.external) state.session = { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof state.session>;
       this.getState = () => state;
     }
 
     setFocusedAgent() {}
-    sendPrompt(input: { text: string }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, resolve, reject }); });
+    sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string }) {
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve, reject }); });
     }
     // Send now goes through the controller's steer ledger, never a queue-then-steer pair.
-    sendPromptNow(input: { text: string }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, now: true, resolve, reject }); });
+    sendPromptNow(input: { text: string; model?: string; thinking?: string; permissionMode?: string }) {
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve, reject }); });
     }
     steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
     refreshSession() { return Promise.resolve(); }
@@ -124,6 +126,8 @@ type ComposerProps = {
   annotations: readonly SelectionAnnotation[];
   onSend: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+  onChangeModel: (model: string | undefined) => void;
+  serverDefaultModel?: string;
 };
 
 function composerProps(): ComposerProps {
@@ -146,6 +150,37 @@ afterAll(() => {
 });
 
 describe('session selection annotations', () => {
+  it.each([false, true])('only inherits native model defaults for native sessions: external=%s', async (external) => {
+    resetComposerMemoryForTests();
+    clearComposerState('session-a');
+    fixture.external = external;
+    submit.calls.length = 0;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queries.setQueryData(['config'], { default_model: 'provider/native-model' });
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queries}>
+          <I18nProvider><MemoryRouter initialEntries={['/s/session-a']}><RoutesWithNavigation /></MemoryRouter></I18nProvider>
+        </QueryClientProvider>);
+      });
+      expect(composerProps().serverDefaultModel).toBe(external ? undefined : 'provider/native-model');
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('hello', []); });
+      expect(submit.calls.at(-1)?.input).toMatchObject({ model: external ? undefined : 'provider/native-model' });
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'first' }); await sent; });
+      await act(async () => { composerProps().onChangeModel('opus'); });
+      await act(async () => { sent = composerProps().onSend('explicit', []); });
+      expect(submit.calls.at(-1)?.input?.model).toBe('opus');
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'second' }); await sent; });
+    } finally {
+      fixture.external = false;
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
   it('keeps unsent annotations after switching away and back without leaking to another session', async () => {
     resetComposerMemoryForTests();
     const container = document.createElement('div');

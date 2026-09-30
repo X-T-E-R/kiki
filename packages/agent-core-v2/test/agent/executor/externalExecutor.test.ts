@@ -1114,6 +1114,20 @@ describe('ACP external executor', () => {
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
     expect(metadata?.profileDelivery).toBe('system_prompt_override');
+  it('keeps unpinned external models ambient and diagnoses explicit unadvertised aliases', async () => {
+    const ambient = createHarness({ unpinModel: true, thinkingEffort: 'off' });
+    const run = await ambient.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(ambient.selections.some((selection) => selection.configId === 'model-id')).toBe(false);
+    const invalid = createHarness({ modelAlias: 'provider/native-model' });
+    await expect(invalid.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'model.not_found', details: { reason_code: 'executor_model_unavailable',
+        requested_value: 'provider/native-model', available_values: ['model-a', 'ambient-model'],
+        hint: expect.stringContaining('leave it unpinned') },
+    });
+    expect(invalid.starts).toHaveLength(0);
+  });
+
     expect(metadata?.losses).not.toContain('profile_as_user_preamble');
     expect((harness.state.get(externalExecutorKey)).profileDelivery).toBe('system_prompt_override');
   });

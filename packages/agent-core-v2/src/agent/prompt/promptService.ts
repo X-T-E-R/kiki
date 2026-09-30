@@ -8,7 +8,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
 import { abortable, abortError, userCancellationReason } from '#/_base/utils/abort';
-import { toErrorPayload } from '#/_base/errors/serialize';
+import { toErrorPayload, type ErrorPayload } from '#/_base/errors/serialize';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
@@ -70,6 +70,7 @@ import {
   type SteerPayload,
 } from './prompt';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
+import { promptLaunchFailure } from './promptFailure';
 import { capturePromptGoalId, hasPromptRuntimeControls, preparePromptRuntimeControls, readPromptRuntimeControlChanges, validatePromptRuntimeControls } from './runtimeControls';
 import { PromptStepRequest, RetryStepRequest, SteerStepRequest } from './promptStepRequests';
 import { PromptAccepted, PromptRetryCommitted, promptAdmissionKey, promptRetryReceiptKey, type PromptRetryReceipt } from './promptOps';
@@ -81,12 +82,14 @@ export interface PromptCompletedPayload {
   readonly promptId: string;
   readonly finishedAt: string;
   readonly reason: 'completed' | 'failed' | 'blocked';
+  readonly error?: ErrorPayload;
 }
 
 const promptCompletedSchema = z.object({
   promptId: z.string().min(1),
   finishedAt: z.string(),
   reason: z.union([z.literal('completed'), z.literal('failed'), z.literal('blocked')]),
+  error: z.custom<ErrorPayload>().optional(),
 });
 
 export class PromptCompleted extends Event2<PromptCompletedPayload> {
@@ -441,6 +444,7 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  error?: ErrorPayload;
   message: ContextMessage;
   appendTiming: DeferredAppendTiming;
   revision: number;
@@ -823,7 +827,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (handle.state === 'pending') return undefined;
     const turn = await handle.launched;
     if (turn === undefined && handle.state !== 'blocked') {
-      throw new Error2(ErrorCodes.INTERNAL, `Prompt ${handle.id} failed to launch; inspect prompt completion events`);
+      throw promptLaunchFailure(handle);
     }
     return turn === undefined ? undefined : { turn_id: turn.id };
   }
@@ -996,6 +1000,7 @@ export class AgentPromptService implements IAgentPromptService {
       get message() { return record.message; },
       get appendTiming() { return record.appendTiming; },
       get revision() { return record.revision; },
+      get error() { return record.error; },
       launched: record.launchedDeferred.promise,
       completion: record.completionDeferred.promise,
     };
@@ -1487,6 +1492,10 @@ export class AgentPromptService implements IAgentPromptService {
         if (item.state !== 'cancelled') this.cancelUnlaunched(item, true);
       } else {
         item.state = 'failed';
+        const payload = toErrorPayload(error);
+        const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+          ? error.code : payload.code;
+        item.error = { ...payload, details: { ...payload.details, reason_code: payload.details?.['reason_code'] ?? code } };
         item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: { type: 'failed', steps: 0, error }, state: 'failed' });
         this.publishCompleted(item, 'failed');
@@ -1615,7 +1624,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
   private publishCompleted(record: Record, reason: 'completed' | 'failed' | 'blocked'): void {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
-    void this.dispatcher.dispatch(new PromptCompleted({ promptId: record.id, finishedAt: new Date().toISOString(), reason }));
+    void this.dispatcher.dispatch(new PromptCompleted({ promptId: record.id, finishedAt: new Date().toISOString(), reason, error: record.error }));
   }
   private publishQueued(record: Record): void {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
@@ -1662,6 +1671,7 @@ function snapshot(item: Record): PromptSnapshot {
     message: item.message,
     appendTiming: item.appendTiming,
     revision: item.revision,
+    error: item.error,
   };
 }
 function isBlockingFiniteTask(task: AgentTaskInfo): boolean {
