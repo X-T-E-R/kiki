@@ -1670,7 +1670,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nApply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.` },
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.` },
       { role: 'user', text: 'new user while compacting' },
     ]);
     await ctx.expectResumeMatches();
@@ -1928,7 +1928,7 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "old user one\\n\\nold user two"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences."
+          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions."
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2731,7 +2731,7 @@ describe('FullCompaction', () => {
       ## User input since notes
       - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
 
-      Apply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.",
+      Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.",
           "user: Retry after provider overflow",
         ],
       ]
@@ -3501,7 +3501,7 @@ describe('FullCompaction', () => {
       ## User input since notes
       - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
 
-      Apply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.",
+      Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.",
           "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         ],
       ]
