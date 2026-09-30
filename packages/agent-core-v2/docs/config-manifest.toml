@@ -8,7 +8,8 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (42 sections · 1 overlay(s))
+# Index (44 sections · 1 overlay(s))
+#   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -32,6 +33,7 @@
 #   models                          src/app/kosongConfig/configSection.ts
 #   nbSearch                        src/app/nbSearch/configSection.ts
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
+#   notifications                   src/app/notifications/configSection.ts
 #   permission                      src/agent/permissionRules/configSection.ts
 #   plan                            src/features/plan/configSection.ts
 #   plugin_settings                 src/app/plugin/settingsConfigSection.ts
@@ -54,6 +56,22 @@
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
+# agentExecutorOverrides (config.toml: agent_executor_overrides)
+#   owner: src/app/agentExecutor/executorOverrides.ts
+#   scope: core
+#   hooks: custom merge · custom fromToml · custom toToml
+# ##########################################################################
+
+[agent_executor_overrides]
+
+# one [agent_executor_overrides."<name>"] table per entry:
+# [agent_executor_overrides."<name>"]
+  # bin_path: string
+  # home_dir: string
+  # env: record<string, string>
+  # args: string[]
+
+# ##########################################################################
 # agentExecutors (config.toml: agent_executors)
 #   owner: src/app/agentExecutor/configSection.ts
 #   scope: core
@@ -72,9 +90,10 @@
   # version_probe: object
     # args: string[]
   # diagnostics: object | object | object | object | object | object[]
-  # auth: object | object
+  # auth: object | object | object
   # args: string[] (default: [])
   # env: record<string, string>
+  # home_env: string
   # startup_timeout_ms: integer
   # shutdown_grace_ms: integer
   # model_binding: string
@@ -100,10 +119,13 @@
     # yolo: string
     # trust_engine_settings: boolean
   # prompt_deliveries: "append" | "replace" | "preamble"[]
+  # supports_mcp: boolean
+  # mcp_transports: "stdio" | "http" | "sse"[]
   # default_profile: boolean
   # install_hint: string
   # program_label: string
   # login_command: string[]
+  # api_key_env: string
   # steer_delivery: "native" | "next_turn_preamble"
   # profile_delivery: "system_prompt_override"
   # revision: string
@@ -463,6 +485,20 @@ merge_all_available_skills = true
 reuse_local_config = true
 
 # ##########################################################################
+# notifications
+#   owner: src/app/notifications/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[notifications]
+global = { enabled = false, suppress_viewing_session = true, min_work_ms = 30000, work_stable_ms = 3000, que…
+provider_instances = {  }
+channels = {  }
+credential_slots = {  }
+credential_values = {  }
+
+# ##########################################################################
 # permission
 #   owner: src/agent/permissionRules/configSection.ts
 #   scope: core
@@ -770,6 +806,7 @@ idle_ttl_ms = 300000
 # worktree
 #   owner: src/app/git/worktreeConfig.ts
 #   scope: core
+#   hooks: custom fromToml · custom toToml
 # ##########################################################################
 
 [worktree]
