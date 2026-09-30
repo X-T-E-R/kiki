@@ -38,6 +38,7 @@ import { useServerEndpoint } from '../../lib/skins/useAppearancePacks';
 import { useMediaThumbnail } from '../../lib/skins/useMediaThumbnail';
 import type { ResolvedTheme } from '../../lib/theme';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
+import { Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SettingField } from './fields';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -154,6 +155,7 @@ function AlignmentGrid({ value, onChange, labelledBy }: { value: BackgroundAlign
 
 /** The picked media as a small still, so the row says what is set. */
 function MediaThumb({ slot }: { slot: BackgroundSlot }) {
+  const { t } = useI18n();
   const ref = slot.poster ?? slot.media[0]!;
   const url = useMediaThumbnail(ref);
   return (
@@ -162,7 +164,7 @@ function MediaThumb({ slot }: { slot: BackgroundSlot }) {
         ? <video src={url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
         : <img src={url} alt="" className="h-full w-full object-cover" />}
       {slot.media[0]!.kind === 'video' ? (
-        <span className="absolute right-1 bottom-1 rounded-[3px] bg-ink/70 px-1 text-[10px] leading-4 font-medium text-paper">▶</span>
+        <span data-bg-thumb-video className="absolute right-1 bottom-1 rounded-[3px] bg-ink/70 px-1 text-[10px] leading-4 font-medium text-paper">{t('st.pack.video')}</span>
       ) : null}
     </span>
   );
@@ -385,7 +387,7 @@ export function BackgroundSettings({ theme, compact = false }: { theme: Resolved
           </div>
           <details className="group" data-bg-more>
             <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-[13px] text-ink-soft select-none hover:text-ink">
-              <span aria-hidden className="inline-block transition-transform group-open:rotate-90">›</span>
+              <Icon name="chevron" size={12} className="text-ink-faint transition-transform duration-150 ease-out motion-reduce:transition-none group-open:rotate-90" />
               {t('st.bg.more')}
             </summary>
             <div className="space-y-2 pt-1">

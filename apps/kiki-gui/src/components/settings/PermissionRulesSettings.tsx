@@ -6,6 +6,7 @@ import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
+import { Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
@@ -93,13 +94,14 @@ export function PermissionRulesSettings() {
         ? <Hint>{t('st.perm.rulesEmpty')}</Hint>
         : <ol className="divide-y divide-hairline" aria-label={t('st.perm.rulesTitle')}>
           {rules.map((rule, index) => <li key={index} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px]">
-            <span className="min-w-0 flex-1 break-all text-ink"><span className="font-mono text-[12px]">{rule.pattern}</span> → {t(`st.perm.decision.${rule.decision}`)}</span>
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 break-all text-ink"><span className="font-mono text-[12px]">{rule.pattern}</span>
+              <Icon name="arrowRight" size={12} className="text-ink-faint" /><span>{t(`st.perm.decision.${rule.decision}`)}</span></span>
             <span className="text-[12px] text-ink-faint">{t(`st.perm.scope.${rule.scope}`)}</span>
             <div className="flex flex-wrap items-center gap-1">
               <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null || index === 0}
-                aria-label={t('st.perm.moveUp')} onClick={() => void move(index, -1)}>↑</button>
+                aria-label={t('st.perm.moveUp')} onClick={() => void move(index, -1)}><Icon name="arrowUp" size={14} /></button>
               <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null || index === rules.length - 1}
-                aria-label={t('st.perm.moveDown')} onClick={() => void move(index, 1)}>↓</button>
+                aria-label={t('st.perm.moveDown')} onClick={() => void move(index, 1)}><Icon name="arrowDown" size={14} /></button>
               <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
                 onClick={() => { setEditing({ index, draft: toDraft(rule) }); setFeedback(null); }}>{t('st.perm.edit')}</button>
               <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
