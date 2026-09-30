@@ -6,6 +6,24 @@ Kiki sends the model far more than the user's text: a rendered system prompt, a 
 
 Snapshot: branch `kiki` at `4b088855ad`. Every `file:line` reference is from that commit. Wire frequencies come from the main-agent wire of one real session (see [Measured frequencies](#measured-frequencies)).
 
+## Current cadence after the redesign
+
+The inventory below remains the historical snapshot named above, including its old line numbers and wire measurements. This section describes the current implementation; do not use the historical rates as current-runtime claims. The implementation adapts the accepted injection-cadence design with Kiki-local structural gates, without a separate classification-model dependency.
+
+| Channel | Current delivery contract | Owning implementation and proof |
+| --- | --- | --- |
+| T0/T1 progress | Separate successful list/notes revisions and ages; 6-human-turn age, shared 8-turn cooldown with backoff, at most two reminders per unchanged state; notes require uncovered work; 24-successful-step long-task exception | `continuityState.ts`, `todoListReminder.ts`; `test/session/todo/todoListReminder.test.ts` |
+| E1 rules / E2 references | Authenticated original human input only; cue seeds feed finite structural gates; replace/revoke bypass progress throttling; E2 checks coverage and has a three-human-turn same-topic cooldown | `directiveCues.ts`, `todoListReminder.ts`; same test |
+| Compaction handoff | Original human input is separate from forwarded evidence/receipts; scoped effective notes are not automatically global rules; complete goal/next/metadata avoids redundant rebuild reminders | `relayPackage.ts`; `test/agent/fullCompaction/relayContract.test.ts` |
+| AgentRun receipts | No appended Standing directives block | `agentTool.ts`; `test/session/dispatch/parity.test.ts` |
+| Dynamic prompt context | New sessions use a durable versioned `runtime_snapshot`; legacy sessions freeze environment fields and migrate at a live natural-compaction splice, never by reordering restored history | `dynamicPrompt.ts`, `profileService.ts`; `test/agent/profile/apply-profile.test.ts` |
+| Plan / goal / permission | State-change and coverage disclosures, no periodic full echo; goal budget enforcement and permission enforcement remain runtime concerns | `planModeInjection.ts`, `goalInjection.ts`, `permissionModeInjection.ts`; corresponding injection tests |
+| Capability directories | String provider changes coalesce at the existing safe sampling boundary into one `capability_delta`, retaining each source's disclosure; schema-role messages remain separate | `contextInjectorService.ts`, `capabilityDelta.ts`; context-injector and tool-select tests |
+
+The user configuration lives in the bilingual [loop-control reference](../en/configuration/config-files.md#loop-control); generated config, wire and state manifests remain the machine-readable contract. `todo.continuity_decision` records non-model shadow decisions with human/work ordinals and revision coordinates, not user text. The human clock is replayable and does not count forwarded receipts or expand skill templates into human rule candidates.
+
+Limits: the structural gate is deliberately finite, not general natural-language understanding. Successful `TaskOutput` calls are currently conservatively excluded with other polling calls. Capability coalescing applies to registered providers, not direct plugin-reminder appends. There is not yet a general coverage/world ledger for every injection class or external harness, nor a complete undo/fork semantic-delivery ledger. Restored system text without full metadata has a best-effort legacy environment extraction; no paid-model memory or cache-cost claim follows from renderer stability tests.
+
 ## How an injection reaches the model
 
 Four distinct channels carry non-user content into a request; each channel has a different effect on prompt caching.

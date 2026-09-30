@@ -403,6 +403,21 @@ A session's per-model token override takes priority over a matching `model_profi
 
 Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
 
+Continuity reminders (requests to update TodoList and working notes) use human turns rather than assistant-message counts. Forwarded peer messages, subagent receipts and scheduled triggers do not advance this clock or qualify as new human rules. The optional settings below accept positive integers:
+
+```toml
+[loop_control.continuity_cadence]
+age_human_turns = 6
+cooldown_human_turns = 8
+long_task_steps = 24
+```
+
+The defaults require at least six human turns since a relevant write and eight since the previous progress reminder. After the first unanswered reminder, spacing doubles; each unchanged list or notes state receives at most two reminders. Notes additionally need substantial uncovered work. A long task can checkpoint after 24 successful work steps and enough uncovered tokens, without waiting for another human turn; polling alone does not qualify. A changed list does not reset the notes age or reminder budget.
+
+Rule reminders use a local structural gate, not a separate model call. Keywords alone, quoted examples and forwarded text do not establish a persistent rule. Configuration decisions belong in task notes unless their broader scope is explicit; cross-session memory still requires its existing approval policy. Rule modifications and revocations are not delayed by the progress cooldown.
+
+New sessions keep changing date, directory listings, workspace instructions and memory in versioned runtime snapshot messages instead of rewriting the system prompt. Existing sessions retain their layout until a natural context compaction; old history is not rearranged. Profile binding, configured prompt text and runtime permissions can still change when their underlying policy changes.
+
 ## `retry`
 
 `retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
