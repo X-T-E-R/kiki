@@ -240,8 +240,7 @@ describe('find bar in the timeline', () => {
     await settle();
     expect(count()).toBe('1 / 7');
     await typeQuery(input, 'haystack');
-    // en carries placeholders until the English copy lands (zh is the source).
-    expect(count()).toBe('find.noResults');
+    expect(count()).toBe('No results');
     expect(container.querySelector<HTMLButtonElement>('[data-find-next]')?.disabled).toBe(true);
     off();
   });
