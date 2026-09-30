@@ -499,6 +499,26 @@ class FakeTerminal {
   }
 }
 
+/**
+ * A scenario module is imported once per process and cached, so every fixture
+ * server in that process would otherwise share one mutable data object: a walk
+ * that writes through a route (a board card's status, a created task) would
+ * leak into the next job for the same scenario — even a later job of the same
+ * scenario with a different locale. Hand each server its own copy instead.
+ * Scripted callbacks (`onPrompt` and friends) come along by reference: they are
+ * stateless frame scripts and are not cloneable.
+ */
+function cloneScenarioData(value) {
+  if (Array.isArray(value)) return value.map(cloneScenarioData);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof Map) return new Map([...value].map(([key, entry]) => [key, cloneScenarioData(entry)]));
+  if (value instanceof Set) return new Set([...value].map(cloneScenarioData));
+  if (value === null || typeof value !== 'object') return value;
+  const copy = {};
+  for (const [key, entry] of Object.entries(value)) copy[key] = cloneScenarioData(entry);
+  return copy;
+}
+
 class FixtureServer {
   constructor() {
     this.scenario = null; // { name, data }
@@ -534,7 +554,7 @@ class FixtureServer {
     const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', `${name}.scenario.mjs`);
     const module = await import(pathToFileURL(file).href);
     const data = module.default;
-    this.scenario = { name, data };
+    this.scenario = { name, data: cloneScenarioData(data) };
     this.hostSkillStaleOnce = undefined;
     this.config = structuredClone(data.config ?? {
       default_model: 'fixture/kiki-pro',
