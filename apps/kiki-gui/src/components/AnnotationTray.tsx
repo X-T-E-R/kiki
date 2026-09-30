@@ -84,7 +84,7 @@ export function AnnotationTray({
           data-annotation-tray-toggle
           aria-expanded={open}
           onClick={() => { setOpen((value) => !value); }}
-          className="flex min-h-8 w-full items-center gap-1.5 rounded-[12px] px-2.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+          className="flex min-h-8 w-full items-center gap-1.5 rounded-[12px] px-3 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           <span aria-hidden className="flex shrink-0"><Icon name="edit" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{tp('annotationTray.sentCount', sent.length)}</span>
@@ -142,7 +142,7 @@ function TrayRow({
     <li data-annotation-tray-row={note.id} className="group/note rounded-lg px-1.5 py-1.5 hover:bg-ink/[0.025]">
       <p className="truncate border-l-2 border-accent/50 pl-2 text-[11.5px] leading-snug text-ink-faint">“{oneLine(note.quote)}”</p>
       {editing ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-2.5">
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-3">
           <input
             type="text"
             data-annotation-tray-input
@@ -162,7 +162,7 @@ function TrayRow({
             className="min-h-9 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
           />
           <button type="button" data-annotation-tray-save disabled={!canSave} onClick={commit}
-            className="min-h-9 rounded-md bg-accent-soft px-2.5 text-[12px] font-semibold text-accent-deep transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40">
+            className="min-h-9 rounded-md bg-accent-soft px-3 text-[12px] font-semibold text-accent-deep transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40">
             {t('annotationTray.save')}
           </button>
           <button type="button" onClick={() => { setDraft(note.comment ?? ''); setEditing(false); }} className={ROW_ACTION}>
@@ -170,7 +170,7 @@ function TrayRow({
           </button>
         </div>
       ) : (
-        <div className="mt-0.5 flex items-center gap-1 pl-2.5">
+        <div className="mt-0.5 flex items-center gap-1 pl-3">
           <p className={`min-w-0 flex-1 text-[13px] leading-snug [overflow-wrap:anywhere] ${note.comment === null ? 'text-ink-faint italic' : 'text-ink'}`}>
             {note.comment ?? t('annotationTray.quoteOnly')}
           </p>

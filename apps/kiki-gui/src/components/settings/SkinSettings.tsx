@@ -110,7 +110,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                 aria-pressed={selected}
                 data-skin-choice={skin.id}
                 onClick={() => { writeSkinPrefs({ selection: { source, id: skin.id ?? '' } }); }}
-                className={`flex min-h-[72px] w-full items-start gap-3 rounded-[10px] px-3 py-2.5 text-left transition-colors ${
+                className={`flex min-h-[72px] w-full items-start gap-3 rounded-[10px] px-3 py-2 text-left transition-colors ${
                   selected
                     ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]'
                     : 'hover:bg-ink/[0.04]'

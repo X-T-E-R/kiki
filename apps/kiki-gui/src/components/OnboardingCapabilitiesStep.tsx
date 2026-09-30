@@ -162,7 +162,7 @@ function CapabilityRow({ item, askingId, onOpen, onAsk, onInstall, feedback }: {
     <li
       data-onboarding-cap={item.id}
       aria-labelledby={nameId}
-      className="grid gap-x-4 gap-y-2 border-t border-hairline py-2.5 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+      className="grid gap-x-4 gap-y-2 border-t border-hairline py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
     >
       <div className="min-w-0">
         <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">

@@ -302,12 +302,12 @@ function EnableBotMenu({
         const index = items.indexOf(document.activeElement as HTMLElement);
         items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
       }}>
-      <p className="px-2.5 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('bot.enable')}</p>
+      <p className="px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('bot.enable')}</p>
       {personas.map((persona) => (
         <button key={persona.id} type="button" role="menuitem" data-enable-bot={persona.id}
           disabled={busyId !== undefined}
           onClick={() => { onPick(persona); }}
-          className="flex h-9 w-full min-w-0 items-center gap-2 rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:opacity-60">
+          className="flex h-9 w-full min-w-0 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:opacity-60">
           <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
           <span className="min-w-0 shrink truncate">{persona.name}</span>
           {persona.title !== undefined ? <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{persona.title}</span> : null}

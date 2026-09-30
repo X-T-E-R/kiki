@@ -203,7 +203,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
     const stepButton = 'flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
     return (
       <section ref={rootRef} data-needs-you-tray data-needs-you-card aria-label={t('tray.aria')} className="anim-enter">
-        <header className="flex min-h-10 items-center gap-2 px-3.5 pt-1.5">
+        <header className="flex min-h-10 items-center gap-2 px-3 pt-1.5">
           <LifeMark markId="composer-needs-you" life="waiting" tone="bg-attention" />
           <h2 className="shrink-0 text-[13px] font-medium text-attention">{t('composer.needsYou.title')}</h2>
           {ordered.length > 1 ? (
@@ -228,7 +228,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
             </button>
           ) : null}
         </header>
-        <div data-tray-current={currentId} className="max-h-[min(44vh,400px)] overflow-y-auto px-3.5 pt-1 pb-2.5">
+        <div data-tray-current={currentId} className="max-h-[min(44vh,400px)] overflow-y-auto px-3 pt-1 pb-2">
           {currentCard}
         </div>
         {footer}
@@ -244,7 +244,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         aria-label={t('tray.aria')}
         className={`anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[14px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
       >
-        <header className="flex items-center gap-2 px-3.5 pt-2.5">
+        <header className="flex items-center gap-2 px-3 pt-2">
           {/* The one moving accent mark on the screen: the tray is where the
               session waits, so it alone beckons. */}
           <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
@@ -306,7 +306,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         </header>
         {/* The current item: the real card, bounded so a long question never
             pushes the composer off screen. */}
-        <div data-tray-current={currentId} className="max-h-[min(46vh,420px)] overflow-y-auto px-3.5 pt-2 pb-3">
+        <div data-tray-current={currentId} className="max-h-[min(46vh,420px)] overflow-y-auto px-3 pt-2 pb-3">
           {current.kind === 'approval' ? (
             <ApprovalCard
               key={currentId}

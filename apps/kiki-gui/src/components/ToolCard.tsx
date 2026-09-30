@@ -570,7 +570,7 @@ ${engineError}`;
       {expanded ? (
         // Expands in place under the line; no frame of its own — the wells
         // inside carry the only surface.
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           {isCommand && block.display?.kind === 'command' ? (
             <CommandIsland
               command={block.display.command}
@@ -608,7 +608,7 @@ ${engineError}`;
                         type="button"
                         onClick={() => { onOpenAgent(ref.agentId); }}
                         title={ref.agentId}
-                        className="min-h-7 rounded-md px-2.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                        className="min-h-7 rounded-md px-3 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
                       >
                         {t('tc.openSpawnedAgent', { name: agentNames?.get(ref.agentId) ?? ref.agentId })}
                       </button>

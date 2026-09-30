@@ -112,7 +112,7 @@ export function FontRoleField({ role, label, help, presets, presetValue, custom,
             // Typing is the choice: it applies at once, like every control here.
             onChange={(event) => { type(event.target.value); }}
             placeholder={t(role === 'mono' ? 'st.font.placeholderMono' : 'st.font.placeholder')}
-            className="h-8 w-full rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
+            className="h-8 w-full rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
           />
           <p
             data-font-sample

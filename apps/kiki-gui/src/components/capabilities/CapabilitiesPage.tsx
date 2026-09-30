@@ -205,7 +205,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                     aria-current={value === tab ? 'page' : undefined}
                     data-segment={value}
                     onClick={() => { setTab(value); }}
-                    className={`-mb-px shrink-0 border-b-2 pb-2.5 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                    className={`-mb-px shrink-0 border-b-2 pb-2 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       value === tab ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                     }`}
                   >

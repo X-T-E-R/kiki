@@ -277,7 +277,7 @@ function BrowserConnectForm({
           type="button"
           onClick={() => { void detect(); }}
           disabled={detecting || connecting}
-          className="w-full rounded-md bg-accent px-3 py-2.5 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
+          className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
         >
           {detecting ? t('connect.detecting') : t('connect.detect')}
         </button>

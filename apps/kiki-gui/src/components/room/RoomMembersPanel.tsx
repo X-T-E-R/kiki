@@ -112,7 +112,7 @@ export function RoomMembersPanel({
             const name = summary?.name ?? member.personaId;
             return (
               <li key={member.personaId} data-room-member={member.personaId} className="rounded-lg py-2">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2">
                   <PersonaAvatar persona={face} size={32} decorative />
                   <div className="min-w-0 flex-1">
                     <p className="flex min-w-0 items-center gap-1.5">
@@ -172,7 +172,7 @@ export function RoomMembersPanel({
                 {(['personas', 'threads'] as const).map((tab) => (
                   <button key={tab} type="button" role="tab" aria-selected={addTab === tab} data-room-add-tab={tab}
                     onClick={() => { setAddTab(tab); }}
-                    className="h-7 rounded-[5px] px-2.5 text-[12px] text-ink-soft transition-colors hover:text-ink aria-selected:bg-paper aria-selected:font-medium aria-selected:text-selected-ink aria-selected:shadow-[0_0_0_1px_var(--color-hairline)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+                    className="h-7 rounded-[5px] px-3 text-[12px] text-ink-soft transition-colors hover:text-ink aria-selected:bg-paper aria-selected:font-medium aria-selected:text-selected-ink aria-selected:shadow-[0_0_0_1px_var(--color-hairline)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
                     {t(tab === 'personas' ? 'room.addTab.personas' : 'room.addTab.threads')}
                   </button>
                 ))}
@@ -266,7 +266,7 @@ function ThreadMemberRow({
       : session === undefined ? t('room.threadCold') : t('room.threadIdle');
   return (
     <li data-room-member={member.sessionId} data-room-member-kind="thread" data-room-member-busy={working || undefined} className="rounded-lg py-2">
-      <div className="flex items-start gap-2.5">
+      <div className="flex items-start gap-2">
         <PersonaAvatar persona={face} size={32} decorative />
         <div className="min-w-0 flex-1">
           <p className="flex min-w-0 items-center gap-1.5">

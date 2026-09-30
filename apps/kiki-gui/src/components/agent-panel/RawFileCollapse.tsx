@@ -67,7 +67,7 @@ export const RawFileCollapse = memo(function RawFileCollapse({
     return (
       <details
         data-profile-section={dataSection}
-        className="rounded-lg border border-hairline bg-paper/40 p-2.5"
+        className="rounded-lg border border-hairline bg-paper/40 p-2"
       >
         <summary className="cursor-pointer text-[12px] font-medium text-ink-soft select-none">
           {t('agentPanel.profileSection.raw')}
@@ -80,7 +80,7 @@ export const RawFileCollapse = memo(function RawFileCollapse({
           ) : error ? (
             <p className="text-[12px] text-danger">{error}</p>
           ) : displayedRaw ? (
-            <pre className="max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
+            <pre className="max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
               {displayedRaw}
             </pre>
           ) : (

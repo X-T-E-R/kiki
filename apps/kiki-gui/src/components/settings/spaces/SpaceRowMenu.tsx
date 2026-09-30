@@ -71,7 +71,7 @@ export function SpaceRowMenu({ anchor, items, ariaLabel, onClose }: {
           <button type="button" role="menuitem" data-space-menu-item={item.key} disabled={item.blockedReason !== undefined}
             aria-describedby={item.blockedReason !== undefined ? `space-menu-${item.key}-why` : undefined}
             onClick={() => { onClose(); item.run(); }}
-            className={`flex min-h-9 w-full flex-col justify-center rounded-md px-2.5 py-1.5 text-left text-[13px] outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+            className={`flex min-h-9 w-full flex-col justify-center rounded-md px-3 py-1.5 text-left text-[13px] outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:hover:bg-transparent ${
               item.blockedReason !== undefined ? 'text-ink-faint' : item.danger === true ? 'text-danger' : 'text-ink'
             }`}>
             <span>{item.label}</span>

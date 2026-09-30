@@ -132,7 +132,7 @@ export function McpServerRow({ server }: { server: McpServer }) {
         </button>
       </div>
       {server.last_error !== undefined && server.last_error !== '' ? (
-        <div className="mt-1.5 space-y-1 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2">
+        <div className="mt-1.5 space-y-1 rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
           <p className="break-all font-mono text-[11px] leading-snug text-danger">
             {server.last_error}
           </p>

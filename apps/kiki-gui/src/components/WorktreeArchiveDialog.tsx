@@ -74,7 +74,7 @@ export function WorktreeArchiveDialog({
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="sidebar-confirm-archive-worktree">
       <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('worktree.archiveBody')}</p>
-      <label data-archive-remove-worktree className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-lg border border-hairline px-3 py-2.5 hover:border-hairline-strong">
+      <label data-archive-remove-worktree className="mt-4 flex cursor-pointer items-start gap-2 rounded-lg border border-hairline px-3 py-2 hover:border-hairline-strong">
         <input
           type="checkbox"
           checked={removeWorktree}
@@ -89,7 +89,7 @@ export function WorktreeArchiveDialog({
         </span>
       </label>
       {error !== null ? <p role="alert" className="mt-2 font-mono text-[11px] text-danger">{error}</p> : null}
-      <div className="mt-5 flex justify-end gap-2.5">
+      <div className="mt-5 flex justify-end gap-2">
         <button type="button" data-autofocus className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>
           {t('common.cancel')}
         </button>

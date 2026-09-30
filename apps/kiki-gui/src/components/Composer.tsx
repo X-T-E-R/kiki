@@ -225,7 +225,7 @@ function PersonaPickerFooter() {
         type="button"
         data-composer-persona-manage
         onClick={() => { void navigate('/personas'); }}
-        className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11"
+        className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11"
       >
         <Icon name="persona" size={14} className="text-ink-faint" />
         {t('persona.pickerManage')}
@@ -2071,7 +2071,7 @@ export function Composer({
               type="button"
               data-needs-you-back
               onClick={backToInput}
-              className="flex min-h-10 w-full items-center gap-2 rounded-b-[18px] border-t border-hairline px-3.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.025] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
+              className="flex min-h-10 w-full items-center gap-2 rounded-b-[18px] border-t border-hairline px-3 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.025] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
             >
               <Icon name="edit" size={12} className="shrink-0" />
               {draftHasContent ? (
@@ -2099,7 +2099,7 @@ export function Composer({
           {queueEditing ? (
             <div
               data-queue-edit-banner
-              className="anim-enter mx-3.5 mt-2 flex items-center gap-2 rounded-md bg-amber-card px-2.5 py-1.5"
+              className="anim-enter mx-3 mt-2 flex items-center gap-2 rounded-md bg-amber-card px-3 py-1.5"
             >
               <span aria-hidden className="flex h-4 shrink-0 items-center text-amber-ink">
                 <Icon name="edit" />
@@ -2127,7 +2127,7 @@ export function Composer({
               data-goal-armed
               role="group"
               aria-label={t('composer.goalArmedAria')}
-              className="anim-enter mx-3.5 mt-2 flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
+              className="anim-enter mx-3 mt-2 flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
             >
               <Icon name="goal" size={12} className="text-ink-soft" />
               <span>{t('composer.goalArmedChip')}</span>
@@ -2262,13 +2262,13 @@ export function Composer({
             </div>
           ) : null}
           {attachmentError !== null ? (
-            <p role="alert" className="px-3.5 pt-1.5 text-[12px] text-danger">{attachmentError}</p>
+            <p role="alert" className="px-3 pt-1.5 text-[12px] text-danger">{attachmentError}</p>
           ) : null}
           {slashConfirm !== null ? (
             <div
               role="alert"
               data-slash-confirm
-              className="mx-3.5 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] font-medium text-amber-ink"
+              className="mx-3 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
             >
               <span>
                 {slashConfirm.reason === 'unknown'
@@ -2300,7 +2300,7 @@ export function Composer({
           {/* Right-click anywhere on the input area (textarea or its padding)
               opens the composer menu. */}
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- context menu only; the textarea is the keyboard target */}
-          <div className="relative px-3.5 pt-3" onContextMenu={onComposerContextMenu}>
+          <div className="relative px-3 pt-3" onContextMenu={onComposerContextMenu}>
             {menu !== null ? (
               <div
                 data-composer-menu
@@ -2343,7 +2343,7 @@ export function Composer({
                 ref={threadRefBackdropRef}
                 aria-hidden
                 data-thread-ref-backdrop
-                className="pointer-events-none absolute top-3 right-3.5 left-3.5 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
+                className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
                 {threadRefs.map((ref, index) => (
                   <span key={ref.start}>
@@ -2534,7 +2534,7 @@ export function Composer({
                   aria-label={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveAria')}
                   className={`flex h-8 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none ${
                     queueEditRemoveArmed
-                      ? 'gap-1 border-danger/60 bg-danger/10 px-2.5 text-[11px] font-medium text-danger hover:bg-danger/20'
+                      ? 'gap-1 border-danger/60 bg-danger/10 px-3 text-[11px] font-medium text-danger hover:bg-danger/20'
                       : 'w-8 border-danger/40 text-danger hover:bg-danger/10'
                   }`}
                 >
@@ -2701,7 +2701,7 @@ function SlashMenuBody({
         aria-disabled={item.disabled === true}
         onClick={() => { onAccept(item); }}
         onMouseEnter={() => { onHoverRow(index); }}
-        className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
+        className={`flex w-full items-baseline gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
           item.disabled === true ? 'opacity-50' : ''
         } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
       >
@@ -2728,7 +2728,7 @@ function SlashMenuBody({
     <>
       {skills.length > 0 ? (
         <>
-          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
             {t('composer.slash.skills')}
           </p>
           {skills.map(renderRow)}
@@ -2736,19 +2736,19 @@ function SlashMenuBody({
       ) : null}
       {actions.length > 0 ? (
         <>
-          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
             {t('composer.slash.shortcuts')}
           </p>
           {actions.map(renderRow)}
         </>
       ) : null}
       {items.length === 0 ? (
-        <p className="px-2.5 py-2 text-[13px] text-ink-faint">
+        <p className="px-3 py-2 text-[13px] text-ink-faint">
           {t('composer.slash.empty')}
         </p>
       ) : null}
       {skillsFailed && hasSession ? (
-        <p className="border-t border-hairline px-2.5 py-1 text-[12px] text-ink-faint">
+        <p className="border-t border-hairline px-3 py-1 text-[12px] text-ink-faint">
           {t('composer.slash.skillsFailed')}
         </p>
       ) : null}
@@ -2818,14 +2818,14 @@ function MentionMenuBody({
   const { t } = useI18n();
   if (failed) {
     return (
-      <p className="px-2.5 py-2 text-[12px] text-danger">
+      <p className="px-3 py-2 text-[12px] text-danger">
         {t('composer.filesFailed')}
       </p>
     );
   }
   if (items.length === 0) {
     return (
-      <p className="px-2.5 py-2 text-[11.5px] text-ink-faint">
+      <p className="px-3 py-2 text-[11.5px] text-ink-faint">
         {loading
           ? t('composer.filesSearching')
           : query === ''
@@ -2836,7 +2836,7 @@ function MentionMenuBody({
   }
   return (
     <>
-      <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
         {t('composer.filesHeader')}
       </p>
       {items.map((item, index) => {
@@ -2849,7 +2849,7 @@ function MentionMenuBody({
             role="option"
             aria-selected={active}
             onClick={() => { onAccept(item); }}
-            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
+            className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
               active ? 'bg-paper' : 'hover:bg-paper'
             }`}
           >

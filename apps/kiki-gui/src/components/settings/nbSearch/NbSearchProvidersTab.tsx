@@ -118,7 +118,7 @@ function ProviderInstanceCard({
       onToggle={(event) => {
         setOpen(event.currentTarget.open);
       }}
-      className={`rounded-lg border bg-paper px-3.5 py-2.5 transition-colors ${
+      className={`rounded-lg border bg-paper px-3 py-2 transition-colors ${
         attention ? 'border-amber-rule/40' : 'border-hairline'
       }`}
     >
@@ -280,7 +280,7 @@ export function NbSearchProvidersTab({
         <Hint>{t('st.nbSearch.providersHint')}</Hint>
 
         {/* Filter bar: text input & status pills */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-48 flex-1">
             <input
               type="search"
@@ -299,7 +299,7 @@ export function NbSearchProvidersTab({
               onClick={() => {
                 setFilterStatus('all');
               }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
+              className={`rounded-md px-3 py-1 transition-colors ${
                 filterStatus === 'all'
                   ? 'bg-ink text-paper font-semibold'
                   : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
@@ -312,7 +312,7 @@ export function NbSearchProvidersTab({
               onClick={() => {
                 setFilterStatus('attention');
               }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
+              className={`rounded-md px-3 py-1 transition-colors ${
                 filterStatus === 'attention'
                   ? 'bg-amber-ink text-paper font-semibold'
                   : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
@@ -325,7 +325,7 @@ export function NbSearchProvidersTab({
               onClick={() => {
                 setFilterStatus('configured');
               }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
+              className={`rounded-md px-3 py-1 transition-colors ${
                 filterStatus === 'configured'
                   ? 'bg-ink text-paper font-semibold'
                   : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
@@ -336,7 +336,7 @@ export function NbSearchProvidersTab({
           </div>
         </div>
 
-        <fieldset disabled={saving} className="space-y-2.5 disabled:opacity-60">
+        <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
           {filteredInstances.map((instance) => (
             <ProviderInstanceCard
               key={instance.id}

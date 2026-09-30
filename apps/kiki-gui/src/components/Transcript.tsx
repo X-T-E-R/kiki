@@ -399,7 +399,7 @@ const UserMessage = memo(function UserMessage({
           onCancel={() => { setEditing(false); }}
         />
       ) : bodyText.trim() === '' ? null : (
-        <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink">
+        <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink">
           <div
             ref={contentRef}
             id={contentId}
@@ -1163,7 +1163,7 @@ const SubagentCard = memo(function SubagentCard({
     );
   }
   const cardClass =
-    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2.5 transition-colors duration-150 hover:bg-bubble-user/60';
+    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2 transition-colors duration-150 hover:bg-bubble-user/60';
   const body = (
     <SubagentCardBody
       name={block.name}
@@ -1957,15 +1957,15 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
   if (previous === undefined || node === undefined) return '';
   if (view === 'message') {
     // One-line status rows (a work summary, "no reply", a failed send) hang
-    // off the message above them: 6px instead of the 16px between speakers.
-    if (isMessageViewStatusRow(node)) return '-mt-2.5';
+    // off the message above them: 8px instead of the 16px between speakers.
+    if (isMessageViewStatusRow(node)) return '-mt-2';
     // A speaker's consecutive messages read as one run: 8px.
     const speaker = speakerKey(node as MessageViewNode);
     if (speaker !== undefined && speakerKey(previous as MessageViewNode) === speaker) return '-mt-2';
   }
   if (node.kind === 'user') return 'mt-2';
   const lane = timelineLane(node);
-  return lane === 'activity' && timelineLane(previous) === 'activity' ? '-mt-3.5' : '';
+  return lane === 'activity' && timelineLane(previous) === 'activity' ? '-mt-3' : '';
 }
 
 /** Message-view rows that are a single status line rather than speech. */
@@ -2459,7 +2459,7 @@ function JumpToBottom({
       type="button"
       data-jump-to-latest
       onClick={() => { virtualizer.scrollToEnd(); }}
-      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3.5 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-150 hover:text-ink"
+      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-150 hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
     </button>
@@ -2725,7 +2725,7 @@ export const TurnTailLine = memo(function TurnTailLine({
         <div
           title={tail.error}
           data-turn-tail-error
-          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-ink/[0.04] px-2.5 py-1 text-center font-mono text-[12px] text-ink-soft"
+          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-ink/[0.04] px-3 py-1 text-center font-mono text-[12px] text-ink-soft"
         >
           {tail.error}
         </div>

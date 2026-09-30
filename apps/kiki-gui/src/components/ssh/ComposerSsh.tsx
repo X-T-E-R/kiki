@@ -35,7 +35,7 @@ import { stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
 const PANEL_ROW =
-  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export interface ComposerSsh {
   /** False hides every SSH affordance (flag off, no session, no REST). */
@@ -109,13 +109,13 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
 
   const renderPanel = (close: (refocus?: boolean) => void) => (
     <div data-composer-ssh-panel>
-      <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.ssh.heading')}</p>
+      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.ssh.heading')}</p>
       {hostsQuery.isLoading ? (
-        <p className="px-2.5 py-1.5 text-[12px] text-ink-faint">{t('composer.ssh.loading')}</p>
+        <p className="px-3 py-1.5 text-[12px] text-ink-faint">{t('composer.ssh.loading')}</p>
       ) : hostsQuery.isError ? (
-        <p role="alert" className="px-2.5 py-1.5 text-[12px] leading-4 text-danger">{errorText(locale, hostsQuery.error)}</p>
+        <p role="alert" className="px-3 py-1.5 text-[12px] leading-4 text-danger">{errorText(locale, hostsQuery.error)}</p>
       ) : hosts.length === 0 ? (
-        <p data-composer-ssh-empty className="px-2.5 py-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.empty')}</p>
+        <p data-composer-ssh-empty className="px-3 py-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.empty')}</p>
       ) : (
         <div className="max-h-64 overflow-y-auto">
           {hosts.map((host) => {
@@ -174,12 +174,12 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           <span className="flex-1">{t('composer.ssh.manage')}</span>
         </button>
       </div>
-      <p className="px-2.5 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.hint')}</p>
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.hint')}</p>
     </div>
   );
 
   const chips = available && joined.length > 0 ? (
-    <div data-composer-ssh-chips role="list" aria-label={t('composer.ssh.chipsAria')} className="mx-3.5 mt-2 flex flex-wrap gap-1.5">
+    <div data-composer-ssh-chips role="list" aria-label={t('composer.ssh.chipsAria')} className="mx-3 mt-2 flex flex-wrap gap-1.5">
       {joined.map(({ host, status }) => {
         const state = visibleState(status);
         const target = sshTargetLabel(host);

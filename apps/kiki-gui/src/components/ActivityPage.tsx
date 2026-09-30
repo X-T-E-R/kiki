@@ -225,7 +225,7 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
               data-activity-view-option={candidate}
               aria-pressed={view === candidate}
               onClick={() => { chooseView(candidate); }}
-              className={segmentClass(view === candidate, 'h-7 px-2.5 text-[13px]')}
+              className={segmentClass(view === candidate, 'h-7 px-3 text-[13px]')}
             >
               {t(candidate === 'inbox' ? 'activity.view.inbox' : 'activity.view.comms')}
             </button>
@@ -264,7 +264,7 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
                 type="button"
                 data-activity-mark-all-read
                 onClick={markAllRead}
-                className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2.5"
+                className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
               >
                 {t('activity.markAllRead')}
               </button>

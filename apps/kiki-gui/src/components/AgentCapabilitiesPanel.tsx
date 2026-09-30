@@ -66,7 +66,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
         className="flex min-h-7 items-center gap-1.5 rounded-md px-1 py-1 text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none">
         <DisclosureChevron open={open} className="text-current" />{t('diagnostics.title')}
       </button>
-      {open ? <div className="mt-1 max-h-60 space-y-2 overflow-y-auto rounded-lg border border-hairline bg-paper p-2.5 sm:max-h-80" data-capability-context={live ? 'live' : 'draft'}>
+      {open ? <div className="mt-1 max-h-60 space-y-2 overflow-y-auto rounded-lg border border-hairline bg-paper p-2 sm:max-h-80" data-capability-context={live ? 'live' : 'draft'}>
         <p className="font-medium text-ink">{t(live ? 'diagnostics.live' : 'diagnostics.draft')}</p>
         <p className="break-all font-mono text-[11px] text-ink-faint">{scope}</p>
         {capabilities.isPending ? <p role="status" className="text-ink-soft">{t('diagnostics.loading')}</p> : null}

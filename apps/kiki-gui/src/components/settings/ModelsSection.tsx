@@ -343,7 +343,7 @@ export function ModelCatalogCard() {
  * per-provider default edited inside each provider.
  */
 const DEFAULT_PICKER =
-  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
+  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
 
 /**
  * Every "which model does X" choice in one place: new sessions, then the
@@ -1239,7 +1239,7 @@ function ModelCatalogRowEditor({
   return (
     <div className="space-y-4 border-t border-hairline pt-3">
       {entity.issues.length > 0 ? (
-        <p role="status" className="rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] leading-4 text-amber-ink">
+        <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
           {entity.issues.map((issue) => {
             const key = MODEL_ISSUE_KEYS[issue.code];
             return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;

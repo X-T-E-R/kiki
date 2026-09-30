@@ -326,7 +326,7 @@ function Header({
                       type="button"
                       role="menuitem"
                       data-bot-settings-open
-                      className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                      className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper"
                       onClick={() => { close(); onOpenBotSettings(); }}
                     >
                       {t('bot.settings')}
@@ -570,7 +570,7 @@ export function SessionActionsMenu({
   }, [open]);
 
   const itemClass =
-    'flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+    'flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
   const pick = (action: 'fork' | 'undo' | 'compact' | 'export') => {
     setOpen(false);
     onAction(action);

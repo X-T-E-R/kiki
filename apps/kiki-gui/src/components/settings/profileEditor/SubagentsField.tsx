@@ -41,7 +41,7 @@ export function SubagentsField({ draft, onChange, profiles, models, disabled, se
     setEntries(next);
   };
   const last = draft.subagents.length - 1;
-  return <div className="space-y-2.5" data-subagents-field>
+  return <div className="space-y-2" data-subagents-field>
     <SettingsSegmented<SubagentsMode> ariaLabel={t('st.profiles.subagents')} value={draft.subagentsMode} disabled={disabled}
       dataAttr="data-subagents-mode"
       onChange={(mode) => onChange({ subagentsMode: mode, subagents: draft.subagents })}

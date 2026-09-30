@@ -62,7 +62,7 @@ export function PersonaMemoryScope({
               data-memory-persona={persona.id}
               aria-pressed={active}
               onClick={() => { onChange(active ? undefined : persona.id); }}
-              className={`${segmentClass(active, 'h-7 max-w-44 shrink-0 pr-2.5 pl-1 text-[13px] pointer-coarse:h-10')}`}
+              className={`${segmentClass(active, 'h-7 max-w-44 shrink-0 pr-3 pl-1 text-[13px] pointer-coarse:h-10')}`}
             >
               <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
               <span className="min-w-0 truncate">{persona.name}</span>

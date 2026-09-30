@@ -254,7 +254,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
         )}
 
         {currentTarget.kind === 'tool' && (
-          <div data-tool-detail className="space-y-3.5">
+          <div data-tool-detail className="space-y-3">
             {/* Title & Badges */}
             <div className="border-b border-hairline pb-3">
               <div className="flex items-center justify-between gap-2">
@@ -277,12 +277,12 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
 
             {/* Notices / Human Explanation */}
             {currentTarget.tool.state === 'approval-required' && (
-              <div className="rounded-lg border border-amber-rule/40 bg-amber-card/50 p-2.5 text-[11px] text-amber-ink">
+              <div className="rounded-lg border border-amber-rule/40 bg-amber-card/50 p-2 text-[11px] text-amber-ink">
                 {t('agentPanel.approvalNotice')}
               </div>
             )}
             {toolReason !== undefined && (
-              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger">
+              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2 text-[11px] text-danger">
                 {t('agentPanel.unavailableReason', { reason: toolReason })}
               </div>
             )}
@@ -307,7 +307,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               <summary className="font-mono text-[11px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
                 {t('agentPanel.parametersSchema')}
               </summary>
-              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
+              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
                 {currentTarget.tool.parametersSchema ??
                   currentTarget.tool.parametersSummary ??
                   t('agentPanel.noParameters')}
@@ -317,7 +317,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
         )}
 
         {currentTarget.kind === 'skill' && (
-          <div data-skill-detail className="space-y-3.5">
+          <div data-skill-detail className="space-y-3">
             {/* Title & Badges */}
             <div className="border-b border-hairline pb-3">
               <div className="flex items-center justify-between gap-2">
@@ -331,7 +331,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
 
             {/* Notices */}
             {skillReason !== undefined && (
-              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger">
+              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2 text-[11px] text-danger">
                 {skillReason}
               </div>
             )}
@@ -347,7 +347,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             ) : null}
 
             {/* Path & Hints */}
-            <dl className="grid grid-cols-1 gap-2 font-mono text-[11px] bg-paper/50 rounded-lg p-2.5 border border-hairline">
+            <dl className="grid grid-cols-1 gap-2 font-mono text-[11px] bg-paper/50 rounded-lg p-2 border border-hairline">
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.scope')}</dt>
                 <dd className="text-ink">
@@ -403,7 +403,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
         )}
 
         {currentTarget.kind === 'subagent' && (
-          <div data-subagent-detail className="space-y-3.5">
+          <div data-subagent-detail className="space-y-3">
             {/* Title & Status */}
             <div className="border-b border-hairline pb-3">
               <div className="flex items-center justify-between gap-2">
@@ -431,11 +431,11 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
 
             {/* Admission Notices */}
             {currentTarget.target.launchAllowed !== false && currentTarget.target.defaultsAvailable ? (
-              <div className="rounded-lg border border-success/30 bg-success/5 p-2.5 text-[11px] text-success">
+              <div className="rounded-lg border border-success/30 bg-success/5 p-2 text-[11px] text-success">
                 {t('agentPanel.launchAllowedNotice')}
               </div>
             ) : (
-              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger space-y-1">
+              <div className="rounded-lg border border-danger/30 bg-danger/5 p-2 text-[11px] text-danger space-y-1">
                 <p className="font-medium">{t('agentPanel.launchBlockedNotice')}</p>
                 {launchReason !== undefined ? (
                   <p className="text-[11px]">{launchReason}</p>
@@ -450,7 +450,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             )}
 
             {/* Metadata Fields */}
-            <dl className="grid grid-cols-1 gap-2 rounded-lg border border-hairline bg-paper/50 p-2.5 font-mono text-[11px]">
+            <dl className="grid grid-cols-1 gap-2 rounded-lg border border-hairline bg-paper/50 p-2 font-mono text-[11px]">
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.label.executor')}</dt>
                 <dd className="font-medium text-ink">{currentTarget.target.executor}</dd>

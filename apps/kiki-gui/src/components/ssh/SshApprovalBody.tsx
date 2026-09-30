@@ -28,7 +28,7 @@ type LoginMethod = 'agent' | 'password' | 'keyFile' | 'keyText';
 type SaveScope = NonNullable<SshCredential['save']>;
 
 const PRIMARY =
-  'inline-flex min-h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 const SECONDARY =
   'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 const LABEL = 'block text-[12px] font-medium text-ink-soft';
@@ -129,7 +129,7 @@ function Actions({ busy, failed, primaryLabel, primaryDisabled = false, onReject
   return (
     <div
       data-ssh-actions
-      className="mt-3 [[data-tray-current]_&]:sticky [[data-tray-current]_&]:-bottom-3 [[data-tray-current]_&]:z-[1] [[data-tray-current]_&]:-mx-1 [[data-tray-current]_&]:-mb-3 [[data-tray-current]_&]:px-1 [[data-tray-current]_&]:border-t [[data-tray-current]_&]:border-hairline [[data-tray-current]_&]:bg-panel [[data-tray-current]_&]:pt-2.5 [[data-tray-current]_&]:pb-3"
+      className="mt-3 [[data-tray-current]_&]:sticky [[data-tray-current]_&]:-bottom-3 [[data-tray-current]_&]:z-[1] [[data-tray-current]_&]:-mx-1 [[data-tray-current]_&]:-mb-3 [[data-tray-current]_&]:px-1 [[data-tray-current]_&]:border-t [[data-tray-current]_&]:border-hairline [[data-tray-current]_&]:bg-panel [[data-tray-current]_&]:pt-2 [[data-tray-current]_&]:pb-3"
       aria-busy={busy !== null}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2">

@@ -215,7 +215,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
               const isMain = space.id === MAIN_SPACE_ID;
               const label = isMain ? t('st.spaces.main') : space.name;
               return (
-                <li key={space.id} data-space-row={space.id} data-space-state={run} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
+                <li key={space.id} data-space-row={space.id} data-space-state={run} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
                   <SpaceDot color={isMain ? 'var(--color-ink-faint)' : space.color} className="mt-px" />
                   <div className="min-w-0 flex-1 basis-48">
                     <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">

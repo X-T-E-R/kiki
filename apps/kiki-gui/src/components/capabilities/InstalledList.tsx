@@ -202,7 +202,7 @@ function InstalledRow({
 
   return (
     <li
-      className="group flex min-h-[60px] min-w-0 items-center gap-3 px-2 py-2.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03]"
+      className="group flex min-h-[60px] min-w-0 items-center gap-3 px-2 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03]"
       data-plugin-row={plugin.id}
       data-plugin-origin={origin}
       data-plugin-enabled={plugin.enabled ? 'true' : 'false'}
@@ -230,7 +230,7 @@ function InstalledRow({
           type="button"
           onClick={() => { onUpdate(update); }}
           data-plugin-update={plugin.id}
-          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
+          className="hidden min-h-8 shrink-0 items-center rounded-md px-3 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
           {update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.action.update')}
         </button>

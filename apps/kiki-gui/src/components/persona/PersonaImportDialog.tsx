@@ -90,7 +90,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[min(88vh,860px)] flex-col !p-0`}
       overlayData={{ 'data-persona-import-dialog': preview === null ? 'pick' : 'preview' }}
     >
-      <div className="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3.5">
+      <div className="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
         <h2 className="min-w-0 flex-1 truncate font-display text-[18px] font-semibold text-ink">{t('persona.importPreview')}</h2>
         <button type="button" onClick={onClose} aria-label={t('common.close')} className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11">
           <Icon name="close" size={14} />
@@ -169,7 +169,7 @@ function PreviewBlock({ label, text, dataAttr }: { readonly label: string; reado
   return (
     <section className="space-y-1.5">
       <h3 className={FORM_LABEL}>{label}</h3>
-      <pre data-persona-import-block={dataAttr} className="max-w-full rounded-lg border border-hairline bg-paper px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap break-words text-ink">
+      <pre data-persona-import-block={dataAttr} className="max-w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap break-words text-ink">
         {text}
       </pre>
     </section>

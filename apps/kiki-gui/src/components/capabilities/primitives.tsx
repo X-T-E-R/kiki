@@ -168,7 +168,7 @@ export function IconButton({
 
 /** Quiet text button — secondary actions that should not look like buttons at rest. */
 export const QUIET_BUTTON =
-  'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50';
 
 /** The paper-inset segmented control, same geometry as the scope control. */
 export function Segmented<T extends string>({

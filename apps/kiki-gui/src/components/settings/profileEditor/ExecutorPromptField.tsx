@@ -266,7 +266,7 @@ function PromptPreview({ value, engineId, engineLabel, supported, steer, profile
       })}
     </p> : null}
     <ol className="space-y-1.5">
-      {parts.map((part, index) => <li key={part.key} data-preview-part={part.key} className="min-w-0 border-l-2 border-hairline pl-2.5">
+      {parts.map((part, index) => <li key={part.key} data-preview-part={part.key} className="min-w-0 border-l-2 border-hairline pl-3">
         <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-[11.5px]">
           <span className="shrink-0 tabular-nums text-ink-faint">{index + 1}</span>
           <span className={`min-w-0 break-all text-ink-soft ${part.mono === true ? 'font-mono' : 'font-medium'}`}>{part.title}</span>

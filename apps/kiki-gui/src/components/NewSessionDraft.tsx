@@ -717,7 +717,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const firstRun = !state.workspacesLoading && state.workspaces.length === 0;
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2">
       <p className="text-[12px] font-medium text-ink-soft">
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>

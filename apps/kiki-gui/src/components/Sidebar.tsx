@@ -265,7 +265,7 @@ function PrimaryNav({
                 {...item.hook}
                 aria-current={current ? 'page' : undefined}
                 onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-                className={`row-interactive flex h-8 w-full items-center gap-2.5 px-2 text-left text-[13px] ${
+                className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] ${
                   current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
                 }`}
               >
@@ -831,7 +831,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2.5 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-150 hover:bg-panel"
+          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-150 hover:bg-panel"
         >
           <span className="text-accent"><Icon name="plus" size={14} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -993,7 +993,7 @@ export function Sidebar({
           </div>
         ) : null}
         {sessionsQuery.isError ? (
-          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-2.5">
+          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3">
             <p className="text-[12.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
             <p className="mt-0.5 text-[12px] text-ink-soft">
               {sessionsQuery.error?.message ?? t('common.unknownError')}
@@ -1229,7 +1229,7 @@ export function Sidebar({
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => navigate('/settings')}
-          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2.5 pr-10 pl-2 text-left text-[13px] ${
+          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-10 pl-2 text-left text-[13px] ${
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
@@ -1912,7 +1912,7 @@ function SearchResults({
           </p>
         ) : null}
         {search.contentInitialError !== null ? (
-          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-2.5" data-search-error>
+          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3" data-search-error>
             <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
             <p className="text-[12px] text-ink-soft">{search.contentInitialError.message || t('common.unknownError')}</p>
             <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2">
@@ -1961,7 +1961,7 @@ function SearchResults({
           </button>
         ) : null}
         {search.contentAppendError ? (
-          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-2.5">
+          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3">
             <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
             <button
               type="button"
@@ -1995,9 +1995,9 @@ const MENU_WIDTH = 232;
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
-const MENU_HEADING = 'px-2.5 pt-2 pb-1 text-[12px] font-medium text-ink-faint';
+const MENU_HEADING = 'px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint';
 const MENU_ITEM =
-  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
 
 /** The selection column: reserved on every row so labels stay aligned. */
 function MenuMark({ on }: { on: boolean }) {
@@ -2330,7 +2330,7 @@ function SessionMenu({
   };
 
   const itemClass =
-    'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
   return (
     <div
       ref={menuRef}
@@ -2424,7 +2424,7 @@ function SessionMenu({
                 {t('room.joinRoom')}
               </button>
               {threadCommsEnabled === false ? (
-                <p className="px-2.5 pt-0.5 pb-1 text-[11.5px] leading-4 text-ink-faint">{t('room.commsOffShort')}</p>
+                <p className="px-3 pt-0.5 pb-1 text-[11.5px] leading-4 text-ink-faint">{t('room.commsOffShort')}</p>
               ) : null}
             </>
           )}
@@ -2541,7 +2541,7 @@ function RenameDialog({
           type="button"
           disabled={busy || title.trim() === ''}
           onClick={submit}
-          className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:opacity-50"
         >
           {busy ? t('common.saving') : t('common.save')}
         </button>

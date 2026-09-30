@@ -88,7 +88,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         aria-label={t('hero.workspaceAria')}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
       >
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
           <path
@@ -114,7 +114,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           {/* What the chosen agent can dispatch here depends on the target,
               so the diagnostic lives with the target, folded. */}
           {catalogMode.mode === 'cwd' || catalogMode.mode === 'workspace' ? (
-            <div data-hero-capabilities className="mt-3 border-t border-hairline pt-2.5">
+            <div data-hero-capabilities className="mt-3 border-t border-hairline pt-3">
               <AgentCapabilitiesPanel query={catalogMode.mode === 'cwd'
                 ? { cwd: catalogMode.cwd, profile: state.agentProfile }
                 : { workspace_id: catalogMode.workspaceId, profile: state.agentProfile }} />
@@ -144,7 +144,7 @@ function ProviderSetupCard() {
         {t('new.setupTitle')}
       </p>
       <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">{t('new.setupBody')}</p>
-      <div className="mt-2.5 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => { void navigate('/settings/ai?tab=providers#st-card-auth'); }}
@@ -394,7 +394,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
             )}
           </div>
           <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="-ml-2.5 inline-flex"><HeroWorkspaceChip state={state} /></span>
+            <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
             <EphemeralOption state={state} />
             <WorktreeOption state={state} />
             <span className="ml-auto inline-flex"><LocalSessionsEntry /></span>

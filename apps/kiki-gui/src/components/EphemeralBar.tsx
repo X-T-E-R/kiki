@@ -53,7 +53,7 @@ export function EphemeralBar({
   };
 
   return (
-    <div data-ephemeral-bar className="mx-auto mb-1.5 flex w-full max-w-[var(--kiki-agent-column,640px)] min-w-0 items-center gap-2 rounded-lg border border-dashed border-hairline-strong px-2.5 py-0.5">
+    <div data-ephemeral-bar className="mx-auto mb-1.5 flex w-full max-w-[var(--kiki-agent-column,640px)] min-w-0 items-center gap-2 rounded-lg border border-dashed border-hairline-strong px-3 py-0.5">
       <span className="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-soft">{t('ephemeral.strip')}</span>
       <button
         type="button"
@@ -138,13 +138,13 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
       <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('ephemeral.endBody')}</p>
       {(check.kind === 'loss' || check.kind === 'clean') && worktree !== undefined ? (
-        <fieldset data-ephemeral-end-worktree={check.kind} className="mt-4 rounded-lg border border-hairline px-3 py-2.5">
+        <fieldset data-ephemeral-end-worktree={check.kind} className="mt-4 rounded-lg border border-hairline px-3 py-2">
           {/* With work at stake the legend says so; a clean checkout is named only. */}
           <legend className={`px-1 text-[12px] leading-snug text-ink-soft ${check.kind === 'clean' ? 'font-mono break-all' : ''}`}>
             {check.kind === 'loss' ? t('ephemeral.endWorktree', { branch: worktree.branch }) : worktree.branch}
           </legend>
           {([false, true] as const).map((remove) => (
-            <label key={String(remove)} className="flex min-h-8 cursor-pointer items-center gap-2.5 text-[13px] text-ink pointer-coarse:min-h-11">
+            <label key={String(remove)} className="flex min-h-8 cursor-pointer items-center gap-2 text-[13px] text-ink pointer-coarse:min-h-11">
               <input
                 type="radio"
                 name="ephemeral-end-worktree"
@@ -160,7 +160,7 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
         </fieldset>
       ) : null}
       {error !== null ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
-      <div className="mt-5 flex justify-end gap-2.5">
+      <div className="mt-5 flex justify-end gap-2">
         <button type="button" data-autofocus className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>
           {t('common.cancel')}
         </button>

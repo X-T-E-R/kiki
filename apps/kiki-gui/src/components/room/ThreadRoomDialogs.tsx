@@ -102,7 +102,7 @@ export function NewThreadRoomDialog({
             {threads.map((session) => {
               const label = threadMemberName(session, session.id, untitled);
               return (
-                <li key={session.id} data-new-thread-room-member={session.id} className="flex min-h-10 items-center gap-2.5 rounded-md px-2">
+                <li key={session.id} data-new-thread-room-member={session.id} className="flex min-h-10 items-center gap-2 rounded-md px-2">
                   <PersonaAvatar persona={threadMemberFace(session, session.id, label)} size={24} decorative />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] text-ink">{label}</span>
@@ -134,7 +134,7 @@ export function NewThreadRoomDialog({
           </p>
         ) : null}
 
-        <div className="mt-6 flex justify-end gap-2.5">
+        <div className="mt-6 flex justify-end gap-2">
           <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
           <button type="submit" data-new-thread-room-submit className={PRIMARY_BUTTON} disabled={!ready}>{t('room.createFromThreads')}</button>
         </div>
@@ -179,7 +179,7 @@ export function JoinRoomDialog({ session, onClose }: { readonly session: Session
                 <li key={room.id}>
                   <button type="button" data-join-room={room.id} disabled={disabled}
                     onClick={() => { join.mutate(room); }}
-                    className="flex min-h-10 w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:hover:bg-transparent">
+                    className="flex min-h-10 w-full items-center gap-2 rounded-md px-2 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:hover:bg-transparent">
                     <span aria-hidden className="w-5 shrink-0 text-center font-mono text-[13px] text-ink-faint">#</span>
                     <span className={`min-w-0 flex-1 truncate text-[13px] ${disabled ? 'text-ink-faint' : 'text-ink'}`}>{room.name}</span>
                     <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">

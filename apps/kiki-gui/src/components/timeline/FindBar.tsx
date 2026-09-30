@@ -324,7 +324,7 @@ export function FindBar({
       data-find-skip
       className={`anim-enter absolute top-2 right-3 z-20 w-[min(420px,calc(100%-24px))] ${POPOVER_SURFACE_CLASS}`}
     >
-      <div className="flex h-10 items-center gap-0.5 pr-1 pl-2.5">
+      <div className="flex h-10 items-center gap-0.5 pr-1 pl-3">
         <Icon name="search" size={14} className="shrink-0 text-ink-faint" />
         <input
           ref={inputRef}

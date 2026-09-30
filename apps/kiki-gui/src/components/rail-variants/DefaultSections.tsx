@@ -165,7 +165,7 @@ export const NeedsYouList = memo(function NeedsYouList({
         <span className={`${SECTION_HEAD} text-attention`}>{t('inspector.needsYou')}</span>
         <span className="text-[12px] font-medium text-attention tabular-nums">{ordered.length}</span>
       </h3>
-      <ul className="border-l-2 border-attention pl-2.5">
+      <ul className="border-l-2 border-attention pl-3">
         {shown.map((item) => {
           const id = pendingId(item);
           const origin = item.originUnknown === true ? undefined : item.originAgentId;
@@ -406,7 +406,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
             );
           })}
           {feed.length > shown.length ? (
-            <li><button type="button" onClick={() => { setAll(true); }} className={`ml-3.5 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.feed.earlier', { count: feed.length - shown.length })}</button></li>
+            <li><button type="button" onClick={() => { setAll(true); }} className={`ml-3 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.feed.earlier', { count: feed.length - shown.length })}</button></li>
           ) : null}
         </ol>
       ) : null}

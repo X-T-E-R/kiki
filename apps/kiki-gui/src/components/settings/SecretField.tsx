@@ -164,7 +164,7 @@ export function SecretField({
             spellCheck={false}
             data-1p-ignore
             data-lpignore="true"
-            className={`min-w-0 flex-1 bg-transparent px-2.5 py-2 font-mono text-[12px] outline-none placeholder:font-sans placeholder:text-ink-faint disabled:cursor-not-allowed ${
+            className={`min-w-0 flex-1 bg-transparent px-3 py-2 font-mono text-[12px] outline-none placeholder:font-sans placeholder:text-ink-faint disabled:cursor-not-allowed ${
               !editing && !visible ? 'tracking-[0.12em] text-ink-soft' : 'text-ink'}`}
             onChange={(event) => {
               const value = event.target.value;

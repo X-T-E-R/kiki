@@ -84,7 +84,7 @@ function AttachmentCard({ attachment, readable }: { readonly attachment: Message
     .filter((part): part is string => part !== undefined).join(' · ');
   const openable = preview !== null && readable;
   return (
-    <div data-message-attachment={attachment.blobId} className="flex max-w-full items-center gap-2.5 rounded-lg bg-panel py-2 pr-2 pl-3 ring-1 ring-hairline sm:max-w-[360px]">
+    <div data-message-attachment={attachment.blobId} className="flex max-w-full items-center gap-2 rounded-lg bg-panel py-2 pr-2 pl-3 ring-1 ring-hairline sm:max-w-[360px]">
       <span className="text-ink-faint"><Icon name="file" size={16} /></span>
       <span className="min-w-0 flex-1">
         <span className="block truncate font-mono text-[12.5px] text-ink" title={attachment.path}>{name}</span>

@@ -70,7 +70,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   return (
     <div
       role="status"
-      className={`anim-enter flex w-88 max-w-full flex-col rounded-xl border bg-panel p-2.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
+      className={`anim-enter flex w-88 max-w-full flex-col rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
         <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">

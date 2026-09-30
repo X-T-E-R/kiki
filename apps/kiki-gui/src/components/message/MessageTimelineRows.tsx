@@ -93,7 +93,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
       </div>
       {open ? (
         <div data-activity-summary-members className="mt-1 ml-8 min-w-0 max-sm:ml-7">
-          <div className="flex min-w-0 flex-col gap-0.5 border-l border-hairline pl-[17px] max-sm:pl-2.5">
+          <div className="flex min-w-0 flex-col gap-0.5 border-l border-hairline pl-[17px] max-sm:pl-3">
             {summary.members.map((member) => (
               <div key={member.id} data-block-id={member.id} className="min-w-0 overflow-hidden">{renderMember(member)}</div>
             ))}

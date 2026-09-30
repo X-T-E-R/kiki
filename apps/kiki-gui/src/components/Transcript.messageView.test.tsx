@@ -165,8 +165,8 @@ describe('message view (Bot mode)', () => {
     ];
     const { container } = await render(timeline(blocks, 'message'));
     const wrapperOf = (selector: string) => container.querySelector(selector)?.closest('[data-transcript-virtual-item]')?.firstElementChild;
-    expect(wrapperOf('[data-message-view-row="activity-summary"]')?.className).toContain('-mt-2.5');
-    expect(wrapperOf('[data-message-outcome="no-reply"]')?.className).toContain('-mt-2.5');
+    expect(wrapperOf('[data-message-view-row="activity-summary"]')?.className).toContain('-mt-2');
+    expect(wrapperOf('[data-message-outcome="no-reply"]')?.className).toContain('-mt-2');
     // t2 has only internal prose: its summary counts nothing and is not a row.
     expect(container.querySelectorAll('[data-message-view-row="activity-summary"]')).toHaveLength(1);
     expect([...container.querySelectorAll('[data-transcript-virtual-item]')].every((item) => item.textContent?.trim() !== '')).toBe(true);

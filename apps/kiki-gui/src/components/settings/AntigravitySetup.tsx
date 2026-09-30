@@ -145,7 +145,7 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
     <div data-antigravity className="space-y-3">
       <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
       <ol className="space-y-3">
-        <li data-antigravity-step="program" data-step-state={programDone ? 'done' : 'current'} className="flex min-w-0 gap-2.5">
+        <li data-antigravity-step="program" data-step-state={programDone ? 'done' : 'current'} className="flex min-w-0 gap-2">
           <StepDot done={programDone} index={1} />
           <div className="min-w-0 flex-1 space-y-2">
             <p className="text-[12.5px] leading-5 text-ink">
@@ -160,7 +160,7 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
               <ul data-antigravity-versions className="divide-y divide-hairline rounded-md border border-hairline">
                 {installed.map((version) => (
                   <li key={version} data-antigravity-version={version} data-active={version === active}
-                    className="flex min-h-9 items-center gap-3 px-2.5 text-[12.5px]">
+                    className="flex min-h-9 items-center gap-3 px-3 text-[12.5px]">
                     <span className="font-mono text-[12px] text-ink">{version}</span>
                     {version === active ? (
                       <span className="inline-flex items-center gap-1 text-[12px] font-medium text-selected-ink">
@@ -220,7 +220,7 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
             <FeedbackLine feedback={feedback} />
           </div>
         </li>
-        <li data-antigravity-step="signin" data-step-state={!programDone ? 'pending' : signedIn ? 'done' : 'current'} className="flex min-w-0 gap-2.5">
+        <li data-antigravity-step="signin" data-step-state={!programDone ? 'pending' : signedIn ? 'done' : 'current'} className="flex min-w-0 gap-2">
           <StepDot done={programDone && signedIn} index={2} muted={!programDone} />
           <div className="min-w-0 flex-1">
             <AntigravitySignIn ready={programDone} signedIn={signedIn} onSignedIn={setSignedIn} onChanged={onChanged} />

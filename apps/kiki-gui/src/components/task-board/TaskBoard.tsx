@@ -231,7 +231,7 @@ export const TaskBoard = memo(function TaskBoard({
       ) : null}
 
       {/* Header: title row (identity + actions), then the scope/filter row. */}
-      <header className="flex shrink-0 flex-col gap-3 border-b border-hairline bg-panel px-5 pt-3.5 pb-3">
+      <header className="flex shrink-0 flex-col gap-3 border-b border-hairline bg-panel px-5 pt-3 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
           {onCloseBoard ? (
             <button
@@ -278,7 +278,7 @@ export const TaskBoard = memo(function TaskBoard({
               type="button"
               data-board-new-task
               onClick={() => setShowNewTaskModal(true)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3.5 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
             >
               <Icon name="plus" size={14} />
               {t('taskBoard.newTask')}
@@ -312,7 +312,7 @@ export const TaskBoard = memo(function TaskBoard({
               aria-label={t('taskBoard.sessionFilter.all')}
               value={selectedSessionFilter}
               onChange={(e) => setSelectedSessionFilter(e.target.value)}
-              className="h-8 w-52 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink focus:border-accent focus:outline-hidden"
+              className="h-8 w-52 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink focus:border-accent focus:outline-hidden"
             >
               <option value="all">{t('taskBoard.sessionFilter.all')}</option>
               {sessions.map((s) => (
@@ -329,7 +329,7 @@ export const TaskBoard = memo(function TaskBoard({
       {showUnavailable ? (
         <div
           data-task-board-unavailable
-          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3.5 overflow-y-auto px-6 py-12 text-center"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-12 text-center"
         >
           <h3 className="font-display text-[18px] font-semibold text-ink">
             {t('taskBoard.unavailable.title')}
@@ -358,14 +358,14 @@ export const TaskBoard = memo(function TaskBoard({
               ) : null}
             </ul>
           ) : null}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {onRefresh ? (
               <button
                 type="button"
                 data-task-board-unavailable-retry
                 disabled={refreshDisabled}
                 onClick={() => { void onRefresh(); }}
-                className="rounded-lg border border-hairline px-3.5 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('common.retry')}
               </button>
@@ -374,7 +374,7 @@ export const TaskBoard = memo(function TaskBoard({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="rounded-lg border border-hairline px-3.5 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
               >
                 {t('sidebar.manageWorkspaces')}
               </button>
@@ -425,7 +425,7 @@ export const TaskBoard = memo(function TaskBoard({
                 className={`flex min-h-0 w-[min(320px,calc(100vw-1.5rem))] min-w-0 snap-start flex-col overflow-hidden rounded-xl bg-canvas/55 transition-shadow duration-150 ${laneLayout === 'fill' ? 'sm:w-auto' : ''} ${dropping ? 'shadow-[inset_0_0_0_1.5px_var(--color-hairline-strong)] bg-canvas/80' : ''}`}
               >
                 {/* Lane header: status mark, sentence-case label, count. */}
-                <div className="flex shrink-0 items-center gap-2 px-3.5 pt-3 pb-2">
+                <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2">
                   <StatusGlyph status={col.status} />
                   <h3 className="min-w-0 truncate text-[13px] font-medium text-ink">
                     {col.label}

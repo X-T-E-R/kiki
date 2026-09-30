@@ -125,13 +125,13 @@ export function NbSearchFetchTab({
 
         {/* Pipeline fallback chain. Inherited mode reads as a static ordered
             list; custom mode turns each row into an editable select. */}
-        <fieldset disabled={saving} className="space-y-2.5 disabled:opacity-60">
+        <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
           {fetchChain.map((pipelineId, index) => {
             const pipeline = pipelineById.get(pipelineId);
             return (
               <div key={`${index}:${pipelineId}`} className="space-y-2">
                 {fetchChainInherited ? (
-                  <div className="rounded-lg border border-hairline bg-paper p-2.5">
+                  <div className="rounded-lg border border-hairline bg-paper p-2">
                     <div className="flex items-center gap-2">
                       <StepNumber n={index + 1} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink">
@@ -153,7 +153,7 @@ export function NbSearchFetchTab({
                     ) : null}
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 rounded-lg border border-hairline bg-paper p-2.5">
+                  <div className="flex items-center gap-2 rounded-lg border border-hairline bg-paper p-2">
                     <StepNumber n={index + 1} />
 
                     <div className="min-w-0 flex-1">

@@ -285,9 +285,9 @@ export function PluginDetail({
           onClose={() => { setConfirmRemove(false); setDeleteData(false); }}
         >
           <h3 className="font-display text-[18px] leading-6 text-ink">{t('cap.remove.title', { name })}</h3>
-          <p className="mt-2.5 text-[13px] leading-5 text-ink-soft">{t('cap.remove.body')}</p>
+          <p className="mt-3 text-[13px] leading-5 text-ink-soft">{t('cap.remove.body')}</p>
           {removalConsequences(t, contributions).length > 0 ? (
-            <ul className="mt-2.5 list-disc space-y-1 pl-5 text-[13px] leading-5 text-ink-soft">
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-5 text-ink-soft">
               {removalConsequences(t, contributions).map((line) => <li key={line}>{line}</li>)}
             </ul>
           ) : null}

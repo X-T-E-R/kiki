@@ -667,7 +667,7 @@ function ModelDraftRow({
         </button>
       </div>
       {open ? (
-        <div className="mt-3 space-y-2.5 border-t border-hairline pt-3">
+        <div className="mt-3 space-y-2 border-t border-hairline pt-3">
           {model.id !== '' ? (
             <p className="truncate font-mono text-[11px] text-ink-faint">{model.id}</p>
           ) : null}
@@ -1363,7 +1363,7 @@ export function ProviderEditor({
       data-connection-health={health}
       className="group/provider border-b border-hairline last:border-b-0 [&[open]]:bg-paper"
     >
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name={kind === 'account' ? 'agent' : kind === 'local' ? 'system' : 'web'} size={14} />
         </span>

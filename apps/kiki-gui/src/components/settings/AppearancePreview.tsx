@@ -45,7 +45,7 @@ export function AppearancePreview() {
         </div>
         <div className="flex items-center gap-2 rounded-[var(--kiki-sheet-radius)] bg-panel px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[13px] text-ink-faint">{t('st.appearance.preview.composer')}</span>
-          <span className="flex h-7 items-center rounded-md bg-accent px-2.5 text-[12px] font-semibold text-on-accent">
+          <span className="flex h-7 items-center rounded-md bg-accent px-3 text-[12px] font-semibold text-on-accent">
             {t('st.appearance.preview.send')}
           </span>
         </div>

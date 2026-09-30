@@ -92,7 +92,7 @@ export function DesktopLogCard() {
           <div data-desktop-log-path className="space-y-1.5">
             <p className="text-[13px] text-ink">{t('st.desktopLog.fileLabel')}</p>
             <div className="flex flex-wrap items-center gap-2">
-              <code className="min-w-0 max-w-full flex-1 break-all rounded-md bg-ink/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] text-ink-soft">
+              <code className="min-w-0 max-w-full flex-1 break-all rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[11.5px] text-ink-soft">
                 {info.backendLogPath}
               </code>
               <button type="button" onClick={copyPath} className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}

@@ -166,9 +166,9 @@ export function ProfileDetailSections({
     (dispatchTargets !== undefined && dispatchTargets.length > 0);
 
   return (
-    <div data-profile-detail className="space-y-3.5 text-[11.5px]">
+    <div data-profile-detail className="space-y-3 text-[11.5px]">
       {/* 1. 身份与来源 */}
-      <details open data-profile-section="identity" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="identity" className="rounded-lg border border-hairline bg-paper/40 p-2">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.identity')}
         </summary>
@@ -222,7 +222,7 @@ export function ProfileDetailSections({
 
       {/* 1b. 磁盘上的同名定义：与上面这份绑定定义不是同一个文件时单列 */}
       {other ? (
-        <details data-disk-definition className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+        <details data-disk-definition className="rounded-lg border border-hairline bg-paper/40 p-2">
           <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
             {t('st.namedAgents.diskVersion')} · {other.source_file ?? t('st.namedAgents.builtin')}
           </summary>
@@ -235,7 +235,7 @@ export function ProfileDetailSections({
       ) : null}
 
       {/* 2. 意图与定位 */}
-      <details open data-profile-section="intent" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="intent" className="rounded-lg border border-hairline bg-paper/40 p-2">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.intent')}
         </summary>
@@ -262,7 +262,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 3. 模型与推理（字段、声明值、生效值、来源/锁定） */}
-      <details open data-profile-section="model" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="model" className="rounded-lg border border-hairline bg-paper/40 p-2">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.model')}
         </summary>
@@ -381,11 +381,11 @@ export function ProfileDetailSections({
       </details>
 
       {/* 4. 工具与策略 */}
-      <details open data-profile-section="tools" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="tools" className="rounded-lg border border-hairline bg-paper/40 p-2">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.tools')}
         </summary>
-        <div className="mt-2 space-y-2.5 font-mono text-[10.5px]">
+        <div className="mt-2 space-y-2 font-mono text-[10.5px]">
           <div>
             <div className="text-[10px] font-semibold uppercase text-ink-faint mb-1">
               {t('st.namedAgents.tools')}
@@ -478,7 +478,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 5. 派生能力 */}
-      <details open data-profile-section="subagents" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="subagents" className="rounded-lg border border-hairline bg-paper/40 p-2">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.subagents')}
         </summary>

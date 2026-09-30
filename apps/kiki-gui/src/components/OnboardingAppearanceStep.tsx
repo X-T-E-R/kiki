@@ -36,7 +36,7 @@ export function OnboardingRow({ label, labelId, children }: {
   readonly children: ReactNode;
 }) {
   return (
-    <div className="grid gap-x-6 gap-y-2 border-t border-hairline py-3.5 first:border-t-0 first:pt-0 sm:grid-cols-[112px_minmax(0,1fr)]">
+    <div className="grid gap-x-6 gap-y-2 border-t border-hairline py-3 first:border-t-0 first:pt-0 sm:grid-cols-[112px_minmax(0,1fr)]">
       <span id={labelId} className="pt-1 text-[13px] font-medium text-ink">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>

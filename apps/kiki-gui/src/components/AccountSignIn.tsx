@@ -140,7 +140,7 @@ export function AccountSignIn({
           const pending = visibleSnapshot !== null && visibleSnapshot.provider === method.provider;
           const rowFeedback = feedback?.provider === method.provider ? feedback.value : null;
           return (
-            <li key={method.id} data-oauth-method={method.id} className="px-3 py-2.5">
+            <li key={method.id} data-oauth-method={method.id} className="px-3 py-2">
               <div className="flex flex-wrap items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-ink">

@@ -52,10 +52,10 @@ export const STATUS_SEGMENT_ICON_CLASS =
 export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)] hover:bg-paper';
 
 /** Popover section label: sentence-case 12px, no caps tracking. */
-export const POPOVER_LABEL_CLASS = 'px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
+export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
 
 const MENU_ROW_CLASS =
-  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export type RunMode = 'normal' | 'plan' | 'goal';
 
@@ -336,7 +336,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
                 </button>
               ) : null}
               {on && mode.id === 'goal' && showObjective ? (
-                <div className="pt-1.5 pr-2.5 pb-2 pl-8" data-goal-open>
+                <div className="pt-1.5 pr-3 pb-2 pl-8" data-goal-open>
                   <label htmlFor="composer-goal-objective" className="text-[12px] font-medium text-ink-faint">
                     {t('composer.goalObjective')}
                   </label>
@@ -346,7 +346,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
                     value={controls.goalObjective ?? ''}
                     onChange={(event) => { controls.onChangeGoalObjective?.(event.target.value); }}
                     placeholder={t('composer.goalObjectiveNext')}
-                    className="mt-1 w-full rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+                    className="mt-1 w-full rounded-md border border-hairline bg-paper px-3 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus-visible:ring-2 focus-visible:ring-selected-ink/40"
                   />
                 </div>
               ) : null}
@@ -659,7 +659,7 @@ export function AddMenu({
 
   const searchField = (placeholder: string) => (
     <div className="px-1 pt-0.5 pb-1">
-      <label className="flex h-8 items-center gap-2 rounded-md bg-ink/[0.04] px-2.5 text-ink-faint focus-within:ring-2 focus-within:ring-selected-ink/40">
+      <label className="flex h-8 items-center gap-2 rounded-md bg-ink/[0.04] px-3 text-ink-faint focus-within:ring-2 focus-within:ring-selected-ink/40">
         <Icon name="search" size={14} className="shrink-0" />
         <input
           data-add-search
@@ -702,7 +702,7 @@ export function AddMenu({
   );
 
   const note = (text: string, tone: 'faint' | 'danger' = 'faint') => (
-    <p role={tone === 'danger' ? 'alert' : undefined} className={`px-2.5 py-1.5 text-[12px] leading-4 ${tone === 'danger' ? 'text-danger' : 'text-ink-faint'}`}>
+    <p role={tone === 'danger' ? 'alert' : undefined} className={`px-3 py-1.5 text-[12px] leading-4 ${tone === 'danger' ? 'text-danger' : 'text-ink-faint'}`}>
       {text}
     </p>
   );
@@ -832,7 +832,7 @@ export function AddMenu({
           : fileHits.length === 0 ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
           : fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} />)}
       </div>
-      <p className="px-2.5 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
     </div>
   );
 

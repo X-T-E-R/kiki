@@ -104,7 +104,7 @@ export function ThreadRefChip({
         navigate(threadRefLink(sessionId));
       }}
       onContextMenu={room.onContextMenu}
-      className={`${shape} ${inline ? '' : 'pr-2.5'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
+      className={`${shape} ${inline ? '' : 'pr-3'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
     >
       {body}
     </a>

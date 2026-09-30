@@ -151,7 +151,7 @@ export function SemanticBody({
   const items = semantics.items ?? [];
   const visible = showAll ? items : items.slice(0, ITEMS_PREVIEW);
   return (
-    <div data-tool-semantic-body className="space-y-2.5">
+    <div data-tool-semantic-body className="space-y-2">
       {error !== undefined ? (
         <pre className="max-h-72 overflow-auto rounded-md bg-danger/[0.06] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-danger">{error}</pre>
       ) : null}
@@ -225,7 +225,7 @@ export function SemanticBody({
           <DisclosureChevron open={rawOpen} className="text-ink-faint" />
           {t('tc.sem.raw')}
         </button>
-        {rawOpen ? <div data-tool-raw className="space-y-2.5 pt-1.5">{raw}</div> : null}
+        {rawOpen ? <div data-tool-raw className="space-y-2 pt-1.5">{raw}</div> : null}
       </div>
     </div>
   );

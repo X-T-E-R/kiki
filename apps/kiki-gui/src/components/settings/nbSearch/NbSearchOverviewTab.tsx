@@ -171,7 +171,7 @@ export function NbSearchOverviewTab({
               <Hint>{t('st.nbSearch.source.credentialsHint')}</Hint>
             ) : null}
 
-            <div className="space-y-1.5 border-t border-hairline pt-2.5 text-[11px]">
+            <div className="space-y-1.5 border-t border-hairline pt-3 text-[11px]">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-ink-soft">{t('st.nbSearch.source.localConfigStatus')}</span>
                 <span
@@ -213,7 +213,7 @@ export function NbSearchOverviewTab({
                 {/* Active layers are shown only when the server reported them;
                     without config_source the effective precedence is unknown. */}
                 {activeLayers !== undefined ? (
-                  <div className="border-t border-hairline pt-2.5">
+                  <div className="border-t border-hairline pt-3">
                     <span className="block font-medium text-ink-soft mb-1.5">
                       {t('st.nbSearch.source.activeLayers')}
                     </span>

@@ -48,7 +48,7 @@ export function LabsSection() {
           const page = labels[section] ?? section;
           const state = effective[row.id];
           return (
-            <li key={row.id} data-labs-entry={row.id} className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 py-2.5 first:pt-0 last:pb-0">
+            <li key={row.id} data-labs-entry={row.id} className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 py-2 first:pt-0 last:pb-0">
               <div className="min-w-0">
                 <p className="text-[13px] text-ink">{t(home?.labelKey ?? 'st.exp.unknown.name')}</p>
                 <p className="text-[12px] leading-snug text-ink-faint">

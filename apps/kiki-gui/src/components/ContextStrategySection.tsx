@@ -72,7 +72,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   // Loading: keep the block's height so the card does not jump on arrival.
   if (status === undefined) {
     return (
-      <div data-context-strategy data-strategy-loading className="mt-3 border-t border-hairline pt-2.5" aria-busy>
+      <div data-context-strategy data-strategy-loading className="mt-3 border-t border-hairline pt-3" aria-busy>
         <p className="text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
         <div aria-hidden className="mt-2 h-7 rounded-[9px] bg-ink/[0.04]" />
       </div>
@@ -123,7 +123,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   };
 
   return (
-    <div data-context-strategy data-strategy={status.strategy} data-strategy-source={status.source} className="mt-3 border-t border-hairline pt-2.5">
+    <div data-context-strategy data-strategy={status.strategy} data-strategy-source={status.source} className="mt-3 border-t border-hairline pt-3">
       <div className="flex items-center justify-between gap-2">
         <p id={titleId} className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
         <div ref={menuRef} className="relative min-w-0">
@@ -215,7 +215,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
 }
 
 const MENU_ROW =
-  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2.5';
+  'flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2';
 
 /** Same surface and keyboard model as the compaction point's save menu. */
 function StrategySourceMenu({

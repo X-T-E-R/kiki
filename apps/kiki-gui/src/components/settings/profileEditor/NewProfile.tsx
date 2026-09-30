@@ -72,7 +72,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
 
   const startCard = (value: Start, icon: 'agent' | 'notes' | 'edit') => <button key={value} type="button" aria-pressed={start === value}
     data-new-start={value} onClick={() => setStart(value)}
-    className={`flex min-h-[4.5rem] flex-1 basis-[11rem] flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors ${start === value
+    className={`flex min-h-[4.5rem] flex-1 basis-[11rem] flex-col items-start gap-1 rounded-lg border px-3 py-2 text-left transition-colors ${start === value
       ? 'border-hairline-strong bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'border-hairline hover:border-hairline-strong'}`}>
     <span className="flex items-center gap-1.5 text-[13px] font-medium text-ink"><Icon name={icon} size={12} />{t(`st.profiles.start.${value}` as I18nKey)}</span>
     <span className="text-[12px] leading-snug text-ink-faint">{t(`st.profiles.start.${value}Hint` as I18nKey)}</span>

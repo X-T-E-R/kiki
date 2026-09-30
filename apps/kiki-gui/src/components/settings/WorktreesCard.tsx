@@ -202,7 +202,7 @@ function WorktreeNotice({ notice }: { notice: NonNullable<Notice> }) {
       ? 'border-success/30 bg-success/5 text-success'
       : 'border-hairline bg-paper text-ink-soft';
   return (
-    <div data-worktree-notice={notice.tone} role={notice.tone === 'error' ? 'alert' : 'status'} className={`rounded-md border px-2.5 py-2 text-[12px] leading-snug ${tone}`}>
+    <div data-worktree-notice={notice.tone} role={notice.tone === 'error' ? 'alert' : 'status'} className={`rounded-md border px-3 py-2 text-[12px] leading-snug ${tone}`}>
       <p>{notice.text}</p>
       {notice.tone === 'error' && notice.path !== undefined ? (
         <p data-worktree-kept-path className="mt-1 font-mono text-[11px] break-all text-ink-soft">

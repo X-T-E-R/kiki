@@ -92,7 +92,7 @@ export function WorktreeRemoveDialog({
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="worktree-remove-dialog" role="alertdialog">
       <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
-      <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">
+      <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">
         {t('st.worktrees.removeBody')}
       </p>
       <p className="mt-1 font-mono text-[11.5px] break-all text-ink-faint">{record.path}</p>
@@ -106,7 +106,7 @@ export function WorktreeRemoveDialog({
             {phase.detail !== undefined ? <p className="mt-1 font-mono text-[11px] text-ink-soft">{phase.detail}</p> : null}
           </div>
         ) : lossy && inspection !== undefined ? (
-          <div data-worktree-loss className="rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2.5">
+          <div data-worktree-loss className="rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2">
             {phase.kind === 'ready' && phase.stale === true ? (
               <p className="mb-1.5 text-[12.5px] text-ink">{t('st.worktrees.removeStale')}</p>
             ) : null}
@@ -128,7 +128,7 @@ export function WorktreeRemoveDialog({
         {error !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
       </div>
 
-      <div className="mt-6 flex flex-wrap justify-end gap-2.5">
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
         <button type="button" data-autofocus className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>
           {t('common.cancel')}
         </button>

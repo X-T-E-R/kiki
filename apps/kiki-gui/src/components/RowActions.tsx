@@ -214,7 +214,7 @@ export function UserMessageEditor({
   return (
     <div
       data-edit-editor
-      className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel px-3.5 py-2"
+      className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel px-3 py-2"
     >
       <textarea
         ref={areaRef}

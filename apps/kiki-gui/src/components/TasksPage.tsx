@@ -85,7 +85,7 @@ function TaskDetail({ task }: { task: Task }) {
     `${new Date(iso).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en')} · ${time.relativeTime(iso)}`;
 
   return (
-    <div className="mt-2.5 space-y-2 border-t border-hairline pt-2.5" data-task-detail>
+    <div className="mt-2 space-y-2 border-t border-hairline pt-3" data-task-detail>
       <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <DetailRow label={t('tasks.field.id')} value={task.id} />
         <DetailRow label={t('tasks.field.kind')} value={t(`tasks.kind.${task.kind}`)} mono={false} />
@@ -216,7 +216,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <button
           type="button"
           onClick={() => void navigate(`/s/${sessionId}`)}
-          className="shrink-0 rounded-lg border border-hairline px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          className="shrink-0 rounded-lg border border-hairline px-3 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('tasks.back')}
         </button>
@@ -263,7 +263,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       data-status-filter={candidate}
                       onClick={() => { setFilter(candidate); }}
                       aria-pressed={filter === candidate}
-                      className={`rounded-md px-2.5 py-1 text-[12px] transition-colors ${
+                      className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
                         filter === candidate
                           ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                           : 'text-ink-soft hover:text-ink'

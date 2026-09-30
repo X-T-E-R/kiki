@@ -387,7 +387,7 @@ function ShortcutRow({
   const canAdd = chords.length < 4 && recordingIndex === null;
   return (
     <li data-shortcut-row={definition.id} data-shortcut-overridden={overridden ? 'true' : 'false'}
-      className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+      className="flex flex-col gap-2 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
       <div className="min-w-0 sm:pt-1">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] text-ink">
           <span>{label}</span>
@@ -485,7 +485,7 @@ function ChordRecorder({ platform, describedBy, onRecorded, onCancel, onDisable 
           if (result.kind === 'unsupported') { setUnsupported(result.key); return; }
           onRecorded(result.chord);
         }}
-        className="inline-flex min-h-8 min-w-[9rem] items-center justify-center gap-1.5 rounded-md bg-selected px-2.5 text-[12px] font-medium text-selected-ink outline-2 outline-selected-ink/60 [outline-style:solid] pointer-coarse:min-h-11"
+        className="inline-flex min-h-8 min-w-[9rem] items-center justify-center gap-1.5 rounded-md bg-selected px-3 text-[12px] font-medium text-selected-ink outline-2 outline-selected-ink/60 [outline-style:solid] pointer-coarse:min-h-11"
       >
         <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-selected-ink motion-reduce:animate-none" />
         {t('st.shortcuts.recording')}

@@ -136,7 +136,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
                   )}
                 </div>
               </div>
-              <div className="mt-1 ml-3.5 flex items-center gap-1">
+              <div className="mt-1 ml-3 flex items-center gap-1">
                 {inline ? (
                   <>
                     <button
@@ -179,7 +179,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
           type="button"
           data-needs-you-more
           onClick={() => { setShowAll(true); }}
-          className="mt-0.5 mb-0.5 ml-3.5 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className="mt-0.5 mb-0.5 ml-3 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           {tp('inspector.needsYouMore', hidden)}
         </button>

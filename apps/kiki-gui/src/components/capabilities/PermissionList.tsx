@@ -46,7 +46,7 @@ export function PermissionList({ permissions, className = '' }: { readonly permi
 export function PermissionBoundary({ className = '' }: { readonly className?: string }) {
   const { t } = useI18n();
   return (
-    <p className={`max-w-[62ch] border-l-2 border-hairline-strong pl-2.5 text-[12px] leading-[18px] text-ink-soft ${className}`} data-permission-boundary>
+    <p className={`max-w-[62ch] border-l-2 border-hairline-strong pl-3 text-[12px] leading-[18px] text-ink-soft ${className}`} data-permission-boundary>
       {t('cap.perm.boundary')}
     </p>
   );

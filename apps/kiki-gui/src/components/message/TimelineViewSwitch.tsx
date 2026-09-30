@@ -11,7 +11,7 @@ import { useI18n } from '../../i18n';
 import type { TimelineView } from './messageViewMode';
 
 const SEGMENT =
-  'min-h-7 rounded-[6px] px-2.5 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+  'min-h-7 rounded-[6px] px-3 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
 
 export function TimelineViewSwitch({
   view,
@@ -50,7 +50,7 @@ export function TimelineViewSwitch({
 }
 
 const MENU_ITEM =
-  'flex min-h-8 w-full items-center justify-between gap-3 rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+  'flex min-h-8 w-full items-center justify-between gap-3 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
 
 /** Menu rows: the view (narrow headers only) and the session's delivery mode. */
 export function TimelineMenuRows({
@@ -77,7 +77,7 @@ export function TimelineMenuRows({
     <>
       {showView ? (
         <>
-          <p className="px-2.5 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.viewSwitchAria')}</p>
+          <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.viewSwitchAria')}</p>
           {(['message', 'process'] as const).map((value) => (
             <button
               key={value}
@@ -95,7 +95,7 @@ export function TimelineMenuRows({
           <div className="my-1 h-px bg-hairline" />
         </>
       ) : null}
-      <p className="px-2.5 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.deliveryLabel')}</p>
+      <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.deliveryLabel')}</p>
       {(['message', 'reply'] as const).map((value) => (
         <button
           key={value}

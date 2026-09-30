@@ -205,7 +205,7 @@ export const InspectorNow = memo(function InspectorNow({
         {excerpt !== undefined && excerpt !== '' ? (
           <p
             data-inspector-said
-            className="mt-1 ml-3.5 line-clamp-2 text-[13px] leading-[19px] text-ink-soft"
+            className="mt-1 ml-3 line-clamp-2 text-[13px] leading-[19px] text-ink-soft"
             // A result or a live excerpt stands in for the brief; the brief
             // stays one hover away.
             title={subagent?.brief !== undefined && subagent.brief !== excerpt ? `${excerpt}\n\n${subagent.brief}` : excerpt}
@@ -287,7 +287,7 @@ export const InspectorRecent = memo(function InspectorRecent({
   if (files.length === 0 && commands.length === 0) return null;
   return (
     <InspectorSection title={t('inspector.recent')} data-inspector-recent="">
-      <div className="space-y-2.5">
+      <div className="space-y-2">
         {files.length > 0 ? (
           <ul aria-label={t('inspector.recentFiles')} className="space-y-px">
             {files.map((file) => {

@@ -279,7 +279,7 @@ export function SearchableSelect({
         >
           {panelHeader}
           {hideFilter ? null : (
-          <div className="border-b border-hairline px-2.5 py-2">
+          <div className="border-b border-hairline px-3 py-2">
             <input
               type="text"
               data-autofocus
@@ -330,7 +330,7 @@ export function SearchableSelect({
                     <div key={`${option.value}-${index}`} role="presentation">
                       {groupHeader !== undefined ? (
                         <p
-                          className={`px-2.5 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2.5'}`}
+                          className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
                         >
                           {groupHeader}
                         </p>
@@ -356,7 +356,7 @@ export function SearchableSelect({
                         title={option.title ?? option.label}
                         onClick={() => { commit(option); }}
                         onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                        className={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                        className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
                           isSelected
                             ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
                             : active ? 'bg-ink/[0.04]' : ''
@@ -417,7 +417,7 @@ export function SearchableSelect({
                     title={customRow}
                     onClick={() => { onChange(customRow); close(); }}
                     onMouseMove={() => { setActiveIndex(visible.length); }}
-                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
+                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
                       activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
                     }`}
                   >
@@ -478,7 +478,7 @@ function CompactOptionRow({
       title={tooltip}
       onClick={onCommit}
       onMouseMove={onHover}
-      className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-2.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+      className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
         hasSecondLine ? 'min-h-10 py-1 pointer-coarse:min-h-12' : 'h-8 pointer-coarse:h-10'
       } ${selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''}`}
     >

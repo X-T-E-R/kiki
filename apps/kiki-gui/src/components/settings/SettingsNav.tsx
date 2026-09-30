@@ -68,7 +68,7 @@ export function SettingsSearch({
             setQuery('');
           }
         }}
-        className="h-8 w-full rounded-md bg-ink/[0.04] px-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
+        className="h-8 w-full rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
       />
       {searching ? (
         <div className="mt-2 flex flex-col gap-0.5" role="listbox" aria-label={t('st.search.aria')}>
@@ -125,7 +125,7 @@ export function SettingsNavTree({
         data-settings-nav-leaf={id}
         aria-current={active === id ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`row-interactive flex h-8 items-center px-2.5 text-left text-[13px] ${
+        className={`row-interactive flex h-8 items-center px-3 text-left text-[13px] ${
           active === id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >

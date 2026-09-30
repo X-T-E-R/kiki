@@ -107,7 +107,7 @@ export function PromptOutcomeLine({
         <p
           id={detailsId}
           data-prompt-outcome-details
-          className="mt-1 max-w-full rounded-md bg-ink/[0.04] px-2.5 py-1 text-right font-mono text-[12px] break-words whitespace-pre-wrap text-ink-soft"
+          className="mt-1 max-w-full rounded-md bg-ink/[0.04] px-3 py-1 text-right font-mono text-[12px] break-words whitespace-pre-wrap text-ink-soft"
         >
           {outcome.error ?? t('transcript.promptOutcome.noDetails')}
         </p>

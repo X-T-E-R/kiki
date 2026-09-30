@@ -220,7 +220,7 @@ export function QuickSwitcher({
                   aria-selected={active}
                   onClick={() => { openItem(item); }}
                   onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                  className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                  className={`flex w-full flex-col gap-0.5 rounded-lg px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
                     active ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
                   }`}
                 >

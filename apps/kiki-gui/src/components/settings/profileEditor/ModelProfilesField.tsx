@@ -22,7 +22,7 @@ export function ModelProfilesField({ values, onChange, models, disabled }: {
   const effortsFor = (alias: string) => models.find((model) => model.id === alias)?.support_efforts;
   return <div className="space-y-2" data-model-profiles-field>
     {values.length > 0 ? <ul className="divide-y divide-hairline rounded-lg border border-hairline">
-      {values.map((entry, index) => <li key={index} data-model-profile-row={entry.alias || index} className="space-y-2 px-3 py-2.5">
+      {values.map((entry, index) => <li key={index} data-model-profile-row={entry.alias || index} className="space-y-2 px-3 py-2">
         <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
           <Field label={t('st.profiles.candidateModel')} htmlFor={`mp-model-${index}`}>
             <ModelPicker id={`mp-model-${index}`} value={entry.alias} models={models} allowInherit={false} disabled={disabled}

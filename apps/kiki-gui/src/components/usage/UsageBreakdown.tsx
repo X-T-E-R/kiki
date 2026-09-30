@@ -150,7 +150,7 @@ export function DimensionBreakdown({
       <li
         key={`${depth}:${row.key}`}
         data-usage-breakdown-row={row.key}
-        className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-x-4 gap-y-1 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_7rem_4.5rem_4.5rem_5.5rem]"
+        className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-x-4 gap-y-1 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_7rem_4.5rem_4.5rem_5.5rem]"
         style={{ paddingLeft: 12 + depth * 20 }}
       >
         <div className="flex min-w-0 items-center gap-2">

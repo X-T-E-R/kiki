@@ -118,8 +118,8 @@ export function SpaceSwitcher() {
       </button>
       {open ? (
         <SpaceMenu anchor={triggerRef.current} onClose={() => { setOpen(false); }}>
-          <p className="px-2.5 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('sidebar.space.menuTitle')}</p>
-          {multi ? null : <p data-space-single-hint className="px-2.5 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.singleHint')}</p>}
+          <p className="px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('sidebar.space.menuTitle')}</p>
+          {multi ? null : <p data-space-single-hint className="px-3 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.singleHint')}</p>}
           {ordered.map((space, index) => {
             const run = spaceRunState(space.id, statuses.data);
             const count = spaceStatus(space.id, statuses.data)?.pendingCount ?? 0;
@@ -128,7 +128,7 @@ export function SpaceSwitcher() {
               <button key={space.id} type="button" role="menuitem" data-space-switch-item={space.id} data-space-state={run}
                 aria-current={current ? 'true' : undefined}
                 onClick={() => { enter(space); }}
-                className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
+                className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
                 <SpaceDot color={space.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : space.color} />
                 <span className={`min-w-0 flex-1 truncate ${current ? 'font-medium' : ''}`}>{label(space)}</span>
                 {current ? (
@@ -152,14 +152,14 @@ export function SpaceSwitcher() {
           {here === null ? (
             <button type="button" role="menuitem" data-space-new-entry
               onClick={() => { setOpen(false); navigate('/settings/spaces?new=1'); }}
-              className="flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
+              className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
               <Icon name="plus" size={14} className="shrink-0 text-ink-soft" />
               {t('sidebar.space.new')}
             </button>
           ) : null}
           <button type="button" role="menuitem" data-space-manage
             onClick={() => { setOpen(false); navigate('/settings/spaces'); }}
-            className="flex h-9 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink-soft outline-none transition-colors hover:bg-paper hover:text-ink focus-visible:bg-paper">
+            className="flex h-9 w-full items-center rounded-md px-3 text-left text-[13px] text-ink-soft outline-none transition-colors hover:bg-paper hover:text-ink focus-visible:bg-paper">
             {t('sidebar.space.manage')}
           </button>
         </SpaceMenu>

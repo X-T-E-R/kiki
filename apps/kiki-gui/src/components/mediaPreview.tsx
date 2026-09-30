@@ -360,7 +360,7 @@ export function PreviewToggleButton({ className }: { className?: string }) {
       aria-label={t('preview.toggleAria')}
       aria-expanded={preview.previewPanelOpen}
       data-preview-toggle
-      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
+      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
         preview.previewPanelOpen
           ? 'bg-canvas text-ink'
           : 'text-ink-faint hover:bg-canvas hover:text-ink'
@@ -549,7 +549,7 @@ function AttachmentPreviewDialog({
           <button
             type="button"
             onClick={() => { downloadUrl(load.url, name); }}
-            className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
+            className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
           >
             {t('media.download')}
           </button>
@@ -630,7 +630,7 @@ function FileChip({ item }: { item: MediaRef }) {
     item.name ?? (item.path !== undefined ? basenameOf(item.path) : t('media.attachment'));
   const detail = item.size !== undefined ? formatBytes(item.size) : item.mime;
   const openable = (item.path !== undefined || item.fileId !== undefined) && preview !== null;
-  const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left ${
+  const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-left ${
     openable
       ? 'border-hairline bg-paper transition-colors hover:border-accent'
       : 'border-hairline bg-paper/60'
@@ -793,7 +793,7 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
       aria-busy={status === 'loading'}
       aria-label={label}
       title={label}
-      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2.5 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default motion-reduce:transition-none`}
+      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default motion-reduce:transition-none`}
     >
       <span className="flex w-full min-w-0 items-center gap-1.5 text-ink-faint">
         <Icon name="file" size={14} />

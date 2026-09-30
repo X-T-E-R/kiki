@@ -201,7 +201,7 @@ export function TaskDetailModal({
         </pre>
       </div>
 
-      <div className="mt-4 flex shrink-0 items-center justify-end gap-2.5">
+      <div className="mt-4 flex shrink-0 items-center justify-end gap-2">
         {live.status === 'running' ? (
           <button
             type="button"

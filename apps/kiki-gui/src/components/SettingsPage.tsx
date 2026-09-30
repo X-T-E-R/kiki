@@ -122,7 +122,7 @@ function SpaceBand() {
   if (space === null) return null;
   const name = space.name ?? space.homeId;
   return (
-    <p data-settings-space-band className="mb-5 flex items-center gap-2 border-l-2 py-0.5 pl-2.5 text-[12px] text-ink-soft"
+    <p data-settings-space-band className="mb-5 flex items-center gap-2 border-l-2 py-0.5 pl-3 text-[12px] text-ink-soft"
       style={{ borderColor: space.color ?? 'var(--color-hairline-strong)' }}>
       <SpaceDot color={space.color} size={7} />
       <span className="min-w-0 truncate">{t('st.spaces.band', { name })}</span>

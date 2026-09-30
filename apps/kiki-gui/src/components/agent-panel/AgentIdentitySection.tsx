@@ -393,7 +393,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         aria-controls={bodyId}
         title={t(expanded ? 'inspector.profileCollapse' : 'inspector.profileExpand')}
         onClick={() => { setExpanded((open) => !open); }}
-        className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-2.5 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-3 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
         <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name="agent" size={12} />
@@ -414,7 +414,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         <span className="shrink-0"><DisclosureChevron open={expanded} /></span>
       </button>
       {expanded ? (
-        <div id={bodyId} data-profile-body className="space-y-2.5 border-t border-hairline px-2.5 pt-2.5 pb-2">
+        <div id={bodyId} data-profile-body className="space-y-2 border-t border-hairline px-3 pt-3 pb-2">
           {identity.summary ? (
             <p className="text-[12.5px] leading-relaxed text-ink-soft">{identity.summary}</p>
           ) : null}

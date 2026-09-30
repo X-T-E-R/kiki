@@ -75,7 +75,7 @@ function SourceTabs({
         <button key={source.executorId} type="button" aria-pressed={source.executorId === value}
           data-local-source={source.executorId}
           onClick={() => { onChange(source.executorId); }}
-          className={segmentClass(source.executorId === value, 'h-7 px-2.5 text-[13px]')}>
+          className={segmentClass(source.executorId === value, 'h-7 px-3 text-[13px]')}>
           {source.label}
         </button>
       ))}

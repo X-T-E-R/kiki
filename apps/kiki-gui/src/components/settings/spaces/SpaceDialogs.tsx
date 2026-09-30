@@ -101,8 +101,8 @@ export function DeleteSpaceDialog({ space, onClose, onDeleted }: {
           <SpaceDot color={space.color} />
           <span className="min-w-0 break-words">{t('st.spaces.deleteTitle', { name: space.name })}</span>
         </h2>
-        <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.deleteBody')}</p>
-        <p data-space-delete-path className="mt-2 break-all rounded-md bg-danger/[0.06] px-2.5 py-2 font-mono text-[12px] text-ink">{space.path}</p>
+        <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.deleteBody')}</p>
+        <p data-space-delete-path className="mt-2 break-all rounded-md bg-danger/[0.06] px-3 py-2 font-mono text-[12px] text-ink">{space.path}</p>
         <p className="mt-2 text-[12.5px] text-ink-soft">{t('st.spaces.deleteKeepHint')}</p>
         <label htmlFor={inputId} className={`${FORM_LABEL} mt-4`}>{t('st.spaces.deleteTypeLabel', { name: space.name })}</label>
         <input id={inputId} data-autofocus data-space-delete-input value={typed} autoComplete="off" spellCheck={false}
@@ -220,7 +220,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
                     const key = targetKey(host);
                     return (
                       <li key={key}>
-                        <label className="flex min-h-11 cursor-pointer items-center gap-2.5 px-3 py-2">
+                        <label className="flex min-h-11 cursor-pointer items-center gap-2 px-3 py-2">
                           <input type="checkbox" data-space-copy-ssh-host={host.hostId} checked={selected.has(key)}
                             onChange={() => { toggle(key); }} className="shrink-0 accent-[var(--color-selected-ink)]" />
                           <span className="min-w-0 flex-1">

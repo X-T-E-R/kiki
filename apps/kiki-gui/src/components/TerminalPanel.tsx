@@ -408,7 +408,7 @@ export function TerminalPanel({
               onClick={() =>
                 void (state.errorKey === 'term.loadFailed' ? manager.open() : manager.create())
               }
-              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
+              className="rounded-md border border-shell-hairline px-3 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
             >
               {t('common.retry')}
             </button>
@@ -422,7 +422,7 @@ export function TerminalPanel({
         ) : null}
 
         {state.loaded && state.error === undefined && tabs.length === 0 ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-6 text-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
             <p className="max-w-[420px] font-mono text-[12px] leading-relaxed text-shell-ink-soft">
               {t('term.empty')}
             </p>
@@ -454,7 +454,7 @@ export function TerminalPanel({
         ) : null}
 
         {activeTab?.status === 'exited' ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-shell/85">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-shell/85">
             <p className="font-mono text-[12px] text-shell-ink-soft">
               {activeTab.exitCode === null
                 ? t('term.exitedNoCode')
@@ -472,7 +472,7 @@ export function TerminalPanel({
         ) : null}
 
         {activeTab?.status === 'unavailable' ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-shell/85 px-6 text-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-shell/85 px-6 text-center">
             <p className="max-w-[460px] font-mono text-[12px] leading-relaxed text-shell-danger">
               {t('term.unavailable')}
             </p>
@@ -480,7 +480,7 @@ export function TerminalPanel({
               type="button"
               onClick={() => { manager.retryAttach(activeTab.id); }}
               data-terminal-retry
-              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
+              className="rounded-md border border-shell-hairline px-3 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
             >
               {t('common.retry')}
             </button>

@@ -102,7 +102,7 @@ export function MiniContextMenu({
             type="button"
             role="menuitem"
             data-menu-item={entry.key}
-            className={`w-full rounded-md px-2.5 py-1.5 text-left text-[12px] transition-colors hover:bg-paper ${
+            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper ${
               entry.danger === true ? 'text-ink hover:text-danger' : 'text-ink'
             }`}
             onClick={() => {

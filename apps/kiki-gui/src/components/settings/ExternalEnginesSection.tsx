@@ -177,12 +177,12 @@ function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckR
   return (
     <div data-engine-setup={stage.kind} className="space-y-2">
       <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
-      <ol className="space-y-2.5">
+      <ol className="space-y-2">
         {requirements.map((requirement, index) => {
           const state = stateOf(index);
           return (
             <li key={`${requirement.role}:${requirement.id}`} data-engine-step={requirement.role === 'program' ? 'program' : requirement.id}
-              data-step-state={state} className="flex min-w-0 gap-2.5">
+              data-step-state={state} className="flex min-w-0 gap-2">
               <StepMarker state={state} index={index + 1} />
               <div className="min-w-0 flex-1 space-y-1">
                 <p className="text-[12.5px] leading-5 text-ink">
@@ -206,7 +206,7 @@ function EngineSetup({ check, loginCommand, apiKeyEnv }: { check: ExecutorCheckR
             </li>
           );
         })}
-        <li data-engine-step="signin" data-step-state={signInState} className="flex min-w-0 gap-2.5">
+        <li data-engine-step="signin" data-step-state={signInState} className="flex min-w-0 gap-2">
           <StepMarker state={signInState} index={requirements.length + 1} />
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-[12.5px] leading-5 text-ink">
@@ -493,7 +493,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   return (
     <details data-engine-row={item.id} data-engine-health={health}
       className="group/engine border-b border-hairline last:border-b-0 [&[open]]:bg-paper">
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name="terminal" size={14} />
         </span>

@@ -5,7 +5,7 @@ import { FieldIssue } from '../SettingsPrimitives';
 import { parseJsonObject } from './model';
 
 export const JSON_TEXTAREA =
-  'block min-h-[5.5rem] w-full resize-y rounded-lg border bg-paper px-2.5 py-2 font-mono text-[12px] leading-5 text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20';
+  'block min-h-[5.5rem] w-full resize-y rounded-lg border bg-paper px-3 py-2 font-mono text-[12px] leading-5 text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20';
 
 /** Pretty JSON for a stored object; empty for "not set". */
 export function jsonText(value: unknown): string {

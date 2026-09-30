@@ -78,7 +78,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
       </div>
 
       {usage ? (
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           {/* Context Meter Bar & Status */}
           <div>
             <div className="flex items-baseline justify-between text-[11px]">
@@ -147,7 +147,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
       {treeMetrics ? (
         <div
           data-tree-metrics
-          className="mt-2.5 rounded-lg border border-amber-rule/30 bg-amber-card/40 p-2 font-mono text-[11px]"
+          className="mt-2 rounded-lg border border-amber-rule/30 bg-amber-card/40 p-2 font-mono text-[11px]"
         >
           <div className="flex items-center justify-between text-amber-ink font-semibold text-[10.5px] uppercase">
             <span>{t('agentPanel.treeSummary')}</span>

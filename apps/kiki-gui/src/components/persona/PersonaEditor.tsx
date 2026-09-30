@@ -264,7 +264,7 @@ function PersonaForm({
           <span id={fieldId('memory')} className={FORM_LABEL}>{t('persona.memory')}</span>
           <div role="group" aria-labelledby={fieldId('memory')} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
             {(['shared', 'own'] as const).map((mode) => (
-              <button key={mode} type="button" data-persona-memory={mode} aria-pressed={draft.memory === mode} onClick={() => { set('memory', mode); }} className={segmentClass(draft.memory === mode, 'h-7 px-2.5 text-[13px] pointer-coarse:h-10')}>
+              <button key={mode} type="button" data-persona-memory={mode} aria-pressed={draft.memory === mode} onClick={() => { set('memory', mode); }} className={segmentClass(draft.memory === mode, 'h-7 px-3 text-[13px] pointer-coarse:h-10')}>
                 {t(mode === 'shared' ? 'persona.memoryShared' : 'persona.memoryOwnOnly')}
               </button>
             ))}
@@ -505,7 +505,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
                 data-persona-action={item.key}
                 disabled={item.key === 'start' && dirty}
                 onClick={() => { void run(item.key); }}
-                className={`flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:opacity-50 pointer-coarse:min-h-11 ${item.danger === true ? 'text-danger' : 'text-ink'}`}
+                className={`flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:opacity-50 pointer-coarse:min-h-11 ${item.danger === true ? 'text-danger' : 'text-ink'}`}
               >
                 {item.label}
               </button>

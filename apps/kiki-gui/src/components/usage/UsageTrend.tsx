@@ -93,7 +93,7 @@ export function TrendChart({
               data-trend-metric={candidate}
               onClick={() => { setMetric(candidate); }}
               aria-pressed={metric === candidate}
-              className={segmentClass(metric === candidate, 'h-7 px-2.5 text-[12.5px]')}
+              className={segmentClass(metric === candidate, 'h-7 px-3 text-[12.5px]')}
             >
               {t(`usage.trend.metric.${candidate}`)}
             </button>

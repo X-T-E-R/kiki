@@ -384,7 +384,7 @@ export function ContextCompactSection({
 }
 
 const SOURCE_MENU_ROW =
-  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:py-2.5';
+  'flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:py-2';
 
 /**
  * "Save as default…" menu behind the source label. Each row names the target
@@ -437,7 +437,7 @@ function CompactSourceMenu({
       }}
       className="anim-enter absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
     >
-      <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.compact.menuLabel')}</p>
+      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.compact.menuLabel')}</p>
       <button type="button" role="menuitem" data-compact-save="model" className={SOURCE_MENU_ROW} onClick={() => { onSave('model'); }}>
         <span className="truncate">{t('context.compact.saveModel', { model: modelLabel ?? '', value })}</span>
       </button>

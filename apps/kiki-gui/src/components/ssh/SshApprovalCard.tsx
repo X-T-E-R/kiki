@@ -55,7 +55,7 @@ export function SshApprovalCard({ block, ssh, originAgentName }: {
   };
 
   return (
-    <div data-ssh-approval-id={approvalId} className="anim-enter border-l-2 border-accent py-2.5 pr-3 pl-3.5">
+    <div data-ssh-approval-id={approvalId} className="anim-enter border-l-2 border-accent py-2 pr-3 pl-3">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
         <span className="font-medium text-accent-ink">{t(sshTitleKey(ssh))}</span>
         {originAgentName !== undefined ? (

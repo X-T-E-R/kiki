@@ -546,7 +546,7 @@ export function DefaultRail({
           pendingCount: subagent.pendingInteractionCount,
         }}
         actions={subagent === undefined ? undefined : (
-          <div data-subagent-context className="-mt-1 ml-3.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div data-subagent-context className="-mt-1 ml-3 flex flex-wrap items-center gap-x-4 gap-y-1">
             {/* The routed agent page is already this agent's workspace. */}
             {onInspectMain !== undefined ? (
               <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { onOpenSubagent(subagent.agentId); }} />

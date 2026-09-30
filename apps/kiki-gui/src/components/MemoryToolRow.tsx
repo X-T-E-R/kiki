@@ -235,7 +235,7 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
             <p className="text-ink-soft">{args['body']}</p>
           ) : null}
           {block.name !== 'MemoryWrite' && typeof block.output === 'string' && block.output !== '' ? (
-            <pre className="max-h-40 overflow-auto rounded-md bg-panel px-2.5 py-1.5 font-mono text-[12px] whitespace-pre-wrap text-ink-soft">
+            <pre className="max-h-40 overflow-auto rounded-md bg-panel px-3 py-1.5 font-mono text-[12px] whitespace-pre-wrap text-ink-soft">
               {block.output.slice(0, 2_000)}
             </pre>
           ) : null}

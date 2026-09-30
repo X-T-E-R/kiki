@@ -811,7 +811,7 @@ function TabContextMenu({
   }, []);
 
   const itemClass =
-    'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
   const pick = (run: () => void) => {
     onCloseMenu();
     run();

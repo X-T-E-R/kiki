@@ -17,11 +17,11 @@ export interface NewTaskModalProps {
 const FIELD_LABEL =
   'block font-mono text-[11px] font-semibold text-ink-faint uppercase tracking-wider';
 const TEXT_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[12.5px] text-ink focus:border-accent focus:outline-hidden';
 const AREA_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 
 const PRIORITY_LABEL_KEYS: Record<TaskPriority, I18nKey> = {
   urgent: 'taskBoard.priority.urgent',
@@ -96,7 +96,7 @@ export const NewTaskModal = memo(function NewTaskModal({
         {/* Form Body */}
         <div inert={pending} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 text-[13px]">
           {error ? (
-            <div className="rounded-lg border border-danger/20 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger">
+            <div className="rounded-lg border border-danger/20 bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
               {error}
             </div>
           ) : null}
@@ -200,12 +200,12 @@ export const NewTaskModal = memo(function NewTaskModal({
         </div>
 
         {/* Footer */}
-        <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-hairline bg-paper/40 px-6 py-4">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-hairline bg-paper/40 px-6 py-4">
           <button
             type="button"
             onClick={close}
             disabled={pending}
-            className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
+            className="rounded-lg border border-hairline px-3 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
           >
             {t('taskBoard.new.cancel')}
           </button>

@@ -149,7 +149,7 @@ export function NbSearchSection() {
           <div className="space-y-3">
             {/* The save landed; only the status refresh failed — say so before
                 the raw error so this never reads as a failed save. */}
-            <p className="rounded-md border border-amber-rule/60 bg-amber-card px-2.5 py-1.5 text-[11px] text-amber-ink">
+            <p className="rounded-md border border-amber-rule/60 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink">
               {t('st.nbSearch.savedStatusFailed')}
             </p>
             <InlineError error={refreshError} />

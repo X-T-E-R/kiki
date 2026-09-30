@@ -71,7 +71,7 @@ export function Toggle({
   // and a column of switches never reads as a row of alerts. The real
   // checkbox sits first so the track can show its keyboard focus.
   return (
-    <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2.5 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+    <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
       {layout === 'row' ? text : null}
       <input
         id={id}

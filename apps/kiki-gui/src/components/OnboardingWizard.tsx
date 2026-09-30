@@ -161,7 +161,7 @@ function ChoiceMark({ selected }: { readonly selected: boolean }) {
 }
 
 const CHOICE_CARD =
-  'flex w-full items-start gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+  'flex w-full items-start gap-2 rounded-[10px] px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const CHOICE_CARD_SELECTED = 'bg-selected';
 const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
 
@@ -371,7 +371,7 @@ function OnboardingProviderForm({
                   aria-pressed={picked}
                   data-model-suggestion={suggestion.remoteId}
                   onClick={() => { pickSuggestion(suggestion); }}
-                  className={`h-7 rounded-md px-2.5 font-mono text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+                  className={`h-7 rounded-md px-3 font-mono text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
                     picked
                       ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                       : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
@@ -702,7 +702,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
                   choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
                 />
               </OnboardingRow>
-              <div className="border-t border-hairline pt-3.5">
+              <div className="border-t border-hairline pt-3">
                 <OnboardingAppearanceStep />
               </div>
             </div>
@@ -714,7 +714,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           <div className="mt-3 space-y-4">
             <p className="text-[12px] leading-relaxed text-ink-soft">{t('onboarding.model.body')}</p>
             {providerReady && !showConnectionOptions ? (
-              <p role="status" className="rounded-md border border-success/30 bg-success/5 px-2.5 py-2 text-[12px] text-success">
+              <p role="status" className="rounded-md border border-success/30 bg-success/5 px-3 py-2 text-[12px] text-success">
                 {t('onboarding.model.ready')}
               </p>
             ) : null}
@@ -784,7 +784,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         ) : null}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-hairline px-6 py-3.5">
+      <div className="flex items-center justify-between gap-3 border-t border-hairline px-6 py-3">
         <button
           type="button"
           onClick={close}
@@ -819,7 +819,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               disabled={savingProvider || permissionBusy}
               onClick={() => void goNext()}
               className={step === 'model' && modelSkipping
-                ? 'rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'
+                ? 'rounded-md px-3 py-1.5 text-[13px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'
                 : PRIMARY_BUTTON}
             >
               {step === 'model'

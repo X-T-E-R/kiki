@@ -332,7 +332,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     {capabilities.isError && isCapabilityUnsupportedError(capabilities.error) ? (
       <p role="status" data-capabilities-unsupported className="sr-only">{t('diagnostics.unknown')}</p>
     ) : null}
-    {capabilities.isError && !isCapabilityUnsupportedError(capabilities.error) ? <div role="alert" className="border-l-2 border-danger pl-2.5 text-[12.5px] text-danger">
+    {capabilities.isError && !isCapabilityUnsupportedError(capabilities.error) ? <div role="alert" className="border-l-2 border-danger pl-3 text-[12.5px] text-danger">
       {t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}
       <button type="button" className="ml-2 font-medium text-ink underline underline-offset-2" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
     </div> : null}

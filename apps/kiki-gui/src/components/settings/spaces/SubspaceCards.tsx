@@ -124,7 +124,7 @@ function CopySshHereDialog({ onClose, onCopied }: { onClose: () => void; onCopie
           <ul className="mt-3 divide-y divide-hairline rounded-lg border border-hairline bg-paper">
             {list.map((host) => (
               <li key={host.id}>
-                <label className="flex min-h-11 cursor-pointer items-center gap-2.5 px-3 py-2">
+                <label className="flex min-h-11 cursor-pointer items-center gap-2 px-3 py-2">
                   <input type="checkbox" data-space-copy-here-host={host.id} checked={selected.has(host.id)} className="accent-[var(--color-selected-ink)]"
                     onChange={() => {
                       setSelected((current) => { const next = new Set(current); if (next.has(host.id)) next.delete(host.id); else next.add(host.id); return next; });

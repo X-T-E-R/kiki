@@ -67,11 +67,11 @@ export function planReviewFromDisplay(display: unknown): PlanReviewDisplay | und
  * a card inside a card. One flat detail well, a solid primary, a quiet
  * secondary. */
 const STRIP_CLASS =
-  'anim-enter border-l-2 border-accent py-2.5 pr-3 pl-3.5';
+  'anim-enter border-l-2 border-accent py-2 pr-3 pl-3';
 const DETAIL_WELL =
   'mt-2 max-h-40 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
 const PRIMARY_BUTTON =
-  'inline-flex min-h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
+  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
   'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 
@@ -496,7 +496,7 @@ export function ApprovalCard({
       {answered === null ? (
         external === undefined ? (
           <>
-            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={submitting !== null}>
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={submitting !== null}>
               <button
                 type="button"
                 disabled={submitting !== null}
@@ -557,7 +557,7 @@ export function ApprovalCard({
         ) : external.ok ? (
           <>
             <div
-              className="mt-2.5 space-y-1"
+              className="mt-2 space-y-1"
               role="radiogroup"
               aria-busy={submittingOptionId !== null}
             >
@@ -588,7 +588,7 @@ export function ApprovalCard({
       ) : (
         <p
           role="status"
-          className={`mt-2.5 flex items-center gap-1.5 text-[13px] font-medium ${
+          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${
             answered === 'approved' || answered === 'cancelled' ? 'text-ink-soft' : 'text-danger'
           }`}
         >
@@ -659,17 +659,17 @@ function PlanReviewCard({
         ) : null}
       </div>
       <div data-plan-body tabIndex={0} aria-label={t('ia.plan.bodyLabel')}
-        className="mt-2 max-h-64 overflow-y-auto rounded-md bg-ink/[0.03] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+        className="mt-2 max-h-64 overflow-y-auto rounded-md bg-ink/[0.03] px-3 py-2 text-[13.5px] leading-relaxed text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
         <Markdown text={plan.plan} mode="static" />
       </div>
       {answered === null ? (
         <>
           {options !== undefined ? (
-            <fieldset className="mt-2.5 space-y-1" disabled={sending !== null}>
+            <fieldset className="mt-2 space-y-1" disabled={sending !== null}>
               <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('ia.plan.choose')}</legend>
               {options.map((option) => (
                 <label key={option.label} data-plan-option={option.label}
-                  className={`flex min-h-9 cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-1.5 transition-colors ${choice === option.label ? 'bg-selected-ink/[0.07]' : 'hover:bg-ink/[0.04]'}`}>
+                  className={`flex min-h-9 cursor-pointer items-start gap-2 rounded-md px-3 py-1.5 transition-colors ${choice === option.label ? 'bg-selected-ink/[0.07]' : 'hover:bg-ink/[0.04]'}`}>
                   <input type="radio" name={`plan-choice-${block.request.approval_id}`} checked={choice === option.label}
                     onChange={() => { setChoice(option.label); }} className="mt-1 h-3.5 w-3.5 accent-[var(--color-selected-ink)]" />
                   <span className="min-w-0">
@@ -680,10 +680,10 @@ function PlanReviewCard({
               ))}
             </fieldset>
           ) : null}
-          <label htmlFor={noteId} className="mt-2.5 block text-[12px] font-medium text-ink-soft">{t('ia.plan.note')}</label>
+          <label htmlFor={noteId} className="mt-2 block text-[12px] font-medium text-ink-soft">{t('ia.plan.note')}</label>
           <textarea id={noteId} data-plan-note rows={2} value={note} disabled={sending !== null}
             onChange={(event) => { setNote(event.target.value); }} placeholder={t('ia.plan.notePlaceholder')}
-            className="mt-1 w-full resize-y rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[13px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink disabled:opacity-60" />
+            className="mt-1 w-full resize-y rounded-md border border-hairline bg-paper px-3 py-1.5 text-[13px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink disabled:opacity-60" />
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={sending !== null}>
             <button type="button" data-plan-approve disabled={sending !== null} onClick={() => { send('approve'); }} className={PRIMARY_BUTTON}>
               {sending === 'approve' ? t('ia.approving') : options !== undefined && choice !== undefined ? t('ia.plan.approveChoice', { option: choice }) : t('ia.plan.approve')}
@@ -702,7 +702,7 @@ function PlanReviewCard({
         </>
       ) : (
         <p role="status" data-plan-answered={answered}
-          className={`mt-2.5 flex items-center gap-1.5 text-[13px] font-medium ${answered === 'exit' ? 'text-danger' : 'text-ink-soft'}`}>
+          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${answered === 'exit' ? 'text-danger' : 'text-ink-soft'}`}>
           {answered === 'exit' ? <Icon name="cross" /> : null}
           {t(answered === 'approve' ? 'ia.plan.sentApproved' : answered === 'revise' ? 'ia.plan.sentRevise' : 'ia.plan.sentExit')}
         </p>
@@ -767,7 +767,7 @@ function ExternalOptionButton({
         aria-checked={submitting}
         disabled={busy}
         onClick={onPick}
-        className="flex min-h-9 w-full items-center gap-2.5 px-3 py-1.5 text-left disabled:opacity-60"
+        className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left disabled:opacity-60"
       >
         <Icon name={tone.icon} className={`h-3.5 w-3.5 ${tone.marker}`} />
         <span className="min-w-0 flex-1">
@@ -793,7 +793,7 @@ function ExternalOptionButton({
             <DisclosureChevron open={expanded} />
           </button>
           {expanded ? (
-            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-paper px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-paper px-3 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
               {changes.map((change) => boundedJson(change, 300)).join('\n')}
             </pre>
           ) : null}
@@ -852,7 +852,7 @@ function QuestionItemView({
               type="button"
               aria-pressed={selected}
               onClick={() => { toggle(option.id); }}
-              className={`flex min-h-9 w-full items-start gap-2.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+              className={`flex min-h-9 w-full items-start gap-2 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
                 selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
               }`}
             >
@@ -873,11 +873,11 @@ function QuestionItemView({
             </button>
           );
         })}
-        <label className="flex items-center gap-2.5 rounded-md px-3 pt-1.5">
+        <label className="flex items-center gap-2 rounded-md px-3 pt-1.5">
           <span className="shrink-0 text-[13px] font-medium text-ink-soft">{otherLabel}</span>
           <input
             aria-label={otherLabel}
-            className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-2.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+            className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
             placeholder={item.other_description ?? t('ia.otherPlaceholder')}
             value={answer.otherText}
             onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}

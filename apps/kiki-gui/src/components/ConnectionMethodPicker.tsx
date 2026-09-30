@@ -19,7 +19,7 @@ import type { ProviderPreset, ProviderWireType } from './providerPresets';
 export type ConnectionMethod = 'api' | 'account';
 
 const CHOICE =
-  'flex min-w-0 flex-1 items-start gap-2.5 rounded-lg px-3 py-2.5 text-left outline-none transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11';
+  'flex min-w-0 flex-1 items-start gap-2 rounded-lg px-3 py-2 text-left outline-none transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11';
 
 export function ConnectionMethodPicker({
   onPickApi,

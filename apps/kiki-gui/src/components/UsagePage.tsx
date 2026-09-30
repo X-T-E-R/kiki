@@ -270,7 +270,7 @@ function FilterBar({
   const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger';
   return (
     <div data-usage-filters className="space-y-3 rounded-xl border border-hairline bg-panel/70 p-3 sm:p-4">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <AxisGroup
           label={t('usage.axis.range')}
           dataAxis="range"
@@ -341,7 +341,7 @@ function FilterBar({
           </div>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <label className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
           <span className="relative min-w-0">
@@ -351,14 +351,14 @@ function FilterBar({
               onChange={(event) => {
                 onChange({ ...filters, workspaceId: event.target.value === '' ? undefined : event.target.value });
               }}
-              className={`${segmentClass(filters.workspaceId !== undefined, 'h-8 max-w-52 pr-7 pl-2.5 text-[13px]')} cursor-pointer appearance-none truncate border border-hairline bg-paper`}
+              className={`${segmentClass(filters.workspaceId !== undefined, 'h-8 max-w-52 pr-7 pl-3 text-[13px]')} cursor-pointer appearance-none truncate border border-hairline bg-paper`}
             >
               <option value="">{t('usage.workspace.all')}</option>
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
               ))}
             </select>
-            <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rotate-90 text-ink-faint" />
+            <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rotate-90 text-ink-faint" />
           </span>
         </label>
         <AxisGroup
@@ -461,7 +461,7 @@ function KpiRow({ summary }: { readonly summary: UsageResponseWire['summary'] })
         hint={cacheHit === null && !totalUnknown ? <span className="text-ink-faint">{t('usage.kpi.cacheHitNone')}</span> : undefined}
       >
         {!totalUnknown && input > 0 ? (
-          <div className="mt-2.5" title={t('usage.cacheHitHint')}>
+          <div className="mt-2" title={t('usage.cacheHitHint')}>
             <div aria-hidden className="flex h-1.5 overflow-hidden rounded-full bg-hairline/70">
               {composition.map((part) => (
                 <span key={part.key} className={part.fill} style={{ width: `${(part.value / input) * 100}%` }} />
@@ -555,7 +555,7 @@ function SessionsTab({
                   type="button"
                   data-usage-session={item.id}
                   onClick={() => void navigate(`/s/${item.id}`)}
-                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-selected-ink`}
+                  className={`${grid} w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-selected-ink`}
                 >
                   <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
                     {rank}
@@ -655,7 +655,7 @@ function FiveHourTab({
           <li
             key={bucket.key}
             data-usage-fivehour-window={bucket.key}
-            className="rounded-lg border border-hairline bg-paper/50 px-3 pt-2.5 pb-1"
+            className="rounded-lg border border-hairline bg-paper/50 px-3 pt-2 pb-1"
           >
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
               <h3 className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
@@ -894,7 +894,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           data-usage-pricing-open
           aria-haspopup="dialog"
           onClick={() => { setPricingOpen(true); }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11"
         >
           <Icon name="sliders" size={14} />
           {t('usage.pricing.open')}
@@ -937,7 +937,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     </span>
                   ) : null}
                   {summary?.cost_unknown === true ? (
-                    <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[12px] font-medium text-amber-ink">
+                    <span className="rounded-full border border-amber-rule/40 bg-amber-card px-3 py-0.5 text-[12px] font-medium text-amber-ink">
                       {t('usage.kpi.partialUnknown')}
                     </span>
                   ) : null}
@@ -1001,7 +1001,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         aria-selected={tab === id}
                         data-usage-tab={id}
                         onClick={() => { selectTab(id); }}
-                        className={`-mb-px min-h-10 border-b-2 px-2.5 text-[13.5px] transition-colors ${
+                        className={`-mb-px min-h-10 border-b-2 px-3 text-[13.5px] transition-colors ${
                           tab === id ? 'border-selected-ink font-semibold text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                         }`}
                       >

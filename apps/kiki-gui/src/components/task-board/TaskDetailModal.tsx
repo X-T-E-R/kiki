@@ -31,11 +31,11 @@ export interface TaskDetailModalProps {
 
 const FIELD_LABEL = 'block text-[12px] font-medium text-ink-soft';
 const TEXT_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[14px] text-ink focus:border-accent focus:outline-hidden';
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink focus:border-accent focus:outline-hidden';
 const AREA_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[13px] leading-relaxed text-ink focus:border-accent focus:outline-hidden';
+  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] leading-relaxed text-ink focus:border-accent focus:outline-hidden';
 const SECTION_TITLE = 'text-[12px] font-medium text-ink-soft';
 
 const RESULT_LABEL_KEYS: Record<NonNullable<BoardTask['executions'][number]['result']> | 'running', I18nKey> = {
@@ -202,7 +202,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
 
         {/* Content Area */}
         <div inert={pending} className="min-h-0 flex-1 overflow-y-auto text-[13px]">
-          {error ? <p role="alert" className="mx-5 mt-4 rounded-lg border border-danger/20 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger sm:mx-6">{error}</p> : null}
+          {error ? <p role="alert" className="mx-5 mt-4 rounded-lg border border-danger/20 bg-danger/10 px-3 py-2 text-[12.5px] text-danger sm:mx-6">{error}</p> : null}
           {task.detailLoaded === false ? <p role="status" className="px-5 pt-4 text-ink-soft sm:px-6">{t('taskBoard.detail.loading')}</p> : null}
           {isEditing ? (
             /* Editing Mode: single roomy column, large writing surfaces */
@@ -300,7 +300,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                       const checked = selectedSessionIds.includes(session.id);
                       return (
                         <li key={session.id}>
-                          <label className="flex min-h-10 cursor-pointer items-center gap-2.5 px-3 py-2 text-[13px] text-ink transition-colors hover:bg-panel">
+                          <label className="flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 text-[13px] text-ink transition-colors hover:bg-panel">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -334,7 +334,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   </span>
                   {task.category && showPrompt ? <span className="text-ink-faint">{task.category}</span> : null}
                 </div>
-                <h3 className="mt-2.5 font-display text-[22px] leading-snug font-semibold break-words text-ink">
+                <h3 className="mt-3 font-display text-[22px] leading-snug font-semibold break-words text-ink">
                   {task.title}
                 </h3>
 
@@ -351,7 +351,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 {showPrompt && task.prompt ? (
                   <section className="mt-6">
                     <h4 className={SECTION_TITLE}>{t('taskBoard.detail.assignedPrompt')}</h4>
-                    <pre className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-hairline bg-paper p-3.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+                    <pre className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-hairline bg-paper p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
                       {task.prompt}
                     </pre>
                   </section>

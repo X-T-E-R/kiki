@@ -28,7 +28,7 @@ const PROTOCOL_HINT_KEYS: Readonly<Record<string, I18nKey>> = {
 };
 
 const ROW =
-  'group flex w-full min-w-0 items-center gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11';
+  'group flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11';
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[\s_-]/g, '');

@@ -458,7 +458,7 @@ export const AgentRoster = memo(function AgentRoster({
       {model.total >= SEARCH_AT ? (
         <label className="relative block">
           <span className="sr-only">{t('inspector.searchAgentsAria')}</span>
-          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-faint" />
+          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" />
           <input
             type="search"
             data-roster-search

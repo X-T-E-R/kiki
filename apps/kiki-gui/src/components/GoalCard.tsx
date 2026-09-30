@@ -388,7 +388,7 @@ export function GoalCard({
                     setActionError(null);
                   }}
                   disabled={pending === 'save'}
-                  className="h-7 rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+                  className="h-7 rounded-md px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
                 >
                   {t('common.cancel')}
                 </button>
@@ -443,7 +443,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -469,7 +469,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>

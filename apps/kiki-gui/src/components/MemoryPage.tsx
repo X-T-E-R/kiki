@@ -175,7 +175,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
         />
       ) : (
         <>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2.5 lg:px-6">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2 lg:px-6">
             <WorkspaceScopeControl
               workspaces={workspaceOptions}
               value={scope}
@@ -197,7 +197,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
                         aria-pressed={active}
                         disabled={workspaceToggle.isPending}
                         onClick={() => { if (!active) workspaceToggle.mutate(value); }}
-                        className={`${segmentClass(active, 'h-7 px-2.5 text-[13px]')} disabled:cursor-not-allowed disabled:opacity-60`}
+                        className={`${segmentClass(active, 'h-7 px-3 text-[13px]')} disabled:cursor-not-allowed disabled:opacity-60`}
                       >
                         {t(key)}
                       </button>
@@ -395,7 +395,7 @@ function MemoryScopeView({
                 onChange={(event) => { setSearch(event.target.value); }}
                 placeholder={t('memory.search.placeholder')}
                 aria-label={t('memory.search.aria')}
-                className="h-8 w-full max-w-64 rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+                className="h-8 w-full max-w-64 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
               />
               <div role="group" aria-label={t('memory.filter.aria')} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
                 {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
@@ -407,7 +407,7 @@ function MemoryScopeView({
                       data-memory-type-filter={candidate}
                       aria-pressed={active}
                       onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                      className={segmentClass(active, 'h-7 px-2.5 text-[13px]')}
+                      className={segmentClass(active, 'h-7 px-3 text-[13px]')}
                     >
                       {t(`memory.type.${candidate}`)}
                     </button>
@@ -836,7 +836,7 @@ function MemoryEditor({
                 data-memory-type-option={candidate}
                 aria-pressed={active}
                 onClick={() => { setType(candidate); }}
-                className={segmentClass(active, 'h-7 px-2.5 text-[13px]')}
+                className={segmentClass(active, 'h-7 px-3 text-[13px]')}
               >
                 {t(`memory.type.${candidate}`)}
               </button>
@@ -869,7 +869,7 @@ function MemoryEditor({
         />
       </div>
       {conflict ? (
-        <p role="alert" data-memory-conflict className="rounded-md border border-amber-rule/40 bg-amber-card px-2.5 py-2 text-[12px] leading-relaxed text-amber-ink">
+        <p role="alert" data-memory-conflict className="rounded-md border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12px] leading-relaxed text-amber-ink">
           {t('memory.conflict')}
           {' '}
           <button type="button" onClick={() => { onDone(); }} className="font-semibold underline underline-offset-2">

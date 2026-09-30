@@ -160,7 +160,7 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
           <button
             type="button"
             onClick={onOpenBoard}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-deep transition-colors shadow-xs"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-deep transition-colors shadow-xs"
           >
             {/* The board opens in-app (/board), so it wears the board mark, not `external`. */}
             <Icon name="board" size={12} />

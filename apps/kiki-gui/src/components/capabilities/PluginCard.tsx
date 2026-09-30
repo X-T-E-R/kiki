@@ -92,7 +92,7 @@ export function PluginCard({
                 onClick={onUpdate}
                 aria-label={t('cap.action.updateNamed', { name })}
                 data-catalog-install={id}
-                className="inline-flex min-h-8 items-center rounded-md px-2.5 text-[13px] font-medium text-selected-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                className="inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-selected-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
                 {t('cap.action.update')}
               </button>

@@ -190,7 +190,7 @@ export function InstallFlow({
               <div data-install-permissions>
                 <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.canDo')}</p>
                 <PermissionList permissions={permissions!} className="mt-1.5" />
-                <PermissionBoundary className="mt-2.5" />
+                <PermissionBoundary className="mt-2" />
               </div>
             ) : (
               <p className="text-ink-soft" data-install-no-permissions>{t('cap.install.noPermissions')}</p>

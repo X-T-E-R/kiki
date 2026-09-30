@@ -347,4 +347,4 @@ export function useComposerContextMenu({
 }
 
 const MENU_ITEM_CLASS =
-  'flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper disabled:pointer-events-none disabled:opacity-45';
+  'flex w-full items-center rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper disabled:pointer-events-none disabled:opacity-45';

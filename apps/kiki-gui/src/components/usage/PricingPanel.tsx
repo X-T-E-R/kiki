@@ -145,7 +145,7 @@ export function PricingPanel({ onClose, models }: {
           onChange={(event) => { setFilter(event.target.value); }}
           placeholder={t('usage.pricing.filter')}
           aria-label={t('usage.pricing.filter')}
-          className="h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
+          className="h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
         />
         {unknownCount > 0 ? (
           <span data-pricing-unknown-count className="text-[12px] text-amber-ink">{t('usage.pricing.unknownCount', { count: unknownCount })}</span>

@@ -100,7 +100,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
                 return (
                   <li key={persona.id}>
                     <label data-room-member-option={persona.id}
-                      className={`flex min-h-10 items-center gap-2.5 rounded-md px-2 ${checked ? 'bg-selected' : 'hover:bg-ink/[0.04]'} ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                      className={`flex min-h-10 items-center gap-2 rounded-md px-2 ${checked ? 'bg-selected' : 'hover:bg-ink/[0.04]'} ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                       <input type="checkbox" className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
                         checked={checked} disabled={full} onChange={() => { toggle(persona); }} />
                       <PersonaAvatar persona={personaAvatarOf(persona)} size={24} decorative />
@@ -150,7 +150,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
           </p>
         ) : null}
 
-        <div className="mt-6 flex justify-end gap-2.5">
+        <div className="mt-6 flex justify-end gap-2">
           <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
           <button type="submit" data-create-room-submit className={PRIMARY_BUTTON} disabled={create.isPending}>{t('room.new')}</button>
         </div>

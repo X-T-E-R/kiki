@@ -98,7 +98,7 @@ export function RoomComposer({
                   data-room-mention={option.key}
                   onPointerDown={(event) => { event.preventDefault(); insert(option); }}
                   onPointerEnter={() => { setActive(index); }}
-                  className={`flex min-h-10 cursor-pointer items-center gap-2.5 rounded-md px-2.5 ${index === activeIndex ? 'bg-selected' : ''}`}>
+                  className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-3 ${index === activeIndex ? 'bg-selected' : ''}`}>
                   {face !== undefined ? <PersonaAvatar persona={face} size={22} decorative /> : (
                     <span aria-hidden className="flex h-[22px] w-[22px] items-center justify-center rounded-[6px] bg-ink/[0.06] text-[12px] font-medium text-ink-soft">@</span>
                   )}
@@ -108,7 +108,7 @@ export function RoomComposer({
               );
             })}
           </ul>
-          <p className="border-t border-hairline px-2.5 pt-1.5 pb-1 text-[11.5px] text-ink-faint max-sm:hidden">{t('room.mentionHint')}</p>
+          <p className="border-t border-hairline px-3 pt-1.5 pb-1 text-[11.5px] text-ink-faint max-sm:hidden">{t('room.mentionHint')}</p>
         </div>
       ) : null}
       <div className="composer-card flex items-end gap-2 rounded-[18px] bg-panel py-2 pr-2 pl-4">

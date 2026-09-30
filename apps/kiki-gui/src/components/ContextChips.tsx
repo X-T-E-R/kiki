@@ -49,7 +49,7 @@ export function QuoteChip({ quote, onRemove }: { quote: string; onRemove?: () =>
     <div
       data-quote-chip
       title={quote}
-      className={`${TILE} max-w-[22rem] bg-ink/[0.045] ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} pl-2`}
+      className={`${TILE} max-w-[22rem] bg-ink/[0.045] ${onRemove === undefined ? 'pr-3' : 'pr-1'} pl-2`}
     >
       <span aria-hidden className="context-chip-quote-mark shrink-0">“</span>
       <span className="min-w-0 truncate text-ink-soft">{oneLine(quote)}</span>
@@ -74,7 +74,7 @@ export function AnnotationChip({
       tabIndex={0}
       aria-label={t('composer.annotationChipAria', { quote: oneLine(quote), comment })}
       className={`group ${TILE} max-w-[24rem] bg-ink/[0.05] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
-        onRemove === undefined ? 'pr-2.5' : 'pr-1'
+        onRemove === undefined ? 'pr-3' : 'pr-1'
       } pl-2`}
     >
       <span aria-hidden className="flex shrink-0 text-accent-ink/80">
@@ -86,7 +86,7 @@ export function AnnotationChip({
         <RemoveButton label={t('composer.removeAnnotation')} onRemove={onRemove} tone="warm" />
       ) : null}
       {/* Hover/focus reveal: the full passage and the full comment. */}
-      <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1.5 hidden w-72 max-w-[calc(100vw-48px)] rounded-[12px] bg-panel p-2.5 text-left shadow-[var(--kiki-sheet-shadow)] group-hover:block group-focus-within:block">
+      <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1.5 hidden w-72 max-w-[calc(100vw-48px)] rounded-[12px] bg-panel p-2 text-left shadow-[var(--kiki-sheet-shadow)] group-hover:block group-focus-within:block">
         <p className="max-h-16 overflow-hidden border-l-2 border-accent/50 pl-2 text-[11.5px] leading-snug whitespace-pre-wrap text-ink-soft">
           {quote}
         </p>
@@ -156,7 +156,7 @@ export function SkillChip({ name, description, onRemove }: { name: string; descr
     <div
       data-skill-chip={name}
       title={description}
-      className={`${TILE} max-w-[18rem] bg-ink/[0.05] ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} pl-2`}
+      className={`${TILE} max-w-[18rem] bg-ink/[0.05] ${onRemove === undefined ? 'pr-3' : 'pr-1'} pl-2`}
     >
       <span aria-hidden className="flex shrink-0 text-accent-ink/80">
         <Icon name="skill" size={12} />
@@ -194,7 +194,7 @@ export function TextTile({
       {...dataAttrs}
       title={title}
       aria-label={ariaLabel}
-      className={`${TILE} max-w-[16rem] bg-ink/[0.045] pl-2 text-ink-soft ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
+      className={`${TILE} max-w-[16rem] bg-ink/[0.045] pl-2 text-ink-soft ${onRemove === undefined ? 'pr-3' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
     >
       {children}
       {onRemove !== undefined && removeLabel !== undefined ? <RemoveButton label={removeLabel} onRemove={onRemove} /> : null}

@@ -82,7 +82,7 @@ export function WorkspacesSection() {
           />
         ) : null}
         {visible.map((workspace) => (
-          <div key={workspace.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2.5">
+          <div key={workspace.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p>

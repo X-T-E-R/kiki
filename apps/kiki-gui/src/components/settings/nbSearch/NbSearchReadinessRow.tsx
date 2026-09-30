@@ -49,7 +49,7 @@ export function NbSearchReadinessRow({
 }) {
   const { t } = useI18n();
   return (
-    <div className="rounded-lg border border-hairline bg-paper px-3 py-2.5">
+    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[12.5px] font-semibold text-ink">{label}</span>
         <NbSearchStateBadge state={state} />

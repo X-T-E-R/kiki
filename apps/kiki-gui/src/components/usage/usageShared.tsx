@@ -78,7 +78,7 @@ export function AxisGroup<T extends string>({
             data-axis-value={option}
             onClick={() => { onChange(option); }}
             aria-pressed={value === option}
-            className={segmentClass(value === option, 'h-7 px-2.5 text-[12.5px]')}
+            className={segmentClass(value === option, 'h-7 px-3 text-[12.5px]')}
           >
             {labelFor(option)}
           </button>

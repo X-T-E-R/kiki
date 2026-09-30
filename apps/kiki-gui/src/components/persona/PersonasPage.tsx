@@ -102,7 +102,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                     onChange={(event) => { setSearch(event.target.value); }}
                     placeholder={t('persona.searchPlaceholder')}
                     aria-label={t('persona.searchAria')}
-                    className="h-8 w-full rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
+                    className="h-8 w-full rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
                   />
                   {archivedCount > 0 ? <Toggle label={t('persona.showArchived')} checked={showArchived} onChange={setShowArchived} /> : null}
                 </div>

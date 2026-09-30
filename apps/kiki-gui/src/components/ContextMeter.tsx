@@ -346,7 +346,7 @@ export function ContextMeter({
           {usage !== undefined ? (
             <dl
               data-context-usage
-              className="mt-3 space-y-1.5 border-t border-hairline pt-2.5 text-[12px]"
+              className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
             >
               <div className="flex items-baseline justify-between gap-3">
                 <p className="text-[12px] font-medium text-ink-soft">
@@ -399,7 +399,7 @@ export function ContextMeter({
           ) : null}
 
           {breakdown !== undefined ? (
-            <div data-context-breakdown className="mt-3 border-t border-hairline pt-2.5">
+            <div data-context-breakdown className="mt-3 border-t border-hairline pt-3">
               <div className="flex items-baseline justify-between gap-3">
                 <p className="text-[12px] font-medium text-ink-soft">{t('context.breakdownTitle')}</p>
                 <span className="text-[12px] text-ink-faint">{t('context.breakdownEstimated')}</span>
@@ -466,7 +466,7 @@ function CompactActions({
   const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
-      <button type="button" data-context-compact onClick={onCompact} className={`mt-3 w-full rounded-md px-2.5 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
     );
@@ -478,7 +478,7 @@ function CompactActions({
   };
   return (
     <div ref={rootRef} className="relative mt-3 flex gap-px">
-      <button type="button" data-context-compact onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-2.5 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
       <button
@@ -505,7 +505,7 @@ function CompactActions({
           }}
           className="anim-enter absolute right-0 bottom-full z-40 mb-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
         >
-          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
           {COMPACT_OPTIONS.map((option) => (
             <button
               key={option}
@@ -513,7 +513,7 @@ function CompactActions({
               role="menuitem"
               data-context-compact-option={option}
               onClick={() => { setMenuOpen(false); onCompactWith(option); }}
-              className="flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2.5"
+              className="flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2"
             >
               <span>{t(STRATEGY_LABEL_KEY[option])}</span>
               <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>

@@ -119,7 +119,7 @@ export function ComposerNotes({
           clearTimer();
           setOpen((current) => (current === 'pinned' ? null : 'pinned'));
         }}
-        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
+        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
           open !== null ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
         }`}
       >
