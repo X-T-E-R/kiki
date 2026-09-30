@@ -21,6 +21,7 @@ import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '..
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 import { CapabilityIcon } from '../capabilities/CapabilityIcon';
 import { Disclosure, StatusDot, Tag } from '../capabilities/primitives';
+import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { McpBearerValue, McpSecretRows, mcpSecretLines, mcpSecretRows, type McpSecretRow } from './McpSecretRows';
 import { SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
@@ -504,9 +505,26 @@ export function McpConfigManager({
     const status = runtimeFor(entry)?.status;
     return status === 'error' || status === 'disconnected';
   };
-  const ordered = [...entries.filter(needsAttention), ...entries.filter((entry) => !needsAttention(entry))];
   const liveCount = entries.filter((entry) => runtimeFor(entry)?.status === 'connected').length;
   const failing = entries.filter(needsAttention).length;
+
+  const keyOf = (entry: McpManagedServer) => `${entry.source}:${entry.name}`;
+  const textOf = (entry: McpManagedServer) => [
+    entry.name,
+    entry.plugin?.name,
+    entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
+  ];
+  const filters: readonly ListFilterSpec<McpManagedServer>[] = [
+    { id: 'attention', label: t('st.mcp.filter.attention'), tone: 'attention', test: needsAttention },
+    { id: 'connected', label: t('st.mcp.filter.connected'), test: (entry) => runtimeFor(entry)?.status === 'connected' },
+  ];
+  const sorts: readonly ListSortSpec<McpManagedServer>[] = [
+    { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
+    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.name.localeCompare(b.name) },
+  ];
+  // Attention leads in the default order; `useListView` keeps that stable.
+  const attentionFirst = [...entries.filter(needsAttention), ...entries.filter((entry) => !needsAttention(entry))];
+  const view = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
 
   return (
     <div className="space-y-3" data-mcp-manager>
@@ -520,17 +538,23 @@ export function McpConfigManager({
         ) : (
           <span className="text-[12px] text-ink-faint tabular-nums">{entries.length > 0 ? entries.length : ''}</span>
         )}
-        <button
-          type="button"
-          className={`${SECONDARY_BUTTON} ms-auto shrink-0`}
-          data-mcp-add
-          disabled={saving || resetting}
-          onClick={() => { switchDraft(mcpDraft()); }}
-        >
-          {t('st.mcp.add')}
-        </button>
       </div>
       <Hint>{t('st.mcp.configHint')}</Hint>
+      {entries.length > 0 ? (
+        <ListToolbar view={view} total={entries.length} filters={filters} sorts={sorts}
+          searchLabel={t('st.mcp.search')} searchPlaceholder={t('st.mcp.searchPlaceholder')}
+          actions={
+            <button
+              type="button"
+              className={`${SECONDARY_BUTTON} shrink-0`}
+              data-mcp-add
+              disabled={saving || resetting}
+              onClick={() => { switchDraft(mcpDraft()); }}
+            >
+              {t('st.mcp.add')}
+            </button>
+          } />
+      ) : null}
       {/* Add and edit share one side panel: the list stays where it was. */}
       {draft !== null ? (
         <SidePanel
@@ -542,15 +566,18 @@ export function McpConfigManager({
           {editor}
         </SidePanel>
       ) : null}
-      <div className="space-y-0.5">
-        {ordered.map((entry) => {
+      {view.visible.length > 0 ? (
+        <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.mcp.configTitle')}
+          virtualizeAfter={Number.POSITIVE_INFINITY}
+          renderRow={(entry) => {
           const live = runtimeFor(entry);
           const open = expanded === `${entry.source}:${entry.name}`;
           const tools = live === undefined ? [] : runtime?.toolsByServer.get(live.id) ?? [];
           const statusLabel = live === undefined ? t('st.mcp.status.notRunning') : t(`st.mcp.status.${live.status}`);
           return (
-            <div key={`${entry.source}:${entry.name}`} data-mcp-server={entry.name} data-mcp-status={live?.status ?? 'unknown'}>
-              <div className="group flex min-h-14 min-w-0 items-center gap-3 rounded-lg px-2 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]">
+            <div data-mcp-server={entry.name} data-mcp-status={live?.status ?? 'unknown'}>
+              <div className="group flex min-w-0 items-center gap-3 px-3 py-1.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]"
+                style={{ minHeight: LIST_ROW_HEIGHT[view.density] }}>
                 <button
                   type="button"
                   aria-expanded={open}
@@ -564,15 +591,17 @@ export function McpConfigManager({
                       {live !== undefined ? <StatusDot state={runtimeDotState(live.status)} label={statusLabel} /> : null}
                       {entry.mutable ? null : <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>}
                     </span>
-                    <span className={`mt-0.5 block truncate text-[12px] leading-4 ${live?.status === 'error' ? 'text-danger' : 'text-ink-faint'}`}>
-                      {live?.status === 'error' && live.last_error !== undefined
-                        ? live.last_error
-                        : [
-                            entry.config.transport,
-                            live === undefined ? statusLabel : live.status === 'connected' ? tp('cap.mcp.tools', live.tool_count) : statusLabel,
-                            entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
-                          ].filter(Boolean).join(' · ')}
-                    </span>
+                    {view.density === 'compact' ? null : (
+                      <span className={`mt-0.5 block truncate text-[12px] leading-4 ${live?.status === 'error' ? 'text-danger' : 'text-ink-faint'}`}>
+                        {live?.status === 'error' && live.last_error !== undefined
+                          ? live.last_error
+                          : [
+                              entry.config.transport,
+                              live === undefined ? statusLabel : live.status === 'connected' ? tp('cap.mcp.tools', live.tool_count) : statusLabel,
+                              entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
+                            ].filter(Boolean).join(' · ')}
+                      </span>
+                    )}
                   </span>
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
@@ -649,16 +678,30 @@ export function McpConfigManager({
               </div>
             </div>
           );
-        })}
-        {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
-        {!loading && entries.length === 0 && draft === null ? (
-          <div className="rounded-lg px-2 py-6" data-capability-empty>
-            <p className="text-[13px] text-ink-soft">{t('st.mcp.empty')}</p>
-            <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.mcp.emptyBody')}</p>
-          </div>
-        ) : null}
-        {error !== null ? <InlineError error={error} /> : null}
-      </div>
+          }} />
+      ) : entries.length > 0 ? (
+        <ListEmpty kind="no-match" title={t('st.mcp.noMatchTitle')}
+          body={view.query.trim() !== '' ? t('st.mcp.noMatches', { query: view.query.trim() }) : undefined}
+          onClear={view.clear} />
+      ) : null}
+      {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
+      {!loading && entries.length === 0 && draft === null ? (
+        <div data-capability-empty>
+          <ListEmpty kind="none" title={t('st.mcp.empty')} body={t('st.mcp.emptyBody')}
+            action={
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-mcp-add
+                disabled={saving || resetting}
+                onClick={() => { switchDraft(mcpDraft()); }}
+              >
+                {t('st.mcp.add')}
+              </button>
+            } />
+        </div>
+      ) : null}
+      {error !== null ? <InlineError error={error} /> : null}
       <section aria-label={t('st.mcp.storedOAuthTitle')} className="border-t border-hairline pt-3" data-mcp-credentials>
         <Disclosure
           label={savedCredentials !== undefined && savedCredentials.length > 0 ? `${t('st.mcp.storedOAuthTitle')} · ${savedCredentials.length}` : t('st.mcp.storedOAuthTitle')}

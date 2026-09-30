@@ -6621,4 +6621,10 @@ export const en = {
   'usage.pricing.noMatchTitle': 'No models match',
   'cap.skills.noMatchTitle': 'No skills match',
   'cap.plugins.noMatchTitle': 'No plugins match',
+  'st.mcp.search': 'Search servers',
+  'st.mcp.searchPlaceholder': 'Search name or command…',
+  'st.mcp.filter.attention': 'Needs attention',
+  'st.mcp.filter.connected': 'Connected',
+  'st.mcp.noMatchTitle': 'No servers match',
+  'st.mcp.noMatches': 'No servers match “{query}”.',
 } as const;

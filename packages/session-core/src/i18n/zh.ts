@@ -6558,4 +6558,10 @@ export const zh = {
   'usage.pricing.noMatchTitle': '没有匹配的模型',
   'cap.skills.noMatchTitle': '没有匹配的技能',
   'cap.plugins.noMatchTitle': '没有匹配的插件',
+  'st.mcp.search': '搜索服务器',
+  'st.mcp.searchPlaceholder': '按名称或命令搜索…',
+  'st.mcp.filter.attention': '需要注意',
+  'st.mcp.filter.connected': '已连接',
+  'st.mcp.noMatchTitle': '没有匹配的服务器',
+  'st.mcp.noMatches': '没有匹配“{query}”的服务器。',
 };
