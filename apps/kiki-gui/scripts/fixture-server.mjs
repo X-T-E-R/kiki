@@ -66,6 +66,9 @@
  * Personas: `/personas*` is served by fixture-personas.mjs from scenario
  * `personas` / `personaImport` (see that file).
  *
+ * Request identity: `/request-identity*` is served by fixture-request-identity.mjs
+ * from scenario `requestIdentity` (see that file).
+ *
  * Terminals: `/sessions/{id}/terminals*` REST plus the `terminal_*` WS control
  * frames are served by FakeTerminal, a line-oriented echo shell (`echo`, `pwd`,
  * `clear`, `exit [n]`) with PTY-style echo, a 2000-frame replay buffer, and
@@ -83,6 +86,7 @@ import { WebSocketServer } from 'ws';
 import { FixtureKlient } from './fixture-klient.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
 import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
+import { handleRequestIdentity, resetRequestIdentity } from './fixture-request-identity.mjs';
 import { handleBotRooms, resetBotRooms } from './fixture-bot-rooms.mjs';
 import { handleAutoCompact } from './fixture-auto-compact.mjs';
 import { handleContextStrategy, resetContextStrategy } from './fixture-context-strategy.mjs';
@@ -577,6 +581,7 @@ class FixtureServer {
     );
     this.memoryOpCounter = 0;
     resetPersonas(this, data);
+    resetRequestIdentity(this, data);
     resetBotRooms(this, data);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
@@ -1379,6 +1384,7 @@ class FixtureServer {
     const path = url.pathname.slice('/api'.length);
     if (handleAppearance(this, req, res, path)) return;
     if (await handlePersonas(this, req, res, path, url.searchParams)) return;
+    if (await handleRequestIdentity(this, req, res, path)) return;
     if (await handleBotRooms(this, req, res, path, url.searchParams)) return;
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
