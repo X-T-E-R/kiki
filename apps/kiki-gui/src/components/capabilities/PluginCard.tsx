@@ -25,8 +25,10 @@ export function PluginCard({
   entry,
   installed,
   badge,
+  hasUpdate = false,
   onOpen,
   onInstall,
+  onUpdate,
 }: {
   readonly id: string;
   readonly name: string;
@@ -35,8 +37,12 @@ export function PluginCard({
   readonly entry?: PluginMarketplaceEntry;
   readonly installed?: PluginSummary;
   readonly badge?: ReactNode;
+  /** An update from the catalog or GitHub (one answer, computed by the view). */
+  readonly hasUpdate?: boolean;
   readonly onOpen: () => void;
   readonly onInstall?: () => void;
+  /** Opens the update preview; never installs directly. */
+  readonly onUpdate?: () => void;
 }) {
   const { t } = useI18n();
   const host = useHost();
@@ -45,7 +51,7 @@ export function PluginCard({
   // The catalog reports install state on its own; the installed list may lag.
   const isInstalled = installed !== undefined || entry?.installed !== undefined;
   const enabled = installed?.enabled ?? entry?.installed?.enabled ?? true;
-  const state = !isInstalled ? 'install' : entry?.updateAvailable === true ? 'update' : 'installed';
+  const state = !isInstalled ? 'install' : hasUpdate ? 'update' : 'installed';
   const source = entry?.source ?? installed?.originalSource;
   const homepage = entry?.homepage;
   const entries: MiniMenuEntry[] = [
@@ -80,10 +86,10 @@ export function PluginCard({
         meta={line === '' ? undefined : line}
         trailing={(
           <>
-            {state === 'update' && onInstall !== undefined ? (
+            {state === 'update' && onUpdate !== undefined ? (
               <button
                 type="button"
-                onClick={onInstall}
+                onClick={onUpdate}
                 aria-label={t('cap.action.updateNamed', { name })}
                 data-catalog-install={id}
                 className="inline-flex min-h-8 items-center rounded-md px-2.5 text-[13px] font-medium text-accent-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"

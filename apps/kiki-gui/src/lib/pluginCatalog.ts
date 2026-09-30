@@ -10,7 +10,7 @@
  * category never renders.
  */
 
-import type { PluginMarketplaceEntry, PluginSummary } from './client';
+import type { PluginMarketplaceEntry, PluginSummary, PluginUpdateStatus } from './client';
 
 export type CatalogShelfId = 'featured' | 'productivity' | 'coding' | 'web' | 'data' | 'more';
 
@@ -304,3 +304,41 @@ export function planContributionGroups(contributions: readonly string[]): readon
     .toSorted(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))
     .map(([kind, names]) => ({ kind, names }));
 }
+
+// ---------------------------------------------------------------------------
+// Updates: one answer per installed plugin, whichever channel knows.
+
+/**
+ * An available update and where it comes from. Catalog updates reinstall the
+ * catalog entry's source; GitHub updates reinstall the plugin's own recorded
+ * source, which resolves the tracked branch or default ref again. Either way
+ * the install sheet previews first and asks again when anything changed —
+ * nothing here installs on its own.
+ */
+export interface PluginUpdateView {
+  readonly via: 'catalog' | 'github';
+  readonly source: string;
+  /** Catalog version or tag; a branch commit's short sha. */
+  readonly version?: string;
+  /** Set when a GitHub branch moved: the branch whose head is newer. */
+  readonly branch?: string;
+}
+
+export function pluginUpdate(
+  plugin: Pick<PluginSummary, 'id' | 'source' | 'originalSource'> | undefined,
+  entry: Pick<PluginMarketplaceEntry, 'source' | 'version' | 'updateAvailable'> | undefined,
+  github: readonly PluginUpdateStatus[] | undefined,
+): PluginUpdateView | undefined {
+  if (plugin === undefined) return undefined;
+  if (entry?.updateAvailable === true) return { via: 'catalog', source: entry.source, version: entry.version };
+  if (plugin.source !== 'github' || plugin.originalSource === undefined) return undefined;
+  const status = github?.find((item) => item.id === plugin.id);
+  if (status?.updateAvailable !== true) return undefined;
+  return {
+    via: 'github',
+    source: plugin.originalSource,
+    version: status.displayVersion,
+    ...(status.latest.kind === 'branch' ? { branch: status.latest.value } : {}),
+  };
+}
+

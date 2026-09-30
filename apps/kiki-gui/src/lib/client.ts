@@ -609,6 +609,17 @@ export interface HostSkillInstallPreview {
   readonly revision: string;
 }
 
+/** GitHub update status from `pluginService.checkUpdates` (GitHub installs only). */
+export interface PluginUpdateStatus {
+  readonly id: string;
+  readonly source: 'local-path' | 'zip-url' | 'github';
+  readonly current?: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
+  readonly latest: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
+  /** Tag, or the first 12 hex of the tracked branch's head commit. */
+  readonly displayVersion: string;
+  readonly updateAvailable: boolean;
+}
+
 /** Installed plugin summary from GET /api/plugins. */
 export interface PluginSummary {
   readonly id: string;
@@ -1697,6 +1708,14 @@ export class KikiClient {
 
   listPlugins(): Promise<ListPluginsResponse> {
     return this.run(this.klient.global.plugins.list().then((plugins) => ({ plugins: [...plugins] })));
+  }
+
+  /**
+   * Update check for GitHub-installed plugins (the catalog covers the rest).
+   * Read-only: it resolves the tracked ref remotely and never installs.
+   */
+  checkPluginUpdates(): Promise<readonly PluginUpdateStatus[]> {
+    return this.run(this.klient.global.plugins.checkUpdates());
   }
 
   listPluginMarketplace(): Promise<PluginMarketplaceResponse> {

@@ -448,6 +448,10 @@ export class FixtureKlient {
       }
       case 'pluginService.listPlugins':
         return structuredClone(server.plugins);
+      case 'pluginService.checkUpdates':
+        // GitHub installs only, like the real manager; scenario data decides the answer.
+        return structuredClone((server.scenario?.data.pluginGithubUpdates ?? [])
+          .filter((status) => server.plugins.some((plugin) => plugin.id === status.id && plugin.source === 'github')));
       case 'pluginService.getPluginInfo': {
         const [inputValue] = args;
         const pluginId = inputValue.id;

@@ -11,11 +11,13 @@
  * sub-view of both, so every surface shows the same state.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+
+import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
-import { shelfOverflow, shelveCatalog, type CatalogShelfId } from '../../lib/pluginCatalog';
+import { pluginUpdate, shelfOverflow, shelveCatalog, type CatalogShelfId, type PluginUpdateView } from '../../lib/pluginCatalog';
 import { InlineError } from '../controls';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
@@ -26,7 +28,7 @@ import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { PluginCard } from './PluginCard';
 import { PluginDetail } from './PluginDetail';
 import { CapabilitySection, Disclosure, EmptyNote, QUIET_BUTTON, RowGrid, SearchField, Segmented, Tag } from './primitives';
-import { useInstalledPlugins, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
+import { useInstalledPlugins, usePluginGithubUpdates, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
 
 /** Two rows of two cards before a category folds into "See N more". */
 const SHELF_ROWS = 4;
@@ -49,7 +51,7 @@ export function PluginsView({
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale, time } = useI18n();
   const installedQuery = useInstalledPlugins();
   const marketQuery = usePluginMarketplace();
   const recommendQuery = usePluginRecommendations(workspaceRoot);
@@ -60,6 +62,17 @@ export function PluginsView({
 
   const installed = installedQuery.data?.plugins ?? [];
   const entries = marketQuery.data?.entries ?? [];
+  const hasGithub = installed.some((plugin) => plugin.source === 'github');
+  const githubQuery = usePluginGithubUpdates(hasGithub);
+  // One answer per installed plugin: the catalog's newer version, else GitHub's.
+  const updates = useMemo(() => {
+    const map = new Map<string, PluginUpdateView>();
+    for (const plugin of installed) {
+      const update = pluginUpdate(plugin, entries.find((entry) => entry.id === plugin.id), githubQuery.data);
+      if (update !== undefined) map.set(plugin.id, update);
+    }
+    return map;
+  }, [installed, entries, githubQuery.data]);
   const subjectOf = (id: string): PluginSubject => ({
     id,
     installed: installed.find((plugin) => plugin.id === id),
@@ -67,6 +80,21 @@ export function PluginsView({
   });
   const startInstall = (entry: PluginMarketplaceEntry) => {
     setInstall({ source: entry.source, displayName: entry.displayName, icon: entry.icon, entry });
+  };
+  /** Every update goes through the same preview sheet; nothing installs here. */
+  const startUpdate = (plugin: UpdateTarget, update: PluginUpdateView) => {
+    const entry = entries.find((candidate) => candidate.id === plugin.id);
+    setInstall({
+      source: update.source,
+      displayName: plugin.displayName,
+      icon: plugin.icon ?? entry?.icon,
+      entry,
+      update: {
+        fromVersion: plugin.version,
+        enabled: plugin.enabled,
+        ...(update.branch !== undefined && update.version !== undefined ? { branch: { name: update.branch, commit: update.version } } : {}),
+      },
+    });
   };
   const open = (id: string) => { onRoute({ view: 'detail', id }); };
 
@@ -80,7 +108,14 @@ export function PluginsView({
   if (route.view === 'detail') {
     return (
       <>
-        <PluginDetail subject={subjectOf(route.id)} onBack={() => { onRoute({ view: 'market' }); }} onInstall={setInstall} onOpenPanel={onOpenPanel} />
+        <PluginDetail
+          subject={subjectOf(route.id)}
+          update={updates.get(route.id)}
+          onBack={() => { onRoute({ view: 'market' }); }}
+          onInstall={setInstall}
+          onUpdate={startUpdate}
+          onOpenPanel={onOpenPanel}
+        />
         {sheets}
       </>
     );
@@ -91,8 +126,23 @@ export function PluginsView({
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
   const shelves = shelveCatalog(entries, query, relevant);
   const visibleShelves = route.view === 'shelf' ? shelves.filter((shelf) => shelf.id === route.shelf) : shelves;
-  const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors).length
-    + entries.filter((entry) => entry.updateAvailable === true).length;
+  const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
+  const updateCheck = hasGithub ? (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[12px] leading-[18px]" data-plugins-update-check={githubQuery.isFetching ? 'checking' : githubQuery.isError ? 'failed' : 'checked'}>
+      {githubQuery.isFetching ? (
+        <span className="flex items-center gap-2 text-ink-faint" role="status"><Spinner label={t('cap.updates.checking')} size={12} />{t('cap.updates.checking')}</span>
+      ) : githubQuery.isError ? (
+        <span className="text-danger" role="alert">{t('cap.updates.failed', { detail: errorText(locale, githubQuery.error) })}</span>
+      ) : githubQuery.dataUpdatedAt > 0 ? (
+        <span className="text-ink-faint">{t('cap.updates.checked', { time: time.relativeTime(new Date(githubQuery.dataUpdatedAt).toISOString()) })}</span>
+      ) : null}
+      {!githubQuery.isFetching ? (
+        <button type="button" className={`${QUIET_BUTTON} -ml-2 min-h-7 text-[12px]`} onClick={() => { void githubQuery.refetch(); }} data-plugins-check-updates>
+          {t('cap.updates.check')}
+        </button>
+      ) : null}
+    </div>
+  ) : undefined;
 
   return (
     <div className="min-w-0 space-y-6" data-plugins-view={route.view}>
@@ -124,8 +174,10 @@ export function PluginsView({
           query={query}
           loading={installedQuery.isPending}
           error={installedQuery.isError ? installedQuery.error : undefined}
+          updates={updates}
+          updateCheck={updateCheck}
           onOpen={open}
-          onUpdate={startInstall}
+          onUpdate={startUpdate}
           onAdd={() => { setAdding(true); }}
         />
       ) : (
@@ -160,8 +212,10 @@ export function PluginsView({
                   expanded={route.view === 'shelf' || filtering}
                   installed={installed}
                   relevant={relevant}
+                  updates={updates}
                   onOpen={open}
                   onInstall={startInstall}
+                  onUpdate={startUpdate}
                   onMore={() => { onRoute({ view: 'shelf', shelf: shelf.id }); }}
                 />
               ))}
@@ -192,6 +246,9 @@ export function PluginsView({
   );
 }
 
+/** What an update needs to know about the installed copy. */
+type UpdateTarget = Pick<PluginSummary, 'id' | 'displayName' | 'icon' | 'version' | 'enabled'>;
+
 const SHELF_TITLE = {
   featured: 'cap.shelf.featured',
   productivity: 'cap.shelf.productivity',
@@ -207,8 +264,10 @@ function CatalogShelfSection({
   expanded,
   installed,
   relevant,
+  updates,
   onOpen,
   onInstall,
+  onUpdate,
   onMore,
 }: {
   readonly id: CatalogShelfId;
@@ -217,8 +276,10 @@ function CatalogShelfSection({
   readonly expanded: boolean;
   readonly installed: readonly PluginSummary[];
   readonly relevant: ReadonlySet<string>;
+  readonly updates: ReadonlyMap<string, PluginUpdateView>;
   readonly onOpen: (id: string) => void;
   readonly onInstall: (entry: PluginMarketplaceEntry) => void;
+  readonly onUpdate: (plugin: UpdateTarget, update: PluginUpdateView) => void;
   readonly onMore: () => void;
 }) {
   const { t } = useI18n();
@@ -226,7 +287,14 @@ function CatalogShelfSection({
   return (
     <CapabilitySection id={`plugins-shelf-${id}`} title={t(SHELF_TITLE[id])} count={expanded ? entries.length : undefined}>
       <RowGrid>
-        {shown.map((entry) => (
+        {shown.map((entry) => {
+          const plugin = installed.find((item) => item.id === entry.id);
+          // The catalog can report an install the list has not caught up with yet.
+          const update = updates.get(entry.id)
+            ?? (entry.updateAvailable === true && entry.installed !== undefined ? { via: 'catalog' as const, source: entry.source, version: entry.version } : undefined);
+          const target: UpdateTarget | undefined = plugin
+            ?? (entry.installed !== undefined ? { id: entry.id, displayName: entry.displayName, icon: entry.icon, version: entry.installed.version, enabled: entry.installed.enabled } : undefined);
+          return (
           <PluginCard
             key={entry.id}
             id={entry.id}
@@ -234,14 +302,17 @@ function CatalogShelfSection({
             icon={entry.icon}
             line={entry.description ?? ''}
             entry={entry}
-            installed={installed.find((plugin) => plugin.id === entry.id)}
+            installed={plugin}
+            hasUpdate={update !== undefined}
             badge={relevant.has(entry.id) && id === 'featured' && entry.installed === undefined
               ? <Tag tone="accent">{t('cap.plugins.relevant')}</Tag>
               : entry.tier === 'third-party' ? <Tag tone="warn">{t('cap.tier.thirdParty')}</Tag> : undefined}
             onOpen={() => { onOpen(entry.id); }}
             onInstall={() => { onInstall(entry); }}
+            onUpdate={target !== undefined && update !== undefined ? () => { onUpdate(target, update); } : undefined}
           />
-        ))}
+          );
+        })}
       </RowGrid>
       {hidden.length > 0 ? (
         <button type="button" className={`${QUIET_BUTTON} mt-2 -ml-0.5`} data-plugins-shelf-more={id} onClick={onMore}>

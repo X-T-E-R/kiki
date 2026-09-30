@@ -85,6 +85,18 @@ const SKETCHBOOK = summary('sketchbook', {
   originalSource: 'D:/work/plugins/sketchbook',
 });
 
+// GitHub install tracking a branch; the catalog does not list it, so only
+// the GitHub check knows its head moved.
+const LINT_RULES = summary('lint-rules', {
+  displayName: 'Lint rules',
+  version: '0.4.0',
+  skillCount: 1,
+  commandCount: 1,
+  source: 'github',
+  originalSource: 'https://github.com/example/lint-rules/tree/main',
+  github: { owner: 'example', repo: 'lint-rules', ref: { kind: 'branch', value: 'main' }, installedSha: '1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d' },
+});
+
 const catalog = (id, tier, displayName, description, keywords, extra = {}) => ({
   id, tier, displayName, description, keywords, version: '1.0.0', source: `https://github.com/example/${id}`, ...extra,
 });
@@ -96,7 +108,11 @@ export default {
     default_model: 'fixture/kiki-pro',
     plugins: { marketplaceUrl: 'C:/kiki/plugins/marketplace.json' },
   },
-  plugins: [WRITING, RESEARCH, BROKEN, SKETCHBOOK],
+  plugins: [WRITING, RESEARCH, BROKEN, SKETCHBOOK, LINT_RULES],
+  pluginGithubUpdates: [
+    { id: 'lint-rules', source: 'github', current: { kind: 'branch', value: 'main' }, latest: { kind: 'branch', value: 'main' }, displayVersion: '9e8d7c6b5a41', updateAvailable: true },
+    { id: 'research', source: 'github', current: { kind: 'tag', value: 'v1.4.0' }, latest: { kind: 'tag', value: 'v1.4.0' }, displayVersion: 'v1.4.0', updateAvailable: false },
+  ],
   pluginInfos: {
     'kiki-writing': {
       ...WRITING,
@@ -216,6 +232,13 @@ export default {
         contributions: ['skill:0', 'skill:1', 'skill:2', 'command:plan'], contextTokens: 420, unsupported: ['hooks/SessionStart'],
       },
       summary: summary('superpowers', { displayName: 'superpowers', version: '1.0.0', source: 'github', skillCount: 3 }),
+    },
+    'https://github.com/example/lint-rules/tree/main': {
+      plan: {
+        id: 'lint-rules', version: '0.4.0', fingerprint: 'd'.repeat(64), changes: [], consentRequired: false,
+        contributions: ['skill:0', 'command:lint'], contextTokens: 310, unsupported: [],
+      },
+      summary: LINT_RULES,
     },
     'https://github.com/example/sql-lens': {
       error: { code: 40001, msg: 'The plugin requires Kiki ^0.9.0; this server runs 0.4.0.' },

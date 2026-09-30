@@ -72,7 +72,9 @@ export function handlePlugins(server, res, path, method, body) {
       server.envelope(res, null, 40001, 'This plugin needs your consent to install.');
       return true;
     }
-    const summary = { ...candidate.summary, enabled: false };
+    // Like the real manager: a new plugin lands off, a reinstall keeps its switch.
+    const existing = server.plugins.find((plugin) => plugin.id === candidate.summary.id);
+    const summary = { ...candidate.summary, enabled: existing?.enabled ?? false };
     server.plugins = server.plugins.filter((plugin) => plugin.id !== summary.id);
     server.plugins.push(summary);
     if (candidate.info !== undefined) {

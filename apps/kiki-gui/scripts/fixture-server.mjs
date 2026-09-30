@@ -520,6 +520,7 @@ class FixtureServer {
     const module = await import(pathToFileURL(file).href);
     const data = module.default;
     this.scenario = { name, data };
+    this.hostSkillStaleOnce = undefined;
     this.config = structuredClone(data.config ?? {
       default_model: 'fixture/kiki-pro',
       default_permission_mode: 'manual',

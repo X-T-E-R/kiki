@@ -10,7 +10,9 @@
  * after the plugin itself — installing the plugin never downloads it.
  *
  * A new plugin lands disabled on the server; this flow enables it right after
- * install because the user just asked for it.
+ * install because the user just asked for it. An update (`request.update`)
+ * reuses the same sheet: it lists what changed, asks again only when the
+ * preview says consent is required, and leaves the on/off switch as it was.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -27,7 +29,7 @@ import { Icon, Spinner } from '../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { CapabilityIcon } from './CapabilityIcon';
 import { Disclosure, FactList } from './primitives';
-import { PermissionList } from './PermissionList';
+import { PermissionBoundary, PermissionList } from './PermissionList';
 import { useInvalidatePlugins } from './usePlugins';
 
 export interface InstallRequest {
@@ -38,6 +40,14 @@ export interface InstallRequest {
   readonly entry?: PluginMarketplaceEntry;
   /** Prerequisites already known from the catalog/detail, shown in the sheet. */
   readonly prerequisites?: readonly PluginPrerequisiteView[];
+  /** Set when this replaces an installed copy. */
+  readonly update?: {
+    readonly fromVersion?: string;
+    /** A moved GitHub branch: its name and new head, when versions do not differ. */
+    readonly branch?: { readonly name: string; readonly commit: string };
+    /** The switch state to keep; an update never turns a plugin on. */
+    readonly enabled: boolean;
+  };
 }
 
 type Phase =
@@ -91,8 +101,8 @@ export function InstallFlow({
         fingerprint: plan.fingerprint,
         consent: plan.consentRequired,
       });
-      await client.setPluginEnabled(installed.id, true);
-      await invalidate();
+      if (request.update === undefined) await client.setPluginEnabled(installed.id, true);
+      await invalidate({ code: true });
       // The preview plan does not carry prerequisites; the installed manifest does.
       const info = await client.getPlugin(installed.id).catch(() => undefined);
       const declared = info === undefined ? [] : pluginPrerequisites(info, info.manifest as Readonly<Record<string, unknown>> | undefined);
@@ -119,7 +129,8 @@ export function InstallFlow({
   const needsConsent = plan?.consentRequired === true;
   const prerequisites = (request.prerequisites ?? []).filter((item) => item.kind === 'executable');
   const busy = phase.kind === 'installing';
-  const title = t('cap.install.title', { name: request.displayName });
+  const updating = request.update !== undefined;
+  const title = updating ? t('cap.update.title', { name: request.displayName }) : t('cap.install.title', { name: request.displayName });
 
   return (
     <Dialog
@@ -134,10 +145,15 @@ export function InstallFlow({
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-[18px] leading-6 text-ink">{title}</h2>
           <p className="mt-0.5 truncate text-[12px] text-ink-faint">
-            {plan?.version !== undefined ? `v${plan.version} · ` : ''}
+            {request.update?.branch !== undefined
+              ? `${t('cap.update.branch', { branch: request.update.branch.name, version: request.update.branch.commit })}${request.entry !== undefined ? ' · ' : ''}`
+              : updating && request.update?.fromVersion !== undefined && plan?.version !== undefined && request.update.fromVersion !== plan.version
+                ? `v${request.update.fromVersion} → v${plan.version} · `
+                : plan?.version !== undefined ? `v${plan.version} · ` : ''}
             {request.entry?.tier === 'official' ? t('cap.tier.official')
               : request.entry?.tier === 'curated' ? t('cap.tier.curated')
-                : t('cap.tier.thirdParty')}
+                // An update of something the catalog does not list: its origin is already on the row.
+                : request.entry?.tier === 'third-party' || !updating ? t('cap.tier.thirdParty') : ''}
           </p>
         </div>
       </div>
@@ -174,6 +190,7 @@ export function InstallFlow({
               <div data-install-permissions>
                 <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.canDo')}</p>
                 <PermissionList permissions={permissions!} className="mt-1.5" />
+                <PermissionBoundary className="mt-2.5" />
               </div>
             ) : (
               <p className="text-ink-soft" data-install-no-permissions>{t('cap.install.noPermissions')}</p>
@@ -194,6 +211,9 @@ export function InstallFlow({
               </div>
             ) : null}
 
+            {updating && plan.changes.length === 0 ? (
+              <p className="text-ink-soft" data-install-no-changes>{t('cap.update.noChanges')}</p>
+            ) : null}
             {plan.changes.length > 0 ? (
               <div data-install-changes>
                 <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.changes')}</p>
@@ -214,7 +234,6 @@ export function InstallFlow({
                     : []),
                 ]}
               />
-              <p className="mt-2 text-[12px] leading-4 text-ink-faint">{t('cap.install.approvalNote')}</p>
             </Disclosure>
           </>
         ) : null}
@@ -223,7 +242,7 @@ export function InstallFlow({
           <div className="space-y-4" data-install-done>
             <p className="flex items-center gap-2 text-ink" role="status">
               <span className="text-success"><Icon name="check" size={14} /></span>
-              {t('cap.install.done', { name: request.displayName })}
+              {updating ? t('cap.update.done', { name: request.displayName }) : t('cap.install.done', { name: request.displayName })}
             </p>
             {(phase.prerequisites.length > 0 ? phase.prerequisites : prerequisites).map((item) => (
               <div key={item.id} className="rounded-lg bg-ink/[0.03] px-3 py-3" data-install-prerequisite={item.id}>
@@ -278,7 +297,9 @@ export function InstallFlow({
                 disabled={plan === undefined || busy}
                 onClick={() => { if (plan !== undefined) void install(plan); }}
               >
-                {busy ? t('cap.install.installing') : needsConsent ? t('cap.install.allow') : t('cap.install.confirm')}
+                {updating
+                  ? busy ? t('cap.update.installing') : needsConsent ? t('cap.update.allow') : t('cap.update.confirm')
+                  : busy ? t('cap.install.installing') : needsConsent ? t('cap.install.allow') : t('cap.install.confirm')}
               </button>
             )}
           </>

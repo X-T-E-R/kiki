@@ -12,6 +12,7 @@ import {
   pluginContributions,
   pluginPermissions,
   pluginPrerequisites,
+  pluginUpdate,
   shelveCatalog,
   toolDisplayName,
 } from './pluginCatalog';
@@ -240,5 +241,32 @@ describe('plugin panel bridge', () => {
     expect(typeof bridgeBody({ ...base, method: 'plugin.call', action: '../x' }, 's1')).toBe('string');
     expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: { a: 1 } }, 's1'))
       .toEqual({ method: 'plugin.call', session_id: 's1', action: 'save', args: { a: 1 } });
+  });
+});
+
+describe('pluginUpdate', () => {
+  const github = { id: 'lint', source: 'github' as const, originalSource: 'https://github.com/example/lint/tree/main' };
+  const status = (updateAvailable: boolean, kind: 'branch' | 'tag' = 'branch') => ({
+    id: 'lint', source: 'github' as const, latest: { kind, value: kind === 'branch' ? 'main' : 'v2.0.0' },
+    displayVersion: kind === 'branch' ? '9e8d7c6b5a41' : 'v2.0.0', updateAvailable,
+  });
+
+  it('prefers the catalog answer and reinstalls from the catalog source', () => {
+    expect(pluginUpdate(github, { source: 'https://example.test/lint.zip', version: '2.0.0', updateAvailable: true }, [status(true)]))
+      .toEqual({ via: 'catalog', source: 'https://example.test/lint.zip', version: '2.0.0' });
+  });
+
+  it('falls back to GitHub for GitHub installs and reinstalls from the recorded source', () => {
+    expect(pluginUpdate(github, undefined, [status(true)]))
+      .toEqual({ via: 'github', source: github.originalSource, version: '9e8d7c6b5a41', branch: 'main' });
+    expect(pluginUpdate(github, undefined, [status(true, 'tag')]))
+      .toEqual({ via: 'github', source: github.originalSource, version: 'v2.0.0' });
+  });
+
+  it('reports nothing when neither channel has an update or the check has not answered', () => {
+    expect(pluginUpdate(github, undefined, [status(false)])).toBeUndefined();
+    expect(pluginUpdate(github, undefined, undefined)).toBeUndefined();
+    expect(pluginUpdate({ ...github, source: 'local-path' }, undefined, [status(true)])).toBeUndefined();
+    expect(pluginUpdate(undefined, { source: 'x', updateAvailable: true }, [])).toBeUndefined();
   });
 });

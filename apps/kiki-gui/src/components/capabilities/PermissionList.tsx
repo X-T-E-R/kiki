@@ -1,7 +1,8 @@
 /**
  * Declared plugin permissions in the user's terms. Declarations, not an OS
  * sandbox: the list says what the plugin asked for, and every tool call still
- * goes through the normal per-call approval.
+ * goes through the normal per-call approval. `PermissionBoundary` says that
+ * in one sentence wherever the list is shown for consent or review.
  */
 
 import { useI18n } from '../../i18n';
@@ -34,5 +35,19 @@ export function PermissionList({ permissions, className = '' }: { readonly permi
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The trust boundary, stated where the permissions are: consent to install is
+ * not per-call approval and not a sandbox. Same sentence in the install sheet
+ * and on the detail page so the two never disagree.
+ */
+export function PermissionBoundary({ className = '' }: { readonly className?: string }) {
+  const { t } = useI18n();
+  return (
+    <p className={`max-w-[62ch] border-l-2 border-hairline-strong pl-2.5 text-[12px] leading-[18px] text-ink-soft ${className}`} data-permission-boundary>
+      {t('cap.perm.boundary')}
+    </p>
   );
 }

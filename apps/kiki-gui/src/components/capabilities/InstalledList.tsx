@@ -1,16 +1,20 @@
 /**
  * Installed — every plugin on this server as one management list. A row is
  * icon, name, where it came from (official, catalog, a local folder, git, a
- * ZIP), version, an update hint when the catalog has a newer one, the enable
- * switch, and a ⋯ menu (details, turn off, remove, homepage). Plugins that
- * need attention lead; the rest keep install order.
+ * ZIP), version, an update hint when the catalog or GitHub has a newer one,
+ * the enable switch, and a ⋯ menu (details, turn off, remove, homepage).
+ *
+ * Rows fall into four groups in this order, each shown only when non-empty:
+ * needs attention (errors), updates available, on, off. Within a group the
+ * server's install order holds. Under a search the groups collapse into one
+ * list, since the query already narrows it.
  */
 
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
 import { copyTextToClipboard } from '../../lib/clipboard';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
-import { installedMatches, pluginOrigin, type PluginOrigin } from '../../lib/pluginCatalog';
+import { installedMatches, pluginOrigin, type PluginOrigin, type PluginUpdateView } from '../../lib/pluginCatalog';
 import { openExternalUrl } from '../../host/external';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -36,6 +40,8 @@ export function InstalledList({
   query,
   loading,
   error,
+  updates,
+  updateCheck,
   onOpen,
   onUpdate,
   onAdd,
@@ -45,8 +51,12 @@ export function InstalledList({
   readonly query: string;
   readonly loading: boolean;
   readonly error?: unknown;
+  /** Available update per plugin id, from the catalog or GitHub. */
+  readonly updates: ReadonlyMap<string, PluginUpdateView>;
+  /** The GitHub check line under the list; absent without GitHub installs. */
+  readonly updateCheck?: ReactNode;
   readonly onOpen: (id: string) => void;
-  readonly onUpdate: (entry: PluginMarketplaceEntry) => void;
+  readonly onUpdate: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onAdd: () => void;
 }) {
   const { t } = useI18n();
@@ -71,7 +81,11 @@ export function InstalledList({
 
   const broken = (plugin: PluginSummary) => plugin.state === 'error' || plugin.hasErrors;
   const visible = plugins.filter((plugin) => installedMatches(plugin, query));
-  const ordered = [...visible.filter(broken), ...visible.filter((plugin) => !broken(plugin))];
+  const groupOf = (plugin: PluginSummary): InstalledGroup =>
+    broken(plugin) ? 'attention' : updates.has(plugin.id) ? 'updates' : plugin.enabled ? 'on' : 'off';
+  const groups = query.trim() !== ''
+    ? [{ id: 'all' as const, plugins: visible }]
+    : GROUP_ORDER.map((id) => ({ id, plugins: visible.filter((plugin) => groupOf(plugin) === id) })).filter((group) => group.plugins.length > 0);
 
   if (loading) return <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
   if (error !== undefined) return <InlineError error={error} />;
@@ -84,25 +98,37 @@ export function InstalledList({
       />
     );
   }
-  if (ordered.length === 0) return <EmptyNote title={t('cap.plugins.noMatch', { query: query.trim() })} />;
+  if (visible.length === 0) return <EmptyNote title={t('cap.plugins.noMatch', { query: query.trim() })} />;
 
   return (
-    <div className="min-w-0" data-installed-list>
-      <ul className="divide-y divide-hairline border-y border-hairline">
-        {ordered.map((plugin) => (
-          <InstalledRow
-            key={plugin.id}
-            plugin={plugin}
-            origin={pluginOrigin(plugin, entries)}
-            entry={entries.find((entry) => entry.id === plugin.id)}
-            busy={busy === plugin.id}
-            onOpen={() => { onOpen(plugin.id); }}
-            onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
-            onUpdate={onUpdate}
-            onRemove={() => { setRemoving(plugin); }}
-          />
-        ))}
-      </ul>
+    <div className="min-w-0 space-y-6" data-installed-list>
+      {groups.map((group) => (
+        <section key={group.id} data-installed-group={group.id} aria-labelledby={group.id === 'all' ? undefined : `installed-group-${group.id}`}>
+          {group.id !== 'all' ? (
+            <h2 id={`installed-group-${group.id}`} className={`mb-1 flex items-center gap-1.5 px-2 text-[12px] font-medium ${group.id === 'attention' ? 'text-danger' : group.id === 'updates' ? 'text-accent-ink' : 'text-ink-soft'}`}>
+              {t(GROUP_KEYS[group.id])}
+              <span className="font-normal tabular-nums text-ink-faint">{group.plugins.length}</span>
+            </h2>
+          ) : null}
+          <ul className="divide-y divide-hairline border-y border-hairline">
+            {group.plugins.map((plugin) => (
+              <InstalledRow
+                key={plugin.id}
+                plugin={plugin}
+                origin={pluginOrigin(plugin, entries)}
+                entry={entries.find((entry) => entry.id === plugin.id)}
+                update={updates.get(plugin.id)}
+                busy={busy === plugin.id}
+                onOpen={() => { onOpen(plugin.id); }}
+                onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
+                onUpdate={(update) => { onUpdate(plugin, update); }}
+                onRemove={() => { setRemoving(plugin); }}
+              />
+            ))}
+          </ul>
+        </section>
+      ))}
+      {updateCheck}
       {failure !== null ? <div className="mt-2"><InlineError error={failure} /></div> : null}
       <ConfirmDialog
         open={removing !== null}
@@ -123,10 +149,20 @@ export function InstalledList({
   );
 }
 
+type InstalledGroup = 'attention' | 'updates' | 'on' | 'off';
+const GROUP_ORDER: readonly InstalledGroup[] = ['attention', 'updates', 'on', 'off'];
+const GROUP_KEYS = {
+  attention: 'cap.installed.group.attention',
+  updates: 'cap.installed.group.updates',
+  on: 'cap.installed.group.on',
+  off: 'cap.installed.group.off',
+} as const satisfies Record<InstalledGroup, string>;
+
 function InstalledRow({
   plugin,
   origin,
   entry,
+  update,
   busy,
   onOpen,
   onToggle,
@@ -136,10 +172,11 @@ function InstalledRow({
   readonly plugin: PluginSummary;
   readonly origin: PluginOrigin;
   readonly entry?: PluginMarketplaceEntry;
+  readonly update?: PluginUpdateView;
   readonly busy: boolean;
   readonly onOpen: () => void;
   readonly onToggle: (enabled: boolean) => void;
-  readonly onUpdate: (entry: PluginMarketplaceEntry) => void;
+  readonly onUpdate: (update: PluginUpdateView) => void;
   readonly onRemove: () => void;
 }) {
   const { t } = useI18n();
@@ -147,7 +184,6 @@ function InstalledRow({
   const anchor = useRef<HTMLSpanElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const broken = plugin.state === 'error' || plugin.hasErrors;
-  const update = entry?.updateAvailable === true ? entry : undefined;
   const homepage = entry?.homepage;
   const source = plugin.originalSource;
   const entries: MiniMenuEntry[] = [
@@ -196,7 +232,7 @@ function InstalledRow({
           data-plugin-update={plugin.id}
           className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
-          {t('cap.plugins.updateTo', { version: update.version ?? '' })}
+          {update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.action.update')}
         </button>
       ) : null}
       {/* The word beside the switch drops on narrow widths; the switch keeps it as its name. */}

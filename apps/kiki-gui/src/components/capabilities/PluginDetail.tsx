@@ -18,8 +18,9 @@ import {
   pluginPermissions,
   pluginPrerequisites,
   type PluginContributions,
+  type PluginUpdateView,
 } from '../../lib/pluginCatalog';
-import type { PluginInfo } from '../../lib/client';
+import type { PluginInfo, PluginSummary } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Toggle } from '../controls';
@@ -28,7 +29,7 @@ import { Icon } from '../icons';
 import { DANGER_BUTTON, DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { CapabilityGlyph, CapabilityIcon } from './CapabilityIcon';
 import type { InstallRequest } from './InstallFlow';
-import { PermissionList } from './PermissionList';
+import { PermissionBoundary, PermissionList } from './PermissionList';
 import { PluginSettingsForm } from './PluginSettingsForm';
 import { Disclosure, FactList, Tag } from './primitives';
 import {
@@ -42,13 +43,18 @@ import {
 
 export function PluginDetail({
   subject,
+  update,
   onBack,
   onInstall,
+  onUpdate,
   onOpenPanel,
 }: {
   readonly subject: PluginSubject;
+  /** Available update from the catalog or GitHub; shown, never auto-installed. */
+  readonly update?: PluginUpdateView;
   readonly onBack: () => void;
   readonly onInstall: (request: InstallRequest) => void;
+  readonly onUpdate?: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
 }) {
   const { client } = useConnection();
@@ -121,12 +127,21 @@ export function PluginDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <h1 className="font-display text-[22px] leading-7 text-ink">{name}</h1>
-            <TierTag tier={subject.entry?.tier} installed={installed !== undefined} />
+            <TierTag tier={subject.entry?.tier} installed={installed} />
           </div>
           {description !== undefined ? <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{description}</p> : null}
           <p className="mt-1 text-[12px] text-ink-faint">
             {version !== undefined ? `v${version}` : null}
-            {subject.entry?.updateAvailable === true ? <> · <span className="text-accent-ink">{t('cap.detail.updateAvailable')}</span></> : null}
+            {update !== undefined ? (
+              <>
+                {version !== undefined ? ' · ' : null}
+                <span className="font-medium text-accent-ink" data-plugin-update-state={update.via}>
+                  {update.branch !== undefined && update.version !== undefined
+                    ? t('cap.update.branch', { branch: update.branch, version: update.version })
+                    : update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.detail.updateAvailable')}
+                </span>
+              </>
+            ) : null}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -136,8 +151,8 @@ export function PluginDetail({
             </button>
           ) : (
             <>
-              {subject.entry?.updateAvailable === true && catalogSource !== undefined ? (
-                <button type="button" className={SECONDARY_BUTTON} onClick={install} data-plugin-update={subject.id}>{t('cap.action.update')}</button>
+              {update !== undefined && onUpdate !== undefined ? (
+                <button type="button" className={SECONDARY_BUTTON} onClick={() => { onUpdate(installed, update); }} data-plugin-update={subject.id}>{t('cap.action.update')}</button>
               ) : null}
               <Toggle
                 label={installed.enabled ? t('cap.state.on') : t('cap.state.off')}
@@ -184,7 +199,10 @@ export function PluginDetail({
               {installed === undefined ? (
                 <p className="text-[13px] text-ink-soft">{t('cap.detail.needsOnPreview')}</p>
               ) : hasAnyPermission(permissions) ? (
-                <PermissionList permissions={permissions} />
+                <>
+                  <PermissionList permissions={permissions} />
+                  <PermissionBoundary />
+                </>
               ) : (
                 <p className="text-[13px] text-ink-soft">{t('cap.install.noPermissions')}</p>
               )}
@@ -219,7 +237,6 @@ export function PluginDetail({
               <div className="space-y-2" data-plugin-permissions-detail>
                 <p className="text-[12px] font-medium text-ink-soft">{t('cap.detail.permissionsDeclared')}</p>
                 <PermissionList permissions={permissions} />
-                <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('cap.install.approvalNote')}</p>
               </div>
             ) : null}
             {prerequisites.length > 0 ? (
@@ -322,12 +339,14 @@ function removalConsequences(t: ReturnType<typeof useI18n>['t'], contributions: 
   return lines;
 }
 
-function TierTag({ tier, installed }: { readonly tier?: 'official' | 'curated' | 'third-party'; readonly installed: boolean }) {
+function TierTag({ tier, installed }: { readonly tier?: 'official' | 'curated' | 'third-party'; readonly installed?: PluginSummary }) {
   const { t } = useI18n();
   if (tier === 'official') return <Tag>{t('cap.tier.official')}</Tag>;
   if (tier === 'curated') return <Tag>{t('cap.tier.curated')}</Tag>;
   if (tier === 'third-party') return <Tag tone="warn">{t('cap.tier.thirdParty')}</Tag>;
-  return installed ? <Tag>{t('cap.tier.local')}</Tag> : null;
+  // Not in the catalog: say how it was installed, as the Installed list does.
+  if (installed === undefined) return null;
+  return <Tag>{installed.source === 'github' ? t('cap.origin.git') : installed.source === 'zip-url' ? t('cap.origin.zip') : t('cap.tier.local')}</Tag>;
 }
 
 function ContributionList({

@@ -27,7 +27,8 @@ const PLUGIN = {
   originalSource: '/tmp/notes',
 };
 
-const listPlugins = vi.fn(async () => ({ plugins: [PLUGIN] }));
+const listPlugins = vi.fn(async (): Promise<{ plugins: readonly (typeof PLUGIN | Record<string, unknown>)[] }> => ({ plugins: [PLUGIN] }));
+const checkPluginUpdates = vi.fn(async (): Promise<readonly unknown[]> => []);
 const listPluginMarketplace = vi.fn(async (): Promise<PluginMarketplaceResponse> => ({
   configured: false,
   entries: [],
@@ -53,7 +54,7 @@ const PLAN = {
   contributions: ['tool:office_view', 'tool:office_set', 'skill:0'], contextTokens: 900, unsupported: [] as string[],
 };
 const previewPlugin = vi.fn(async () => PLAN);
-const installPreviewedPlugin = vi.fn(async () => ({ ...PLUGIN, id: 'catalog-notes', displayName: 'Catalog Notes', enabled: false }));
+const installPreviewedPlugin = vi.fn(async (): Promise<Record<string, unknown>> => ({ ...PLUGIN, id: 'catalog-notes', displayName: 'Catalog Notes', enabled: false }));
 const rollbackPlugin = vi.fn(async () => ({ ok: true }));
 const installPluginPrerequisite = vi.fn(async () => ({ ok: true }));
 const recommendPlugins = vi.fn(async () => ({ entries: [] }));
@@ -82,6 +83,7 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listPlugins,
+      checkPluginUpdates,
       listPluginMarketplace,
       getPlugin,
       getConfig,
@@ -121,6 +123,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) root.unmount();
   for (const container of containers.splice(0)) container.remove();
   listPlugins.mockClear();
+  checkPluginUpdates.mockReset();
+  checkPluginUpdates.mockResolvedValue([]);
   listPluginMarketplace.mockClear();
   getPlugin.mockClear();
   getConfig.mockClear();
@@ -294,6 +298,7 @@ describe('PluginsSection', () => {
     const sheet = document.querySelector('[data-install-flow]')!;
     expect(sheet.textContent).toContain('It will be able to');
     expect(sheet.textContent).toContain('officecli');
+    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('not a sandbox');
     const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
     expect(confirm.textContent).toBe('Allow and install');
     await click(confirm);
@@ -337,6 +342,62 @@ describe('PluginsSection', () => {
     expect(container.querySelector('[data-catalog-install="notes"]')).toBeNull();
     expect(container.querySelector('[data-catalog-row="notes-next"]')?.getAttribute('data-catalog-state')).toBe('update');
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
+  });
+
+  it('checks GitHub only when a GitHub install exists and flags its update without installing', async () => {
+    await renderView();
+    expect(checkPluginUpdates).not.toHaveBeenCalled();
+
+    const GITHUB = {
+      ...PLUGIN, id: 'lint', displayName: 'Lint', version: '0.4.0', source: 'github' as const,
+      originalSource: 'https://github.com/example/lint/tree/main',
+      github: { owner: 'example', repo: 'lint', ref: { kind: 'branch' as const, value: 'main' }, installedSha: 'a'.repeat(40) },
+    };
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN, { ...GITHUB, enabled: false }] });
+    checkPluginUpdates.mockResolvedValue([{
+      id: 'lint', source: 'github', current: { kind: 'branch', value: 'main' }, latest: { kind: 'branch', value: 'main' },
+      displayVersion: '9e8d7c6b5a41', updateAvailable: true,
+    }]);
+    const container = await renderView();
+    await flush();
+    expect(checkPluginUpdates).toHaveBeenCalledTimes(1);
+    expect(previewPlugin).not.toHaveBeenCalled();
+    expect(installPreviewedPlugin).not.toHaveBeenCalled();
+    // The update group leads the healthy ones, and the row offers the same Update button as catalog updates.
+    const groups = [...container.querySelectorAll('[data-installed-group]')].map((node) => node.getAttribute('data-installed-group'));
+    expect(groups).toEqual(['updates', 'on']);
+    const row = container.querySelector('[data-installed-group="updates"] [data-plugin-row="lint"]')!;
+    expect(row.querySelector('[data-plugin-update="lint"]')?.textContent).toBe('Update to 9e8d7c6b5a41');
+    expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('nothing installs on its own');
+
+    // Update reuses the preview sheet on the plugin's own source and keeps it off.
+    previewPlugin.mockResolvedValueOnce({ ...PLAN, id: 'lint', version: '0.4.0', consentRequired: false, changes: [], permissions: undefined as never });
+    installPreviewedPlugin.mockResolvedValueOnce({ ...GITHUB, enabled: false });
+    await click(row.querySelector('[data-plugin-update="lint"]')!);
+    await flush();
+    expect(previewPlugin).toHaveBeenCalledWith(GITHUB.originalSource, undefined);
+    expect(installPreviewedPlugin).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-install-no-changes]')).not.toBeNull();
+    const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
+    expect(confirm.textContent).toBe('Update');
+    await click(confirm);
+    await flush();
+    expect(installPreviewedPlugin).toHaveBeenCalledWith({ source: GITHUB.originalSource, sha256: undefined, fingerprint: PLAN.fingerprint, consent: false });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
+  });
+
+  it('states the trust boundary next to declared permissions on the detail page', async () => {
+    getPlugin.mockResolvedValueOnce({
+      ...PLUGIN, root: '/tmp/notes', installedAt: '2026-01-01T00:00:00.000Z',
+      manifest: { name: 'notes', 'x-kiki': { permissions: { exec: ['officecli'], fs: 'outside' } } },
+      mcpServers: [], diagnostics: [],
+    });
+    const container = await renderView({ view: 'detail', id: 'notes' });
+    await flush();
+    const boundary = container.querySelector('[data-plugin-needs] [data-permission-boundary]');
+    expect(boundary?.textContent).toContain('not approval of each call');
+    expect(boundary?.textContent).toContain('not a sandbox');
   });
 
   it('explains an unconfigured catalog instead of showing an empty list', async () => {

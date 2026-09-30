@@ -12,6 +12,7 @@ import { useConnection } from '../../state/connection';
 export const PLUGIN_QUERY_KEYS = {
   installed: ['plugins'] as const,
   marketplace: ['plugin-marketplace'] as const,
+  githubUpdates: ['plugin-github-updates'] as const,
   info: (id: string) => ['plugin', id] as const,
   recommendations: (signals: string) => ['plugin-recommendations', signals] as const,
   panels: ['plugin-panels'] as const,
@@ -33,6 +34,24 @@ export function usePluginMarketplace() {
     queryKey: PLUGIN_QUERY_KEYS.marketplace,
     queryFn: () => client.listPluginMarketplace(),
     staleTime: 30_000,
+  });
+}
+
+/**
+ * GitHub update check for GitHub-installed plugins. It asks GitHub for every
+ * such plugin, so it runs only while a GitHub install exists, keeps its answer
+ * for ten minutes, and never retries on its own: a failed check just means
+ * no GitHub update is shown. Checking never installs.
+ */
+export function usePluginGithubUpdates(enabled: boolean) {
+  const { client } = useConnection();
+  return useQuery({
+    queryKey: PLUGIN_QUERY_KEYS.githubUpdates,
+    queryFn: () => client.checkPluginUpdates(),
+    enabled,
+    staleTime: 10 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -89,10 +108,16 @@ export function usePluginSkins(pluginId: string | undefined) {
   };
 }
 
+/**
+ * Refresh every plugin surface after a change. `code: true` (an install,
+ * update or rollback replaced the plugin's files) also re-asks GitHub for
+ * updates; a toggle or removal does not cost a GitHub round-trip.
+ */
 export function useInvalidatePlugins() {
   const queryClient = useQueryClient();
-  return async () => {
+  return async (options?: { readonly code?: boolean }) => {
     await Promise.all([
+      ...(options?.code === true ? [queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.githubUpdates })] : []),
       queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.installed }),
       queryClient.invalidateQueries({ queryKey: PLUGIN_QUERY_KEYS.marketplace }),
       queryClient.invalidateQueries({ queryKey: ['plugin'] }),
