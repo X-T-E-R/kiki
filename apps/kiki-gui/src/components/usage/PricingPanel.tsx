@@ -20,6 +20,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
 import { InlineEditor } from '../InlineEditor';
+import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListDensity, type ListFilterSpec } from '../settings/list';
 import { SidePanel } from '../SidePanel';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
@@ -105,7 +106,6 @@ export function PricingPanel({ onClose, models }: {
   const { t } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState('');
   const [openModel, setOpenModel] = useState<string | null>(null);
   const pricing = useQuery({
     queryKey: ['usage-pricing', models],
@@ -117,9 +117,13 @@ export function PricingPanel({ onClose, models }: {
   const configured = useMemo(() => new Set((catalog.data?.items ?? []).map((item) => item.id)), [catalog.data]);
 
   const items = pricing.data?.items ?? [];
-  const needle = filter.trim().toLowerCase();
-  const shown = needle === '' ? items : items.filter((item) =>
-    item.model.toLowerCase().includes(needle) || (item.matched_key ?? '').toLowerCase().includes(needle));
+  const keyOf = (item: PricingItem) => item.model;
+  const textOf = (item: PricingItem) => [item.model, item.matched_key ?? undefined];
+  const filters = useMemo<readonly ListFilterSpec<PricingItem>[]>(() => [
+    { id: 'override', label: t('usage.pricing.source.override'), test: (item) => item.source === 'override' },
+    { id: 'unknown', label: t('usage.pricing.source.unknown'), tone: 'attention', test: (item) => item.source === 'unknown' },
+  ], [t]);
+  const view = useListView({ listId: 'usage-pricing', items, keyOf, textOf, filters });
   const unknownCount = items.filter((item) => item.source === 'unknown').length;
 
   const refresh = async () => {
@@ -138,18 +142,14 @@ export function PricingPanel({ onClose, models }: {
       width="lg"
       data={{ 'data-usage-pricing-panel': '' }}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <input
-          type="search"
-          value={filter}
-          onChange={(event) => { setFilter(event.target.value); }}
-          placeholder={t('usage.pricing.filter')}
-          aria-label={t('usage.pricing.filter')}
-          className="h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
-        />
-        {unknownCount > 0 ? (
-          <span data-pricing-unknown-count className="text-[12px] text-amber-ink">{t('usage.pricing.unknownCount', { count: unknownCount })}</span>
-        ) : null}
+      {/* The side panel scrolls itself, not the settings pane; re-anchor the
+          sticky toolbar to the panel's own padding. */}
+      <div className="mb-3 [&_[data-list-toolbar]]:-top-4">
+        <ListToolbar view={view} total={items.length} filters={filters}
+          searchLabel={t('usage.pricing.filter')} searchPlaceholder={t('usage.pricing.filter')}
+          actions={unknownCount > 0 ? (
+            <span data-pricing-unknown-count className="shrink-0 text-[12px] text-amber-ink">{t('usage.pricing.unknownCount', { count: unknownCount })}</span>
+          ) : undefined} />
       </div>
       {pricing.isPending ? (
         <p role="status" className="py-10 text-center text-[13px] text-ink-faint">{t('usage.pricing.loading')}</p>
@@ -160,39 +160,46 @@ export function PricingPanel({ onClose, models }: {
           <button type="button" className={SECONDARY_BUTTON} onClick={() => void pricing.refetch()}>{t('common.retry')}</button>
         </div>
       ) : items.length === 0 ? (
-        <p className="py-10 text-center text-[13px] text-ink-faint">{t('usage.pricing.empty')}</p>
+        <ListEmpty kind="none" title={t('usage.pricing.empty')} />
       ) : (
-        <div role="table" aria-label={t('usage.pricing.title')} className="text-[13px]">
-          <div role="row" className="grid grid-cols-[minmax(0,1fr)_repeat(2,5.5rem)] items-end gap-x-3 border-b border-hairline pb-1.5 text-[11.5px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_repeat(4,5.5rem)]">
-            <span role="columnheader">{t('usage.pricing.model')}</span>
+        <div className="text-[13px]">
+          <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,5.5rem)] items-end gap-x-3 pb-1.5 text-[11.5px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_repeat(4,5.5rem)]">
+            <span>{t('usage.pricing.model')}</span>
             {FIELDS.map((field, index) => (
-              <span key={field.key} role="columnheader" className={`text-right ${index > 1 ? 'hidden sm:block' : ''}`}>{t(field.labelKey)}</span>
+              <span key={field.key} className={`text-right ${index > 1 ? 'hidden sm:block' : ''}`}>{t(field.labelKey)}</span>
             ))}
           </div>
-          {shown.length === 0 ? (
-            <p className="py-6 text-center text-[12.5px] text-ink-faint">{t('usage.pricing.noMatch', { query: filter.trim() })}</p>
-          ) : shown.map((item) => (
-            <PricingRow
-              key={item.model}
-              item={item}
-              open={openModel === item.model}
-              configured={configured.has(item.model)}
-              onToggle={() => { setOpenModel((current) => (current === item.model ? null : item.model)); }}
-              onSaved={async () => { setOpenModel(null); await refresh(); }}
-            />
-          ))}
+          {view.visible.length === 0 ? (
+            <ListEmpty kind="no-match" title={t('usage.pricing.noMatchTitle')}
+              body={view.query.trim() !== '' ? t('usage.pricing.noMatch', { query: view.query.trim() }) : undefined}
+              onClear={view.clear} />
+          ) : (
+            <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('usage.pricing.title')}
+              virtualizeAfter={Number.POSITIVE_INFINITY}
+              renderRow={(item) => (
+                <PricingRow
+                  item={item}
+                  density={view.density}
+                  open={openModel === item.model}
+                  configured={configured.has(item.model)}
+                  onToggle={() => { setOpenModel((current) => (current === item.model ? null : item.model)); }}
+                  onSaved={async () => { setOpenModel(null); await refresh(); }}
+                />
+              )} />
+          )}
           <p className="pt-3 text-[12px] leading-5 text-ink-faint">{t('usage.pricing.unitNote')}</p>
         </div>
       )}
     </SidePanel>
   );
 }
-function PricingRow({ item, open, configured, onToggle, onSaved }: {
+function PricingRow({ item, open, configured, onToggle, onSaved, density }: {
   item: PricingItem;
   open: boolean;
   configured: boolean;
   onToggle: () => void;
   onSaved: () => Promise<void>;
+  density: ListDensity;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -226,7 +233,7 @@ function PricingRow({ item, open, configured, onToggle, onSaved }: {
   const failure = save.error !== null && (save.error as { field?: unknown }).field === undefined ? save.error : clear.error;
 
   return (
-    <div role="rowgroup" data-pricing-row={item.model} className="border-b border-hairline">
+    <div role="rowgroup" data-pricing-row={item.model}>
       <button
         type="button"
         role="row"
@@ -236,18 +243,21 @@ function PricingRow({ item, open, configured, onToggle, onSaved }: {
           if (!open) { setDraft(draftOf(item)); setInvalid(null); save.reset(); clear.reset(); }
           onToggle();
         }}
-        className="-mx-2 grid w-[calc(100%+1rem)] grid-cols-[minmax(0,1fr)_repeat(2,5.5rem)] items-center gap-x-3 rounded-md px-2 py-2 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink sm:grid-cols-[minmax(0,1fr)_repeat(4,5.5rem)]"
+        style={{ minHeight: LIST_ROW_HEIGHT[density] }}
+        className="grid w-full grid-cols-[minmax(0,1fr)_repeat(2,5.5rem)] items-center gap-x-3 px-2 py-1 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink sm:grid-cols-[minmax(0,1fr)_repeat(4,5.5rem)]"
       >
         <span role="cell" className="min-w-0">
           <span className="block truncate font-mono text-[12.5px] text-ink" title={item.model}>{item.model}</span>
-          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4">
-            <span data-pricing-source={item.source} className={`shrink-0 whitespace-nowrap ${item.source === 'unknown' ? 'text-amber-ink' : item.source === 'override' ? 'text-selected-ink' : 'text-ink-faint'}`}>
-              {t(SOURCE_KEY[item.source])}
+          {density === 'compact' ? null : (
+            <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4">
+              <span data-pricing-source={item.source} className={`shrink-0 whitespace-nowrap ${item.source === 'unknown' ? 'text-amber-ink' : item.source === 'override' ? 'text-selected-ink' : 'text-ink-faint'}`}>
+                {t(SOURCE_KEY[item.source])}
+              </span>
+              {item.matched_key !== null && item.matched_key !== item.model ? (
+                <span className="min-w-0 truncate font-mono text-ink-faint" title={item.matched_key}>· {item.matched_key}</span>
+              ) : null}
             </span>
-            {item.matched_key !== null && item.matched_key !== item.model ? (
-              <span className="min-w-0 truncate font-mono text-ink-faint" title={item.matched_key}>· {item.matched_key}</span>
-            ) : null}
-          </span>
+          )}
         </span>
         {FIELDS.map((field, index) => (
           <span key={field.key} role="cell" className={`text-right font-mono text-[12.5px] tabular-nums ${index > 1 ? 'hidden sm:block' : ''} ${item.prices?.[field.key] === undefined ? 'text-ink-faint' : 'text-ink'}`}>
