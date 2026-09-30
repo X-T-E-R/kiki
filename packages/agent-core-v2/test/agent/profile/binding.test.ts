@@ -465,7 +465,13 @@ describe('AgentProfileService.bind', () => {
       list: () => current === undefined || current.private === true ? [] : [current],
       listRoutes: () => [],
       routeDiagnostics: () => [],
-      resolveSelection: () => { throw new Error('not a route'); },
+      resolveSelection: ({ profile, route }) => {
+        if (route !== undefined) throw new Error('not a route');
+        if (current === undefined || current.private === true || profile !== current.name) {
+          throw new Error(`Unknown agent profile: "${profile ?? ''}"`);
+        }
+        return { profile: current, baseProfile: current };
+      },
       inspect: () => undefined,
       load: async () => {},
       reload: async () => {},
@@ -483,7 +489,7 @@ describe('AgentProfileService.bind', () => {
         name: original.name, private: true, modelAlias: RESUME_OLD_MODEL,
         systemPrompt: () => 'hidden prompt',
       });
-    } else if (change === 'deleted') {
+    } else {
       current = undefined;
     }
     await profile.rebuildPromptContext();
@@ -1667,8 +1673,11 @@ describe('AgentProfileService.bind', () => {
       list: () => [first, second],
       listRoutes: () => [],
       routeDiagnostics: () => [],
-      resolveSelection: () => {
-        throw new Error('routes are not configured');
+      resolveSelection: ({ profile: name, route }) => {
+        if (route !== undefined) throw new Error('routes are not configured');
+        const profile = [first, second].find((candidate) => candidate.name === name);
+        if (profile === undefined) throw new Error(`Unknown agent profile: "${name ?? ''}"`);
+        return { profile, baseProfile: profile };
       },
       inspect: () => undefined,
       load: async () => {},
@@ -2430,7 +2439,7 @@ describe('AgentToolPolicyService tool denylist', () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     await expect(
       ctx.get(IAgentProfileService).bind({ profile: 'does-not-exist', model: MOCK_MODEL }),
-    ).rejects.toThrow(/Available profiles: .*agent/);
+    ).rejects.toThrow(/Unknown agent profile: "does-not-exist"\. Available agent profiles: .*agent/);
   });
 
   it('rejects a renamed tool denylist instead of silently restoring AgentRun', async () => {
