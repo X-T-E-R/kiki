@@ -65,7 +65,9 @@ import {
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
+  type ToolBlock,
 } from './types';
+import { projectSendMessage } from '../messageView';
 
 export type AgentTranscriptProjectionSource = {
   readonly agent_id: string;
@@ -157,7 +159,10 @@ function classifiedTextToBlocks(input: {
               : undefined,
           peerThread:
             classified.origin?.kind === 'peer_thread'
-              ? { sessionId: classified.origin.source?.sessionId }
+              ? { sessionId: classified.origin.source?.sessionId,
+                  personaId: classified.origin.source?.personaId,
+                  senderName: classified.origin.source?.name,
+                  messageId: classified.origin.messageId }
               : undefined,
         });
       }
@@ -759,6 +764,7 @@ function blockTimelineMs(block: Block): number | undefined {
     case 'skill':
       return timestampMs(block.createdAt);
     case 'tool':
+    case 'message':
       return block.startedAt !== undefined && block.startedAt > 0 ? block.startedAt : undefined;
     case 'subagent':
       return timestampMs(block.startedAt);
@@ -795,6 +801,7 @@ function blockTurnId(block: Block): string | undefined {
     case 'system-reminder':
     case 'skill':
     case 'tool':
+    case 'message':
     case 'shell':
     case 'notice':
       return block.turnId;
@@ -2374,7 +2381,7 @@ export function agentTranscriptToBlocks(
               });
               break;
             }
-            blocks.push({
+            const tool: ToolBlock = {
               kind: 'tool',
               id: `tool-${frame.toolCallId}`,
               toolCallId: frame.toolCallId,
@@ -2400,7 +2407,8 @@ export function agentTranscriptToBlocks(
               progressText: frame.progress?.text,
               agentRefs: frame.agentRefs,
               turnId: item.turnId,
-            });
+            };
+            blocks.push(projectSendMessage(tool) ?? tool);
             break;
           }
           case 'notice':

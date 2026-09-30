@@ -1495,6 +1495,7 @@ export class SessionController {
      * it). Defaults to the server-side `agent_idle` when omitted.
      */
     appendTiming?: DeferredAppendTiming;
+    personaGreetingReply?: boolean;
   }): Promise<PromptSubmitResult> {
     assertSessionWritable(this.state);
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
@@ -1512,6 +1513,7 @@ export class SessionController {
           : undefined,
       goal_control: input.goalControl,
       append_timing: input.appendTiming,
+      persona_greeting_reply: input.personaGreetingReply,
     });
     const projection = projectMessageContent(result.content);
     this.setState(

@@ -229,7 +229,7 @@ describe('classifyTranscriptText', () => {
       expect.objectContaining({
         kind: 'user',
         text: 'Message from thread "Design review" (sess-source):\n\nping',
-        peerThread: { sessionId: 'sess-source' },
+        peerThread: { sessionId: 'sess-source', messageId: 'thread-message-1', personaId: undefined, senderName: undefined },
       }),
     ]);
   });

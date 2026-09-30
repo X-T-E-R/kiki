@@ -38,7 +38,8 @@ export interface PromptOriginLike {
   readonly taskId?: string;
   readonly senderAgentId?: string;
   readonly senderTaskName?: string;
-  readonly source?: { readonly sessionId?: string };
+  readonly messageId?: string;
+  readonly source?: { readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
 }
 
 export function unwrapOrigin(origin: PromptOriginLike | undefined): PromptOriginLike | undefined {

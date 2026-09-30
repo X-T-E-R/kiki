@@ -45,6 +45,9 @@ export interface UserBlock {
   };
   readonly peerThread?: {
     readonly sessionId?: string;
+    readonly personaId?: string;
+    readonly senderName?: string;
+    readonly messageId?: string;
   };
 }
 
@@ -173,6 +176,62 @@ export interface ToolBlock {
   readonly progressText: string | undefined;
   readonly agentRefs?: readonly ToolAgentRef[];
   readonly turnId?: string;
+}
+
+/** A SendMessage invocation projected as speech, never ordinary assistant prose. */
+export interface MessageBlock {
+  readonly kind: 'message';
+  readonly id: string;
+  readonly toolCallId?: string;
+  readonly messageId?: string;
+  readonly origin: 'send_message' | 'persona_greeting';
+  readonly status: 'sending' | 'sent' | 'failed' | 'cancelled';
+  readonly text: string;
+  readonly to?: string;
+  readonly replyTo?: string;
+  readonly attachments: readonly MessageAttachment[];
+  readonly deliveredTo: readonly string[];
+  readonly personaId?: string;
+  readonly senderName?: string;
+  readonly sourceSessionId?: string;
+  readonly handoff?: {
+    readonly targetPersonaId: string;
+    readonly targetSessionId: string;
+    readonly targetName: string;
+    readonly messageId?: string;
+  };
+  readonly startedAt?: number;
+  readonly turnId?: string;
+  /** The original call remains available for process inspection and streaming argsText. */
+  readonly sourceTool?: ToolBlock;
+}
+
+export interface MessageAttachment {
+  readonly blobId: string;
+  readonly path: string;
+  readonly title?: string;
+  readonly mimeType?: string;
+  readonly size?: number;
+}
+
+/** A contiguous, same-turn stretch of internal activity; members retain original order. */
+export interface ActivitySummary {
+  readonly kind: 'activity-summary';
+  readonly id: string;
+  readonly turnId?: string;
+  readonly members: readonly Block[];
+  readonly counts: {
+    readonly tools: number;
+    readonly reads: number;
+    readonly commands: number;
+    readonly thinking: number;
+    readonly subagents: number;
+    readonly memories: number;
+  };
+  readonly running: boolean;
+  readonly failed: number;
+  /** Only measured tool-frame durations; turn-level fallbacks are not added repeatedly. */
+  readonly durationMs?: number;
 }
 
 export interface ShellBlock {
@@ -341,6 +400,7 @@ export type Block =
   | AssistantBlock
   | ThinkingBlock
   | ToolBlock
+  | MessageBlock
   | ShellBlock
   | SubagentBlock
   | SubagentEventBlock

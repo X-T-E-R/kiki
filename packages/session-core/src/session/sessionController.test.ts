@@ -673,6 +673,19 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('forwards an explicit persona greeting reply without opting ordinary prompts in', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-greeting', user_message_id: 'm-greeting', status: 'running',
+      content: [{ type: 'text', text: 'Hello' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'Hello', permissionMode: 'manual', personaGreetingReply: true });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ persona_greeting_reply: true }));
+    await controller.sendPrompt({ text: 'Ordinary', permissionMode: 'manual' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ persona_greeting_reply: undefined }));
+    controller.close();
+  });
+
   it('forwards the effort selected in Composer with the next prompt request', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({

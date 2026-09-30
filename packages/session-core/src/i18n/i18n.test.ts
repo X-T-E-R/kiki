@@ -100,8 +100,8 @@ describe('dictionary parity', () => {
   it('both locales declare the same {placeholders} per key', () => {
     const placeholders = (text: string) =>
       [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
-    for (const key of Object.keys(en) as I18nKey[]) {
-      const translated = zh[key];
+    for (const key of Object.keys(en) as (keyof typeof en)[]) {
+      const translated = (zh as Partial<Record<I18nKey, string>>)[key];
       if (translated === undefined) continue;
       expect(placeholders(translated), `placeholder mismatch for ${key}`).toEqual(
         placeholders(en[key]),

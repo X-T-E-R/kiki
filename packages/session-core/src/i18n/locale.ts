@@ -3,9 +3,8 @@
  * attachments) can localize without React. The React provider lives in
  * `index.tsx`; dictionaries in `en.ts` / `zh.ts`.
  *
- * Missing-key behavior: zh is `Partial` — new copy lands in en.ts first and is
- * translated in batches. At runtime `translate` falls back to English and then
- * to the raw key, so an untranslated key degrades instead of crashing.
+ * Dictionary keys may originate in either language. Missing translations fall
+ * back to English, then Chinese, then the raw key.
  */
 
 import { en } from './en';
@@ -13,7 +12,7 @@ import { zh } from './zh';
 import { errorToText } from '../util/errorText';
 
 export type Locale = 'en' | 'zh';
-export type I18nKey = keyof typeof en;
+export type I18nKey = keyof typeof en | keyof typeof zh;
 export type I18nParams = Readonly<Record<string, string | number>>;
 
 export const LOCALE_STORAGE_KEY = 'kiki.locale';
@@ -35,7 +34,7 @@ export function detectLocale(input: {
 
 /** `{name}` interpolation; unknown placeholders are left intact. */
 export function translate(locale: Locale, key: I18nKey, params?: I18nParams): string {
-  const template = DICTIONARIES[locale][key] ?? en[key] ?? key;
+  const template = DICTIONARIES[locale][key] ?? DICTIONARIES.en[key] ?? DICTIONARIES.zh[key] ?? key;
   if (params === undefined) return template;
   return template.replaceAll(/\{(\w+)\}/g, (raw, name: string) => {
     const value = params[name];

@@ -7,6 +7,9 @@ export {
   type ApprovalResolution,
   type ApprovalReviewer,
   type AssistantBlock,
+  type ActivitySummary,
+  type MessageBlock,
+  type MessageAttachment,
   type Block,
   type EarlierPromptOutcome,
   type FloorEntry,
@@ -107,6 +110,7 @@ export {
   taskItemsFromSessionTasks,
   taskItemsFromTranscriptTasks,
 } from './forest';
+export { projectSendMessage, projectMessageView, personaGreeting, type MessageViewNode, type MessageViewOptions } from '../messageView';
 export { resolveSpawnInstruction } from './spawn';
 export { countToolBlocks } from '../agentTree';
 export type { AgentForest, AgentTreeNode } from '../agentTree';
