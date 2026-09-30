@@ -120,7 +120,7 @@ LICENSE/NOTICE for the original attribution and full terms.
     node-pty 1.1.0 (Microsoft Corporation)
     react and react-dom 19.2.5; @tanstack/react-query 5.99.2
     @xterm/xterm 5.5.0 and its addon-fit/addon-web-links packages
-    CodeMirror packages; use-stick-to-bottom; katex 0.16.47; mermaid 11.15.0
+    CodeMirror packages; katex 0.16.47; mermaid 11.15.0
     bcryptjs 2.4.3 (Daniel Wirtz); ulid 3.0.2 (Alizain Feerasta)
     ws 8.20.0 (Einar Otto Stangvik); zod 3.25.76 and 4.3.6 (Colin McDonnell)
   BSD-3-Clause:
@@ -129,6 +129,7 @@ LICENSE/NOTICE for the original attribution and full terms.
     semver 7.7.4 (GitHub Inc.)
   OFL-1.1:
     @fontsource-variable/fraunces 5.3.0
+    @fontsource-variable/instrument-sans 5.3.0; @fontsource-variable/newsreader 5.3.0
     @fontsource/jetbrains-mono 5.3.0; @fontsource/space-grotesk 5.3.0
   Apache-2.0 OR MIT:
     Tauri, @tauri-apps/api and the desktop integration plugins (see Cargo.lock
