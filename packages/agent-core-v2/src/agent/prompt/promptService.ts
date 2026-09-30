@@ -1468,7 +1468,7 @@ export class AgentPromptService implements IAgentPromptService {
         const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
         admission.dispose();
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
-        turn = (await execution.run({ kind: 'prompt', prompt: text, input: message.content, origin: message.origin }, { signal: controller.signal })).turn;
+        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: message.content, origin: message.origin }, { signal: controller.signal })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, turnId: turn.id,

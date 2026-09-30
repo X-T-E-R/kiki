@@ -120,16 +120,17 @@ export class ExternalTurnRecorder {
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
-  async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = []): Promise<void> {
+  async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = [], promptId?: string): Promise<void> {
     await this.#dispatcher.dispatch(
       new TurnPrompt({
         turnId: this.turnId,
         input: [{ type: 'text', text: prompt }, ...attachments],
         origin,
+        promptId,
       }),
     );
     await this.#dispatcher.dispatch(
-      new TurnStarted({ turnId: this.turnId, origin, prompt }),
+      new TurnStarted({ turnId: this.turnId, origin, prompt, promptId }),
     );
     await this.#dispatcher.dispatch(
       new TurnStepStarted({ turnId: this.turnId, step: 1, stepId: this.stepId }),
@@ -321,12 +322,12 @@ export class ExternalTurnRecorder {
   }
 
   async #toolCall(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): Promise<void> {
-    const namespacedId = this.toolCallId(event.toolCallId);
     this.#flushSegment();
     if (this.#tools.has(event.toolCallId)) {
       await this.#toolUpdate({ ...event, type: 'tool.update' });
       return;
     }
+    const namespacedId = this.toolCallId(event.toolCallId);
     const tool: RecordedTool = {
       remoteId: event.toolCallId,
       namespacedId,
@@ -367,10 +368,10 @@ export class ExternalTurnRecorder {
   }
 
   async #toolUpdate(event: Extract<ExternalExecutorEvent, { type: 'tool.update' }>): Promise<void> {
-    let tool = this.#tools.get(event.toolCallId);
     this.#flushSegment();
-    if (tool === undefined) {
+    let tool = this.#tools.get(event.toolCallId);
     if (tool?.terminal === true) return;
+    if (tool === undefined) {
       tool = {
         remoteId: event.toolCallId,
         namespacedId: this.toolCallId(event.toolCallId),

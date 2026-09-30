@@ -1007,6 +1007,14 @@ describe('ACP external executor', () => {
     ]));
   });
 
+  it.each([undefined, 'owned-prompt'])('attributes external turns to the owning prompt without inventing ids: %s', async (promptId) => {
+    const harness = createHarness();
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work', promptId }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(harness.events.find((event) => event.type === 'turn.prompt')).toMatchObject({ promptId });
+    expect(harness.events.find((event) => event.type === 'turn.started')).toMatchObject({ promptId });
+  });
+
   it('uses segment ids shared by live and durable frames and flushes text before tool boundaries', async () => {
     const harness = createHarness({ events: [
       { type: 'thought.delta', messageId: 'shared-message', content: { type: 'text', text: 'think' } },
@@ -1106,6 +1114,20 @@ describe('ACP external executor', () => {
     ]);
   });
 
+  it('keeps unpinned external models ambient and diagnoses explicit unadvertised aliases', async () => {
+    const ambient = createHarness({ unpinModel: true, thinkingEffort: 'off' });
+    const run = await ambient.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(ambient.selections.some((selection) => selection.configId === 'model-id')).toBe(false);
+    const invalid = createHarness({ modelAlias: 'provider/native-model' });
+    await expect(invalid.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'model.not_found', details: { reason_code: 'executor_model_unavailable',
+        requested_value: 'provider/native-model', available_values: ['model-a', 'ambient-model'],
+        hint: expect.stringContaining('leave it unpinned') },
+    });
+    expect(invalid.starts).toHaveLength(0);
+  });
+
   it('passes the original Grok alias and xhigh through session config', async () => {
     const sessionConfigOptions = configOptions().map((option) => {
       if (option.id === 'model-id' && option.type === 'select') {
@@ -1155,20 +1177,6 @@ describe('ACP external executor', () => {
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
     expect(metadata?.profileDelivery).toBe('system_prompt_override');
-  it('keeps unpinned external models ambient and diagnoses explicit unadvertised aliases', async () => {
-    const ambient = createHarness({ unpinModel: true, thinkingEffort: 'off' });
-    const run = await ambient.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
-    await run.completion;
-    expect(ambient.selections.some((selection) => selection.configId === 'model-id')).toBe(false);
-    const invalid = createHarness({ modelAlias: 'provider/native-model' });
-    await expect(invalid.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'model.not_found', details: { reason_code: 'executor_model_unavailable',
-        requested_value: 'provider/native-model', available_values: ['model-a', 'ambient-model'],
-        hint: expect.stringContaining('leave it unpinned') },
-    });
-    expect(invalid.starts).toHaveLength(0);
-  });
-
     expect(metadata?.losses).not.toContain('profile_as_user_preamble');
     expect((harness.state.get(externalExecutorKey)).profileDelivery).toBe('system_prompt_override');
   });

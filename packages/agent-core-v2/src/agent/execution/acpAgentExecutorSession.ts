@@ -330,7 +330,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin, externalAttachments(request));
+    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
 
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);

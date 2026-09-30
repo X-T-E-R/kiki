@@ -257,7 +257,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin, externalAttachments(request));
+    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
 
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
