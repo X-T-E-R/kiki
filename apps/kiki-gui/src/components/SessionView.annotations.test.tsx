@@ -170,10 +170,13 @@ describe('session selection annotations', () => {
       let sent: Promise<unknown> | undefined;
       await act(async () => { sent = composerProps().onSend('hello', []); });
       expect(submit.calls.at(-1)?.input).toMatchObject({ model: external ? undefined : 'provider/native-model' });
+      expect(submit.calls.at(-1)?.input?.permissionMode).toBeUndefined();
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'first' }); await sent; });
+      await act(async () => { composerProps().onChangePermissionMode('yolo'); });
       await act(async () => { composerProps().onChangeModel('opus'); });
       await act(async () => { sent = composerProps().onSend('explicit', []); });
       expect(submit.calls.at(-1)?.input?.model).toBe('opus');
+      expect(submit.calls.at(-1)?.input?.permissionMode).toBe('yolo');
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'second' }); await sent; });
     } finally {
       fixture.external = false;

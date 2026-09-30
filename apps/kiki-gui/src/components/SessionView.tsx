@@ -1973,7 +1973,7 @@ export function SessionView({
               content,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
-              permissionMode,
+              permissionMode: permissionOverride ?? state.permissionMode,
               planMode,
               planGate,
             })
@@ -2030,7 +2030,7 @@ export function SessionView({
             // FU7: the select's visible value is the prompt's wire value,
             // including the catalog default when the user leaves it untouched.
             thinking: profileSwitch.thinking,
-            permissionMode,
+            permissionMode: permissionOverride ?? state.permissionMode,
             planMode,
             planGate,
             goalObjective: promptGoalObjective(options),
@@ -2247,7 +2247,8 @@ export function SessionView({
     pendingProfile,
     boundProfile,
     profileModelTouched,
-    permissionMode,
+    permissionOverride,
+    state.permissionMode,
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,

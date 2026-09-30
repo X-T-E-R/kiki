@@ -1833,8 +1833,8 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('clears plan/swarm/queue/active/pending from the current AgentState', async () => {
-    const { controller } = await openTranscriptController();
+  it('clears plan/swarm/queue/active/pending while preserving permission through sparse AgentState updates', async () => {
+    const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
@@ -1886,7 +1886,14 @@ describe('SessionController transcript authority', () => {
       queuedPromptIds: [],
       activePromptId: undefined,
       pendingInteraction: 'none',
+      permissionMode: 'yolo',
     });
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops', agent_id: 'main', seq: 3,
+      ops: [{ op: 'meta.merge', meta: { agent: { permission: 'manual' } } }],
+    }));
+    flushAll();
+    expect(controller.getState().permissionMode).toBe('manual');
     controller.close();
   });
 

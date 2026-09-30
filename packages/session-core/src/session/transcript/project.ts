@@ -2782,7 +2782,7 @@ export function projectAgentTranscriptView(
     contextTokens: meta?.contextTokens,
     maxContextTokens: meta?.maxContextTokens,
     usage: projectUsageStatus(meta?.usage),
-    permissionMode: mapTranscriptPermission(meta?.permission),
+    permissionMode: mapTranscriptPermission(meta?.permission) ?? previous.permissionMode,
     planMode: snapshot.meta.modes?.plan !== undefined,
     swarmMode: snapshot.meta.modes?.swarm !== undefined,
     queuedPromptIds,

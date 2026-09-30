@@ -1504,7 +1504,7 @@ export class SessionController {
     profile?: string;
     model?: string;
     thinking?: string;
-    permissionMode: PermissionMode;
+    permissionMode?: PermissionMode;
     planMode?: boolean;
     /**
      * Session plan-gate pick (`plan_gate`): when set, every prompt of this
