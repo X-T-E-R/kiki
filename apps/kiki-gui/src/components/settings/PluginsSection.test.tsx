@@ -364,9 +364,9 @@ describe('PluginsSection', () => {
     expect(previewPlugin).not.toHaveBeenCalled();
     expect(installPreviewedPlugin).not.toHaveBeenCalled();
     // The update group leads the healthy ones, and the row offers the same Update button as catalog updates.
-    const groups = [...container.querySelectorAll('[data-installed-group]')].map((node) => node.getAttribute('data-installed-group'));
+    const groups = [...container.querySelectorAll('[data-list-group]')].map((node) => node.getAttribute('data-list-group'));
     expect(groups).toEqual(['updates', 'on']);
-    const row = container.querySelector('[data-installed-group="updates"] [data-plugin-row="lint"]')!;
+    const row = container.querySelector('[data-list-group="updates"] [data-plugin-row="lint"]')!;
     expect(row.querySelector('[data-plugin-update="lint"]')?.textContent).toBe('Update to 9e8d7c6b5a41');
     expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('nothing installs on its own');
 

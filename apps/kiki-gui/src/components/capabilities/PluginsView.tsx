@@ -158,12 +158,14 @@ export function PluginsView({
           ]}
         />
         <div className="min-w-0 flex-1">
-          <SearchField
-            value={query}
-            onChange={setQuery}
-            placeholder={tab === 'installed' ? t('cap.plugins.searchInstalled') : t('cap.plugins.search')}
-            ariaLabel={tab === 'installed' ? t('cap.plugins.searchInstalled') : t('cap.plugins.search')}
-          />
+          {tab === 'market' ? (
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              placeholder={t('cap.plugins.search')}
+              ariaLabel={t('cap.plugins.search')}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -171,7 +173,6 @@ export function PluginsView({
         <InstalledList
           plugins={installed}
           entries={entries}
-          query={query}
           loading={installedQuery.isPending}
           error={installedQuery.isError ? installedQuery.error : undefined}
           updates={updates}

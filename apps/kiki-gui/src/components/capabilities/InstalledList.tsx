@@ -1,20 +1,18 @@
 /**
- * Installed — every plugin on this server as one management list. A row is
- * icon, name, where it came from (official, catalog, a local folder, git, a
- * ZIP), version, an update hint when the catalog or GitHub has a newer one,
- * the enable switch, and a ⋯ menu (details, turn off, remove, homepage).
- *
- * Rows fall into four groups in this order, each shown only when non-empty:
- * needs attention (errors), updates available, on, off. Within a group the
- * server's install order holds. Under a search the groups collapse into one
- * list, since the query already narrows it.
+ * Installed — every plugin on this server as one management list, on the
+ * shared settings list pattern: the toolbar carries search, state chips and
+ * density; rows group into needs attention / updates available / on / off
+ * (each shown only when non-empty, each foldable). A row is icon, name, where
+ * it came from (official, catalog, a local folder, git, a ZIP), version, an
+ * update hint when the catalog or GitHub has a newer one, the enable switch,
+ * and a ⋯ menu (details, turn off, remove, homepage).
  */
 
 import { useRef, useState, type ReactNode } from 'react';
 
 import { copyTextToClipboard } from '../../lib/clipboard';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
-import { installedMatches, pluginOrigin, type PluginOrigin, type PluginUpdateView } from '../../lib/pluginCatalog';
+import { pluginOrigin, type PluginOrigin, type PluginUpdateView } from '../../lib/pluginCatalog';
 import { openExternalUrl } from '../../host/external';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -22,8 +20,19 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { InlineError, Toggle } from '../controls';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import {
+  groupItems,
+  LIST_ROW_HEIGHT,
+  ListBody,
+  ListEmpty,
+  ListGroup,
+  ListToolbar,
+  useListView,
+  type ListDensity,
+  type ListFilterSpec,
+} from '../settings/list';
 import { CapabilityIcon } from './CapabilityIcon';
-import { EmptyNote, IconButton, Tag } from './primitives';
+import { IconButton, Tag } from './primitives';
 import { useInvalidatePlugins } from './usePlugins';
 
 const ORIGIN_KEYS = {
@@ -37,7 +46,6 @@ const ORIGIN_KEYS = {
 export function InstalledList({
   plugins,
   entries,
-  query,
   loading,
   error,
   updates,
@@ -48,7 +56,6 @@ export function InstalledList({
 }: {
   readonly plugins: readonly PluginSummary[];
   readonly entries: readonly PluginMarketplaceEntry[];
-  readonly query: string;
   readonly loading: boolean;
   readonly error?: unknown;
   /** Available update per plugin id, from the catalog or GitHub. */
@@ -80,54 +87,66 @@ export function InstalledList({
   };
 
   const broken = (plugin: PluginSummary) => plugin.state === 'error' || plugin.hasErrors;
-  const visible = plugins.filter((plugin) => installedMatches(plugin, query));
   const groupOf = (plugin: PluginSummary): InstalledGroup =>
     broken(plugin) ? 'attention' : updates.has(plugin.id) ? 'updates' : plugin.enabled ? 'on' : 'off';
-  const groups = query.trim() !== ''
-    ? [{ id: 'all' as const, plugins: visible }]
-    : GROUP_ORDER.map((id) => ({ id, plugins: visible.filter((plugin) => groupOf(plugin) === id) })).filter((group) => group.plugins.length > 0);
+
+  const keyOf = (plugin: PluginSummary) => plugin.id;
+  const textOf = (plugin: PluginSummary) => [plugin.displayName, plugin.id, plugin.originalSource];
+  const filters: readonly ListFilterSpec<PluginSummary>[] = [
+    { id: 'attention', label: t('cap.installed.group.attention'), tone: 'attention', test: (plugin) => groupOf(plugin) === 'attention' },
+    { id: 'updates', label: t('cap.installed.group.updates'), test: (plugin) => groupOf(plugin) === 'updates' },
+    { id: 'on', label: t('cap.installed.group.on'), test: (plugin) => plugin.enabled },
+    { id: 'off', label: t('cap.installed.group.off'), test: (plugin) => !plugin.enabled },
+  ];
+  const view = useListView({ listId: 'cap-plugins-installed', items: plugins, keyOf, textOf, filters });
+  const groups = groupItems(plugins, view.visible, (plugin) => {
+    const id = groupOf(plugin);
+    return [{ key: id, label: t(GROUP_KEYS[id]) }];
+  }, GROUP_ORDER);
 
   if (loading) return <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
   if (error !== undefined) return <InlineError error={error} />;
   if (plugins.length === 0) {
     return (
-      <EmptyNote
+      <ListEmpty
+        kind="none"
         title={t('cap.plugins.noneInstalled')}
         body={t('cap.plugins.noneInstalledBody')}
         action={<button type="button" className="text-[13px] font-medium text-selected-ink hover:underline" onClick={onAdd}>{t('cap.plugins.addFromSource')}</button>}
       />
     );
   }
-  if (visible.length === 0) return <EmptyNote title={t('cap.plugins.noMatch', { query: query.trim() })} />;
 
   return (
-    <div className="min-w-0 space-y-6" data-installed-list>
-      {groups.map((group) => (
-        <section key={group.id} data-installed-group={group.id} aria-labelledby={group.id === 'all' ? undefined : `installed-group-${group.id}`}>
-          {group.id !== 'all' ? (
-            <h2 id={`installed-group-${group.id}`} className={`mb-1 flex items-center gap-1.5 px-2 text-[12px] font-medium ${group.id === 'attention' ? 'text-danger' : group.id === 'updates' ? 'text-selected-ink' : 'text-ink-soft'}`}>
-              {t(GROUP_KEYS[group.id])}
-              <span className="font-normal tabular-nums text-ink-faint">{group.plugins.length}</span>
-            </h2>
-          ) : null}
-          <ul className="divide-y divide-hairline border-y border-hairline">
-            {group.plugins.map((plugin) => (
-              <InstalledRow
-                key={plugin.id}
-                plugin={plugin}
-                origin={pluginOrigin(plugin, entries)}
-                entry={entries.find((entry) => entry.id === plugin.id)}
-                update={updates.get(plugin.id)}
-                busy={busy === plugin.id}
-                onOpen={() => { onOpen(plugin.id); }}
-                onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
-                onUpdate={(update) => { onUpdate(plugin, update); }}
-                onRemove={() => { setRemoving(plugin); }}
-              />
-            ))}
-          </ul>
-        </section>
-      ))}
+    <div className="min-w-0 space-y-3 [&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8" data-installed-list>
+      <ListToolbar view={view} total={plugins.length} filters={filters}
+        searchLabel={t('cap.plugins.searchInstalled')} searchPlaceholder={t('cap.plugins.searchInstalled')} />
+      {view.visible.length === 0 ? (
+        <ListEmpty kind="no-match" title={t('cap.plugins.noMatchTitle')}
+          body={view.query.trim() !== '' ? t('cap.plugins.noMatch', { query: view.query.trim() }) : undefined}
+          onClear={view.clear} />
+      ) : (
+        groups.map((group) => (
+          <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
+            folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}>
+            <ListBody items={group.items} keyOf={keyOf} density={view.density} label={group.label}
+              renderRow={(plugin) => (
+                <InstalledRow
+                  plugin={plugin}
+                  density={view.density}
+                  origin={pluginOrigin(plugin, entries)}
+                  entry={entries.find((entry) => entry.id === plugin.id)}
+                  update={updates.get(plugin.id)}
+                  busy={busy === plugin.id}
+                  onOpen={() => { onOpen(plugin.id); }}
+                  onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
+                  onUpdate={(update) => { onUpdate(plugin, update); }}
+                  onRemove={() => { setRemoving(plugin); }}
+                />
+              )} />
+          </ListGroup>
+        ))
+      )}
       {updateCheck}
       {failure !== null ? <div className="mt-2"><InlineError error={failure} /></div> : null}
       <ConfirmDialog
@@ -164,6 +183,7 @@ function InstalledRow({
   entry,
   update,
   busy,
+  density,
   onOpen,
   onToggle,
   onUpdate,
@@ -174,6 +194,7 @@ function InstalledRow({
   readonly entry?: PluginMarketplaceEntry;
   readonly update?: PluginUpdateView;
   readonly busy: boolean;
+  readonly density: ListDensity;
   readonly onOpen: () => void;
   readonly onToggle: (enabled: boolean) => void;
   readonly onUpdate: (update: PluginUpdateView) => void;
@@ -201,8 +222,9 @@ function InstalledRow({
   ].filter((part) => part !== undefined).join(' · ');
 
   return (
-    <li
-      className="group flex min-h-[60px] min-w-0 items-center gap-3 px-2 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03]"
+    <div
+      className="group flex min-w-0 items-center gap-3 px-3 py-1.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03]"
+      style={{ minHeight: LIST_ROW_HEIGHT[density] }}
       data-plugin-row={plugin.id}
       data-plugin-origin={origin}
       data-plugin-enabled={plugin.enabled ? 'true' : 'false'}
@@ -218,11 +240,16 @@ function InstalledRow({
           <span className="flex min-w-0 items-center gap-2">
             <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>{plugin.displayName}</span>
             <span className="shrink-0"><Tag>{t(ORIGIN_KEYS[origin])}</Tag></span>
-          </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-2">
             {broken ? <span className="shrink-0"><Tag tone="danger">{t('cap.state.error')}</Tag></span> : null}
-            <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
+            {density === 'compact' && fact !== '' ? (
+              <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
+            ) : null}
           </span>
+          {density === 'compact' ? null : (
+            <span className="mt-0.5 flex min-w-0 items-center gap-2">
+              <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
+            </span>
+          )}
         </span>
       </button>
       {update !== undefined ? (
@@ -267,6 +294,6 @@ function InstalledRow({
           dataAttribute="data-plugin-card-menu"
         />
       ) : null}
-    </li>
+    </div>
   );
 }
