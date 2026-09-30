@@ -195,7 +195,12 @@ export function RoomMembersPanel({
                     {t('room.addMember')}
                   </button>
                 </div>
-              ) : <p role="tabpanel" className="text-[12.5px] text-ink-faint">{t('room.noPersonas')}</p>
+              ) : (
+                <p role="tabpanel" data-room-add-personas-empty className="text-[12.5px] text-ink-faint">
+                  {/* Nothing left to add is not the same as nothing created yet. */}
+                  {t([...personas.values()].some((persona) => !persona.archived) ? 'room.allPersonasIn' : 'room.noPersonas')}
+                </p>
+              )
             ) : (
               <div role="tabpanel">
                 <AddThreadMember exclude={new Set(room.members.map((member) => member.sessionId))} disabled={busy} onAdd={(sessionId) => { onAddMember({ kind: 'thread', sessionId }); }} />

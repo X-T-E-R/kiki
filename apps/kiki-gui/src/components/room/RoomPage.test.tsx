@@ -217,6 +217,25 @@ describe('RoomPage', () => {
     expect(rooms.stop).toHaveBeenCalledWith('release-031');
   });
 
+  it('says every persona is already in the room instead of asking to create one', async () => {
+    const container = await renderRoom();
+    if (container.querySelector('[data-room-members]') === null) {
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-roster]')?.click(); });
+    }
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-add-tab="personas"]')?.click(); });
+    expect(container.querySelector('[data-room-add-personas-empty]')?.textContent).toBe('角色都已在房间里。');
+  });
+
+  it('asks to create personas when none exist yet', async () => {
+    client.listPersonas.mockResolvedValue(PERSONAS.map((persona) => ({ ...persona, archived: true })));
+    const container = await renderRoom();
+    if (container.querySelector('[data-room-members]') === null) {
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-roster]')?.click(); });
+    }
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-add-tab="personas"]')?.click(); });
+    expect(container.querySelector('[data-room-add-personas-empty]')?.textContent).toBe('还没有角色。先在角色页新建几个。');
+  });
+
   it('keeps host and mute editable and locks the roster while a member holds a question', async () => {
     rooms.usage.mockResolvedValue(usage({ questions: { activeSessionId: 'sess_lan', queued: 2 } }));
     rooms.update.mockResolvedValue(roomDoc({ host: 'a-che' }));

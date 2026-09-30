@@ -6252,6 +6252,7 @@ export const zh = {
   'room.namePlaceholder': '例如：0.31 发布',
   'room.membersHint': '选 2–6 个角色，主持人默认是第一个。',
   'room.noPersonas': '还没有角色。先在角色页新建几个。',
+  'room.allPersonasIn': '角色都已在房间里。',
   'room.nameRequired': '给房间起个名字。',
   'room.createFailed': '房间没有创建：{detail}',
   'room.deleteRoom': '删除房间',

@@ -6282,6 +6282,7 @@ export const en = {
   'room.namePlaceholder': 'For example: 0.31 release',
   'room.membersHint': 'Choose 2–6 personas; the first one hosts by default.',
   'room.noPersonas': 'No personas yet. Create some on the Personas page first.',
+  'room.allPersonasIn': 'Every persona is already in this room.',
   'room.nameRequired': 'Give the room a name.',
   'room.createFailed': 'Room not created: {detail}',
   'room.deleteRoom': 'Delete room',
