@@ -57,6 +57,7 @@ import {
 } from '#/agent/execution/externalExecutorOps';
 import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
+import { AssistantDelta, ThinkingDelta } from '#/agent/loop/turnEvents';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -1004,6 +1005,46 @@ describe('ACP external executor', () => {
       'message_id_missing',
       'user_message_attribution_missing',
     ]));
+  });
+
+  it('uses segment ids shared by live and durable frames and flushes text before tool boundaries', async () => {
+    const harness = createHarness({ events: [
+      { type: 'thought.delta', messageId: 'shared-message', content: { type: 'text', text: 'think' } },
+      { type: 'message.delta', role: 'assistant', messageId: 'shared-message', content: { type: 'text', text: 'before ' } },
+      { type: 'message.delta', role: 'assistant', messageId: 'shared-message', content: { type: 'text', text: 'tool' } },
+      { type: 'tool.call', toolCallId: 'tool-1', title: 'Read', status: 'pending' },
+      { type: 'tool.update', toolCallId: 'tool-1', status: 'completed', rawOutput: 'done' },
+      { type: 'message.delta', role: 'assistant', messageId: 'shared-message', content: { type: 'text', text: 'after' } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const records = harness.loopEvents as { type: string; uuid?: string; part?: { type: string; text?: string; think?: string } }[];
+    const timeline = records.filter((event) => ['content.part', 'tool.call', 'tool.result'].includes(event.type));
+    expect(timeline.map((event) => event.type)).toEqual(['content.part', 'content.part', 'tool.call', 'tool.result', 'content.part']);
+    const parts = records.filter((event) => event.type === 'content.part');
+    expect(parts.map((event) => event.part)).toEqual([{ type: 'think', think: 'think' }, { type: 'text', text: 'before tool' }, { type: 'text', text: 'after' }]);
+    const deltas = harness.events.filter((event): event is AssistantDelta | ThinkingDelta => event instanceof AssistantDelta || event instanceof ThinkingDelta);
+    expect(deltas.map((event) => event.partId)).toEqual([parts[0]!.uuid, parts[1]!.uuid, parts[1]!.uuid, parts[2]!.uuid]);
+    expect(new Set(parts.map((event) => event.uuid)).size).toBe(3);
+    expect(parts.some((event) => event.uuid === 'shared-message')).toBe(false);
+  });
+
+  it.each([true, false])('records one tool boundary and result for repeated terminal updates: startsWithCall=%s', async (startsWithCall) => {
+    const harness = createHarness({ events: [
+      ...(startsWithCall ? [
+        { type: 'tool.call' as const, toolCallId: 'repeated', title: 'Read', status: 'pending' },
+        { type: 'tool.call' as const, toolCallId: 'repeated', title: 'Read', status: 'in_progress' },
+      ] : []),
+      { type: 'tool.update', toolCallId: 'repeated', status: 'completed', rawOutput: 'done' },
+      { type: 'tool.update', toolCallId: 'repeated', status: 'completed', rawOutput: 'done' },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const records = harness.loopEvents as { type: string }[];
+    expect(records.filter((event) => event.type === 'tool.call')).toHaveLength(1);
+    expect(records.filter((event) => event.type === 'tool.result')).toHaveLength(1);
+    expect(harness.events.filter((event) => event.type === 'tool.call.started')).toHaveLength(1);
+    expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
   it('maps normalized events to live and canonical durable records with stable losses', async () => {

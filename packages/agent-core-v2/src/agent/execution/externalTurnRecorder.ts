@@ -68,6 +68,7 @@ export function resolveExternalModelProvider(
 }
 
 interface Segment {
+  readonly id: string;
   readonly kind: 'text' | 'think';
   readonly messageId?: string;
   text: string;
@@ -98,7 +99,7 @@ export class ExternalTurnRecorder {
   readonly #wire: IWireService;
   readonly #context: IAgentContextMemoryService;
   readonly #usage: IAgentUsageService;
-  readonly #segments: Segment[] = [];
+  #segment: Segment | undefined;
   readonly #userSegments: UserSegment[] = [];
   readonly #tools = new Map<string, RecordedTool>();
   #partOrdinal = 0;
@@ -245,14 +246,14 @@ export class ExternalTurnRecorder {
       return;
     }
     if (event.messageId === undefined) this.losses.add('message_id_missing');
-    this.#appendSegment('text', event.messageId, event.content.text);
+    const segment = this.#appendSegment('text', event.messageId, event.content.text);
     this.#lastAssistantText += event.content.text;
     await this.#dispatcher.dispatch(
       new AssistantDelta({
         turnId: this.turnId,
         step: 1,
         stepId: this.stepId,
-        partId: event.messageId,
+        partId: segment.id,
         delta: event.content.text,
       }),
     );
@@ -266,13 +267,13 @@ export class ExternalTurnRecorder {
       return;
     }
     if (event.messageId === undefined) this.losses.add('message_id_missing');
-    this.#appendSegment('think', event.messageId, event.content.text);
+    const segment = this.#appendSegment('think', event.messageId, event.content.text);
     await this.#dispatcher.dispatch(
       new ThinkingDelta({
         turnId: this.turnId,
         step: 1,
         stepId: this.stepId,
-        partId: event.messageId,
+        partId: segment.id,
         delta: event.content.text,
       }),
     );
@@ -295,17 +296,37 @@ export class ExternalTurnRecorder {
     this.#userSegments.push({ messageId: event.messageId, text });
   }
 
-  #appendSegment(kind: Segment['kind'], messageId: string | undefined, text: string): void {
-    const current = this.#segments.at(-1);
+  #appendSegment(kind: Segment['kind'], messageId: string | undefined, text: string): Segment {
+    const current = this.#segment;
     if (current !== undefined && current.kind === kind && current.messageId === messageId) {
       current.text += text;
-      return;
+      return current;
     }
-    this.#segments.push({ kind, messageId, text });
+    this.#flushSegment();
+    const segment = { id: `${this.stepId}:part:${this.#partOrdinal++}`, kind, messageId, text };
+    this.#segment = segment;
+    return segment;
+  }
+
+  #flushSegment(): void {
+    const segment = this.#segment;
+    if (segment === undefined) return;
+    this.#segment = undefined;
+    const part: ContentPart = segment.kind === 'text'
+      ? { type: 'text', text: segment.text } : { type: 'think', think: segment.text };
+    this.#context.appendLoopEvent({
+      type: 'content.part', stepUuid: this.stepId, part, uuid: segment.id,
+      turnId: String(this.turnId), step: 1,
+    });
   }
 
   async #toolCall(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): Promise<void> {
     const namespacedId = this.toolCallId(event.toolCallId);
+    this.#flushSegment();
+    if (this.#tools.has(event.toolCallId)) {
+      await this.#toolUpdate({ ...event, type: 'tool.update' });
+      return;
+    }
     const tool: RecordedTool = {
       remoteId: event.toolCallId,
       namespacedId,
@@ -347,7 +368,9 @@ export class ExternalTurnRecorder {
 
   async #toolUpdate(event: Extract<ExternalExecutorEvent, { type: 'tool.update' }>): Promise<void> {
     let tool = this.#tools.get(event.toolCallId);
+    this.#flushSegment();
     if (tool === undefined) {
+    if (tool?.terminal === true) return;
       tool = {
         remoteId: event.toolCallId,
         namespacedId: this.toolCallId(event.toolCallId),
@@ -357,7 +380,6 @@ export class ExternalTurnRecorder {
         rawInput: boundedUnknown(event.rawInput),
         terminal: false,
       };
-      this.#tools.set(event.toolCallId, tool);
       await this.#toolCall({
         type: 'tool.call',
         toolCallId: event.toolCallId,
@@ -439,19 +461,7 @@ export class ExternalTurnRecorder {
   ): Promise<void> {
     if (this.#ended) return;
     this.#ended = true;
-    for (const segment of this.#segments) {
-      const part: ContentPart = segment.kind === 'text'
-        ? { type: 'text', text: segment.text }
-        : { type: 'think', think: segment.text };
-      this.#context.appendLoopEvent({
-        type: 'content.part',
-        stepUuid: this.stepId,
-        part,
-        uuid: `${this.stepId}:part:${this.#partOrdinal++}`,
-        turnId: String(this.turnId),
-        step: 1,
-      });
-    }
+    this.#flushSegment();
     for (const tool of this.#tools.values()) {
       if (tool.terminal) continue;
       this.#context.appendLoopEvent({
