@@ -9,7 +9,7 @@
  * active option, which is also scrolled into view while arrowing.
  */
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
@@ -49,6 +49,57 @@ export interface SearchableSelectOption {
   readonly title?: string;
   /** Extra match text the filter sees but the row never renders (e.g. a model id). */
   readonly keywords?: string;
+}
+
+const PANEL_GAP = 4;
+const VIEWPORT_MARGIN = 8;
+const PANEL_MIN_WIDTH = 224;
+const PANEL_MAX_HEIGHT = 340;
+
+/**
+ * Viewport-fixed placement for `placement="auto"`. The panel is at least as
+ * wide as its trigger, hangs from the trigger edge `align` names, is clamped
+ * inside the viewport horizontally, and takes whichever side (below first)
+ * has room, with its height capped to that room. Recomputed on scroll and
+ * resize so it follows the trigger instead of floating over neighbours.
+ */
+function useAutoPlacement(
+  active: boolean,
+  triggerRef: React.RefObject<HTMLButtonElement | null>,
+  align: 'start' | 'end',
+): CSSProperties | undefined {
+  const [style, setStyle] = useState<CSSProperties | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!active) {
+      setStyle(undefined);
+      return;
+    }
+    const place = () => {
+      const trigger = triggerRef.current;
+      if (trigger === null) return;
+      const rect = trigger.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const width = Math.min(Math.max(rect.width, PANEL_MIN_WIDTH), viewportWidth - VIEWPORT_MARGIN * 2);
+      const preferredLeft = align === 'end' ? rect.right - width : rect.left;
+      const left = Math.max(VIEWPORT_MARGIN, Math.min(preferredLeft, viewportWidth - width - VIEWPORT_MARGIN));
+      const below = viewportHeight - rect.bottom - PANEL_GAP - VIEWPORT_MARGIN;
+      const above = rect.top - PANEL_GAP - VIEWPORT_MARGIN;
+      const openBelow = below >= Math.min(PANEL_MAX_HEIGHT, 200) || below >= above;
+      const maxHeight = Math.max(120, Math.min(PANEL_MAX_HEIGHT, openBelow ? below : above));
+      setStyle(openBelow
+        ? { left, width, top: rect.bottom + PANEL_GAP, maxHeight }
+        : { left, width, bottom: viewportHeight - rect.top + PANEL_GAP, maxHeight });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [active, triggerRef, align]);
+  return style;
 }
 
 export function SearchableSelect({
@@ -91,8 +142,13 @@ export function SearchableSelect({
   readonly noMatchText?: (query: string) => string;
   readonly buttonClassName?: string;
   readonly panelClassName?: string;
-  /** 'above' for triggers docked near the viewport bottom (the composer). */
-  readonly placement?: 'below' | 'above';
+  /**
+   * 'above' for triggers docked near the viewport bottom (the composer).
+   * 'auto' measures the trigger: the panel is fixed to the viewport, opens
+   * below when it fits and above otherwise, caps its height to the room it
+   * has, and never runs past either viewport edge.
+   */
+  readonly placement?: 'below' | 'above' | 'auto';
   /**
    * Which trigger edge the panel hangs from. `end` for triggers that sit at
    * the right edge of their row (settings controls), so the panel opens
@@ -136,6 +192,7 @@ export function SearchableSelect({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const autoStyle = useAutoPlacement(placement === 'auto' && open, triggerRef, align);
 
   const selected = options.find((option) => option.value === value);
   const visible = useMemo(() => filterSelectOptions(options, query), [options, query]);
@@ -272,10 +329,13 @@ export function SearchableSelect({
         <div
           className={
             panelClassName ??
-            `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS} ${
-              placement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
-            } ${align === 'end' ? 'right-0' : 'left-0'}`
+            (placement === 'auto'
+              ? `anim-enter fixed z-50 flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`
+              : `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS} ${
+                placement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
+              } ${align === 'end' ? 'right-0' : 'left-0'}`)
           }
+          style={placement === 'auto' && panelClassName === undefined ? autoStyle : undefined}
         >
           {panelHeader}
           {hideFilter ? null : (
@@ -308,7 +368,7 @@ export function SearchableSelect({
             id={listId}
             role="listbox"
             aria-label={ariaLabel}
-            className="max-h-[min(340px,55vh)] overflow-x-hidden overflow-y-auto p-1.5"
+            className={`overflow-x-hidden overflow-y-auto p-1.5 ${placement === 'auto' ? 'min-h-0 flex-1' : 'max-h-[min(340px,55vh)]'}`}
           >
             {rowCount === 0 ? (
               <p className="px-2 py-4 text-center text-[12px] text-ink-faint">

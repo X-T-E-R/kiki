@@ -221,8 +221,10 @@ export function SettingsSelect<T extends string>({ id, choices, value, onChange,
   const trigger = variant === 'form' ? FORM_SELECT_TRIGGER : SETTINGS_SELECT_TRIGGER;
   const select = <SearchableSelect id={id} options={choices} value={value} ariaLabel={ariaLabel} disabled={disabled}
     emptyText={emptyText} hideFilter={choices.length <= 8} onChange={(next) => { onChange(next as T); }}
-    // A row control sits on the right edge of its field: open inward.
+    // A row control sits on the right edge of its field: open inward, and
+    // flip or shrink against the viewport instead of covering a neighbour.
     align={variant === 'row' ? 'end' : 'start'}
+    placement="auto"
     buttonClassName={`${trigger} ${mono ? 'font-mono' : ''} ${className ?? ''}`} />;
   return dataAttr === undefined ? select : <div className="contents" {...{ [dataAttr]: value }}>{select}</div>;
 }

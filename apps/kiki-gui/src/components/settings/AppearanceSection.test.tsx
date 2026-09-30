@@ -192,10 +192,18 @@ describe('AppearanceSection', () => {
   });
 
   it('opens a settings dropdown toward the page, not past its right edge', async () => {
-    await act(async () => { button('[data-font-role="sans"] [aria-haspopup="listbox"]').click(); });
+    const trigger = button('[data-font-role="sans"] [aria-haspopup="listbox"]');
+    // A row control at the right edge of a 1024px viewport.
+    trigger.getBoundingClientRect = () => ({ left: 880, right: 1000, top: 200, bottom: 232, width: 120, height: 32, x: 880, y: 200, toJSON: () => ({}) });
+    await act(async () => { trigger.click(); });
     const panel = container.querySelector('[data-font-role="sans"] [role="listbox"]')!.parentElement!;
-    expect(panel.className).toContain('right-0');
-    expect(panel.className).not.toContain('left-0');
+    // Viewport-fixed, hung from the trigger's right edge, never past the viewport.
+    expect(panel.className).toContain('fixed');
+    const left = Number.parseFloat(panel.style.left);
+    const width = Number.parseFloat(panel.style.width);
+    expect(left + width).toBeLessThanOrEqual(1000);
+    expect(left + width).toBeLessThanOrEqual(window.innerWidth - 8);
+    expect(panel.style.top).toBe('236px');
   });
 
   it('lists pack colors in the skin picker and applies a pack as colors plus background', async () => {

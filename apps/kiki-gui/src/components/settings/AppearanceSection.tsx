@@ -28,6 +28,7 @@ import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { FontRoleField } from './FontRoleField';
+import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { SkinFiles, SkinPicker, useSkinPrefs } from './SkinSettings';
 
@@ -79,6 +80,19 @@ function readAccent(): string {
 }
 
 /**
+ * The face "Follow skin" resolves to for one role, read from the live stack
+ * while no tweak overrides it (with a tweak in force the skin's own face is
+ * not on screen, and the generic label is enough).
+ */
+function skinFaceName(variable: '--font-sans' | '--font-mono', tweak: string | undefined): string | null {
+  if (tweak !== undefined || typeof document === 'undefined') return null;
+  const stack = getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+  if (stack === '') return null;
+  const face = firstFamily(stack).replace(/ Variable$/, '');
+  return face === '' || face.startsWith('ui-') ? null : face;
+}
+
+/**
  * Settings → Appearance. Every control applies the moment it changes, so the
  * app (and the preview at the top) is the feedback; there is no draft to save.
  * The one page-level action is "Restore defaults", which keeps an undo; it is
@@ -113,8 +127,18 @@ export function AppearanceSection() {
   const atDefaults = isDefaultAppearance(current);
   const sans = splitStack(tweaks.fontSans, FONT_CHOICES);
   const mono = splitStack(tweaks.fontMono, MONO_CHOICES);
-  const fontPresets = (choices: readonly { value: string; label: string | null }[]) =>
-    choices.map((choice) => ({ value: choice.value, label: choice.label ?? t('st.skin.fontSkin') }));
+  const fontPresets = (choices: readonly { value: string; label: string | null }[], variable: '--font-sans' | '--font-mono') => {
+    // "Follow skin" names the face the skin resolves to, so the interface and
+    // code rows never show two identical triggers, and the list never offers
+    // that same face twice (once as the skin, once as a preset).
+    const skinFace = skinFaceName(variable, variable === '--font-sans' ? tweaks.fontSans : tweaks.fontMono);
+    return choices
+      .filter((choice) => choice.value === '' || skinFace === null || choice.label !== skinFace)
+      .map((choice) => ({
+        value: choice.value,
+        label: choice.label ?? (skinFace === null ? t('st.skin.fontSkin') : t('st.skin.fontSkinNamed', { face: skinFace })),
+      }));
+  };
 
   return (
     <div className="space-y-6" data-appearance-page data-skin-settings>
@@ -199,7 +223,7 @@ export function AppearanceSection() {
           <FontRoleField
             role="sans"
             label={t('st.skin.font')}
-            presets={fontPresets(FONT_CHOICES)}
+            presets={fontPresets(FONT_CHOICES, '--font-sans')}
             presetValue={sans.preset}
             custom={sans.custom}
             fallback={SANS_FALLBACK}
@@ -223,7 +247,7 @@ export function AppearanceSection() {
           <FontRoleField
             role="mono"
             label={t('st.skin.fontMono')}
-            presets={fontPresets(MONO_CHOICES)}
+            presets={fontPresets(MONO_CHOICES, '--font-mono')}
             presetValue={mono.preset}
             custom={mono.custom}
             fallback={MONO_FALLBACK}
