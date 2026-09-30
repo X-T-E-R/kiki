@@ -329,9 +329,11 @@ describe('history navigation source rows', () => {
     const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
     try {
       const filler = 'f'.repeat(1 << 20);
-      await writeFile(wirePath, Array.from({ length: 9 }, (_unused, turnId) =>
+      const wire = Array.from({ length: 9 }, (_unused, turnId) =>
         line({ type: 'turn.prompt', turnId, promptId: `p-${turnId}`, time: 1000 + turnId,
-          input: [{ type: 'text', text: `${turnId === 3 || turnId === 8 ? 'needle ' : ''}${filler}` }] })).join(''));
+          input: [{ type: 'text', text: `${turnId === 3 || turnId === 8 ? 'needle ' : ''}${turnId === 8 ? 'tailmarker ' : ''}${filler}` }] })).join('');
+      expect(Buffer.byteLength(wire)).toBeGreaterThan(9 << 20);
+      await writeFile(wirePath, wire);
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
       const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
@@ -351,6 +353,19 @@ describe('history navigation source rows', () => {
       expect((await archive.readRef?.(second.items[0]!.ref!))).toMatchObject({
         status: 'ok', text: expect.stringContaining('needle'), turn: 8,
       });
+      expect(first.fallback).toMatchObject({ maxBytes: 8 << 20, maxRecords: 50_000 });
+      expect(first.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
+      expect(second.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
+      const recent = await archive.search({ ...request, query: 'tailmarker', sort: 'newest' });
+      expect(recent).toMatchObject({ items: [], continuation: 'scan', hasMore: true, coverage: { complete: false } });
+      const recentTail = await archive.search({ ...request, query: 'tailmarker', sort: 'newest', pageToken: recent.pageToken });
+      expect(recentTail).toMatchObject({ items: [{ turn: 8, time: 1008 }], hasMore: false, coverage: { complete: true } });
+      const absent = await archive.search({ ...request, query: 'absentmarker' });
+      expect(absent).toMatchObject({ items: [], continuation: 'scan', hasMore: true,
+        coverage: { complete: false }, incomplete: 'wire_scan_limit' });
+      const absentTail = await archive.search({ ...request, query: 'absentmarker', pageToken: absent.pageToken });
+      expect(absentTail).toMatchObject({ items: [], hasMore: false, coverage: { complete: true } });
+      expect(absentTail.pageToken).toBeUndefined();
       const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
       expect(alternate.items.map((hit) => hit.turn)).toEqual([3]);
       const manifestScopes = (await db.ready()).db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
