@@ -117,6 +117,8 @@ export interface SkinTweaks {
   readonly accent?: string;
   readonly fontSans?: string;
   readonly fontMono?: string;
+  /** A typed family for assistant replies; wins over the serif / sans choice. */
+  readonly fontProse?: string;
   readonly radius?: number;
   readonly spacing?: number;
 }
@@ -186,6 +188,7 @@ export function variantToCssVariables(
   }
   if (tweaks.fontSans !== undefined) out['--font-sans'] = tweaks.fontSans;
   if (tweaks.fontMono !== undefined) out['--font-mono'] = tweaks.fontMono;
+  if (tweaks.fontProse !== undefined) out['--kiki-prose-user'] = tweaks.fontProse;
   if (tweaks.radius !== undefined) out['--kiki-sheet-radius'] = `${tweaks.radius}px`;
   if (tweaks.spacing !== undefined) out['--spacing'] = `${tweaks.spacing}rem`;
 
@@ -198,6 +201,7 @@ export function allSkinVariables(): readonly string[] {
     ...Object.values(COLOR_TOKEN_VARIABLES).flat(),
     ...Object.values(FONT_TOKEN_VARIABLES).flat(),
     '--kiki-shadow-ink',
+    '--kiki-prose-user',
     '--kiki-sheet-radius',
     '--kiki-stage-gap',
     '--spacing',

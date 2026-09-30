@@ -1401,8 +1401,8 @@ input[data-add-search]:focus-visible {
 .thinking-row {
   /* YaHei before Noto Sans SC: on Windows the system Noto SC is a variable
    * font whose fallback instance renders visibly heavier than regular. */
-  --kiki-prose-font: 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', 'Noto Sans SC', serif;
+  --kiki-prose-font: var(--kiki-prose-user, 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', serif);
 }
 .kiki-prose {
   font-family: var(--kiki-prose-font);

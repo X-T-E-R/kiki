@@ -65,6 +65,7 @@ export function SearchableSelect({
   buttonClassName,
   panelClassName,
   placement = 'below',
+  align = 'start',
   triggerLabel,
   triggerIcon,
   triggerSuffix,
@@ -92,6 +93,12 @@ export function SearchableSelect({
   readonly panelClassName?: string;
   /** 'above' for triggers docked near the viewport bottom (the composer). */
   readonly placement?: 'below' | 'above';
+  /**
+   * Which trigger edge the panel hangs from. `end` for triggers that sit at
+   * the right edge of their row (settings controls), so the panel opens
+   * inward instead of past the container.
+   */
+  readonly align?: 'start' | 'end';
   /**
    * Replaces the selected option's label on the trigger (a short form of a
    * long row label); the panel rows keep the full label.
@@ -266,8 +273,8 @@ export function SearchableSelect({
           className={
             panelClassName ??
             `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS} ${
-              placement === 'above' ? 'bottom-full mb-1 left-0' : 'top-full mt-1 left-0'
-            }`
+              placement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
+            } ${align === 'end' ? 'right-0' : 'left-0'}`
           }
         >
           {panelHeader}

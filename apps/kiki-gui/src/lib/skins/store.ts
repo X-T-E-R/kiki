@@ -78,6 +78,9 @@ export function normalizeSkinPrefs(raw: unknown): SkinPrefs {
     ...(typeof rawTweaks['fontMono'] === 'string' && FONT_STACK.test(rawTweaks['fontMono'])
       ? { fontMono: rawTweaks['fontMono'] }
       : {}),
+    ...(typeof rawTweaks['fontProse'] === 'string' && FONT_STACK.test(rawTweaks['fontProse'])
+      ? { fontProse: rawTweaks['fontProse'] }
+      : {}),
     ...(typeof rawTweaks['radius'] === 'number'
     && rawTweaks['radius'] >= 0
     && rawTweaks['radius'] <= 28

@@ -95,6 +95,12 @@ afterEach(async () => {
 
 const button = (selector: string) => container.querySelector<HTMLButtonElement>(selector)!;
 
+/** Open a font role's picker and pick one of its rows. */
+async function pickFont(role: string, value: string) {
+  await act(async () => { button(`[data-font-role="${role}"] [aria-haspopup="listbox"]`).click(); });
+  await act(async () => { button(`[data-font-role="${role}"] [data-option-value="${value}"]`).click(); });
+}
+
 describe('AppearanceSection', () => {
   it('renders every card, the preview, and no draft bar', () => {
     for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-appearance-packs', 'st-card-skin-files']) {
@@ -111,7 +117,7 @@ describe('AppearanceSection', () => {
     expect(readSettings().motion).toBe('reduce');
     expect(document.documentElement.dataset['kikiMotion']).toBe('reduce');
 
-    await act(async () => { button('[data-prose-choice="sans"]').click(); });
+    await pickFont('prose', 'sans');
     expect(readSettings().proseFont).toBe('sans');
     expect(document.documentElement.dataset['kikiProse']).toBe('sans');
   });
@@ -129,7 +135,7 @@ describe('AppearanceSection', () => {
     await act(async () => { button('[data-theme-choice="dark"]').click(); });
     expect(readSettings().theme).toBe('dark');
     expect(container.querySelector('[data-appearance-restore]')).toBeNull();
-    await act(async () => { button('[data-prose-choice="sans"]').click(); });
+    await pickFont('prose', 'sans');
     expect(container.querySelector('[data-appearance-restore]')).not.toBeNull();
   });
 
@@ -154,6 +160,42 @@ describe('AppearanceSection', () => {
     expect(readSettings().theme).toBe('dark');
     expect(readSettings().motion).toBe('full');
     expect(readSkinPrefs().selection.id).toBe('graphite');
+  });
+
+  it('takes a typed family for each role, applies it as you type, and leaves it for a preset', async () => {
+    for (const role of ['sans', 'prose', 'mono']) {
+      await pickFont(role, '__custom');
+      const input = container.querySelector<HTMLInputElement>(`[data-font-role="${role}"] [data-font-custom] input`)!;
+      expect(input).not.toBeNull();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        setter.call(input, 'Fixture Face');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+    const tweaks = readSkinPrefs().tweaks;
+    expect(tweaks.fontSans?.startsWith("'Fixture Face', ")).toBe(true);
+    expect(tweaks.fontProse?.startsWith("'Fixture Face', ")).toBe(true);
+    expect(tweaks.fontMono?.startsWith("'Fixture Face', ")).toBe(true);
+    expect(document.documentElement.style.getPropertyValue('--font-mono')).toContain('Fixture Face');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-user')).toContain('Fixture Face');
+    // The sample line previews the typed face.
+    expect(container.querySelector<HTMLElement>('[data-font-role="sans"] [data-font-sample]')?.style.fontFamily).toContain('Fixture Face');
+    // A preset takes over and drops the typed family.
+    await pickFont('prose', 'serif');
+    expect(readSkinPrefs().tweaks.fontProse).toBeUndefined();
+    expect(container.querySelector('[data-font-role="prose"] [data-font-custom]')).toBeNull();
+    // Restore defaults clears the rest and closes their fields.
+    await act(async () => { button('[data-appearance-restore]').click(); });
+    expect(readSkinPrefs().tweaks).toEqual({});
+    expect(container.querySelector('[data-font-custom]')).toBeNull();
+  });
+
+  it('opens a settings dropdown toward the page, not past its right edge', async () => {
+    await act(async () => { button('[data-font-role="sans"] [aria-haspopup="listbox"]').click(); });
+    const panel = container.querySelector('[data-font-role="sans"] [role="listbox"]')!.parentElement!;
+    expect(panel.className).toContain('right-0');
+    expect(panel.className).not.toContain('left-0');
   });
 
   it('lists pack colors in the skin picker and applies a pack as colors plus background', async () => {

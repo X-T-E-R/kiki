@@ -42,10 +42,11 @@
 
 /* Assistant prose face (Settings → Appearance). Serif Newsreader is the
  * default set in index.css; `sans` swaps the prose stack for the UI sans so
- * long answers read in the same face as the chrome. Only the family moves —
+ * long answers read in the same face as the chrome. A typed family
+ * (`--kiki-prose-user`, from the skin tweaks) wins over both. Only the family moves —
  * size, measure and code inside prose keep their own rules. */
 :root[data-kiki-prose='sans'] :is(.kiki-prose, .thinking-row) {
-  --kiki-prose-font: var(--font-sans);
+  --kiki-prose-font: var(--kiki-prose-user, var(--font-sans));
 }
 
 /* ---- window background ----

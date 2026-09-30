@@ -6,7 +6,6 @@ import {
   subscribeSettings,
   writeSettings,
   type MotionPreference,
-  type ProseFontPreference,
   type ThemePreference,
 } from '@kiki/session-core/settings';
 
@@ -28,7 +27,8 @@ import { AppearancePreview } from './AppearancePreview';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
-import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { FontRoleField } from './FontRoleField';
+import { SettingsSegmented } from './SettingsPrimitives';
 import { SkinFiles, SkinPicker, useSkinPrefs } from './SkinSettings';
 
 const DENSITY_CHOICES = [
@@ -46,6 +46,17 @@ const FONT_CHOICES: readonly { value: string; label: string | null }[] = [
   { value: "'Space Grotesk', ui-sans-serif, system-ui, 'PingFang SC', 'Noto Sans SC', sans-serif", label: 'Space Grotesk' },
   { value: "ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif", label: 'System sans' },
 ];
+
+/** What a typed family falls back to, per role, so missing glyphs land on a deliberate face. */
+const SANS_FALLBACK = "ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
+const MONO_FALLBACK = "ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Microsoft YaHei', monospace";
+const PROSE_FALLBACK = "Georgia, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', serif";
+
+/** A stored stack is a preset when it is one of the listed values; anything else was typed. */
+function splitStack(stack: string | undefined, presets: readonly { value: string }[]): { preset: string; custom: string | undefined } {
+  if (stack === undefined) return { preset: '', custom: undefined };
+  return presets.some((choice) => choice.value === stack) ? { preset: stack, custom: undefined } : { preset: '', custom: stack };
+}
 
 const MONO_CHOICES: readonly { value: string; label: string | null }[] = [
   { value: '', label: null },
@@ -100,6 +111,10 @@ export function AppearanceSection() {
     background,
   };
   const atDefaults = isDefaultAppearance(current);
+  const sans = splitStack(tweaks.fontSans, FONT_CHOICES);
+  const mono = splitStack(tweaks.fontMono, MONO_CHOICES);
+  const fontPresets = (choices: readonly { value: string; label: string | null }[]) =>
+    choices.map((choice) => ({ value: choice.value, label: choice.label ?? t('st.skin.fontSkin') }));
 
   return (
     <div className="space-y-6" data-appearance-page data-skin-settings>
@@ -181,34 +196,40 @@ export function AppearanceSection() {
 
       <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')}>
         <div className="space-y-2">
-          <SettingField label={t('st.skin.font')} labelId="skin-font-label">
-            <SettingsSelect
-              ariaLabel={t('st.skin.font')}
-              value={tweaks.fontSans ?? ''}
-              onChange={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
-              choices={FONT_CHOICES.map((choice) => ({ value: choice.value, label: choice.label ?? t('st.skin.fontSkin') }))}
-            />
-          </SettingField>
-          <SettingField label={t('st.skin.fontMono')} labelId="skin-mono-label">
-            <SettingsSelect
-              ariaLabel={t('st.skin.fontMono')}
-              value={tweaks.fontMono ?? ''}
-              onChange={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
-              choices={MONO_CHOICES.map((choice) => ({ value: choice.value, label: choice.label ?? t('st.skin.fontSkin') }))}
-            />
-          </SettingField>
-          <SettingField label={t('st.appearance.prose')} labelId="prose-font-label" help={t('st.appearance.proseHint')}>
-            <SettingsSegmented<ProseFontPreference>
-              ariaLabelledBy="prose-font-label"
-              dataAttr="data-prose-choice"
-              value={settings.proseFont}
-              onChange={(choice) => { setLocal({ proseFont: choice }); }}
-              choices={[
-                { value: 'serif', label: t('st.appearance.prose.serif') },
-                { value: 'sans', label: t('st.appearance.prose.sans') },
-              ]}
-            />
-          </SettingField>
+          <FontRoleField
+            role="sans"
+            label={t('st.skin.font')}
+            presets={fontPresets(FONT_CHOICES)}
+            presetValue={sans.preset}
+            custom={sans.custom}
+            fallback={SANS_FALLBACK}
+            onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
+            onCustom={(stack) => { setTweak('fontSans', stack); }}
+          />
+          <FontRoleField
+            role="prose"
+            label={t('st.appearance.prose')}
+            help={t('st.appearance.proseHint')}
+            presets={[
+              { value: 'serif', label: t('st.appearance.prose.serif') },
+              { value: 'sans', label: t('st.appearance.prose.sans') },
+            ]}
+            presetValue={settings.proseFont}
+            custom={tweaks.fontProse}
+            fallback={PROSE_FALLBACK}
+            onPreset={(value) => { setLocal({ proseFont: value === 'sans' ? 'sans' : 'serif' }); }}
+            onCustom={(stack) => { setTweak('fontProse', stack); }}
+          />
+          <FontRoleField
+            role="mono"
+            label={t('st.skin.fontMono')}
+            presets={fontPresets(MONO_CHOICES)}
+            presetValue={mono.preset}
+            custom={mono.custom}
+            fallback={MONO_FALLBACK}
+            onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
+            onCustom={(stack) => { setTweak('fontMono', stack); }}
+          />
         </div>
       </SectionCard>
 
