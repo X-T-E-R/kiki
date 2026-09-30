@@ -106,6 +106,7 @@ function reminderBlocks(
   createdAt: string | undefined,
   reminders: readonly string[],
   turnId?: string,
+  origin?: PromptOriginLike,
 ): SystemReminderBlock[] {
   return reminders.map((reminder, index) => ({
     kind: 'system-reminder',
@@ -113,6 +114,8 @@ function reminderBlocks(
     text: reminder,
     createdAt,
     turnId,
+    variant: origin?.variant,
+    disclosure: origin?.disclosure,
   }));
 }
 
@@ -209,7 +212,8 @@ function classifiedTextToBlocks(input: {
     case 'reminder':
       break;
   }
-  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId));
+  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId,
+    classified.origin?.kind === 'injection' ? classified.origin : undefined));
   return blocks;
 }
 

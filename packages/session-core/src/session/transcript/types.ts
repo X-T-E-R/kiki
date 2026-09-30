@@ -74,6 +74,8 @@ export interface SystemReminderBlock {
   readonly text: string;
   readonly createdAt: string | undefined;
   readonly turnId?: string;
+  readonly variant?: string;
+  readonly disclosure?: unknown;
 }
 
 export type SystemVariant =

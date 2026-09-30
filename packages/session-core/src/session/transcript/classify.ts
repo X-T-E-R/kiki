@@ -31,6 +31,7 @@ export interface PromptOriginLike {
   readonly pluginId?: string;
   readonly name?: string;
   readonly variant?: string;
+  readonly disclosure?: unknown;
   readonly phase?: string;
   readonly isError?: boolean;
   readonly payload?: unknown;

@@ -4363,7 +4363,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
             turnId: 't1',
             ordinal: 1,
             state: 'completed',
-            origin: { kind: 'other', payload: { kind: 'injection', variant: 'todo_list_reminder' } },
+            origin: { kind: 'other', payload: { kind: 'injection', variant: 'todo_list_reminder', disclosure: { kind: 'directive', triggers: ['E1'], epoch: 1 } } },
             prompt: '<system-reminder>\nTodoList has not been updated recently.\n</system-reminder>',
             startedAt: FIXED_AT_1,
             steps: [{ kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed', frames: [] }],
@@ -4383,6 +4383,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     const reminders = projected.blocks.filter((block) => block.kind === 'system-reminder');
     expect(reminders.map((block) => block.text)).toEqual(['TodoList has not been updated recently.', 'Image compressed to fit.']);
+    expect(reminders[0]).toMatchObject({ variant: 'todo_list_reminder', disclosure: { kind: 'directive', triggers: ['E1'], epoch: 1 } });
+    expect(reminders[1]?.disclosure).toBeUndefined();
     expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Ship it.');
     expect(projected.blocks.some((block) => block.kind === 'system' && block.text === '')).toBe(false);
   });
