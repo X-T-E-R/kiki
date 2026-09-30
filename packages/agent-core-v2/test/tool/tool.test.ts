@@ -11,6 +11,7 @@ import { userCancellationReason } from '#/_base/utils/abort';
 import { createHooks } from '#/hooks';
 import type { ToolCall } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -163,10 +164,10 @@ function modelCatalogResolving(...aliases: readonly string[]): IModelCatalog {
           { details: { model: alias } },
         );
       }
-      return { id: alias } as Model;
+      return { id: alias, capability: UNKNOWN_CAPABILITY } as Model;
     },
     getRequester: (alias: string) => ({
-      model: { id: alias } as Model,
+      model: { id: alias, capability: UNKNOWN_CAPABILITY } as Model,
       request: async function* () {},
     }),
     notifyConfigChanged: () => {},
@@ -1092,6 +1093,7 @@ describe('AgentRun tool execution contract', () => {
     lifecycle: AgentLifecycleStub = createAgentLifecycleStub(),
     ...extra: readonly (TestAgentServiceOverride | TestAgentOptions)[]
   ): TestAgentContext {
+    lifecycle.addHandle('main', 'agent');
     ctx = createTestAgent(
       sessionService(IAgentLifecycleService, lifecycle),
       sessionService(ISessionSubagentService, lifecycle),
@@ -1106,7 +1108,6 @@ describe('AgentRun tool execution contract', () => {
       defaultProfile?: string;
     };
     void config.set('subagent', { ...subagentSection, defaultProfile: subagentSection.defaultProfile ?? 'general' });
-    lifecycle.addHandle('main', 'agent');
     return ctx;
   }
 
