@@ -7,6 +7,9 @@ import { Hint, Toggle } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { NbSearchIssues } from './NbSearchIssues';
 import { INPUT } from '../../ui';
+import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListDensity, type ListFilterSpec, type ListSortSpec } from '../list';
+
+type ProviderInstance = NbSearchCapabilities['providers']['instances'][number];
 
 function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavailable' }) {
   const { t } = useI18n();
@@ -40,6 +43,7 @@ function ProviderInstanceCard({
   readCredential,
   writeCredential,
   credentialDisabled,
+  density,
 }: {
   instance: NbSearchCapabilities['providers']['instances'][number];
   descriptor: NbSearchCapabilities['providers']['descriptors'][number] | undefined;
@@ -50,8 +54,10 @@ function ProviderInstanceCard({
   readCredential: (id: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
   writeCredential: (id: string, value: string | null, version: string, binding: string) => Promise<NbSearchManagedCredentialView>;
   credentialDisabled: boolean;
+  density: ListDensity;
 }) {
   const { t } = useI18n();
+  const compact = density === 'compact';
   const attention = instance.availability === 'unavailable' || instance.issues.length > 0;
   const [open, setOpen] = useState(attention);
   const needsCredential = instance.credential.requirement !== 'none';
@@ -118,11 +124,10 @@ function ProviderInstanceCard({
       onToggle={(event) => {
         setOpen(event.currentTarget.open);
       }}
-      className={`rounded-lg border bg-paper px-3 py-2 transition-colors ${
-        attention ? 'border-amber-rule/40' : 'border-hairline'
-      }`}
+      className="group/nb px-3"
     >
-      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 select-none">
+      <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
+        className={`flex cursor-pointer flex-wrap items-center justify-between gap-2 select-none ${compact ? 'py-1' : 'py-2'}`}>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[12.5px] font-semibold text-ink">{instance.id}</span>
           <AvailabilityBadge availability={instance.availability} />
@@ -138,11 +143,13 @@ function ProviderInstanceCard({
           ) : null}
         </div>
 
-        <span className="text-[12px]">
-          <span className={credentialSummaryClass}>{t(credentialSummaryKey)}</span>
-          <span className="text-ink-faint">{' · '}</span>
-          <span className={endpointSummaryClass}>{t(endpointSummaryKey)}</span>
-        </span>
+        {compact ? null : (
+          <span className="text-[12px]">
+            <span className={credentialSummaryClass}>{t(credentialSummaryKey)}</span>
+            <span className="text-ink-faint">{' · '}</span>
+            <span className={endpointSummaryClass}>{t(endpointSummaryKey)}</span>
+          </span>
+        )}
       </summary>
 
       <div className="mt-3 space-y-3 border-t border-hairline pt-3">
@@ -231,8 +238,6 @@ export function NbSearchProvidersTab({
   saving?: boolean;
 }) {
   const { t } = useI18n();
-  const [filterQuery, setFilterQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'attention' | 'configured'>('all');
 
   const descriptorByProvider = useMemo(
     () => new Map(capabilities.providers.descriptors.map((d) => [d.provider_id, d])),
@@ -248,24 +253,18 @@ export function NbSearchProvidersTab({
     });
   }, [capabilities.providers.instances]);
 
-  const totalCount = instances.length;
-  const attentionCount = instances.filter(
-    (i) => i.availability === 'unavailable' || i.issues.length > 0,
-  ).length;
-  const configuredCount = totalCount - attentionCount;
-
-  const filteredInstances = useMemo(() => {
-    const q = filterQuery.trim().toLowerCase();
-    return instances.filter((instance) => {
-      if (q && !instance.id.toLowerCase().includes(q) && !instance.provider_id.toLowerCase().includes(q)) {
-        return false;
-      }
-      const needsAttention = instance.availability === 'unavailable' || instance.issues.length > 0;
-      if (filterStatus === 'attention' && !needsAttention) return false;
-      if (filterStatus === 'configured' && needsAttention) return false;
-      return true;
-    });
-  }, [instances, filterQuery, filterStatus]);
+  const needsAttention = (instance: ProviderInstance) => instance.availability === 'unavailable' || instance.issues.length > 0;
+  const keyOf = (instance: ProviderInstance) => instance.id;
+  const textOf = (instance: ProviderInstance) => [instance.id, instance.provider_id];
+  const filters = useMemo<readonly ListFilterSpec<ProviderInstance>[]>(() => [
+    { id: 'attention', label: t('st.nbSearch.filter.attention'), tone: 'attention', test: needsAttention },
+    { id: 'ready', label: t('st.nbSearch.filter.ready'), test: (instance) => !needsAttention(instance) },
+  ], [t]);
+  const sorts = useMemo<readonly ListSortSpec<ProviderInstance>[]>(() => [
+    { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
+    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.id.localeCompare(b.id) },
+  ], [t]);
+  const view = useListView({ listId: 'nbsearch-providers', items: instances, keyOf, textOf, filters, sorts });
 
   const getCredentialEnv = (instanceId: string) => {
     const pDraft = draftProviders[instanceId];
@@ -276,91 +275,38 @@ export function NbSearchProvidersTab({
 
   return (
     <SectionCard id="st-card-search-providers" title={t('st.nbSearch.providersTitle')}>
-      <div className="space-y-4">
+      <div className="space-y-3">
         <Hint>{t('st.nbSearch.providersHint')}</Hint>
 
-        {/* Filter bar: text input & status pills */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-48 flex-1">
-            <input
-              type="search"
-              value={filterQuery}
-              onChange={(event) => {
-                setFilterQuery(event.target.value);
-              }}
-              placeholder={t('st.nbSearch.providers.filterPlaceholder')}
-              className={`${INPUT} py-1.5 text-[11.5px]`}
-            />
-          </div>
+        <ListToolbar view={view} total={instances.length} filters={filters} sorts={sorts}
+          searchLabel={t('st.nbSearch.providers.search')} searchPlaceholder={t('st.nbSearch.providers.filterPlaceholder')} />
 
-          <div className="flex items-center gap-1 text-[11px]">
-            <button
-              type="button"
-              onClick={() => {
-                setFilterStatus('all');
-              }}
-              className={`rounded-md px-3 py-1 transition-colors ${
-                filterStatus === 'all'
-                  ? 'bg-ink text-paper font-semibold'
-                  : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t('st.nbSearch.providers.filterAll', { count: totalCount })}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setFilterStatus('attention');
-              }}
-              className={`rounded-md px-3 py-1 transition-colors ${
-                filterStatus === 'attention'
-                  ? 'bg-amber-ink text-paper font-semibold'
-                  : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t('st.nbSearch.providers.filterNeedsAttention', { count: attentionCount })}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setFilterStatus('configured');
-              }}
-              className={`rounded-md px-3 py-1 transition-colors ${
-                filterStatus === 'configured'
-                  ? 'bg-ink text-paper font-semibold'
-                  : 'bg-paper border border-hairline text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t('st.nbSearch.providers.filterConfigured', { count: configuredCount })}
-            </button>
-          </div>
-        </div>
-
-        <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
-          {filteredInstances.map((instance) => (
-            <ProviderInstanceCard
-              key={instance.id}
-              instance={instance}
-              descriptor={descriptorByProvider.get(instance.provider_id)}
-              providerDraft={draftProviders[instance.id]!}
-              credentialEnv={getCredentialEnv(instance.id)}
-              onChange={(patch) => {
-                onUpdateProvider(instance.id, patch);
-              }}
-              onCredentialEnvChange={(env) => {
-                onUpdateCredentialEnv(instance.id, instance.provider_id, env);
-              }}
-              readCredential={readCredential}
-              writeCredential={writeCredential}
-              credentialDisabled={credentialDisabled}
-            />
-          ))}
-
-          {filteredInstances.length === 0 ? (
-            <p className="text-center text-[12px] text-ink-faint py-6 border border-dashed border-hairline rounded-lg">
-              {t('st.nbSearch.providers.emptyFilter')}
-            </p>
-          ) : null}
+        <fieldset disabled={saving} className="disabled:opacity-60">
+          {view.visible.length === 0 ? (
+            <ListEmpty kind="no-match" title={t('st.nbSearch.providers.noMatchTitle')} body={t('st.nbSearch.providers.emptyFilter')}
+              onClear={view.clear} />
+          ) : (
+            <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.nbSearch.providersTitle')}
+              virtualizeAfter={Number.POSITIVE_INFINITY}
+              renderRow={(instance) => (
+                <ProviderInstanceCard
+                  instance={instance}
+                  descriptor={descriptorByProvider.get(instance.provider_id)}
+                  providerDraft={draftProviders[instance.id]!}
+                  credentialEnv={getCredentialEnv(instance.id)}
+                  onChange={(patch) => {
+                    onUpdateProvider(instance.id, patch);
+                  }}
+                  onCredentialEnvChange={(env) => {
+                    onUpdateCredentialEnv(instance.id, instance.provider_id, env);
+                  }}
+                  readCredential={readCredential}
+                  writeCredential={writeCredential}
+                  credentialDisabled={credentialDisabled}
+                  density={view.density}
+                />
+              )} />
+          )}
         </fieldset>
       </div>
     </SectionCard>

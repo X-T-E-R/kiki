@@ -6551,4 +6551,8 @@ export const zh = {
   'st.identity.searchPlaceholder': '按名称或 ID 搜索…',
   'st.identity.noMatchTitle': '没有匹配的档案',
   'st.identity.noMatches': '没有匹配“{query}”的档案。',
+  'st.nbSearch.providers.search': '搜索提供商',
+  'st.nbSearch.filter.attention': '待配置或异常',
+  'st.nbSearch.filter.ready': '就绪',
+  'st.nbSearch.providers.noMatchTitle': '没有匹配的提供商',
 };

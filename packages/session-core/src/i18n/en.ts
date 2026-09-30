@@ -6614,4 +6614,8 @@ export const en = {
   'st.identity.searchPlaceholder': 'Search label or id…',
   'st.identity.noMatchTitle': 'No profiles match',
   'st.identity.noMatches': 'No profiles match “{query}”.',
+  'st.nbSearch.providers.search': 'Search providers',
+  'st.nbSearch.filter.attention': 'Needs attention',
+  'st.nbSearch.filter.ready': 'Ready',
+  'st.nbSearch.providers.noMatchTitle': 'No providers match',
 } as const;
