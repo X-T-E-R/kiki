@@ -236,12 +236,43 @@ describe('default main profile settings', () => {
     expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Advisory');
   });
 
-  it('shows Not reported when an older profile response omits the policy field', async () => {
+  it('shows Inherit default when the profile declares no policy of its own', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: undefined }] });
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="unknown"]')?.textContent).toBe('Not reported');
-    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Not reported');
+    expect(row.querySelector('[data-subagent-policy="inherit"]')?.textContent).toBe('Inherit default');
+    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Inherit default');
+    expect(row.textContent).not.toContain('Not reported');
+  });
+
+  it('offers inherit, advisory and strict in the editor and clears the key with null', async () => {
+    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, subagent_policy: undefined });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const choices = [...dialog.querySelectorAll<HTMLButtonElement>('[data-policy-choice]')];
+    expect(choices.map((button) => button.textContent)).toEqual(['Inherit default', 'Advisory', 'Strict']);
+    expect(choices.find((button) => button.getAttribute('aria-pressed') === 'true')?.dataset['policyChoice']).toBe('advisory');
+    await act(async () => { choices[0]!.click(); });
+    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ subagent_policy: null }));
+  });
+
+  it('opens an unset profile on Inherit default and writes strict only when picked', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: undefined }] });
+    client.updateNamedAgentProfile.mockResolvedValue({ ...profile, subagent_policy: 'strict' });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const pressed = dialog.querySelector<HTMLButtonElement>('[data-policy-choice][aria-pressed="true"]');
+    expect(pressed?.dataset['policyChoice']).toBe('inherit');
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-policy-choice="strict"]')!.click(); });
+    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ subagent_policy: 'strict' }));
   });
 
   it('shows the projected strict profile policy', async () => {
@@ -384,7 +415,7 @@ describe('default main profile settings', () => {
     }));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Updated default');
-    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Agent saved and reloaded.');
+    expect(container.querySelector('[data-default-agent="true"] [data-saved-tick]')).not.toBeNull();
   });
 
   it('keeps the dialog open with the error when the profile save fails', async () => {
@@ -838,7 +869,7 @@ describe('dispatch policy defaults card', () => {
     expect(client.patchConfig).toHaveBeenCalledWith({
       subagent: { main_dispatch_policy: 'advisory', subagent_dispatch_policy: undefined },
     });
-    expect(card.textContent).toContain('Dispatch policy defaults saved and echoed by the server.');
+    expect(card.querySelector('[data-saved-tick]')).not.toBeNull();
     expect(policyValue(card, 'subagentDispatchPolicy')).toBe('strict');
   });
 

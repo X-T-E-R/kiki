@@ -37,7 +37,7 @@ import type {
   ShippedAgentProfile,
 } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -48,7 +48,9 @@ import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { useInstantSave } from './useInstantSave';
 import { useSavedTick } from './useSavedTick';
+import { subagentPolicyChoice, subagentPolicyLabelKey } from './subagentPolicy';
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
@@ -66,25 +68,20 @@ export function SubagentDispatchPoliciesCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
+  const save = useInstantSave();
+  const [lastRow, setLastRow] = useState<'mainDispatchPolicy' | 'subagentDispatchPolicy' | null>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const draft = subagentDispatchPoliciesDraftFromConfig(configQuery.data);
-  const saved = useMemo(() => subagentDispatchPoliciesDraftFromConfig(configQuery.data), [configQuery.data]);
+  const stored = useMemo(() => subagentDispatchPoliciesDraftFromConfig(configQuery.data), [configQuery.data]);
+  const saving = save.saving;
 
-  const apply = async (next: SubagentDispatchPoliciesDraft) => {
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(subagentDispatchPoliciesPatch(next, saved));
+  const apply = async (name: 'mainDispatchPolicy' | 'subagentDispatchPolicy', next: SubagentDispatchPoliciesDraft) => {
+    setLastRow(name);
+    await save.run(async () => {
+      const echoed = await client.patchConfig(subagentDispatchPoliciesPatch(next, stored));
       queryClient.setQueryData(['config'], echoed);
       await queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] });
-      setFeedback({ tone: 'success', text: t('st.dispatchPolicies.saved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
+    });
   };
 
   const select = (
@@ -94,13 +91,14 @@ export function SubagentDispatchPoliciesCard() {
   ) => (
     <div data-dispatch-policy={name}>
       <SettingField label={t(labelKey)} labelId={`${name}-label`}>
+        {lastRow === name ? <SaveStatus saving={save.saving} saved={save.saved} /> : null}
         <span title={t('st.settings.configKey', { key: name === 'mainDispatchPolicy' ? '[subagent].main_dispatch_policy' : '[subagent].subagent_dispatch_policy' })}>
           <SettingsSegmented<SubagentDispatchPolicy>
             ariaLabelledBy={`${name}-label`}
             dataAttr="data-policy-choice"
             value={value}
             disabled={saving || configQuery.isPending}
-            onChange={(policy) => void apply({ ...draft, [name]: policy })}
+            onChange={(policy) => void apply(name, { ...draft, [name]: policy })}
             choices={(['advisory', 'strict'] as SubagentDispatchPolicy[]).map((policy) => ({
               value: policy, label: t(`agentPanel.subagentPolicy.${policy}` as I18nKey),
             }))}
@@ -121,7 +119,7 @@ export function SubagentDispatchPoliciesCard() {
           <p className="font-mono text-[11px] text-ink-faint">[subagent].main_dispatch_policy · [subagent].subagent_dispatch_policy</p>
         </AdvancedDetails>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
+        <FeedbackLine feedback={save.error} />
       </div>
     </SectionCard>
   );
@@ -255,6 +253,7 @@ export function NamedAgentProfileRow({
     (profile.subagents?.length ?? 0) > 0;
   const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [rowSaved, pingRowSaved] = useSavedTick();
   const saveRaw = async (rawText: string) => {
     if (!writable || profile.workspace_id === undefined) return;
     setFeedback(null);
@@ -265,7 +264,7 @@ export function NamedAgentProfileRow({
       raw_text: rawText,
     });
     onUpdated(echoed);
-    setFeedback({ tone: 'success', text: t('st.namedAgents.rawSaved') });
+    pingRowSaved();
   };
 
   const overriddenBy = overrideRelation?.kind === 'overridden' ? overrideRelation : undefined;
@@ -298,9 +297,8 @@ export function NamedAgentProfileRow({
       summaryChips.push(`${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`);
     }
   }
-  const subagentPolicyLabel = profile.subagent_policy === undefined
-    ? t('diagnostics.unknown')
-    : t(`agentPanel.subagentPolicy.${profile.subagent_policy}` as I18nKey);
+  const subagentPolicy = subagentPolicyChoice(profile.subagent_policy);
+  const subagentPolicyLabel = t(subagentPolicyLabelKey(subagentPolicy));
 
   // A built-in shadowed by an overriding same-name file profile collapses to
   // a single muted line — rendering it as a normal enabled row would suggest
@@ -317,8 +315,8 @@ export function NamedAgentProfileRow({
           <p className="font-mono text-[12.5px] text-ink-faint">{profile.name}</p>
           <SourceBadge source={profile.source} variant="muted" />
           <span
-            data-subagent-policy={profile.subagent_policy ?? 'unknown'}
-            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[11px] text-ink-faint"
+            data-subagent-policy={subagentPolicy}
+            className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint"
           >
             {subagentPolicyLabel}
           </span>
@@ -394,9 +392,9 @@ export function NamedAgentProfileRow({
             variant="muted"
             suffix={writable ? undefined : ` · ${t('st.namedAgents.readOnly')}`}
           />}
-          {embedded && profile.subagent_policy === undefined ? null : <span
-            data-subagent-policy={profile.subagent_policy ?? 'unknown'}
-            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 font-mono text-[11px] text-ink-faint'}
+          {embedded && subagentPolicy === 'inherit' ? null : <span
+            data-subagent-policy={subagentPolicy}
+            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
           >
             {subagentPolicyLabel}
           </span>}
@@ -439,7 +437,8 @@ export function NamedAgentProfileRow({
           onClose={() => { setEditorOpen(false); }}
           onSaved={(updated) => {
             onUpdated(updated);
-            setFeedback({ tone: 'success', text: t('st.namedAgents.saved') });
+            setFeedback(null);
+            pingRowSaved();
           }}
         />
       ) : null}
@@ -455,7 +454,7 @@ export function NamedAgentProfileRow({
           {profile.subagents !== undefined && profile.subagents.length > 0 ? (
             <SubagentLeaseList items={profile.subagents} variant="compact" />
           ) : null}
-          <details className={`mt-2 ${embedded ? 'border-t border-hairline pt-2' : 'rounded-lg border border-hairline bg-panel px-2.5 py-1.5'}`} data-technical-details>
+          <details className="mt-2 border-t border-hairline pt-2" data-technical-details>
             <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
@@ -516,6 +515,7 @@ export function NamedAgentProfileRow({
           <AgentCapabilitiesPanel query={{ workspace_id: workspaceFallbackId, profile: profile.name }} />
         </div>
       ) : null}
+      {rowSaved ? <div className="pt-2"><SavedTick show /></div> : null}
       <FeedbackLine feedback={feedback} />
     </div>
   );

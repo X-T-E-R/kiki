@@ -27,7 +27,7 @@ function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavaila
 
 function FieldError({ text }: { text: string | null }) {
   if (text === null) return null;
-  return <p role="alert" className="mt-1 text-[11px] text-danger">{text}</p>;
+  return <p role="alert" data-field-issue className="mt-1 text-[12px] leading-4 text-danger">{text}</p>;
 }
 
 function ProviderInstanceCard({

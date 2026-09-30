@@ -11,7 +11,7 @@ import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { Dialog } from '../Dialog';
 import { useDirtyGuard, useGuardedNavigate } from '../dirtyGuard';
 import { SearchableSelect } from '../SearchableSelect';
@@ -24,6 +24,7 @@ import { NewProfile } from './profileEditor/NewProfile';
 import { ProfileEditor } from './profileEditor/ProfileEditor';
 import { isWritable, writeScope } from './profileEditor/profileDraft';
 import { TeamView, type TeamFilter, type TeamRow } from './profileEditor/TeamView';
+import { useSavedTick } from './useSavedTick';
 
 // Identity of the file, not of one workspace's registration: a refetch can
 // re-merge rows under another workspace id while the sheet is open.
@@ -48,6 +49,7 @@ export function UnifiedAgentManager() {
   const [sheet, setSheet] = useState<Sheet>(null);
   const [toggleSaving, setToggleSaving] = useState(false);
   const [quickSaving, setQuickSaving] = useState<string>();
+  const [quickSaved, pingQuickSaved] = useSavedTick();
   const [feedback, setFeedback] = useState<Feedback>(null);
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
@@ -124,7 +126,7 @@ export function UnifiedAgentManager() {
       await client.updateNamedAgentProfile(row.profile.name, {
         scope: writeScope(row.profile), workspace_id: row.profile.workspace_id, source_file: row.profile.source_file, ...patch,
       });
-      setFeedback({ tone: 'success', text: t('st.profiles.quickSaved', { name: row.profile.name }) });
+      pingQuickSaved();
       refresh();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -146,7 +148,10 @@ export function UnifiedAgentManager() {
     <div className="space-y-4">
       <Hint>{t('st.profiles.teamIntro')}</Hint>
       <TeamView rows={rows} models={models} filter={filter} onFilter={setFilter} savingKey={quickSaving}
-        toolbar={workspacePicker}
+        toolbar={<>
+          <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
+          {workspacePicker}
+        </>}
         onOpen={(row) => setSheet({ kind: 'edit', key: row.key })} onNew={() => setSheet({ kind: 'new' })}
         onQuickSave={(row, patch) => void quickSave(row, patch)} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>

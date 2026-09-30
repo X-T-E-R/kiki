@@ -303,9 +303,9 @@ describe('MCP managed header editor', () => {
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Test connection')!);
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://new.example.test/mcp');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
-    expect(container.textContent).toContain('MCP entry saved');
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
     await act(async () => { rejectOld(new Error('Old probe failed')); await Promise.resolve(); });
-    expect(container.textContent).toContain('MCP entry saved');
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
     expect(container.textContent).not.toContain('Old probe failed');
   });
 

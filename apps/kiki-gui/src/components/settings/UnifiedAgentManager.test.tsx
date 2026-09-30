@@ -123,7 +123,7 @@ describe('agents team view', () => {
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', {
       scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/reviewer/SYSTEM.md', pinned_model_alias: 'fixture/opus',
     });
-    expect(container.textContent).toContain('Saved reviewer.');
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
   });
 
   it('filters to main agents', async () => {

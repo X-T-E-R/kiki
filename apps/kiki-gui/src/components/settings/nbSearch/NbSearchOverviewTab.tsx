@@ -1,6 +1,7 @@
 import type { NbSearchCapabilities, NbSearchTestStatus } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { SectionCard } from '../SectionCard';
+import { AdvancedDetails, SettingField } from '../fields';
 import { Hint, Toggle } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
@@ -148,23 +149,20 @@ export function NbSearchOverviewTab({
         <div className="space-y-3">
           <Hint>{t('st.nbSearch.source.hint')}</Hint>
 
-          <div className="rounded-lg border border-hairline bg-paper p-3.5 space-y-3">
-            {/* The toggle carries the label once, as the row heading; the
-                description sits under it instead of duplicating the wording. */}
-            <div className="space-y-1.5">
+          <div className="space-y-3">
+            <SettingField label={t('st.nbSearch.source.reuseLocalLabel')} htmlFor="nb-search-reuse-local" help={t('st.nbSearch.source.reuseLocalDesc')}>
               <Toggle
+                id="nb-search-reuse-local"
+                layout="bare"
                 label={t('st.nbSearch.source.reuseLocalLabel')}
                 checked={reuseLocalConfig}
                 disabled={saving}
                 onChange={onToggleReuseLocal}
               />
-              <p className="text-[11px] text-ink-soft">
-                {t('st.nbSearch.source.reuseLocalDesc')}
-              </p>
-            </div>
+            </SettingField>
 
             {isDraftChanged ? (
-              <p className="rounded-md border border-amber-rule/60 bg-amber-card px-2.5 py-1.5 text-[11px] text-amber-ink">
+              <p role="status" className="text-[12px] text-amber-ink">
                 {t('st.nbSearch.source.draftHint')}
               </p>
             ) : null}
@@ -201,9 +199,8 @@ export function NbSearchOverviewTab({
               ) : null}
             </div>
 
-            <details data-technical-details className="border-t border-hairline pt-3 text-[11px]">
-              <summary className="cursor-pointer font-medium text-ink-soft">{t('st.nbSearch.source.technicalDetails')}</summary>
-              <div className="mt-3 space-y-3">
+            <AdvancedDetails summary={t('st.nbSearch.source.technicalDetails')} data-technical-details>
+              <div className="space-y-3">
                 <div>
                   <span className="font-medium text-ink-soft">
                     {t('st.nbSearch.source.daemonHost')}:
@@ -249,7 +246,7 @@ export function NbSearchOverviewTab({
                   </div>
                 ) : null}
               </div>
-            </details>
+            </AdvancedDetails>
           </div>
         </div>
       </SectionCard>

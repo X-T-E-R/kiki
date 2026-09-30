@@ -14,7 +14,8 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { formatCompactTokens } from '../../lib/autoCompact';
 import { CompactPointField } from './CompactPointField';
-import { SettingsSelect } from './SettingsPrimitives';
+import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { SUBAGENT_POLICY_CHOICES, subagentPolicyBody, subagentPolicyChoice, subagentPolicyLabelKey, type SubagentPolicyChoice } from './subagentPolicy';
 
 /**
  * Three-way state of one frontmatter tool list. `inherit` writes nothing (the
@@ -111,7 +112,7 @@ function ToolListField({
         />
       ) : null}
       {fieldKey === 'tools' && toolFieldUnnamed(field) ? (
-        <p role="alert" data-tool-field-error="tools" className="text-[10.5px] text-danger">
+        <p role="alert" data-tool-field-error="tools" className="text-[12px] leading-4 text-danger">
           {t('st.namedAgents.toolsListRequired')}
         </p>
       ) : null}
@@ -157,6 +158,7 @@ export function AgentProfileEditorDialog({
     disallowedTools: toolFieldFrom(profile.disallowed_tools),
     routeAliases: Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
     autoCompact: profile.auto_compact,
+    subagentPolicy: subagentPolicyChoice(profile.subagent_policy),
   }));
   const [autoCompact, setAutoCompact] = useState(baseline.autoCompact);
   const [description, setDescription] = useState(baseline.description);
@@ -167,6 +169,7 @@ export function AgentProfileEditorDialog({
   const [tools, setTools] = useState(baseline.tools);
   const [disallowedTools, setDisallowedTools] = useState(baseline.disallowedTools);
   const [routeAliases, setRouteAliases] = useState(baseline.routeAliases);
+  const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicyChoice>(baseline.subagentPolicy);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -187,7 +190,8 @@ export function AgentProfileEditorDialog({
     || !toolFieldsEqual(tools, baseline.tools)
     || !toolFieldsEqual(disallowedTools, baseline.disallowedTools)
     || changedRoutes.length > 0
-    || autoCompact !== baseline.autoCompact;
+    || autoCompact !== baseline.autoCompact
+    || subagentPolicy !== baseline.subagentPolicy;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
   const mainCannotFollowCaller = profile.main === true && modelAlias.trim() === 'inherit';
@@ -221,6 +225,7 @@ export function AgentProfileEditorDialog({
           ? (serviceTier === '' ? null : serviceTier)
           : undefined,
         auto_compact: autoCompact !== baseline.autoCompact ? (autoCompact ?? null) : undefined,
+        subagent_policy: subagentPolicy !== baseline.subagentPolicy ? subagentPolicyBody(subagentPolicy) : undefined,
         tools: toolFieldsEqual(tools, baseline.tools) ? undefined : toolFieldBody(tools),
         disallowed_tools: toolFieldsEqual(disallowedTools, baseline.disallowedTools)
           ? undefined
@@ -308,7 +313,7 @@ export function AgentProfileEditorDialog({
             }}
           />
           {mainCannotFollowCaller ? (
-            <p role="alert" className="text-[10.5px] text-danger">{t('st.namedAgents.mainCannotFollowCaller')}</p>
+            <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.namedAgents.mainCannotFollowCaller')}</p>
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -324,6 +329,13 @@ export function AgentProfileEditorDialog({
               value={serviceTier ?? ''} onChange={(next) => { setServiceTier(next as typeof serviceTier); }}
               choices={[{ value: '', label: t('st.namedAgents.inherit') }, ...['auto', 'default', 'flex', 'priority'].map((value) => ({ value, label: value }))]} /></div>
           </div>
+        </div>
+        <div data-profile-field="subagentPolicy" className="space-y-1">
+          <p id="agent-subagent-policy-label" className={FORM_LABEL}>{t('st.profiles.policy')}</p>
+          <SettingsSegmented<SubagentPolicyChoice> ariaLabelledBy="agent-subagent-policy-label" dataAttr="data-policy-choice"
+            value={subagentPolicy} onChange={setSubagentPolicy}
+            choices={SUBAGENT_POLICY_CHOICES.map((value) => ({ value, label: t(subagentPolicyLabelKey(value)) }))} />
+          <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.policyHint')}</p>
         </div>
         <div data-profile-auto-compact className="space-y-1">
           <CompactPointField

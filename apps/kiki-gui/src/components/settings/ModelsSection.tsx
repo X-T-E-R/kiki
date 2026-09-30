@@ -754,7 +754,7 @@ export function CatalogRefreshCard() {
           disabled={busy}
         />
         {choice !== undefined ? (
-          <div className="space-y-3 rounded-lg border border-hairline bg-paper p-3">
+          <div className="space-y-3 border-t border-hairline pt-3" data-catalog-refresh-form>
             <Hint>{t('st.catalogRefresh.saveHint')}</Hint>
             <label className={FORM_LABEL}>{t('st.catalogRefresh.alias')}
               <input className={`${INPUT} mt-1 font-normal`} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
@@ -916,7 +916,7 @@ export function ModelGenerationMigrationCard() {
             ) : null}
           </>
         ) : null}
-        {message !== null ? <p role={message.tone === 'error' ? 'alert' : 'status'} className={message.tone === 'error' ? 'text-xs text-danger' : 'text-xs text-success'}>{message.text}</p> : null}
+        {message !== null ? <FeedbackLine feedback={message} /> : null}
       </div>
       <ConfirmDialog
         open={confirmation !== null}
@@ -1132,6 +1132,7 @@ function ModelCatalogRowEditor({
   const [baseline, setBaseline] = useState<ProviderModelDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [detailSaved, pingDetailSaved] = useSavedTick();
   // The compaction point rides beside the shared model draft: it is a token
   // count on the model entity, edited here and nowhere in the provider form.
   const [autoCompact, setAutoCompact] = useState<number | undefined>(undefined);
@@ -1221,7 +1222,7 @@ function ModelCatalogRowEditor({
       setBaseline(draft);
       setAutoCompactBaseline(autoCompact);
       setEngineBaseline(engine);
-      setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: entity.id }) });
+      pingDetailSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -1321,8 +1322,8 @@ function ModelCatalogRowEditor({
           {t('common.close')}
         </button>
         {dirty ? (
-          <span className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span>
-        ) : null}
+          <span className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span>
+        ) : <SavedTick show={detailSaved} />}
       </div>
       <FeedbackLine feedback={feedback} />
     </div>

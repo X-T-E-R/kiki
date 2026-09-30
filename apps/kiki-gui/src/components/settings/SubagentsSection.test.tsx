@@ -94,7 +94,7 @@ describe('default subagent target card', () => {
     await choose('explore');
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { default_profile: 'explore' } });
     expect(target().dataset['value']).toBe('explore');
-    expect(container.textContent).toContain('Default subagent saved.');
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
     expect(container.textContent).toContain('Strict');
     expect(container.textContent).toContain('fixture/model-a');
     expect(container.textContent).not.toContain('pins no model');

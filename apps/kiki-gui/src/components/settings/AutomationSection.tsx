@@ -17,7 +17,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON, DANGER_GHOST_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { AdvancedDetails, SettingField } from './fields';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -100,7 +100,7 @@ export function ToolPolicyCard() {
                 ]}
               />
             </SettingField>
-            {emptyAllowlist ? <p role="alert" className="text-[12px] text-ink">{t('st.tools.emptyAllowlist')}</p> : null}
+            {emptyAllowlist ? <FeedbackLine feedback={{ tone: 'error', text: t('st.tools.emptyAllowlist') }} /> : null}
             <input type="search" className={INPUT} aria-label={t('st.tools.search')} placeholder={t('st.tools.search')} value={search} onChange={(event) => setSearch(event.target.value)} />
             <div className="max-h-[28rem] overflow-y-auto">
               {toolNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())).map((name) => {
@@ -110,7 +110,7 @@ export function ToolPolicyCard() {
                     <div className="min-w-0">
                       <p className="break-all text-[13px] font-medium text-ink">{name}</p>
                       <p className="text-[11px] text-ink-soft">{descriptor === undefined ? t('st.tools.configOnly') : t(descriptor.active ? 'st.tools.currentOn' : 'st.tools.currentOff')}</p>
-                      {descriptor !== undefined ? <details className="text-[11px] text-ink-soft"><summary className="cursor-pointer">{t('st.tools.description')}</summary>{descriptor.description}</details> : null}
+                      {descriptor !== undefined ? <AdvancedDetails summary={t('st.tools.description')}><p>{descriptor.description}</p></AdvancedDetails> : null}
                     </div>
                     <SettingsSelect<'enabled' | 'disabled' | 'inherited'>
                       dataAttr="data-tool-policy"

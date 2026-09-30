@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { errorText } from '@kiki/session-core/i18n';
 import {
   mergeNamedAgentProfiles,
   readSettings,
@@ -15,11 +14,15 @@ import { useI18n } from '../../i18n';
 import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { SubagentGovernanceCard } from './AgentsSection';
+import { SettingField } from './fields';
 import { SectionCard } from './SectionCard';
+import { SETTINGS_SELECT_TRIGGER } from './SettingsPrimitives';
+import { useInstantSave } from './useInstantSave';
 import { SubagentToolDefaultsCard } from './SubagentToolDefaultsCard';
+import { subagentPolicyChoice, subagentPolicyLabelKey } from './subagentPolicy';
 
 const STRICT_TARGET_VALUE = '__strict__';
 
@@ -32,10 +35,10 @@ const STRICT_TARGET_VALUE = '__strict__';
  */
 export function SubagentDefaultTargetCard() {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
+  const save = useInstantSave();
+  const saving = save.saving;
   const configQuery = useQuery({
     queryKey: ['config'],
     queryFn: () => client.getConfig(),
@@ -85,9 +88,7 @@ export function SubagentDefaultTargetCard() {
       hint: profile.pinned_model_alias,
       badges: [
         { label: profile.source },
-        ...(profile.subagent_policy === undefined
-          ? []
-          : [{ label: t(`agentPanel.subagentPolicy.${profile.subagent_policy}`) }]),
+        { label: t(subagentPolicyLabelKey(subagentPolicyChoice(profile.subagent_policy))) },
       ],
     }));
     const values = new Set(profileOptions.map((option) => option.value));
@@ -117,25 +118,16 @@ export function SubagentDefaultTargetCard() {
     const target: SubagentDefaultTarget = value === STRICT_TARGET_VALUE
       ? { mode: 'strict' }
       : { mode: 'profile', name: value };
-    setSaving(true);
-    setFeedback(null);
-    try {
+    await save.run(async () => {
       const echoed = await client.patchConfig(subagentDefaultTargetPatch(target));
       queryClient.setQueryData(['config'], echoed);
-      setFeedback({ tone: 'success', text: t('st.subagentDefault.saved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
+    });
   };
 
   const summaryChips: string[] = [];
   if (selectedProfile !== undefined) {
     summaryChips.push(selectedProfile.source);
-    summaryChips.push(selectedProfile.subagent_policy === undefined
-      ? t('diagnostics.unknown')
-      : t(`agentPanel.subagentPolicy.${selectedProfile.subagent_policy}`));
+    summaryChips.push(t(subagentPolicyLabelKey(subagentPolicyChoice(selectedProfile.subagent_policy))));
     if (selectedProfile.pinned_model_alias !== undefined && selectedProfile.pinned_model_alias !== '') {
       summaryChips.push(`${t('st.namedAgents.modelPin')} ${selectedProfile.pinned_model_alias}`);
     }
@@ -145,27 +137,29 @@ export function SubagentDefaultTargetCard() {
     <SectionCard id="st-card-subagent-default-target" title={t('st.subagentDefault.title')}>
       <div className="space-y-3">
         <Hint>{t('st.subagentDefault.hint')}</Hint>
-        <fieldset disabled={saving || configQuery.isPending} className="space-y-3 disabled:opacity-60">
+        <fieldset disabled={saving || configQuery.isPending} className="disabled:opacity-60">
           <div data-subagent-default-target data-value={selectValue}>
-            <p className="text-[11px] font-medium text-ink-soft">{t('st.subagentDefault.label')}</p>
-            <SearchableSelect
-              id="subagent-default-profile-select"
-              options={options}
-              value={selectValue}
-              onChange={(value) => { void applyTarget(value); }}
-              ariaLabel={t('st.subagentDefault.label')}
-              emptyText={t('st.namedAgents.loading')}
-              buttonClassName="mt-1 flex w-full max-w-sm items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-left text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
-            />
+            <SettingField label={t('st.subagentDefault.label')} labelId="subagent-default-label">
+              <SaveStatus saving={save.saving} saved={save.saved} />
+              <SearchableSelect
+                id="subagent-default-profile-select"
+                options={options}
+                value={selectValue}
+                onChange={(value) => { void applyTarget(value); }}
+                ariaLabel={t('st.subagentDefault.label')}
+                emptyText={t('st.namedAgents.loading')}
+                buttonClassName={`${SETTINGS_SELECT_TRIGGER} max-w-64`}
+              />
+            </SettingField>
           </div>
         </fieldset>
         {current?.mode === 'strict' ? (
           <Hint>{t('st.subagentDefault.strictHint')}</Hint>
         ) : null}
         {current?.mode === 'profile' && profilesQuery.data !== undefined && selectedProfile === undefined ? (
-          <p data-subagent-default-status="unresolvable" className="text-[12px] text-danger">
-            {t('st.subagentDefault.unresolvable', { name: current.name })}
-          </p>
+          <div data-subagent-default-status="unresolvable">
+            <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.unresolvable', { name: current.name }) }} />
+          </div>
         ) : null}
         {selectedProfile !== undefined ? (
           <div className="space-y-1.5" data-subagent-default-status="resolved">
@@ -175,9 +169,9 @@ export function SubagentDefaultTargetCard() {
               ))}
             </div>
             {selectedProfile.disabled ? (
-              <p data-subagent-default-status="disabled" className="text-[12px] text-danger">
-                {t('st.subagentDefault.disabledTarget', { name: selectedProfile.name })}
-              </p>
+              <div data-subagent-default-status="disabled">
+                <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.disabledTarget', { name: selectedProfile.name }) }} />
+              </div>
             ) : null}
             {selectedProfile.pinned_model_alias === undefined || selectedProfile.pinned_model_alias === '' ? (
               <Hint>{t('st.subagentDefault.noModelPin')}</Hint>
@@ -186,7 +180,7 @@ export function SubagentDefaultTargetCard() {
         ) : null}
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
+        <FeedbackLine feedback={save.error} />
       </div>
     </SectionCard>
   );

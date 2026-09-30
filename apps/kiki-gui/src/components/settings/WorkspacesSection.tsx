@@ -252,7 +252,7 @@ function WorkspaceRenameDialog({
         onChange={(event) => { setName(event.target.value); }}
         onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
       />
-      {error !== null ? <p className="mt-2 font-mono text-[11px] text-danger">{error}</p> : null}
+      {error !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>{t('common.cancel')}</button>
         <button

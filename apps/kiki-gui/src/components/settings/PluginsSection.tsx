@@ -106,7 +106,7 @@ function WebBridgeReadiness() {
               <Hint>{t('st.plugins.runtimeIdentityUnverified')}</Hint>
             ) : null}
             {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
-            {capability.install.error ? <p className="text-[11px] text-danger" role="alert">{capability.install.error}</p> : null}
+            {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
             {capability.install.note ? <p className="text-[11px] text-ink-soft" data-webbridge-install-note>
               {capability.install.note.endsWith('identity-unverified') || capability.install.note.endsWith('extension-unverified')
                 ? t('st.plugins.runtimeIdentityUnverified') : capability.install.note}

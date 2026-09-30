@@ -30,6 +30,7 @@ import { useUserSkins } from '../../lib/skins/useUserSkins';
 import type { ResolvedTheme } from '../../lib/theme';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { AdvancedDetails } from './fields';
 
 export function useSkinPrefs() {
   return useSyncExternalStore(subscribeSkinPrefs, skinPrefsSnapshot, skinPrefsServerSnapshot);
@@ -191,12 +192,11 @@ export function SkinFiles() {
             </Hint>
             {userSkins.data.skins.length === 0 ? <Hint>{t('st.skin.empty')}</Hint> : null}
             {userSkins.data.skipped.length > 0 ? (
-              <details className="text-[12px] text-ink-soft">
-                <summary className="cursor-pointer select-none hover:text-ink">{tp('st.skin.skipped', userSkins.data.skipped.length)}</summary>
-                <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-ink-faint">
+              <AdvancedDetails summary={tp('st.skin.skipped', userSkins.data.skipped.length)}>
+                <ul className="space-y-0.5 font-mono text-[11px] text-ink-faint">
                   {userSkins.data.skipped.map((entry) => <li key={entry.file}>{entry.file}: {entry.reason}</li>)}
                 </ul>
-              </details>
+              </AdvancedDetails>
             ) : null}
           </>
         )}

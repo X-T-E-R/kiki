@@ -15,13 +15,14 @@ import type {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 import { CapabilityIcon } from '../capabilities/CapabilityIcon';
 import { Disclosure, StatusDot, Tag } from '../capabilities/primitives';
 import { McpBearerValue, McpSecretRows, mcpSecretLines, mcpSecretRows, type McpSecretRow } from './McpSecretRows';
 import { SettingsSelect } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 /**
  * Listings arrive redacted (`envKeys` / `headerKeys`); an older server may
@@ -156,6 +157,7 @@ export function McpConfigManager({
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const [oauthFeedback, setOauthFeedback] = useState<Feedback>(null);
   const [pendingDelete, setPendingDelete] = useState<McpManagedServer | null>(null);
   const [pendingReset, setPendingReset] = useState<McpManagedServer | null>(null);
@@ -255,7 +257,7 @@ export function McpConfigManager({
         onEcho(echoed);
       }
       setDraft(null);
-      setFeedback({ tone: 'success', text: t('st.mcp.saved') });
+      pingSaved();
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -682,7 +684,7 @@ export function McpConfigManager({
                   <p className="break-all font-mono text-[11px] text-ink">{breakableOAuthUrl(revealed.url)}</p>
                 ) : null}
                 {revealed?.url === null ? <p role="status" className="text-[11px] text-ink-soft">{t('st.mcp.storedOAuthRevealing')}</p> : null}
-                {revealErrorId === credential.credentialId ? <p role="alert" className="text-[11px] text-danger">{t('st.mcp.storedOAuthRevealError')}</p> : null}
+                {revealErrorId === credential.credentialId ? <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.mcp.storedOAuthRevealError')}</p> : null}
                 <Hint>{t('st.mcp.storedOAuthOriginUnknown')} · {t('st.mcp.storedOAuthIdentity', { id: credential.credentialId.slice(0, 8) })}</Hint>
               </div>
               <div className="flex flex-wrap gap-2 sm:justify-end">
@@ -707,6 +709,7 @@ export function McpConfigManager({
         </div>
         </Disclosure>
       </section>
+      <SavedTick show={justSaved} />
       <FeedbackLine feedback={feedback} />
       <FeedbackLine feedback={oauthFeedback} />
       <ConfirmDialog

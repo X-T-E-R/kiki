@@ -89,12 +89,12 @@ describe('default subagent tool access card', () => {
   it('saving a board opt-in sends only allowed_tools and accepts the echo', async () => {
     await render();
     await act(async () => { checkbox('BoardRead').click(); });
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-subagent-tools-save]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-settings-draft="subagent-tool-defaults"] button')!.click());
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { allowed_tools: ['BoardRead'] } });
-    expect(container.textContent).toContain('Subagent tool access saved.');
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
     expect(checkbox('BoardRead').checked).toBe(true);
-    expect(container.textContent).not.toContain('Unsaved changes.');
+    expect(container.textContent).not.toContain('Unsaved changes');
   });
 
   it('reset clears only server opt-ins and keeps profile opt-ins in the preview', async () => {
@@ -157,17 +157,17 @@ describe('default subagent tool access card', () => {
     client.patchConfig.mockRejectedValueOnce(new Error('fixture save failure'));
     await render();
     await act(async () => { checkbox('BoardWrite').click(); });
-    const save = container.querySelector<HTMLButtonElement>('[data-subagent-tools-save]')!;
+    const save = container.querySelector<HTMLButtonElement>('[data-settings-draft="subagent-tool-defaults"] button')!;
     await act(async () => save.click());
     await settle();
     expect(container.textContent).toContain('fixture save failure');
     expect(checkbox('BoardWrite').checked).toBe(true);
-    expect(container.textContent).toContain('Unsaved changes.');
+    expect(container.textContent).toContain('Unsaved changes');
     expect(save.disabled).toBe(false);
     await act(async () => save.click());
     await settle();
     expect(client.patchConfig).toHaveBeenLastCalledWith({ subagent: { allowed_tools: ['BoardWrite'] } });
     expect(checkbox('BoardWrite').checked).toBe(true);
-    expect(container.textContent).not.toContain('Unsaved changes.');
+    expect(container.textContent).not.toContain('Unsaved changes');
   });
 });

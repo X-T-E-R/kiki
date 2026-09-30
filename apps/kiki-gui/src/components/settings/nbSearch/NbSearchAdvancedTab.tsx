@@ -1,6 +1,8 @@
 import type { NbSearchDraft } from '@kiki/session-core/settings';
 import type { NbSearchTestStatus } from '@kiki/protocol';
 import { SectionCard } from '../SectionCard';
+import { SettingsGroup } from '../fields';
+import { FORM_LABEL } from '../SettingsPrimitives';
 import { FeedbackLine, Hint } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
@@ -26,7 +28,7 @@ function NumberField({
   const numeric = Number(trimmed);
   const invalid = trimmed !== '' && (!Number.isInteger(numeric) || numeric < 0);
   return (
-    <label className="block text-[11px] font-medium text-ink-soft">
+    <label className={FORM_LABEL}>
       {label}
       <input
         className={`${INPUT} mt-1 font-mono`}
@@ -37,7 +39,7 @@ function NumberField({
         }}
       />
       {invalid ? (
-        <p role="alert" className="mt-1 font-normal text-[11px] text-danger">
+        <p role="alert" data-field-issue className="mt-1 font-normal text-[12px] leading-4 text-danger">
           {t('st.nbSearch.invalidNumber', { value: trimmed })}
         </p>
       ) : (
@@ -49,13 +51,10 @@ function NumberField({
   );
 }
 
+// A sub-step of the card, not a box inside it: the shared SettingsGroup
+// heading and hairline, so the three groups read like every other card.
 function Group({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3">
-      <legend className="px-1 text-[12px] font-semibold text-ink">{title}</legend>
-      {children}
-    </fieldset>
-  );
+  return <SettingsGroup title={title}>{children}</SettingsGroup>;
 }
 
 export type TestRun =

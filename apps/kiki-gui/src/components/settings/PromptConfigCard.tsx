@@ -8,9 +8,11 @@ import { errorText, type I18nKey, type I18nParams } from '@kiki/session-core/i18
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { useDirtyReporter } from '../dirtyGuard';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { AdvancedDetails } from './fields';
 import { SectionCard } from './SectionCard';
+import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 import { Icon } from '../icons';
 
 type PromptRow = { id: string; name: string; value: string };
@@ -105,12 +107,11 @@ export function PromptConfigCard() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const ready = configQuery.data !== undefined;
   const errors = useMemo(() => validatePromptDraft(draft, t), [draft, t]);
   const preview = useMemo(() => hasPromptErrors(errors) ? null : previewFields(draft), [draft, errors]);
-
-  useDirtyReporter('prompt-config', dirty);
 
   useEffect(() => {
     if (configQuery.data !== undefined && !dirty) setDraft(promptDraftFromConfig(configQuery.data.prompt));
@@ -137,7 +138,7 @@ export function PromptConfigCard() {
       queryClient.setQueryData(['config'], echoed);
       setDraft(promptDraftFromConfig(echoed.prompt));
       setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.prompt.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -176,7 +177,7 @@ export function PromptConfigCard() {
                     onChange={(event) => { update({ ...draft, files: draft.files.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }}
                   />
                   <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeFile', { name: row.value || String(index + 1) })} onClick={() => { update({ ...draft, files: draft.files.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
-                  {errors.files[index] !== undefined ? <p className="sm:col-span-2 text-[11px] text-danger" role="alert">{errors.files[index]}</p> : null}
+                  {errors.files[index] !== undefined ? <div className="sm:col-span-2"><FieldIssue id={`prompt-file-issue-${row.id}`} text={errors.files[index]} /></div> : null}
                 </div>
               ))}
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { update({ ...draft, files: [...draft.files, { id: newPromptRowId('file'), value: '' }] }); }}>{t('st.prompt.addFile')}</button>
@@ -190,7 +191,7 @@ export function PromptConfigCard() {
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.variableNamePlaceholder')} aria-label={t('st.prompt.variableName')} data-prompt-variable-name onChange={(event) => { update({ ...draft, variables: draft.variables.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
                   <textarea className={`${INPUT} min-h-16`} value={row.value} placeholder={t('st.prompt.variableValuePlaceholder')} aria-label={t('st.prompt.variableValue')} onChange={(event) => { update({ ...draft, variables: draft.variables.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }} />
                   <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeVariable', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, variables: draft.variables.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
-                  {errors.variables[index] !== undefined ? <p className="sm:col-span-3 text-[11px] text-danger" role="alert">{errors.variables[index]}</p> : null}
+                  {errors.variables[index] !== undefined ? <div className="sm:col-span-3"><FieldIssue id={`prompt-variable-issue-${row.id}`} text={errors.variables[index]} /></div> : null}
                 </div>
               ))}
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { update({ ...draft, variables: [...draft.variables, newRow('variable')] }); }}>{t('st.prompt.addVariable')}</button>
@@ -204,7 +205,7 @@ export function PromptConfigCard() {
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.fieldNamePlaceholder')} aria-label={t('st.prompt.fieldName')} onChange={(event) => { update({ ...draft, fields: draft.fields.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
                   <textarea className={`${INPUT} min-h-16`} value={row.value} placeholder={t('st.prompt.fieldValuePlaceholder')} aria-label={t('st.prompt.fieldValue')} onChange={(event) => { update({ ...draft, fields: draft.fields.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }} />
                   <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeField', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, fields: draft.fields.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
-                  {errors.fields[index] !== undefined ? <p className="sm:col-span-3 text-[11px] text-danger" role="alert">{errors.fields[index]}</p> : null}
+                  {errors.fields[index] !== undefined ? <div className="sm:col-span-3"><FieldIssue id={`prompt-field-issue-${row.id}`} text={errors.fields[index]} /></div> : null}
                 </div>
               ))}
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { update({ ...draft, fields: [...draft.fields, newRow('field')] }); }}>{t('st.prompt.addField')}</button>
@@ -212,25 +213,19 @@ export function PromptConfigCard() {
             </fieldset>
           </fieldset>
 
-          <details data-prompt-preview className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-ink-soft">
-            <summary className="cursor-pointer font-medium">{t('st.prompt.preview')}</summary>
-            <div className="mt-3 space-y-3">
-              {preview === null ? <p role="status">{t('st.prompt.previewUnavailable')}</p> : (
-                <div>
-                  <p className="font-medium text-ink">{t('st.prompt.previewFields')}</p>
-                  {Object.entries(preview).length === 0 ? <p>—</p> : Object.entries(preview).map(([name, text]) => <pre key={name} className="mt-1 whitespace-pre-wrap break-words font-mono">{name}: {text}</pre>)}
-                </div>
-              )}
-            </div>
-          </details>
+          <AdvancedDetails summary={t('st.prompt.preview')} data-prompt-preview>
+            {preview === null ? <p role="status">{t('st.prompt.previewUnavailable')}</p> : (
+              <div>
+                <p className="font-medium text-ink">{t('st.prompt.previewFields')}</p>
+                {Object.entries(preview).length === 0 ? <p>—</p> : Object.entries(preview).map(([name, text]) => <pre key={name} className="mt-1 whitespace-pre-wrap break-words font-mono">{name}: {text}</pre>)}
+              </div>
+            )}
+          </AdvancedDetails>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={!ready || saving || !dirty || hasPromptErrors(errors)} onClick={() => void save()}>{saving ? t('common.saving') : t('st.prompt.save')}</button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={() => {
-              setDraft(promptDraftFromConfig(configQuery.data?.prompt)); setDirty(false); setFeedback(null);
-            }}>{t('st.advanced.discard')}</button>
-            {dirty ? <span className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
-          </div>
+          <SettingsDraftFooter id="prompt-config" dirty={dirty} saving={saving} saved={justSaved}
+            saveDisabled={!ready || hasPromptErrors(errors)} saveLabel={t('st.prompt.save')}
+            onSave={() => void save()}
+            onDiscard={() => { setDraft(promptDraftFromConfig(configQuery.data?.prompt)); setDirty(false); setFeedback(null); }} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
           <FeedbackLine feedback={feedback} />
         </div>

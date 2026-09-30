@@ -289,9 +289,7 @@ describe('ModelCatalogCard row editor', () => {
     expect(patch).not.toHaveProperty('max_context_size');
     expect(patch).not.toHaveProperty('capabilities');
 
-    expect(container.textContent).toContain(
-      'The server saved the parameters for kimi-code/kimi-k2.',
-    );
+    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
   });
 
   it('edits the remote id and image policy while leaving model inheritance explicit', async () => {

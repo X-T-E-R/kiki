@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { NbSearchManagedCredentialView } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
+import { FeedbackLine, SavedTick } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../SecretField';
 
@@ -92,8 +93,8 @@ export function NbSearchCredentialEditor({ instanceId, disabled, read, write }: 
         </div>
       ) : null}
       {disabled ? <p className="text-[12px] text-amber-ink">{t('st.nbSearch.managed.saveConfigFirst')}</p> : null}
-      {error !== null ? <p role="alert" className="text-[12px] text-danger">{t(`st.nbSearch.managed.error.${error}`)}</p> : null}
-      {notice !== null ? <p role="status" className="text-[12px] text-success">{t(notice === 'saved' ? 'st.secret.saved' : 'st.secret.cleared')}</p> : null}
+      {error !== null ? <FeedbackLine feedback={{ tone: 'error', text: t(`st.nbSearch.managed.error.${error}`) }} /> : null}
+      {notice === 'saved' ? <SavedTick show /> : notice !== null ? <FeedbackLine feedback={{ tone: 'success', text: t('st.secret.cleared') }} /> : null}
     </div>
   );
 }

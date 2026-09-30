@@ -22,12 +22,8 @@ export function NbSearchActionBar({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           {dirty ? (
-            <span
-              className="flex items-center gap-1.5 rounded-full bg-amber-card border border-amber-rule/60 px-2.5 py-0.5 text-[11px] font-medium text-amber-ink"
-              data-dirty-indicator
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-ink animate-pulse motion-reduce:animate-none" />
-              {t('st.tools.unsaved')}
+            <span role="status" className="text-[12px] text-ink-faint" data-dirty-indicator>
+              {t('st.draft.unsaved')}
             </span>
           ) : (
             <span className="text-[12px] text-ink-faint">

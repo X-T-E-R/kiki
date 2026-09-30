@@ -4,9 +4,10 @@ import type { BoardClient } from '@kiki/klient/contract/board/types';
 import { taskBoardStorageFromConfig, type TaskBoardStorage } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
-import { Hint } from '../controls';
+import { FeedbackLine, Hint } from '../controls';
 import { SearchableSelect } from '../SearchableSelect';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { AdvancedDetails } from './fields';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -107,14 +108,13 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
     {workspaceId === '' ? <p role="status" className="text-xs text-ink-soft">{t('st.boardStorage.awaitWorkspace')}</p> : null}
     {value ? <dl className="break-all text-xs space-y-1" data-board-storage-preview><dt>{t('st.boardStorage.source')}</dt><dd>{t(`st.boardStorage.kind.${value.kind}`)} · {t(`st.boardStorage.${value.mode}`)} · {value.existing ? t('st.boardStorage.existing') : t('st.boardStorage.newStore')}</dd><dt>{t('st.boardStorage.resolved')}</dt><dd className="font-mono">{value.tasksDirectory}</dd></dl> : null}
     <Hint>{t('st.boardStorage.noMove')}</Hint>
-    <details data-board-storage-details className="text-xs text-ink-soft">
-      <summary className="cursor-pointer">{t('st.boardStorage.details')}</summary>
-      <p className="mt-1">{t('st.boardStorage.policyDetails')}</p>
-    </details>
+    <AdvancedDetails summary={t('st.boardStorage.details')} data-board-storage-details>
+      <p>{t('st.boardStorage.policyDetails')}</p>
+    </AdvancedDetails>
     <SettingsDraftFooter id="board-storage" dirty={dirty} saving={saving} saved={saved} saveLabel={t('st.boardStorage.save')}
       saveDisabled={config.isPending || config.isError || (storage.mode === 'fixed' && !storage.path?.trim())}
       onSave={() => { void save(); }}
       onDiscard={() => { if (config.data !== undefined) setStorage(taskBoardStorageFromConfig(config.data)); setDirty(false); setError(undefined); }} />
-    {error || config.error || preview.error || (result && !result.ok) ? <p role="alert" className="text-xs text-danger">{error ?? config.error?.message ?? preview.error?.message ?? (result && !result.ok ? `${result.error.code}: ${result.error.message}` : '')}</p> : null}
+    {error || config.error || preview.error || (result && !result.ok) ? <FeedbackLine feedback={{ tone: 'error', text: error ?? config.error?.message ?? preview.error?.message ?? (result && !result.ok ? `${result.error.code}: ${result.error.message}` : '') }} /> : null}
   </div>;
 }

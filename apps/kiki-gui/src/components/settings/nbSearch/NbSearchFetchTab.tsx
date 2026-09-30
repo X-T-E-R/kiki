@@ -71,10 +71,10 @@ export function NbSearchFetchTab({
     <SectionCard id="st-card-search-fetch" title={t('st.nbSearch.fetchChainLabel')}>
       <div className="space-y-4">
         {/* Mode banner & toggle */}
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="space-y-0.5 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12.5px] font-semibold text-ink">
+              <span className="text-[13px] font-medium text-ink">
                 {fetchChainInherited
                   ? t('st.nbSearch.chainInherited')
                   : t('st.nbSearch.chainCustom')}
@@ -234,7 +234,7 @@ export function NbSearchFetchTab({
           {!fetchChainInherited ? (
             <button
               type="button"
-              className={`${SECONDARY_BUTTON} mt-2 text-[12px] font-medium`}
+              className={`${SECONDARY_BUTTON} mt-2 inline-flex items-center gap-1 text-[12px] font-medium`}
               onClick={() => {
                 const unused = capabilities.fetch.pipelines.find(
                   (pipeline) => !fetchChain.includes(pipeline.id),
@@ -242,7 +242,8 @@ export function NbSearchFetchTab({
                 onChangeChain([...fetchChain, unused?.id ?? '']);
               }}
             >
-              + {t('st.nbSearch.addPipeline')}
+              <Icon name="plus" size={12} />
+              {t('st.nbSearch.addPipeline')}
             </button>
           ) : null}
 

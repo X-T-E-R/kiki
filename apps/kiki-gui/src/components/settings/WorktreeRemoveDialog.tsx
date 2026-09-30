@@ -20,6 +20,7 @@ import {
   type WorktreeRemovalOutcome,
 } from '../../lib/worktrees';
 import { useConnection } from '../../state/connection';
+import { FeedbackLine } from '../controls';
 import { Dialog } from '../Dialog';
 import { DANGER_BUTTON, SECONDARY_BUTTON } from '../ui';
 
@@ -124,7 +125,7 @@ export function WorktreeRemoveDialog({
         {inspection !== undefined && record.branchCreated ? (
           <p className="mt-2 text-[12px] leading-snug text-ink-faint">{t('st.worktrees.branchNote', { branch: record.branch })}</p>
         ) : null}
-        {error !== null ? <p role="alert" className="mt-2 font-mono text-[11px] text-danger">{error}</p> : null}
+        {error !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
       </div>
 
       <div className="mt-6 flex flex-wrap justify-end gap-2.5">

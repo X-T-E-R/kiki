@@ -15,10 +15,10 @@ import { useI18n } from '../../i18n';
 import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingsSelect } from './SettingsPrimitives';
-import { useDirtyReporter } from '../dirtyGuard';
+import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 /** Edits server board opt-ins independently of the subagent profile and run settings. */
 /** A tool group as wrapped name chips: scannable, and one name never breaks across lines. */
@@ -40,6 +40,7 @@ export function SubagentToolDefaultsCard() {
   const [profileName, setProfileName] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({
     queryKey: ['config'],
     queryFn: () => client.getConfig(),
@@ -55,7 +56,6 @@ export function SubagentToolDefaultsCard() {
   const dirty = draft !== null && (
     draft.length !== saved.length || draft.some((name) => !saved.includes(name))
   );
-  useDirtyReporter('subagent-tool-defaults', dirty);
 
   const profiles = useMemo(() => {
     const merged = mergeNamedAgentProfiles(profilesQuery.data?.items ?? []);
@@ -90,7 +90,9 @@ export function SubagentToolDefaultsCard() {
       const echoed = await client.patchConfig(subagentToolsPatch(allowedTools));
       queryClient.setQueryData(['config'], echoed);
       setDraft(null);
-      setFeedback({ tone: 'success', text: t(reset ? 'st.subagentTools.resetDone' : 'st.subagentTools.saved') });
+      // Reset is a result worth naming; a plain save is the footer's tick.
+      if (reset) setFeedback({ tone: 'success', text: t('st.subagentTools.resetDone') });
+      else pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -159,15 +161,12 @@ export function SubagentToolDefaultsCard() {
             </table>
           </div>
           <Hint>{t('st.subagentTools.mcpHint')}</Hint>
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={!dirty} data-subagent-tools-save onClick={() => void persist(serverAllowed)}>
-              {saving ? t('common.saving') : t('st.subagentTools.save')}
-            </button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={serverAllowed.length === 0 && saved.length === 0} data-subagent-tools-reset onClick={() => void persist([], true)}>
+          <SettingsDraftFooter id="subagent-tool-defaults" persistent dirty={dirty} saving={saving} saved={justSaved}
+            saveLabel={t('st.subagentTools.save')} onSave={() => void persist(serverAllowed)}
+            onDiscard={() => { setDraft(null); setFeedback(null); }}
+            extra={<button type="button" className={SECONDARY_BUTTON} disabled={serverAllowed.length === 0 && saved.length === 0} data-subagent-tools-reset onClick={() => void persist([], true)}>
               {t('st.subagentTools.reset')}
-            </button>
-            {dirty ? <span role="status" className="text-[12px] text-ink-soft">{t('st.subagentTools.unsaved')}</span> : null}
-          </div>
+            </button>} />
         </fieldset>
         <fieldset disabled={saving || profilesQuery.isPending} className="min-w-0 space-y-2">
           <div className="grid max-w-sm justify-items-start gap-1.5 text-[13px] font-medium text-ink" data-subagent-tools-profile-select>
