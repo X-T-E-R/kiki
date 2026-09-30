@@ -28,6 +28,8 @@ import {
   ISessionContext,
   ISessionMetadata,
   ISessionDispatchService,
+  ISessionManager,
+  ensureMainAgent,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
@@ -45,7 +47,7 @@ import {
   watchPromptSettlements,
 } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
-import { authHeaders } from './helpers/auth';
+import { authHeaders, bearerToken } from './helpers/auth';
 
 interface Envelope<T> {
   code: number;
@@ -304,6 +306,47 @@ describe('server-v2 /api prompts', () => {
     }, { before: 'context-injector' });
     return child;
   }
+
+  it.each(['submit', 'steer'])('keeps cold browsing read-only then explicitly resumes for %s through the GUI client', async (firstAction) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    await closeSessionById(server!.core.accessor, id);
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    const listener = server!.core.accessor.get(ISessionManager).onDidCreateSession!((event) => {
+      if (event.sessionId !== id) return;
+      event.waitUntil((async () => {
+        const main = await ensureMainAgent(event.handle);
+        main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-cold-action', async (ctx) => {
+          await new Promise<void>((resolve) => {
+            if (ctx.signal.aborted) resolve();
+            else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          ctx.signal.throwIfAborted();
+        }, { before: 'context-injector' });
+      })());
+    });
+    try {
+      const view = client.klient.session(id).view;
+      const shell = await view.snapshot();
+      await view.transcript.page({ agentId: 'main' });
+      expect(shell.session.busy).toBe(false);
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      if (firstAction === 'steer') {
+        await expect(client.steerPrompt(id, 'missing-prompt')).rejects.toMatchObject({ code: 40402 });
+        expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
+      }
+      const active = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Start after cold browsing' }] });
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
+      expect(active.status).toBe('running');
+      const queued = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Steer this queued prompt' }] });
+      expect(queued.status).toBe('queued');
+      await expect(client.steerPrompt(id, queued.prompt_id)).resolves.toMatchObject({ steered: true, prompt_ids: [queued.prompt_id] });
+      await client.abortPrompt(id, active.prompt_id);
+    } finally {
+      listener.dispose();
+      await client.klient.close();
+    }
+  });
 
   it.each([undefined, 'stub-alt'])('authenticates the session or requested model rather than an unrelated default: %s', async (model) => {
     const id = await createSession(home as string);

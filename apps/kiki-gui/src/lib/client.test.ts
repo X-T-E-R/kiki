@@ -18,6 +18,52 @@ import {
 } from './client';
 import { isMemoryToolName, parseMemoryWriteResult } from '../components/MemoryToolRow';
 
+function resumeResponse(url: string | URL, init?: RequestInit): Response | undefined {
+  if (!String(url).endsWith('/api/klient/call')) return undefined;
+  const body = JSON.parse(init?.body as string);
+  if (body.procedure.method !== 'resume') return undefined;
+  expect(body).toEqual({ procedure: { scope: 'core', service: 'sessionManager', method: 'resume' }, params: ['s1'] });
+  return Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } });
+}
+
+describe('KikiClient cold-session actions', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const actions = [
+    { path: '/prompts', invoke: (client: KikiClient) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] }),
+      result: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00.000Z' } },
+    { path: '/approvals/a1', invoke: (client: KikiClient) => client.resolveApproval('s1', 'a1', { decision: 'approved' }),
+      result: { resolved: true, resolved_at: '2026-01-01T00:00:00.000Z' } },
+    { path: '/prompts/p1:steer', invoke: (client: KikiClient) => client.steerPrompt('s1', 'p1'),
+      result: { steered: true, prompt_ids: ['p1'] } },
+  ];
+  it.each(actions)('resumes before POST $path', async ({ path, invoke, result }) => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push(new URL(url).pathname);
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
+      expect(calls).toEqual(['/api/klient/call', `/api/sessions/s1${path}`]);
+      expect(init?.method).toBe('POST');
+      return Response.json({ code: 0, msg: 'success', data: result });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { await expect(invoke(client)).resolves.toEqual(result); }
+    finally { await client.klient.close(); }
+  });
+  it.each(actions)('does not POST $path when resume fails', async ({ invoke }) => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(resumeResponse(url, init)).toBeDefined();
+      return Response.json({ code: 40901, msg: 'session locked', data: null });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(invoke(client)).rejects.toMatchObject({ code: 40901 });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+});
+
 describe('KikiClient capability plan', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -238,6 +284,8 @@ describe('KikiClient.sendAgentMessage', () => {
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       urls.push(String(url));
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
         code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
           agents: { child: { type: 'sub', executor: 'native' } } },
@@ -254,7 +302,7 @@ describe('KikiClient.sendAgentMessage', () => {
       .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
     // Attachments retain the ordinary prompt route and have no replay guarantee.
     expect(receipt).toBeNull();
-    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts']);
+    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts']);
   });
 
   it('sends one native child text key to the prompt route and treats replay as a prompt, not a mailbox delivery', async () => {
@@ -262,6 +310,8 @@ describe('KikiClient.sendAgentMessage', () => {
     const requests: Array<Record<string, unknown>> = [];
     let loseFirstResponse = true;
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
         code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
           agents: { child: { type: 'sub', executor: 'native' } } },
@@ -302,6 +352,8 @@ describe('KikiClient.sendAgentMessage', () => {
 
   it('does not attach a child replay key to a main prompt', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
         code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} },
       });
@@ -1184,6 +1236,8 @@ describe('KikiClient message-closure routes', () => {
 
   it('posts :edit with full-replacement content and the expected cursor', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
       expect(String(url)).toBe(
         'http://127.0.0.1:8080/api/sessions/s1/messages/m1:edit',
       );
@@ -1212,6 +1266,8 @@ describe('KikiClient message-closure routes', () => {
 
   it('posts :regenerate with the expected cursor', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
       expect(String(url)).toBe(
         'http://127.0.0.1:8080/api/sessions/s1/messages/m9:regenerate',
       );
@@ -1229,7 +1285,7 @@ describe('KikiClient message-closure routes', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
     await client.regenerateMessage('s1', 'm9', { expected_cursor: { seq: 7, epoch: 'epoch-1' } });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 
@@ -1259,8 +1315,8 @@ describe('KikiClient message-closure routes', () => {
   });
 
   it('surfaces a 40937 cursor mismatch as an ApiError code', async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) =>
+      resumeResponse(url, init) ?? new Response(
         JSON.stringify({ code: 40937, msg: 'session.cursor_mismatch', data: null }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
@@ -1282,10 +1338,11 @@ describe('KikiClient.submitPrompt', () => {
   });
 
   it('waits for a slow submission acknowledgement beyond the generic request deadline', async () => {
-    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) =>
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) =>
       new Promise<Response>((resolve, reject) => {
+        const resumed = resumeResponse(url, init);
         const responseTimer = setTimeout(() => {
-          resolve(new Response(JSON.stringify({
+          resolve(resumed ?? new Response(JSON.stringify({
             code: 0,
             msg: 'success',
             data: {

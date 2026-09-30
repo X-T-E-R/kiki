@@ -100,6 +100,26 @@ This capability requires the current kap-server host and is not implemented by
 memory or IPC; those transports reject view calls rather than substituting
 ordinary events.
 
+Cold views are read-only: `snapshot()` reads indexed metadata and the durable
+session watermark without acquiring a runtime lease or replaying an engine.
+Transcript reads project only the requested agents; a `turn` wildcard does not
+scan every cold agent's wire. When focusing a child, set `main: 'off'` to avoid
+reading the main conversation. Cold transcript cursors have a `cold:` epoch and
+catch-up returns `complete: false`. Resuming the session upgrades attached cold
+views to the live broadcaster and emits `resyncRequired`; read a new shell and
+baseline before relying on live checkpoints. Closing or replacing a view cancels
+its cold reads. External-process appends are read on refresh or reconnect, not
+watched by a cold subscription.
+
+Call `await session.resume()` before runtime commands such as submit,
+edit/regenerate, approvals/questions, steer, or task cancellation; do not call it
+just to browse. A `false` result means the session is missing, and a rejected
+resume must prevent the subsequent command. The GUI/TUI's shared SessionTransport
+performs this admission. Direct `session.commands` calls retain their existing
+route behavior; in particular, a cold approval/question lookup does not resume.
+Already-live sessions and global background activity remain independent of cold
+view subscriptions.
+
 Read a snapshot, then subscribe with its `{ seq: as_of_seq, epoch }` as
 `sessionCursor` and the desired `transcriptGrades`. Keep that durable checkpoint
 separate from each agent's transcript cursor. The subscription shares the HTTP

@@ -74,6 +74,20 @@ const SUMMARY = {
 };
 
 describe('facade routing', () => {
+  it('admits a potentially slow resume without the generic call deadline and preserves missing-session results', async () => {
+    const channel = new FakeChannel();
+    const call = vi.spyOn(channel, 'call');
+    const klient = createKlientFromChannel(channel);
+    try {
+      channel.results.set('sessionManager.resume', { id: 's1', kind: 'session' });
+      await expect(klient.session('s1').resume()).resolves.toBe(true);
+      expect(call).toHaveBeenLastCalledWith({}, 'sessionManager', 'resume', ['s1'], { timeoutMs: 0 });
+      await expect(klient.session('s1').resume({ waitForSessionMs: 100 })).resolves.toBe(true);
+      expect(call).toHaveBeenLastCalledWith({}, 'sessionManager', 'resume', ['s1', { waitForSessionMs: 100 }], { timeoutMs: 0 });
+      channel.results.set('sessionManager.resume', null);
+      await expect(klient.session('missing-session').resume()).resolves.toBe(false);
+    } finally { await klient.close(); }
+  });
   it('passes task-board cancellation as transport metadata, not procedure arguments', async () => {
     const channel = new FakeChannel();
     const call = vi.spyOn(channel, 'call');

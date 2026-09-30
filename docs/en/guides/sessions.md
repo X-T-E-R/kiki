@@ -48,6 +48,8 @@ When context is compacted, the handoff lists up to five cards linked to the curr
 
 On the desktop or browser **New session** page, you can use an existing workspace, enter an absolute project directory, or select **Automatically create a workspace**. When no workspaces are registered, the automatic option is selected by default. On your first send, Kiki creates a new directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it as a workspace, and opens the session there. An explicitly selected workspace that was later deleted stays invalid until you choose another workspace or the automatic option; Kiki will not silently use a different existing one. See [Data locations](../configuration/data-locations.md#directory-layout) for the directory layout and cleanup implications.
 
+Opening a saved session in the desktop or browser GUI reads its history without starting an inactive session's agents. Selecting a subagent reads that subagent's history without loading the main agent's conversation. Sending, editing or regenerating a message, answering an approval or question, or steering a prompt activates the session first. If activation fails, the action is not sent and the history remains readable. Browsing does not stop work that is already running.
+
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
 **Resume the most recent session in the current directory (`-c` is the short form of `--continue`, the same `kiki -c` shown in [First launch](../getting-started/first-launch.md)):**

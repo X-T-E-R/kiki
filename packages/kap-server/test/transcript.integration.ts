@@ -14,6 +14,8 @@ import {
   ISessionMetadata,
   ISessionInteractionService,
   ISessionQuestionService,
+  ISessionApprovalService,
+  ISessionManager,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
@@ -28,6 +30,7 @@ import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
 import { createKlient } from '@kiki/klient/http';
+import { createSessionTransport } from '../../session-core/src/session/klientTransport';
 import { WebSocket } from 'ws';
 import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import type { SessionViewSignal, SessionViewSubscription } from '@kiki/klient/session-view';
@@ -245,6 +248,34 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     agent!.accessor.get(IAgentContextMemoryService).append(...messages);
     await agent!.accessor.get(IWireService).flush();
   }
+
+  it('admits a cold approval action before REST lookup and preserves real missing-interaction errors', async () => {
+    const id = await createSession();
+    await ensureMainAgent(id);
+    await closeSessionById(server!.core.accessor, id);
+    const klient = createKlient({ endpoint: base, token: bearerToken(server!) });
+    const listener = server!.core.accessor.get(ISessionManager).onDidCreateSession!(({ sessionId, handle }) => {
+      if (sessionId !== id) return;
+      handle.accessor.get(ISessionInteractionService).acquireConsumer('cold-approval-test');
+      handle.accessor.get(ISessionApprovalService).enqueue({ id: 'activation-approval', toolName: 'Bash', action: 'run',
+        display: { kind: 'command', command: 'echo example' }, agentId: 'main' });
+    });
+    try {
+      await klient.session(id).view.snapshot();
+      await klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      await expect(klient.session(id).commands.approve('activation-approval', { decision: 'rejected' })).rejects.toMatchObject({ code: 40404 });
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      const transport = createSessionTransport(klient);
+      await expect(transport.resolveApproval(id, 'activation-approval', { decision: 'rejected' })).resolves.toMatchObject({ resolved: true });
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
+      await expect(transport.resolveApproval(id, 'missing-approval', { decision: 'approved' })).rejects.toMatchObject({ code: 40404 });
+      await expect(transport.resolveApproval('missing-session', 'a1', { decision: 'approved' })).rejects.toMatchObject({ code: 40401 });
+    } finally {
+      listener.dispose();
+      await klient.close();
+    }
+  });
 
   it('rejects frozen old REST transcript requests and echoes the negotiated contract on each successful page and catch-up', async () => {
     const id = await createSession();
@@ -549,10 +580,13 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     await server!.close();
     server = undefined;
     await boot();
-    await resumeSessionById(server!.core.accessor, id);
-    const resumed = getLiveSessionById(server!.core.accessor, id)!;
     const klient = createKlient({ endpoint: base, token: bearerToken(server!) });
     try {
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      await expect(klient.session(id).agent('plan-child').getPlan()).resolves.toEqual(expected);
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      await resumeSessionById(server!.core.accessor, id);
+      const resumed = getLiveSessionById(server!.core.accessor, id)!;
       expect(resumed.accessor.get(IAgentLifecycleService).get('plan-child')).toBeUndefined();
       await expect(klient.session(id).agent('plan-child').getPlan()).resolves.toEqual(expected);
       if (mode === 'active') expect(expected).toMatchObject({ id: 'current-child-plan', content: 'The current child plan, not the main plan.' });
@@ -599,6 +633,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       let ready = 0;
       try {
         const snapshot = await klient.session(id).view.snapshot();
+        if (phase === 'restart') expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
         subscription = klient.session(id).view.subscribe({
           sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
           transcriptGrades: { '*': 'turn', main: 'delta' },
@@ -617,6 +652,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
         expect(JSON.stringify(transcripts.get('history-child')?.snapshot()) ?? '').not.toContain('Found the historical answer');
         for (let visit = 0; visit < 2; visit += 1) {
           subscription.setTranscriptGrades({ '*': 'turn', main: 'turn', 'history-child': 'delta' });
+          await vi.waitFor(() => expect(ready).toBe(2 + visit * 2));
           await vi.waitFor(() => {
             const detail = JSON.stringify(transcripts.get('history-child')?.snapshot());
             expect(detail).toContain('Inspect the example files');
@@ -628,6 +664,15 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
           await vi.waitFor(() => expect(ready).toBe(3 + visit * 2));
           expect(JSON.stringify(transcripts.get('main')?.snapshot())).toContain('Main history only');
           expect(JSON.stringify(transcripts.get('main')?.snapshot())).not.toContain('Found the historical answer');
+        }
+        if (phase === 'restart') {
+          expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+          await expect(createSessionTransport(klient).resolveApproval(id, 'missing-approval', { decision: 'rejected' })).rejects.toMatchObject({ code: 40404 });
+          expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
+          await vi.waitFor(() => expect(ready).toBeGreaterThan(5));
+          mainAgentBus(id).publish(serverEvent({ type: 'turn.started', turnId: 99, origin: { kind: 'user' } }));
+          mainAgentBus(id).publish(serverEvent({ type: 'turn.ended', turnId: 99, reason: 'completed' }));
+          await vi.waitFor(() => expect(transcripts.get('main')?.snapshot().items.filter((item) => item.kind === 'turn' && item.turnId === 't99')).toHaveLength(1));
         }
       } finally {
         subscription?.close();
@@ -953,7 +998,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     await closeSessionById(server!.core.accessor, id);
 
     const { body } = await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=main`);
-    expect(body.code).toBe(0);
+    expect(body.code, body.msg).toBe(0);
     expect(body.data.items.map((item) => (item as TurnContract).turnId)).toEqual(['t0']);
     const turn = body.data.items[0] as TurnContract;
     expect(turn.prompt).toBe('hi');

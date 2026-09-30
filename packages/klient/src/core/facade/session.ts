@@ -184,7 +184,7 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
     close: () => call({}, 'sessionManager', 'close', [sessionId]) as Promise<void>,
     archive: () => call({}, 'sessionManager', 'archive', [sessionId]) as Promise<void>,
     resume: async (opts) => {
-      const handle = await call({}, 'sessionManager', 'resume', opts === undefined ? [sessionId] : [sessionId, opts]) as HandleWire | undefined;
+      const handle = await call({}, 'sessionManager', 'resume', opts === undefined ? [sessionId] : [sessionId, opts], { timeoutMs: 0 }) as HandleWire | undefined;
       return handle !== undefined && handle !== null;
     },
     restore: async (opts) => {
