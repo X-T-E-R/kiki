@@ -619,6 +619,29 @@ export class ClusterDb<V = unknown> {
     }));
   }
 
+  /** Read a bounded, globally ordered compound-index range across shards. */
+  async compoundRange(
+    name: string,
+    groupValue: unknown,
+    opts: Pick<NonNullable<Parameters<MiniDb<V>['compoundRange']>[2]>, 'gte' | 'gt' | 'lte' | 'lt' | 'reverse' | 'limit'> = {},
+  ): Promise<ReturnType<MiniDb<V>['compoundRange']>> {
+    this.ensureOpen();
+    const definitions = await this.listCompoundIndexes();
+    const definition = definitions.find((index) => index.name === name);
+    if (definition === undefined) throw new Error(`no such compound index: ${name}`);
+    const rows: ReturnType<MiniDb<V>['compoundRange']> = [];
+    for (const id of this.router.shardIds()) {
+      rows.push(...await this.reader(id, (db) => db.compoundRange(name, groupValue, opts)));
+    }
+    rows.sort((left, right) => {
+      const a = left.orderValue as string | number;
+      const b = right.orderValue as string | number;
+      const order = a < b ? -1 : a > b ? 1 : compareEntries(left, right);
+      return opts.reverse ? -order : order;
+    });
+    return opts.limit === undefined ? rows : rows.slice(0, opts.limit);
+  }
+
   // ---- full-text search -------------------------------------------------------
 
   async createTextIndex(name: string, opts: { fields?: readonly string[] } = {}): Promise<void> {

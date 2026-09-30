@@ -300,3 +300,24 @@ test('compound index definitions fan out to all shards and survive reopen', asyn
     await rmrf(dir);
   }
 });
+
+test('compound ranges merge shard pages in order with exclusive continuation and group isolation', async () => {
+  const dir = await tmpDir('minidb-cluster-range-');
+  const db = await ClusterDb.open<{ group: string; order: string }>({ dir, shardCount: 4, valueCodec: 'json' });
+  try {
+    await db.createCompoundIndex('timeline', { groupBy: 'group', orderBy: 'order', orderType: 'string' });
+    for (let shard = 0; shard < 4; shard++) {
+      await db.set(keyOnShard(`range-${shard}`, shard, 4), { group: 'peer', order: `0001/${shard}` });
+      await db.set(keyOnShard(`other-${shard}`, shard, 4), { group: 'other', order: `9999/${shard}` });
+    }
+    const first = await db.compoundRange('timeline', 'peer', { reverse: true, limit: 2 });
+    assert.deepEqual(first.map((row) => row.orderValue), ['0001/3', '0001/2']);
+    const second = await db.compoundRange('timeline', 'peer', { reverse: true, lt: first.at(-1)!.orderValue, limit: 2 });
+    assert.deepEqual(second.map((row) => row.orderValue), ['0001/1', '0001/0']);
+    assert.deepEqual(await db.compoundRange('timeline', 'missing', { limit: 2 }), []);
+    await assert.rejects(db.compoundRange('absent', 'peer', { limit: 2 }), /no such compound index/);
+  } finally {
+    await db.close();
+    await rmrf(dir);
+  }
+});
