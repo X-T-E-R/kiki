@@ -125,3 +125,41 @@ describe('Antigravity install progress', () => {
     } finally { await context.service.dispose(); context.services.dispose(); }
   });
 });
+
+describe('Antigravity sign-in completion codes', () => {
+  const authUrl = 'https://accounts.google.com/o/oauth2/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A48123%2F&state=fixture-state';
+  async function pendingLogin() {
+    const context = await fixture();
+    vi.spyOn(AcpLoginHelper.prototype, 'start').mockResolvedValue({ alreadySignedIn: false, authUrl, redirectUri: 'http://127.0.0.1:48123/' });
+    vi.spyOn(AcpLoginHelper.prototype, 'close').mockResolvedValue();
+    const started = await context.service.beginLogin('oauth-personal');
+    if (started.alreadySignedIn) throw new Error('expected a pending sign-in');
+    return { ...context, handle: started.handle };
+  }
+
+  it('codes a paste from another flow as a retryable callback mismatch', async () => {
+    const context = await pendingLogin();
+    try {
+      expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=other&code=x'))
+        .toMatchObject({ signedIn: false, retryable: true, messageCode: 'callback_mismatch' });
+    } finally { await context.service.dispose(); context.services.dispose(); }
+  });
+
+  it('codes a vendor rejection as a final sign-in failure and keeps the vendor words in message', async () => {
+    const context = await pendingLogin();
+    vi.spyOn(AcpLoginHelper.prototype, 'finish').mockRejectedValue(new Error('invalid_grant'));
+    try {
+      expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
+        .toEqual({ signedIn: false, retryable: false, messageCode: 'signin_failed', message: 'Antigravity sign-in failed: invalid_grant' });
+    } finally { await context.service.dispose(); context.services.dispose(); }
+  });
+
+  it('carries no code on success', async () => {
+    const context = await pendingLogin();
+    vi.spyOn(AcpLoginHelper.prototype, 'finish').mockResolvedValue();
+    try {
+      expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
+        .toEqual({ signedIn: true, retryable: false });
+    } finally { await context.service.dispose(); context.services.dispose(); }
+  });
+});

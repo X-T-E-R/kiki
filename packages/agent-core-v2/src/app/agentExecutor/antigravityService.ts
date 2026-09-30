@@ -63,7 +63,14 @@ export type AntigravityLoginStart = { readonly alreadySignedIn: true } | {
   readonly methodId: AntigravityAuthMethod;
   readonly expiresInSecs: number;
 };
-export interface AntigravityLoginOutcome { readonly signedIn: boolean; readonly retryable: boolean; readonly message?: string }
+/** Why a sign-in did not complete: the paste belongs to another flow, or the vendor rejected it. */
+export type AntigravityLoginMessageCode = 'callback_mismatch' | 'signin_failed';
+export interface AntigravityLoginOutcome {
+  readonly signedIn: boolean;
+  readonly retryable: boolean;
+  readonly message?: string;
+  readonly messageCode?: AntigravityLoginMessageCode;
+}
 export interface IAntigravityService {
   readonly _serviceBrand: undefined;
   status(): Promise<AntigravityStatus>;
@@ -175,13 +182,16 @@ export class AntigravityService implements IAntigravityService {
     const pending = this.requirePending(handle);
     if (this.loginBusy) throw invalid('Antigravity sign-in is busy');
     try { rebuildLoopbackRedirect(pending.authUrl, redirectUrl); }
-    catch { return { signedIn: false, retryable: true, message: 'The callback does not match this pending sign-in.' }; }
+    catch { return { signedIn: false, retryable: true, message: 'The callback does not match this pending sign-in.', messageCode: 'callback_mismatch' }; }
     this.loginBusy = true;
     clearTimeout(pending.timer);
     try {
       await pending.helper.finish(pending.authUrl, redirectUrl);
       return { signedIn: true, retryable: false };
-    } catch { return { signedIn: false, retryable: false, message: 'Antigravity sign-in failed; start a new sign-in.' }; }
+    } catch (error) {
+      const detail = error instanceof Error && error.message.trim() !== '' ? `: ${error.message.trim()}` : '';
+      return { signedIn: false, retryable: false, message: `Antigravity sign-in failed${detail}`, messageCode: 'signin_failed' };
+    }
     finally { this.pending = undefined; await pending.helper.close(); this.loginBusy = false; }
   }
 

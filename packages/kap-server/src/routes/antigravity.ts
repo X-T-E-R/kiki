@@ -43,7 +43,7 @@ export function registerAntigravityRoutes(app: AgentProfilesRouteHost, core: Sco
   const complete = defineRoute({ method: 'POST', path: `${root}/login/complete`, body: antigravityLoginCompleteRequestSchema,
     success: { data: antigravityLoginOutcomeSchema }, tags: ['agents'] }, async (req, reply) => {
     const value = await service().completeLogin(req.body.handle, req.body.redirect_url);
-    reply.send(okEnvelope({ signed_in: value.signedIn, retryable: value.retryable, message: value.message }, req.id));
+    reply.send(okEnvelope({ signed_in: value.signedIn, retryable: value.retryable, message: value.message, message_code: value.messageCode }, req.id));
   });
   app.post(complete.path, complete.options, complete.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
   const cancel = defineRoute({ method: 'POST', path: `${root}/login/cancel`, body: antigravityLoginCancelRequestSchema,

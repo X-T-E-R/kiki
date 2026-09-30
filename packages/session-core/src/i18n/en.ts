@@ -5433,6 +5433,7 @@ export const en = {
   'st.antigravity.startAgain': 'Start again',
   'st.antigravity.pasteRetry': 'That address has no sign-in code. Copy the full address from the browser and paste it again.',
   'st.antigravity.flowEnded': 'This sign-in ended. Start again.',
+  'st.antigravity.signInRejected': 'Google did not accept this sign-in, so it has ended. Start again.',
   'st.antigravity.signedInBody': 'Antigravity uses this Google account.',
   'st.antigravity.signOut': 'Sign out',
   'st.antigravity.signingOut': 'Signing out…',

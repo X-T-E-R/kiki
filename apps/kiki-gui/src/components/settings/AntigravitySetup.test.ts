@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { antigravityVersionValid, reduceInstallProgress, secondsLeft, type InstallProgressEvent } from './AntigravitySetup';
+import { antigravityVersionValid, loginOutcomeKey, reduceInstallProgress, secondsLeft, type InstallProgressEvent } from './AntigravitySetup';
 
 describe('antigravityVersionValid', () => {
   it('accepts 1.x releases only', () => {
@@ -43,5 +43,14 @@ describe('reduceInstallProgress', () => {
   it('keeps the current bar when a stale install ends', () => {
     expect(run([{ ...tag, stage: 'download', receivedBytes: 7 }, { installId: 'old', version: '1.2.1', stage: 'done' }]))
       .toMatchObject({ installId: 'i1', receivedBytes: 7 });
+  });
+});
+
+describe('loginOutcomeKey', () => {
+  it('translates by message_code and falls back to retryable for older servers', () => {
+    expect(loginOutcomeKey({ retryable: true, message_code: 'callback_mismatch' })).toBe('st.antigravity.pasteRetry');
+    expect(loginOutcomeKey({ retryable: false, message_code: 'signin_failed' })).toBe('st.antigravity.signInRejected');
+    expect(loginOutcomeKey({ retryable: true })).toBe('st.antigravity.pasteRetry');
+    expect(loginOutcomeKey({ retryable: false })).toBe('st.antigravity.flowEnded');
   });
 });

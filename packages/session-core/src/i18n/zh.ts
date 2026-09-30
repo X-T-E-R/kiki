@@ -5377,6 +5377,7 @@ export const zh = {
   'st.antigravity.startAgain': '重新开始',
   'st.antigravity.pasteRetry': '这个地址里没有登录码。请从浏览器复制完整地址后重新粘贴。',
   'st.antigravity.flowEnded': '本次登录已结束，请重新开始。',
+  'st.antigravity.signInRejected': 'Google 没有接受这次登录，本次登录已结束。请重新开始。',
   'st.antigravity.signedInBody': 'Antigravity 使用这个 Google 账号。',
   'st.antigravity.signOut': '退出登录',
   'st.antigravity.signingOut': '退出中…',

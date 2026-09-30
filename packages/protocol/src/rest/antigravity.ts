@@ -15,7 +15,11 @@ export const antigravityLoginStartSchema = z.discriminatedUnion('already_signed_
 ]);
 export const antigravityLoginCompleteRequestSchema = z.object({ handle: z.string().min(1), redirect_url: z.string().url() }).strict();
 export const antigravityLoginCancelRequestSchema = z.object({ handle: z.string().min(1) }).strict();
-export const antigravityLoginOutcomeSchema = z.object({ signed_in: z.boolean(), retryable: z.boolean(), message: z.string().optional() });
+/** `message` is the server's own words (diagnostic); `message_code` is what clients translate. */
+export const antigravityLoginMessageCodeSchema = z.enum(['callback_mismatch', 'signin_failed']);
+export const antigravityLoginOutcomeSchema = z.object({
+  signed_in: z.boolean(), retryable: z.boolean(), message: z.string().optional(), message_code: antigravityLoginMessageCodeSchema.optional(),
+});
 export type AntigravityStatusResponse = z.infer<typeof antigravityStatusSchema>;
 export type AntigravityLoginStartResponse = z.infer<typeof antigravityLoginStartSchema>;
 export type AntigravityLoginOutcomeResponse = z.infer<typeof antigravityLoginOutcomeSchema>;

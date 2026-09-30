@@ -52,6 +52,17 @@ export function reduceInstallProgress(current: InstallProgressView | null, event
     totalBytes: current?.installId === event.installId ? current.totalBytes : undefined };
 }
 
+/**
+ * The sentence for a sign-in that did not complete, chosen by the server's
+ * `message_code`; servers that predate the code fall back to `retryable`.
+ * The server's own `message` is shown only as the tooltip.
+ */
+export function loginOutcomeKey(outcome: { readonly retryable: boolean; readonly message_code?: 'callback_mismatch' | 'signin_failed' }) {
+  if (outcome.message_code === 'callback_mismatch') return 'st.antigravity.pasteRetry' as const;
+  if (outcome.message_code === 'signin_failed') return 'st.antigravity.signInRejected' as const;
+  return outcome.retryable ? 'st.antigravity.pasteRetry' as const : 'st.antigravity.flowEnded' as const;
+}
+
 /** Seconds left on a sign-in, never negative. */
 export function secondsLeft(pending: { startedAt: number; expires_in_secs: number }, now: number): number {
   return Math.max(0, Math.ceil(pending.expires_in_secs - (now - pending.startedAt) / 1000));
@@ -236,9 +247,10 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
   const [pending, setPending] = useState<Pending | null>(null);
   const [redirect, setRedirect] = useState('');
   const [working, setWorking] = useState<'start' | 'complete' | 'cancel' | 'logout' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorText] = useState<string | null>(null);
   // The server's own words for a rejected paste, kept for the tooltip.
   const [errorDetail, setErrorDetail] = useState<string | undefined>();
+  const setError = (text: string | null, detail?: string) => { setErrorText(text); setErrorDetail(detail); };
   const [openFailed, setOpenFailed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -276,8 +288,7 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
         return;
       }
       if (!outcome.retryable) setPending(null);
-      setError(t(outcome.retryable ? 'st.antigravity.pasteRetry' : 'st.antigravity.flowEnded'));
-      setErrorDetail(outcome.message);
+      setError(t(loginOutcomeKey(outcome)), outcome.message);
     } catch (failure) {
       setError(errorText(locale, failure));
     } finally { setWorking(null); }
@@ -334,7 +345,7 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
             {t('st.antigravity.signInWithGoogle')}
           </button>
         </div>
-        {error !== null ? <p role="alert" data-antigravity-login-error className="text-[12px] text-danger">{error}</p> : null}
+        {error !== null ? <p role="alert" data-antigravity-login-error title={errorDetail} className="text-[12px] text-danger">{error}</p> : null}
       </div>
     );
   }
