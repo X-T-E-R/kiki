@@ -131,6 +131,25 @@ describe('ActivityPage', () => {
     expect(page.querySelector('[data-activity-item="ask"]')).not.toBeNull();
   });
 
+  it.each([
+    ['en', 'Not delivered: Target thread is archived'],
+    ['zh', '未送达：目标线程已归档'],
+  ])('translates delivery codes in %s without displaying diagnostic text', async (locale, expected) => {
+    localStorage.setItem('kiki.locale', locale);
+    const endpoint = { ref: { host_id: 'h', workspace_id: 'ws-1', session_id: 'a' }, deleted: false, archived: false };
+    client.listThreadMessages.mockReset();
+    client.listThreadMessages.mockResolvedValue({ items: [{ message_id: 'failed', source: { kind: 'thread', thread: endpoint },
+      target: endpoint, content: 'Ping', accepted_at: 1, target_seq: 1, delivery: 'undeliverable',
+      reason_code: 'thread_archived', reason_detail: 'arbitrary backend diagnostic', reason: 'legacy diagnostic' }] });
+    try {
+      const page = await render([], '/activity?view=comms');
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const note = page.querySelector('[data-comms-delivery="undeliverable"]');
+      expect(note?.textContent).toBe(expected);
+      expect(note?.getAttribute('title')).toBe('arbitrary backend diagnostic');
+    } finally { localStorage.removeItem('kiki.locale'); }
+  });
+
   it('lists thread messages across workspaces, follows empty pages, and scopes by workspace', async () => {
     const endpoint = (session_id: string, workspace_id: string, extra: { deleted?: boolean } = {}) => ({
       ref: { host_id: 'h', workspace_id, session_id }, title: `T ${session_id}`, deleted: extra.deleted ?? false, archived: false,
@@ -154,7 +173,9 @@ describe('ActivityPage', () => {
     expect(first.querySelector('[data-comms-jump="m1"]')).not.toBeNull();
     const second = page.querySelector('[data-activity-comms-item="m2"]')!;
     expect(second.textContent).toContain('Deleted thread');
-    expect(second.textContent).toContain('Not delivered: thread closed');
+    expect(second.textContent).toContain('Not delivered: Delivery failed');
+    expect(second.textContent).not.toContain('thread closed');
+    expect(second.querySelector('[data-comms-delivery]')?.getAttribute('title')).toBe('thread closed');
     expect(second.querySelector('[data-comms-jump]')).toBeNull();
     expect(second.querySelector('[data-comms-endpoint="gone"]')).toBeNull();
 

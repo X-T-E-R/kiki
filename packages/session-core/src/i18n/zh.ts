@@ -6022,4 +6022,15 @@ export const zh = {
   'room.system.workspaceChanged': '工作区已更换，成员会话已重建',
   'room.system.renamed': '房间改名为「{name}」',
   'st.profiles.policyInherit': '继承默认',
+
+  'comms.reason.thread_not_found': '目标线程已不存在',
+  'comms.reason.thread_archived': '目标线程已归档',
+  'comms.reason.communication_disabled': '线程沟通已关闭',
+  'comms.reason.cross_host': '不支持跨主机投递',
+  'comms.reason.prompt_rejected': '目标提示词被拒绝',
+  'comms.reason.session_unavailable': '目标会话不可用',
+  'comms.reason.workspace_unavailable': '目标工作区不可用',
+  'comms.reason.executor_unavailable': '目标执行器不可用',
+  'comms.reason.cancelled': '投递已取消',
+  'comms.reason.delivery_failed': '投递失败',
 };

@@ -116,6 +116,12 @@ export const threadMessageEndpointSchema = z.object({
   archived: z.boolean(),
 });
 
+export const threadDeliveryReasonCodeSchema = z.enum([
+  'thread_not_found', 'thread_archived', 'communication_disabled', 'cross_host',
+  'prompt_rejected', 'session_unavailable', 'workspace_unavailable', 'executor_unavailable',
+  'cancelled', 'delivery_failed',
+]);
+
 export const threadCommunicationMessageSchema = z.object({
   message_id: z.string(),
   source: z.discriminatedUnion('kind', [
@@ -127,6 +133,8 @@ export const threadCommunicationMessageSchema = z.object({
   accepted_at: z.number(),
   target_seq: z.number().int().nonnegative(),
   delivery: z.enum(['pending', 'delivered', 'undeliverable']),
+  reason_code: threadDeliveryReasonCodeSchema.optional(),
+  reason_detail: z.string().optional(),
   reason: z.string().optional(),
 });
 

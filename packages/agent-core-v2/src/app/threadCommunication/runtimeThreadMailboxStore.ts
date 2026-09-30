@@ -18,7 +18,7 @@ import {
   ThreadMailboxBacklogError,
   ThreadMailboxLegacyWriterActiveError,
 } from './mailboxErrors';
-import type { ThreadActivityKind, ThreadRef } from './threadCommunication';
+import { THREAD_DELIVERY_REASON_CODES, type ThreadActivityKind, type ThreadDeliveryReasonCode, type ThreadRef } from './threadCommunication';
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
@@ -103,6 +103,7 @@ interface MessageDoc {
   readonly claim?: ThreadDeliveryClaim;
   readonly terminalClaim?: ThreadDeliveryClaim;
   readonly reason?: string;
+  readonly reasonCode?: ThreadDeliveryReasonCode;
 }
 
 interface IdempotencyDoc {
@@ -197,6 +198,7 @@ interface ClaimPayload {
 interface UndeliverablePayload {
   readonly claim: ThreadDeliveryClaim;
   readonly reason: string;
+  readonly reasonCode?: ThreadDeliveryReasonCode;
 }
 
 interface CancelProducerPayload {
@@ -342,7 +344,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.acknowledge, (payload, ctx) => this.finishOwner(assertClaim(payload), 'delivered', undefined, ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.undeliverable, (payload, ctx) => {
         const input = assertUndeliverablePayload(payload);
-        return this.finishOwner(input.claim, 'undeliverable', input.reason, ctx);
+        return this.finishOwner(input.claim, 'undeliverable', input.reason, ctx, input.reasonCode);
       }),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.cancelProducer, (payload, ctx) =>
         this.cancelProducerOwner(assertCancelProducerPayload(payload), ctx)),
@@ -401,7 +403,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       const pointer = row.value as PeerIndexDoc;
       const doc = asMessage(await db.partitionGet(pointer.partition, pointer.messageKey));
       if (doc === undefined || doc.message.producer.kind !== 'peer_thread') continue;
-      items.push({ message: doc.message, delivery: publicDeliveryState(doc.state), reason: doc.reason, order: pointer.peerOrder });
+      items.push({ message: doc.message, delivery: publicDeliveryState(doc.state), reason: doc.reason, reasonCode: doc.reasonCode, order: pointer.peerOrder });
     }
     return { items, nextBefore: rows.length > input.limit ? rows[input.limit - 1]?.orderValue as string : undefined };
   }
@@ -432,12 +434,13 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   markUndeliverable(
     claim: ThreadDeliveryClaim,
-    reason: string,
+    reason: string | { readonly code: ThreadDeliveryReasonCode; readonly detail: string },
     options?: ThreadMailboxMutationOptions,
   ): Promise<boolean> {
     return this.call(
       THREAD_MAILBOX_RUNTIME_METHODS.undeliverable,
-      { claim, reason },
+      { claim, reason: typeof reason === 'string' ? reason : reason.detail,
+        reasonCode: typeof reason === 'string' ? undefined : reason.code },
       options,
     ) as Promise<boolean>;
   }
@@ -822,12 +825,13 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     state: 'delivered' | 'undeliverable',
     reason: string | undefined,
     ctx: RuntimeMethodContext,
+    reasonCode?: ThreadDeliveryReasonCode,
   ): Promise<boolean> {
     const method = state === 'delivered'
       ? THREAD_MAILBOX_RUNTIME_METHODS.acknowledge
       : THREAD_MAILBOX_RUNTIME_METHODS.undeliverable;
     const partition = targetPartition(claim.message.target);
-    const input = state === 'delivered' ? claim : { claim, reason };
+    const input = state === 'delivered' ? claim : { claim, reason, reasonCode };
     return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
       const receiptKey = requestReceiptKey(partition, method, ctx);
@@ -847,6 +851,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
             claim: undefined,
             terminalClaim: claim,
             reason,
+            reasonCode,
           };
           changed = true;
         }
@@ -1886,7 +1891,11 @@ function assertClaim(value: unknown): ThreadDeliveryClaim {
 function assertUndeliverablePayload(value: unknown): UndeliverablePayload {
   const input = assertRecord(value);
   if (typeof input['reason'] !== 'string') throw new TypeError('Invalid undeliverable reason.');
-  return { claim: assertClaim(input['claim']), reason: input['reason'] };
+  const reasonCode = input['reasonCode'];
+  if (reasonCode !== undefined && !THREAD_DELIVERY_REASON_CODES.includes(reasonCode as ThreadDeliveryReasonCode)) {
+    throw new TypeError('Invalid undeliverable reason code.');
+  }
+  return { claim: assertClaim(input['claim']), reason: input['reason'], reasonCode: reasonCode as ThreadDeliveryReasonCode | undefined };
 }
 
 function assertCancelProducerPayload(value: unknown): CancelProducerPayload {

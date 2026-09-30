@@ -129,6 +129,12 @@ export const threadCommunicationMessageSchema = z.object({
   ]),
   target: threadMessageEndpointSchema, content: z.string(), acceptedAt: z.number(), targetSeq: z.number(),
   delivery: z.enum(['pending', 'delivered', 'undeliverable']), reason: z.string().optional(),
+  reasonCode: z.enum([
+    'thread_not_found', 'thread_archived', 'communication_disabled', 'cross_host',
+    'prompt_rejected', 'session_unavailable', 'workspace_unavailable', 'executor_unavailable',
+    'cancelled', 'delivery_failed',
+  ]).optional(),
+  reasonDetail: z.string().optional(),
 });
 export const listThreadMessagesInputSchema = z.object({
   workspaceId: z.string().trim().min(1).optional(), sessionId: z.string().trim().min(1).optional(),

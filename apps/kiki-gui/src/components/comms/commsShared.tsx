@@ -70,10 +70,11 @@ export function DeliveryNote({ message, always = false }: { readonly message: Th
   const { t } = useI18n();
   if (message.delivery === 'delivered' && !always) return null;
   if (message.delivery === 'undeliverable') {
-    const reason = message.reason?.trim();
+    const reason = t(`comms.reason.${message.reason_code ?? 'delivery_failed'}`);
+    const detail = (message.reason_detail ?? message.reason)?.trim();
     return (
-      <span data-comms-delivery="undeliverable" title={reason} className="min-w-0 truncate text-amber-ink">
-        {reason !== undefined && reason !== '' ? t('comms.undeliverableReason', { reason }) : t('comms.delivery.undeliverable')}
+      <span data-comms-delivery="undeliverable" title={detail} className="min-w-0 truncate text-amber-ink">
+        {t('comms.undeliverableReason', { reason })}
       </span>
     );
   }

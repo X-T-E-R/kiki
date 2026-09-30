@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
-import type { ThreadActivityKind, ThreadRef } from './threadCommunication';
+import type { ThreadActivityKind, ThreadDeliveryReasonCode, ThreadRef } from './threadCommunication';
 
 export interface ThreadMessageSender {
   readonly personaId?: string;
@@ -104,7 +104,7 @@ export interface IThreadMailboxStore {
 
   markUndeliverable(
     claim: ThreadDeliveryClaim,
-    reason: string,
+    reason: string | { readonly code: ThreadDeliveryReasonCode; readonly detail: string },
     options?: ThreadMailboxMutationOptions,
   ): Promise<boolean>;
 
@@ -156,6 +156,7 @@ export interface MailboxMessageRecord {
   readonly message: AcceptedThreadMessage;
   readonly delivery: 'pending' | 'delivered' | 'undeliverable';
   readonly reason?: string;
+  readonly reasonCode?: ThreadDeliveryReasonCode;
   readonly order: string;
 }
 

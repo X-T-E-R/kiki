@@ -285,6 +285,21 @@ The standard envelope's `data` is `{ items, next_cursor?, incomplete? }`. Each i
 
 `delivery` is `pending`, `delivered`, or `undeliverable`. Delivered means the input was handed to the target prompt, not that the target finished answering. A rejected send before mailbox acceptance, such as an unknown target, creates no communication record. Use `message_id` as the target prompt's navigation identity; `target_seq` is a mailbox sequence, not a transcript turn number. A deleted endpoint has `deleted: true`; the record stays visible from the surviving side and disappears from this view when neither side survives.
 
+For `undeliverable` records, `reason_code` is a stable localization key and `reason_detail` is the original diagnostic text. The legacy `reason` remains an alias of `reason_detail`. Other delivery states omit these fields. Older stored failures without a code return `delivery_failed`; clients talking to older servers should use the same fallback instead of translating diagnostic text.
+
+| `reason_code` | Failure category |
+| --- | --- |
+| `thread_not_found` | Target thread was removed or is missing |
+| `thread_archived` | Target thread is archived |
+| `communication_disabled` | Thread communication is disabled |
+| `cross_host` | Cross-host delivery is unsupported |
+| `prompt_rejected` | Target prompt or request was rejected |
+| `session_unavailable` | Target session could not be opened or is closed |
+| `workspace_unavailable` | Target workspace is unavailable |
+| `executor_unavailable` | Target executor failed or is unavailable |
+| `cancelled` | Delivery was cancelled |
+| `delivery_failed` | Other or uncoded delivery failure |
+
 Klient provides `klient.rest.threads.messages(query, options)` with these snake_case wire shapes. `klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` provides the same read using camelCase shapes over HTTP, IPC, and memory transports.
 
 Peer messages are no longer evicted by the mailbox's former 512-message limit. The first upgraded mailbox owner resumes a checkpointed backfill of records still present in the mailbox; messages already evicted by older versions are not reconstructed from session wires. Restart older processes sharing the same Kiki home before relying on the new retention behavior.

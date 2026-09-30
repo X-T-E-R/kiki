@@ -6087,4 +6087,14 @@ export const en = {
   'message.deliverySwitchFailed': 'Delivery was not switched: {detail}',
   'st.profiles.policyInherit': 'Inherit default',
 
+  'comms.reason.thread_not_found': 'Target thread no longer exists',
+  'comms.reason.thread_archived': 'Target thread is archived',
+  'comms.reason.communication_disabled': 'Thread communication is disabled',
+  'comms.reason.cross_host': 'Cross-host delivery is not supported',
+  'comms.reason.prompt_rejected': 'Target prompt was rejected',
+  'comms.reason.session_unavailable': 'Target session is unavailable',
+  'comms.reason.workspace_unavailable': 'Target workspace is unavailable',
+  'comms.reason.executor_unavailable': 'Target executor is unavailable',
+  'comms.reason.cancelled': 'Delivery was cancelled',
+  'comms.reason.delivery_failed': 'Delivery failed',
 } as const;

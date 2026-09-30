@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel } from '../src/transports/http/channel.js';
+import { threadCommunicationMessageSchema } from '../src/contract/global/threads.js';
 
 function envelope(data: unknown, code = 0): Response {
   return new Response(JSON.stringify({ code, msg: code === 0 ? 'success' : 'failed', data }), {
@@ -696,6 +697,23 @@ describe('native HTTP response lifecycle', () => {
 });
 
 describe('communication history REST', () => {
+  it('preserves failure codes and diagnostics in REST and validates the facade enum', async () => {
+    const endpoint = { ref: { host_id: 'host', workspace_id: 'workspace', session_id: 'target' }, deleted: false, archived: false };
+    const item = { message_id: 'message', source: { kind: 'thread', thread: endpoint }, target: endpoint,
+      content: 'handoff', accepted_at: 1, target_seq: 1, delivery: 'undeliverable',
+      reason_code: 'thread_archived', reason_detail: 'diagnostic', reason: 'diagnostic' };
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: vi.fn(async () => envelope({ items: [item] })) as typeof fetch });
+    try {
+      expect((await channel.rest.threads.messages({})).items).toEqual([item]);
+    } finally { await channel.close(); }
+    const ref = { hostId: 'host', workspaceId: 'workspace', sessionId: 'target' };
+    const target = { ref, deleted: false, archived: false };
+    const facade = { messageId: 'message', source: { kind: 'thread', thread: target }, target,
+      content: 'handoff', acceptedAt: 1, targetSeq: 1, delivery: 'undeliverable',
+      reasonCode: 'thread_archived', reasonDetail: 'diagnostic', reason: 'diagnostic' };
+    expect(threadCommunicationMessageSchema.parse(facade)).toEqual(facade);
+    expect(threadCommunicationMessageSchema.safeParse({ ...facade, reasonCode: 'unregistered_failure' }).success).toBe(false);
+  });
   it('preserves workspace, pair and cursor filters on the typed read endpoint', async () => {
     const fetchMock = vi.fn(async (input: string | URL) => {
       const url = new URL(String(input));

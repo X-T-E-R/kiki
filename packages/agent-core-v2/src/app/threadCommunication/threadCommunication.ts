@@ -167,6 +167,14 @@ export type ThreadMessageSource =
   | { readonly kind: 'thread'; readonly thread: ThreadMessageEndpoint }
   | { readonly kind: 'room'; readonly roomId: string };
 
+export const THREAD_DELIVERY_REASON_CODES = [
+  'thread_not_found', 'thread_archived', 'communication_disabled', 'cross_host',
+  'prompt_rejected', 'session_unavailable', 'workspace_unavailable', 'executor_unavailable',
+  'cancelled', 'delivery_failed',
+] as const;
+
+export type ThreadDeliveryReasonCode = typeof THREAD_DELIVERY_REASON_CODES[number];
+
 export interface ThreadCommunicationMessage {
   readonly messageId: string;
   readonly source: ThreadMessageSource;
@@ -175,6 +183,8 @@ export interface ThreadCommunicationMessage {
   readonly acceptedAt: number;
   readonly targetSeq: number;
   readonly delivery: 'pending' | 'delivered' | 'undeliverable';
+  readonly reasonCode?: ThreadDeliveryReasonCode;
+  readonly reasonDetail?: string;
   readonly reason?: string;
 }
 

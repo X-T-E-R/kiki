@@ -285,6 +285,21 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 `delivery` 为 `pending`、`delivered` 或 `undeliverable`。Delivered 表示输入已交给对方 prompt，不代表对方已完成回复。邮箱接收前被拒绝的发送，例如目标不存在，不会生成沟通记录。导航时用 `message_id` 定位对方 prompt；`target_seq` 是邮箱序号，不是会话轮次号。已删除的端点标记为 `deleted: true`，另一侧仍存在时记录保留；两侧都删除后，记录从这个视图中消失。
 
+对于 `undeliverable` 记录，`reason_code` 是稳定的本地化键，`reason_detail` 是诊断原文。旧字段 `reason` 保留为 `reason_detail` 的别名。其他投递状态不返回这些字段。没有代码的旧失败记录返回 `delivery_failed`；连接旧服务器的客户端也应使用这个兜底值，而不是翻译诊断原文。
+
+| `reason_code` | 失败类别 |
+| --- | --- |
+| `thread_not_found` | 目标线程已删除或不存在 |
+| `thread_archived` | 目标线程已归档 |
+| `communication_disabled` | 线程沟通已关闭 |
+| `cross_host` | 不支持跨主机投递 |
+| `prompt_rejected` | 目标提示词或请求被拒绝 |
+| `session_unavailable` | 目标会话无法打开或已关闭 |
+| `workspace_unavailable` | 目标工作区不可用 |
+| `executor_unavailable` | 目标执行器失败或不可用 |
+| `cancelled` | 投递已取消 |
+| `delivery_failed` | 其他失败或没有代码的投递失败 |
+
 Klient 提供 `klient.rest.threads.messages(query, options)`，参数和结果沿用上述 snake_case 形状。`klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` 以 camelCase 形状提供同一读取能力，支持 HTTP、IPC 和内存传输。
 
 Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首个邮箱 owner 会按持久检查点回填仍在邮箱中的记录；旧版本已淘汰的消息不会从会话 wire 重建。依赖新保留规则前，应重启共享同一 Kiki home 的旧进程。

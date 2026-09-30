@@ -30,6 +30,7 @@ import {
   type ThreadRef,
 } from '#/app/threadCommunication/threadCommunication';
 import { ThreadCommunicationService } from '#/app/threadCommunication/threadCommunicationService';
+import { threadDeliveryReasonCode } from '#/app/threadCommunication/deliveryFailure';
 import {
   ThreadActivityCursorExpiredError,
   ThreadMailboxBacklogError,
@@ -80,6 +81,30 @@ const summaries: Record<string, SessionSummary> = {
     archived: false,
   },
 };
+
+describe('thread delivery reason codes', () => {
+  it.each([
+    [ErrorCodes.THREAD_NOT_FOUND, 'thread_not_found'],
+    [ErrorCodes.THREAD_ARCHIVED, 'thread_archived'],
+    [ErrorCodes.THREAD_DISABLED, 'communication_disabled'],
+    [ErrorCodes.THREAD_CROSS_HOST, 'cross_host'],
+    [ErrorCodes.PROMPT_ID_CONFLICT, 'prompt_rejected'],
+    [ErrorCodes.PROMPT_NOT_FOUND, 'prompt_rejected'],
+    [ErrorCodes.REQUEST_INVALID, 'prompt_rejected'],
+    [ErrorCodes.SESSION_CLOSED, 'session_unavailable'],
+    [ErrorCodes.SESSION_INIT_FAILED, 'session_unavailable'],
+    [ErrorCodes.WORKSPACE_NOT_FOUND, 'workspace_unavailable'],
+    [ErrorCodes.EXECUTOR_DISCONNECTED, 'executor_unavailable'],
+    [ErrorCodes.EXECUTOR_CANCELLED, 'cancelled'],
+    [ErrorCodes.THREAD_DELIVERY_FAILED, 'delivery_failed'],
+  ] as const)('classifies %s independently of the error text', (code, expected) => {
+    expect(threadDeliveryReasonCode(new Error2(code, 'arbitrary diagnostic'))).toBe(expected);
+  });
+
+  it.each([new Error('untyped failure'), 'failure', undefined])('falls back for uncoded failures', (error) => {
+    expect(threadDeliveryReasonCode(error)).toBe('delivery_failed');
+  });
+});
 
 describe('ThreadCommunicationService', () => {
   let homeDir: string;
@@ -312,6 +337,7 @@ describe('ThreadCommunicationService', () => {
       expect(all.items).toHaveLength(3);
       expect(all.items.find((message) => message.messageId === failed.messageId)).toMatchObject({
         content: 'failed handoff', delivery: 'undeliverable', reason: 'resume failed',
+        reasonCode: 'delivery_failed', reasonDetail: 'resume failed',
         source: { kind: 'thread', thread: { ref: source, title: 'Design review', deleted: false } }, target: { ref: target },
       });
       const page1 = await service.listMessages({ sessionId: 'source', peerSessionId: 'target', limit: 1 });

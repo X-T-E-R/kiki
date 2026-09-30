@@ -265,7 +265,7 @@ describe('peer-thread routes', () => {
       const failed = await mailbox.acceptMessage({ producer: { kind: 'peer_thread', source: target }, target: source,
         content: 'needle delivery failure', idempotencyKey: 'peer-two' });
       const failureClaim = await mailbox.claimNext({ target: source, consumerId: 'test', leaseMs: 10_000 });
-      expect(await mailbox.markUndeliverable(failureClaim!, 'target closed')).toBe(true);
+      expect(await mailbox.markUndeliverable(failureClaim!, { code: 'session_unavailable', detail: 'target closed' })).toBe(true);
       await mailbox.acceptMessage({ producer: { kind: 'external_client' }, target, content: 'needle ordinary prompt', idempotencyKey: 'external' });
       const get = async (query: string) => (await fetch(`${base}/api/threads/messages?${query}`, {
         headers: authHeaders(server!),
@@ -278,6 +278,11 @@ describe('peer-thread routes', () => {
       expect(second.code).toBe(0);
       expect(new Set([first.data.items[0].message_id, second.data.items[0].message_id])).toEqual(new Set([accepted.message.messageId, failed.message.messageId]));
       expect(second.data.next_cursor).toBeUndefined();
+      const rows = [first.data.items[0], second.data.items[0]];
+      expect(rows.find((row) => row.message_id === failed.message.messageId)).toMatchObject({
+        reason_code: 'session_unavailable', reason_detail: 'target closed', reason: 'target closed',
+      });
+      expect(rows.find((row) => row.message_id === accepted.message.messageId).reason_code).toBeUndefined();
       expect((await get('workspace_id=unrelated')).data.items).toEqual([]);
       expect((await get('peer_session_id=missing')).code).toBe(ErrorCode.VALIDATION_FAILED);
       const badCursor = await get(`session_id=${target.sessionId}&cursor=${encodeURIComponent(first.data.next_cursor)}`);

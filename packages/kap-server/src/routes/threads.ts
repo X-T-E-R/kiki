@@ -114,6 +114,7 @@ export function registerThreadsRoutes(
         target: { ...message.target, ref: toRefWire(message.target.ref) },
         content: message.content, accepted_at: message.acceptedAt, target_seq: message.targetSeq,
         delivery: message.delivery, reason: message.reason,
+        reason_code: message.reasonCode, reason_detail: message.reasonDetail,
       })), next_cursor: page.nextCursor, incomplete: page.incomplete }, req.id));
     } catch (error) { reply.send(mapError(error, req.id)); }
   });

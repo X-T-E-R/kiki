@@ -66,6 +66,7 @@ import {
   type ThreadMessageProducer,
 } from './threadMailboxStore';
 import { ThreadActivityCursorExpiredError, ThreadMailboxBacklogError } from './mailboxErrors';
+import { threadDeliveryReasonCode } from './deliveryFailure';
 import {
   SEND_PEER_THREAD_MESSAGE,
   type IThreadPeerSendCapability,
@@ -258,7 +259,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         if (input.peerSessionId !== undefined && ![source, target].some((side) => side.ref.sessionId === input.peerSessionId)) continue;
         items.push({ messageId: message.messageId, source: { kind: 'thread', thread: source }, target,
           content: message.content, acceptedAt: message.acceptedAt, targetSeq: message.targetSeq,
-          delivery: record.delivery, reason: record.reason });
+          delivery: record.delivery, reason: record.reason, reasonDetail: record.reason,
+          reasonCode: record.delivery === 'undeliverable' ? record.reasonCode ?? 'delivery_failed' : undefined });
       }
       if (!hasMore) break;
       before = page.nextBefore;
@@ -887,7 +889,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     error: unknown,
   ): Promise<SendThreadMessageResult['delivery']> {
     const reason = error instanceof Error ? error.message : String(error);
-    const changed = await this.mailbox.markUndeliverable(claim, reason, {
+    const changed = await this.mailbox.markUndeliverable(claim, { code: threadDeliveryReasonCode(error), detail: reason }, {
       requestId: threadMailboxClaimRequestId('thread-undeliverable', claim),
       signal: this.mailboxController.signal,
     });
