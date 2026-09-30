@@ -9,6 +9,7 @@ import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 
 import { IAgentProfileService, type Scope } from '@kiki/agent-core-v2';
 import { IAgentToolRegistryService } from '@kiki/agent-core-v2/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '@kiki/agent-core-v2/agent/toolPolicy/toolPolicy';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { IAgentStateService } from '@kiki/agent-core-v2/agent/state/agentState';
 import { turnKey } from '@kiki/agent-core-v2/agent/loop/turnOps';
@@ -73,11 +74,12 @@ export class ContextProcedureHost {
   async catalog(seat: McpSeat): Promise<ContextCatalog> {
     return this.withAgent(seat, async (agent) => {
       const binding = agent.accessor.get(IAgentProfileService).data();
+      const policy = agent.accessor.get(IAgentToolPolicyService);
       const registry = agent.accessor.get(IAgentToolRegistryService);
       return {
         delegation: binding.allowKikiSubagents === true,
         tools: contextProcedureTable.flatMap((procedure) => {
-          if (!binding.kikiContext?.includes(procedure.group)) return [];
+          if (!binding.kikiContext?.includes(procedure.group) || !policy.isToolActive(procedure.nativeName)) return [];
           const tool = registry.resolve(procedure.nativeName);
           return tool === undefined ? [] : [{
             name: procedure.name,
@@ -96,6 +98,9 @@ export class ContextProcedureHost {
       const procedure = contextProcedureTable.find((entry) => entry.name === input.name)!;
       const binding = agent.accessor.get(IAgentProfileService).data();
       if (!binding.kikiContext?.includes(procedure.group)) throw new Error('Kiki context tool group is disabled');
+      if (!agent.accessor.get(IAgentToolPolicyService).isToolActive(procedure.nativeName)) {
+        return { output: `Tool "${procedure.nativeName}" is disabled by the active tool policy`, isError: true };
+      }
       const registry = agent.accessor.get(IAgentToolRegistryService);
       if (registry.resolve(procedure.nativeName) === undefined) throw new Error('Kiki context tool is disabled by the active tool policy');
       const executor = agent.accessor.get(IAgentToolExecutorService);

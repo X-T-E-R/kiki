@@ -872,9 +872,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
       agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
-      activeToolNames: [],
-      toolAllowPolicies: undefined,
-      disallowedTools: [],
+      activeToolNames: profile.tools,
+      toolAllowPolicies: profile.toolAllowPolicies,
+      disallowedTools: profile.disallowedTools ?? [],
+      disabledToolGroups: profile.disabledToolGroups,
       subagentPolicy: profile.subagentPolicy,
       subagentDeclaration: profile.subagentDeclaration,
       subagents: profile.subagents,
@@ -891,7 +892,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: profile.name,
       thinkingLevel,
       systemPrompt: assembled.text,
-      disallowedTools: [],
+      disallowedTools: profile.disallowedTools ?? [],
     });
     await this.syncBindingMetadata();
     if (validation.ok) for (const advisory of validation.advisories ?? []) {

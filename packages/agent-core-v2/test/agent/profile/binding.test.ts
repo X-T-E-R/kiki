@@ -5,6 +5,7 @@ import { join, normalize } from 'pathe';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
+import { IMemoryStore } from '#/app/memory/memoryStore';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
@@ -34,7 +35,7 @@ import { IHostClock } from '#/os/interface/hostClock';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
-import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolExecutorService, type ToolExecutionResult } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -57,6 +58,7 @@ import {
   InMemoryWireRecordPersistence,
   agentService,
   appService,
+  appServices,
   createTestAgent,
   homeDirServices,
   hostEnvironmentServices,
@@ -497,6 +499,38 @@ describe('AgentProfileService.bind', () => {
     expect(profile.getSystemPrompt()).toContain('stable prompt');
     expect(profile.data().boundProfile).toEqual(binding);
     expect(profile.data().profileName).toBe(original.name);
+  });
+
+  it.each([
+    { tools: undefined, active: true },
+    { tools: [] as string[], active: false },
+    { tools: ['MemoryRead', 'AgentRun'], active: true },
+  ])('keeps external harness tool activation subject to the authored allow and deny policies: $active', async ({ tools, active }) => {
+    const external = normalizeAgentProfile({ name: 'external-main', executor: 'grok-acp',
+      tools, disallowedTools: ['MemoryWrite'], allowKikiSubagents: true, kikiContext: ['memory'],
+      systemPrompt: () => 'external main' });
+    ctx = createTestAgent({ initialConfig: { memory: { enabled: true, approval: 'auto', budget: 2000, workspaces: {} } } },
+      appServices((reg) => reg.definePartialInstance(IMemoryStore, { get: async () => undefined })),
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(profile.data().activeToolNames).toEqual(tools);
+    expect(ctx.get(IConfigService).get('memory')).toMatchObject({ enabled: true, approval: 'auto' });
+    const policy = ctx.get(IAgentToolPolicyService);
+    expect(policy.isToolActive('MemoryRead')).toBe(active);
+    expect(policy.isToolActive('AgentRun')).toBe(active);
+    expect(policy.isToolActive('MemoryWrite')).toBe(false);
+    const executed: ToolExecutionResult[] = [];
+    for await (const execution of ctx.get(IAgentToolExecutorService).execute([
+      { id: 'external-memory', type: 'function', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_missing' }) },
+    ], { signal: new AbortController().signal, turnId: 0 })) executed.push(execution);
+    expect(executed).toHaveLength(1);
+    expect(executed[0]!.result.isError === true, JSON.stringify(executed[0]!.result)).toBe(!active);
+    if (!active) expect(executed[0]!.result.output).toContain('disabled by the active tool policy');
+    await ctx.get(ISessionToolPolicy).setDisabledTools(['MemoryRead']);
+    expect(policy.isToolActive('MemoryRead')).toBe(false);
   });
 
   it('binds an external profile without persisting descriptor environment secrets', async () => {

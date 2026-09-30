@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -80,6 +80,7 @@ describe('attached harness MCP', () => {
 describe('harness context authority', () => {
   it('gates every context group, executes native approval, rejects spoofing, and deduplicates projected hook context', { timeout: 60_000 }, async () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-context-bridge-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n');
     const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     let lease: Awaited<ReturnType<IHarnessMcpService['acquire']>> | undefined;
     try {
@@ -106,7 +107,7 @@ describe('harness context authority', () => {
       profile.applyBindingSnapshot({ ...binding, kikiContext: ['memory', 'cron', 'hooks'] });
       main.accessor.get(IAgentPermissionModeService).setMode('yolo');
       const read = await context.call({ name: 'memory_read', arguments: { id: 'm_missing' } });
-      expect(read.isError).not.toBe(true);
+      expect(read, JSON.stringify(read)).not.toMatchObject({ isError: true });
       expect(read.output).toContain('missing');
       const mcp = createKikiMcpServer({ endpoint, delegationToken: token, sessionId }, {
         contextCatalog: await context.catalog(), contextCall: context.call,
@@ -121,6 +122,9 @@ describe('harness context authority', () => {
         await mcpClient.close();
         await mcp.close();
       }
+      profile.applyBindingSnapshot({ ...binding, kikiContext: ['memory', 'cron', 'hooks'], disallowedTools: ['MemoryRead'] });
+      expect((await context.catalog()).tools.map((tool) => tool.name)).not.toContain('memory_read');
+      expect((await context.call({ name: 'memory_read', arguments: { id: 'm_missing' } })).isError).toBe(true);
       const forged = await fetch(`${endpoint}/api/klient/delegation/context/call`, {
         method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'memory_read', arguments: { id: 'm_missing' }, session_id: 'another-session', principalId: 'another-owner' }),
