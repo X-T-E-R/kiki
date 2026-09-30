@@ -77,6 +77,7 @@ import {
   splitStreamingText,
   subagentAutoForm,
   Transcript,
+  TranscriptLoading,
   TurnTailLine,
   type TranscriptRowActions,
 } from './Transcript';
@@ -632,7 +633,7 @@ function transcriptState(
   blocks: Block[],
   overrides: Partial<SessionViewState> = {},
 ): SessionViewState {
-  return { ...createViewState('session_test'), loaded: true, blocks, ...overrides };
+  return { ...createViewState('session_test'), loaded: true, transcriptReady: true, blocks, ...overrides };
 }
 
 function noopActions(): Promise<void> {
@@ -772,6 +773,49 @@ describe('timeline annotations', () => {
 });
 
 describe('live and event chrome', () => {
+  it('shows elapsed time after three seconds and cleans up the timer', async () => {
+    vi.useFakeTimers();
+    const { root, container } = makeRoot();
+    try {
+      await act(async () => { root.render(<I18nProvider><TranscriptLoading /></I18nProvider>); });
+      expect(container.textContent).toContain('Loading…');
+      expect(container.textContent).not.toContain('elapsed');
+      await act(async () => { vi.advanceTimersByTime(4000); });
+      expect(container.textContent).toContain('4s elapsed');
+      await act(async () => { root.render(null); });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a loaded shell in the loading state until its transcript arrives', async () => {
+    const container = await renderTranscript([], undefined, { transcriptReady: false });
+    expect(container.querySelector('[data-transcript-loading]')).not.toBeNull();
+    expect(container.textContent).not.toContain('A blank page');
+  });
+
+  it('distinguishes an established empty transcript from loading', async () => {
+    const container = await renderTranscript([]);
+    expect(container.querySelector('[data-transcript-loading]')).toBeNull();
+    expect(container.textContent).toContain('A blank page');
+  });
+
+  it('offers retry for a failed transcript before a baseline arrives', async () => {
+    const retry = vi.fn();
+    const { root, container } = makeRoot();
+    await renderSettled(root, <Transcript
+      state={transcriptState([], { transcriptReady: false, resyncFailed: true,
+        resyncError: { message: 'fixture read failed', retryable: true } })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
+    />);
+    expect(container.textContent).toContain('fixture read failed');
+    const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
+    expect(button).toBeDefined();
+    await act(async () => { click(button!); });
+    expect(retry).toHaveBeenCalledOnce();
+  });
   it('shows a working status instead of the blank-state screen before live blocks arrive', async () => {
     const { root, container } = makeRoot();
     await renderSettled(

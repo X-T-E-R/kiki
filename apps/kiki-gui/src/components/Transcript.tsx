@@ -2765,6 +2765,26 @@ export const TurnTailLine = memo(function TurnTailLine({
   );
 });
 
+export function TranscriptLoading() {
+  const { t } = useI18n();
+  const [startedAt] = useState(Date.now);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => { clearInterval(timer); };
+  }, [startedAt]);
+  return (
+    <div data-transcript-loading role="status" aria-live="polite" className="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-faint">
+      <span aria-hidden="true" className="status-dot-busy h-1 w-1 rounded-full bg-ink-faint" />
+      <span>{elapsedSeconds >= 3
+        ? t('transcript.openingElapsed', { seconds: elapsedSeconds })
+        : t('transcript.opening')}</span>
+    </div>
+  );
+}
+
 export function Transcript({
   state,
   agentId = 'main',
@@ -2808,7 +2828,9 @@ export function Transcript({
   rowActions?: TranscriptRowActions;
 }) {
   const { t } = useI18n();
-  const { blocks, loaded, loadError } = state;
+  const { blocks } = state;
+  const loaded = state.loaded && state.transcriptReady;
+  const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
   // Failed / aborted prompts: send again puts the text back in this session's
   // composer (nothing is rewritten or re-run behind the reader's back); an
@@ -3804,14 +3826,7 @@ export function Transcript({
     );
   }
 
-  if (!loaded) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[13px] text-ink-faint">
-        <span className="status-dot-busy h-2 w-2 rounded-full bg-ink-soft" />
-        {t('transcript.opening')}
-      </div>
-    );
-  }
+  if (!loaded) return <TranscriptLoading />;
 
   if (timelineBlocks.length === 0 && !state.busy) {
     return (

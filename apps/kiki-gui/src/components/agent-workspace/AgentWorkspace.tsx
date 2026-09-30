@@ -737,7 +737,8 @@ function ChildAgentWorkspace({
     // nothing about this agent's rows, and landing before they arrive
     // would spend the one-time initial scroll on an empty list.
     loaded: agentLiveState.loaded,
-    loadError: agentLiveState.loadError ?? sessionState.loadError,
+    loadError: agentLiveState.loadError ?? sessionState.loadError ??
+      (!agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -763,6 +764,7 @@ function ChildAgentWorkspace({
         state: agentState, agentId, onLoadOlder: handleLoadOlder,
         onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
         onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
+        onRetryLoad: controller === null ? undefined : () => { void controller.retryOpen(); },
         visible: transcriptVisible,
       }}
       dock={<div className="space-y-2 pt-2">
