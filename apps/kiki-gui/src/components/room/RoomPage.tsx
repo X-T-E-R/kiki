@@ -421,8 +421,29 @@ function systemLine(entry: Extract<RoomLogEntry, { kind: 'system' }>, t: ReturnT
     case 'member_left': return t('room.threadLeft', { name: typeof data['memberId'] === 'string' ? nameOf(data['memberId']) : '' });
     case 'member_busy': return t('room.threadBusy', { name: typeof data['sessionId'] === 'string' ? nameOf(data['sessionId']) : '' });
     case 'wake_failed': {
-      const text = entry.text.match(/wake (\S+);/u)?.[1];
-      return t('room.system.wakeFailed', { name: text === undefined ? '' : nameOf(text) });
+      const memberId = typeof data['memberId'] === 'string' ? data['memberId'] : entry.text.match(/wake (\S+);/u)?.[1];
+      const name = memberId === undefined ? '' : nameOf(memberId);
+      const reason = typeof data['reason'] === 'string' ? data['reason'] : entry.text;
+      const provider = typeof data['provider'] === 'string' ? data['provider'] : t('room.system.memberModel');
+      const code = data['reason_code'];
+      switch (code) {
+        case 'auth.login_required':
+        case 'auth.token_missing':
+        case 'auth.token_unauthorized':
+        case 'provider.auth_error':
+          return t('room.system.wakeLoginRequired', { name, provider });
+        case 'provider.connection_error':
+          return t('room.system.wakeConnectionFailed', { name, provider });
+        case 'thread.not_found':
+        case 'thread.archived':
+        case 'session.closed':
+        case 'session.init_failed':
+          return t('room.system.wakeSessionUnavailable', { name });
+        case 'workspace.not_found':
+          return t('room.system.wakeWorkspaceUnavailable', { name });
+        default:
+          return t('room.system.wakeFailed', { name, reason });
+      }
     }
     default: return entry.text;
   }

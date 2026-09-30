@@ -7,7 +7,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
 import { BOT_SECTION } from '#/app/bot/configSection';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, toErrorPayload } from '#/errors';
 import { IPersonaStore } from '#/app/persona/personaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
@@ -826,10 +826,15 @@ export class RoomService extends Disposable implements IRoomService {
       } catch (error) {
         await this.withRoomLock(roomId, async () => {
           if (work.cancelled || this.runtimes.get(roomId) !== runtime) return;
-          await this.appendSystem(work.roomId, 'wake_failed', `Unable to wake ${roomMemberId(work.member)}; the wake remains retryable.`, {
+          const failure = toErrorPayload(error);
+          await this.appendSystem(work.roomId, 'wake_failed', `Unable to wake ${roomMemberId(work.member)}: ${failure.message}`, {
+            memberId: roomMemberId(work.member),
             sessionId: work.member.sessionId,
             sourceMessageId: work.sourceMessageId,
-            reason: error instanceof Error ? error.message : String(error),
+            reason_code: failure.code,
+            reason: failure.message,
+            retryable: failure.retryable,
+            provider: failure.details?.['provider'],
           });
         }).catch(() => undefined);
       } finally {

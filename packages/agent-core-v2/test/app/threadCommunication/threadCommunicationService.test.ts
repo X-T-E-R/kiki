@@ -468,6 +468,37 @@ describe('ThreadCommunicationService', () => {
     await service.shutdown();
   });
 
+  it('reads legacy string-only failed receipts with a stable delivery failure code', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const target = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    await ix.get(IAtomicDocumentStore).set('thread-communication', 'legacy-room-message', {
+      target: { target, roomId: 'room-test' }, status: 'failed', error: 'Legacy prompt failure',
+    });
+    await expect(service.waitRoomDelivery({ target, messageId: 'legacy-room-message' })).rejects.toMatchObject({ code: ErrorCodes.THREAD_DELIVERY_FAILED, message: 'Legacy prompt failure' });
+    await service.shutdown();
+  });
+
+  it('preserves the failed prompt code, details and cause in live and persisted room receipts', async () => {
+    let complete!: (value: Awaited<PromptHandle['completion']>) => void;
+    const completion = new Promise<Awaited<PromptHandle['completion']>>((resolve) => { complete = resolve; });
+    promptEnqueue.mockImplementationOnce(async (input) => ({
+      id: input.id!, userMessageId: input.id!, createdAt: new Date().toISOString(),
+      state: 'running', message: input.message, launched: Promise.resolve(undefined), completion,
+    }));
+    const service = ix.get(IThreadCommunicationService);
+    const target = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    const receipt = await service.sendRoomMessage({ target, roomId: 'room-test', content: 'Review', idempotencyKey: 'failed-room', targeted: true });
+    const waiting = service.waitRoomDelivery({ target, messageId: receipt.messageId });
+    const failure = new Error2(ErrorCodes.AUTH_LOGIN_REQUIRED, 'Model provider requires login.', {
+      details: { provider: 'example-provider' }, cause: new Error('No token'),
+    });
+    const observed = expect(waiting).rejects.toMatchObject({ code: failure.code, message: failure.message, details: failure.details, cause: { message: 'No token' } });
+    complete({ promptId: receipt.messageId, state: 'failed', result: { type: 'failed', steps: 0, error: failure } });
+    await observed;
+    await expect(service.waitRoomDelivery({ target, messageId: receipt.messageId })).rejects.toMatchObject({ code: failure.code, message: failure.message, details: failure.details, cause: { message: 'No token' } });
+    await service.shutdown();
+  });
+
   it('waits for actual room turn completion beyond the receipt retention duration', async () => {
     globalEnabled = false;
     let complete!: (value: Awaited<PromptHandle['completion']>) => void;

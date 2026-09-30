@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { onTestFinished, describe, expect, it } from 'vitest';
 import { TestInstantiationService } from '#/_base/di/test';
+import { Error2, ErrorCodes } from '#/errors';
 
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAppendLogStore, type AppendLogWrite } from '#/persistence/interface/appendLogStore';
@@ -102,7 +103,7 @@ function fakeMeta(id: string): ISessionMetadata {
   };
 }
 
-function setup(enabled = true): {
+function setup(enabled = true, wakeError?: unknown): {
   service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
@@ -174,6 +175,7 @@ function setup(enabled = true): {
       return { messageId: id, targetSeq: sequence, acceptedAt: sequence, deduplicated: false, delivery: 'pending' as const };
     },
     waitRoomDelivery: async (input: { messageId: string }) => {
+      if (wakeError !== undefined) throw wakeError;
       if (released.delete(input.messageId)) return;
       await new Promise<void>((resolve) => waiters.set(input.messageId, resolve));
     },
@@ -233,6 +235,26 @@ async function eventually(predicate: () => boolean): Promise<void> {
 }
 
 describe('RoomService', () => {
+  it.each([
+    [new Error2(ErrorCodes.AUTH_LOGIN_REQUIRED, 'Sign in to the model provider.', { details: { provider: 'example-provider' } }), 'auth.login_required', false],
+    [new Error('Unexpected delivery failure'), 'internal', false],
+    [new Error2(ErrorCodes.PROVIDER_CONNECTION_ERROR, 'Provider offline'), 'provider.connection_error', true],
+  ] as const)('records actionable wake failure metadata without advancing the cursor (%s)', async (error, code, retryable) => {
+    const { service, room } = setup(true, error);
+    const created = await room;
+    const source = await service.postUserMessage(created.id, { text: 'Please review this release' });
+    await service.drain(created.id);
+    const entries = (await service.log(created.id)).entries;
+    const failure = entries.find((entry) => entry.kind === 'system' && entry.event === 'wake_failed');
+    expect(failure).toMatchObject({
+      text: expect.stringContaining(error.message),
+      data: { memberId: 'alpha', sourceMessageId: source.id, reason_code: code, reason: error.message, retryable },
+    });
+    if (code === 'auth.login_required') expect(failure).toMatchObject({ data: { provider: 'example-provider' } });
+    expect((await service.get(created.id))?.cursors).toEqual(created.cursors);
+    expect((await service.get(created.id))?.pendingWakes).toHaveLength(1);
+  });
+
   it('wakes the thread host for a message that mentions no one and keeps other threads for their next wake', async () => {
     const { service, calls, release, room: personas } = setup();
     await personas;

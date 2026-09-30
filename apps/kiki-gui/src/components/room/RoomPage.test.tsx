@@ -156,6 +156,38 @@ describe('room mention helpers', () => {
 });
 
 describe('RoomPage', () => {
+  it.each([
+    ['auth.login_required', '模型登录'],
+    ['provider.connection_error', '检查网络'],
+    ['session.init_failed', '成员会话不可用'],
+    ['workspace.not_found', '检查房间工作区路径'],
+    ['unknown.failure', 'Original diagnostic'],
+  ])('translates wake failures by reason_code with a recovery action (%s)', async (code, expected) => {
+    rooms.log.mockResolvedValue({ entries: [{
+      id: 'failure-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
+      text: 'Diagnostic text is not a routing contract',
+      data: { memberId: 'lin-lan', reason_code: code, provider: 'example-provider', reason: 'Original diagnostic' },
+    }] });
+    const container = await renderRoom();
+    const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
+    expect(line).toContain('林岚');
+    expect(line).toContain(expected);
+    expect(line).not.toContain('稍后会重试');
+    if (code.startsWith('auth.') || code === 'provider.connection_error') expect(line).toContain('example-provider');
+  });
+
+  it('keeps the reason from legacy wake failures without promising automatic retries', async () => {
+    rooms.log.mockResolvedValue({ entries: [{
+      id: 'legacy-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
+      text: 'Unable to wake lin-lan; the wake remains retryable.', data: { reason: 'Legacy failure detail' },
+    }] });
+    const container = await renderRoom();
+    const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
+    expect(line).toContain('林岚');
+    expect(line).toContain('Legacy failure detail');
+    expect(line).not.toContain('稍后会重试');
+  });
+
   it('states the routing rule in the placeholder and completes @ with 所有人 first (acceptance 5)', async () => {
     const container = await renderRoom();
     const input = container.querySelector<HTMLTextAreaElement>('[data-room-input]')!;

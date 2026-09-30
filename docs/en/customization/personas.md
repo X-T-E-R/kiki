@@ -71,6 +71,8 @@ Thread members default to `queueWhenBusy: true`: room input waits for their curr
 
 Renaming, changing the host, muting, and workspace classification never rewrite member system prompts or permissions. Removing a thread leaves a system record in its session and preserves the room log; it does not archive the original thread. Creation requires two to six members, but leaving can reduce a room below two. Free discussion and room-scoped `HistorySearch` are not part of this release.
 
+If a member cannot wake, the room shows the failure and a recovery action instead of promising an automatic retry. For a model login failure, sign in under **Settings → Models**, or open the member's conversation and select an available model. Existing member sessions retain their bound model; editing the persona card does not change it. After fixing the problem, send another room message and mention the failed member if it is not the host. **Continue** resumes a paused room; it does not retry an unpaused failed wake.
+
 ## API entry points
 
 The SDK exposes `global.personas`, `global.bots`, and `global.rooms`; HTTP clients also have `rest.personas`, `rest.bots`, and `rest.rooms`. Lists return arrays directly. Session creation accepts `persona` and `delivery`; session reads return `agent_config.persona = { id, name, avatarUrl? }` and `delivery`.

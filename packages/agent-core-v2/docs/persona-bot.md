@@ -26,6 +26,12 @@ Thread wakes use the persistent mailbox and ordinary prompt queue, on a per-thre
 
 `peer_log` includes room mailbox wake receipts as `{source: {kind: 'room', roomId}}`, ordered by the same `(acceptedAt, messageId)` keyset as peer sends and attributed only to the recipient session/workspace. These are catch-up deliveries, not individual room log entries. Raw room logs use forward `afterId` cursors and room ownership rather than recipient ownership, so merging them into this stream would duplicate broadcasts and break pair/deletion/filter semantics. GUI communication views should link the room reference to its room page for the complete log; pair-filtered history excludes room receipts. The mailbox index migration marker is v2; backfill only finds retained records, so previously pruned room receipts cannot be reconstructed from the distinct raw log.
 
+## Wake failure recovery
+
+A room prompt failure preserves the original turn error in its completion receipt, including the error code, details, and cause; persisted receipts retain the same error payload across restart. Legacy string-only receipts remain readable as `thread.delivery_failed`. The `wake_failed` room system entry exposes `data.memberId`, `sessionId`, `sourceMessageId`, `reason_code` (the engine error code), `reason`, `retryable`, and optional `provider`. GUI recovery text branches on `reason_code`, not English diagnostic text. Unknown codes display the diagnostic and a session/model check action.
+
+`ModelOAuthTokenAdapter` classifies token failures for all prompt callers, including persona sessions and Bot home sessions: missing/rejected OAuth tokens become `auth.login_required`, while OAuth connection and retryable refresh failures become `provider.connection_error`; both keep provider identity and the original cause. Unknown and already-coded failures pass through unchanged. A failed wake does not advance its catch-up cursor. There is no automatic retry promise: after fixing authentication, connectivity, or the member session, send another room message (mention the failed member when it is not the host). Existing persona bindings remain frozen, so change the model in the member session rather than expecting a card edit to rebind it. **Continue** is the paused/budget recovery action, not a retry for an unpaused failed wake.
+
 ## Verification
 
 Claim-matched coverage lives in:

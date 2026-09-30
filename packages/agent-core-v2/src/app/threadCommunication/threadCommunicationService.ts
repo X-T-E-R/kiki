@@ -19,7 +19,7 @@ import {
   type PromptOrigin,
 } from '#/agent/contextMemory/types';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
-import { Error2, ErrorCodes, isError2 } from '#/errors';
+import { Error2, ErrorCodes, fromErrorPayload, isError2, toErrorPayload, type ErrorPayload } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
@@ -134,6 +134,7 @@ interface PersistedRoomDeliveryReceipt {
   readonly target: RoomDeliveryTarget;
   readonly status: 'pending' | 'completed' | 'failed';
   readonly error?: string;
+  readonly errorPayload?: ErrorPayload;
 }
 
 interface RoomDeliveryReceipt {
@@ -395,7 +396,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let target = this.roomDeliveryTargets.get(input.messageId);
     const persisted = await this.readRoomDeliveryReceipt(input.messageId);
     if (persisted?.status === 'completed') return;
-    if (persisted?.status === 'failed') throw new Error(persisted.error ?? 'Room delivery failed.');
+    if (persisted?.status === 'failed') {
+      throw persisted.errorPayload === undefined
+        ? new Error2(ErrorCodes.THREAD_DELIVERY_FAILED, persisted.error ?? 'Room delivery failed.')
+        : fromErrorPayload(persisted.errorPayload);
+    }
     if (target === undefined) {
       if (persisted === undefined) return;
       target = persisted.target;
@@ -763,6 +768,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         target,
         status: 'failed',
         error: error instanceof Error ? error.message : String(error),
+        errorPayload: toErrorPayload(error),
       }).catch(() => {});
     }
     receipt?.reject(error);
@@ -771,7 +777,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private trackRoomPromptOutcome(messageId: string, handle: PromptHandle): void {
     void handle.completion.then((completion) => {
       if (completion.state === 'completed') this.resolveRoomDelivery(messageId);
-      else this.rejectRoomDelivery(messageId, new Error(`Room prompt ${completion.state}.`));
+      else if (completion.result?.type === 'failed') {
+        this.rejectRoomDelivery(messageId, completion.result.error);
+      } else {
+        this.rejectRoomDelivery(messageId, new Error2(
+          completion.state === 'cancelled' ? ErrorCodes.EXECUTOR_CANCELLED : ErrorCodes.THREAD_DELIVERY_FAILED,
+          `Room prompt ${completion.state}.`,
+        ));
+      }
     }, (error: unknown) => {
       this.rejectRoomDelivery(messageId, error);
     });
