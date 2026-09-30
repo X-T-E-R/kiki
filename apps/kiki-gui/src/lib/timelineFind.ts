@@ -12,6 +12,8 @@
  * registry) and the tiny host registry the app-level shortcut opens.
  */
 
+import { matchesShortcutAction } from './shortcuts';
+
 export interface FindOptions {
   readonly caseSensitive: boolean;
   readonly wholeWord: boolean;
@@ -291,8 +293,9 @@ export function handleFindShortcut(
   handlers: { readonly overlayOpen: () => boolean; readonly focusSettingsSearch: () => void },
 ): boolean {
   const find = isFindShortcut(event);
-  const stepKey = event.key === 'F3' && !event.ctrlKey && !event.metaKey && !event.altKey;
-  if ((!find && !stepKey) || route === 'other' || handlers.overlayOpen()) return false;
+  const next = matchesShortcutAction(event, 'find-next');
+  const previous = !next && matchesShortcutAction(event, 'find-previous');
+  if ((!find && !next && !previous) || route === 'other' || handlers.overlayOpen()) return false;
   if (route === 'settings') {
     if (!find) return false;
     event.preventDefault();
@@ -306,7 +309,7 @@ export function handleFindShortcut(
     ? document.activeElement
     : null;
   if (find) host.open({ prefill: selectionPrefill(event.target), returnFocus: focused });
-  else host.step(event.shiftKey ? -1 : 1, focused);
+  else host.step(previous ? -1 : 1, focused);
   return true;
 }
 
@@ -315,9 +318,9 @@ export function attrSelector(name: string, value: string): string {
   return `[${name}="${value.replace(/["\\]/g, '\\$&')}"]`;
 }
 
-/** Ctrl+F / ⌘F (no Shift/Alt). */
+/** The saved "find" chord (Ctrl+F / ⌘F unless remapped). */
 export function isFindShortcut(event: KeyboardEvent): boolean {
-  return (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f';
+  return matchesShortcutAction(event, 'find');
 }
 
 /** App-level request to open the quick switcher's content search on a query. */

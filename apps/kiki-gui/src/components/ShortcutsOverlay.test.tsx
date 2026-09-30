@@ -36,3 +36,21 @@ describe('shortcutsGroups runtime honesty', () => {
     ]);
   });
 });
+
+describe('shortcutsGroups follows the saved bindings', () => {
+  it('prints a remapped chord and drops a disabled action', async () => {
+    const { shortcutPreferencesSchema } = await import('@kiki/session-core/settings/shortcuts');
+    const { applyShortcutPreferences, resetShortcutRuntime, shortcutState } = await import('../lib/shortcuts');
+    resetShortcutRuntime('windows');
+    applyShortcutPreferences(shortcutPreferencesSchema.parse({
+      version: 1,
+      overrides: { windows: { switcher: [{ key: 'p', modifier: 'mod', shift: true }], approve: [] } },
+    }));
+    const groups = shortcutsGroups('enter', false, shortcutState());
+    const all = groups.flatMap((group) => group.rows);
+    expect(all.find((entry) => entry.labelKey === 'shortcuts.switcher')?.keys).toEqual(['Ctrl', 'Shift', 'P']);
+    expect(all.some((entry) => entry.labelKey === 'shortcuts.approve')).toBe(false);
+    expect(all.some((entry) => entry.labelKey === 'shortcuts.reject')).toBe(true);
+    resetShortcutRuntime('windows');
+  });
+});

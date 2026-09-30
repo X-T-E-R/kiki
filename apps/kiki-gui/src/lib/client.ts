@@ -1677,6 +1677,27 @@ export class KikiClient {
     return this.run(this.klient.global.auth.cancelLogin(query.provider));
   }
 
+  /** Saved shortcut overrides plus the bindings and conflicts they resolve to on `platform`. */
+  readShortcuts(platform: import('@kiki/protocol').ShortcutPlatform): Promise<import('@kiki/protocol').ShortcutResponse> {
+    return this.run(() => this.rest.shortcuts.read(platform));
+  }
+
+  /** Replace every platform's overrides; a conflicting set is rejected (40001) without writing. */
+  writeShortcuts(
+    platform: import('@kiki/protocol').ShortcutPlatform,
+    preferences: import('@kiki/protocol').ShortcutPreferences,
+  ): Promise<import('@kiki/protocol').ShortcutResponse> {
+    return this.run(() => this.rest.shortcuts.write(platform, preferences));
+  }
+
+  /** Back to the shipped defaults: one action, one platform, or (`{}`) everything. */
+  resetShortcuts(
+    platform: import('@kiki/protocol').ShortcutPlatform,
+    target: { platform?: import('@kiki/protocol').ShortcutPlatform; action?: import('@kiki/protocol').ShortcutAction },
+  ): Promise<import('@kiki/protocol').ShortcutResponse> {
+    return this.run(() => this.rest.shortcuts.reset(platform, target));
+  }
+
   /** Account sign-in methods (Kimi Code is one of several) and whether each is signed in. */
   listOAuthMethods(): Promise<readonly OAuthMethodStatus[]> {
     return this.run(this.klient.global.auth.methods());

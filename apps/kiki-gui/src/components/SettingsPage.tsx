@@ -34,6 +34,7 @@ import { PluginsSection } from './settings/PluginsSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SessionsSection } from './settings/SessionsSection';
+import { ShortcutsSection } from './settings/ShortcutsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
@@ -263,6 +264,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const pane = active === null ? null
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
+    : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
     : active === 'identity' ? <IdentitySection />

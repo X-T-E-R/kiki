@@ -82,6 +82,7 @@ import {
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { pushToast } from '../lib/toasts';
+import { matchesShortcutAction } from '../lib/shortcuts';
 import { useConnection } from '../state/connection';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
@@ -1655,21 +1656,26 @@ export function Composer({
       onQueueEditCancel?.();
       return;
     }
-    // ⌘/Ctrl+Shift+M opens the Mode menu from the keyboard.
-    if (
-      (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey &&
-      event.key.toLowerCase() === 'm' && variant !== 'subagent'
-    ) {
+    // The Mode menu and composer-local undo/redo (the controlled value defeats
+    // the native textarea undo stack, so these walk our snapshot lane) use
+    // the saved chords: ⌘/Ctrl+Shift+M and ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z by default.
+    const chordEvent = {
+      key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey,
+      altKey: event.altKey, isComposing: event.nativeEvent.isComposing, target: event.target,
+    };
+    if (variant !== 'subagent' && matchesShortcutAction(chordEvent, 'composer-mode')) {
       event.preventDefault();
       setAddView('mode');
       return;
     }
-    // Composer-local undo/redo: the controlled value defeats the native
-    // textarea undo stack, so these walk our snapshot lane instead.
-    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+    if (matchesShortcutAction(chordEvent, 'composer-redo')) {
       event.preventDefault();
-      if (event.shiftKey) redoEdit();
-      else undoEdit();
+      redoEdit();
+      return;
+    }
+    if (matchesShortcutAction(chordEvent, 'composer-undo')) {
+      event.preventDefault();
+      undoEdit();
       return;
     }
     // History recall lives strictly below the menu branches: an open slash or

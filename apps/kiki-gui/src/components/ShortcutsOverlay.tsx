@@ -1,10 +1,11 @@
 /**
  * ShortcutsOverlay — the Ctrl+/ (or `?`) keyboard map, built on the shared
- * Dialog primitive. Rows reflect the bindings actually wired in code:
- * App.tsx global keys, Composer's textarea keys, SessionView's Esc/y/n, and
- * TerminalPanel's Ctrl+Shift+C/V; the desktop show/hide hotkey only appears
- * in the desktop runtime, and browser-reserved combos (Ctrl+N, Ctrl+Tab —
- * App.tsx never registers them there) carry a "desktop only" badge.
+ * Dialog primitive. Remappable rows print the saved bindings (lib/shortcuts),
+ * so a chord changed in Settings shows here at once; fixed interaction keys
+ * (send/newline, layered Esc, `/` and `@`) keep their own rows. The desktop
+ * show/hide hotkey only appears in the desktop runtime, and browser-reserved
+ * combos (App.tsx never registers them there) carry a "desktop only" badge.
+ * A disabled action is left out.
  */
 
 import { useSyncExternalStore } from 'react';
@@ -16,8 +17,11 @@ import {
   subscribeSettings,
   type SendShortcut,
 } from '@kiki/session-core/settings';
+import type { ShortcutAction } from '@kiki/session-core/settings/shortcuts';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import { chordKeys, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
+import { useGuardedNavigate } from './dirtyGuard';
 import { Dialog } from './Dialog';
 
 interface ShortcutRow {
@@ -41,20 +45,34 @@ function newlineKeys(shortcut: SendShortcut): readonly string[] {
   return shortcut === 'cmd-enter' ? ['Enter'] : ['Shift', 'Enter'];
 }
 
-/** Exported for tests: the runtime- and preference-aware keyboard map. */
-export function shortcutsGroups(shortcut: SendShortcut, desktop: boolean): readonly ShortcutGroup[] {
+/** Exported for tests: the runtime-, preference- and binding-aware keyboard map. */
+export function shortcutsGroups(
+  shortcut: SendShortcut,
+  desktop: boolean,
+  current: ShortcutState = shortcutState(),
+): readonly ShortcutGroup[] {
+  // One row per saved chord of an action; a disabled action has none.
+  const rows = (action: ShortcutAction): ShortcutRow[] => {
+    const definition = shortcutDefinition(action);
+    if (definition === undefined) return [];
+    return current.bindings[action].map((chord) => ({
+      keys: chordKeys(chord, current.platform),
+      labelKey: definition.labelKey as I18nKey,
+      ...(definition.desktopOnly ? { desktopOnly: true } : {}),
+    }));
+  };
   const globalRows: ShortcutRow[] = [
-    { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession', desktopOnly: true },
-    { keys: ['Ctrl', 'K'], labelKey: 'shortcuts.switcher' },
-    { keys: ['Ctrl', 'Tab'], labelKey: 'shortcuts.nextSession', desktopOnly: true },
-    { keys: ['Ctrl', ','], labelKey: 'shortcuts.settings' },
-    { keys: ['Ctrl', '/'], labelKey: 'shortcuts.thisPanel' },
-    { keys: ['?'], labelKey: 'shortcuts.thisPanel' },
+    ...rows('new-session'),
+    ...rows('switcher'),
+    ...rows('next-session'),
+    ...rows('settings'),
+    ...rows('shortcuts'),
+    ...rows('shortcuts-help'),
   ];
   if (desktop) {
     globalRows.push({ keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' });
   }
-  return [
+  const groups: ShortcutGroup[] = [
     { titleKey: 'shortcuts.group.global', rows: globalRows },
     {
       titleKey: 'shortcuts.group.session',
@@ -69,29 +87,27 @@ export function shortcutsGroups(shortcut: SendShortcut, desktop: boolean): reado
         { keys: ['Esc'], labelKey: 'shortcuts.escAbort' },
         { keys: ['/'], labelKey: 'shortcuts.slashMenu' },
         { keys: ['@'], labelKey: 'shortcuts.fileMention' },
-        { keys: ['Ctrl', 'F'], labelKey: 'shortcuts.find' },
-        { keys: ['F3'], labelKey: 'shortcuts.findNext' },
-        { keys: ['Shift', 'F3'], labelKey: 'shortcuts.findPrevious' },
+        ...rows('find'),
+        ...rows('find-next'),
+        ...rows('find-previous'),
+        ...rows('composer-mode'),
+        ...rows('composer-undo'),
+        ...rows('composer-redo'),
       ],
     },
-    {
-      titleKey: 'shortcuts.group.approvals',
-      rows: [
-        { keys: ['y'], labelKey: 'shortcuts.approve' },
-        { keys: ['n'], labelKey: 'shortcuts.reject' },
-      ],
-    },
+    { titleKey: 'shortcuts.group.approvals', rows: [...rows('approve'), ...rows('reject')] },
     {
       titleKey: 'shortcuts.group.terminal',
       rows: [
-        { keys: ['Ctrl', '`'], labelKey: 'shortcuts.termToggle' },
-        { keys: ['Ctrl', 'Shift', 'C'], labelKey: 'shortcuts.termCopy' },
-        { keys: ['Ctrl', 'Shift', 'V'], labelKey: 'shortcuts.termPaste' },
+        ...rows('terminal-toggle'),
+        ...rows('terminal-copy'),
+        ...rows('terminal-paste'),
         { keys: ['Esc'], labelKey: 'shortcuts.termEsc' },
         { keys: ['Esc'], labelKey: 'shortcuts.termClose' },
       ],
     },
   ];
+  return groups.filter((group) => group.rows.length > 0);
 }
 
 function Kbd({ label }: { label: string }) {
@@ -105,7 +121,9 @@ function Kbd({ label }: { label: string }) {
 export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
   const host = useHost();
   const { t } = useI18n();
+  const navigate = useGuardedNavigate();
   const desktop = host.kind === 'tauri';
+  const current = useShortcutState();
   const sendShortcut = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -120,7 +138,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
     >
       <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
-        {shortcutsGroups(sendShortcut, desktop).map((group) => (
+        {shortcutsGroups(sendShortcut, desktop, current).map((group) => (
           <section key={group.titleKey}>
             <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
               {t(group.titleKey)}
@@ -150,9 +168,19 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
           </section>
         ))}
       </div>
-      <p className="mt-3 border-t border-hairline pt-2 text-center text-[10.5px] text-ink-faint">
-        {t('shortcuts.hint')}
-      </p>
+      <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline pt-2 text-[10.5px] text-ink-faint">
+        <span>{current.bindings.shortcuts[0] === undefined
+          ? t('shortcuts.hintNoChord')
+          : t('shortcuts.hintChord', { keys: chordKeys(current.bindings.shortcuts[0], current.platform).join('+') })}</span>
+        <button
+          type="button"
+          data-shortcuts-customize
+          onClick={() => { onClose(); navigate('/settings/general#st-card-shortcuts'); }}
+          className="shrink-0 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-selected-ink transition-colors hover:bg-selected"
+        >
+          {t('shortcuts.customize')}
+        </button>
+      </div>
     </Dialog>
   );
 }

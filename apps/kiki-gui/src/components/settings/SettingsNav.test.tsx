@@ -80,7 +80,7 @@ describe('SettingsNav grouped tree', () => {
       .toEqual(['App', 'Models & agents', 'How work runs', 'Capabilities', 'System']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'appearance', 'connection']);
+    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'connection']);
     expect(leaves(1)).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(leaves(2)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);

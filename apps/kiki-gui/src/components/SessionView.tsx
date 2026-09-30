@@ -121,6 +121,7 @@ import { codexRefusesKikiTools, harnessDenies, useSessionHarness, type SessionHa
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
+import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import {
@@ -148,10 +149,8 @@ export function withoutQueuedAttachment(content: readonly MessageContent[], atta
   });
 }
 
-/** VS Code's terminal binding, and the only keyboard path to the panel now
- * that its toggle lives in the header's overflow menu. */
-export const TERMINAL_SHORTCUT_LABEL = 'Ctrl+`';
-
+/** The saved terminal chord (VS Code's Ctrl+` unless remapped), and the only
+ * keyboard path to the panel now that its toggle lives in the header menu. */
 export function isTerminalShortcut(event: {
   key: string;
   ctrlKey: boolean;
@@ -159,7 +158,7 @@ export function isTerminalShortcut(event: {
   altKey: boolean;
   shiftKey: boolean;
 }): boolean {
-  return event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === '`';
+  return matchesShortcutAction(event, 'terminal-toggle');
 }
 
 function MoreIcon({ className = '' }: { className?: string }) {
@@ -539,6 +538,7 @@ export function SessionActionsMenu({
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const terminalChord = actionChordText('terminal-toggle', useShortcutState());
 
   useEffect(() => {
     if (!open) return;
@@ -615,7 +615,7 @@ export function SessionActionsMenu({
               }}
             >
               <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
-              <span className="text-[12px] text-ink-faint">{TERMINAL_SHORTCUT_LABEL}</span>
+              {terminalChord !== undefined ? <span className="text-[12px] text-ink-faint">{terminalChord}</span> : null}
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
@@ -972,14 +972,38 @@ export function isApprovalShortcutAmbiguous(
   return cards.filter((card) => card.pending && card.visible).length > 1;
 }
 
-/** y/n must not fire while a dialog, overlay, or popover owns the keyboard. */
+/** Which saved approval chord (`y` / `n` unless remapped) the press matches. */
+export function approvalShortcutDecision(event: {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+}): 'approved' | 'rejected' | null {
+  const keyEvent = {
+    key: event.key,
+    ctrlKey: event.ctrlKey ?? false,
+    metaKey: event.metaKey ?? false,
+    shiftKey: event.shiftKey ?? false,
+    altKey: event.altKey ?? false,
+  };
+  if (matchesShortcutAction(keyEvent, 'approve')) return 'approved';
+  if (matchesShortcutAction(keyEvent, 'reject')) return 'rejected';
+  return null;
+}
+
+/** Approval chords must not fire while a dialog, overlay, or popover owns the keyboard. */
 export function shouldHandleApprovalShortcut(input: {
   key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
   overlayOpen: boolean;
   inEditable: boolean;
 }): boolean {
   if (input.overlayOpen || input.inEditable) return false;
-  return input.key === 'y' || input.key === 'n';
+  return approvalShortcutDecision(input) !== null;
 }
 
 export function collectApprovalShortcutCards(
@@ -1847,6 +1871,10 @@ export function SessionView({
       if (
         !shouldHandleApprovalShortcut({
           key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
           overlayOpen: anyOverlayOpen(),
           inEditable: false,
         })
@@ -1869,7 +1897,7 @@ export function SessionView({
       }
       event.preventDefault();
       void controller
-        .resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected')
+        .resolveApproval(approvalId, approvalShortcutDecision(event) ?? 'rejected')
         .catch((error: unknown) => {
           pushToast({
             tone: 'error',

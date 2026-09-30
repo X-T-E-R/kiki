@@ -94,6 +94,7 @@ import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plug
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
 import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
+import { handleGuiEntries } from './fixture-gui-entries.mjs';
 import { handleSpaces, spaceConfig, spaceConfigWrite, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
 
@@ -599,6 +600,7 @@ class FixtureServer {
     this.lastFileUpload = null;
     this.lastFsWrite = null;
     this.oauthOverride = null;
+    this.shortcutPreferences = null;
     this.providerHealth = null;
     this.executorLogin = null;
     this.wsInbound = [];
@@ -1607,6 +1609,8 @@ class FixtureServer {
     if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body)) return;
     // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
     if ((path.startsWith('/homes') || path === '/config/overrides:remove') && handleSpaces(this, res, path, method, body)) return;
+    // GUI entry contracts (scripts/fixture-gui-entries.mjs): shortcuts, models.dev directory, account quota.
+    if (handleGuiEntries(this, res, path, query, body, method)) return;
     const sessions = [...this.sessions.values()];
     // Action suffixes bind tighter than the tail: `/sessions/{id}:undo`,
     // mirroring kap-server's parseActionSuffix (session ids never contain

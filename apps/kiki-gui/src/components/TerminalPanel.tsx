@@ -9,8 +9,9 @@
  *
  * The panel renders wire state only; all lifecycle logic lives in
  * `state/terminalManager.ts`. Keyboard norms: full input goes straight to the
- * PTY, Ctrl+Shift+C copies the selection, Ctrl+Shift+V pastes from the
- * clipboard, and plain Ctrl+C still sends ETX when nothing is selected.
+ * PTY, the saved copy/paste chords (Ctrl+Shift+C / Ctrl+Shift+V by default)
+ * copy the selection and paste from the clipboard, and plain Ctrl+C still
+ * sends ETX when nothing is selected.
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -26,6 +27,7 @@ import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { matchesShortcutAction } from '../lib/shortcuts';
 import { runToastAction } from '../lib/toasts';
 import { onThemeChange } from '../lib/theme';
 import type { TerminalConnectionStatus as WsStatus } from '@kiki/klient';
@@ -118,25 +120,25 @@ function TerminalCanvas({
     });
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
-      if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
-        if (event.code === 'KeyC') {
-          if (!term.hasSelection()) return true;
-          runToastAction(copyLabel, () => copyTextToClipboard(term.getSelection()));
-          return false;
+      // Copy/paste chords come from the saved shortcut table (Ctrl+Shift+C/V
+      // unless remapped); everything else goes to the PTY.
+      if (matchesShortcutAction(event, 'terminal-copy')) {
+        if (!term.hasSelection()) return true;
+        runToastAction(copyLabel, () => copyTextToClipboard(term.getSelection()));
+        return false;
+      }
+      if (matchesShortcutAction(event, 'terminal-paste')) {
+        if (navigator.clipboard?.readText !== undefined) {
+          navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (text !== '') manager.input(tabId, text);
+            })
+            .catch(() => {
+              // clipboard permission denied — nothing to paste
+            });
         }
-        if (event.code === 'KeyV') {
-          if (navigator.clipboard?.readText !== undefined) {
-            navigator.clipboard
-              .readText()
-              .then((text) => {
-                if (text !== '') manager.input(tabId, text);
-              })
-              .catch(() => {
-                // clipboard permission denied — nothing to paste
-              });
-          }
-          return false;
-        }
+        return false;
       }
       return true;
     });

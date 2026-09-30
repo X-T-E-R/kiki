@@ -1878,6 +1878,7 @@ export interface SettingsSearchSpecEntry {
 export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
   { id: 'appearance', labelKey: 'st.section.appearance' },
+  { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'identity', labelKey: 'st.section.identity' },
@@ -1925,7 +1926,7 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'connection'] },
+  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'connection'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'hooks'] },
@@ -1960,6 +1961,7 @@ export interface SettingsSectionMeta {
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
   general: { scopes: ['app'], purposeKey: 'st.purpose.general' },
   appearance: { scopes: ['app'], purposeKey: 'st.purpose.appearance' },
+  shortcuts: { scopes: ['app', 'server'], purposeKey: 'st.purpose.shortcuts' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
@@ -2088,6 +2090,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
   { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps', 'st.layout.railOpenByDefault'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏'] },
+  { section: 'shortcuts', cardId: 'st-card-shortcuts', titleKey: 'st.shortcuts.title', keywordKeys: ['st.shortcuts.intro', 'st.shortcuts.platform', 'st.shortcuts.reset'], synonyms: ['shortcut', 'shortcuts', 'keybinding', 'keyboard', 'hotkey', '快捷键', '键位', '按键', '热键'] },
+  { section: 'shortcuts', cardId: 'st-card-shortcuts-fixed', titleKey: 'st.shortcuts.fixedTitle', keywordKeys: ['st.shortcuts.fixedHint'], synonyms: ['esc', 'enter', '固定按键'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.tray', 'st.desktop.quit'] },
   { section: 'notifications', cardId: 'st-card-notify-away', titleKey: 'st.away.title', keywordKeys: ['st.away.enabled', 'st.away.completed', 'st.away.failed', 'st.away.question', 'st.away.approval'], synonyms: ['system notification', '系统通知', 'desktop notification', '桌面通知', 'unread', '未读', 'badge', '角标', 'activity', '活动'] },
   { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },

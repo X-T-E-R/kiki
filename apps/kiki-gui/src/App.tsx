@@ -14,8 +14,8 @@
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
  * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most
  * recent other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
- * Ctrl+N and Ctrl+Tab are browser-reserved and register only in the desktop
- * runtime.
+ * Those are the shipped chords; the saved shortcut table (lib/shortcuts) can
+ * remap each one. Ctrl+N and Ctrl+Tab register only in the desktop runtime.
  * `document.title` follows the active route; toasts mount at the root.
  */
 
@@ -85,6 +85,8 @@ import { useLayoutPreferences } from './lib/layoutHooks';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
+import { isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
@@ -137,20 +139,7 @@ function RootRedirect() {
   return <Navigate to={lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new'} replace />;
 }
 
-/**
- * True while focus sits in a text input surface. Global navigation shortcuts
- * that would yank focus away (Ctrl+Tab session hopping) must yield to it;
- * deliberate app shortcuts (Ctrl+K, Ctrl+, …) stay active by design.
- */
-export function isEditableTarget(target: EventTarget | null): boolean {
-  if (typeof HTMLInputElement === 'undefined') return false;
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
-  );
-}
+export { isEditableTarget };
 
 export function App() {
   const host = useHost();
@@ -164,6 +153,8 @@ export function App() {
   // visit to Settings → Appearance.
   useUserSkins();
   useAppearancePacks();
+  // Remapped keys apply app-wide, so the saved table loads with the shell.
+  useShortcutPreferencesSync();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const layoutPrefs = useLayoutPreferences();
   // Sidebar filters persist in layoutPrefs. The fetch mirrors the two
@@ -422,29 +413,26 @@ export function App() {
   }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, sessions, t]);
 
   // ⌘N / Ctrl+N navigates to the /new draft page from any route; ⌘K / Ctrl+K
-  // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
-  // session (the list arrives sorted by updated_at, newest first).
-  // ⌘, / Ctrl+, opens settings.
+  // toggles the quick switcher; ⌘, / Ctrl+, opens settings; Ctrl+/ toggles
+  // the shortcuts panel. Chords come from the saved shortcut table.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === 'n' && !event.shiftKey && !event.altKey) {
+      if (matchesShortcutAction(event, 'new-session')) {
         // Browsers reserve Ctrl+N (new window) — preventDefault cannot stop
         // it, so the binding stays desktop-only instead of half-firing.
         if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
         navigate('/new');
-      } else if (key === 'k' && !event.shiftKey && !event.altKey) {
+      } else if (matchesShortcutAction(event, 'switcher')) {
         event.preventDefault();
         setQuickSwitcherOpen((open) => !open);
-      } else if (key === ',' && !event.shiftKey && !event.altKey) {
+      } else if (matchesShortcutAction(event, 'settings')) {
         event.preventDefault();
         // Land in the search field: Ctrl+, → type → Enter → Esc is the
         // shortest path to any setting, and shorter than the nav tree.
         navigate('/settings', { state: { focusSearch: true } });
-      } else if (key === '/' && !event.shiftKey && !event.altKey) {
+      } else if (matchesShortcutAction(event, 'shortcuts')) {
         event.preventDefault();
         setQuickSwitcherOpen(false);
         setShortcutsOpen((open) => !open);
@@ -492,7 +480,7 @@ export function App() {
   // shortcuts panel — the discoverability path for keyboard-first users.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== '?' || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (!matchesShortcutAction(event, 'shortcuts-help')) return;
       if (anyOverlayOpen()) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
@@ -529,7 +517,7 @@ export function App() {
   useEffect(() => {
     if (!desktop) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || event.key !== 'Tab') return;
+      if (!matchesShortcutAction(event, 'next-session')) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
       const next = sessions.find((session) => session.id !== activeSessionId);
