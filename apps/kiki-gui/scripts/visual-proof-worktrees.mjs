@@ -50,14 +50,19 @@ export function createWorktreesWalker({ page, shot, resizeViewport, setProofThem
     await expectCount('[data-new-worktree-hint]', 0, 'hint while off');
     await noOverflow('new (git)');
     await shot(name('new-off', theme, width));
+    // Turning it on asks first: the dialog names the directory and the branch.
     await page.locator('[data-new-worktree] label').click();
+    await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
+    await shot(name('new-confirm', theme, width));
+    await page.locator('[role="alertdialog"] button[data-confirm-action="confirm"]').click();
+    await page.waitForSelector('[role="alertdialog"]', { state: 'detached', timeout: 10_000 });
     if (!await page.locator('[data-new-worktree-toggle]').isChecked()) throw new Error('worktree toggle did not turn on');
     await expectCount('[data-new-worktree-hint]', 1, 'hint while on');
     await page.locator('[data-new-worktree-toggle]').focus();
     await shot(name('new-on', theme, width));
-    // Plain folder: disabled with the reason.
-    await open(`/new?workspace=wd_fixture_000000000001`, '[data-new-worktree="not-git"]');
-    if (!await page.locator('[data-new-worktree-toggle]').isDisabled()) throw new Error('not-git toggle must be disabled');
+    // Plain folder: the switch is simply not offered.
+    await open(`/new?workspace=wd_fixture_000000000001`, 'textarea[data-composer]');
+    await expectCount('[data-new-worktree]', 0, 'not-git hides the switch');
     await shot(name('new-not-git', theme, width));
   }
 
@@ -65,6 +70,9 @@ export function createWorktreesWalker({ page, shot, resizeViewport, setProofThem
     await reset();
     await open(`/new?workspace=wd_fixture_000000000000`, '[data-new-worktree="ready"]');
     await page.locator('[data-new-worktree] label').click();
+    await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
+    await page.locator('[role="alertdialog"] button[data-confirm-action="confirm"]').click();
+    await page.waitForSelector('[role="alertdialog"]', { state: 'detached', timeout: 10_000 });
     await page.fill('textarea[data-composer]', 'Draft the migration plan');
     await page.press('textarea[data-composer]', 'Control+Enter');
     await page.waitForURL(/\/s\/session_/, { timeout: 15_000 });

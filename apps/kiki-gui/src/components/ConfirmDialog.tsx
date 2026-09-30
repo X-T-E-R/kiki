@@ -4,7 +4,7 @@
  * the panel with the safe option focused first, focus restored on close.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
@@ -17,6 +17,8 @@ export interface ConfirmDialogProps {
   readonly body?: string;
   /** Consequence bullets listed under the body so the choice is informed. */
   readonly consequences?: readonly string[];
+  /** Extra content (e.g. a "don't ask again" checkbox) between the consequences and the buttons. */
+  readonly children?: ReactNode;
   readonly confirmLabel: string;
   readonly cancelLabel?: string;
   readonly tone?: 'danger' | 'default';
@@ -32,6 +34,7 @@ export function ConfirmDialog({
   title,
   body,
   consequences,
+  children,
   confirmLabel,
   cancelLabel,
   tone = 'danger',
@@ -102,6 +105,7 @@ export function ConfirmDialog({
           {consequences.map((item) => <li key={item}>{item}</li>)}
         </ul>
       ) : null}
+      {children}
       <div className="mt-6 flex justify-end gap-2">
         <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
           {cancelLabel ?? t('common.cancel')}

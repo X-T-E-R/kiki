@@ -115,6 +115,16 @@ export function GeneralSection() {
             />
             <Hint>{t('st.layout.railOpenByDefaultHint')}</Hint>
           </div>
+          {/* The /new worktree opt-in's "don't ask again" lands back here. */}
+          <div data-settings-field data-setting-worktree-confirm className="space-y-0.5 py-1">
+            <Toggle
+              layout="row"
+              label={t('st.composer.worktreeConfirm')}
+              checked={!settings.worktreeSkipConfirm}
+              onChange={(checked) => { writeSettings({ worktreeSkipConfirm: !checked }); }}
+            />
+            <Hint>{t('st.composer.worktreeConfirmHint')}</Hint>
+          </div>
           <AppendTimingField />
         </div>
       </SectionCard>

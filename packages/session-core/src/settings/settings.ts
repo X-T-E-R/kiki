@@ -68,6 +68,11 @@ export interface DesktopSettings {
   defaultAppendTiming: DefaultAppendTiming;
   /** Fold runs of ≥3 consecutive pure reads into one summary line (off by default). */
   foldSteps: boolean;
+  /**
+   * Skip the /new worktree opt-in's confirmation dialog (its "don't ask
+   * again"). Settings carries the way back to asking.
+   */
+  worktreeSkipConfirm: boolean;
   /** The session inspector (right rail) starts open on wide windows. */
   railOpenByDefault: boolean;
   motion: MotionPreference;
@@ -332,6 +337,7 @@ const DEFAULTS: DesktopSettings = {
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
   foldSteps: false,
+  worktreeSkipConfirm: false,
   railOpenByDefault: true,
   motion: 'system',
   proseFont: 'serif',
@@ -417,6 +423,8 @@ export function readSettings(): DesktopSettings {
       : DEFAULTS.defaultAppendTiming,
     foldSteps:
       typeof stored.foldSteps === 'boolean' ? stored.foldSteps : DEFAULTS.foldSteps,
+    worktreeSkipConfirm:
+      typeof stored.worktreeSkipConfirm === 'boolean' ? stored.worktreeSkipConfirm : DEFAULTS.worktreeSkipConfirm,
     railOpenByDefault:
       typeof stored.railOpenByDefault === 'boolean' ? stored.railOpenByDefault : DEFAULTS.railOpenByDefault,
     motion: isMotionPreference(stored.motion) ? stored.motion : DEFAULTS.motion,
