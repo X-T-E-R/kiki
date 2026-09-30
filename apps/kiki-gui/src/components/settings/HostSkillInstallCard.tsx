@@ -20,7 +20,8 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 
-const HOSTS: readonly { readonly id: HostSkillTarget; readonly name: I18nKey; readonly folder: string }[] = [
+/** Agent hosts the skill installs into, with the folder each one reads. */
+export const HOST_SKILL_HOSTS: readonly { readonly id: HostSkillTarget; readonly name: I18nKey; readonly folder: string }[] = [
   { id: 'claude', name: 'st.hostSkill.host.claude', folder: '~/.claude/skills' },
   { id: 'codex', name: 'st.hostSkill.host.codex', folder: '~/.codex/skills' },
   { id: 'grok', name: 'st.hostSkill.host.grok', folder: '~/.grok/skills' },
@@ -43,7 +44,7 @@ export function HostSkillInstallCard() {
       <div className="space-y-3" data-host-skill-card>
         <Hint>{t('st.hostSkill.intro')}</Hint>
         <div className="space-y-1">
-          {HOSTS.map((host) => (
+          {HOST_SKILL_HOSTS.map((host) => (
             <SettingField
               key={host.id}
               label={t(host.name)}
@@ -70,7 +71,7 @@ export function HostSkillInstallCard() {
       {open !== null ? (
         <HostSkillInstallDialog
           host={open}
-          hostName={t(HOSTS.find((host) => host.id === open)!.name)}
+          hostName={t(HOST_SKILL_HOSTS.find((host) => host.id === open)!.name)}
           onClose={() => { setOpen(null); }}
           onInstalled={(result) => {
             setInstalled((current) => ({ ...current, [open]: result.path }));
@@ -81,7 +82,8 @@ export function HostSkillInstallCard() {
     </SectionCard>
   );
 }
-function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
+/** Preview → confirm install dialog; also opened from the onboarding capabilities page. */
+export function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
   readonly host: HostSkillTarget;
   readonly hostName: string;
   readonly onClose: () => void;

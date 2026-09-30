@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
+import { writeDraft } from '@kiki/session-core/composer';
 import { errorText, issueText, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
@@ -48,6 +49,7 @@ import { useConnection } from '../state/connection';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import { Dialog } from './Dialog';
 import { OnboardingAppearanceStep, OnboardingRow } from './OnboardingAppearanceStep';
+import { OnboardingCapabilitiesStep } from './OnboardingCapabilitiesStep';
 import { needsProviderSetup } from './NewSessionDraft';
 import {
   API_PROTOCOLS,
@@ -72,13 +74,14 @@ import { Wordmark } from './Wordmark';
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'model', 'permissions'] as const;
+const STEPS = ['welcome', 'model', 'permissions', 'capabilities'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
   model: 'onboarding.step.model',
   permissions: 'onboarding.step.permissions',
+  capabilities: 'onboarding.step.capabilities',
 } as const;
 
 /**
@@ -595,22 +598,43 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     }
     if (step === 'model' && await saveProvider()) {
       setStep('permissions');
+      return;
+    }
+    // The permission default is saved on leaving its step, so the optional
+    // capabilities page after it never holds anything unsaved.
+    if (step === 'permissions' && await savePermissionMode()) {
+      setStep('capabilities');
     }
   };
 
   // Finish: land on the /new hero with an empty composer. The /new draft is
   // left alone, so its own target default applies (most recent workspace,
   // else a new folder in Kiki Home). Nothing is sent or prefilled.
-  const finish = async () => {
+  const finish = () => {
     if (finishing) return;
     setFinishing(true);
-    if (!await savePermissionMode()) {
-      setFinishing(false);
-      return;
-    }
     markOnboardingCompleted();
     onClose();
     navigate('/new');
+  };
+
+  // A capability's settings card: the wizard is done once the user leaves for it.
+  const openCapability = (href: string) => {
+    markOnboardingCompleted();
+    onClose();
+    navigate(href);
+  };
+
+  // "Let Kiki set it up": a fresh session (no workspace → a new folder in Kiki
+  // Home, like /new's automatic choice) with the /kiki-ops request waiting in
+  // its composer. Nothing is sent; the user reads it and presses send.
+  const askKiki = async (prompt: string) => {
+    const session = await client.createSession({});
+    writeDraft(session.id, prompt);
+    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    markOnboardingCompleted();
+    onClose();
+    navigate(`/s/${session.id}`);
   };
 
   const stepIndex = STEPS.indexOf(step);
@@ -633,6 +657,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       onClose={dismiss}
       ariaLabel={t('onboarding.title')}
       overlayId="onboarding-wizard"
+      // Stacked so a dialog opened from a step (the skill install preview)
+      // owns Escape and focus while it is up.
+      stacked
       // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
       // its header/body/footer insets so the scroll region meets the dividers.
       panelClassName="anim-enter w-full max-w-[680px] max-h-[85vh] flex flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
@@ -730,6 +757,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           </div>
         ) : null}
 
+        {step === 'capabilities' ? (
+          <OnboardingCapabilitiesStep onOpen={openCapability} onAsk={askKiki} />
+        ) : null}
+
         {step === 'permissions' ? (
           <div className="mt-3 space-y-4">
             <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.permissions.body')}</p>
@@ -775,8 +806,8 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <button
               type="button"
               data-autofocus
-              disabled={finishing || permissionBusy}
-              onClick={() => void finish()}
+              disabled={finishing}
+              onClick={finish}
               className={PRIMARY_BUTTON}
             >
               {finishing ? t('st.auth.working') : t('onboarding.finish')}
@@ -785,7 +816,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <button
               type="button"
               data-autofocus
-              disabled={savingProvider}
+              disabled={savingProvider || permissionBusy}
               onClick={() => void goNext()}
               className={step === 'model' && modelSkipping
                 ? 'rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none'
@@ -793,7 +824,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             >
               {step === 'model'
                 ? (savingProvider ? t('common.saving') : modelPrimaryLabel)
-                : t('onboarding.next')}
+                : step === 'permissions' && permissionBusy ? t('common.saving') : t('onboarding.next')}
             </button>
           )}
         </div>

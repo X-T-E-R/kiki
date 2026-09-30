@@ -39,6 +39,8 @@ const listWorkspaces = vi.fn();
 const createSession = vi.fn();
 const createProvider = vi.fn();
 const probeProviderDraft = vi.fn();
+const previewHostSkillInstall = vi.fn();
+const installHostSkill = vi.fn();
 const navigate = vi.fn();
 
 vi.mock('../state/connection', () => ({
@@ -58,6 +60,8 @@ vi.mock('../state/connection', () => ({
       createSession,
       createProvider,
       probeProviderDraft,
+      previewHostSkillInstall,
+      installHostSkill,
     },
   }),
 }));
@@ -123,6 +127,12 @@ beforeEach(() => {
   createSession.mockReset().mockResolvedValue({ id: 's_onboarding_1' });
   createProvider.mockReset().mockResolvedValue({ id: 'kimi', revision: 'r1' });
   probeProviderDraft.mockReset().mockResolvedValue([]);
+  previewHostSkillInstall.mockReset().mockResolvedValue({
+    host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-as-subagent/SKILL.md', overwrites: true, revision: 'rev-1',
+  });
+  installHostSkill.mockReset().mockResolvedValue({
+    host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-as-subagent/SKILL.md', overwrites: false, revision: 'rev-2',
+  });
 });
 
 afterEach(() => {
@@ -267,11 +277,18 @@ async function toPermissionsStep(): Promise<void> {
   await click(buttonByText('Skip for now'));
 }
 
+/** … → approvals → (Next saves the mode) → capabilities. */
+async function toCapabilitiesStep(): Promise<void> {
+  await toPermissionsStep();
+  await click(buttonByText('Next'));
+  await flush();
+}
+
 describe('OnboardingWizard', () => {
   it('opens on one welcome page: language and appearance together', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
-    expect(dialog().textContent).toContain('Step 1 of 3');
+    expect(dialog().textContent).toContain('Step 1 of 4');
     expect(dialog().textContent).toContain('Language and look');
     expect(dialog().querySelector('[data-onboarding-welcome] [aria-labelledby="onboarding-language-label"]')).not.toBeNull();
     expect(dialog().querySelector('[data-onboarding-welcome] [data-onboarding-appearance]')).not.toBeNull();
@@ -295,10 +312,10 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('Settings › Appearance');
   });
 
-  it('walks forward and back through all three steps', async () => {
+  it('walks forward and back through the setup steps', async () => {
     await mount();
     await toModelStep();
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 4');
     // One entry: choose API key or account first, then protocol or method.
     expect(dialog().querySelectorAll('[data-connection-choice]')).toHaveLength(2);
     expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
@@ -309,13 +326,13 @@ describe('OnboardingWizard', () => {
     expect(dialog().querySelector('[data-provider-protocol]')).toBeNull();
 
     await click(buttonByText('Skip for now'));
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 3 of 4');
     expect(dialog().textContent).toContain('How much should Kiki do on its own?');
 
     await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 4');
     await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 1 of 3');
+    expect(dialog().textContent).toContain('Step 1 of 4');
     expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
   });
 
@@ -333,7 +350,7 @@ describe('OnboardingWizard', () => {
     await toModelStep();
     await click(buttonByText('Skip for now'));
     expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
   it('keeps the advance as Next while adding another provider to an existing connection', async () => {
@@ -349,7 +366,7 @@ describe('OnboardingWizard', () => {
     await click(dialog().querySelector('[data-connection-choice="account"]')!);
     expect(dialog().querySelector('[data-account-sign-in]')).not.toBeNull();
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 3 of 4');
     expect(createProvider).not.toHaveBeenCalled();
   });
 
@@ -368,7 +385,7 @@ describe('OnboardingWizard', () => {
     expect(body['models']).toEqual([
       expect.objectContaining({ remote_id: 'kimi-for-coding' }),
     ]);
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
   it('Test connection probes the unsaved form values and fills suggestions', async () => {
@@ -413,7 +430,7 @@ describe('OnboardingWizard', () => {
     await flush();
     expect(createProvider).not.toHaveBeenCalled();
     expect(dialog().textContent).toContain('Model IDs cannot be empty.');
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 4');
   });
 
   it('a protocol card derives the connection name from the Base URL, and keeps it editable', async () => {
@@ -522,10 +539,10 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('A model provider is connected');
     await click(buttonByText('Next'));
     expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
-  it('offers every permission mode, recommends auto, and finish writes it to the server config', async () => {
+  it('offers every permission mode, recommends auto, and Next writes it to the server config', async () => {
     await mount();
     await toPermissionsStep();
     const options = [...dialog().querySelectorAll<HTMLElement>('[data-permission-choice]')];
@@ -535,9 +552,20 @@ describe('OnboardingWizard', () => {
     const auto = options.find((option) => option.dataset['permissionChoice'] === 'auto');
     expect(auto?.getAttribute('aria-checked')).toBe('true');
     expect(auto?.textContent).toContain('Recommended');
-    await click(buttonByText('Start'));
+    await click(buttonByText('Next'));
     await flush();
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
+    expect(dialog().textContent).toContain('Step 4 of 4');
+  });
+
+  it('a failed permission save stays on the step', async () => {
+    patchConfig.mockRejectedValueOnce(new Error('config is read-only'));
+    await mount();
+    await toPermissionsStep();
+    await click(buttonByText('Next'));
+    await flush();
+    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().querySelector('[data-onboarding-capabilities]')).toBeNull();
   });
 
   it('a replay shows the server’s explicit permission choice instead of forcing auto', async () => {
@@ -560,7 +588,7 @@ describe('OnboardingWizard', () => {
   it('finishes on the /new hero without touching the /new target or draft', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toPermissionsStep();
+    await toCapabilitiesStep();
     expect(dialog().querySelector('[data-workspace-choice]')).toBeNull();
     await click(buttonByText('Start'));
     await flush();
@@ -578,9 +606,131 @@ describe('OnboardingWizard', () => {
     const { writeDraft } = await import('@kiki/session-core/composer');
     writeDraft('new', 'half-typed thought');
     await mount();
-    await toPermissionsStep();
+    await toCapabilitiesStep();
     await click(buttonByText('Start'));
     await flush();
     expect(readDraft('new')).toBe('half-typed thought');
+  });
+
+  // ── capabilities page ──────────────────────────────────────────────────
+
+  it('lists grouped capabilities, each with a way to set it up, and walks back to approvals', async () => {
+    await mount();
+    await toCapabilitiesStep();
+    expect(dialog().textContent).toContain('What else Kiki can do');
+    const rows = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-cap]')];
+    expect(rows.map((row) => row.dataset['onboardingCap'])).toEqual([
+      'search', 'memory', 'ssh', 'engines', 'extensions', 'host-skill', 'cron', 'board', 'bots',
+    ]);
+    for (const row of rows) {
+      expect(row.querySelectorAll('button').length, row.dataset['onboardingCap']).toBeGreaterThan(0);
+    }
+    expect(dialog().querySelectorAll('[data-onboarding-cap-group]')).toHaveLength(3);
+    await click(buttonByText('Back'));
+    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().querySelector('[data-permission-choice]')).not.toBeNull();
+  });
+
+  it('a settings button leaves the wizard for that card', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(dialog().querySelector('[data-onboarding-cap="ssh"] [data-cap-open]')!);
+    expect(navigate).toHaveBeenCalledWith('/settings/ssh#st-card-ssh-hosts');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+  });
+
+  it('every settings target is a real card or route', async () => {
+    const { resolveSettingsRoute } = await import('@kiki/session-core/settings');
+    const { ONBOARDING_CAPABILITIES } = await import('./OnboardingCapabilitiesStep');
+    const hrefs = ONBOARDING_CAPABILITIES.flatMap((group) => group.items)
+      .flatMap((item) => item.actions)
+      .flatMap((action) => (action.kind === 'open' ? [action.href] : []));
+    expect(hrefs.length).toBeGreaterThan(0);
+    for (const href of hrefs) {
+      if (!href.startsWith('/settings/')) {
+        expect(['/board', '/cron', '/personas']).toContain(href);
+        continue;
+      }
+      const [path, hash] = href.split('#');
+      const section = path!.slice('/settings/'.length);
+      const resolved = resolveSettingsRoute(section, `#${hash}`);
+      expect(resolved.status, href).toBe('ok');
+      expect(resolved.section, href).toBe(section);
+      expect(resolved.cardId, href).toBe(hash);
+    }
+  });
+
+  it('"Let Kiki set it up" creates a session with the request waiting in its composer', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(dialog().querySelector('[data-onboarding-cap="ssh"] [data-cap-ask]')!);
+    await flush();
+    // No workspace: the server gives the session a new folder in Kiki Home.
+    expect(createSession).toHaveBeenCalledWith({});
+    expect(readDraft('s_onboarding_1')).toMatch(/^\/kiki-ops .*SSH remote host/);
+    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+  });
+
+  it('a failed "Let Kiki set it up" stays on the page with the reason', async () => {
+    createSession.mockRejectedValueOnce(new Error('server offline'));
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(dialog().querySelector('[data-onboarding-cap="cron"] [data-cap-ask]')!);
+    await flush();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(dialog().querySelector('[data-onboarding-cap="cron"]')?.textContent).toContain('server offline');
+    // The ask buttons are usable again for a retry.
+    expect((dialog().querySelector('[data-cap-ask]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('the skill install previews the target and writes only after confirming', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(dialog().querySelector('[data-cap-install="claude"]')!);
+    await flush();
+    expect(previewHostSkillInstall).toHaveBeenCalledWith('claude');
+    expect(installHostSkill).not.toHaveBeenCalled();
+    const installDialog = document.querySelector('[data-host-skill-dialog="ready"]')!;
+    expect(installDialog.querySelector('[data-host-skill-path]')?.textContent).toContain('.claude/skills/kiki-as-subagent/SKILL.md');
+    expect(installDialog.querySelector('[data-host-skill-overwrites="true"]')).not.toBeNull();
+    await click(installDialog.querySelector('[data-host-skill-confirm]')!);
+    await flush();
+    expect(installHostSkill).toHaveBeenCalledWith('claude', 'rev-1');
+    expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
+    expect(dialog().querySelector('[data-onboarding-cap="host-skill"]')?.textContent).toContain('Installed for Claude Code.');
+    // Installing is a side trip: the wizard stays open on its page.
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('cancelling the skill preview writes nothing', async () => {
+    await mount();
+    await toCapabilitiesStep();
+    await click(dialog().querySelector('[data-cap-install="codex"]')!);
+    await flush();
+    const cancel = [...document.querySelectorAll('[data-host-skill-dialog] button')].find((button) => button.textContent === 'Cancel')!;
+    await click(cancel);
+    expect(installHostSkill).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
+  });
+
+  it('Start skips the capabilities page without using any of it', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toCapabilitiesStep();
+    await click(buttonByText('Start'));
+    await flush();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(previewHostSkillInstall).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('/new');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
