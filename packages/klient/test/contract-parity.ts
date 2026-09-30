@@ -9,6 +9,9 @@
  */
 
 import type { z } from 'zod';
+import type { BotSummary, BotState, BotUpdateInput } from '@kiki/agent-core-v2/app/bot/bot';
+import type { RoomDocument, CreateRoomInput, UpdateRoomInput, RoomMessage, RoomLogResult, RoomUsage } from '@kiki/agent-core-v2/app/room/room';
+import { botSummarySchema, botStateSchema, botUpdateInputSchema, roomDocumentSchema, createRoomInputSchema, updateRoomInputSchema, roomMessageSchema, roomLogResultSchema, roomUsageSchema } from '@kiki/protocol';
 
 import type {
   ActivityLastTurnState,
@@ -876,3 +879,12 @@ const _listThreadMessagesResult: AssertWire<
   typeof import('../src/contract/global/threads.js').listThreadMessagesResultSchema,
   import('@kiki/agent-core-v2/app/threadCommunication/threadCommunication').ListThreadMessagesResult
 > = true;
+const _botSummary: AssertWire<typeof botSummarySchema, BotSummary> = true;
+const _botState: AssertWire<typeof botStateSchema, BotState> = true;
+const _botUpdate: AssertWire<typeof botUpdateInputSchema, BotUpdateInput> = true;
+const _roomDocument: AssertWire<typeof roomDocumentSchema, RoomDocument> = true;
+const _roomCreate: AssertWire<typeof createRoomInputSchema, CreateRoomInput> = true;
+const _roomUpdate: AssertWire<typeof updateRoomInputSchema, UpdateRoomInput> = true;
+const _roomMessage: AssertWire<typeof roomMessageSchema, RoomMessage> = true;
+const _roomLog: AssertWire<typeof roomLogResultSchema, RoomLogResult> = true;
+const _roomUsage: AssertWire<typeof roomUsageSchema, RoomUsage> = true;

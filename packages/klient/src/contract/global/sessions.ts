@@ -14,6 +14,7 @@ export const sessionSummarySchema = z.object({
   cwd: z.string().optional(),
   title: z.string().optional(),
   lastPrompt: z.string().optional(),
+  delivery: z.enum(['reply', 'message']).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
   archived: z.boolean(),

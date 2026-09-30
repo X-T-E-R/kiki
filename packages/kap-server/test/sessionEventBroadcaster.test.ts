@@ -496,6 +496,18 @@ describe('SessionEventBroadcaster', () => {
     expect(sessionEvent).not.toContain('event.di.unit_changed');
   });
 
+  it('publishes room changes to every established global target', () => {
+    const { target, envelopes, deliveries } = collectingTarget();
+    bc.addGlobalTarget(target);
+    bc.publishRoomChanged({
+      roomId: 'room-proof',
+      room: { id: 'room-proof', name: 'Proof', members: [], host: 'alpha', mode: 'mention', budget: { botMessagesPerUserMessage: 1 }, workspace: '/proof', createdAt: new Date().toISOString(), generation: 0, paused: false, budgetUsed: 0, userMessageCount: 0, cursors: {} } as never,
+    });
+    expect(envelopes[0]?.type).toBe('event.room.changed');
+    expect(envelopes[0]?.payload).toMatchObject({ type: 'event.room.changed', room_id: 'room-proof' });
+    expect(deliveries[0]).toBe('immediate');
+  });
+
   it('preserves a real Event2 time in payload and derives the envelope timestamp from it', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');

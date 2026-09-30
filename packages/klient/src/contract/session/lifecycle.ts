@@ -17,9 +17,11 @@ export const createSessionOptionsSchema = z.object({
     externalId: z.string(), home: z.string() }).optional(),
   workDir: z.string(),
   ephemeral: z.boolean().optional(),
+  delivery: z.enum(['reply', 'message']).optional(),
   additionalDirs: z.array(z.string()).optional(),
   waitForSessionMs: z.number().nonnegative().finite().optional(),
   mainAgentBinding: z.object({
+    persona: z.string().optional(),
     profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),
   }).optional(),
   /**

@@ -1,3 +1,4 @@
+import type { GlobalBotsFacade, GlobalRoomsFacade } from './botRooms.js';
 import type { PluginInfo, PluginSummary } from '@kiki/agent-core-v2/app/plugin/types';
 
 import type {
@@ -35,6 +36,14 @@ import type {
   Task,
   UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
+  PersonaAvatarData,
+  PersonaCardFormat,
+  PersonaDeleteResponse,
+  PersonaImportPreview,
+  PersonaImportResponse,
+  PersonaPutInput,
+  PersonaSnapshot,
+  PersonaSummary,
 } from '@kiki/protocol';
 import type { UsageResponse } from '@kiki/protocol';
 
@@ -213,6 +222,17 @@ export interface HttpRestSessionArchive {
   readonly filename: string;
 }
 
+export interface HttpRestPersonaCardInput {
+  readonly data: Uint8Array;
+  readonly format?: PersonaCardFormat;
+  readonly filename?: string;
+}
+
+export interface HttpRestPersonaImportInput extends HttpRestPersonaCardInput {
+  readonly id?: string;
+  readonly name?: string;
+}
+
 /**
  * Aggregated cron task wire shape from `GET /api/cron` (kap-server
  * `src/protocol/rest-cron.ts`; snake_case, not re-exported by `@kiki/protocol`).
@@ -321,6 +341,23 @@ export interface HttpRestFacade {
     ): Promise<FsSearchResponse>;
     media(sessionId: string, fileId: string, options?: { readonly ifNoneMatch?: string }): Promise<HttpRestBinaryFile>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
+  };
+
+  readonly bots: GlobalBotsFacade;
+  readonly rooms: GlobalRoomsFacade;
+  readonly personas: {
+    list(options?: { readonly includeArchived?: boolean }): Promise<readonly PersonaSummary[]>;
+    get(id: string): Promise<PersonaSnapshot>;
+    put(input: PersonaPutInput): Promise<PersonaSnapshot>;
+    duplicate(id: string, options?: { readonly id?: string; readonly name?: string }): Promise<PersonaSnapshot>;
+    archive(id: string, archived?: boolean): Promise<{ readonly version: 1; readonly archived: boolean }>;
+    delete(id: string, options?: { readonly expectedRevision?: string }): Promise<PersonaDeleteResponse>;
+    previewImport(input: HttpRestPersonaCardInput): Promise<PersonaImportPreview>;
+    importCard(input: HttpRestPersonaImportInput): Promise<PersonaImportResponse>;
+    exportCard(id: string, format: PersonaCardFormat, options?: HttpRestRequestOptions & { readonly includeMemory?: boolean }): Promise<HttpRestBinaryFile>;
+    getAvatar(id: string, options?: HttpRestRequestOptions): Promise<HttpRestBinaryFile>;
+    putAvatar(id: string, data: Uint8Array, mimeType?: string): Promise<import('@kiki/protocol').PersonaAvatarUploadResponse>;
+    avatar(input: { readonly id: string; readonly name: string; readonly avatarMime?: string }): PersonaAvatarData;
   };
 
   readonly skills: {

@@ -492,7 +492,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.goal_objective === undefined &&
             req.body.goal_follow_up_timing === undefined &&
             req.body.goal_initial_status === undefined &&
-            req.body.goal_control === undefined
+            req.body.goal_control === undefined &&
+            req.body.persona_greeting_reply === undefined
             ? undefined
             : {
                 profile: req.body.profile,
@@ -505,6 +506,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 goalFollowUpTiming: req.body.goal_follow_up_timing,
                 goalInitialStatus: req.body.goal_initial_status,
                 goalControl: req.body.goal_control,
+                personaGreetingReply: req.body.persona_greeting_reply,
               };
         validatePromptRuntimeControls(resolved.accessor, execution);
         let deferredDisabledTools: readonly string[] | undefined;

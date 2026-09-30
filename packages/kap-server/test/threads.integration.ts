@@ -66,6 +66,9 @@ function makeService(): IThreadCommunicationService {
       deduplicated: false,
       delivery: 'pending' as const,
     })),
+    sendRoomMessage: vi.fn(async () => ({ messageId: 'room-message', targetSeq: 1, acceptedAt: 2, deduplicated: false, delivery: 'pending' as const })),
+    cancelRoomDeliveries: vi.fn(async () => {}),
+    waitRoomDelivery: vi.fn(async () => {}),
     waitThreads: vi.fn(async (input: Parameters<IThreadCommunicationService['waitThreads']>[0]) => ({
       threads: input.threads.map((item) => ({ thread: item.thread, cursor: 'cursor-a', activities: [] })),
       timedOut: true,

@@ -4,8 +4,11 @@ import type {
   HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
+  HttpRestPersonaCardInput,
+  HttpRestPersonaImportInput,
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
+import { personaAvatarForm, personaCardForm } from './persona-form.js';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -32,11 +35,17 @@ import type {
   Task,
   UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
+  PersonaCardFormat,
+  PersonaImportPreview,
+  PersonaImportResponse,
+  PersonaSnapshot,
+  PersonaSummary,
 } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
+  readonly rawBody?: unknown;
   readonly query?: Record<string, string | number | boolean | undefined>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly okCodes?: readonly number[];
@@ -234,6 +243,65 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           };
         },
       ),
+    },
+
+    bots: {
+      list: () => transport.json('/bots'),
+      enable: (id) => transport.json(`/bots/${encodeURIComponent(id)}/enable`, { method: 'POST' }),
+      ensureHomeSession: (id) => transport.json(`/bots/${encodeURIComponent(id)}/home`, { method: 'POST' }),
+      update: (id, body) => transport.json(`/bots/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+    },
+    rooms: {
+      list: () => transport.json('/rooms'),
+      get: (id) => transport.json(`/rooms/${encodeURIComponent(id)}`),
+      create: (body) => transport.json('/rooms', { method: 'POST', body }),
+      update: (id, body) => transport.json(`/rooms/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+      delete: async (id) => { await transport.json(`/rooms/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
+      postUserMessage: (id, body) => transport.json(`/rooms/${encodeURIComponent(id)}/messages`, { method: 'POST', body }),
+      pause: (id) => transport.json(`/rooms/${encodeURIComponent(id)}/pause`, { method: 'POST' }),
+      continue: (id) => transport.json(`/rooms/${encodeURIComponent(id)}/continue`, { method: 'POST' }),
+      stop: (id) => transport.json(`/rooms/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+      log: (id, query) => transport.json(`/rooms/${encodeURIComponent(id)}/log`, { query }),
+      usage: (id) => transport.json(`/rooms/${encodeURIComponent(id)}/usage`),
+    },
+    personas: {
+      list: (options) => transport.json<readonly PersonaSummary[]>('/personas', {
+        query: { includeArchived: options?.includeArchived },
+      }),
+      get: (id) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(id)}`),
+      put: (input) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(input.definition.id)}`, {
+        method: 'PUT',
+        body: input,
+      }),
+      duplicate: (id, options) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(id)}:duplicate`, {
+        method: 'POST', body: options ?? {},
+      }),
+      archive: (id, archived = true) => transport.json(`/personas/${encodeURIComponent(id)}:archive`, {
+        method: 'POST', body: { archived },
+      }),
+      delete: (id, options) => transport.json(`/personas/${encodeURIComponent(id)}`, {
+        method: 'DELETE', query: { expectedRevision: options?.expectedRevision },
+      }),
+      previewImport: (input) => transport.json<PersonaImportPreview>('/personas/import/preview', {
+        method: 'POST', rawBody: personaCardForm(input),
+      }),
+      importCard: (input) => transport.json<PersonaImportResponse>('/personas/import', {
+        method: 'POST', rawBody: personaCardForm(input),
+      }),
+      exportCard: (id, format, options) => readBinary(transport, `/personas/${encodeURIComponent(id)}/export`, {
+        query: { format, includeMemory: options?.includeMemory }, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+      getAvatar: (id, options) => readBinary(transport, `/personas/${encodeURIComponent(id)}/avatar`, {
+        signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+      putAvatar: (id, data, mimeType) => transport.json(`/personas/${encodeURIComponent(id)}/avatar`, {
+        method: 'PUT', rawBody: personaAvatarForm(data, mimeType),
+      }),
+      avatar: ({ id, name, avatarMime }) => ({
+        id,
+        name,
+        avatarUrl: avatarMime === undefined ? undefined : `/api/personas/${encodeURIComponent(id)}/avatar`,
+      }),
     },
 
     skills: {
@@ -529,7 +597,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 async function readBinary(
   transport: HttpRestTransport,
   path: string,
-  options?: Pick<HttpRestJsonOptions, 'query' | 'signal' | 'expectBinary' | 'headers'>,
+  options?: Pick<HttpRestJsonOptions, 'query' | 'signal' | 'timeoutMs' | 'expectBinary' | 'headers'>,
 ) {
   return transport.raw(
     path,

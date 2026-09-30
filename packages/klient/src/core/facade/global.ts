@@ -6,7 +6,19 @@
  * code never sees service tokens, scope routing, or transport details.
  */
 
-import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse } from '@kiki/protocol';
+export type { PersonaAvatarData } from '@kiki/protocol';
+import { createGlobalBots, createGlobalRooms, type GlobalBotsFacade, type GlobalRoomsFacade } from './botRooms.js';
+export type { GlobalBotsFacade, GlobalRoomsFacade } from './botRooms.js';
+
+import type {
+  AgentCapabilitiesQuery,
+  AgentCapabilitiesResponse,
+  PersonaAvatarData,
+  PersonaDeleteResponse,
+  PersonaPutInput,
+  PersonaSnapshot,
+  PersonaSummary,
+} from '@kiki/protocol';
 import type { BoardClient, BoardOverviewClient } from '../../contract/board/types.js';
 import type {
   SessionListQuery,
@@ -167,9 +179,35 @@ export interface GlobalSessionsFacade {
     additionalDirs?: readonly string[];
     waitForSessionMs?: number;
     title?: string;
-    mainAgentBinding?: { profile?: string; model?: string; thinking?: string };
+    persona?: string;
+    delivery?: 'reply' | 'message';
+    mainAgentBinding?: { persona?: string; profile?: string; model?: string; thinking?: string };
     mcpServers?: Readonly<Record<string, McpServerConfig>>;
   }): Promise<SessionMeta>;
+}
+
+export interface GlobalPersonasFacade {
+  list(options?: { includeArchived?: boolean }): Promise<readonly PersonaSummary[]>;
+  get(id: string): Promise<PersonaSnapshot | undefined>;
+  put(input: PersonaPutInput): Promise<PersonaSnapshot>;
+  duplicate(id: string, options?: { id?: string; name?: string }): Promise<PersonaSnapshot>;
+  archive(id: string, archived?: boolean): Promise<{ version: 1; archived: boolean }>;
+  delete(id: string, options?: { expectedRevision?: string }): Promise<PersonaDeleteResponse>;
+  avatar(input: { id: string; name: string; avatarMime?: string }): PersonaAvatarData;
+}
+
+export function createPersonaAvatarData(input: {
+  id: string;
+  name: string;
+  avatarMime?: string;
+}): PersonaAvatarData {
+  return {
+    id: input.id,
+    name: input.name,
+    avatarUrl: input.avatarMime === undefined
+      ? undefined
+      : `/api/personas/${encodeURIComponent(input.id)}/avatar`,
+  };
 }
 
 export interface GlobalWorkspacesFacade {
@@ -419,6 +457,9 @@ export interface GlobalFacade {
   readonly board: BoardOverviewClient;
   readonly agentPanel: GlobalAgentPanelFacade;
   readonly sessions: GlobalSessionsFacade;
+  readonly personas: GlobalPersonasFacade;
+  readonly bots: GlobalBotsFacade;
+  readonly rooms: GlobalRoomsFacade;
   readonly workspaces: GlobalWorkspacesFacade;
   readonly config: GlobalConfigFacade;
   readonly kosong: GlobalKosongFacade;
@@ -508,9 +549,12 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'count', [{ workspaceIds }]) as Promise<number>,
-      create: async ({ sessionId, workDir, ephemeral, additionalDirs, waitForSessionMs, title, mcpServers, mainAgentBinding }) => {
+      create: async ({ sessionId, workDir, ephemeral, additionalDirs, waitForSessionMs, title, persona, delivery, mcpServers, mainAgentBinding }) => {
+        const binding = persona === undefined
+          ? mainAgentBinding
+          : { ...mainAgentBinding, persona };
         const handle = (await scoped({}, 'sessionManager', 'create', [
-          { sessionId, workDir, ephemeral, additionalDirs, waitForSessionMs, mcpServers, mainAgentBinding },
+          { sessionId, workDir, ephemeral, delivery, additionalDirs, waitForSessionMs, mcpServers, mainAgentBinding: binding },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
         if (title !== undefined) {
@@ -520,6 +564,27 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       },
     },
 
+    bots: createGlobalBots(call),
+    rooms: createGlobalRooms(call),
+    personas: {
+      list: (options) => call('personaStore', 'list', options === undefined ? [] : [options]) as Promise<readonly PersonaSummary[]>,
+      get: (id) => call('personaStore', 'get', [id]) as Promise<PersonaSnapshot | undefined>,
+      put: (input) => call('personaStore', 'put', [{
+        ...input.definition,
+        examples: input.examples,
+        expectedRevision: input.revision,
+      }]) as Promise<PersonaSnapshot>,
+      duplicate: (id, options) => call('personaStore', 'duplicate', options === undefined ? [id] : [id, options]) as Promise<PersonaSnapshot>,
+      archive: (id, archived) => call('personaStore', 'archive', archived === undefined ? [id] : [id, archived]) as Promise<{ version: 1; archived: boolean }>,
+      delete: async (id, options) => {
+        const result = await call('personaStore', 'delete', options?.expectedRevision === undefined ? [id] : [id, options.expectedRevision]) as {
+          memory: PersonaDeleteResponse['memory'];
+        };
+        if (result.memory.status !== 'committed') throw new Error(result.memory.error ?? 'Persona memory deletion is incomplete; retry deletion');
+        return { deleted: true as const, memory: result.memory };
+      },
+      avatar: createPersonaAvatarData,
+    },
     workspaces: {
       list: () => call('workspaceService', 'list', []) as Promise<readonly Workspace[]>,
       get: (id) => call('workspaceService', 'get', [id]) as Promise<Workspace | undefined>,

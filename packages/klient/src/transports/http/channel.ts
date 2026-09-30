@@ -235,8 +235,13 @@ export class HttpChannel implements KlientChannel {
     consume: (response: Response) => Promise<T>,
   ): Promise<T> {
     if (this.closed) throw new Error('http closed');
-    const body = options.body === undefined ? undefined : JSON.stringify(options.body);
-    if (body !== undefined && new TextEncoder().encode(body).byteLength > HTTP_REQUEST_BODY_LIMIT_BYTES) {
+    const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
+    const bodySize = typeof body === 'string'
+      ? new TextEncoder().encode(body).byteLength
+      : body instanceof Uint8Array
+        ? body.byteLength
+        : undefined;
+    if (bodySize !== undefined && bodySize > HTTP_REQUEST_BODY_LIMIT_BYTES) {
       throw new RPCError(40001, 'request body exceeds the allowed size limit');
     }
     const controller = new AbortController();
@@ -272,13 +277,13 @@ export class HttpChannel implements KlientChannel {
         ...options.headers,
       };
       if (this.token !== undefined && options.skipAuth !== true) headers['authorization'] = `Bearer ${this.token}`;
-      if (options.body !== undefined) headers['content-type'] = 'application/json';
+      if (options.body !== undefined && headers['content-type'] === undefined) headers['content-type'] = 'application/json';
       let response: Response;
       try {
         const input = path === '/api/klient/call' ? url.toString() : url;
         response = await this.fetchImpl(input, {
           method: options.method ?? 'GET',
-          body,
+          body: body as never,
           headers,
           signal: controller.signal,
         });

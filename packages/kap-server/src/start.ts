@@ -25,6 +25,7 @@ import {
   IThreadMailboxStore,
   IWorkspaceService,
   PluginChanged,
+  IRoomService,
   logSeed,
   resolveConfigPath,
   resolveKikiHome,
@@ -500,6 +501,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       closeErrors.push(error);
       logger.warn({ event_type: 'home_runtime_close_failed' }, 'home runtime close failed; continuing server cleanup');
     }
+    roomChangeSubscription.dispose();
     configWarningSubscription.dispose();
     pluginChangeSubscription.dispose();
     capabilityInstallSubscription.dispose();
@@ -552,6 +554,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core,
     logger,
     transcriptService,
+  });
+  const roomChangeSubscription = core.accessor.get(IRoomService).onDidChange((change) => {
+    broadcaster.publishRoomChanged(change);
   });
   const fsWatchBridge = new FsWatchBridge({ core, logger });
 

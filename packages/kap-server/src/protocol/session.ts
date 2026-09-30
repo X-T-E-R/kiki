@@ -8,6 +8,7 @@ import {
   sessionMetadataSchema,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
+import { personaAvatarDataSchema } from '@kiki/protocol';
 import { workspaceIdSchema } from './workspace';
 
 export const sessionUsageSchema = z.object({
@@ -42,6 +43,13 @@ export function emptySessionUsage(): SessionUsage {
 export const sessionPendingInteractionSchema = z.enum(['none', 'approval', 'question']);
 export type SessionPendingInteraction = z.infer<typeof sessionPendingInteractionSchema>;
 
+const sessionPersonaSchema = personaAvatarDataSchema;
+
+const wireSessionAgentConfigSchema = sessionAgentConfigSchema.extend({
+  persona: sessionPersonaSchema.optional(),
+});
+const wireSessionAgentConfigCreateSchema = sessionAgentConfigCreateSchema;
+
 const sessionWorktreeSchema = z.object({
   worktree_id: z.string(), branch: z.string(), source_root: z.string(), base_ref: z.string(),
 });
@@ -62,12 +70,13 @@ export const sessionSchema = z.object({
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   archived: z.boolean().optional(),
   ephemeral: z.boolean().optional(),
+  delivery: z.enum(['reply', 'message']).optional(),
   archived_at: isoDateTimeSchema.optional(),
   current_prompt_id: z.string().min(1).optional(),
   last_prompt: z.string().optional(),
   metadata: sessionMetadataSchema,
   worktree: sessionWorktreeSchema.optional(),
-  agent_config: sessionAgentConfigSchema,
+  agent_config: wireSessionAgentConfigSchema,
   usage: sessionUsageSchema,
   permission_rules: z.array(permissionRuleSchema),
   message_count: z.number().int().nonnegative(),
@@ -78,10 +87,12 @@ export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
+  persona: z.string().min(1).optional(),
   metadata: sessionMetadataSchema.optional(),
-  agent_config: sessionAgentConfigCreateSchema.optional(),
+  agent_config: wireSessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
   ephemeral: z.boolean().optional(),
+  delivery: z.enum(['reply', 'message']).optional(),
   isolation: worktreeIsolationSchema.optional(),
 });
 

@@ -48,6 +48,7 @@ export const promptSubmissionSchema = z.object({
   append_timing: deferredAppendTimingSchema.optional(),
   disabled_tools: z.array(z.string()).optional(),
   prompt_id: z.string().min(1).optional(),
+  persona_greeting_reply: z.boolean().optional(),
   skills: z.array(promptSkillActivationSchema).min(1).optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
@@ -60,6 +61,7 @@ export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   plan_gate: true,
   plan_mode: true,
   swarm_mode: true,
+  persona_greeting_reply: true,
   disabled_tools: true,
 });
 export type PromptExecutionOverrides = z.infer<typeof promptExecutionOverridesSchema>;

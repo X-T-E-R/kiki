@@ -10,6 +10,7 @@ import type { ContextBreakdown } from '../../../protocol/context-usage';
 import type { ConfigResponse } from '../../../protocol/rest-config';
 import type { Session, SessionPendingInteraction } from '../../../protocol/session';
 import type { Workspace } from '../../../protocol/workspace';
+import type { RoomChangedEvent } from '@kiki/protocol';
 
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
@@ -265,7 +266,8 @@ export type AgentEvent =
   | CapabilityChangedEvent
   | PromptSubmittedEvent
   | BackgroundTaskStartedEvent
-  | BackgroundTaskTerminatedEvent;
+  | BackgroundTaskTerminatedEvent
+  | RoomChangedEvent;
 
 export type Event = AgentEvent & {
   agentId: string;

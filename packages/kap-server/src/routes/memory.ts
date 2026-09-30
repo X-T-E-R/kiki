@@ -11,9 +11,10 @@ interface MemoryRouteHost {
   post(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
   delete(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown }) => unknown): unknown;
 }
-const scopeParams = z.object({ scope: z.enum(['global', 'workspace']) });
+const scopeParams = z.object({ scope: z.enum(['global', 'workspace', 'persona', 'persona_workspace']) });
 const entryParams = scopeParams.extend({ id: z.string().regex(/^m_[a-zA-Z0-9_]+$/) });
-const scopeQuery = z.object({ workspace_id: z.string().optional() });
+const personaIdQuery = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional();
+const scopeQuery = z.object({ workspace_id: z.string().optional(), persona_id: personaIdQuery });
 const entryQuery = scopeQuery.extend({ expected_revision: z.string().optional() });
 const body = z.object({ action: z.enum(['create', 'update', 'supersede', 'archive']).default('create'), type: z.enum(['user', 'feedback', 'project', 'reference']), title: z.string().min(1).max(200), body: z.string().min(1).max(1_500), reason: z.string().min(1), expected_revision: z.string().optional(), pinned: z.boolean().optional() });
 const generic = z.any();
@@ -26,9 +27,21 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     app[method](route.path, route.options, route.handler);
   };
   const settings = () => config.get<MemoryConfig>(MEMORY_SECTION);
-  const resolve = async (kind: 'global' | 'workspace', workspaceId?: string): Promise<MemoryScope> => {
+  const resolve = async (
+    kind: 'global' | 'workspace' | 'persona' | 'persona_workspace',
+    workspaceId?: string,
+    personaId?: string,
+  ): Promise<MemoryScope> => {
     if (kind === 'global') return { kind: 'global' };
+    if (kind === 'persona') {
+      if (personaId === undefined) throw new Error('Persona id is required');
+      return { kind: 'persona', personaId };
+    }
     if (workspaceId === undefined || await core.accessor.get(IWorkspaceService).get(workspaceId) === undefined) throw new Error('Workspace not found');
+    if (kind === 'persona_workspace') {
+      if (personaId === undefined) throw new Error('Persona id is required');
+      return { kind: 'persona_workspace', workspaceId, personaId };
+    }
     return { kind: 'workspace', workspaceId };
   };
   const handle = async (requestId: string, reply: { send(payload: unknown): unknown }, operation: () => Promise<unknown>): Promise<void> => {
@@ -65,36 +78,36 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/inbox', params: scopeParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => (await store().list(await resolve(req.params.scope, req.query.workspace_id), true)).filter((entry) => entry.status === 'pending'));
+    await handle(req.id, reply, async () => (await store().list(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), true)).filter((entry) => entry.status === 'pending'));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/journal', params: scopeParams, querystring: scopeQuery.extend({ id: z.string().optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => store().journal(await resolve(req.params.scope, req.query.workspace_id), req.query.id));
+    await handle(req.id, reply, async () => store().journal(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.query.id));
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/undo', params: scopeParams, querystring: scopeQuery, body: z.object({ operation_id: z.string().uuid() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => ({ entry: await store().undo(await resolve(req.params.scope, req.query.workspace_id), req.body.operation_id) ?? null }));
+    await handle(req.id, reply, async () => ({ entry: await store().undo(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.operation_id) ?? null }));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}', params: scopeParams, querystring: scopeQuery.extend({ query: z.string().optional(), type: z.enum(['user', 'feedback', 'project', 'reference']).optional(), include_inactive: z.enum(['true', 'false']).transform((value) => value === 'true').optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
-      const target = await resolve(req.params.scope, req.query.workspace_id);
+      const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
       return { items: req.query.query ? await store().search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) : await store().list(target, req.query.include_inactive) };
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
-      const entry = await store().get(await resolve(req.params.scope, req.query.workspace_id), req.params.id);
+      const entry = await store().get(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id);
       if (entry === undefined) throw new Error('Memory not found');
       return entry;
     });
   }));
   add('put', defineRoute({ method: 'PUT', path: '/memory/{scope}/{id}', params: z.object({ scope: scopeParams.shape.scope, id: z.union([z.literal('new'), entryParams.shape.id]) }), querystring: scopeQuery, body, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => store().put({
-      scope: await resolve(req.params.scope, req.query.workspace_id),
+      scope: await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id),
       action: req.params.id === 'new' ? 'create' : req.body.action, id: req.params.id === 'new' ? undefined : req.params.id,
       type: req.body.type, title: req.body.title, body: req.body.body, reason: req.body.reason,
       expectedRevision: req.body.expected_revision, pinned: req.body.pinned, source: { writer: 'user' },
     }));
   }));
   add('delete', defineRoute({ method: 'DELETE', path: '/memory/{scope}/{id}', params: entryParams, querystring: entryQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => ({ operation_id: await store().delete(await resolve(req.params.scope, req.query.workspace_id), req.params.id, req.query.expected_revision ?? '') }));
+    await handle(req.id, reply, async () => ({ operation_id: await store().delete(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id, req.query.expected_revision ?? '') }));
   }));
 }

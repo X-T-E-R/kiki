@@ -62,6 +62,9 @@ import { IAgentUsageService } from '@kiki/agent-core-v2/agent/usage/usage';
 import { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IThreadCommunicationService } from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
+import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
+import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
+import { IRoomService } from '@kiki/agent-core-v2/app/room/room';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
@@ -93,6 +96,9 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   hostFolderBrowser: IHostFolderBrowser,
   bootstrapService: IBootstrapService,
   threadCommunicationService: IThreadCommunicationService,
+  personaStore: IPersonaStore,
+  botService: IBotService,
+  roomService: IRoomService,
   fileService: IFileService,
   workspaceInstanceManager: IWorkspaceInstanceManager,
   sessionManager: ISessionManager,

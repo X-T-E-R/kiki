@@ -96,6 +96,17 @@ describe('memory REST', () => {
       const undo = await request('POST', '/global/undo', { operation_id: write.envelope.data.operationId });
       expect(undo.envelope.code).toBe(0);
       expect((await request('GET', `/global/${id}`)).envelope.code).toBe(40423);
+      const workspace = await server.core.accessor.get(IWorkspaceService).createOrTouch(process.cwd());
+      for (const scope of ['persona', 'persona_workspace']) {
+        const query = `persona_id=example-role${scope === 'persona_workspace' ? `&workspace_id=${workspace.id}` : ''}`;
+        const saved = await request('PUT', `/${scope}/new?${query}`, { type: 'user', title: 'Private', body: 'Role-owned memory.', reason: 'Explicit user choice' });
+        expect(saved.envelope.code).toBe(0);
+        expect((await request('GET', `/${scope}/${saved.envelope.data.entry.id}?${query}`)).envelope.data.body).toBe('Role-owned memory.');
+        expect((await request('GET', `/${scope}?${query}`)).envelope.data.items).toHaveLength(1);
+        expect((await request('GET', `/${scope}?${query.replace('example-role', 'other-role')}`)).envelope.data.items).toEqual([]);
+        expect((await request('GET', `/${scope}?workspace_id=${workspace.id}`)).envelope.code).toBe(40001);
+      }
+      expect((await request('GET', '/global')).envelope.data.items).toEqual([]);
     } finally {
       await server.close();
       await rm(home, { force: true, recursive: true });

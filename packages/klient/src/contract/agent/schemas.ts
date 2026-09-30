@@ -39,6 +39,7 @@ export const promptPartSchema = z.discriminatedUnion('type', [
 export const emptyPayloadSchema = z.object({});
 
 export const promptExecutionBindingSchema = z.object({
+  personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),
   model: z.string().optional(),
   thinking: z.string().optional(),

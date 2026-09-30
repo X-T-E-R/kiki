@@ -264,6 +264,33 @@ export class SessionEventBroadcaster {
     this.globalTargets.add(target);
   }
 
+  publishRoomChanged(change: {
+    readonly roomId: string;
+    readonly room: import('@kiki/agent-core-v2/app/room/room').RoomDocument;
+    readonly entry?: import('@kiki/agent-core-v2/app/room/room').RoomLogEntry;
+  }): void {
+    const event = {
+      type: 'event.room.changed' as const,
+      room_id: change.roomId,
+      room: change.room,
+      entry: change.entry,
+      agentId: 'main',
+      sessionId: GLOBAL_SESSION_ID,
+    };
+    const envelope: EventEnvelope = {
+      type: event.type,
+      seq: 0,
+      session_id: GLOBAL_SESSION_ID,
+      timestamp: new Date().toISOString(),
+      payload: event,
+    };
+    for (const target of this.globalTargets) {
+      try {
+        target.send(envelope, 'immediate');
+      } catch {}
+    }
+  }
+
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);

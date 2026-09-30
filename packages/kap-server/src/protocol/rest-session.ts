@@ -5,8 +5,6 @@ import {
   sessionStatusResponseSchema as coreSessionStatusResponseSchema,
   sessionWarningSchema,
   sessionWarningsResponseSchema,
-  updateSessionProfileRequestSchema,
-  type UpdateSessionProfileRequest,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 import { restContextBreakdownSchema } from './context-usage';
@@ -19,11 +17,12 @@ import {
   sessionSchema,
 } from './session';
 
+import { updateSessionProfileRequestSchema, type UpdateSessionProfileRequest } from '@kiki/protocol';
 export { sessionWarningSchema, sessionWarningsResponseSchema, updateSessionProfileRequestSchema };
+export type { UpdateSessionProfileRequest };
 export type {
   SessionWarning,
   SessionWarningsResponse,
-  UpdateSessionProfileRequest,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
 export const sessionStatusResponseSchema = coreSessionStatusResponseSchema.extend({

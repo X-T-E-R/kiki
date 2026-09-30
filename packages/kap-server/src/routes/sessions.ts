@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -374,20 +376,24 @@ export function registerSessionsRoutes(
           workDir,
           sessionId: createdSessionId,
           ephemeral: body.ephemeral,
+          delivery: body.delivery,
           worktree: worktree === undefined ? undefined : {
             worktreeId: worktree.id, branch: worktree.branch,
             sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
           },
           mainAgentBinding:
-            body.agent_config?.model === undefined
+            body.persona === undefined
+              && body.agent_config?.model === undefined
               && body.agent_config?.profile === undefined
               && body.agent_config?.thinking === undefined
               ? undefined
               : {
-                  profile: body.agent_config.profile ?? DEFAULT_AGENT_PROFILE_NAME,
-                  model: body.agent_config.model,
-                  thinking: body.agent_config.thinking,
-                  strictThinking: body.agent_config.thinking !== undefined,
+                  persona: body.persona,
+                  profile: body.agent_config?.profile
+                    ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
+                  model: body.agent_config?.model,
+                  thinking: body.agent_config?.thinking,
+                  strictThinking: body.agent_config?.thinking !== undefined,
                 },
         });
         sessionCreated = true;
@@ -654,12 +660,25 @@ export function registerSessionsRoutes(
         );
         return;
       }
+      let facts = resolveSessionFacts(core, session_id, summary.usage);
+      if (!facts.live) {
+        const profile = await readPersistedAgentProfileSnapshot(core, summary.workspaceId, session_id, MAIN_AGENT_ID, undefined);
+        const persona = profile?.persona?.definition;
+        if (profile !== undefined) {
+          facts = { ...facts, agentConfig: {
+            model: profile.modelAlias ?? '', profile: profile.profileName,
+            persona: persona === undefined ? undefined : {
+              id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+            },
+          } };
+        }
+      }
       reply.send(
         okEnvelope(
           toWireSession(
             summary,
             cwd,
-            resolveSessionFacts(core, session_id, summary.usage),
+            facts,
             cursor?.seq,
           ),
           req.id,
@@ -757,9 +776,10 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const { agent_config, ...profileBody } = req.body;
+        const { agent_config, delivery, ...profileBody } = req.body;
         await withSessionOperation(core, session_id, async (handle) => {
           if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
           const fields = await updateSessionProfile(handle, profileBody);
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
           const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), undefined, core.accessor.get(ISessionManager).isEphemeral(fields.id));
@@ -1421,6 +1441,7 @@ export interface SessionWireFields {
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly delivery?: 'reply' | 'message';
 }
 
 export function toWireSession(
@@ -1433,6 +1454,7 @@ export function toWireSession(
   return {
     id: fields.id,
     workspace_id: fields.workspaceId,
+    delivery: facts.delivery ?? fields.delivery ?? 'reply',
     title: fields.title ?? '',
     created_at: new Date(fields.createdAt).toISOString(),
     updated_at: new Date(fields.updatedAt).toISOString(),
@@ -1467,6 +1489,7 @@ export interface SessionFacts {
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly delivery?: 'reply' | 'message';
   readonly agentConfig?: Session['agent_config'];
   readonly usage?: SessionUsage;
   /** False when no live handle exists (cold session); live warm sessions
@@ -1506,11 +1529,19 @@ export function resolveSessionFacts(
   const main = agents.find((agent) => agent.id === MAIN_AGENT_ID);
   const sessionUsage = handle.accessor.get(ISessionMetadata).usage() ?? persistedUsage;
   const profile = main?.accessor.get(IAgentProfileService).data();
+  const persona = profile?.persona?.definition;
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
+    delivery: handle.accessor.get(ISessionDeliveryService).mode(),
     agentConfig: profile === undefined
       ? undefined
-      : { model: profile.modelAlias ?? '', profile: profile.profileName },
+      : {
+          model: profile.modelAlias ?? '',
+          profile: profile.profileName,
+          persona: persona === undefined
+            ? undefined
+            : { id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar` },
+        },
     usage:
       main === undefined
         ? undefined

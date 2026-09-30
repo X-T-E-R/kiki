@@ -47,6 +47,8 @@ import { modelsContract } from './global/models.js';
 import { modelCatalogMutationContract } from './global/modelCatalogMutation.js';
 import { mcpManagementContract } from './global/mcpManagement.js';
 import { pluginsContract } from './global/plugins.js';
+import { personaStoreContract } from './global/personas.js';
+import { botContract, roomContract } from './global/botRooms.js';
 import { providersContract } from './global/providers.js';
 import { sessionsContract } from './global/sessions.js';
 import { workspacesContract } from './global/workspaces.js';
@@ -86,6 +88,9 @@ export const globalContract: KlientContract = {
   authSummaryService: authSummaryContract,
   flagService: flagsContract,
   pluginService: pluginsContract,
+  personaStore: personaStoreContract,
+  botService: botContract,
+  roomService: roomContract,
   capabilityService: capabilitiesContract,
   hostFolderBrowser: hostFsContract,
   bootstrapService: envContract,
