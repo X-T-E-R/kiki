@@ -1,6 +1,7 @@
 import { Console } from 'node:console';
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createContextKlient } from '@kiki/klient/procedures';
 
 import {
   createKikiMcpServer,
@@ -16,5 +17,9 @@ export async function runKikiMcpStdio(
     configurable: true,
     value: new Console({ stdout: process.stderr, stderr: process.stderr }),
   });
-  await createKikiMcpServer(config, options).connect(new StdioServerTransport());
+  const context = config.contextEnabled ? createContextKlient({
+    endpoint: config.endpoint, token: config.delegationToken, fetch: options.fetch,
+  }) : undefined;
+  const contextCatalog = await context?.catalog(AbortSignal.timeout(15_000));
+  await createKikiMcpServer(config, { ...options, contextCatalog, contextCall: context?.call }).connect(new StdioServerTransport());
 }

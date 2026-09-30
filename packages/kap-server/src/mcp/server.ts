@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   createSeatKlient,
+  contextReadOnlyTools,
   delegationProcedureTable,
   SeatKlientError,
   type DelegationProcedureInput,
@@ -32,11 +33,14 @@ export interface KikiMcpConfig {
   readonly delegationToken: string;
   readonly sessionId: string;
   readonly workspacePath?: string;
+  readonly contextEnabled?: boolean;
 }
 
 export interface KikiMcpServerOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly progressPollIntervalMs?: number;
+  readonly contextCatalog?: import('@kiki/klient/procedures').ContextCatalog;
+  readonly contextCall?: ReturnType<typeof import('@kiki/klient/procedures').createContextKlient>['call'];
 }
 
 interface ProgressRequestContext {
@@ -97,11 +101,11 @@ export function createKikiMcpServer(
   const registrar = server as unknown as {
     registerTool(
       name: string,
-      config: { readonly description: string; readonly inputSchema: z.ZodTypeAny },
+      config: { readonly description: string; readonly inputSchema: z.ZodTypeAny; readonly annotations?: { readonly readOnlyHint: boolean; readonly destructiveHint: boolean; readonly openWorldHint: boolean } },
       callback: (input: unknown, extra: unknown) => Promise<unknown>,
     ): RegisteredTool;
   };
-  for (const procedure of delegationProcedureTable) {
+  for (const procedure of options.contextCatalog?.delegation === false ? [] : delegationProcedureTable) {
     const codec = procedure.mcp.input as {
       readonly schema: z.ZodTypeAny;
       decode(value: unknown): unknown;
@@ -128,13 +132,28 @@ export function createKikiMcpServer(
           ? boundResultPage(output as never, input as DelegationProcedureInput<'result'>)
           : output;
         const encoded = encodeOutput(normalized, input);
-        if (procedure.name === 'profiles') updateProfileDescriptions(tools, encoded);
+        if (procedure.name === 'profiles' && options.contextCatalog === undefined) updateProfileDescriptions(tools, encoded);
         return encoded;
       }),
     );
     tools.set(procedure.mcp.toolName, tool);
   }
 
+  for (const tool of options.contextCatalog?.tools ?? []) {
+    registrar.registerTool(tool.toolName, {
+      description: tool.description,
+      inputSchema: z.fromJSONSchema(tool.parameters),
+      annotations: { readOnlyHint: contextReadOnlyTools.has(tool.toolName), destructiveHint: !contextReadOnlyTools.has(tool.toolName), openWorldHint: false },
+    }, async (input, extra) => {
+      try {
+        const output = await options.contextCall!({ name: tool.name as never, arguments: input as Record<string, unknown> },
+          (extra as ProgressRequestContext).signal);
+        return { ...result(output), isError: output.isError === true };
+      } catch (error) {
+        return toolResult(async () => { throw error; });
+      }
+    });
+  }
   return server;
 }
 
@@ -152,6 +171,7 @@ export function kikiMcpConfigFromEnv(env: NodeJS.ProcessEnv): KikiMcpConfig {
     delegationToken: parsed.KIKI_DELEGATION_TOKEN,
     sessionId: parsed.KIKI_SESSION_ID,
     workspacePath: parsed.KIKI_WORKSPACE_PATH,
+    contextEnabled: env['KIKI_CONTEXT_MCP'] === 'true',
   };
 }
 

@@ -301,6 +301,7 @@ describe('Kiki external delegation MCP projector', () => {
       delegationToken: 'DELEGATION_SECRET',
       sessionId: 'session-operator',
       workspacePath: '/example/workspace',
+      contextEnabled: false,
     });
     expect(() => kikiMcpConfigFromEnv({
       KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',

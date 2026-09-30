@@ -121,6 +121,7 @@ import {
   createSeatKlientDelegationAuth,
   registerSeatKlientDelegationRoutes,
 } from './procedures/http';
+import { registerContextRoutes } from './procedures/contextHttp';
 
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
 import {
@@ -736,6 +737,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const externalDelegationHost = new ExternalDelegationProcedureHost(core);
   if (exposureClass === 'loopback') {
     registerSeatKlientDelegationRoutes(app, externalDelegationHost, seatDelegationAuth!);
+    registerContextRoutes(app, core, seatDelegationAuth!);
     registerKikiMcpHttp(app, {
       seatResolver,
       resolveKlient: async (seat) => {
