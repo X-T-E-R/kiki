@@ -1298,13 +1298,16 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.metadataAgents['agent_child_1']).toMatchObject({ model: 'main-model', thinkingEffort: 'high' });
   });
 
-  it('resolves tool, route, and caller-lease inherit pins without persisting the sentinel', async () => {
+  it('rejects tool inherit while resolving configured route and caller-lease pins', async () => {
     const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'other-model', thinkingEffort: 'low' });
     const lane = createLane(disposables, 'internal', { profile, mainModel: 'main-model' });
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, { thinkingLevel: 'high' });
 
-    const toolResult = await lane.runInternal({ profile: 'coder', model_alias: 'inherit', prompt: 'work', description: 'Inherit tool', background: true });
+    await expect(lane.runInternal({ profile: 'coder', model_alias: 'inherit', prompt: 'work', description: 'Rejected tool inherit', background: true }))
+      .rejects.toMatchObject({ issues: [{ path: ['model_alias'], message: expect.stringContaining('AgentRun does not accept model_alias: "inherit"') }] });
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    const toolResult = await lane.runInternal({ profile: 'coder', model_alias: 'main-model', effort: 'low', prompt: 'work', description: 'Concrete tool model', background: true });
     expect(toolResult.isError).not.toBe(true);
     expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding).toMatchObject({ model: 'main-model', thinking: 'low' });
 
@@ -1338,7 +1341,7 @@ describe('AgentRun and dispatch parity golden', () => {
     });
   });
 
-  it('resolves inherit against the current caller when resuming a saved child', async () => {
+  it('requires a concrete model override when changing a saved child binding', async () => {
     const lane = createLane(disposables, 'internal', {
       profile: normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined }),
       mainModel: 'main-model',
@@ -1351,7 +1354,11 @@ describe('AgentRun and dispatch parity golden', () => {
       modelAlias: 'next-model', thinkingLevel: 'low', effectiveThinkingLevel: 'high',
     });
 
-    const resumed = await lane.runInternal({ resume: 'saved_child', model_alias: 'inherit',
+    await expect(lane.runInternal({ resume: 'saved_child', model_alias: 'inherit',
+      allow_model_change: true, prompt: 'continue', description: 'Rejected resume inherit', background: true }))
+      .rejects.toMatchObject({ issues: [{ path: ['model_alias'], message: expect.stringContaining('AgentRun does not accept model_alias: "inherit"') }] });
+    expect(lane.probe.resumeBindings).toHaveLength(0);
+    const resumed = await lane.runInternal({ resume: 'saved_child', model_alias: 'next-model', effort: 'high',
       allow_model_change: true, prompt: 'continue', description: 'Continue saved child', background: true });
 
     expect(resumed.isError).not.toBe(true);
