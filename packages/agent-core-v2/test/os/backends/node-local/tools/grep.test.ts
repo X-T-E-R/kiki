@@ -52,6 +52,8 @@ import { recordingTelemetry, type TelemetryRecord } from '../../../../app/teleme
 import { registerStateServices } from '../../../../state/stubs';
 import { stubBootstrap } from '../../../../app/bootstrap/stubs';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 
 vi.mock('#/os/backends/node-local/tools/rgLocator', () => ({
   ensureRgPath: vi.fn(async () => ({ path: '/mock/rg', source: 'system-path' })),
@@ -378,6 +380,14 @@ describe('GrepTool', () => {
             onDidSectionChange: Event.None as Event<ConfigSectionChangedEvent>,
           });
           reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.definePartialInstance(IShippedAgentProfileManager, {
+            ready: Promise.resolve(),
+            isCleanActivePath: () => false,
+          });
+          reg.definePartialInstance(ISessionDeliveryService, {
+            onDidChangeEffective: Event.None as ISessionDeliveryService['onDidChangeEffective'],
+            effectiveMode: () => 'reply',
+          });
         },
       });
 

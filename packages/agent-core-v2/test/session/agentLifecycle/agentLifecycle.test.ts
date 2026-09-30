@@ -11,7 +11,7 @@ import { IWireService } from '#/wire/wire';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
-import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
+import { overrideScopedService, ScopeActivation, type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -34,6 +34,9 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IPersonaStore } from '#/app/persona/personaStore';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import {
@@ -99,6 +102,7 @@ import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { AgentPromptService } from '#/agent/prompt/promptService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
@@ -386,7 +390,14 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAgentPromptService, {
       _serviceBrand: undefined,
       drain: promptDrain,
-    } as unknown as IAgentPromptService);
+    });
+    class StubPromptService {
+      declare readonly _serviceBrand: undefined;
+      drain = promptDrain;
+    }
+    overrideScopedService<Partial<IAgentPromptService>>(
+      LifecycleScope.Agent, IAgentPromptService, StubPromptService, ScopeActivation.OnDemand,
+    );
     executionCancel = vi.fn<IAgentExecutionService['cancel']>(() => false);
     executionShutdown = vi.fn<IAgentExecutionService['shutdown']>(async () => {});
     ix.stub(IAgentExecutionService, {
@@ -466,6 +477,15 @@ describe('AgentLifecycleService', () => {
       resolve: async () => ({ values: {}, fields: [] }),
     });
     ix.stub(IAgentIdentity, { _serviceBrand: undefined } as IAgentIdentity);
+    ix.stub(IPersonaStore, { _serviceBrand: undefined });
+    ix.stub(IShippedAgentProfileManager, {
+      ready: Promise.resolve(),
+      isCleanActivePath: () => false,
+    });
+    ix.stub(ISessionDeliveryService, {
+      onDidChangeEffective: Event.None as ISessionDeliveryService['onDidChangeEffective'],
+      effectiveMode: () => 'reply',
+    });
     ix.stub(IAgentAgentsMdReminderService, {
       _serviceBrand: undefined,
     } as IAgentAgentsMdReminderService);
@@ -548,6 +568,7 @@ describe('AgentLifecycleService', () => {
   beforeEach(createTestHost);
   afterEach(() => {
     disposables.dispose();
+    overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
     vi.restoreAllMocks();
   });
 
