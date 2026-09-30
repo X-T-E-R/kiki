@@ -12,6 +12,8 @@ The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` in
 
 While the agent is busy, new messages join a queue above the input box instead of interrupting. Each queued message has its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). Change a message's timing, edit, reorder, or send it now from its row in the queue.
 
+Stopping the main agent before it has replied or called a tool restores the interrupted prompt and its attachments to the session draft, alongside any unsent edits. Already answered or steered prompts are not restored. Attachment recovery requires the complete prompt content to be available in the loaded transcript; recovered attachments stay in memory for the current app run.
+
 After a restart, restored queued messages wait for confirmation. Choose **Send now** on one message to send just that message, or **Resume queue** to release the queue. **Later** only collapses the explanation: the resume button stays visible while messages are held, and newly submitted messages may continue to queue until you resume.
 
 In a subagent's input box, the stop button is disabled while its stop request is pending. If the request fails, an error notice explains why and the button becomes available to retry. Stopping one run does not clear unrelated messages waiting in that subagent's queue.

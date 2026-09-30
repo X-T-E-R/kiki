@@ -63,6 +63,8 @@ import {
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
+import { messageContentSchema } from '@kiki/protocol';
+import { restorePromptToDraft } from '../composer/drafts';
 
 export type Listener = () => void;
 
@@ -195,6 +197,8 @@ export class SessionController {
   private rewriteHold: RewriteHold | undefined;
   private rewriteHoldToken = 0;
   private closed = false;
+  private abortActiveInFlight: Promise<void> | undefined;
+  private lastRestoredPromptId: string | undefined;
 
   private readonly snapshotControllers = new Set<AbortController>();
   private readonly agentStates = new Map<string, SessionViewState>();
@@ -1604,10 +1608,51 @@ export class SessionController {
   }
 
   async abortActive(): Promise<void> {
+    if (this.abortActiveInFlight !== undefined) return this.abortActiveInFlight;
+    const pending = this.abortActiveAndRestore();
+    this.abortActiveInFlight = pending;
+    try {
+      await pending;
+    } finally {
+      this.abortActiveInFlight = undefined;
+    }
+  }
+
+  private unansweredPromptContent(promptId: string, afterAbort = false): readonly MessageContent[] | undefined {
+    const store = this.agentTranscripts.get(MAIN_AGENT_ID);
+    if (store === undefined || this.appliedTranscriptGrades.get(MAIN_AGENT_ID) !== 'delta') return undefined;
+    const snapshot = store.snapshot();
+    const prompt = snapshot.prompts.find((item) => item.promptId === promptId);
+    if (prompt === undefined || prompt.steeredAt !== undefined ||
+        (prompt.status !== 'running' && !(afterAbort && prompt.status === 'aborted'))) return undefined;
+    const turn = snapshot.items.find((item) => item.kind === 'turn' && (
+      item.promptId === promptId || item.origin.kind === 'user' &&
+      typeof item.origin.payload === 'object' && item.origin.payload !== null &&
+      'promptId' in item.origin.payload && item.origin.payload.promptId === promptId
+    ));
+    if (turn?.kind === 'turn') {
+      if (turn.origin.kind !== 'user') return undefined;
+      if (turn.steps.some((step) => step.frames.some((frame) => frame.kind === 'tool' ||
+          frame.kind === 'text' && frame.role === 'assistant' && (frame.text !== '' || (frame.attachmentIds?.length ?? 0) > 0)))) return undefined;
+    }
+    const parsed = messageContentSchema.array().safeParse(prompt.content);
+    if (!parsed.success || parsed.data.length === 0 || parsed.data.some((part) =>
+      part.type !== 'text' && part.type !== 'image' && part.type !== 'video' && part.type !== 'file')) return undefined;
+    return parsed.data;
+  }
+
+  private async abortActiveAndRestore(): Promise<void> {
     if (!this.state.busy) return;
     const promptId = this.state.abortablePromptId;
     if (promptId !== undefined) {
-      await this.abortPrompt(promptId);
+      const content = this.unansweredPromptContent(promptId);
+      const result = await this.client.abortPrompt(this.sessionId, promptId);
+      await this.refreshPrompts();
+      if (result.aborted && content !== undefined && this.lastRestoredPromptId !== promptId &&
+          this.unansweredPromptContent(promptId, true) !== undefined) {
+        this.lastRestoredPromptId = promptId;
+        restorePromptToDraft(this.sessionId, content);
+      }
       return;
     }
     const turnId = this.state.abortableTurnId;

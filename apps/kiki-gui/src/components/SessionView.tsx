@@ -1418,11 +1418,16 @@ export function SessionView({
   // returns focus so the follow-up can be typed at once.
   useEffect(
     () =>
-      subscribeDraftAppends((target) => {
+      subscribeDraftAppends((target, restoredAttachments) => {
         if (target !== sessionId) return;
         const next = readDraft(sessionId);
         draftRef.current = next;
         setDraft(next);
+        if (restoredAttachments !== undefined) {
+          const nextAttachments = [...attachmentsRef.current, ...restoredAttachments];
+          attachmentsRef.current = nextAttachments;
+          setAttachments(nextAttachments);
+        }
         focusComposer();
       }),
     [sessionId, focusComposer],

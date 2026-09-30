@@ -6,6 +6,8 @@ import type {
   AgentTranscriptResponse,
   SessionTransport as KikiClient,
 } from '../transport';
+import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, subscribeDraftAppends } from '../composer/drafts';
+import { buildPromptContent } from '../composer/attachments';
 import { resolveSelectedEffort } from '../settings/agentSettings';
 import { resolveEffectiveModel } from '../settings/settings';
 import type { SessionEventFrame } from '../wire';
@@ -1134,6 +1136,66 @@ describe('SessionController transcript authority', () => {
     await controller.abortActive();
     expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'p-canonical-1');
     controller.close();
+  });
+
+  it('restores an unanswered prompt and its attachments once without replacing an existing draft', async () => {
+    resetDraftMemoryForTests();
+    resetComposerMemoryForTests();
+    const { controller, client } = await openTranscriptController();
+    const content: MessageContent[] = [
+      { type: 'text', text: 'original prompt' },
+      { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'file', file_id: 'example-file', name: 'report.txt', media_type: 'text/plain', size: 5 },
+    ];
+    const canonical = userTurnSnapshot({ streaming: true, assistantText: '', prompt: 'original prompt' });
+    controller.handleTranscript(resetEvent('main', { ...canonical, prompts: canonical.prompts.map((prompt) => ({ ...prompt, content })) }, 1));
+    writeDraft('session_test', 'unsent follow-up');
+    const listener = vi.fn();
+    const unsubscribe = subscribeDraftAppends(listener);
+    try {
+      await Promise.all([controller.abortActive(), controller.abortActive()]);
+      await controller.abortActive();
+      expect(readDraft('session_test')).toBe('unsent follow-up\n\noriginal prompt');
+      expect(buildPromptContent('', readComposerState('session_test').attachments ?? [])).toEqual(content.slice(1));
+      expect(listener).toHaveBeenCalledOnce();
+      expect(client.abortPrompt).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      controller.close();
+      resetDraftMemoryForTests();
+      resetComposerMemoryForTests();
+    }
+  });
+
+  it.each(['answered', 'steered', 'tool-started', 'missing-content', 'abort-failed', 'completed-race', 'reply-race'] as const)('does not refill a %s prompt', async (condition) => {
+    resetDraftMemoryForTests();
+    const { controller, client } = await openTranscriptController();
+    const canonical = userTurnSnapshot({ streaming: true, assistantText: condition === 'answered' ? 'reply' : '' });
+    const turn = canonical.items[0];
+    if (condition === 'tool-started' && turn?.kind === 'turn') turn.steps[0]!.frames.push({
+      kind: 'tool', frameId: 'example-tool', toolCallId: 'example-call', name: 'Read', state: 'running',
+    });
+    const prepared = condition === 'steered'
+      ? { ...canonical, prompts: canonical.prompts.map((prompt) => ({ ...prompt, steeredAt: '2026-01-01T00:00:01.000Z' })) }
+      : condition === 'missing-content'
+        ? { ...canonical, prompts: canonical.prompts.map((prompt) => ({ ...prompt, content: undefined })) }
+        : canonical;
+    controller.handleTranscript(resetEvent('main', prepared, 1));
+    writeDraft('session_test', 'keep my edits');
+    if (condition === 'abort-failed') client.abortPrompt.mockRejectedValueOnce(new Error('abort unavailable'));
+    if (condition === 'completed-race') client.abortPrompt.mockResolvedValueOnce({ aborted: false, at_seq: 2 });
+    if (condition === 'reply-race') client.abortPrompt.mockImplementationOnce(async () => {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'late reply' }), 2));
+      return { aborted: true, at_seq: 2 };
+    });
+    try {
+      if (condition === 'abort-failed') await expect(controller.abortActive()).rejects.toThrow('abort unavailable');
+      else await controller.abortActive();
+      expect(readDraft('session_test')).toBe('keep my edits');
+    } finally {
+      controller.close();
+      resetDraftMemoryForTests();
+    }
   });
 
   it('retains independent delta views alongside the unchanged legacy focus baseline', async () => {

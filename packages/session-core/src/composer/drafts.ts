@@ -19,7 +19,7 @@ let hydratedFromDisk = false;
 let unloadListenersInstalled = false;
 
 function draftsEnabled(): boolean {
-  return readSettings().draftPersistence;
+  return typeof localStorage !== 'undefined' && readSettings().draftPersistence;
 }
 
 function readAllStored(): Record<string, string> {
@@ -356,7 +356,29 @@ export function appendToDraft(sessionId: string, text: string): void {
   for (const listener of appendListeners) listener(sessionId);
 }
 
-type DraftAppendListener = (sessionId: string) => void;
+export function restorePromptToDraft(sessionId: string, content: readonly import('@kiki/protocol').MessageContent[]): void {
+  const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
+  const restored: ComposerAttachment[] = content.flatMap((part): ComposerAttachment[] => {
+    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];
+    return [{ kind: 'retained', name: part.type === 'file' ? part.name ?? part.file_id : part.type, content: part }];
+  });
+  const current = readDraft(sessionId);
+  writeDraft(sessionId, current === '' ? text : text === '' ? current : `${current}\n\n${text}`);
+  const previous = readComposerState(sessionId);
+  writeComposerState(sessionId, {
+    attachments: [...(previous.attachments ?? []), ...restored],
+    annotations: previous.annotations ?? [],
+    permissionMode: previous.permissionMode,
+    planMode: previous.planMode,
+    planGate: previous.planGate,
+    goalObjective: previous.goalObjective,
+    modelOverride: previous.modelOverride,
+    effortOverride: previous.effortOverride,
+  });
+  for (const listener of appendListeners) listener(sessionId, restored);
+}
+
+type DraftAppendListener = (sessionId: string, attachments?: readonly ComposerAttachment[]) => void;
 
 const appendListeners = new Set<DraftAppendListener>();
 

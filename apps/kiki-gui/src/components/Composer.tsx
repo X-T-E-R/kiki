@@ -2025,6 +2025,19 @@ export function Composer({
                         </TextTile>
                       );
                     }
+                    if (attachment.kind === 'retained') {
+                      return (
+                        <TextTile
+                          key={`retained-${index}`}
+                          title={attachment.name}
+                          onRemove={remove}
+                          removeLabel={t('composer.removeAttachment', { name: attachment.name })}
+                        >
+                          <FileGlyph dir={false} />
+                          <span className="min-w-0 truncate">{attachment.name}</span>
+                        </TextTile>
+                      );
+                    }
                     if (attachment.kind === 'upload') {
                       const name = attachment.name === '' ? t('attach.pastedFile') : attachment.name;
                       const uploading = attachment.fileId === undefined;

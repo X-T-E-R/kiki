@@ -17,7 +17,7 @@
  *     lands; sending blocks while an upload is in flight.
  */
 
-import type { FileContent, ImageContent, MessageContent } from '@kiki/protocol';
+import type { FileContent, ImageContent, VideoContent, MessageContent } from '@kiki/protocol';
 
 import { LocalizedError, type ValidationIssue } from '../i18n/locale';
 
@@ -41,7 +41,13 @@ export interface ImageAttachment {
   previewUrl: string;
 }
 
-export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment;
+export interface RetainedAttachment {
+  kind: 'retained';
+  name: string;
+  content: Extract<MessageContent, { type: 'image' | 'video' | 'file' }>;
+}
+
+export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment | RetainedAttachment;
 
 /**
  * A dropped/pasted non-image file, uploaded to the server's file store at
@@ -283,6 +289,9 @@ export function buildPromptContent(
     };
     content.push(part);
   }
+  for (const attachment of attachments) {
+    if (attachment.kind === 'retained') content.push(attachment.content);
+  }
   return content.length > 0 ? content : null;
 }
 
@@ -294,27 +303,14 @@ export function buildPromptContent(
 export function buildSkillActivation(
   args: string,
   attachments: readonly ComposerAttachment[],
-): { args: string; attachments?: (ImageContent | FileContent)[] } {
+): { args: string; attachments?: (ImageContent | VideoContent | FileContent)[] } {
   const mentions = attachments.filter((item): item is FileMention => item.kind === 'file');
-  const images = attachments.filter((item): item is ImageAttachment => item.kind === 'image');
-  const uploads = attachments.filter((item): item is UploadAttachment => item.kind === 'upload');
   const mergedArgs = [mentions.map(mentionToken).join(' '), args.trim()]
     .filter((part) => part !== '')
     .join(' ');
-  const media: (ImageContent | FileContent)[] = images.map((image) => ({
-    type: 'image' as const,
-    source: { kind: 'base64' as const, media_type: image.mediaType, data: image.data },
-  }));
-  for (const upload of uploads) {
-    if (upload.fileId === undefined) continue;
-    media.push({
-      type: 'file',
-      file_id: upload.fileId,
-      name: upload.name,
-      media_type: upload.mediaType,
-      size: upload.size,
-    });
-  }
+  const media = (buildPromptContent('', attachments) ?? []).filter(
+    (part): part is ImageContent | VideoContent | FileContent => part.type === 'image' || part.type === 'video' || part.type === 'file',
+  );
   return { args: mergedArgs, attachments: media.length > 0 ? media : undefined };
 }
 
