@@ -31,18 +31,15 @@
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
-  column-gap: 6px;
+  column-gap: 10px;
 }
 /* A switch's hint (why it is unavailable, what turning it on means) follows
  * its label on the same line instead of hanging under it, so the row keeps
- * one baseline; narrow widths wrap it after the label. */
+ * one baseline; narrow widths wrap it after the label. The gap and the
+ * hint's quieter ink separate it from the label; a separator glyph would be
+ * left stranded at the start of the line once the hint wraps. */
 [data-hero-target] > div > p {
   padding-left: 0;
-}
-[data-hero-target] > div > p::before {
-  content: '·';
-  margin-right: 6px;
-  color: var(--color-ink-faint);
 }
 @media (pointer: fine) {
   [data-hero-target] > div > label {
