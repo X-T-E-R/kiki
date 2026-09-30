@@ -223,6 +223,44 @@ export function collectTimelineAnnotations(
   return targets;
 }
 
+/**
+ * Draft-driven targets: the composer's unsent notes mark their passages in the
+ * timeline while they ride the draft. Each note anchors to the NEWEST block
+ * containing its quote (the passage the user just read), scanning from the
+ * end; a quote no longer on the timeline simply gets no marker. The note id is
+ * the draft annotation's own, so a mark click edits the draft, not an overlay.
+ */
+export function collectDraftAnnotationTargets(
+  blocks: readonly TimelineBlockLike[],
+  drafts: readonly { readonly id: string; readonly quote: string; readonly comment: string }[],
+): ReadonlyMap<string, readonly TimelineAnnotation[]> {
+  const targets = new Map<string, TimelineAnnotation[]>();
+  for (const draft of drafts) {
+    if (draft.quote.trim() === '') continue;
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const candidate = blocks[index];
+      if (
+        candidate === undefined ||
+        !ANCHORABLE_KINDS.has(candidate.kind) ||
+        candidate.text === undefined
+      ) {
+        continue;
+      }
+      if (findQuoteRange(candidate.text, draft.quote) === null) continue;
+      const annotation: TimelineAnnotation = {
+        id: draft.id,
+        quote: draft.quote,
+        comment: draft.comment,
+      };
+      const list = targets.get(candidate.id);
+      if (list === undefined) targets.set(candidate.id, [annotation]);
+      else list.push(annotation);
+      break;
+    }
+  }
+  return targets;
+}
+
 /** Apply local overlays: drop removed markers, swap in edited comments. */
 export function applyAnnotationOverrides(
   targets: ReadonlyMap<string, readonly TimelineAnnotation[]>,

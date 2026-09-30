@@ -34,13 +34,9 @@ import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
-  applyAnnotationOverrides,
-  collectTimelineAnnotations,
-  getAnnotationOverridesSnapshot,
+  collectDraftAnnotationTargets,
   parseSelectionCarryovers,
-  subscribeAnnotationOverrides,
-  writeAnnotationOverride,
-  type AnnotationOverride,
+  type SelectionAnnotation,
   type TimelineAnnotation,
   appendToDraft,
   appendThreadRefContext,
@@ -111,12 +107,12 @@ import {
 } from './ActivityHistory';
 import {
   ActivityRow,
-  ActivityStats,
   ACTIVITY_GUTTER,
   TimelineDivider,
 } from './timeline/ActivityRow';
 import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopover';
-import { AnnotationChip, QuoteChip } from './ContextChips';
+import { QuoteChip } from './ContextChips';
+import { SentAnnotationsBubble } from './SentAnnotationsBubble';
 import { FloorNavRail } from './FloorNavRail';
 import {
   TRANSCRIPT_END_THRESHOLD,
@@ -164,7 +160,7 @@ import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './To
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
 import { useTranscriptDetail } from './transcriptDetail';
-import { MessageRow, SpeakerHead, speakerOf, MESSAGE_FACE } from './message/MessageRow';
+import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
 import { buildMessageNodes, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
 import { writeTimelineView, type TimelineView } from './message/messageViewMode';
@@ -383,11 +379,13 @@ const UserMessage = memo(function UserMessage({
         </span>
       </span>
       {carried && !editing ? (
-        <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+        <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap items-center justify-end gap-1.5">
           {carry.quote !== null ? <QuoteChip quote={carry.quote} /> : null}
-          {carry.annotations.map((annotation, index) => (
-            <AnnotationChip key={index} quote={annotation.quote} comment={annotation.comment} />
-          ))}
+          {/* Sent notes fold into one bubble beside the message; the timeline
+              itself only marks notes still riding the composer's draft. */}
+          {carry.annotations.length > 0 ? (
+            <SentAnnotationsBubble blockId={block.id} annotations={carry.annotations} />
+          ) : null}
         </div>
       ) : null}
       {block.media !== undefined ? <div data-user-media className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
@@ -2050,40 +2048,6 @@ export function mergeSubagentRows(nodes: readonly DisplayNode[]): readonly Displ
   return merged.length === nodes.length ? nodes : merged;
 }
 
-/**
- * The notes a reader left on a message, set right under it: the passage in
- * faint type, the comment in ink. Each note is the same entry point as the
- * mark in the text (`data-annotation-ref`), so a click or Enter opens the
- * editor in place. Quote-only carry-overs keep just their mark.
- */
-function AnnotationNotes({ annotations, align }: { annotations: readonly TimelineAnnotation[]; align: 'start' | 'end' }) {
-  const { t, tp } = useI18n();
-  const notes = annotations.filter((annotation) => annotation.comment !== null && annotation.comment !== '');
-  if (notes.length === 0) return null;
-  return (
-    <ul
-      data-annotation-notes
-      aria-label={tp('transcript.annotation.notes', notes.length)}
-      className={`mt-2 flex max-w-[80%] flex-col gap-1 ${align === 'end' ? 'ml-auto items-end' : 'items-start'}`}
-    >
-      {notes.map((annotation) => (
-        <li key={annotation.id} className="max-w-full">
-          <button
-            type="button"
-            data-annotation-ref={annotation.id}
-            data-annotation-note
-            aria-label={t('transcript.annotation.openAria', { quote: annotation.quote.replace(/\s+/g, ' ').trim() })}
-            className="flex min-h-8 max-w-full flex-col gap-0.5 rounded-md sm:flex-row sm:items-baseline sm:gap-2 bg-ink/[0.03] py-1 pr-2 pl-2 text-left text-[12px] leading-snug transition-colors hover:bg-ink/[0.06] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-          >
-            <span className="max-w-full truncate text-ink-faint sm:max-w-[16rem]">“{annotation.quote.replace(/\s+/g, ' ').trim()}”</span>
-            <span className="min-w-0 text-ink-soft [overflow-wrap:anywhere]">{annotation.comment}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 /** Turn a display node belongs to (tool groups take their first tool's). */
 function displayNodeTurnId(node: TimelineNode): string | undefined {
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
@@ -2447,9 +2411,6 @@ const TranscriptRow = memo(
       >
         {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
         {renderNode(node)}
-        {annotations !== undefined && (node.kind === 'assistant' || node.kind === 'user') ? (
-          <AnnotationNotes annotations={annotations} align={node.kind === 'user' ? 'end' : 'start'} />
-        ) : null}
       </div>
     );
   },
@@ -2800,6 +2761,9 @@ export function Transcript({
   rowActions,
   visible = true,
   view = 'process',
+  draftAnnotations,
+  onSaveDraftAnnotation,
+  onRemoveDraftAnnotation,
 }: {
   state: SessionViewState;
   agentId?: string;
@@ -2826,6 +2790,14 @@ export function Transcript({
   forest?: AgentForest;
   onOpenAgent?: (agentId: string) => void;
   rowActions?: TranscriptRowActions;
+  /**
+   * Composer draft annotations: while the draft quotes part of a message, the
+   * quoted range is marked in the timeline and the popover edits the draft
+   * annotation itself. Sent notes live on the message bubble instead.
+   */
+  draftAnnotations?: readonly SelectionAnnotation[];
+  onSaveDraftAnnotation?: (id: string, comment: string) => void;
+  onRemoveDraftAnnotation?: (id: string) => void;
 }) {
   const { t } = useI18n();
   const { blocks } = state;
@@ -2857,20 +2829,14 @@ export function Transcript({
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
   );
-  const annotationOverrides = useSyncExternalStore(
-    subscribeAnnotationOverrides,
-    getAnnotationOverridesSnapshot,
-    getAnnotationOverridesSnapshot,
+  // Timeline marks follow the composer draft only: no draft annotation, no
+  // mark. Sent annotations are rendered by the user message bubble itself.
+  const annotationTargets = useStableAnnotationTargets(
+    useMemo(
+      () => collectDraftAnnotationTargets(timelineBlocks, draftAnnotations ?? []),
+      [timelineBlocks, draftAnnotations],
+    ),
   );
-  const derivedAnnotationTargets = useMemo(
-    () => collectTimelineAnnotations(timelineBlocks),
-    [timelineBlocks],
-  );
-  const resolvedAnnotationTargets = useMemo(
-    () => applyAnnotationOverrides(derivedAnnotationTargets, annotationOverrides),
-    [annotationOverrides, derivedAnnotationTargets],
-  );
-  const annotationTargets = useStableAnnotationTargets(resolvedAnnotationTargets);
   const annotationsById = useMemo(() => {
     const map = new Map<string, TimelineAnnotation>();
     for (const annotations of annotationTargets.values()) {
@@ -2925,10 +2891,6 @@ export function Transcript({
         : { ...current, anchor };
     });
   }, [annotationPopover]);
-  const updateAnnotationOverride = useCallback((id: string, patch: AnnotationOverride) => {
-    const previous = getAnnotationOverridesSnapshot()[id] ?? {};
-    writeAnnotationOverride(id, { ...previous, ...patch });
-  }, []);
   useEffect(() => {
     if (annotationPopover !== null && openAnnotation === undefined) setAnnotationPopover(null);
   }, [annotationPopover, openAnnotation]);
@@ -3957,13 +3919,14 @@ export function Transcript({
           })}
         </div>
       </div>
-      {annotationPopover !== null && openAnnotation !== undefined ? (
+      {annotationPopover !== null && openAnnotation !== undefined &&
+      onSaveDraftAnnotation !== undefined && onRemoveDraftAnnotation !== undefined ? (
         <AnnotationPopover
           state={annotationPopover}
           annotation={openAnnotation}
-          onSave={(id, comment) => { updateAnnotationOverride(id, { comment }); }}
+          onSave={onSaveDraftAnnotation}
           onRemove={(id) => {
-            updateAnnotationOverride(id, { deleted: true });
+            onRemoveDraftAnnotation(id);
             closeAnnotationPopover();
           }}
           onClose={closeAnnotationPopover}

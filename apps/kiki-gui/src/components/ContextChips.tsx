@@ -1,15 +1,13 @@
 /**
- * Context chips — the quote / annotation / image language shared by the
- * composer's tray (what rides along with the next prompt) and the sent user
- * bubble (what rode along). Same tiles in both places, so a carried-over
- * selection looks the same before and after it is sent:
+ * Context chips — the quote / image language shared by the composer's tray
+ * (what rides along with the next prompt) and the sent user bubble (what rode
+ * along). Same tiles in both places, so a carried-over selection looks the
+ * same before and after it is sent:
  *
  *   - QuoteChip       a quotation mark + the quoted text on one line;
- *   - AnnotationChip  the annotated passage (faint, short) + the comment, on the
- *                     same neutral wash the transcript uses for annotation
- *                     marks; hover/focus reveals both in full;
  *   - ImageTile       a rounded thumbnail; clicking opens the lightbox.
  *
+ * (Sent annotations fold into SentAnnotationsBubble instead of chips.)
  * Remove buttons are optional: the composer passes them, the bubble does not.
  */
 
@@ -50,44 +48,6 @@ export function QuoteChip({ quote, onRemove }: { quote: string; onRemove?: () =>
       <span aria-hidden className="context-chip-quote-mark shrink-0">“</span>
       <span className="min-w-0 truncate text-ink-soft">{oneLine(quote)}</span>
       {onRemove !== undefined ? <RemoveButton label={t('composer.removeQuote')} onRemove={onRemove} /> : null}
-    </div>
-  );
-}
-
-export function AnnotationChip({
-  quote,
-  comment,
-  onRemove,
-}: {
-  quote: string;
-  comment: string;
-  onRemove?: () => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <div
-      data-annotation-chip
-      tabIndex={0}
-      aria-label={t('composer.annotationChipAria', { quote: oneLine(quote), comment })}
-      className={`group ${TILE} max-w-[24rem] bg-ink/[0.05] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
-        onRemove === undefined ? 'pr-3' : 'pr-1'
-      } pl-2`}
-    >
-      <span aria-hidden className="flex shrink-0 text-accent-ink/80">
-        <Icon name="edit" size={12} />
-      </span>
-      <span className="max-w-[8rem] min-w-0 shrink-[2] truncate text-ink-faint">“{oneLine(quote)}”</span>
-      <span className="min-w-0 truncate text-ink">{comment}</span>
-      {onRemove !== undefined ? (
-        <RemoveButton label={t('composer.removeAnnotation')} onRemove={onRemove} />
-      ) : null}
-      {/* Hover/focus reveal: the full passage and the full comment. */}
-      <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1.5 hidden w-72 max-w-[calc(100vw-48px)] rounded-[12px] bg-panel p-2 text-left shadow-[var(--kiki-sheet-shadow)] group-hover:block group-focus-within:block">
-        <p className="max-h-16 overflow-hidden border-l-2 border-accent/50 pl-2 text-[11.5px] leading-snug whitespace-pre-wrap text-ink-soft">
-          {quote}
-        </p>
-        <p className="mt-1.5 text-[12px] leading-snug whitespace-pre-wrap text-ink">{comment}</p>
-      </div>
     </div>
   );
 }

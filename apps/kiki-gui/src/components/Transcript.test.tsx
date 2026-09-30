@@ -21,7 +21,7 @@
  * document fallback).
  */
 
-import { act, type ReactNode } from 'react';
+import { act, type ComponentProps, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -31,6 +31,7 @@ import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 import type { AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import {
+  annotationOverrideId,
   getAnnotationOverridesSnapshot,
   readDraft,
   resetAnnotationOverridesForTests,
@@ -644,6 +645,7 @@ async function renderTranscript(
   blocks: Block[],
   rowActions?: TranscriptRowActions,
   stateOverrides?: Partial<SessionViewState>,
+  transcriptProps?: Partial<ComponentProps<typeof Transcript>>,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(
@@ -655,6 +657,7 @@ async function renderTranscript(
       onAnswerQuestion={() => noopActions()}
       onDismissQuestion={() => noopActions()}
       rowActions={rowActions}
+      {...transcriptProps}
     />,
   );
   return container;
@@ -722,11 +725,56 @@ describe('user message token projection', () => {
 });
 
 describe('timeline annotations', () => {
-  it('marks the source passage and reopens it for local comment editing', async () => {
+  it('marks the passage a draft note quotes and routes popover edits to the draft callbacks', async () => {
+    const quote = 'batches transcript blocks into floors';
+    const comment = 'Keep the floor boundary explicit';
+    const onSave = vi.fn();
+    const onRemove = vi.fn();
+    const container = await renderTranscript(
+      [
+        assistantBlock(
+          'assistant-annotation-source',
+          'The renderer **batches transcript blocks into floors** so long sessions stay cheap.',
+        ),
+        userBlock({ id: 'user-plain', text: 'noted' }),
+      ],
+      undefined,
+      undefined,
+      {
+        draftAnnotations: [{ id: 'draft-note-1', quote, comment }],
+        onSaveDraftAnnotation: onSave,
+        onRemoveDraftAnnotation: onRemove,
+      },
+    );
+
+    const mark = container.querySelector<HTMLElement>('mark[data-annotation-ref="draft-note-1"]')!;
+    expect(mark.textContent).toContain(quote);
+    expect(mark.getAttribute('aria-haspopup')).toBe('dialog');
+
+    await act(async () => { click(mark); });
+    const panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
+    const input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
+    expect(panel.textContent).toContain(quote);
+    expect(input.value).toBe(comment);
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'edited');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { click(panel.querySelector('[data-annotation-panel-save]')!); });
+    expect(onSave).toHaveBeenCalledWith('draft-note-1', 'edited');
+
+    await act(async () => { click(panel.querySelector('[data-annotation-panel-remove]')!); });
+    expect(onRemove).toHaveBeenCalledWith('draft-note-1');
+    expect(document.body.querySelector('[data-annotation-panel]')).toBeNull();
+    // The draft state is the owner's: without it the local overlay store stays untouched.
+    expect(getAnnotationOverridesSnapshot()).toEqual({});
+  });
+
+  it('keeps a sent note off the timeline and folds it into the message bubble', async () => {
     resetAnnotationOverridesForTests();
     const quote = 'batches transcript blocks into floors';
     const originalComment = 'Floor batching keeps long sessions cheap';
-    const editedComment = 'Keep the floor boundary explicit';
     const container = await renderTranscript([
       assistantBlock(
         'assistant-annotation-source',
@@ -738,36 +786,37 @@ describe('timeline annotations', () => {
       }),
     ]);
 
-    const mark = container.querySelector<HTMLElement>('[data-annotation-ref]')!;
-    expect(mark.textContent).toContain('batches transcript blocks into floors');
-    expect(mark.getAttribute('aria-haspopup')).toBe('dialog');
+    // No draft note, no mark.
+    expect(container.querySelector('[data-annotation-ref]')).toBeNull();
+    const bubble = container.querySelector<HTMLElement>('[data-annotation-bubble="user-annotation-carrier"]')!;
+    expect(bubble).not.toBeNull();
 
-    await act(async () => { click(mark); });
-    let panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
-    let input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
+    await act(async () => { click(bubble); });
+    let panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
     expect(panel.textContent).toContain(quote);
-    expect(input.value).toBe(originalComment);
+    expect(panel.textContent).toContain(originalComment);
 
+    // Edits write the same local overlay store the old timeline editor used.
+    const editedComment = 'Keep the floor boundary explicit';
+    await act(async () => { click(panel.querySelector('[data-annotation-bubble-edit]')!); });
+    panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
+    const input = panel.querySelector<HTMLInputElement>('[data-annotation-bubble-input]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, editedComment);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await act(async () => { click(panel.querySelector('[data-annotation-panel-save]')!); });
-    const annotationId = mark.dataset['annotationRef']!;
-    expect(getAnnotationOverridesSnapshot()[annotationId]?.comment).toBe(editedComment);
+    await act(async () => { click(panel.querySelector('[data-annotation-bubble-save]')!); });
+    const noteId = annotationOverrideId(quote, originalComment, 'user-annotation-carrier', 0);
+    expect(getAnnotationOverridesSnapshot()[noteId]?.comment).toBe(editedComment);
+    expect(document.body.querySelector('[data-annotation-bubble-panel]')!.textContent).toContain(editedComment);
 
+    // Removing the only note folds the bubble away entirely.
     await act(async () => {
-      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      click(document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel] [data-annotation-bubble-remove]')!);
     });
-    expect(document.body.querySelector('[data-annotation-panel]')).toBeNull();
-
-    await act(async () => { click(mark); });
-    panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
-    input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
-    expect(input.value).toBe(editedComment);
-    await act(async () => {
-      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-    });
+    expect(getAnnotationOverridesSnapshot()[noteId]?.deleted).toBe(true);
+    expect(container.querySelector('[data-annotation-bubble]')).toBeNull();
+    expect(document.body.querySelector('[data-annotation-bubble-panel]')).toBeNull();
     resetAnnotationOverridesForTests();
   });
 });

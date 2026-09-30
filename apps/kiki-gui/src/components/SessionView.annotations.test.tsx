@@ -6,12 +6,12 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, readComposerState, resetComposerMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
 
-const { seat, submit, fixture } = vi.hoisted(() => ({
+const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
   fixture: { external: false },
   seat: { composer: null as unknown },
   submit: {
@@ -19,6 +19,11 @@ const { seat, submit, fixture } = vi.hoisted(() => ({
     // composer mid-flight, then settle it (accepted / queued / rejected).
     calls: [] as { text: string; input?: { model?: string; thinking?: string; permissionMode?: string }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
     steered: [] as string[],
+  },
+  queueStub: {
+    // Queued prompts the stub controller reports; set before rendering.
+    items: [] as { promptId: string; text: string }[],
+    replaced: [] as { promptId: string; text: string }[],
   },
 }));
 
@@ -56,7 +61,34 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       const state = fixture.external
         ? { ...base, session: { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof base.session> }
         : base;
-      this.getState = () => state;
+      // The queued view is cached by items identity: useSyncExternalStore
+      // re-reads the snapshot every render, so a fresh object per call would
+      // re-render forever.
+      let cachedItems: readonly { promptId: string; text: string }[] = [];
+      let queuedState: ReturnType<typeof actual.createViewState> | null = null;
+      this.getState = () => {
+        if (queueStub.items.length === 0) return state;
+        if (queueStub.items !== cachedItems || queuedState === null) {
+          cachedItems = queueStub.items;
+          queuedState = {
+            ...state,
+            loaded: true,
+            queuedPromptIds: queueStub.items.map((item) => item.promptId),
+            blocks: [
+              ...state.blocks,
+              ...queueStub.items.map((item) => ({
+                kind: 'user' as const,
+                id: `user-${item.promptId}`,
+                promptId: item.promptId,
+                text: item.text,
+                createdAt: '2026-01-01T00:00:00.000Z',
+                promptStatus: 'queued' as const,
+              })),
+            ],
+          };
+        }
+        return queuedState;
+      };
     }
 
     setFocusedAgent() {}
@@ -68,6 +100,14 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve, reject }); });
     }
     steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
+    replaceQueued(promptId: string, text: string) {
+      queueStub.replaced.push({ promptId, text });
+      const item = queueStub.items.find((entry) => entry.promptId === promptId);
+      if (item !== undefined) item.text = text;
+      return Promise.resolve();
+    }
+    abortPrompt() { return Promise.resolve(); }
+    holdQueued() { return Promise.resolve(); }
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
@@ -125,12 +165,16 @@ function ActiveSession() {
 }
 
 type ComposerProps = {
+  value: string;
   annotations: readonly SelectionAnnotation[];
   onSend: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
   serverDefaultModel?: string;
+  onQueueEditConfirm?: (text: string) => Promise<void>;
+  onQueueEditCancel?: () => void;
+  onUpdateAnnotation?: (id: string, comment: string) => void;
 };
 
 function composerProps(): ComposerProps {
@@ -313,6 +357,71 @@ describe('session selection annotations', () => {
       expect(back[1]).toBe(added[0]);
       expect(back[0]!.id).not.toBe(added[0]!.id);
     });
+  });
+
+  it('a queue edit restores the parked prompt\u2019s notes as live draft annotations', async () => {
+    queueStub.items = [{ promptId: 'p-queued', text: '> quoted passage\n\nComment: noted\n\nqueued body' }];
+    queueStub.replaced = [];
+    resetComposerMemoryForTests();
+    resetDraftMemoryForTests();
+    clearStoredDrafts();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const composerHost = document.createElement('div');
+    document.body.append(composerHost);
+    const composerRoot = createRoot(composerHost);
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <I18nProvider>
+              <MemoryRouter initialEntries={['/s/session-a']}>
+                <RoutesWithNavigation />
+              </MemoryRouter>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => {
+        composerRoot.render(
+          <QueryClientProvider client={new QueryClient()}>
+            <I18nProvider><MemoryRouter>{seat.composer as ReactElement}</MemoryRouter></I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      // Open the queue sheet, then start the row's round-trip edit.
+      const summary = [...composerHost.querySelectorAll('button')].find((b) => b.textContent?.includes('1 queued'))!;
+      await act(async () => { summary.click(); });
+      const editButton = [...composerHost.querySelectorAll<HTMLButtonElement>('[data-queue-item="p-queued"] button')]
+        .find((b) => b.getAttribute('aria-label') === 'Edit queued prompt')!;
+      await act(async () => { editButton.click(); });
+
+      // Notes and body split back apart: the chip lives, the draft holds only the body.
+      expect(currentAnnotations()).toMatchObject([{ quote: 'quoted passage', comment: 'noted' }]);
+      expect(composerProps().value).toBe('queued body');
+
+      // Editing the note rides the confirm back into the queued text's prefix.
+      const noteId = currentAnnotations()[0]!.id;
+      await act(async () => { composerProps().onUpdateAnnotation!(noteId, 'noted harder'); });
+      await act(async () => { await composerProps().onQueueEditConfirm!('edited body'); });
+      expect(queueStub.replaced).toEqual([
+        { promptId: 'p-queued', text: '> quoted passage\n\nComment: noted harder\n\nedited body' },
+      ]);
+      // The composer then hands its pre-edit state back: empty here.
+      expect(currentAnnotations()).toEqual([]);
+      expect(composerProps().value).toBe('');
+    } finally {
+      await act(async () => { composerRoot.unmount(); });
+      composerHost.remove();
+      await act(async () => { root.unmount(); });
+      container.remove();
+      queueStub.items = [];
+      queueStub.replaced = [];
+      resetComposerMemoryForTests();
+      resetDraftMemoryForTests();
+      clearStoredDrafts();
+    }
   });
 
   it('shows an unsent note once: as the composer chip, never also in the tray', async () => {

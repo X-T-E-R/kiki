@@ -964,7 +964,7 @@ it('keeps the preview-tab composer disabled for an agent the forest does not kno
 
 const EMPTY_AGENT_STATE = createViewState('');
 
-it('mounts the annotation tray over the child dock for notes sent in this agent', async () => {
+it('mounts no annotation tray over the child dock — sent notes fold into the message bubble', async () => {
   const forest = testForest('completed');
   const blocks = [
     { id: 'a1', kind: 'assistant', text: 'The cursor pages older turns in batches of twenty.' },
@@ -975,11 +975,10 @@ it('mounts the annotation tray over the child dock for notes sent in this agent'
     controller: controllerStub({ forest, agentStates: { child: { ...createViewState('session'), loaded: true, blocks } } }),
   });
   await settle();
-  const toggle = dock.querySelector<HTMLButtonElement>('[data-annotation-tray-toggle]');
-  expect(toggle?.textContent).toBe('1 note already in this conversation');
-  // The tray sits above the composer, as in the main session's dock.
-  const composer = dock.querySelector('[data-composer-variant="subagent"]')!;
-  expect(toggle!.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The "N notes already in this conversation" line is gone for good; the
+  // note rides its own message (the transcript renders the bubble).
+  expect(dock.querySelector('[data-annotation-tray-toggle]')).toBeNull();
+  expect(container.querySelector('[data-annotation-tray]')).toBeNull();
 });
 
 /**

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   annotationOverrideId,
   applyAnnotationOverrides,
+  collectDraftAnnotationTargets,
   collectTimelineAnnotations,
   findQuoteRange,
   getAnnotationOverridesSnapshot,
@@ -165,6 +166,35 @@ describe('collectTimelineAnnotations', () => {
     expect(first).toBe(annotationOverrideId(quote, 'same', 'u1', 0));
     expect(second).toBe(annotationOverrideId(quote, 'same', 'u2', 0));
     expect(first).not.toBe(second);
+  });
+});
+
+describe('collectDraftAnnotationTargets', () => {
+  const ASSISTANT = 'The queue batches transcript blocks into floors and drains parked prompts in order.';
+
+  it('marks the last matching block with the draft note id, and nothing without a draft', () => {
+    const quote = 'batches transcript blocks into floors';
+    expect(
+      collectDraftAnnotationTargets([block('a1', 'assistant', ASSISTANT)], []).size,
+    ).toBe(0);
+    const targets = collectDraftAnnotationTargets(
+      [block('a1', 'assistant', `prefix ${quote} suffix`), block('a2', 'assistant', `nearer ${quote} here`)],
+      [{ id: 'draft-1', quote, comment: 'floors matter' }],
+    );
+    expect(targets.has('a1')).toBe(false);
+    expect(targets.get('a2')).toEqual([{ id: 'draft-1', quote, comment: 'floors matter' }]);
+  });
+
+  it('marks user messages too and drops drafts whose quote matches nothing', () => {
+    const targets = collectDraftAnnotationTargets(
+      [block('u1', 'user', 'send it as one message')],
+      [
+        { id: 'draft-hit', quote: 'one message', comment: 'yes' },
+        { id: 'draft-miss', quote: 'appears nowhere', comment: 'no' },
+      ],
+    );
+    expect(targets.get('u1')).toEqual([{ id: 'draft-hit', quote: 'one message', comment: 'yes' }]);
+    expect(targets.size).toBe(1);
   });
 });
 

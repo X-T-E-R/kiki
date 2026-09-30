@@ -5,8 +5,8 @@
  * each with locate / edit / remove. The panel closes on Escape, a click
  * outside, or when the pointer leaves (unless it was opened by click).
  *
- * This is the only place an unsent note shows; notes already sent live in
- * the AnnotationTray line ("会话中已有 N 条批注") above the composer.
+ * This is the only place an unsent note shows; notes already sent fold into
+ * the SentAnnotationsBubble beside the message that carried them.
  */
 
 import { useEffect, useId, useRef, useState } from 'react';

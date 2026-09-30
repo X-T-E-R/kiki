@@ -60,6 +60,7 @@ import {
   buildSkillActivation,
   findQuoteRange,
   flushDrafts,
+  parseSelectionCarryovers,
   readComposerState,
   readDraft,
   removeAnnotation,
@@ -114,7 +115,6 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
 import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
-import { AnnotationTray } from './AnnotationTray';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
 import { HarnessMark } from './harness/HarnessMark';
@@ -1362,10 +1362,13 @@ export function SessionView({
   >(undefined);
   const [confirmClearQueue, setConfirmClearQueue] = useState(false);
   // Queue edit round-trip: the queued text being edited lives in the composer;
-  // `savedDraft` is what the composer held before the edit parked itself there.
+  // `savedDraft`/`savedQuote`/`savedAnnotations` are what the composer held
+  // before the edit parked itself there.
   const [queueEdit, setQueueEdit] = useState<{
     readonly promptId: string;
     readonly savedDraft: string;
+    readonly savedQuote: string | null;
+    readonly savedAnnotations: readonly SelectionAnnotation[];
   } | null>(null);
   const [draft, setDraft] = useState('');
   const [pendingSubmission, setPendingSubmission] = useState<{
@@ -2727,18 +2730,34 @@ export function SessionView({
       });
   }, [controller, queuedItems, t]);
   // Queue edit round-trip: "edit" parks the queued text in the composer
-  // (remembering the in-progress draft); confirm replaces it in place via
-  // actions.editQueued, cancel/remove hand the saved draft back.
+  // (remembering the in-progress draft, quote and notes); confirm replaces it
+  // in place via actions.editQueued, cancel/remove hand the saved state back.
   const handleStartQueueEdit = useCallback(
     (promptId: string) => {
       if (queueEdit !== null) return;
       const item = queuedItems.find((entry) => entry.promptId === promptId);
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
-      setQueueEdit({ promptId, savedDraft: draftRef.current });
-      // The composer re-attaches the thread context on confirm.
-      updateDraft(stripThreadRefContext(item.text));
+      setQueueEdit({
+        promptId,
+        savedDraft: draftRef.current,
+        savedQuote: quote,
+        savedAnnotations: annotations,
+      });
+      // The composer re-attaches the thread context on confirm. The parked
+      // text's selection carry-overs come back as composer chips, so notes and
+      // the plain quote stay editable (and keep marking the timeline) instead
+      // of flattening into plain text.
+      const carryovers = parseSelectionCarryovers(stripThreadRefContext(item.text));
+      updateDraft(carryovers.body);
+      setQuote(carryovers.quote);
+      setAnnotations(
+        carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
+          (current, note) => addAnnotation(current, note.quote, note.comment),
+          [],
+        ),
+      );
     },
-    [queueEdit, queuedItems, updateDraft],
+    [queueEdit, queuedItems, quote, annotations, updateDraft],
   );
   const handleQueueEditConfirm = useCallback(
     (text: string): Promise<void> => {
@@ -2747,26 +2766,34 @@ export function SessionView({
       const exit = () => {
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
+        setQuote(edit.savedQuote);
+        setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
+      // The edited chips ride back into the queued text as the same plain-text
+      // prefix the send path builds.
+      const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote) : ''}`;
+      const finalText = prefix === '' ? text : `${prefix}${text}`;
       // Row vanished (sent/cleared elsewhere) or text unchanged: nothing to
       // replace — just restore the draft.
-      if (item === undefined || item.text === text || actions === null) {
+      if (item === undefined || stripThreadRefContext(item.text) === finalText || actions === null) {
         exit();
         return Promise.resolve();
       }
       return actions
-        .editQueued(edit.promptId, text)
+        .editQueued(edit.promptId, finalText)
         .then(() => { exit(); })
         // editQueued already toasted the failure; keep the edit open so the
         // text can be retried or cancelled.
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, actions, updateDraft],
+    [queueEdit, queuedItems, quote, annotations, actions, updateDraft],
   );
   const handleQueueEditCancel = useCallback(() => {
     if (queueEdit === null) return;
     updateDraft(queueEdit.savedDraft);
+    setQuote(queueEdit.savedQuote);
+    setAnnotations(queueEdit.savedAnnotations);
     setQueueEdit(null);
   }, [queueEdit, updateDraft]);
   const handleQueueEditRemove = useCallback(() => {
@@ -2774,6 +2801,8 @@ export function SessionView({
     if (edit === null) return;
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
+    setQuote(edit.savedQuote);
+    setAnnotations(edit.savedAnnotations);
     void handleCancelQueued(edit.promptId);
   }, [queueEdit, updateDraft, handleCancelQueued]);
   const handleMoveQueued = useCallback(
@@ -3215,9 +3244,9 @@ export function SessionView({
             fsSearch={handleFsSearch}
             attachments={queueEdit === null ? attachments : []}
             onChangeAttachments={updateAttachments}
-            quote={queueEdit === null ? quote : null}
+            quote={quote}
             onRemoveQuote={handleRemoveQuote}
-            annotations={queueEdit === null ? annotations : []}
+            annotations={annotations}
             onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
@@ -3438,6 +3467,9 @@ export function SessionView({
             forest,
             onOpenAgent: openAgent,
             rowActions: transcriptRowActions,
+            draftAnnotations: annotations,
+            onSaveDraftAnnotation: handleUpdateAnnotation,
+            onRemoveDraftAnnotation: handleRemoveAnnotation,
           },
           timelineRef: transcriptQuoteRef,
           timelineOverlay: <SelectionQuoteButton
@@ -3461,7 +3493,6 @@ export function SessionView({
                 onSaved={() => { void controller?.refreshSession(); }}
               />
             ) : null}
-            <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
           </>,
           rail: botSettingsOpen && botPersonaId !== undefined ? (
             <BotSettingsPanel

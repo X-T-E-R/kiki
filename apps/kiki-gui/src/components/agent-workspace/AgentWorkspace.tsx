@@ -43,7 +43,6 @@ import type { PlanReviewResponse } from '../Interactions';
 import { useConnection } from '../../state/connection';
 import { locateInTimeline } from '../../lib/timelineLocate';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
-import { AnnotationTray } from '../AnnotationTray';
 import {
   EMPTY_SLOTS,
   useOptionalConversationShell,
@@ -778,9 +777,6 @@ function ChildAgentWorkspace({
             {sendNotice.text}
           </p>
         ) : null}
-        {/* Notes already sent in this agent's own conversation, located in
-            this tab's timeline (the main session mounts the same tray). */}
-        <AnnotationTray sessionId={sessionId} agentId={agentId} blocks={agentState.blocks} />
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
           disabledPlaceholder={t('subagent.composerUnavailable')}
