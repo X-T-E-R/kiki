@@ -2310,30 +2310,62 @@ async function scenarioSettingsNbSearch() {
   }
   await shot('settings-nbsearch-reloaded');
 
+  // The provider's credential is the shared secret field: the value the
+  // fixture saved in Kiki rests masked, the eye fetches it on demand, an
+  // override saves over it, and clearing falls back to the other sources.
   const exaCard = page.locator('#st-card-search-providers details', { hasText: 'exa.default' });
-  await exaCard.locator('summary').click();
-  const credentialInput = exaCard.locator('input[autocomplete="off"]');
-  const reveal = exaCard.getByRole('button', { name: S.nbSearchManagedReveal, exact: true });
-  await exaCard.getByText(S.nbSearchManagedStored, { exact: false }).waitFor();
+  if (!await exaCard.evaluate((node) => node.open)) await exaCard.locator('summary').click();
+  const credential = exaCard.locator('[data-nb-search-credential="exa.default"]');
+  const secretInput = credential.locator('[data-secret-field] input');
+  await credential.locator('[data-secret-field][data-secret-source="kiki"]').waitFor({ timeout: 10_000 });
+  await credential.getByText(S.secretSourceKiki, { exact: false }).waitFor({ timeout: 5000 });
+  const reveal = credential.locator('[data-secret-reveal]');
+  const masked = await secretInput.inputValue();
+  if (masked === 'fixture-managed-exa-key') throw new Error('a saved credential must rest masked');
   if (await reveal.isDisabled()) throw new Error('fixture managed credential reveal is disabled after config reload');
   await reveal.click();
-  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"][type="text"]')?.value === 'fixture-managed-exa-key');
+  await page.waitForFunction(
+    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value === 'fixture-managed-exa-key',
+    undefined,
+    { timeout: 5000 },
+  );
   await exaCard.scrollIntoViewIfNeeded();
   await shot('settings-nbsearch-credential-revealed');
-  await credentialInput.fill('fixture-managed-exa-updated');
-  await exaCard.getByRole('button', { name: S.nbSearchManagedSave, exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"]')?.value === '');
+  // The eye toggles back to the mask (from the same single fetch).
+  await reveal.click();
+  await page.waitForFunction(
+    ([selector, expected]) => document.querySelector(selector)?.value === expected,
+    ['[data-nb-search-credential="exa.default"] input', masked],
+    { timeout: 5000 },
+  );
+  // Editing saves a Kiki value that overrides the stored one.
+  await credential.locator('[data-secret-edit]').click();
+  await secretInput.fill('fixture-managed-exa-updated');
+  await credential.getByRole('button', { name: S.save, exact: true }).click();
+  await credential.locator('[data-saved-tick]').waitFor({ timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value !== 'fixture-managed-exa-updated',
+    undefined,
+    { timeout: 5000 },
+  );
   await shot('settings-nbsearch-credential-saved');
   await reveal.click();
-  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"][type="text"]')?.value === 'fixture-managed-exa-updated');
-  await exaCard.getByRole('button', { name: S.nbSearchManagedHide, exact: true }).click();
-  if (await credentialInput.getAttribute('type') !== 'password'
-    || await credentialInput.inputValue() !== 'fixture-managed-exa-updated') {
-    throw new Error('managed credential hide did not mask the updated value');
+  await page.waitForFunction(
+    () => document.querySelector('[data-nb-search-credential="exa.default"] input')?.value === 'fixture-managed-exa-updated',
+    undefined,
+    { timeout: 5000 },
+  );
+  await reveal.click();
+  await credential.locator('[data-secret-clear]').click();
+  await credential.getByRole('button', { name: S.save, exact: true }).click();
+  await credential.locator('[data-secret-field][data-secret-source="none"]').waitFor({ timeout: 5000 });
+  await credential.getByText(S.secretSourceNone, { exact: false }).waitFor({ timeout: 5000 });
+  if (await credential.locator('[data-secret-clear]').count() !== 0) {
+    throw new Error('a cleared credential must not offer clear again');
   }
-  await exaCard.getByRole('button', { name: S.nbSearchManagedClear, exact: true }).click();
-  await exaCard.getByText(S.nbSearchManagedEmpty, { exact: false }).waitFor();
-  if (await reveal.isEnabled()) throw new Error('cleared managed credential must not remain revealable');
+  if (!await credential.locator('[data-secret-reveal]').isDisabled()) {
+    throw new Error('cleared managed credential must not remain revealable');
+  }
   await shot('settings-nbsearch-credential-cleared');
 
   // Diagnostics are explicit: nothing runs until the button is pressed.
