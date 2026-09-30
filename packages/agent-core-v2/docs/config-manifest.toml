@@ -458,10 +458,11 @@ merge_all_available_skills = true
     # files: string[]
     # fields: record<string, string>
   # request_identity: object
-    # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # preset: "codex_compatible" | "claude_code_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # profile: string
     # overrides: object
       # lineage: object
-        # format: "codex" | "grok_build" | "kimi_code" | "none"
+        # format: "codex" | "claude_code" | "grok_build" | "kimi_code" | "none"
         # session_scope: "shared_session" | "agent_session" | "none"
         # thread_identity: "agent" | "none"
         # parent_thread: "immediate_agent" | "none"
@@ -470,7 +471,7 @@ merge_all_available_skills = true
       # client: object
         # installation_identity: "persistent_local" | "none"
         # originator: object | object | object
-        # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+        # user_agent: "codex" | "claude_code" | "grok_build" | "kimi_code" | "host" | "none"
       # request: object
         # logical_id: "turn" | "none"
         # turn_index: "agent_session" | "none"
@@ -609,10 +610,11 @@ enter_approval_timeout_ms = 60000
     # thinking_effort: string
     # service_tier: "auto" | "default" | "flex" | "priority" | object
   # request_identity: object
-    # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # preset: "codex_compatible" | "claude_code_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # profile: string
     # overrides: object
       # lineage: object
-        # format: "codex" | "grok_build" | "kimi_code" | "none"
+        # format: "codex" | "claude_code" | "grok_build" | "kimi_code" | "none"
         # session_scope: "shared_session" | "agent_session" | "none"
         # thread_identity: "agent" | "none"
         # parent_thread: "immediate_agent" | "none"
@@ -621,7 +623,7 @@ enter_approval_timeout_ms = 60000
       # client: object
         # installation_identity: "persistent_local" | "none"
         # originator: object | object | object
-        # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+        # user_agent: "codex" | "claude_code" | "grok_build" | "kimi_code" | "host" | "none"
       # request: object
         # logical_id: "turn" | "none"
         # turn_index: "agent_session" | "none"
@@ -650,11 +652,12 @@ enter_approval_timeout_ms = 60000
 # ##########################################################################
 
 [request_identity]
-# preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+# preset: "codex_compatible" | "claude_code_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+# profile: string
 
 # [request_identity.overrides]
   # lineage: object
-    # format: "codex" | "grok_build" | "kimi_code" | "none"
+    # format: "codex" | "claude_code" | "grok_build" | "kimi_code" | "none"
     # session_scope: "shared_session" | "agent_session" | "none"
     # thread_identity: "agent" | "none"
     # parent_thread: "immediate_agent" | "none"
@@ -663,7 +666,7 @@ enter_approval_timeout_ms = 60000
   # client: object
     # installation_identity: "persistent_local" | "none"
     # originator: object | object | object
-    # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+    # user_agent: "codex" | "claude_code" | "grok_build" | "kimi_code" | "host" | "none"
   # request: object
     # logical_id: "turn" | "none"
     # turn_index: "agent_session" | "none"

@@ -74,6 +74,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/request-identity/profiles/{id}",
+    ],
+    [
+      "DELETE",
       "/api/rooms/{id}",
     ],
     [
@@ -215,6 +219,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/executors/{id}/local-sessions/{local_session_id}",
+    ],
+    [
+      "GET",
+      "/api/executors/antigravity-acp/binaries",
     ],
     [
       "GET",
@@ -423,6 +431,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "GET",
+      "/api/request-identity",
     ],
     [
       "GET",
@@ -778,6 +790,30 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/executors/antigravity-acp/binaries/activate",
+    ],
+    [
+      "POST",
+      "/api/executors/antigravity-acp/binaries/install",
+    ],
+    [
+      "POST",
+      "/api/executors/antigravity-acp/login/cancel",
+    ],
+    [
+      "POST",
+      "/api/executors/antigravity-acp/login/complete",
+    ],
+    [
+      "POST",
+      "/api/executors/antigravity-acp/login/start",
+    ],
+    [
+      "POST",
+      "/api/executors/antigravity-acp/logout",
+    ],
+    [
+      "POST",
       "/api/external-delegation/seats",
     ],
     [
@@ -955,6 +991,34 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/providers/{tail}",
+    ],
+    [
+      "POST",
+      "/api/request-identity/preview",
+    ],
+    [
+      "POST",
+      "/api/request-identity/profiles",
+    ],
+    [
+      "POST",
+      "/api/request-identity/tracks/{track}/apply",
+    ],
+    [
+      "POST",
+      "/api/request-identity/tracks/{track}/check",
+    ],
+    [
+      "POST",
+      "/api/request-identity/tracks/{track}/dismiss",
+    ],
+    [
+      "POST",
+      "/api/request-identity/tracks/{track}/reset",
+    ],
+    [
+      "POST",
+      "/api/request-identity/tracks/{track}/rollback",
     ],
     [
       "POST",
@@ -1231,6 +1295,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/personas/{id}/avatar",
+    ],
+    [
+      "PUT",
+      "/api/request-identity/manifest",
+    ],
+    [
+      "PUT",
+      "/api/request-identity/profiles/{id}",
+    ],
+    [
+      "PUT",
+      "/api/request-identity/tracks/{track}/pin",
     ],
     [
       "PUT",

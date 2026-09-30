@@ -1602,10 +1602,11 @@ export interface AgentStateSnapshot {
         };
       };
       requestIdentity?: /* RequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
-        preset?: 'none' | 'codex_compatible' | 'grok_build_compatible' | 'kimi_code';
+        preset?: 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'kimi_code';
+        profile?: string;
         overrides?: /* RequestIdentityOverrides — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
           lineage?: {
-            format?: 'none' | 'kimi_code' | 'codex' | 'grok_build';
+            format?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build';
             sessionScope?: 'none' | 'shared_session' | 'agent_session';
             threadIdentity?: 'agent' | 'none';
             parentThread?: 'none' | 'immediate_agent';
@@ -1622,7 +1623,7 @@ export interface AgentStateSnapshot {
               mode: 'custom';
               value: string;
             };
-            userAgent?: 'none' | 'kimi_code' | 'codex' | 'grok_build' | 'host';
+            userAgent?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'host';
           };
           request?: {
             logicalId?: 'none' | 'turn';
@@ -1652,7 +1653,7 @@ export interface AgentStateSnapshot {
     } | undefined;
     readonly requestIdentity: /* ResolvedRequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
       lineage: {
-        format: 'none' | 'kimi_code' | 'codex' | 'grok_build';
+        format: /* RequestIdentityLineageFormat — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build';
         sessionScope: 'none' | 'shared_session' | 'agent_session';
         threadIdentity: 'agent' | 'none';
         parentThread: 'none' | 'immediate_agent';
@@ -1669,7 +1670,7 @@ export interface AgentStateSnapshot {
           mode: 'custom';
           value: string;
         };
-        userAgent: 'none' | 'kimi_code' | 'codex' | 'grok_build' | 'host';
+        userAgent: /* RequestIdentityUserAgentMode — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'host';
       };
       request: {
         logicalId: 'none' | 'turn';
@@ -1681,7 +1682,8 @@ export interface AgentStateSnapshot {
         messages: 'none' | 'metadata_user_id';
       };
       responsesMetadata: 'none' | 'codex';
-      preset: /* RequestIdentityPreset — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'codex_compatible' | 'grok_build_compatible' | 'kimi_code';
+      preset: /* RequestIdentityPreset — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'kimi_code';
+      profile: string;
     };
   }>;
   // src/agent/loop/loopService.ts
