@@ -17,20 +17,21 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 
 ## 绑定规则
 
-新派生 subagent 的模型只有两个来源：
+新派生 subagent 按此顺序选择模型：
 
-1. 派发时传入的 `model_alias`。
+1. 派发时传入的具体 `model_alias`。
 2. 生效 profile、route 或调用方 lease（caller lease，外部委派方为调用方预设的约束）上的 `model_alias` pin。
+3. 显式配置的 `[subagent].default_model`。
 
-两者都存在时以派发值为准。两者都没有时，派生以 `model.not_configured` 失败；调用方模型与 `default_model` 都不是静默回退来源。在 profile、route 或 caller lease 上显式写 `model_alias: inherit`，才会绑定调用方当前已解析的模型与有效思考强度；工具显式 `effort`，或 profile、route、lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。未知的具体 alias 与被机器级策略禁止的模型会在子 Agent 启动前失败。若模型只是不符合 role 指引，或偏离 route / caller lease pin，只要实际可执行就会继续，并产生结构化绑定 advisory。
+这些来源都不存在时，派生以 `model.not_configured` 失败；调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。在 profile、route 或 caller lease 上显式写 `model_alias: inherit`，才会绑定调用方当前已解析的模型与有效思考强度；工具显式 `effort`，或 profile、route、lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。未知的具体 alias 与被机器级策略禁止的模型会在子 Agent 启动前失败。偏离显式偏好或 route / caller lease pin 的模型，只有可执行且满足全部硬模型与档位边界才会继续，并产生 advisory。
 
 恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。同时省略 `model_alias` 与 `effort` 会保留已有绑定；显式传入的 effort 应用于下一次空闲运行。`AgentRun` 恢复时同样拒绝 `model_alias: "inherit"`；显式换模请写具体模型名，或省略参数以保留已保存模型。切换到不同规范模型需要传 `allow_model_change: true`；如果解析到同一规范模型，则不产生模型变化。
 
 ## Agent 文件与 routes
 
-Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型；main agent 没有调用方，其 profile 不可使用 `inherit`。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据会被忽略。
+Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型；main agent 没有调用方，其 profile 不可使用 `inherit`。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据也会加载失败。请删除不支持的字段，不要依赖忽略行为。
 
-Route 声明的 `model_alias` 是 route 默认值。派发方可以用另一个可执行模型覆盖它；绑定仍保留 route 身份，同时标记为 detached 并携带 advisory。Role 级 `allowed_models` / `deny_models` 与 effort 列表属于推荐策略；机器级 `[subagent].deny_models` 才是硬模型边界。
+Route 声明的 `model_alias` 是软默认值。可执行且满足硬规则的覆盖仍保留 route 身份，同时标记为 detached 并携带 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在 profile、lease、`spawn_constraints` 与匹配的 `model_profiles` 中都是硬规则；违规会拒绝绑定、人工切换与恢复。只有 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议。机器级 `[subagent].deny_models` 增加另一道硬边界。原生模型列表比较规范身份，外部 executor 则比较实际生效模型 ID。
 
 ## 模型 ID 解析
 

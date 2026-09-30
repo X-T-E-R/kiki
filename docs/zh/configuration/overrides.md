@@ -77,11 +77,11 @@ CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目
 
 ## 模型与 effort 解析
 
-在原生 executor 上，先确定本次派发使用的模型，再解析该模型的 thinking effort。Route 与 caller lease 的模型 / effort pin 提供默认值；可执行的偏离会保留并产生绑定 advisory。机器级 deny 与真实 provider / executor 能力检查仍是硬限制。
+在原生 executor 上，先确定本次派发使用的模型，再解析其 thinking effort。Route 与 caller lease 的 pin 提供软默认值；偏离 pin、显式 `preferred_*` 或 `discouraged_models` 建议时，仅在绑定满足硬规则且可执行的前提下产生 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在每个 profile、lease、树策略与匹配 model-profile 作用域都为硬规则。机器级 deny 与 provider / executor 能力检查也仍是硬限制。
 
-Thinking effort 按以下顺序解析：
+Thinking effort 按以下顺序解析，解析后仍须满足全部硬档位列表：
 
-1. 显式 `effort` 优先。偏离 route、role 或 lease 时产生 advisory；所选模型无法执行的档位会被拒绝。
+1. 显式 `effort` 优先于默认值，但不能覆盖硬约束。Pin 或偏好偏离产生 advisory；列表外或不支持的档位被拒绝。
 2. 未显式传入时，route 或 caller lease 默认值优先。
 3. 匹配的 `model_profiles` 条目。
 4. profile 顶层的 `thinking_effort`，但仅当所选模型匹配 profile 的默认 `model_alias`。

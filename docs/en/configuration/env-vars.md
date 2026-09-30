@@ -165,7 +165,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 
-`[subagent]` previously accepted `default_model` and `default_effort`; both keys have been removed. They no longer configure anything and only produce a startup warning if present — a subagent's model comes from the dispatch or a profile pin, never from a configured default (see [`subagent`](./config-files.md#subagent)).
+`[subagent].default_model` explicitly supplies a model only when dispatch parameters and effective pins do not. It does not inherit the caller or bypass hard model rules. `[subagent].default_effort` remains removed: use an effort pin or the selected model's defaults (see [`subagent`](./config-files.md#subagent)). Forced environment values likewise cannot bypass profile hard lists.
 
 ## Diagnostic logs
 

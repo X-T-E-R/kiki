@@ -349,8 +349,8 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 
 ## 子 Agent 的模型绑定
 
-子 Agent 的模型只有两个来源：通过 `AgentRun` 派发时传入的 `model_alias`，或所选 profile、route、caller lease 上的 pin。
-调用方模型与 `default_model` 都不是静默回退来源；既没有传参数又没有生效 pin 时，派发会以 `model.not_configured` 失败，不会创建子 Agent。在 subagent profile、route 或 caller lease 中写 `model_alias: inherit`，才会绑定调用方当前已解析的模型。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。main agent 没有调用方，其 profile 不可使用 `inherit`。
+子 Agent 按此顺序选模型：具体的 `AgentRun` 参数 `model_alias` → 生效 profile、route、caller lease 上的 pin → 显式配置的 `[subagent].default_model`。
+调用方模型与主 Agent 的 `default_model` 都不是静默回退来源；这些来源都不存在时，派发会以 `model.not_configured` 失败，不会创建子 Agent。在 subagent profile、route 或 caller lease 中写 `model_alias: inherit`，才会绑定调用方当前已解析的模型。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。main agent 没有调用方，其 profile 不可使用 `inherit`。
 
 thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随调用方的有效思考强度；工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下按工具 `effort` → 匹配的 `model_profiles` 档位 → 所选模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型的 `overrides.default_effort` → 模型的 `default_effort` → 全局 [`[thinking].effort`](#thinking) → 模型能力兜底档位解析。
 
@@ -462,7 +462,10 @@ retry = false
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
-| `deny_models` | `string[]` | — | alias 解析后应用于所有 subagent 模型绑定的黑名单，无论该 alias 来自派发参数还是 profile pin |
+| `default_model` | `string` | — | 仅在派发参数与生效 profile、route、caller lease pin 都未选模型时使用的显式兜底；从不继承调用方 |
+| `main_dispatch_policy` | `"advisory" \| "strict"` | `"advisory"` | 主调用方的全局角色策略；strict 是 profile 不能降低的下限 |
+| `subagent_dispatch_policy` | `"advisory" \| "strict"` | `"strict"` | 子调用方独立的全局角色策略；省略角色列表不增加具名限制 |
+| `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
 | `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，目前适用于 `BoardRead` 和 `BoardWrite`；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |

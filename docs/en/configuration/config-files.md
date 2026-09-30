@@ -349,11 +349,11 @@ Treat that wording as a starting point rather than a setting. Which phrasing act
 
 ## Subagent model binding
 
-A subagent's model comes from exactly two places: the `model_alias` passed
-with the `AgentRun` dispatch, or the pin on the profile, route, or caller lease
-that the dispatch selects. The caller's model and `default_model` are not silent
-fallbacks: without a parameter or effective pin, dispatch fails with
-`model.not_configured` before creating a child. Set `model_alias: inherit` on a
+A subagent selects its model in order: the concrete `AgentRun` `model_alias`
+parameter → the effective profile, route, or caller-lease pin → explicitly
+configured `[subagent].default_model`. The caller's model and the main-agent
+`default_model` are not silent fallbacks: without any of these sources, dispatch
+fails with `model.not_configured` before creating a child. Set `model_alias: inherit` on a
 subagent profile, route, or caller lease to explicitly bind the caller's current
 resolved model. `AgentRun` rejects `model_alias: "inherit"`: specify a concrete
 configured model name, or omit the parameter to use the target default. A
@@ -474,7 +474,10 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
-| `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
+| `default_model` | `string` | — | Explicit fallback only when neither a dispatch parameter nor an effective profile, route, or caller-lease pin selects a model; never inherits the caller |
+| `main_dispatch_policy` | `"advisory" \| "strict"` | `"advisory"` | Global role policy for the main caller; strict is a floor a profile cannot lower |
+| `subagent_dispatch_policy` | `"advisory" \| "strict"` | `"strict"` | Independent global role policy for subagent callers; omitted role lists add no named restriction |
+| `deny_models` | `string[]` | — | Hard denylist for every subagent binding after alias resolution; pins, manual changes, resume, and advisory dispatch cannot bypass it. Profile/lease/tree/model-profile hard rules remain additional boundaries |
 | `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. Currently applies to `BoardRead` and `BoardWrite`; it does not override profile allowlists, denylists, or other policy limits |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |

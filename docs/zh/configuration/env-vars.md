@@ -165,7 +165,7 @@ kiki
 
 subagent 并发没有环境变量覆盖。请在 [`[subagent]`](./config-files.md#subagent) 中配置 `max_direct_children` 和 `max_total_subagents`，默认值分别为 `16` 和 `0`（不限）。
 
-`[subagent]` 曾经接受 `default_model` 与 `default_effort`；这两个键已被移除，写了不会生效，只会在启动时产生警告——subagent 的模型只来自派发参数或 profile pin，没有可回退的配置默认值（见 [`subagent`](./config-files.md#subagent)）。
+`[subagent].default_model` 仅在派发参数与生效 pin 都未指定模型时显式提供兜底；它不会继承调用方，也不能绕过硬模型规则。`[subagent].default_effort` 仍已移除：使用档位 pin 或所选模型的默认值（见 [`subagent`](./config-files.md#subagent)）。宿主强制环境值同样不能绕过 profile 硬列表。
 
 ## 诊断日志
 

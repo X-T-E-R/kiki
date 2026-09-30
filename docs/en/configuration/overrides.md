@@ -77,11 +77,11 @@ Mutual exclusion rules (startup fails if violated):
 
 ## Model and effort resolution
 
-For native executor agents, determine the model for this dispatch first, then resolve that model's thinking effort. Route and caller-lease model/effort pins supply defaults; an executable deviation is retained with a binding advisory. Machine deny rules and real provider/executor capability checks remain hard.
+For native executor agents, determine the model for this dispatch first, then resolve that model's thinking effort. Route and caller-lease pins supply soft defaults; deviations and explicit `preferred_*` / `discouraged_models` advice produce binding advisories only for hard-permitted executable bindings. `allowed_models`, `deny_models`, and `allowed_efforts` are hard at every profile, lease, tree, and matching model-profile scope. Machine deny rules and provider/executor capability checks also remain hard.
 
-Thinking effort resolves in this order:
+Thinking effort resolves in this order, then must satisfy all hard effort lists:
 
-1. An explicit `effort` wins. A route, role, or lease mismatch produces an advisory; an effort the selected model cannot execute is rejected.
+1. An explicit `effort` wins over defaults, not hard constraints. Pin or preference mismatches produce advisories; an out-of-list or unsupported effort is rejected.
 2. When `effort` is omitted, route or caller-lease defaults take precedence.
 3. A matching `model_profiles` entry.
 4. The profile's top-level `thinking_effort`, only when the selected model matches the profile's default `model_alias`.
