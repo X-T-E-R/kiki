@@ -1,0 +1,155 @@
+Kiki — third-party attribution and source provenance
+
+Kiki derives from MoonshotAI/kimi-code (https://github.com/MoonshotAI/kimi-code).
+The inherited MIT notice is preserved in LICENSE:
+  Copyright (c) 2026 Moonshot AI
+
+This file records evidenced origins and selected resolved runtime dependencies.
+It does not relicense third-party material, replace upstream license texts, or
+certify that a particular release's complete distribution notice set is ready.
+Exact dependency graphs are in pnpm-lock.yaml and
+apps/kiki-gui/src-tauri/Cargo.lock. Bundled assets and optional platform packages
+vary by build target. Keep the original licenses and notices with shipped copies.
+
+Vendored and adapted source
+---------------------------
+
+* pi-mono / pi-tui — MIT
+  https://github.com/earendil-works/pi-mono/tree/main/packages/tui
+  Terminal renderer/editor in packages/pi-tui.
+  Copyright (c) 2025 Mario Zechner; full text: packages/pi-tui/LICENSE.
+
+* OpenTUI — MIT
+  https://github.com/anomalyco/opentui
+  packages/pi-tui/src/stdin-buffer.ts and its test retain:
+  Copyright (c) 2025 opentui.
+
+* string-width
+  https://github.com/sindresorhus/string-width
+  packages/pi-tui/src/utils.ts identifies code based on this library. The
+  installed string-width 4.2.3 package declares MIT (author: Sindre Sorhus).
+  The adapted-source comment does not pin a version; that package resolution
+  is not proof of the exact revision used for the adaptation.
+
+* codeg — Apache-2.0
+  https://github.com/xintaofei/codeg
+  Recorded GUI donor revision: fa230248d285c3f4fa541a737fc93f209820512e.
+  Streamdown loading, thread scrolling, collapsible overflow and sidecar staging.
+
+* AionUi — Apache-2.0
+  https://github.com/iOfficeAI/AionUi
+  Recorded GUI donor revision: 28a2a9f57f1bf4f9111b9c33e0cfc1eb918effc8.
+  Code-block controls, approval guards and capability degradation.
+
+* grok-build — Apache-2.0
+  https://github.com/xai-org/grok-build
+  Recorded GUI donor revision: a5589e958437d79e13db026eedcb1720bffd4063.
+  Unified diff presentation; packages/session-core/src/util/diff.ts explicitly
+  identifies the adapted recipe from crates/codegen/xai-grok-pager/src/diff.rs.
+
+* LiveAgent — MIT
+  https://github.com/Stack-Cairn/LiveAgent
+  Recorded GUI donor revision: 00a2c6fc43754f40022b0703459824559bee73ea.
+  Wake/reconnect and managed-child shutdown patterns, composer context menu.
+
+* deepseek-harness — MIT
+  https://github.com/deepseek-ai/deepseek-harness
+  Recorded GUI donor revision: 47f943859bef60e4160492346772ded9b24f765a.
+  Conversation-shell and composer/status interactions. Separately,
+  packages/kap-server/src/search/sqlite/schema.ts identifies a schema guard
+  adapted from dsh-core/packages/session-query/session-query-sqlite/src/schema.ts;
+  that file does not specify the search donor revision.
+
+* dsh-web-ui — Apache-2.0
+  https://github.com/zhu1090093659/dsh-web-ui
+  Recorded GUI reference revision: 62651870dd18ad3d9bf54a9cb934b75d0fbaf639.
+  Grouped collapsible capability-card presentation. ACKNOWLEDGEMENTS.md
+  classifies this as a design reference, not copied code.
+
+* tree-sitter-bash — MIT
+  https://github.com/tree-sitter/tree-sitter-bash
+  packages/tree-sitter-bash reproduces grammar/node types and records scanner.c
+  derivations. The development reference dependency is pinned to 0.25.0.
+
+* LiteLLM — MIT
+  https://github.com/BerriAI/litellm
+  Model price/context-window snapshot in packages/kap-server/vendor/litellm.
+  Copyright (c) 2023 Berri AI; full license and revision/retrieval notice:
+  packages/kap-server/vendor/litellm/LICENSE and NOTICE.
+
+* nb-search — MIT
+  https://github.com/NB-Corp/nb-search
+  Current patched runtime tarball: vendor/nb-search-0.4.0-4218580a.tgz.
+  Copyright (c) 2026 nb-search contributors.
+  Full license and patch/source hashes are preserved under
+  vendor/nb-search-patches/canonical-target/LICENSE and provenance.json.
+
+* Redis zskiplist provenance — unresolved revision/license
+  packages/minidb/src/skiplist.ts names Redis zskiplist; DESIGN_NOTES.md
+  describes the implementation as copied/ported from it. No donor revision
+  or original copyright/license text is identified there. This notice records
+  the attribution without assigning a license to that adaptation. Establish
+  its exact provenance and applicable license before distribution clearance.
+  NeDB is also named in DESIGN_NOTES.md as an append-only/AVL design pattern,
+  not as an identified copied file.
+
+GUI revision details and source locations are maintained in
+apps/kiki-gui/ATTRIBUTION.md and apps/kiki-gui/THIRD_PARTY_NOTICES.md.
+Additional design-only references are listed in ACKNOWLEDGEMENTS.md; a design
+reference does not imply that its code or license is included in Kiki.
+
+Selected resolved runtime dependencies
+-------------------------------------
+
+The following versions/license identifiers were checked against the installed
+pnpm-lock.yaml graph with `pnpm licenses list --prod --json`. Names below refer
+to the upstream packages, not to Kiki's workspace packages. Package authors
+are not automatically the legal copyright holders; consult each package's
+LICENSE/NOTICE for the original attribution and full terms.
+
+  Apache-2.0:
+    @agentclientprotocol/sdk 1.3.0 (Zed Industries)
+    @google/genai 1.49.0; openai 6.34.0 (OpenAI)
+    @jsquash/webp 1.5.0 (Jamie Sinclair)
+    streamdown 2.5.0 (Hayden Bleasel), and its Apache-2.0 plugins
+  MIT:
+    @anthropic-ai/sdk 0.95.2 (Anthropic)
+    @modelcontextprotocol/sdk 1.29.0 (Anthropic, PBC)
+    @jimp/core 1.6.1 (Andrew Lisowski)
+    fastify 5.8.5 and pino 9.14.0 (Matteo Collina)
+    node-pty 1.1.0 (Microsoft Corporation)
+    react and react-dom 19.2.5; @tanstack/react-query 5.99.2
+    @xterm/xterm 5.5.0 and its addon-fit/addon-web-links packages
+    CodeMirror packages; use-stick-to-bottom; katex 0.16.47; mermaid 11.15.0
+    bcryptjs 2.4.3 (Daniel Wirtz); ulid 3.0.2 (Alizain Feerasta)
+    ws 8.20.0 (Einar Otto Stangvik); zod 3.25.76 and 4.3.6 (Colin McDonnell)
+  BSD-3-Clause:
+    diff 8.0.4; smol-toml 1.6.1 (Cynthia)
+  ISC:
+    semver 7.7.4 (GitHub Inc.)
+  OFL-1.1:
+    @fontsource-variable/fraunces 5.3.0
+    @fontsource/jetbrains-mono 5.3.0; @fontsource/space-grotesk 5.3.0
+  Apache-2.0 OR MIT:
+    Tauri, @tauri-apps/api and the desktop integration plugins (see Cargo.lock
+    and the desktop notices for the Rust and platform-specific graph).
+
+Scope and remaining verification
+--------------------------------
+
+This is a repository-level attribution index, not an exhaustive transitive
+license bundle. Reproduce the full installed JavaScript metadata inventory
+with `pnpm install --offline --frozen-lockfile` followed by
+`pnpm licenses list --json` (all dependencies) or
+`pnpm licenses list --prod --json` (runtime dependencies). Recheck it when the
+lockfile changes, retain required license texts, and separately inventory the
+Rust crates and non-package assets actually shipped by a desktop release.
+
+@nb-im/core 0.1.0 is an installed runtime dependency from
+vendor/nb-im-core-0.1.0.tgz. Its package metadata has no license declaration
+and the tarball has no LICENSE file. No license is inferred here; obtain the
+applicable terms and attribution from its owner before distribution clearance.
+
+The VS Code extension declares Apache-2.0 and retains apps/vscode/LICENSE;
+that package declaration is distinct from the root MIT license. First-party
+workspace packages and first-party own-work are not third-party attributions.
