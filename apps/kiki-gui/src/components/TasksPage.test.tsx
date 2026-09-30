@@ -23,6 +23,8 @@ vi.mock('../state/connection', () => ({
   // No live session controller in these fixtures: the agent panel reports
   // "not reported" instead of borrowing another agent's data.
   useOptionalControllerRegistry: () => null,
+  // No thread-message reads here: the rail's Thread messages chapter stays empty.
+  useOptionalConnection: () => null,
 }));
 
 const containers: HTMLDivElement[] = [];
