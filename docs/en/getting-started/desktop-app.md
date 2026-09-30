@@ -45,6 +45,12 @@ If the in-app update fails, close Kiki, download the newer installer from its ex
 
 The public `latest.json` files provide signed updater metadata for stable and beta clients. Each manifest points to an installer under a specific `kiki-v<version>` tag rather than a mutable latest-download URL, and its `signature` field is the content of that installer's `.sig` asset.
 
+## Backend logs
+
+When desktop starts its own backend, it records diagnostic stderr (the process's error-output stream) in `desktop-backend.log` inside the active space's Kiki home. The current file rotates at 5 MiB and keeps three numbered backups (`.1` is the newest). Rotation also runs when opening an oversized existing log; that older file is retained as a backup. A single oversized new line is truncated to its UTF-8 tail. Logging failures do not stop the backend; startup diagnostics still retain the last 100 nonempty lines in memory.
+
+The backend defaults to `warn`. To change it before the settings control is connected, quit desktop and set `"logLevel": "debug"` in the active space's `desktop.json`, preserving its other fields. Supported values are `fatal`, `error`, `warn`, `info`, `debug`, `trace`, and `silent`. A space inherits the main home's level unless it has its own override. The change applies on the next desktop-owned backend launch, not to an already running or externally managed server. Log-directory and path commands are available to desktop integrations; a browser connected to a remote server cannot open its host directory.
+
 ## SmartScreen and updater signing
 
 SmartScreen reputation and updater signing answer two different questions: SmartScreen asks "who published this installer?", while the updater signature asks "was this file tampered with?". Because the installer has no Authenticode signature, Windows cannot display a verified publisher identity; the Tauri `.sig` allows the built-in updater to verify that the downloaded installer was signed with the Kiki updater key. The two facts are complementary, not contradictory.

@@ -11,6 +11,8 @@
  */
 mod ssh_remote;
 mod ssh_tunnel;
+mod desktop_log;
+use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
 
 macro_rules! command_handlers {
@@ -22,7 +24,6 @@ macro_rules! command_handlers {
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
-    fs::OpenOptions,
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
@@ -180,7 +181,7 @@ fn describe_exit(payload: &TerminatedPayload) -> String {
 /// the stderr tail, its on-disk log, and the sidecar's exit status.
 struct BackendMonitor {
     /// Append target for stderr lines; `None` once writing is impossible.
-    log: Mutex<Option<fs::File>>,
+    log: Mutex<Option<desktop_log::RotatingLog>>,
     log_path: Option<PathBuf>,
     /// Bounded rolling tail of the backend's stderr.
     stderr_tail: Mutex<VecDeque<String>>,
@@ -192,13 +193,7 @@ impl BackendMonitor {
     /// Open the append log under `home`; diagnostics stay in memory on failure.
     fn open(home: &Path) -> Self {
         let path = home.join(DESKTOP_BACKEND_LOG_FILE);
-        let file = fs::create_dir_all(home).ok().and_then(|_| {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok()
-        });
+        let file = desktop_log::RotatingLog::open(&path, desktop_log::LOG_MAX_BYTES, desktop_log::LOG_BACKUPS).ok();
         let log_path = file.as_ref().map(|_| path);
         Self {
             log: Mutex::new(file),
@@ -220,7 +215,7 @@ impl BackendMonitor {
         }
         if let Ok(mut guard) = self.log.lock() {
             if let Some(file) = guard.as_mut() {
-                if writeln!(file, "{line}").is_err() {
+                if file.write_line(line).is_err() {
                     // Disk logging is a convenience, not a health dependency:
                     // stop retrying and keep the in-memory tail only.
                     *guard = None;
@@ -582,7 +577,8 @@ impl BackendManager {
                 None => {
                     let launched_at_ms = unix_epoch_millis()?;
                     let home = runtime.kiki_home.clone();
-                    let mut args = vec!["web", "--no-open", "--port", "0", "--log-level", "warn"];
+                    let level = read_desktop_prefs_for(&home).log_level;
+                    let mut args = vec!["web", "--no-open", "--port", "0", "--log-level", level.as_str()];
                     if self.idle_exit { args.extend(["--idle-exit", "30m"]); }
                     let command = app
                         .shell()
@@ -1398,6 +1394,7 @@ struct DesktopPrefs {
     locale: Option<String>,
     update_channel: UpdateChannel,
     auto_update: AutoUpdateMode,
+    log_level: DesktopLogLevel,
     compatibility: CompatibilitySettings,
     #[serde(rename = "window_mode", alias = "windowMode")]
     window_mode: WindowMode,
@@ -1411,6 +1408,7 @@ impl Default for DesktopPrefs {
             locale: None,
             update_channel: UpdateChannel::build_default(option_env!("KIKI_UPDATE_CHANNEL")),
             auto_update: AutoUpdateMode::Notify,
+            log_level: DesktopLogLevel::default(),
             compatibility: CompatibilitySettings::default(),
             window_mode: WindowMode::Switch,
         }
@@ -1429,6 +1427,7 @@ struct DesktopPrefsPatch {
     locale: Option<String>,
     update_channel: Option<UpdateChannel>,
     auto_update: Option<AutoUpdateMode>,
+    log_level: Option<DesktopLogLevel>,
     compatibility: Option<CompatibilitySettings>,
     #[serde(alias = "window_mode")]
     window_mode: Option<WindowMode>,
@@ -1468,6 +1467,7 @@ fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
             prefs.notifications = override_prefs.notifications.unwrap_or(prefs.notifications);
             prefs.close_to_tray = override_prefs.close_to_tray.unwrap_or(prefs.close_to_tray);
             prefs.locale = override_prefs.locale.or(prefs.locale);
+            prefs.log_level = override_prefs.log_level.unwrap_or(prefs.log_level);
             prefs.compatibility = override_prefs.compatibility.unwrap_or(prefs.compatibility);
         }
     }
@@ -1500,7 +1500,8 @@ fn write_desktop_prefs_file(home: &Path, prefs: &DesktopPrefs, patch: &DesktopPr
     if let Some(value) = patch.close_to_tray { child.insert("closeToTray".to_string(), value.into()); }
     if let Some(value) = &patch.locale { child.insert("locale".to_string(), value.clone().into()); }
     if let Some(value) = &patch.compatibility { child.insert("compatibility".to_string(), serde_json::to_value(value).map_err(|error| error.to_string())?); }
-    if patch.notifications.is_some() || patch.close_to_tray.is_some() || patch.locale.is_some() || patch.compatibility.is_some() {
+    if let Some(value) = patch.log_level { child.insert("logLevel".to_string(), serde_json::to_value(value).map_err(|error| error.to_string())?); }
+    if patch.notifications.is_some() || patch.close_to_tray.is_some() || patch.locale.is_some() || patch.compatibility.is_some() || patch.log_level.is_some() {
         write_json_file(&path, &child)?;
     }
     if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() {
@@ -2141,6 +2142,40 @@ fn open_with_default_app(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopLogInfo {
+    directory: String,
+    backend_log_path: String,
+    max_bytes: u64,
+    backups: usize,
+    log_level: DesktopLogLevel,
+    applies_on_next_launch: bool,
+}
+
+#[tauri::command]
+fn desktop_log_info(manager: State<'_, SpaceBackendManager>) -> Result<DesktopLogInfo, String> {
+    let home = PathBuf::from(manager.active_space()?.path);
+    Ok(DesktopLogInfo {
+        directory: home.to_string_lossy().into_owned(),
+        backend_log_path: home.join(DESKTOP_BACKEND_LOG_FILE).to_string_lossy().into_owned(),
+        max_bytes: desktop_log::LOG_MAX_BYTES,
+        backups: desktop_log::LOG_BACKUPS,
+        log_level: read_desktop_prefs_for(&home).log_level,
+        applies_on_next_launch: true,
+    })
+}
+
+#[tauri::command]
+async fn open_desktop_log_directory(manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
+    let home = PathBuf::from(manager.active_space()?.path);
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::create_dir_all(&home).map_err(|error| error.to_string())?;
+        check_host_path(&home, HostPathOp::Open)?;
+        open_with_default_app(&home)
+    }).await.map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn read_desktop_prefs(manager: State<'_, SpaceBackendManager>) -> DesktopPrefs {
     manager.active_space().map(|space| read_desktop_prefs_for(Path::new(&space.path)))
@@ -2159,6 +2194,7 @@ fn write_desktop_prefs(app: AppHandle, manager: State<'_, SpaceBackendManager>, 
         locale: prefs.locale.or(current.locale),
         update_channel: prefs.update_channel.unwrap_or(current.update_channel),
         auto_update: prefs.auto_update.unwrap_or(current.auto_update),
+        log_level: prefs.log_level.unwrap_or(current.log_level),
         compatibility: prefs.compatibility.unwrap_or(current.compatibility),
         window_mode: prefs.window_mode.unwrap_or(current.window_mode),
     };
@@ -3226,6 +3262,28 @@ mod tests {
 
         let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
         assert!(corrupt.close_to_tray);
+    }
+
+    #[test]
+    fn desktop_log_level_round_trips_inherited_and_space_overrides() {
+        let root = env::temp_dir().join(format!("kiki-log-prefs-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let main = root.join("main");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let main_text = main.to_string_lossy().replace('\\', "/");
+        fs::write(child.join("home.toml"), format!("schema = 1\nid = \"h-test\"\nname = \"Test\"\nbase = {:?}\n", main_text)).unwrap();
+        let prefs: DesktopPrefs = serde_json::from_str(r#"{"logLevel":"info"}"#).unwrap();
+        let patch: DesktopPrefsPatch = serde_json::from_str(r#"{"logLevel":"info"}"#).unwrap();
+        write_desktop_prefs_file(&main, &prefs, &patch).unwrap();
+        assert_eq!(read_desktop_prefs_for(&main).log_level, DesktopLogLevel::Info);
+        assert_eq!(read_desktop_prefs_for(&child).log_level, DesktopLogLevel::Info);
+        let patch: DesktopPrefsPatch = serde_json::from_str(r#"{"logLevel":"trace"}"#).unwrap();
+        let mut next = prefs.clone(); next.log_level = DesktopLogLevel::Trace;
+        write_desktop_prefs_file(&child, &next, &patch).unwrap();
+        assert_eq!(read_desktop_prefs_for(&child).log_level, DesktopLogLevel::Trace);
+        assert_eq!(read_desktop_prefs_for(&main).log_level, DesktopLogLevel::Info);
+        assert!(serde_json::from_str::<DesktopPrefsPatch>(r#"{"logLevel":"verbose"}"#).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -104,6 +104,8 @@ function readAwayNotificationKinds(value: unknown): AwayNotificationKinds {
 
 export type UpdateChannel = 'stable' | 'beta';
 export type AutoUpdateMode = 'off' | 'notify' | 'install';
+export const DESKTOP_LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
+export type DesktopLogLevel = typeof DESKTOP_LOG_LEVELS[number];
 
 export interface DesktopNativePrefs {
   notifications: boolean;
@@ -112,6 +114,8 @@ export interface DesktopNativePrefs {
   locale?: string;
   updateChannel: UpdateChannel;
   autoUpdate: AutoUpdateMode;
+  /** Backend verbosity; persisted per space and applied on the next owned backend launch. */
+  logLevel?: DesktopLogLevel;
   compatibility: CompatibilitySettings;
   /**
    * How spaces open: one window that switches between them, or one window per
@@ -327,6 +331,7 @@ const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   closeToTray: true,
   updateChannel: (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
   autoUpdate: 'notify',
+  logLevel: 'warn',
   compatibility: {
     homeKind: 'kimi',
     customHome: undefined,
@@ -590,6 +595,7 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       stored.autoUpdate === 'off' || stored.autoUpdate === 'notify' || stored.autoUpdate === 'install'
         ? stored.autoUpdate
         : DESKTOP_PREFS_DEFAULTS.autoUpdate,
+    logLevel: DESKTOP_LOG_LEVELS.includes(stored.logLevel as DesktopLogLevel) ? stored.logLevel : 'warn',
     compatibility: {
       homeKind: homeKind === 'kimi' || homeKind === 'custom'
         ? homeKind

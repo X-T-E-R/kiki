@@ -162,6 +162,7 @@ describe('settings persistence and validation', () => {
       closeToTray: true,
       updateChannel: 'stable',
       autoUpdate: 'notify',
+      logLevel: 'warn',
       compatibility: {
         homeKind: 'kimi',
         customHome: undefined,
@@ -200,6 +201,16 @@ describe('settings persistence and validation', () => {
   it('preserves an explicitly persisted quit choice', () => {
     writeDesktopPrefs({ closeToTray: false });
     expect(readDesktopPrefs().closeToTray).toBe(false);
+  });
+
+  it('persists desktop log levels and defaults invalid or missing values to warn', () => {
+    expect(readDesktopPrefs().logLevel).toBe('warn');
+    writeDesktopPrefs({ logLevel: 'trace' });
+    expect(readDesktopPrefs().logLevel).toBe('trace');
+    writeDesktopPrefs({ closeToTray: false });
+    expect(readDesktopPrefs().logLevel).toBe('trace');
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ logLevel: 'verbose' }));
+    expect(readDesktopPrefs().logLevel).toBe('warn');
   });
 
   it('persists valid automatic update modes and falls back from invalid values', () => {
