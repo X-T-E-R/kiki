@@ -10,7 +10,13 @@ import { LockError, MiniDb } from '@kiki/minidb';
 import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { InstantiationService } from '#/_base/di/instantiationService';
+import { ServiceCollection } from '#/_base/di/serviceCollection';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
+import { IThreadMailboxStore } from '#/app/threadCommunication/threadMailboxStore';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
 import {
@@ -75,12 +81,17 @@ function bootstrap(homeDir: string): IBootstrapService {
 }
 
 function harness(homeDir: string): Harness {
-  const seed = bootstrap(homeDir);
-  const runtime = new HomeRuntimeHostService(seed);
-  return {
-    runtime,
-    store: new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem()),
-  };
+  const services = new ServiceCollection(
+    [IBootstrapService, bootstrap(homeDir)],
+    [IHostFileSystem, new SyncDescriptor(HostFileSystem)],
+    [IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService)],
+    [IThreadMailboxStore, new SyncDescriptor(RuntimeThreadMailboxStore)],
+  );
+  const instantiation = new InstantiationService(services, true);
+  return instantiation.invokeFunction((accessor) => ({
+    runtime: accessor.get(IHomeRuntimeService) as HomeRuntimeHostService,
+    store: accessor.get(IThreadMailboxStore) as RuntimeThreadMailboxStore,
+  }));
 }
 
 async function closeHarnesses(items: readonly Harness[]): Promise<void> {
@@ -229,6 +240,33 @@ function blockFirstTargetBatch(): {
   };
 }
 
+function blockMailboxOpen() {
+  const original = ClusterDb.open;
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let count = 0;
+  ClusterDb.open = async function<V>(options: Parameters<typeof original>[0]): Promise<ClusterDb<V>> {
+    count++;
+    markEntered();
+    await blocked;
+    return original<V>(options);
+  };
+  return {
+    entered,
+    release,
+    count: () => count,
+    restore: () => { release(); ClusterDb.open = original; },
+  };
+}
+
+function setCallBudgets(store: RuntimeThreadMailboxStore, normalMs: number, startupMs: number): void {
+  const budgets = store as unknown as { callTimeoutMs: number; startupCallTimeoutMs: number };
+  budgets.callTimeoutMs = normalMs;
+  budgets.startupCallTimeoutMs = startupMs;
+}
+
 describe('runtime thread mailbox', () => {
   let homeDir: string;
   const open: Harness[] = [];
@@ -240,6 +278,178 @@ describe('runtime thread mailbox', () => {
   afterEach(async () => {
     await closeHarnesses(open.splice(0));
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('gives the first workspace read a startup budget but keeps warm calls bounded', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.runtime.ready();
+    setCallBudgets(item.store, 50, 2_000);
+    const gate = blockMailboxOpen();
+    try {
+      const cold = item.store.getWorkspaceOverride('example-workspace');
+      void cold.catch(() => {});
+      await gate.entered;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      gate.release();
+      await expect(cold).resolves.toBeUndefined();
+      expect(gate.count()).toBe(1);
+      item.runtime.call = () => Promise.reject(new HomeRuntimeError('runtime.timeout', 'blocked warm call'));
+      await expect(item.store.getWorkspaceOverride('example-workspace')).rejects.toMatchObject({
+        code: 'runtime.timeout',
+        message: expect.stringContaining('after 100ms'),
+      });
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it('does not cancel shared initialization when its first caller aborts', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.runtime.ready();
+    const gate = blockMailboxOpen();
+    const controller = new AbortController();
+    const cancelled = new Error('caller cancelled');
+    try {
+      const first = item.store.getWorkspaceOverride('example-workspace', { signal: controller.signal });
+      const failure = expect(first).rejects.toBe(cancelled);
+      await gate.entered;
+      controller.abort(cancelled);
+      await failure;
+      const second = item.store.getWorkspaceOverride('example-workspace');
+      gate.release();
+      await expect(second).resolves.toBeUndefined();
+      expect(gate.count()).toBe(1);
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it('keeps initialization reusable after bounded RPC retries expire', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.runtime.ready();
+    const gate = blockMailboxOpen();
+    const internal = item.store as unknown as RuntimeMailboxCaller;
+    try {
+      const first = internal.call(THREAD_MAILBOX_RUNTIME_METHODS.getWorkspaceOverride,
+        { workspaceId: 'example-workspace' }, undefined, 50);
+      const failure = expect(first).rejects.toMatchObject({
+        code: 'runtime.timeout',
+        message: expect.stringContaining('method=threadMailbox.v3.getWorkspaceOverride'),
+      });
+      await gate.entered;
+      await failure;
+      const second = item.store.getWorkspaceOverride('example-workspace');
+      gate.release();
+      await expect(second).resolves.toBeUndefined();
+      expect(gate.count()).toBe(1);
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it.each(['store', 'runtime'] as const)('cancels shared initialization when the %s closes', async (closing) => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.runtime.ready();
+    const gate = blockMailboxOpen();
+    const controller = new AbortController();
+    const cancelled = new Error('caller cancelled');
+    try {
+      const first = item.store.getWorkspaceOverride('example-workspace', { signal: controller.signal });
+      void first.catch(() => {});
+      await gate.entered;
+      const initializing = (item.store as unknown as {
+        initialization: { controller: AbortController };
+      }).initialization;
+      const closed = closing === 'store' ? item.store.close() : item.runtime.close();
+      expect(initializing.controller.signal.aborted).toBe(true);
+      controller.abort(cancelled);
+      await expect(first).rejects.toBeInstanceOf(Error);
+      gate.release();
+      await closed;
+      await item.store.close();
+      expect((item.store as unknown as { db: unknown }).db).toBeUndefined();
+    } finally {
+      gate.restore();
+    }
+  });
+
+  it('keeps peer-history backfill off workspace reads and reuses it after reader cancellation', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.store.acceptMessage(acceptInput('backfill-message'));
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const internals = item.store as unknown as {
+      preparePeerIndex(db: ClusterDb<Record<string, unknown>>, ctx: { signal: AbortSignal }): Promise<void>;
+    };
+    const original = internals.preparePeerIndex.bind(item.store);
+    let count = 0;
+    let initializationSignal: AbortSignal | undefined;
+    internals.preparePeerIndex = async (db, ctx) => {
+      count++;
+      initializationSignal = ctx.signal;
+      entered();
+      await gate;
+      return original(db, ctx);
+    };
+    const controller = new AbortController();
+    const cancelled = new Error('reader cancelled');
+    try {
+      const first = item.store.readMessages({ group: 'all', limit: 100 }, { signal: controller.signal });
+      const failure = expect(first).rejects.toBe(cancelled);
+      await started;
+      await expect(item.store.getWorkspaceOverride('example-workspace')).resolves.toBeUndefined();
+      controller.abort(cancelled);
+      await failure;
+      expect(initializationSignal?.aborted).toBe(false);
+      const second = item.store.readMessages({ group: 'all', limit: 100 });
+      release();
+      await expect(second).resolves.toMatchObject({ items: [{ message: { idempotencyKey: 'backfill-message' } }] });
+      expect(count).toBe(1);
+    } finally {
+      release();
+      internals.preparePeerIndex = original;
+    }
+  });
+
+  it('cancels peer-history backfill before releasing a departed owner database', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.store.getWorkspaceOverride('example-workspace');
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const internals = item.store as unknown as {
+      db: unknown;
+      peerIndexInitialization: { controller: AbortController };
+      preparePeerIndex(): Promise<void>;
+    };
+    const original = internals.preparePeerIndex.bind(item.store);
+    internals.preparePeerIndex = async () => { entered(); await gate; };
+    const controller = new AbortController();
+    try {
+      const first = item.store.readMessages({ group: 'all', limit: 100 }, { signal: controller.signal });
+      void first.catch(() => {});
+      await started;
+      const initialization = internals.peerIndexInitialization;
+      await item.runtime.close();
+      expect(initialization.controller.signal.aborted).toBe(true);
+      controller.abort(new Error('reader cancelled'));
+      await expect(first).rejects.toBeInstanceOf(Error);
+      release();
+      await item.store.close();
+      expect(internals.db).toBeUndefined();
+    } finally {
+      release();
+      internals.preparePeerIndex = original;
+    }
   });
 
   it('uses one real cross-process owner and produces no MiniDb LockError', async () => {

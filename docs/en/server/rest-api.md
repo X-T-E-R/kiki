@@ -287,6 +287,8 @@ The standard envelope's `data` is `{ items, next_cursor?, incomplete? }`. Each i
 
 `delivery` is `pending`, `delivered`, or `undeliverable`. Delivered means the input was handed to the target prompt, not that the target finished answering. A rejected send before mailbox acceptance, such as an unknown target, creates no communication record. The contract guarantees that `message_id` equals both the recipient main-agent prompt id and its user-message id, including steered delivery and idempotent retries. Navigate only `delivered` records in the target session with `?block=user-<message_id>`; `target_seq` is a mailbox sequence, not a transcript turn number. A deleted endpoint has `deleted: true`; the record stays visible from the surviving side and disappears from this view when neither side survives.
 
+The first history read after an index upgrade can wait for retained-message indexing; ordinary mailbox operations do not wait for that backfill. The read remains subject to the client's request timeout. If it times out, retry while the same server remains running: indexing continues in that server and keeps durable checkpoints across restarts. The Activity history view shows a loading message and a retry control on failure, but no indexing percentage or completion estimate.
+
 For `undeliverable` records, `reason_code` is a stable localization key and `reason_detail` is the original diagnostic text. The legacy `reason` remains an alias of `reason_detail`. Other delivery states omit these fields. Older stored failures without a code return `delivery_failed`; clients talking to older servers should use the same fallback instead of translating diagnostic text.
 
 | `reason_code` | Failure category |

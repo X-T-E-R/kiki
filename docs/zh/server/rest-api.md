@@ -287,6 +287,8 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 `delivery` 为 `pending`、`delivered` 或 `undeliverable`。Delivered 表示输入已交给对方 prompt，不代表对方已完成回复。邮箱接收前被拒绝的发送，例如目标不存在，不会生成沟通记录。契约保证 `message_id` 同时等于接收方 main agent 的 prompt ID 和对应 User 消息 ID，包括 steer 投递和幂等重试。仅对 `delivered` 记录使用目标会话的 `?block=user-<message_id>` 跳转；`target_seq` 是邮箱序号，不是会话轮次号。已删除的端点标记为 `deleted: true`，另一侧仍存在时记录保留；两侧都删除后，记录从这个视图中消失。
 
+索引升级后的第一次历史读取可能需要等待保留消息建立索引；普通邮箱操作不等待这次回填。读取仍受客户端请求超时限制。如果超时，请在同一个服务器保持运行时重试：索引会在该服务器中继续建立，并通过持久检查点支持重启后继续。活动页的沟通记录视图显示加载提示，失败时提供重试按钮，但不显示索引百分比或预计完成时间。
+
 对于 `undeliverable` 记录，`reason_code` 是稳定的本地化键，`reason_detail` 是诊断原文。旧字段 `reason` 保留为 `reason_detail` 的别名。其他投递状态不返回这些字段。没有代码的旧失败记录返回 `delivery_failed`；连接旧服务器的客户端也应使用这个兜底值，而不是翻译诊断原文。
 
 | `reason_code` | 失败类别 |

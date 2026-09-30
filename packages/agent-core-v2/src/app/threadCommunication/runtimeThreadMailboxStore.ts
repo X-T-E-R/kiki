@@ -286,6 +286,12 @@ interface AcceptPlan {
   readonly ops: readonly BatchInputOp<StoredDoc>[];
 }
 
+interface OwnerInitialization {
+  readonly epoch: number;
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+}
+
 export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   declare readonly _serviceBrand: undefined;
 
@@ -305,7 +311,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private observedRuntimeEpoch = 0;
   private ownerReleaseFlight: Promise<void> = Promise.resolve();
   private readonly ownerReleaseErrors: unknown[] = [];
-  private initialization: { readonly epoch: number; readonly promise: Promise<void> } | undefined;
+  private initializedCallEpoch: number | undefined;
+  private initializedPeerReadCallEpoch: number | undefined;
+  private initialization: OwnerInitialization | undefined;
+  private peerIndexInitialization: OwnerInitialization | undefined;
+  private peerIndexEpoch: number | undefined;
   private closing = false;
   private closeFlight: Promise<void> | undefined;
 
@@ -394,6 +404,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async readMessagesOwner(input: ReadMailboxMessagesInput, ctx: RuntimeMethodContext): Promise<MailboxMessagesPage> {
     const db = await this.readyOwner(ctx);
+    await this.readyPeerIndex(db, ctx);
     const rows = await db.compoundRange(PEER_INDEX_NAME, input.group, {
       lt: input.before, reverse: true, limit: input.limit + 1,
     });
@@ -544,15 +555,27 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     method: RuntimeMethodName,
     payload: unknown,
     options?: ThreadMailboxMutationOptions,
-    timeoutMs = this.callTimeoutMs,
+    timeoutMs = (method === THREAD_MAILBOX_RUNTIME_METHODS.readMessages
+      ? this.initializedPeerReadCallEpoch
+      : this.initializedCallEpoch) === this.runtime.status().epoch
+      ? this.callTimeoutMs
+      : this.startupCallTimeoutMs,
   ): Promise<unknown> {
     if (this.closing) throw new Error('Thread mailbox store is closed.');
     const requestId = options?.requestId ?? randomUUID();
     const totalTimeoutMs = timeoutMs * CALL_TOTAL_TIMEOUT_MULTIPLIER;
     const deadlineAt = Date.now() + totalTimeoutMs;
-    const deadlineError = new HomeRuntimeError('runtime.timeout', `thread mailbox call timed out after ${totalTimeoutMs}ms`);
+    let phase = 'ready';
+    let lastRetryError: unknown;
+    const deadlineError = (): HomeRuntimeError => {
+      const status = this.runtime.status();
+      const lastCode = lastRetryError instanceof HomeRuntimeError ? lastRetryError.code : 'none';
+      return new HomeRuntimeError('runtime.timeout',
+        `thread mailbox call timed out after ${totalTimeoutMs}ms (method=${method}, phase=${phase}, role=${status.role}, ready=${status.ready}, epoch=${status.epoch}, lastRetry=${lastCode})`,
+        { cause: lastRetryError });
+    };
     const deadlineController = new AbortController();
-    const deadlineTimer = setTimeout(() => deadlineController.abort(deadlineError), totalTimeoutMs);
+    const deadlineTimer = setTimeout(() => deadlineController.abort(deadlineError()), totalTimeoutMs);
     deadlineTimer.unref?.();
     const callerSignal = combineAbortSignals(this.closeController.signal, options?.signal);
     const signal = combineAbortSignals(callerSignal, deadlineController.signal);
@@ -560,21 +583,29 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       for (;;) {
         throwIfAborted(signal);
         const readyBudgetMs = deadlineAt - Date.now();
-        if (readyBudgetMs <= 0) throw deadlineError;
+        if (readyBudgetMs <= 0) throw deadlineError();
         try {
+          phase = 'ready';
           await abortable(this.runtime.ready(), signal);
           const remainingMs = deadlineAt - Date.now();
-          if (remainingMs <= 0) throw deadlineError;
-          return await this.runtime.call(method, payload, {
+          if (remainingMs <= 0) throw deadlineError();
+          const epoch = this.runtime.status().epoch;
+          phase = 'call';
+          const result = await this.runtime.call(method, payload, {
             requestId,
             timeoutMs: Math.min(timeoutMs, remainingMs),
             signal,
           });
+          this.initializedCallEpoch = epoch;
+          if (method === THREAD_MAILBOX_RUNTIME_METHODS.readMessages) this.initializedPeerReadCallEpoch = epoch;
+          return result;
         } catch (error) {
           throwIfAborted(signal);
           if (!isRetryableMailboxRuntimeResponse(error)) throw error;
+          lastRetryError = error;
+          phase = 'backoff';
           const backoffMs = Math.min(CALL_RETRY_BACKOFF_MS, deadlineAt - Date.now());
-          if (backoffMs <= 0) throw deadlineError;
+          if (backoffMs <= 0) throw deadlineError();
           await abortable(delay(backoffMs), signal);
         }
       }
@@ -593,22 +624,22 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       const current = this.initialization;
       if (current !== undefined) {
         try {
-          await current.promise;
+          await abortable(current.promise, ctx.signal);
         } catch (error) {
+          throwIfAborted(ctx.signal);
           if (current.epoch === ctx.epoch) throw error;
         }
-        throwIfAborted(ctx.signal);
         continue;
       }
-      const promise = this.initializeOwner(ctx);
-      const flight = { epoch: ctx.epoch, promise };
-      this.initialization = flight;
-      try {
-        await promise;
-      } finally {
+      const controller = new AbortController();
+      const signal = combineAbortSignals(this.closeController.signal, controller.signal);
+      const promise = this.initializeOwner({ ...ctx, signal }).finally(() => {
         if (this.initialization === flight) this.initialization = undefined;
-      }
-      throwIfAborted(ctx.signal);
+      });
+      const flight = { epoch: ctx.epoch, controller, promise };
+      this.initialization = flight;
+      void promise.catch(() => {});
+      await abortable(promise, ctx.signal);
     }
   }
 
@@ -668,7 +699,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
             value: { kind: 'active_backend', version: 3, ownerEpoch: epoch, readyAt: Date.now() },
           }]);
         }
-        await this.preparePeerIndex(openedDb, ctx);
+        await this.ensurePeerIndex(openedDb);
+        throwIfAborted(ctx.signal);
+        this.assertOwnerContext(ctx);
         this.db = openedDb;
         this.quarantine.push(...openedQuarantine);
       } catch (error) {
@@ -686,10 +719,38 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     this.ownerEpoch = epoch;
   }
 
-  private async preparePeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
+  private async ensurePeerIndex(db: ClusterDb<StoredDoc>): Promise<void> {
     if (!(await db.listCompoundIndexes()).some((index) => index.name === PEER_INDEX_NAME)) {
       await db.createCompoundIndex(PEER_INDEX_NAME, { groupBy: 'peerGroup', orderBy: 'peerOrder', orderType: 'string' });
     }
+  }
+
+  private async readyPeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
+    throwIfAborted(ctx.signal);
+    this.assertOwnerContext(ctx);
+    if (this.peerIndexEpoch === ctx.epoch) return;
+    let flight = this.peerIndexInitialization;
+    if (flight === undefined) {
+      const controller = new AbortController();
+      const signal = combineAbortSignals(this.closeController.signal, controller.signal);
+      const promise = this.preparePeerIndex(db, { ...ctx, signal }).then(() => {
+        throwIfAborted(signal);
+        this.assertOwnerContext(ctx);
+        this.peerIndexEpoch = ctx.epoch;
+      }).finally(() => {
+        if (this.peerIndexInitialization === current) this.peerIndexInitialization = undefined;
+      });
+      const current = { epoch: ctx.epoch, controller, promise };
+      this.peerIndexInitialization = current;
+      flight = current;
+      void promise.catch(() => {});
+    }
+    await abortable(flight.promise, ctx.signal);
+    throwIfAborted(ctx.signal);
+    this.assertOwnerContext(ctx);
+  }
+
+  private async preparePeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
     const stored = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_MARKER);
     const checkpoint = stored?.kind === 'peer_index_marker' ? stored : undefined;
     if (checkpoint?.complete === true) return;
@@ -698,13 +759,21 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       throwIfAborted(ctx.signal);
       const rows = await db.query({ key: { gt: after, lt: 't0' }, limit: 50 });
       if (rows.length === 0) break;
+      const batches = new Map<string, BatchInputOp<StoredDoc>[]>();
       for (const row of rows) {
         throwIfAborted(ctx.signal);
         const doc = asMessage(row.value);
         if (doc === undefined) continue;
         const partition = targetPartition(doc.message.target);
         const ops = peerIndexOps(partition, doc.message);
-        if (ops.length > 0) await db.partitionBatch(partition, ops);
+        if (ops.length === 0) continue;
+        const batch = batches.get(partition) ?? [];
+        batch.push(...ops);
+        batches.set(partition, batch);
+      }
+      for (const [partition, ops] of batches) {
+        throwIfAborted(ctx.signal);
+        await db.partitionBatch(partition, ops);
       }
       after = rows.at(-1)!.key;
       await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER,
@@ -1501,6 +1570,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   }
 
   private queueOwnerRelease(epoch?: number): Promise<void> {
+    for (const initialization of [this.initialization, this.peerIndexInitialization]) {
+      if (initialization !== undefined && (epoch === undefined || initialization.epoch === epoch)) {
+        initialization.controller.abort(new HomeRuntimeError('runtime.owner_gone', 'runtime owner epoch is no longer active'));
+      }
+    }
     const prior = this.ownerReleaseFlight;
     const next = prior.then(
       () => this.releaseOwnerResources(epoch),
@@ -1512,10 +1586,10 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async releaseOwnerResources(epoch?: number): Promise<void> {
     if (epoch === undefined || this.ownerEpoch === epoch) this.ownerEpoch = 0;
-    const initialization = this.initialization;
-    if (initialization !== undefined && (epoch === undefined || initialization.epoch === epoch)) {
-      await Promise.allSettled([initialization.promise]);
-    }
+    const initializations = [this.initialization, this.peerIndexInitialization]
+      .filter((flight): flight is OwnerInitialization => flight !== undefined && (epoch === undefined || flight.epoch === epoch));
+    await Promise.allSettled(initializations.map((flight) => flight.promise));
+    this.peerIndexEpoch = undefined;
     const operations = [...this.ownerOperations]
       .filter(([, operationEpoch]) => epoch === undefined || operationEpoch === epoch)
       .map(([operation]) => operation);

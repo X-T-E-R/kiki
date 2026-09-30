@@ -70,6 +70,8 @@ Klient 提供 `global.threads.hostId`、`list`、`read`、`send`、`wait`、`get
 
 沟通记录通过 `GET /api/threads/messages`、`global.threads.messages` 和 `rest.threads.messages` 读取，见[规范读取契约](../zh/server/rest-api.md#沟通记录)。`RuntimeThreadMailboxStore` 将派生的全局、会话、工作区索引指针与 peer 接收记录放在同一个目标分区、同一个原子 WAL 批次中，用 group / order 复合索引读取。查询解析当前投递文档，不复制正文日志，也不恢复冷会话。邮箱使用磁盘模式的 value，保留历史不会把所有消息正文载入内存；键和索引元数据仍驻留内存。回填使用持久分页检查点；peer 终态记录不再按 512 条规则淘汰。已淘汰的更早历史不会从 wire 恢复。服务检查仍存在的两端元数据，包含已归档会话，达到扫描预算后明确返回续页游标（500 条候选或 2 MiB 正文阈值，每批最多 20 条后检查）。`HistorySearch` 的 peer 范围复用词法匹配，在此视图上提供有界扫描续页。Room 只是预留的来源判别字段；接入房间日志另行实施。
 
+邮箱初始化和历史回填按 runtime epoch 单飞运行，不归属于第一个 RPC 调用者。调用超时或取消只停止该调用者的等待；失去 owner 身份或关闭 store 会取消共享工作，并等待它结束后再释放数据库锁。普通邮箱初始化安装历史索引定义，但不等待回填。历史读取等待回填，回填保留持久分页检查点，并按分区批量写入。第一次成功的邮箱调用和第一次成功的历史读取分别记录自己的热调用 epoch：冷调用的默认单次预算为 20 秒，热调用为 10 秒，总重试期限为单次预算的两倍。`KIKI_THREAD_MAILBOX_TIMEOUT_MS` 同时覆盖这两个单次默认值。期限错误包含方法、等待阶段、runtime 角色、就绪状态、epoch 和最后一次重试代码，不表示某个 shard 锁的持有者。
+
 ## 区分 GUI、服务端和客户端
 
 GUI 和 TUI 会话视图通过共享 session-core 集成消费 Klient 的会话视图/命令契约，daemon 负责引擎执行。既有通用 REST 路由、终端/全局 WebSocket 流量及非交互 SDK 链路仍然存在；统一会话接线不表示所有历史传输或 SDK 入口都已删除。
