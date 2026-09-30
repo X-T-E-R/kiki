@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { translate } from '@kiki/session-core/i18n';
+import { buildAnnotationsPrefix } from '@kiki/session-core/composer';
 import {
   createViewState,
   type AgentForest,
@@ -909,6 +910,24 @@ it('keeps the preview-tab composer disabled for an agent the forest does not kno
 });
 
 const EMPTY_AGENT_STATE = createViewState('');
+
+it('mounts the annotation tray over the child dock for notes sent in this agent', async () => {
+  const forest = testForest('completed');
+  const blocks = [
+    { id: 'a1', kind: 'assistant', text: 'The cursor pages older turns in batches of twenty.' },
+    { id: 'u2', kind: 'user', text: `${buildAnnotationsPrefix([{ quote: 'batches of twenty', comment: 'match the cap' }])}ok?` },
+  ] as unknown as ReturnType<typeof createViewState>['blocks'];
+  await renderWorkspace({
+    forest,
+    controller: controllerStub({ forest, agentStates: { child: { ...createViewState('session'), loaded: true, blocks } } }),
+  });
+  await settle();
+  const toggle = dock.querySelector<HTMLButtonElement>('[data-annotation-tray-toggle]');
+  expect(toggle?.textContent).toBe('1 note already in this conversation');
+  // The tray sits above the composer, as in the main session's dock.
+  const composer = dock.querySelector('[data-composer-variant="subagent"]')!;
+  expect(toggle!.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
 
 /**
  * Minimal live-controller seat for the per-agent snapshots the workspace reads:

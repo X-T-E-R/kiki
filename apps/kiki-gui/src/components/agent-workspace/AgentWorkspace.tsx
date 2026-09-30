@@ -41,6 +41,7 @@ import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { locateInTimeline } from '../../lib/timelineLocate';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
+import { AnnotationTray } from '../AnnotationTray';
 import {
   EMPTY_SLOTS,
   useOptionalConversationShell,
@@ -680,10 +681,16 @@ function ChildAgentWorkspace({
       total_cost_usd: null,
     };
   }, [displayUsage]);
+  // One filtered list per publish, so the annotation tray's derivation keys
+  // on a stable array instead of re-collecting on every render.
+  const agentBlocks = useMemo(
+    () => filterBlocksToDirectChildren(capturedBlocks, forest, agentId),
+    [capturedBlocks, forest, agentId],
+  );
   const agentState: SessionViewState = {
     ...agentLiveState,
     session: sessionState.session,
-    blocks: filterBlocksToDirectChildren(capturedBlocks, forest, agentId),
+    blocks: agentBlocks,
     // The child's own transcript decides: the session being loaded says
     // nothing about this agent's rows, and landing before they arrive
     // would spend the one-time initial scroll on an empty list.
@@ -727,6 +734,9 @@ function ChildAgentWorkspace({
             {sendNotice.text}
           </p>
         ) : null}
+        {/* Notes already sent in this agent's own conversation, located in
+            this tab's timeline (the main session mounts the same tray). */}
+        <AnnotationTray sessionId={sessionId} agentId={agentId} blocks={agentState.blocks} />
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
           disabledPlaceholder={t('subagent.composerUnavailable')}
