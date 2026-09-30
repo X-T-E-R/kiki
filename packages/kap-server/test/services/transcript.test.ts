@@ -1096,6 +1096,36 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it.each(['s1', 'unrelated-session', 'service-dispose'])('scopes cold receipt verification cancellation independently of live eviction (%s)', async (evictedSessionId) => {
+    const home = await seedWireHomeWithTool();
+    const originalDigest = transcriptReceipt.digestWireBytes;
+    let release!: () => void;
+    let hashingFinished!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hashing = new Promise<void>((resolve) => { hashingFinished = resolve; });
+    const digest = vi.spyOn(transcriptReceipt, 'digestWireBytes').mockImplementation(async (source) => {
+      const result = await originalDigest(source);
+      hashingFinished();
+      await held;
+      return result;
+    });
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const read = service.readColdSnapshot('s1', 'main');
+      await hashing;
+      if (evictedSessionId === 'service-dispose') service.dispose();
+      else service.dropSession(evictedSessionId);
+      release();
+      if (evictedSessionId === 'service-dispose') await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+      else await expect(read).resolves.toMatchObject({ toolCallCountKnown: true, toolCallCount: 1 });
+    } finally {
+      release();
+      service.dispose();
+      digest.mockRestore();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('[STAT-R1] memoizes sealed receipt verification without rehashing an unchanged wire', async () => {
     const home = await seedWireHomeWithTool();
     const digest = vi.spyOn(transcriptReceipt, 'digestWireBytes');

@@ -1975,7 +1975,6 @@ export class TranscriptService {
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
-    this.clearVerifiedWireReceipts();
     this.resolvedToolCallCounts.delete(sessionId);
     this.opsListeners.delete(sessionId);
     for (const key of this.unverifiedResident.keys()) {
