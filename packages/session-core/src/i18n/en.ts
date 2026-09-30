@@ -6605,4 +6605,9 @@ export const en = {
   'st.perm.noMatchTitle': 'No rules match',
   'st.perm.noMatches': 'No rules match “{query}”.',
   'st.perm.reorderNarrowed': 'Clear the search to reorder rules',
+  'st.connections.search': 'Search connections',
+  'st.connections.searchPlaceholder': 'Search name, id or host…',
+  'st.connections.filter.attention': 'Needs attention',
+  'st.connections.noMatchTitle': 'No connections match',
+  'st.connections.noMatches': 'No connections match “{query}”.',
 } as const;

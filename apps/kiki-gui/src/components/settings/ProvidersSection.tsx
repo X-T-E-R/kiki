@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -17,6 +17,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { AccountQuotaCard } from './AccountQuotaCard';
 import { CatalogImportCard } from './CatalogImportCard';
 import { ExternalEnginesList } from './ExternalEnginesSection';
+import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { SectionCard } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['account', 'api', 'local'];
@@ -54,14 +55,36 @@ export function ConnectionsTab() {
 
   const providerItems = providersQuery.data?.items ?? [];
   const methods = methodsQuery.data ?? [];
-  const accountProviders = new Set(methods.map((method) => method.provider));
+  const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
   const methodFor = (providerId: string) => methods.find((method) => method.provider === providerId);
   const modelCount = (providerId: string) =>
     (modelsQuery.data?.items ?? []).filter((model) => model.provider_id === providerId).length;
-  const ordered = providerItems.toSorted((a: ProviderCatalogItem, b: ProviderCatalogItem) =>
-    KIND_ORDER.indexOf(connectionKind(a, accountProviders)) - KIND_ORDER.indexOf(connectionKind(b, accountProviders))
-    || a.id.localeCompare(b.id));
   const empty = providersQuery.isSuccess && providerItems.length === 0;
+
+  const keyOf = useCallback((provider: ProviderCatalogItem) => provider.id, []);
+  const textOf = useCallback(
+    (provider: ProviderCatalogItem) => [provider.id, methodFor(provider.id)?.label, provider.base_url],
+    [methods],
+  );
+  const filters = useMemo<readonly ListFilterSpec<ProviderCatalogItem>[]>(() => [
+    ...KIND_ORDER.map((kind) => ({
+      id: kind, label: t(`st.connections.kind.${kind}`),
+      test: (provider: ProviderCatalogItem) => connectionKind(provider, accountProviders) === kind,
+    })),
+    {
+      id: 'attention', label: t('st.connections.filter.attention'), tone: 'attention' as const,
+      test: (provider: ProviderCatalogItem) => provider.status === 'error' || provider.status === 'unconfigured',
+    },
+  ], [t, accountProviders]);
+  const sorts = useMemo<readonly ListSortSpec<ProviderCatalogItem>[]>(() => [
+    {
+      id: 'kind', label: t('st.list.sort.order'),
+      compare: (a, b) => KIND_ORDER.indexOf(connectionKind(a, accountProviders)) - KIND_ORDER.indexOf(connectionKind(b, accountProviders))
+        || a.id.localeCompare(b.id),
+    },
+    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.id.localeCompare(b.id) },
+  ], [t, accountProviders]);
+  const view = useListView({ listId: 'connections', items: providerItems, keyOf, textOf, filters, sorts });
   // The /new banner deep-links to account sign-in; open the add flow on it.
   const wantsAccount = hash === '#st-card-auth';
   const [adding, setAdding] = useState(false);
@@ -93,7 +116,7 @@ export function ConnectionsTab() {
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.connections.intro')}</p>
-            {!addOpen ? (
+            {empty && !addOpen ? (
               <button type="button" data-add-connection className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
                 onClick={() => { setAdding(true); }}>
                 <Icon name="plus" size={12} />
@@ -101,31 +124,49 @@ export function ConnectionsTab() {
               </button>
             ) : null}
           </div>
-          {ordered.length > 0 ? (
-            <div data-connection-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-              {ordered.map((provider) => {
-                const method = methodFor(provider.id);
-                return (
-                  <ProviderEditor
-                    key={provider.id}
-                    provider={provider}
-                    models={modelsQuery.data?.items ?? []}
-                    managed={accountProviders.has(provider.id)}
-                    modelCount={modelCount(provider.id)}
-                    onSaved={refreshProviderData}
-                    accountLabel={method?.label}
-                    account={method}
-                    onSignOut={method?.signed_in === true ? () => void signOut(provider.id) : undefined}
-                    signingOut={signingOut === provider.id}
-                  />
-                );
-              })}
-            </div>
+          {providerItems.length > 0 ? (
+            <>
+              <ListToolbar view={view} total={providerItems.length} filters={filters} sorts={sorts}
+                searchLabel={t('st.connections.search')} searchPlaceholder={t('st.connections.searchPlaceholder')}
+                actions={!addOpen ? (
+                  <button type="button" data-add-connection className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                    onClick={() => { setAdding(true); }}>
+                    <Icon name="plus" size={12} />
+                    {t('st.connections.add')}
+                  </button>
+                ) : undefined} />
+              {view.visible.length === 0 ? (
+                <ListEmpty kind="no-match" title={t('st.connections.noMatchTitle')}
+                  body={view.query.trim() !== '' ? t('st.connections.noMatches', { query: view.query.trim() }) : undefined}
+                  onClear={view.clear} />
+              ) : (
+                <div data-connection-list>
+                  <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.providers.title')}
+                    virtualizeAfter={Number.POSITIVE_INFINITY}
+                    renderRow={(provider) => {
+                      const method = methodFor(provider.id);
+                      return (
+                        <ProviderEditor
+                          provider={provider}
+                          models={modelsQuery.data?.items ?? []}
+                          managed={accountProviders.has(provider.id)}
+                          modelCount={modelCount(provider.id)}
+                          onSaved={refreshProviderData}
+                          accountLabel={method?.label}
+                          account={method}
+                          onSignOut={method?.signed_in === true ? () => void signOut(provider.id) : undefined}
+                          signingOut={signingOut === provider.id}
+                          density={view.density}
+                        />
+                      );
+                    }} />
+                </div>
+              )}
+            </>
           ) : null}
           {empty ? (
-            <div data-connections-empty className="rounded-lg border border-dashed border-hairline-strong px-4 py-5">
-              <p className="text-[13px] font-medium text-ink">{t('st.connections.emptyTitle')}</p>
-              <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.connections.emptyBody')}</p>
+            <div data-connections-empty>
+              <ListEmpty kind="none" title={t('st.connections.emptyTitle')} body={t('st.connections.emptyBody')} />
             </div>
           ) : null}
           {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}

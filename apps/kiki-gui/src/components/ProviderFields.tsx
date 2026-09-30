@@ -61,6 +61,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { LIST_ROW_HEIGHT, type ListDensity } from './settings/list';
 import { useCustomIdentityChoices } from './settings/IdentitySection';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import {
@@ -1112,6 +1113,7 @@ export function ProviderEditor({
   account,
   onSignOut,
   signingOut = false,
+  density = 'comfortable',
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
@@ -1127,6 +1129,8 @@ export function ProviderEditor({
   /** OAuth connections sign out instead of clearing a key. */
   onSignOut?: () => void;
   signingOut?: boolean;
+  /** Row density from the surrounding settings list; compact drops the second line. */
+  density?: ListDensity;
 }) {
   const { t, locale, time } = useI18n();
   const { client } = useConnection();
@@ -1361,9 +1365,10 @@ export function ProviderEditor({
       data-connection-row={provider.id}
       data-connection-kind={kind}
       data-connection-health={health}
-      className="group/provider border-b border-hairline last:border-b-0 [&[open]]:bg-paper"
+      className="group/provider [&[open]]:bg-paper"
     >
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+      <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
+        className={`flex cursor-pointer list-none items-center gap-3 px-3 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden ${density === 'compact' ? 'py-1' : 'py-2'}`}>
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name={kind === 'account' ? 'agent' : kind === 'local' ? 'system' : 'web'} size={14} />
         </span>
@@ -1374,14 +1379,16 @@ export function ProviderEditor({
               <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
             ) : null}
           </span>
-          <span className="block truncate text-[12px] text-ink-faint">
-            {t(`st.connections.kind.${kind}`)}
-            {identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
-            {host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
-            {' · '}{t('st.connections.modelCount', { count })}
-            {quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
-              title={quota?.reset_at === undefined ? undefined : t('st.connections.quotaResets', { time: time.absoluteTime(quota.reset_at) ?? quota.reset_at })}>{quotaText}</span></> : null}
-          </span>
+          {density === 'compact' ? null : (
+            <span className="block truncate text-[12px] text-ink-faint">
+              {t(`st.connections.kind.${kind}`)}
+              {identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
+              {host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
+              {' · '}{t('st.connections.modelCount', { count })}
+              {quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
+                title={quota?.reset_at === undefined ? undefined : t('st.connections.quotaResets', { time: time.absoluteTime(quota.reset_at) ?? quota.reset_at })}>{quotaText}</span></> : null}
+            </span>
+          )}
         </span>
         {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
         <span data-connection-status={health}

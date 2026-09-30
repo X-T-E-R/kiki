@@ -6542,4 +6542,9 @@ export const zh = {
   'st.perm.noMatchTitle': '没有匹配的规则',
   'st.perm.noMatches': '没有匹配“{query}”的规则。',
   'st.perm.reorderNarrowed': '清除搜索后才能调整顺序',
+  'st.connections.search': '搜索连接',
+  'st.connections.searchPlaceholder': '按名称、ID 或主机搜索…',
+  'st.connections.filter.attention': '需要注意',
+  'st.connections.noMatchTitle': '没有匹配的连接',
+  'st.connections.noMatches': '没有匹配“{query}”的连接。',
 };
