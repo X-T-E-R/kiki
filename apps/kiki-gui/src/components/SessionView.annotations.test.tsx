@@ -52,8 +52,10 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
 
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
-      const state = actual.createViewState(sessionId);
-      if (fixture.external) state.session = { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof state.session>;
+      const base = actual.createViewState(sessionId);
+      const state = fixture.external
+        ? { ...base, session: { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof base.session> }
+        : base;
       this.getState = () => state;
     }
 
@@ -127,6 +129,7 @@ type ComposerProps = {
   onSend: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
+  onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
   serverDefaultModel?: string;
 };
 
