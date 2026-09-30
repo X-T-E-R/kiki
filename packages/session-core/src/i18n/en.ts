@@ -6585,4 +6585,12 @@ export const en = {
   'st.models.openDetail': 'Edit {model}',
   'sidebar.roomsLoadFailed': 'Could not load rooms',
   'room.renameTitle': 'Rename room',
+  'st.spaces.search': 'Search spaces',
+  'st.spaces.searchPlaceholder': 'Search name or path…',
+  'st.spaces.filter.running': 'Running',
+  'st.spaces.filter.pending': 'Pending',
+  'st.spaces.filter.isolated': 'Isolated credentials',
+  'st.spaces.sort.order': 'Default order',
+  'st.spaces.noMatchTitle': 'No spaces match',
+  'st.spaces.noMatches': 'No spaces match “{query}”.',
 } as const;

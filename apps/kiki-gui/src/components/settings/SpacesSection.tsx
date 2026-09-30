@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -32,6 +32,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { CreateSpaceDialog } from './spaces/CreateSpaceDialog';
 import { AttachSpaceDialog, DeleteSpaceDialog, SpaceCredentialsDialog } from './spaces/SpaceDialogs';
 import { SpaceDot } from './spaces/SpaceDot';
@@ -149,7 +150,29 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const items = spaces.data ?? [];
   const main = items.find((item) => item.id === MAIN_SPACE_ID);
   const others = items.filter((item) => item.id !== MAIN_SPACE_ID);
+  // The list is anchored on the main space; every sort keeps it first.
+  const ordered = useMemo(() => [...(main === undefined ? [] : [main]), ...others], [main, others]);
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: spaceKeys.all }); };
+
+  const spaceLabel = useCallback(
+    (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name),
+    [t],
+  );
+  const keyOf = useCallback((space: SpaceListItem) => space.id, []);
+  const textOf = useCallback((space: SpaceListItem) => [spaceLabel(space), space.path], [spaceLabel]);
+  const filters = useMemo<readonly ListFilterSpec<SpaceListItem>[]>(() => [
+    { id: 'running', label: t('st.spaces.filter.running'), test: (space) => spaceRunState(space.id, statuses.data) === 'hot' },
+    { id: 'pending', label: t('st.spaces.filter.pending'), test: (space) => (spaceStatus(space.id, statuses.data)?.pendingCount ?? 0) > 0 },
+    { id: 'isolated', label: t('st.spaces.filter.isolated'), test: (space) => space.credentials_shared === false },
+  ], [t, statuses.data]);
+  const sorts = useMemo<readonly ListSortSpec<SpaceListItem>[]>(() => [
+    { id: 'order', label: t('st.spaces.sort.order'), compare: () => 0 },
+    {
+      id: 'name', label: t('st.list.sort.name'),
+      compare: (a, b) => Number(b.id === MAIN_SPACE_ID) - Number(a.id === MAIN_SPACE_ID) || spaceLabel(a).localeCompare(spaceLabel(b)),
+    },
+  ], [t, spaceLabel]);
+  const view = useListView({ listId: 'spaces', items: ordered, keyOf, textOf, filters, sorts });
 
   const enter = (space: SpaceListItem) => {
     setEntering(space.id);
@@ -192,85 +215,110 @@ function SpaceListCard({ sub }: { sub: boolean }) {
     setRestartNote(result.restart_required ? { id: space.id, text: t('st.spaces.restartRequired', { name: space.name }) } : null);
   };
 
+  const renderRow = (space: SpaceListItem) => {
+    const run = spaceRunState(space.id, statuses.data);
+    const pending = mode === 'switch' ? (spaceStatus(space.id, statuses.data)?.pendingCount ?? 0) : 0;
+    const isMain = space.id === MAIN_SPACE_ID;
+    const label = spaceLabel(space);
+    const compact = view.density === 'compact';
+    return (
+      <div data-space-row={space.id} data-space-state={run} style={{ minHeight: LIST_ROW_HEIGHT[view.density] }}
+        className="flex items-center gap-3 px-3 py-1.5">
+        <SpaceDot color={isMain ? 'var(--color-ink-faint)' : space.color} />
+        {compact ? (
+          <div className="flex min-w-0 flex-1 items-baseline gap-x-2">
+            <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+            {!isMain ? (
+              <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
+                {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
+              </span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</span>
+          </div>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-baseline gap-x-2">
+              <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+              {!isMain ? (
+                <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
+                  {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
+                </span>
+              ) : null}
+            </div>
+            <p className="truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</p>
+            {restartNote?.id === space.id ? <p className="text-[12px] font-medium text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
+          </div>
+        )}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {pending > 0 && run !== 'current' ? (
+            <span data-space-pending className="rounded-full bg-attention-soft px-1.5 text-[11.5px] font-medium tabular-nums text-attention">{tp('st.spaces.pending', pending)}</span>
+          ) : null}
+          {run === 'current' ? (
+            <span className="text-[12px] font-medium text-ink-soft" data-space-current>{t('st.spaces.current')}</span>
+          ) : (
+            <>
+              {desktop && mode === 'switch' ? (
+                <span className="inline-flex items-center gap-1 text-[12px] text-ink-faint" data-space-run={run}>
+                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${run === 'hot' ? 'bg-success' : 'border border-ink-faint/70'}`} />
+                  {t(run === 'hot' ? 'st.spaces.running' : 'st.spaces.notStarted')}
+                </span>
+              ) : null}
+              {desktop ? (
+                <button type="button" data-space-enter={space.id} disabled={entering !== null} className={SECONDARY_BUTTON}
+                  onClick={() => { enter(space); }}>
+                  {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
+                </button>
+              ) : null}
+            </>
+          )}
+          {!sub && !isMain ? (
+            <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              onClick={(event) => {
+                setMenu({ space, anchor: event.currentTarget.getBoundingClientRect() });
+              }}>
+              <Icon name="more" size={14} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server">
       <div className="space-y-3" data-space-list>
-        {!sub ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
-              <Icon name="plus" size={12} />{t('st.spaces.new')}
-            </button>
-            <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
-          </div>
-        ) : <Hint>{t('st.spaces.subManageHint')}</Hint>}
+        {sub ? <Hint>{t('st.spaces.subManageHint')}</Hint> : null}
 
         {spaces.isLoading ? <Hint>{t('st.spaces.loading')}</Hint> : null}
         {spaces.isError ? <InlineError error={spaces.error} /> : null}
 
         {items.length > 0 ? (
-          <ul className="divide-y divide-hairline rounded-lg border border-hairline bg-paper">
-            {[...(main === undefined ? [] : [main]), ...others].map((space) => {
-              const run = spaceRunState(space.id, statuses.data);
-              const pending = mode === 'switch' ? (spaceStatus(space.id, statuses.data)?.pendingCount ?? 0) : 0;
-              const isMain = space.id === MAIN_SPACE_ID;
-              const label = isMain ? t('st.spaces.main') : space.name;
-              return (
-                <li key={space.id} data-space-row={space.id} data-space-state={run} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
-                  <SpaceDot color={isMain ? 'var(--color-ink-faint)' : space.color} className="mt-px" />
-                  <div className="min-w-0 flex-1 basis-48">
-                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                      <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
-                      {!isMain ? (
-                        <span className="text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
-                          {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</p>
-                    {restartNote?.id === space.id ? <p className="mt-0.5 text-[12px] font-medium text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
-                  </div>
-                  <div className="ml-auto flex shrink-0 items-center gap-2">
-                    {pending > 0 && run !== 'current' ? (
-                      <span data-space-pending className="rounded-full bg-attention-soft px-1.5 text-[11.5px] font-medium tabular-nums text-attention">{tp('st.spaces.pending', pending)}</span>
-                    ) : null}
-                    {run === 'current' ? (
-                      <span className="text-[12px] font-medium text-ink-soft" data-space-current>{t('st.spaces.current')}</span>
-                    ) : (
-                      <>
-                        {desktop && mode === 'switch' ? (
-                          <span className="inline-flex items-center gap-1 text-[12px] text-ink-faint" data-space-run={run}>
-                            <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${run === 'hot' ? 'bg-success' : 'border border-ink-faint/70'}`} />
-                            {t(run === 'hot' ? 'st.spaces.running' : 'st.spaces.notStarted')}
-                          </span>
-                        ) : null}
-                        {desktop ? (
-                          <button type="button" data-space-enter={space.id} disabled={entering !== null} className={SECONDARY_BUTTON}
-                            onClick={() => { enter(space); }}>
-                            {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
-                          </button>
-                        ) : null}
-                      </>
-                    )}
-                    {!sub && !isMain ? (
-                      <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-                        onClick={(event) => {
-                          setMenu({ space, anchor: event.currentTarget.getBoundingClientRect() });
-                        }}>
-                        <Icon name="more" size={14} />
-                      </button>
-                    ) : null}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <>
+            <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
+              searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')}
+              actions={!sub ? (
+                <>
+                  <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
+                    <Icon name="plus" size={12} />{t('st.spaces.new')}
+                  </button>
+                  <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
+                </>
+              ) : undefined} />
+            {view.visible.length === 0 ? (
+              <ListEmpty kind="no-match" title={t('st.spaces.noMatchTitle')}
+                body={view.query.trim() !== '' ? t('st.spaces.noMatches', { query: view.query.trim() }) : undefined}
+                onClear={view.clear} />
+            ) : (
+              <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.spaces.listTitle')}
+                virtualizeAfter={Number.POSITIVE_INFINITY} renderRow={renderRow} />
+            )}
+          </>
         ) : null}
 
         {spaces.isSuccess && others.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-hairline bg-paper/60 px-4 py-6 text-center" data-space-empty>
-            <p className="text-[13px] font-medium text-ink">{t('st.spaces.emptyTitle')}</p>
-            <p className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-ink-faint">{t('st.spaces.emptyBody')}</p>
+          <div data-space-empty>
+            <ListEmpty kind="none" title={t('st.spaces.emptyTitle')} body={t('st.spaces.emptyBody')} />
           </div>
         ) : null}
         {!desktop && others.length > 0 ? <Hint>{t('st.spaces.desktopOnly')}</Hint> : null}

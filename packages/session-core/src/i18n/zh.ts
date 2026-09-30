@@ -6522,4 +6522,12 @@ export const zh = {
   'st.models.openDetail': '编辑 {model}',
   'sidebar.roomsLoadFailed': '房间列表加载失败',
   'room.renameTitle': '重命名房间',
+  'st.spaces.search': '搜索空间',
+  'st.spaces.searchPlaceholder': '按名称或路径搜索…',
+  'st.spaces.filter.running': '运行中',
+  'st.spaces.filter.pending': '待处理',
+  'st.spaces.filter.isolated': '独立凭据',
+  'st.spaces.sort.order': '默认顺序',
+  'st.spaces.noMatchTitle': '没有匹配的空间',
+  'st.spaces.noMatches': '没有匹配“{query}”的空间。',
 };
