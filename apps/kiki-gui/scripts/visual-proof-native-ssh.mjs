@@ -39,7 +39,10 @@ export function createNativeSshWalker({ page, shot, resizeViewport, setProofThem
   };
   const expect = (condition, message) => { if (!condition) throw new Error(message); };
   const openSession = async (sessionId) => {
-    await open(`/s/${sessionId}`, '[data-composer-variant="main"] textarea');
+    // An SSH approval opens as the tray's current decision, which takes the
+    // composer card over and hides its textarea: either seat is the session
+    // view being ready.
+    await open(`/s/${sessionId}`, '[data-composer-variant="main"] textarea, [data-needs-you-back]');
   };
 
   // The action row must stay on screen and clickable however tall the form gets.

@@ -453,6 +453,16 @@ function throwOnPageErrors(context) {
 }
 
 async function selectSession(titleFragment) {
+  // Below md the sidebar is an off-canvas drawer; a translated-away row is
+  // visible to the locator but cannot be clicked, so open the drawer first.
+  const sidebar = page.locator('aside[data-session-sidebar]');
+  const sidebarBox = await sidebar.boundingBox();
+  const viewport = page.viewportSize();
+  if (sidebarBox !== null && viewport !== null
+    && (sidebarBox.x + sidebarBox.width <= 1 || sidebarBox.x >= viewport.width - 1)) {
+    await page.locator(`button[aria-label="${S.openMenuAria}"]`).first().click();
+    await page.waitForTimeout(300);
+  }
   const row = page.locator('aside div.group', { hasText: titleFragment }).first();
   await row.waitFor({ timeout: 10_000 });
   await row.click();
@@ -460,8 +470,14 @@ async function selectSession(titleFragment) {
   // prompt; a fixed sleep here raced that mount under load and sent the prompt
   // into a composer that was not the session's yet.
   await page.waitForURL(/\/s\//, { timeout: 15_000 });
-  await page.waitForSelector('[data-transcript-scroll]', { timeout: 20_000 }).catch(() => undefined);
-  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
+  // An empty, idle session renders the blank wordmark instead of the scroll
+  // container, so settle on whichever body this session actually shows —
+  // waiting only for the scroll container burned its whole timeout there.
+  await page.waitForSelector(`[data-transcript-scroll], text=${S.blankPage}`, { timeout: 20_000 }).catch(() => undefined);
+  // With a pending decision and an empty draft the composer card is taken over:
+  // the textarea stays mounted but hidden, and the takeover's "back to input"
+  // row is the live seat.
+  await page.waitForSelector('textarea:not([disabled]), [data-needs-you-back]', { timeout: 20_000 });
   await page.waitForTimeout(300); // first paint of the transcript rows
 }
 
