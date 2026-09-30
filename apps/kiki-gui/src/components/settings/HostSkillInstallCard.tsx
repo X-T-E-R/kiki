@@ -115,7 +115,9 @@ function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
     }
   };
 
+  // A stale preview no longer describes the target; only the path stays as context.
   const shown = phase.kind === 'previewing' ? undefined : phase.preview;
+  const stale = phase.kind === 'failed' && phase.stale;
   const busy = phase.kind === 'installing';
   const title = t('st.hostSkill.dialogTitle', { host: hostName });
   return (
@@ -142,7 +144,7 @@ function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
               <dt className="text-[12px] font-medium text-ink-soft">{t('st.hostSkill.file')}</dt>
               <dd className="mt-1 break-all rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] leading-5 text-ink" data-host-skill-path>{shown.path}</dd>
             </div>
-            <div>
+            {!stale ? <div>
               <dt className="sr-only">{t('st.hostSkill.existing')}</dt>
               <dd
                 className={`flex items-start gap-1.5 leading-5 ${shown.overwrites ? 'text-amber-ink' : 'text-ink-soft'}`}
@@ -151,7 +153,7 @@ function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
                 {shown.overwrites ? <Icon name="warning" size={12} className="mt-[4px] shrink-0" /> : null}
                 {shown.overwrites ? t('st.hostSkill.overwrites') : t('st.hostSkill.creates')}
               </dd>
-            </div>
+            </div> : null}
           </dl>
         ) : null}
         {phase.kind === 'failed' ? (
