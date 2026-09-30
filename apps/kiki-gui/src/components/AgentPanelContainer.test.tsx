@@ -337,6 +337,27 @@ it('does not keep polling a settled historical agent', async () => {
   }
 });
 
+it('reads a plan only after the tab agent is loaded, settled, and known to be in plan mode', async () => {
+  getAgentCapabilities.mockResolvedValue({ context: 'persisted', owner: { agent_id: 'child' }, available: false, targets: [], tools: [], skills: [], metrics: {} });
+  getAgentPlan.mockResolvedValue({ id: 'child-plan', content: '# Child plan', path: '/fixture/child/PLAN.md' });
+  harness.agents['child'] = viewState({ planMode: undefined });
+  await render('child', { routed: routedState({ planMode: true }) });
+  expect(getAgentPlan).not.toHaveBeenCalled();
+  harness.agents['child'] = viewState({ planMode: false });
+  await render('child', { routed: routedState({ planMode: true }) });
+  expect(getAgentPlan).not.toHaveBeenCalled();
+  harness.agents['child'] = viewState({ planMode: true, loaded: false });
+  await render('child');
+  expect(getAgentPlan).not.toHaveBeenCalled();
+  harness.agents['child'] = viewState({ planMode: true, resyncing: true });
+  await render('child');
+  expect(getAgentPlan).not.toHaveBeenCalled();
+  harness.agents['child'] = viewState({ planMode: true });
+  await render('child', { routed: routedState({ planMode: false }) });
+  expect(getAgentPlan).toHaveBeenCalledExactlyOnceWith('child');
+  expect(element.querySelector('[data-agent-plan]')).not.toBeNull();
+});
+
 it('keeps the current plan agent-scoped, collapsed by default, and expandable', async () => {
   getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: false, targets: [], tools: [], skills: [], metrics: { main: UNKNOWN_AGENT_PANEL_METRICS } });
   getAgentPlan.mockImplementation(async (agentId: string) => ({
@@ -344,12 +365,12 @@ it('keeps the current plan agent-scoped, collapsed by default, and expandable', 
     content: agentId === 'main' ? '# Main plan\n- Main only' : '# Child plan\n- Child only',
     path: `/fixture/${agentId}/PLAN.md`,
   }));
-  harness.agents['main'] = viewState({ planMode: false });
-  harness.agents['child'] = viewState({ planMode: false });
+  harness.agents['main'] = viewState({ planMode: true });
+  harness.agents['child'] = viewState({ planMode: true });
 
-  // The routed agent is in plan mode; the panel's plan query must still be
+  // The routed agent is not in plan mode; the panel's plan query must still be
   // keyed on the tab agent's own plan mode.
-  await render('main', { routed: routedState({ planMode: true }) });
+  await render('main', { routed: routedState({ planMode: false }) });
   const mainPlan = element.querySelector<HTMLElement>('[data-agent-plan]');
   expect(mainPlan).not.toBeNull();
   expect(mainPlan?.querySelector('button')?.getAttribute('aria-expanded')).toBe('false');
@@ -357,12 +378,12 @@ it('keeps the current plan agent-scoped, collapsed by default, and expandable', 
   await act(async () => { mainPlan?.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
   expect(element.textContent).toContain('Main only');
 
-  await render('child', { routed: routedState({ planMode: true }) });
+  await render('child', { routed: routedState({ planMode: false }) });
   expect(getAgentPlan).toHaveBeenLastCalledWith('child');
   const planQueryKey = queryClient.getQueryCache().getAll()
     .map((query) => query.queryKey)
     .find((key) => key[0] === 'agentPlan' && key[2] === 'child');
-  expect(planQueryKey).toEqual(['agentPlan', 'session', 'child', false]);
+  expect(planQueryKey).toEqual(['agentPlan', 'session', 'child', true]);
   const childPlan = element.querySelector<HTMLElement>('[data-agent-plan]');
   expect(childPlan?.querySelector('button')?.getAttribute('aria-expanded')).toBe('false');
   expect(element.textContent).not.toContain('Child only');
