@@ -311,3 +311,51 @@
   transition-duration: 0.01ms !important;
   scroll-behavior: auto !important;
 }
+
+/* ---- send now (steer) ----
+ * A message sent into a running turn is the user's own bubble drawn as an
+ * outline until the agent reads it: paper ground, a dashed ink-blue hairline
+ * (ink-blue = "current", never vermilion — waiting on the agent is not
+ * "needs you"). Delivery fills the same element in; ground and outline cross
+ * over on one base transition, so the row keeps its place and never remounts.
+ * The mark on the status line beckons while it waits and stops when reduced.
+ */
+.steer-bubble {
+  border: 1px solid transparent;
+  transition:
+    background-color var(--kiki-motion-base) var(--kiki-ease-out),
+    border-color var(--kiki-motion-base) var(--kiki-ease-out);
+}
+.steer-bubble-pending {
+  background-color: var(--color-paper);
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-selected-ink) 55%, transparent);
+}
+.steer-mark {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--color-selected-ink);
+}
+[data-steer-line='sending'] .steer-mark {
+  opacity: 0.45;
+}
+[data-steer-line='waiting'] .steer-mark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0;
+  animation: kiki-beckon var(--kiki-motion-loop-beckon) var(--kiki-ease-out) infinite;
+}
+:root[data-kiki-motion='reduce'] [data-steer-line] .steer-mark::after {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-kiki-motion='full']) [data-steer-line] .steer-mark::after {
+    animation: none;
+  }
+}

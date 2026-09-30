@@ -9,6 +9,7 @@ import { translate } from '@kiki/session-core/i18n';
 import { buildAnnotationsPrefix } from '@kiki/session-core/composer';
 import {
   createViewState,
+  SendNowError,
   type AgentForest,
   type AgentTreeNode,
   type SessionController,
@@ -27,6 +28,7 @@ const harness = vi.hoisted(() => ({
   scopeId: 'direct:one',
   listModels: vi.fn(),
   sendAgentMessage: vi.fn(),
+  isNativeAgent: vi.fn(),
   stopAgentTask: vi.fn(),
   setAgentModel: vi.fn(),
   setAgentEffort: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock('../../state/connection', () => ({
       listModels: harness.listModels,
       listSessionSkills: harness.listSessionSkills,
       sendAgentMessage: harness.sendAgentMessage,
+      isNativeAgent: harness.isNativeAgent,
       stopAgentTask: harness.stopAgentTask,
       setAgentModel: harness.setAgentModel,
       setAgentEffort: harness.setAgentEffort,
@@ -117,6 +120,7 @@ beforeEach(() => {
     metrics: {},
   });
   harness.shellEnabled = true;
+  harness.isNativeAgent.mockResolvedValue(true);
   harness.scopeId = 'direct:one';
   harness.host = { kind: 'browser' };
   harness.mediaProviderProps.length = 0;
@@ -228,9 +232,12 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   await typeText(textarea, 'next step');
   await settle();
   expect(textarea.value).toBe('next step');
-  const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]');
+  // Busy child: the button sends into the running turn (there is no queue strip to park in).
+  const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]');
   expect(sendButton?.disabled).toBe(false);
   await act(async () => { sendButton?.click(); });
+  await settle();
+  // No controller to steer through: falls back to the mailbox path.
   expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
     { type: 'text', text: 'next step' },
   ], expect.any(String));
@@ -243,6 +250,52 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+});
+
+async function sendNowToBusyChild(
+  sendPromptNow: ReturnType<typeof vi.fn>,
+): Promise<HTMLTextAreaElement> {
+  const controller = Object.assign(
+    controllerStub({ forest: testForest('running', true), agentStates: {} }),
+    { sendPromptNow },
+  );
+  await renderWorkspace({ controller, forest: testForest('running', true) });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'look at the tests too');
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  return textarea;
+}
+
+it('steers a busy native child through the shared send-now ledger, not its mailbox', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
+  const textarea = await sendNowToBusyChild(sendPromptNow);
+  expect(sendPromptNow).toHaveBeenCalledWith({
+    agentId: 'child', text: 'look at the tests too', content: [{ type: 'text', text: 'look at the tests too' }],
+  });
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+  expect(textarea.value).toBe('');
+  expect(harness.pushToast).not.toHaveBeenCalled();
+});
+
+it('hands a refused child send-now back to the composer with the reason', async () => {
+  const sendPromptNow = vi.fn().mockRejectedValue(new SendNowError('refused', new Error('model differs')));
+  const textarea = await sendNowToBusyChild(sendPromptNow);
+  expect(textarea.value).toBe('look at the tests too');
+  expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error' }));
+});
+
+it('keeps an external-executor child on its mailbox when sending into a busy turn', async () => {
+  harness.isNativeAgent.mockResolvedValue(false);
+  harness.sendAgentMessage.mockResolvedValue({});
+  const sendPromptNow = vi.fn();
+  await sendNowToBusyChild(sendPromptNow);
+  expect(sendPromptNow).not.toHaveBeenCalled();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'look at the tests too', [
+    { type: 'text', text: 'look at the tests too' },
+  ], expect.any(String));
 });
 
 /** Minimal durable-mailbox acceptance returned by `client.sendAgentMessage`. */

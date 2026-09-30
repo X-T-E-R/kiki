@@ -1534,6 +1534,35 @@ describe('message row actions', () => {
     expect(container.querySelector('[data-block-id="user-queued-message"]')).toBeNull();
   });
 
+  it.each(['sending', 'waiting'] as const)('paints a %s send-now as an awaiting-insertion bubble without row mutations', async (phase) => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript([
+      assistantBlock('assistant-anchor', 'working on it'),
+      userBlock({ id: 'user-p-now', text: 'also check the docs', userMessageId: 'p-now', promptId: 'p-now', steerStatus: phase }),
+    ], rowActions);
+    const row = container.querySelector('[data-block-id="user-p-now"]')!;
+    expect(row).not.toBeNull();
+    expect(row.querySelector(`[data-steer-status="${phase}"]`)?.className).toContain('steer-bubble-pending');
+    expect(row.querySelector('[data-steer-line]')?.getAttribute('data-steer-line')).toBe(phase);
+    expect(row.querySelector('[data-steer-line]')?.textContent).toContain(phase === 'waiting' ? 'Waiting to join' : 'Sending');
+    // It is not in the conversation yet: nothing to edit or fork.
+    expect(rowActionButtons(row)).toEqual(['copy', 'link']);
+
+    const delivered = await renderTranscript([
+      assistantBlock('assistant-anchor', 'working on it'),
+      userBlock({ id: 'user-p-now', text: 'also check the docs', userMessageId: 'p-now', promptId: 'p-now', turnId: 't1' }),
+    ], rowActions);
+    const settledRow = delivered.querySelector('[data-block-id="user-p-now"]')!;
+    expect(settledRow.querySelector('[data-steer-line]')).toBeNull();
+    expect(settledRow.querySelector('.steer-bubble')?.className).toContain('bg-bubble-user');
+    expect(rowActionButtons(settledRow)).toEqual(['copy', 'link', 'edit', 'fork']);
+  });
+
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,

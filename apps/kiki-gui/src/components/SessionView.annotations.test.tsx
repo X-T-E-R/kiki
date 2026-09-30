@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { readComposerState, resetComposerMemoryForTests, type SelectionAnnotation } from '@kiki/session-core/composer';
+import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
 
@@ -15,7 +16,7 @@ const { seat, submit } = vi.hoisted(() => ({
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
     steered: [] as string[],
   },
 }));
@@ -57,6 +58,10 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     setFocusedAgent() {}
     sendPrompt(input: { text: string }) {
       return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, resolve, reject }); });
+    }
+    // Send now goes through the controller's steer ledger, never a queue-then-steer pair.
+    sendPromptNow(input: { text: string }) {
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, now: true, resolve, reject }); });
     }
     steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
     refreshSession() { return Promise.resolve(); }
@@ -214,7 +219,7 @@ describe('session selection annotations', () => {
   it.each([
     ['a plain send', 'running', false],
     ['a send that parks in the queue', 'queued', false],
-    ['send now (queued, then steered in)', 'queued', true],
+    ['send now (steered into the running turn)', 'queued', true],
   ] as const)('takes the notes off the composer the moment %s goes out', async (_label, status, now) => {
     await withSession(async () => {
       let sent: Promise<unknown> | undefined;
@@ -223,12 +228,33 @@ describe('session selection annotations', () => {
       });
       expect(submit.calls).toHaveLength(1);
       expect(submit.calls[0]!.text).toContain('keep this');
+      expect(submit.calls[0]!.now).toBe(now ? true : undefined);
       // In flight: the notes already ride the prompt, not the composer.
       expect(currentAnnotations()).toEqual([]);
-      await act(async () => { submit.calls[0]!.resolve(accepted(status)); await sent; });
+      await act(async () => {
+        submit.calls[0]!.resolve(now ? { promptId: 'prompt-1', outcome: 'steered' } : accepted(status));
+        await sent;
+      });
       expect(currentAnnotations()).toEqual([]);
       expect(readComposerState('session-a').annotations).toEqual([]);
-      expect(submit.steered).toEqual(now ? ['prompt-1'] : []);
+      // The ledger steers by itself; the view never issues a follow-up steer.
+      expect(submit.steered).toEqual([]);
+    });
+  });
+
+  it.each([
+    ['refused by the running turn', 'refused', true],
+    ['never reached the server', 'submit', true],
+    ['lost in an unknown state', 'unknown', false],
+  ] as const)('hands a send-now back to the composer when it was %s', async (_label, reason, restored) => {
+    await withSession(async () => {
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSendNow('go on', []); });
+      expect(currentAnnotations()).toEqual([]);
+      await act(async () => { submit.calls[0]!.reject(new SendNowError(reason, new Error('busy'))); await sent; });
+      // Only a send that provably never landed returns its notes; an unknown
+      // outcome may already be in the turn, so it is not duplicated.
+      expect(currentAnnotations()).toHaveLength(restored ? 1 : 0);
     });
   });
 

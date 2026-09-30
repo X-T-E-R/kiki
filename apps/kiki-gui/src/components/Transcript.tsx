@@ -310,7 +310,7 @@ const UserMessage = memo(function UserMessage({
   useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
-  const settled = block.promptStatus === undefined;
+  const settled = block.promptStatus === undefined && block.steerStatus === undefined;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled;
   const agentMessageLabel =
     block.agentMessage === undefined
@@ -399,7 +399,12 @@ const UserMessage = memo(function UserMessage({
           onCancel={() => { setEditing(false); }}
         />
       ) : bodyText.trim() === '' ? null : (
-        <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink">
+        <div
+          data-steer-status={block.steerStatus}
+          className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+            block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
+          }`}
+        >
           <div
             ref={contentRef}
             id={contentId}
@@ -432,6 +437,24 @@ const UserMessage = memo(function UserMessage({
       {block.optimisticStatus !== undefined ? (
         <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[11px] text-ink-faint">
           {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}
+        </span>
+      ) : null}
+      {block.steerStatus !== undefined ? (
+        <span
+          role="status"
+          data-steer-line={block.steerStatus}
+          title={block.steerStatus === 'waiting' ? t('transcript.steerWaitingTitle') : undefined}
+          className="mt-1 mr-1 flex items-center gap-1.5 text-[11px]"
+        >
+          <span aria-hidden className="steer-mark" />
+          {block.steerStatus === 'waiting' ? (
+            <>
+              <span className="font-medium text-selected-ink">{t('transcript.steerWaiting')}</span>
+              <span className="text-ink-faint">· {t('transcript.steerWaitingHint')}</span>
+            </>
+          ) : (
+            <span className="text-ink-faint">{t('transcript.steerSending')}</span>
+          )}
         </span>
       ) : null}
       {block.promptStatus === 'blocked' ? (

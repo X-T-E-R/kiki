@@ -302,6 +302,7 @@ export function Composer({
   onChangeEffort,
   onSend,
   onSendNow,
+  busySendsNow = false,
   working,
   onAbort,
   abortPending = false,
@@ -469,6 +470,12 @@ export function Composer({
    * to join; the key then falls back to a normal send.
    */
   onSendNow?: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  /**
+   * While busy, the plain send joins the running turn too (a conversation
+   * with no queue surface of its own): the button reads as "send into this
+   * turn" rather than "queue", and the separate send-now hint is dropped.
+   */
+  busySendsNow?: boolean;
   /**
    * The agent is working on this conversation: the row under the card shows
    * a quiet working line with the age of its latest output. Omit when idle
@@ -2408,7 +2415,7 @@ export function Composer({
                 disabled
                   ? (disabledPlaceholder ?? t('composer.placeholder'))
                   : busy
-                    ? (busyPlaceholder ?? t('composer.placeholderBusy'))
+                    ? (busyPlaceholder ?? t(busySendsNow ? 'composer.placeholderBusySendsNow' : 'composer.placeholderBusy'))
                     : t('composer.placeholder')
               }
               // The card's focus-within border is the focus indicator; the
@@ -2575,11 +2582,13 @@ export function Composer({
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
                     : sendDisabled && !disabled && sendDisabledTitle !== undefined
                       ? sendDisabledTitle
+                      : busy && busySendsNow
+                        ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowTitleCmdEnter' : 'composer.sendNowTitle')
                       : busy
                         ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
                         : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
                 }
-                aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t('composer.queueAria') : t('composer.sendAria')}
+                aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
                 data-send-ready={canSend ? '' : undefined}
                 // Filled accent only once there is something to send; at rest
                 // the button is a quiet ink glyph on paper.
@@ -2625,7 +2634,7 @@ export function Composer({
               {working !== undefined ? (
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
-                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !queueEditing && !takenOver
+                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
                     : undefined}
                 />

@@ -25,6 +25,7 @@ import {
   createViewState,
   filterBlocksToDirectChildren,
   MAIN_AGENT_ID,
+  SendNowError,
   sessionAgentForest,
   type AgentForest,
   type AgentTreeNode,
@@ -577,6 +578,45 @@ function ChildAgentWorkspace({
       text: summary,
     });
   };
+  // "Send now" into this child's running turn — the controller's steer path,
+  // shared with the main session, so the echo, the insertion point (next
+  // step boundary) and the failure fallback are identical. Only a native
+  // child can be steered; an external executor keeps its mailbox path.
+  const handleComposerSendNow = async (
+    text: string,
+    composerAttachments: readonly ComposerAttachment[],
+  ) => {
+    if (!agentKnown) return;
+    const content = buildPromptContent(text, composerAttachments);
+    if (content === null) return;
+    if (controller === null || !(await client.isNativeAgent(sessionId, agentId))) {
+      await handleComposerSend(text, composerAttachments);
+      return;
+    }
+    draftRef.current = '';
+    setSendNotice(null);
+    setDraft('');
+    setAttachments([]);
+    try {
+      const result = await controller.sendPromptNow({ agentId, text, content });
+      if (result.outcome === 'queued') pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
+    } catch (error) {
+      const reason = error instanceof SendNowError ? error.reason : 'submit';
+      if (reason !== 'unknown' && draftRef.current === '') {
+        // Nothing reached the turn: hand the text back to its author.
+        draftRef.current = text;
+        setDraft(text);
+        setAttachments(composerAttachments);
+      }
+      const cause = error instanceof SendNowError ? error.cause : error;
+      pushToast({
+        tone: 'error',
+        text: t(reason === 'refused' ? 'sv.steerRefused' : reason === 'unknown' ? 'sv.steerUnknown' : 'sv.steerFailed', {
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+      });
+    }
+  };
   // Stop is a server-side cancel that can fail; duplicate requests during the
   // round trip are guarded by a synchronous ref (a state-only guard can be
   // crossed by two events in the same batch), mirrored to state for the
@@ -754,7 +794,9 @@ function ChildAgentWorkspace({
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
           onChangePlanMode={() => {}}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-          onSend={handleComposerSend}
+          onSend={headerBusy ? handleComposerSendNow : handleComposerSend}
+          onSendNow={handleComposerSendNow}
+          busySendsNow
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
         />

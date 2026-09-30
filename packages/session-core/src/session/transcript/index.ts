@@ -117,3 +117,4 @@ export { projectSendMessage, projectMessageView, personaGreeting, type MessageVi
 export { resolveSpawnInstruction } from './spawn';
 export { countToolBlocks } from '../agentTree';
 export type { AgentForest, AgentTreeNode } from '../agentTree';
+export { isSteerSettled, newSteerPromptId, steerBlock, withPendingSteers, type PendingSteer } from './steer';

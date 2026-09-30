@@ -73,6 +73,7 @@ import {
 import {
   assertSessionWritable,
   MAIN_AGENT_ID,
+  SendNowError,
   SessionController,
   assistantMessageIdFromBlock,
   createViewState,
@@ -1961,6 +1962,58 @@ export function SessionView({
           thinking: effectiveEffort,
         });
         pendingSendRef.current = true;
+        // "Send now" into the running turn: the controller's steer ledger
+        // owns the echo from this frame until the delivered frame replaces
+        // it (no local pending bubble, so nothing to clear early). A profile
+        // switch has to open its own turn, so it keeps the ordinary path.
+        if (options?.now === true && profileSwitch.profile === undefined) {
+          const sentAnnotationsNow = annotations;
+          const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
+          updateDraft('');
+          updateAttachments([]);
+          setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
+          return controller
+            .sendPromptNow({
+              text: echoText,
+              content,
+              model: profileSwitch.model,
+              thinking: profileSwitch.thinking,
+              permissionMode,
+              planMode,
+              planGate,
+            })
+            .then((result) => {
+              setQuote(null);
+              if (result.outcome === 'queued') {
+                // The turn ended while it was on the way: it runs next, from
+                // the queue — say so instead of letting it look lost.
+                pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
+              }
+            })
+            .catch((error: unknown) => {
+              const reason = error instanceof SendNowError ? error.reason : 'submit';
+              if (reason !== 'unknown') {
+                // Nothing reached the turn: the text goes back to its author.
+                setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                if (recovery !== undefined) {
+                  updateDraft(recovery.text);
+                  updateAttachments(recovery.attachments);
+                }
+              }
+              const cause = error instanceof SendNowError ? error.cause : error;
+              const detail = cause instanceof Error ? cause.message : String(cause);
+              pushToast({
+                tone: 'error',
+                text: t(reason === 'refused' ? 'sv.steerRefused' : reason === 'unknown' ? 'sv.steerUnknown' : 'sv.steerFailed', { detail }),
+                code: cause instanceof ApiError ? cause.code : undefined,
+                requestId: cause instanceof ApiError ? cause.requestId : undefined,
+              });
+            })
+            .finally(() => {
+              pendingSendRef.current = false;
+            });
+        }
         const submissionId = crypto.randomUUID();
         setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
         updateDraft('');

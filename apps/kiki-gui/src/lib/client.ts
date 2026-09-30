@@ -1288,6 +1288,13 @@ export class KikiClient {
     return this.run(() => this.klient.session(sessionId).btw.start());
   }
 
+  /** Whether `agentId` runs on kiki's own engine (steerable) or an external executor (mailbox only). */
+  async isNativeAgent(sessionId: string, agentId: string): Promise<boolean> {
+    if (agentId === MAIN_AGENT_ID) return true;
+    const agents = await this.run(() => this.klient.session(sessionId).agents());
+    return (agents[agentId]?.executor ?? 'native') === 'native';
+  }
+
   async sendAgentMessage(
     sessionId: string,
     agentId: string,

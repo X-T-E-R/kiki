@@ -62,6 +62,7 @@ import {
   type TranscriptDetailKind,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
+import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
 
@@ -173,6 +174,25 @@ function errorMessage(error: unknown, fallback: string): string {
       : fallback;
 }
 
+/**
+ * Why a "send now" did not reach the running turn. `submit` and `refused`
+ * leave nothing behind on the server, so the text belongs back in the
+ * composer; `unknown` may still arrive and must not be re-sent blindly.
+ */
+function nonEmpty<T>(items: readonly T[]): readonly T[] | undefined {
+  return items.length === 0 ? undefined : items;
+}
+
+export class SendNowError extends Error {
+  constructor(
+    readonly reason: 'submit' | 'refused' | 'unknown',
+    override readonly cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'SendNowError';
+  }
+}
+
 export class SessionController {
   private readonly client: SessionTransport;
   private viewHandle: SessionViewSubscription | undefined;
@@ -218,6 +238,8 @@ export class SessionController {
   private readonly historyGeneration = new Map<string, number>();
   private readonly inFlightOlder = new Map<string, string>();
   private readonly emptyAgentState: SessionViewState;
+  /** "Send now" echoes per agent, laid over each published view (transcript/steer.ts). */
+  private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
   private publishedForest: AgentForest | undefined;
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
   private focusedAgentId: string | undefined;
@@ -297,7 +319,8 @@ export class SessionController {
   };
 
   private notifyMain(): void {
-    this.publishedState = this.state;
+    this.retireSettledSteers(MAIN_AGENT_ID, this.state);
+    this.publishedState = withPendingSteers(this.state, this.getPendingSteers(MAIN_AGENT_ID));
     for (const listener of this.listeners) listener();
   }
 
@@ -305,7 +328,8 @@ export class SessionController {
     for (const agentId of this.dirtyAgents) {
       const state = this.agentStates.get(agentId);
       if (state === undefined) continue;
-      this.publishedAgentStates.set(agentId, state);
+      this.retireSettledSteers(agentId, state);
+      this.publishedAgentStates.set(agentId, withPendingSteers(state, this.getPendingSteers(agentId)));
       for (const listener of this.agentListeners.get(agentId) ?? []) listener();
     }
     this.dirtyAgents.clear();
@@ -1753,6 +1777,141 @@ export class SessionController {
     assertSessionWritable(this.state);
     await this.client.steerPrompt(this.sessionId, promptId);
     await this.refreshPrompts();
+  }
+
+  /** "Send now" echoes still between the keypress and their delivered frame, per agent. */
+  getPendingSteers(agentId: string = MAIN_AGENT_ID): readonly PendingSteer[] {
+    return this.pendingSteers.get(agentId) ?? [];
+  }
+
+  /**
+   * "Send now" into the running turn of `agentId` (main or a native child) —
+   * one path for every conversation, so the insertion point is the same
+   * everywhere: the turn's next step boundary (after the current tool round).
+   *
+   * The message is on the timeline from the first frame: it enters the
+   * steer ledger before any request goes out and leaves it only when the
+   * projection owns its delivered frame. The prompt id is chosen here, so the
+   * submit, the steer and the delivered context message share one identity
+   * and the echo hands over to the real row without a remount.
+   *
+   * Idle agent: the submit starts its own turn and the echo retires as soon
+   * as that prompt is running. Steer refused (the turn ended meanwhile, a
+   * mode change needs its own turn): the parked prompt is withdrawn — a
+   * failed "send now" never lingers as an invisible queued prompt — and the
+   * error is rethrown for the caller to hand the text back.
+   */
+  async sendPromptNow(input: {
+    readonly agentId?: string;
+    readonly text: string;
+    readonly content?: MessageContent[];
+    readonly media?: PendingSteer['media'];
+    readonly promptId?: string;
+    readonly model?: string;
+    readonly thinking?: string;
+    readonly permissionMode?: PermissionMode;
+    readonly planMode?: boolean;
+    readonly planGate?: PromptPlanGate;
+  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' }> {
+    assertSessionWritable(this.state);
+    const agentId = input.agentId ?? MAIN_AGENT_ID;
+    const promptId = input.promptId ?? newSteerPromptId();
+    const content = input.content ?? [{ type: 'text' as const, text: input.text }];
+    this.setPendingSteer(agentId, {
+      promptId,
+      text: input.text,
+      media: input.media ?? nonEmpty(projectMessageContent(content).media),
+      createdAt: new Date().toISOString(),
+      phase: 'sending',
+    });
+    let result: PromptSubmitResult;
+    try {
+      result = await this.client.submitPrompt(this.sessionId, {
+        content,
+        prompt_id: promptId,
+        ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
+        model: input.model,
+        thinking: input.thinking,
+        permission_mode: input.permissionMode,
+        plan_mode: input.planMode,
+        plan_gate: input.planGate,
+      });
+    } catch (error) {
+      this.clearPendingSteer(agentId, promptId);
+      throw new SendNowError('submit', error);
+    }
+    if (result.status !== 'queued') {
+      // Idle by the time it landed: the prompt opened its own turn, which is
+      // an ordinary send — the projection owns the row from here.
+      this.clearPendingSteer(agentId, promptId);
+      return { promptId: result.prompt_id, outcome: 'started' };
+    }
+    try {
+      await this.client.steerPrompt(this.sessionId, result.prompt_id, agentId);
+    } catch (error) {
+      this.clearPendingSteer(agentId, promptId);
+      if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) {
+        // The turn ended while the steer was in flight; the engine put the
+        // prompt back in line, so it runs as its own next turn.
+        return { promptId: result.prompt_id, outcome: 'queued' };
+      }
+      if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
+        // Refused before it left the queue (it changes a mode, which needs a
+        // turn of its own): withdraw it so the text can go back to its author.
+        await this.client.abortPrompt(this.sessionId, result.prompt_id, agentId).catch(() => undefined);
+        throw new SendNowError('refused', error);
+      }
+      // Outcome unknown: it may already be in the turn. Never withdraw it.
+      throw new SendNowError('unknown', error);
+    }
+    const accepted = this.findPendingSteer(agentId, promptId);
+    if (accepted !== undefined) this.setPendingSteer(agentId, { ...accepted, phase: 'waiting' });
+    return { promptId: result.prompt_id, outcome: 'steered' };
+  }
+
+  private findPendingSteer(agentId: string, promptId: string): PendingSteer | undefined {
+    return this.pendingSteers.get(agentId)?.find((steer) => steer.promptId === promptId);
+  }
+
+  private setPendingSteer(agentId: string, steer: PendingSteer): void {
+    const current = this.pendingSteers.get(agentId) ?? [];
+    const index = current.findIndex((entry) => entry.promptId === steer.promptId);
+    this.pendingSteers.set(agentId, index < 0
+      ? [...current, steer]
+      : current.map((entry, at) => (at === index ? steer : entry)));
+    this.republishSteers(agentId);
+  }
+
+  private clearPendingSteer(agentId: string, promptId: string): void {
+    const current = this.pendingSteers.get(agentId);
+    if (current === undefined || !current.some((steer) => steer.promptId === promptId)) return;
+    const next = current.filter((steer) => steer.promptId !== promptId);
+    if (next.length === 0) this.pendingSteers.delete(agentId);
+    else this.pendingSteers.set(agentId, next);
+    this.republishSteers(agentId);
+  }
+
+  /** Drop echoes whose delivered frame the projection now owns. */
+  private retireSettledSteers(agentId: string, next: SessionViewState): void {
+    const current = this.pendingSteers.get(agentId);
+    if (current === undefined) return;
+    const live = current.filter((steer) => !isSteerSettled(next.blocks, steer));
+    if (live.length === current.length) return;
+    if (live.length === 0) this.pendingSteers.delete(agentId);
+    else this.pendingSteers.set(agentId, live);
+  }
+
+  /** Re-publish an agent's view with its current echoes (no transcript change). */
+  private republishSteers(agentId: string): void {
+    if (this.closed) return;
+    if (agentId === MAIN_AGENT_ID) {
+      this.setState({ ...this.state, version: this.state.version + 1 });
+      return;
+    }
+    const base = this.agentStates.get(agentId) ?? this.emptyAgentState;
+    this.agentStates.set(agentId, { ...base, version: base.version + 1 });
+    this.dirtyAgents.add(agentId);
+    this.publishAgents();
   }
 
   /** Clear the whole queue: the wire has no bulk-remove route, so abort each

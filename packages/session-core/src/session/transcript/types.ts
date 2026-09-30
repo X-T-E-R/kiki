@@ -33,6 +33,13 @@ export interface UserBlock {
   readonly userMessageId?: string;
   readonly clientRequestId?: string;
   readonly optimisticStatus?: 'sending' | 'slow';
+  /**
+   * "Send now" (steer) lifecycle of a message sent into a running turn:
+   * `sending` until the server accepts it, `waiting` while it sits between
+   * acceptance and the next step boundary that puts it in the model's
+   * context. Absent once delivered — the bubble is then an ordinary message.
+   */
+  readonly steerStatus?: 'sending' | 'waiting';
   readonly promptStatus?: PromptStatus;
   /**
    * Terminal outcome of the prompt behind this message when it did not
