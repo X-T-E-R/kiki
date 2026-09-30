@@ -200,6 +200,7 @@ export class UsageAggregationService {
   }
 
   async query(raw: UsageQuery): Promise<UsageResponse> {
+    await this.core.accessor.get(IModelPricingService).ready;
     const now = this.now();
     this.pruneExpired(now);
     const query = normalizeQuery(raw, now);

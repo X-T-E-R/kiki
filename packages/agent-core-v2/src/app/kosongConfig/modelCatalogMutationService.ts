@@ -220,6 +220,7 @@ function modelEntity(
     provider_id: ref.providerId,
     provider_source: ref.source,
     remote_id: nonEmpty(record.name) ?? nonEmpty(record.model),
+    pricing_model: record.pricingModel,
     display_name: record.displayName,
     max_context_size: record.maxContextSize,
     max_input_size: record.maxInputSize,
@@ -344,6 +345,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   if (patch.auto_compact !== undefined && patch.auto_compact !== null) {
     assertTokenBudget('model auto_compact', patch.auto_compact);
   }
+  setOrClear('pricingModel', patch.pricing_model);
   setOrClear('displayName', patch.display_name);
   setOrClear('maxContextSize', patch.max_context_size);
   setOrClear('maxInputSize', patch.max_input_size);
@@ -567,7 +569,7 @@ export class ModelCatalogMutationService
       if (request.max_context_size !== undefined) {
         assertTokenBudget('max_context_size', request.max_context_size);
       }
-      const record: ModelRecord = { provider: providerId, model: request.remote_id };
+      const record: ModelRecord = { provider: providerId, model: request.remote_id, pricingModel: request.pricing_model };
       if (request.display_name !== undefined) record.displayName = request.display_name;
       if (request.max_context_size !== undefined) record.maxContextSize = request.max_context_size;
       if (request.max_input_size !== undefined) record.maxInputSize = request.max_input_size;

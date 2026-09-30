@@ -336,6 +336,7 @@ Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首�
 | `POST /api/search` | 跨会话全文搜索，`mode` 为 `terms`（默认）或 `literal`（精确子串），`page_token` 分页 |
 | `GET /api/connections` | 列出当前在线的 WebSocket 连接 |
 | `GET /api/usage` | 按有界筛选与分页汇总各会话用量 |
+| `GET /api/usage/pricing` / `PUT /api/usage/pricing` | 查询模型价格来源或按键修改用户价格覆盖，见下节 |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | 创建或列出外部委派席位 |
 | `DELETE /api/external-delegation/seats/{seat_id}` | 撤销外部委派席位 |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | 调用已获准的外部委派过程 |
@@ -343,6 +344,20 @@ Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首�
 | `POST /api/sessions:archive` | 批量归档会话，见下节 |
 | `POST /api/sessions:restore` | 批量恢复已归档会话，见下节 |
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
+
+### 用量计价
+
+`GET /api/usage/pricing` 返回配置中的模型 ID、已保存的覆盖，以及通过重复 `model` 查询参数指定的 ID。每个 `items` 项包含 `model`、配置的 `pricing_model`（未设时为 `null`）、`matched_key`、`source`（`override`、`litellm-cache`、`vendored` 或 `unknown`）和 `prices`（未知时为 `null`）。带路由前缀的模型按价格目录中的规范名匹配；价格是估算，不是代理的实际账单。服务器在 `<home>/model-pricing` 下刷新 LiteLLM 缓存，随包附带的 MIT 许可快照用于离线兜底。
+
+`PUT /api/usage/pricing` 按键修改覆盖：未发出的键保持不变，`null` 删除该键的覆盖。所有单价均为**每 token**，不是每百万 token。提交每百万 token 报价前，先除以 1,000,000。输入、输出单价必填；缓存读、缓存写单价未知时可省略，但使用了未定价类别的请求仍是部分估算。
+
+```json
+{"overrides":{"proxy/model":{"input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"cache_read_input_token_cost":0.0000002,"cache_creation_input_token_cost":0.0000025,"currency":"USD"}}}
+```
+
+以上仅为示例数字，不是 `proxy/model` 的公开报价。单价必须为有限非负数，`currency` 为三个大写字母。非 USD 覆盖会保存并返回，不做汇率换算，也不计入 `cost_usd_estimated`。未知模型不会获得虚构价格。覆盖沿用原子 TOML 存储，写入 `<home>/model-pricing/overrides.toml`，重启后保留。校验失败返回信封错误码 `40001`，存储失败为 `50001`。HTTP 客户端方法为 `klient.rest.usagePricing.get(models?)` 和 `.set({ overrides })`。
+
+用量检查点按会话持久化。Agent 清单与 wire 字节长度、修改时间不变时，复用已记录的用量，不再读取 wire 边界；追加或指纹变化时增量读取或重建。没有 Agent 的会话计为完整零用量，不占用用量明细行。
 
 ### `GET /api/sessions/query`
 

@@ -46,7 +46,7 @@ export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
   readonly rawBody?: unknown;
-  readonly query?: Record<string, string | number | boolean | undefined>;
+  readonly query?: Record<string, string | readonly string[] | number | boolean | undefined>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly okCodes?: readonly number[];
   readonly allowMissingRoute?: boolean;
@@ -92,6 +92,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     }),
 
     usage: (query) => transport.json('/usage', { query }),
+    usagePricing: {
+      get: (models) => transport.json('/usage/pricing', { query: { model: models } }),
+      set: (update) => transport.json('/usage/pricing', { method: 'PUT', body: update }),
+    },
 
     shortcuts: {
       read: (platform) => transport.json('/gui/shortcuts', { query: { platform } }),

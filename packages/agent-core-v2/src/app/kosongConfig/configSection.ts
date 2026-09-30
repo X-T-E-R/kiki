@@ -309,6 +309,7 @@ export const CognitionConfigSchema = z.object({
 });
 
 export const ModelRecordSchema = ModelBaseSchema.extend({
+  pricingModel: z.string().trim().min(1).optional(),
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   overrides: ModelOverrideSchema.optional(),
   cognition: CognitionConfigSchema.optional(),

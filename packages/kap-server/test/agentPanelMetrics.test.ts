@@ -31,6 +31,9 @@ function usage(inputOther: number, output: number): TokenUsage {
 function pricing(costs: Readonly<Record<string, number | undefined>>): IModelPricingService {
   return {
     _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    getPricing: async () => ({ items: [], overrides: {} }),
+    setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
     calculate: (model) => costs[model],
     refreshNow: async () => false,

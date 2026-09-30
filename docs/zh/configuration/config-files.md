@@ -201,6 +201,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | --- | --- | --- | --- |
 | `provider` | `string` | 是 | 使用的供应商名称，必须在 `providers` 中定义 |
 | `model` | `string` | 是 | 调用 API 时实际传给服务端的模型 ID |
+| `pricing_model` | `string` | 否 | 用于估算用量成本的规范模型名，与上游模型 ID 独立；例如代理别名可以按 `gpt-6-sol` 计价。价格缺失时仍标为未知，不会改变实际发给供应商的模型 |
 | `max_context_size` | `integer` | 是 | 最大上下文长度（token 数），必须 ≥ 1 |
 | `max_input_size` | `integer` | 否 | 模型声明的单次请求输入上限（当低于总窗口时，如 gpt-5 的 400k 窗口 / 272k 输入）。压缩、上下文溢出检查和用量比率优先使用它；补全预算仍使用总窗口。解析时会被钳制到不超过 `max_context_size` |
 | `max_output_size` | `integer` | 否 | 单次请求的输出 token 上限（对应 `max_tokens`）。目前仅 `anthropic` 供应商读取。为 Claude 模型设置后，这个显式值会覆盖内置的服务端最大值 |

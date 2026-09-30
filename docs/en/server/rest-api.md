@@ -336,6 +336,7 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/search` | Cross-session full-text search; `mode` is `terms` (default) or `literal` (exact substring); `page_token` pagination |
 | `GET /api/connections` | List live WebSocket connections |
 | `GET /api/usage` | Aggregate usage across sessions with bounded filters and pagination |
+| `GET /api/usage/pricing` / `PUT /api/usage/pricing` | Inspect model price sources or patch user price overrides, see below |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | Create or list external-delegation seats |
 | `DELETE /api/external-delegation/seats/{seat_id}` | Revoke an external-delegation seat |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | Call an admitted external-delegation procedure |
@@ -343,6 +344,20 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/sessions:archive` | Batch-archive sessions, see below |
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
+
+### Usage pricing
+
+`GET /api/usage/pricing` returns configured model IDs, saved overrides, and any IDs requested with repeated `model` query parameters. Each `items` entry contains `model`, the optional configured `pricing_model` (or `null`), `matched_key`, `source` (`override`, `litellm-cache`, `vendored`, or `unknown`), and `prices` (or `null`). Model IDs behind routing prefixes are matched against canonical catalog names; prices are estimates, not the proxy's invoice. The server refreshes its LiteLLM cache under `<home>/model-pricing`; the vendored MIT-licensed snapshot is the offline fallback.
+
+`PUT /api/usage/pricing` takes a sparse patch; omitted keys stay unchanged, and `null` removes an override. All rates are **per token**, not per million tokens. Divide a quoted per-million rate by 1,000,000 before submitting it. Input and output rates are required; cache-read and cache-write rates may be omitted when unknown, but a request using an unpriced category remains a partial estimate.
+
+```json
+{"overrides":{"proxy/model":{"input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"cache_read_input_token_cost":0.0000002,"cache_creation_input_token_cost":0.0000025,"currency":"USD"}}}
+```
+
+These example rates are illustrative, not a published price for `proxy/model`. Rates must be finite and nonnegative, and `currency` is a three-letter uppercase code. Non-USD overrides are stored and returned without currency conversion; they do not contribute to `cost_usd_estimated`. Unknown models are never assigned an invented price. Overrides are atomically stored in `<home>/model-pricing/overrides.toml` and survive restart. Validation errors return envelope code `40001`; storage failures return `50001`. The HTTP client methods are `klient.rest.usagePricing.get(models?)` and `.set({ overrides })`.
+
+Usage checkpoints are persisted per session. Unchanged agent inventories and wire size/mtime reuse their recorded usage without reading wire boundaries; appends or changed fingerprints trigger incremental reads or rebuilds. Sessions with no agents contribute complete zero usage and do not occupy a usage detail row.
 
 ### `GET /api/sessions/query`
 

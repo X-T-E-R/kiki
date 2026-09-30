@@ -13,11 +13,17 @@ import { dirname, join, resolve } from 'node:path';
 import {
   createDecorator,
   IBootstrapService,
+  IConfigService,
   ILogService,
+  type ModelRecord,
   LifecycleScope,
   ScopeActivation,
   registerScopedService,
 } from '@kiki/agent-core-v2';
+
+import { IAtomicTomlDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { modelPriceOverrideSchema, usagePricingUpdateSchema, type ModelPriceOverride, type UsagePricingResponse, type UsagePricingUpdate } from '@kiki/protocol';
+import { z } from 'zod';
 
 import { getModelPricingRuntimeState } from './runtime';
 
@@ -37,7 +43,11 @@ const PROVIDER_PREFIXES = [
   'deepseek',
   'dashscope',
   'moonshot',
+  'zai',
+  'zhipu',
 ] as const;
+const OVERRIDES_KEY = 'overrides.toml';
+const overridesSchema = z.record(z.string(), modelPriceOverrideSchema);
 
 export const MODEL_PRICE_URLS = [
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json',
@@ -72,6 +82,7 @@ export interface ModelPriceMatch {
   readonly catalogModel: string;
   readonly strategy: ModelPriceMatchStrategy;
   readonly prices: ModelTokenPrices;
+  readonly currency?: string;
 }
 
 interface RawPriceEntry extends Record<string, unknown> {
@@ -119,6 +130,9 @@ export interface ModelPricingStatus {
 
 export interface IModelPricingService {
   readonly _serviceBrand: undefined;
+  readonly ready: Promise<void>;
+  getPricing(models?: readonly string[]): Promise<UsagePricingResponse>;
+  setPricing(update: UsagePricingUpdate): Promise<UsagePricingResponse>;
   resolve(model: string): ModelPriceMatch | undefined;
   calculate(model: string, usage: ModelTokenUsage): number | undefined;
   refreshNow(): Promise<boolean>;
@@ -169,20 +183,9 @@ function aliasesOf(value: unknown): readonly string[] {
 }
 
 function modelCandidates(model: string): readonly string[] {
-  const candidates = [model];
   const slash = model.indexOf('/');
-  if (slash > 0) {
-    const bare = model.slice(slash + 1);
-    if (!PROVIDER_PREFIXES.includes(model.slice(0, slash) as never)) {
-      candidates.push(bare);
-      for (const provider of PROVIDER_PREFIXES) candidates.push(`${provider}/${bare}`);
-      return candidates;
-    }
-    candidates.push(bare);
-  } else {
-    for (const provider of PROVIDER_PREFIXES) candidates.push(`${provider}/${model}`);
-  }
-  return candidates;
+  const bare = slash > 0 ? model.slice(slash + 1) : model;
+  return [...new Set([model, bare, ...PROVIDER_PREFIXES.map((provider) => `${provider}/${bare}`)])];
 }
 
 const DATE_SUFFIX_PATTERN = /-?\d{4}$/;
@@ -286,8 +289,8 @@ export class ModelPriceCatalog {
 
   /** Resolves the priced entry for `model`. Order: the local override table (an override pointing at
    *  a catalog key missing from this snapshot yields no price rather than an invented figure), then
-   *  the candidate chain — the exact id, plus, when the first `/` segment is an unknown routing
-   *  prefix rather than a pricing provider, the bare id under every known provider prefix. As a last
+   *  the candidate chain — the exact id, the id without its first routing segment, and that bare
+   *  id under every supported pricing-provider prefix. As a last
    *  resort a trailing date pin (`deepseek-v4-pro-0813`) is stripped and the chain retried: a real
    *  name ending in four digits still resolves by its exact id first, and overrides are deliberately
    *  not consulted for the stripped name, which carries a bare id with no `kimi-code/` prefix. */
@@ -390,28 +393,28 @@ export class ModelPriceCatalog {
   }
 
   calculate(model: string, usage: ModelTokenUsage): number | undefined {
-    const totalTokens =
-      (usage.inputOther ?? 0) +
-      (usage.output ?? 0) +
-      (usage.inputCacheRead ?? 0) +
-      (usage.inputCacheCreation ?? 0);
-    if (totalTokens === 0) return 0;
-    const match = this.resolve(model);
-    if (match === undefined) return undefined;
-    const parts: readonly [number, number | undefined][] = [
-      [usage.inputOther ?? 0, match.prices.inputCostPerToken],
-      [usage.output ?? 0, match.prices.outputCostPerToken],
-      [usage.inputCacheRead ?? 0, match.prices.cacheReadInputTokenCost],
-      [usage.inputCacheCreation ?? 0, match.prices.cacheCreationInputTokenCost],
-    ];
-    let cost = 0;
-    for (const [tokens, price] of parts) {
-      if (tokens === 0) continue;
-      if (price === undefined) return undefined;
-      cost += tokens * price;
-    }
-    return cost;
+    return calculateMatch(this.resolve(model), usage);
   }
+}
+
+function calculateMatch(match: ModelPriceMatch | undefined, usage: ModelTokenUsage): number | undefined {
+  const totalTokens = (usage.inputOther ?? 0) + (usage.output ?? 0) +
+    (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0);
+  if (totalTokens === 0) return 0;
+  if (match === undefined || (match.currency !== undefined && match.currency !== 'USD')) return undefined;
+  const parts: readonly [number, number | undefined][] = [
+    [usage.inputOther ?? 0, match.prices.inputCostPerToken],
+    [usage.output ?? 0, match.prices.outputCostPerToken],
+    [usage.inputCacheRead ?? 0, match.prices.cacheReadInputTokenCost],
+    [usage.inputCacheCreation ?? 0, match.prices.cacheCreationInputTokenCost],
+  ];
+  let cost = 0;
+  for (const [tokens, price] of parts) {
+    if (tokens === 0) continue;
+    if (price === undefined) return undefined;
+    cost += tokens * price;
+  }
+  return Number.isFinite(cost) ? cost : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -456,6 +459,8 @@ export async function drainModelPricingDisposals(): Promise<void> {
 
 export class ModelPricingService implements IModelPricingService {
   declare readonly _serviceBrand: undefined;
+  readonly ready: Promise<void>;
+  private overrides: Record<string, ModelPriceOverride> = {};
 
   private readonly cachePath: string;
   private readonly vendoredPath: string;
@@ -476,6 +481,8 @@ export class ModelPricingService implements IModelPricingService {
   constructor(
     @IBootstrapService bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
+    @IAtomicTomlDocumentStore private readonly documents: IAtomicTomlDocumentStore,
+    @IConfigService private readonly config: IConfigService,
     options: ModelPricingServiceOptions = {},
   ) {
     this.cachePath = options.cachePath ?? join(bootstrap.homeDir, PRICE_CACHE_DIR, PRICE_FILE_NAME);
@@ -486,15 +493,83 @@ export class ModelPricingService implements IModelPricingService {
     this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? Date.now;
     this.loadInitialCatalog();
+    this.ready = Promise.all([this.config.ready, this.loadOverrides()]).then(() => undefined);
+    void this.ready.catch((error) => this.log.warn('model pricing: override load failed', { error: errorMessage(error) }));
     if (options.scheduleRefresh !== false) this.scheduleNextRefresh();
   }
 
+  private async loadOverrides(): Promise<void> {
+    const stored = await this.documents.get(PRICE_CACHE_DIR, OVERRIDES_KEY);
+    this.overrides = overridesSchema.parse(stored ?? {});
+  }
+
+  private configuredModel(model: string): { id: string; record: ModelRecord } | undefined {
+    const models = this.config.get<Record<string, ModelRecord>>('models') ?? {};
+    const direct = Object.hasOwn(models, model) ? models[model] : undefined;
+    if (direct !== undefined) return { id: model, record: direct };
+    const matches = Object.entries(models).filter(([, record]) =>
+      record.aliases?.includes(model) || record.name === model || record.model === model ||
+      `${record.providerId ?? record.provider}/${record.name ?? record.model}` === model);
+    const match = matches.length === 1 ? matches[0] : undefined;
+    return match === undefined ? undefined : { id: match[0], record: match[1] };
+  }
+
   resolve(model: string): ModelPriceMatch | undefined {
-    return this.active?.catalog.resolve(model);
+    const configured = this.configuredModel(model);
+    const pricingModel = configured?.record.pricingModel ?? model;
+    const overrideKey = [model, configured?.id, pricingModel].find((key) => key !== undefined && Object.hasOwn(this.overrides, key));
+    const override = overrideKey === undefined ? undefined : this.overrides[overrideKey];
+    if (override !== undefined && overrideKey !== undefined) {
+      return { requestedModel: model, catalogModel: overrideKey, strategy: 'override',
+        prices: toPrices(override), currency: override.currency };
+    }
+    const match = this.active?.catalog.resolve(pricingModel);
+    return match === undefined ? undefined : { ...match, requestedModel: model };
   }
 
   calculate(model: string, usage: ModelTokenUsage): number | undefined {
-    return this.active?.catalog.calculate(model, usage);
+    return calculateMatch(this.resolve(model), usage);
+  }
+
+  async getPricing(models: readonly string[] = []): Promise<UsagePricingResponse> {
+    await this.ready;
+    const keys = new Set([...models, ...Object.keys(this.config.get<Record<string, ModelRecord>>('models') ?? {}), ...Object.keys(this.overrides)]);
+    return {
+      items: [...keys].toSorted().map((model): UsagePricingResponse['items'][number] => {
+        const match = this.resolve(model);
+        const prices = match?.prices;
+        const identity = { model, pricing_model: this.configuredModel(model)?.record.pricingModel ?? null,
+          matched_key: match?.catalogModel ?? null };
+        if (match === undefined || prices?.inputCostPerToken === undefined || prices.outputCostPerToken === undefined) {
+          return { ...identity, source: 'unknown', prices: null };
+        }
+        const source = match.strategy === 'override' ? 'override'
+          : this.source === 'vendored' ? 'vendored' : 'litellm-cache';
+        return { ...identity, source, prices: {
+          input_cost_per_token: prices.inputCostPerToken,
+          output_cost_per_token: prices.outputCostPerToken,
+          cache_read_input_token_cost: prices.cacheReadInputTokenCost,
+          cache_creation_input_token_cost: prices.cacheCreationInputTokenCost,
+          currency: match.currency ?? 'USD',
+        } };
+      }),
+      overrides: structuredClone(this.overrides),
+    };
+  }
+
+  async setPricing(input: UsagePricingUpdate): Promise<UsagePricingResponse> {
+    const update = usagePricingUpdateSchema.parse(input);
+    await this.ready;
+    const next = await this.documents.update<Record<string, ModelPriceOverride>>(PRICE_CACHE_DIR, OVERRIDES_KEY, (current) => {
+      const result = overridesSchema.parse(current ?? {});
+      for (const [model, price] of Object.entries(update.overrides)) {
+        if (price === null) delete result[model];
+        else result[model] = price;
+      }
+      return result;
+    });
+    this.overrides = overridesSchema.parse(next ?? {});
+    return this.getPricing(Object.keys(update.overrides));
   }
 
   status(): ModelPricingStatus {

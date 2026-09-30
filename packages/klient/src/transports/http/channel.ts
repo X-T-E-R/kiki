@@ -270,7 +270,9 @@ export class HttpChannel implements KlientChannel {
         ? new URL(route, locationOrigin ?? 'http://localhost')
         : new URL(`${root}${route}`);
       for (const [key, value] of Object.entries(options.query ?? {})) {
-        if (value !== undefined) url.searchParams.set(key, String(value));
+        if (Array.isArray(value)) {
+          for (const item of value) url.searchParams.append(key, item);
+        } else if (value !== undefined) url.searchParams.set(key, String(value));
       }
       const headers: Record<string, string> = {
         accept: options.expectBinary === true ? 'application/octet-stream' : 'application/json',

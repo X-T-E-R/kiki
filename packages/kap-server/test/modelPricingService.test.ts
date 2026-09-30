@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { IBootstrapService, ILogService } from '@kiki/agent-core-v2';
+import type { IBootstrapService, ILogService, IConfigService, ModelRecord } from '@kiki/agent-core-v2';
+import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 
 import {
   ModelPriceCatalog,
@@ -41,18 +43,18 @@ function fixture(extra: Record<string, unknown> = {}, padding = 0): string {
   return JSON.stringify(catalog);
 }
 
-function createService(options: ConstructorParameters<typeof ModelPricingService>[2]) {
-  const log = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-  } as unknown as ILogService;
+function createService(options: ConstructorParameters<typeof ModelPricingService>[4], models: Record<string, ModelRecord> = {}, home = tempDir()) {
+  const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() } as unknown as ILogService;
+  const documents = new TomlAtomicDocumentStore(new FileStorageService(home));
+  const config = { ready: Promise.resolve(), get: () => models } as unknown as IConfigService;
   const service = new ModelPricingService(
-    { homeDir: tempDir() } as IBootstrapService,
+    { homeDir: home } as IBootstrapService,
     log,
+    documents,
+    config,
     { scheduleRefresh: false, minimumKeys: 2, ...options },
   );
-  return { service, log };
+  return { service, log, home };
 }
 
 afterEach(async () => {
@@ -258,6 +260,74 @@ describe('catalog validation and refresh fallback', () => {
     expect(readFileSync(cachePath, 'utf8')).toBe(cached);
     expect(service.status()).toMatchObject({ source: 'cache' });
     expect(service.resolve('cached')).toBeDefined();
+    service.dispose();
+  });
+});
+
+describe('user model pricing', () => {
+  it('matches canonical ids behind provider and proxy prefixes including Zhipu', () => {
+    const catalog = new ModelPriceCatalog({
+      'claude-opus-5-5': price(), 'gpt-6-sol': price(), 'gpt-6.1-sol': price(),
+      'zai/glm-5.3-flash': price(), 'zhipu/other-model': price(),
+    });
+    for (const [requested, canonical] of [
+      ['anthropic/claude-opus-5-5', 'claude-opus-5-5'],
+      ['axon/gpt-6-sol', 'gpt-6-sol'], ['axon/gpt-6.1-sol', 'gpt-6.1-sol'],
+      ['z-ai/glm-5.3-flash', 'zai/glm-5.3-flash'], ['other-model', 'zhipu/other-model'],
+    ]) expect(catalog.resolve(requested as string)?.catalogModel).toBe(canonical);
+    expect(catalog.resolve('axon/unpublished-model')).toBeUndefined();
+  });
+
+  it('persists overrides atomically, patches without losing neighbors, restores catalog pricing and reports provenance', async () => {
+    const home = tempDir();
+    const vendoredPath = join(home, 'vendored.json');
+    writeFileSync(vendoredPath, fixture({ canonical: price(1, 2) }));
+    const models = { alias: { provider: 'proxy', model: 'remote', pricingModel: 'canonical' } };
+    const { service } = createService({ vendoredPath }, models, home);
+    expect((await service.getPricing(['alias', 'unknown'])).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: 'alias', pricing_model: 'canonical', matched_key: 'canonical', source: 'vendored' }),
+      expect.objectContaining({ model: 'unknown', matched_key: null, source: 'unknown', prices: null }),
+    ]));
+    expect(service.calculate('proxy/remote', { inputOther: 3 })).toBe(3);
+    const override = { input_cost_per_token: 0.1, output_cost_per_token: 0.2,
+      cache_read_input_token_cost: 0.01, cache_creation_input_token_cost: 0.15, currency: 'USD' };
+    await Promise.all([
+      service.setPricing({ overrides: { alias: override } }),
+      service.setPricing({ overrides: { unknown: override } }),
+    ]);
+    expect((await service.getPricing()).overrides).toEqual({ alias: override, unknown: override });
+    expect(service.calculate('alias', { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 })).toBeCloseTo(0.46);
+    const text = readFileSync(join(home, 'model-pricing', 'overrides.toml'), 'utf8');
+    expect(text).toContain('currency = "USD"');
+    service.dispose();
+    const { service: restarted } = createService({ vendoredPath }, models, home);
+    expect((await restarted.getPricing()).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: 'alias', matched_key: 'alias', source: 'override', prices: override }),
+    ]));
+    expect(restarted.calculate('proxy/remote', { inputOther: 1 })).toBe(0.1);
+    expect(restarted.calculate('remote', { inputOther: 1 })).toBe(0.1);
+    await restarted.setPricing({ overrides: { alias: null } });
+    expect(restarted.calculate('alias', { inputOther: 1 })).toBe(1);
+    expect((await restarted.getPricing()).overrides).toEqual({ unknown: override });
+    await restarted.setPricing({ overrides: { unknown: { ...override, currency: 'CNY' } } });
+    expect(restarted.calculate('unknown', { inputOther: 1 })).toBeUndefined();
+    expect((await restarted.getPricing(['unknown'])).items.find((item) => item.model === 'unknown')?.prices?.currency).toBe('CNY');
+    await expect(restarted.setPricing({ overrides: { alias: { ...override, input_cost_per_token: -1 } } })).rejects.toThrow();
+    restarted.dispose();
+  });
+
+  it('reports refreshed/cache catalogs without silently assigning an unrelated model price', async () => {
+    const home = tempDir();
+    const vendoredPath = join(home, 'vendored.json');
+    const cachePath = join(home, 'cache.json');
+    writeFileSync(vendoredPath, fixture());
+    writeFileSync(cachePath, fixture({ canonical: price() }));
+    const { service } = createService({ vendoredPath, cachePath }, { unknown: { pricingModel: 'unpublished' } }, home);
+    const response = await service.getPricing(['canonical', 'unknown']);
+    expect(response.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: 'canonical', matched_key: 'canonical', source: 'litellm-cache' }),
+      expect.objectContaining({ model: 'unknown', matched_key: null, source: 'unknown' }),
+    ]));
     service.dispose();
   });
 });

@@ -13,6 +13,26 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('reads repeated pricing model ids and writes overrides through the shared authenticated transport', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET',
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ items: [], overrides: {} });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    const update = { overrides: { 'proxy/model': { input_cost_per_token: 0.1, output_cost_per_token: 0.2, currency: 'USD' } } };
+    try {
+      await channel.rest.usagePricing.get(['proxy/model', 'unknown']);
+      await channel.rest.usagePricing.set(update);
+      expect(calls).toEqual([
+        { path: '/api/usage/pricing?model=proxy%2Fmodel&model=unknown', method: 'GET', body: undefined },
+        { path: '/api/usage/pricing', method: 'PUT', body: update },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('exposes shortcut read, replacement and scoped reset with explicit client platform', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

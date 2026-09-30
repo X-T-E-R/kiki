@@ -159,3 +159,35 @@ export const usageResponseSchema = z.object({
 export type UsageQuery = z.infer<typeof usageQuerySchema>;
 export type UsageResponse = z.infer<typeof usageResponseSchema>;
 export type UsageAggregateWire = z.infer<typeof usageAggregateSchema>;
+
+export const modelPriceOverrideSchema = z.object({
+  input_cost_per_token: z.number().finite().nonnegative(),
+  output_cost_per_token: z.number().finite().nonnegative(),
+  cache_read_input_token_cost: z.number().finite().nonnegative().optional(),
+  cache_creation_input_token_cost: z.number().finite().nonnegative().optional(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+}).strict();
+
+export const usagePricingQuerySchema = z.object({
+  model: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1)).max(500)]).optional(),
+});
+
+export const usagePricingUpdateSchema = z.object({
+  overrides: z.record(z.string().trim().min(1).max(512), modelPriceOverrideSchema.nullable()),
+}).strict();
+
+export const usagePricingResponseSchema = z.object({
+  items: z.array(z.object({
+    model: z.string(),
+    pricing_model: z.string().nullable(),
+    matched_key: z.string().nullable(),
+    source: z.enum(['override', 'litellm-cache', 'vendored', 'unknown']),
+    prices: modelPriceOverrideSchema.nullable(),
+  })),
+  overrides: z.record(z.string(), modelPriceOverrideSchema),
+});
+
+export type ModelPriceOverride = z.infer<typeof modelPriceOverrideSchema>;
+export type UsagePricingQuery = z.infer<typeof usagePricingQuerySchema>;
+export type UsagePricingUpdate = z.infer<typeof usagePricingUpdateSchema>;
+export type UsagePricingResponse = z.infer<typeof usagePricingResponseSchema>;

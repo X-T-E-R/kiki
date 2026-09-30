@@ -630,6 +630,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/usage/pricing",
+    ],
+    [
+      "GET",
       "/api/workspaces",
     ],
     [
@@ -1323,6 +1327,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/ssh/hosts/{id}",
+    ],
+    [
+      "PUT",
+      "/api/usage/pricing",
     ],
     [
       "PUT",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { usageQuerySchema, usageResponseSchema } from '../index';
+import { usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema } from '../index';
 
 function response() {
   return {
@@ -51,6 +51,16 @@ function response() {
 }
 
 describe('usage REST schemas', () => {
+  it('validates per-token currency prices and supports explicit override removal', () => {
+    const price = { input_cost_per_token: 0, output_cost_per_token: 0.01, currency: 'USD' };
+    expect(usagePricingUpdateSchema.parse({ overrides: { model: price, removed: null } })).toEqual({ overrides: { model: price, removed: null } });
+    for (const invalid of [NaN, Infinity, -1]) {
+      expect(usagePricingUpdateSchema.safeParse({ overrides: { model: { ...price, input_cost_per_token: invalid } } }).success).toBe(false);
+    }
+    expect(usagePricingUpdateSchema.safeParse({ overrides: { model: { ...price, currency: 'usd' } } }).success).toBe(false);
+    expect(usagePricingQuerySchema.parse({ model: ['proxy/model', 'unknown'] }).model).toEqual(['proxy/model', 'unknown']);
+    expect(usagePricingResponseSchema.parse({ items: [{ model: 'unknown', pricing_model: null, matched_key: null, source: 'unknown', prices: null }], overrides: {} }).items[0]?.source).toBe('unknown');
+  });
   it('accepts additive usage knowledge without requiring it from older servers', () => {
     const baseline = response();
     const enriched = {

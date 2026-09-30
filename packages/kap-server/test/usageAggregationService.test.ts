@@ -177,6 +177,9 @@ function fixture(
   };
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    getPricing: async () => ({ items: [], overrides: {} }),
+    setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
     calculate: () => 1,
     refreshNow: async () => false,

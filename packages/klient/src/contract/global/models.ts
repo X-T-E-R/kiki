@@ -70,7 +70,7 @@ const modelOverrideSchema = modelBaseSchema
   .partial();
 
 export const modelConfigSchema = modelBaseSchema
-  .extend({ overrides: modelOverrideSchema.optional() })
+  .extend({ overrides: modelOverrideSchema.optional(), pricingModel: z.string().trim().min(1).optional() })
   .passthrough();
 
 export const modelsContract = {

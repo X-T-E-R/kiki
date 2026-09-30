@@ -122,6 +122,24 @@ describe('server-v2 /api model/provider catalog', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('creates, projects, persists and explicitly clears the pricing model independently of the wire id', async () => {
+    await boot(CATALOG_TOML);
+    const created = await postJson('/api/models', { id: 'priced-alias', provider_id: 'kimi',
+      remote_id: 'remote-new', max_context_size: 128000, pricing_model: 'canonical-price' });
+    expect(created.body.code).toBe(0);
+    expect(created.body.data).toMatchObject({ remote_id: 'remote-new', pricing_model: 'canonical-price' });
+    expect((await getJson('/api/models/priced-alias')).body.data).toMatchObject({ pricing_model: 'canonical-price' });
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).toContain('pricing_model = "canonical-price"');
+    const cleared = await fetch(`${base}/api/models/priced-alias`, { method: 'PATCH',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ pricing_model: null }),
+    } as never);
+    const response = await cleared.json() as Envelope<Record<string, unknown>>;
+    expect(response.code).toBe(0);
+    expect(response.data['pricing_model']).toBeUndefined();
+    expect(response.data['remote_id']).toBe('remote-new');
+  });
+
   it('waits for Kosong hydration before listing models and providers', async () => {
     let hydrated = false;
     let releaseHydration!: () => void;

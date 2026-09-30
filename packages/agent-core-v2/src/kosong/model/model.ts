@@ -53,6 +53,7 @@ export interface ModelRecord extends ModelParameterDefaults {
 
   name?: string;
   aliases?: string[];
+  pricingModel?: string;
 
   provider?: string;
   model?: string;

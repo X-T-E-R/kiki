@@ -356,7 +356,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
   }
-  core.accessor.get(IModelPricingService);
+  await core.accessor.get(IModelPricingService).ready;
 
   const runPostListenWarmup = async (): Promise<void> => {
     try {

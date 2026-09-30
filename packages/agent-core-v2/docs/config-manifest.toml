@@ -431,6 +431,7 @@ merge_all_available_skills = true
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"
+  # pricing_model: string
   # overrides: object
     # max_context_size: integer
     # max_input_size: integer

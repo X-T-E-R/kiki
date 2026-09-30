@@ -205,6 +205,12 @@ describe('models config section', () => {
 });
 
 describe('models TOML transforms', () => {
+  it('round trips an explicit pricing model independently of the upstream model id', () => {
+    const toml = { local: { provider: 'proxy', model: 'remote', pricing_model: 'canonical' } };
+    const parsed = modelsFromToml(toml);
+    expect(parsed).toEqual({ local: { provider: 'proxy', model: 'remote', pricingModel: 'canonical' } });
+    expect(modelsToToml(parsed, {})).toEqual(toml);
+  });
   it('camelCases nested model overrides from TOML', () => {
     expect(
       modelsFromToml({

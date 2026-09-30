@@ -82,6 +82,9 @@ function stubSessionIndex(): ISessionIndex {
 
 const pricingStub: IModelPricingService = {
   _serviceBrand: undefined,
+  ready: Promise.resolve(),
+  getPricing: async () => ({ items: [], overrides: {} }),
+  setPricing: async () => ({ items: [], overrides: {} }),
   resolve: () => undefined,
   calculate: (model, usage) => {
     if (model === 'unknown-price') return undefined;
@@ -194,6 +197,43 @@ describe('server /api/usage', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as never);
       home = undefined;
     }
+  });
+
+  it('reads and writes user pricing through the validated public route and updates usage without wire changes', async () => {
+    await server?.close();
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
+      homeDir: home as string, logLevel: 'silent', seeds: [[ISessionIndex, stubSessionIndex()]] });
+    base = `http://127.0.0.1:${server.port}`;
+    const before = await getData();
+    expect(before.reliability.unknown_price_models).toContain('billing-a');
+    const prices = { input_cost_per_token: 0.01, output_cost_per_token: 0.02,
+      cache_read_input_token_cost: 0.003, cache_creation_input_token_cost: 0.004, currency: 'USD' };
+    const put = await authedFetch(server, base, '/api/usage/pricing', { method: 'PUT',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ overrides: { 'billing-a': prices } }) });
+    const saved = await put.json() as EnvelopeWire;
+    expect(saved.code).toBe(0);
+    expect(saved.data).toMatchObject({ overrides: { 'billing-a': prices } });
+    const read = await authedFetch(server, base, '/api/usage/pricing?model=billing-a&model=unknown-price');
+    expect((await read.json() as EnvelopeWire).data).toMatchObject({ items: expect.arrayContaining([
+      expect.objectContaining({ model: 'billing-a', source: 'override', matched_key: 'billing-a', prices }),
+      expect.objectContaining({ model: 'unknown-price', source: 'unknown', prices: null }),
+    ]) });
+    const after = await getData();
+    expect(after.summary.cost_usd_estimated).toBeCloseTo(150 * 0.037);
+    expect(after.reliability.unknown_price_models).not.toContain('billing-a');
+    for (const overrides of [
+      { bad: { ...prices, output_cost_per_token: -1 } },
+      { bad: { ...prices, currency: 'not-a-currency' } },
+      { bad: { ...prices, extra: true } },
+    ]) {
+      const invalid = await authedFetch(server, base, '/api/usage/pricing', { method: 'PUT',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ overrides }) });
+      expect((await invalid.json() as EnvelopeWire).code).toBe(40001);
+    }
+    const remove = await authedFetch(server, base, '/api/usage/pricing', { method: 'PUT',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ overrides: { 'billing-a': null } }) });
+    expect((await remove.json() as EnvelopeWire).code).toBe(0);
+    expect((await getData()).reliability.unknown_price_models).toContain('billing-a');
   });
 
   async function get(query = ''): Promise<{ status: number; body: EnvelopeWire }> {
