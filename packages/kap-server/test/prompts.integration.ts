@@ -2600,7 +2600,7 @@ describe('server-v2 /api prompts', () => {
       'utf-8',
     );
     const id = await createSession(home as string);
-    await createMainAgent(id);
+    await createHeldMainAgent(id);
     const session = getLiveSessionById(server!.core.accessor, id);
     if (session === undefined) throw new Error(`session ${id} not found`);
     const main = session.accessor.get(IAgentLifecycleService).get('main');
@@ -2724,7 +2724,7 @@ describe('server-v2 /api prompts', () => {
     base = `http://127.0.0.1:${server.port}`;
 
     const id = await createSession(home as string);
-    await createMainAgent(id);
+    await createHeldMainAgent(id);
 
     const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
