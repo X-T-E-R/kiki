@@ -12,6 +12,7 @@
 mod ssh_remote;
 mod ssh_tunnel;
 mod desktop_log;
+mod space_badge;
 use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
 
@@ -1565,40 +1566,9 @@ fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: 
 
 #[cfg(windows)]
 fn space_overlay_icon(space: &DesktopSpace, pending: usize) -> Option<Image<'static>> {
-    if space.home_id == "main" && pending == 0 { return None; }
-    let color = space.color.as_deref().and_then(|value| value.strip_prefix('#'))
-        .filter(|value| value.len() == 6)
-        .and_then(|value| u32::from_str_radix(value, 16).ok()).unwrap_or(0x475569);
-    let rgb = [((color >> 16) & 255) as u8, ((color >> 8) & 255) as u8, (color & 255) as u8];
-    let mut rgba = vec![0u8; 16 * 16 * 4];
-    for y in 1..15usize {
-        for x in 1..15usize {
-            let offset = (y * 16 + x) * 4;
-            rgba[offset..offset + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
-        }
-    }
-    if pending > 0 {
-        for y in 0..9usize {
-            for x in 8..16usize {
-                let offset = (y * 16 + x) * 4;
-                rgba[offset..offset + 4].copy_from_slice(&[234, 88, 12, 255]);
-            }
-        }
-        const DIGITS: [[u8; 5]; 10] = [
-            [7, 5, 5, 5, 7], [2, 6, 2, 2, 7], [7, 1, 7, 4, 7], [7, 1, 7, 1, 7],
-            [5, 5, 7, 1, 1], [7, 4, 7, 1, 7], [7, 4, 7, 5, 7], [7, 1, 1, 1, 1],
-            [7, 5, 7, 5, 7], [7, 5, 7, 1, 7],
-        ];
-        for (row, bits) in DIGITS[pending.min(9)].iter().enumerate() {
-            for col in 0..3usize {
-                if *bits & (1u8 << (2 - col)) != 0 {
-                    let offset = ((row + 2) * 16 + col + 10) * 4;
-                    rgba[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-                }
-            }
-        }
-    }
-    Some(Image::new_owned(rgba, 16, 16))
+    let rgb = space_badge::space_rgb(space.color.as_deref());
+    let rgba = space_badge::render(space.home_id == "main", rgb, pending)?;
+    Some(Image::new_owned(rgba, space_badge::OVERLAY_SIZE, space_badge::OVERLAY_SIZE))
 }
 
 fn combined_space_attention(current: usize, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
