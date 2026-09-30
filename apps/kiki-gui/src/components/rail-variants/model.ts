@@ -1,5 +1,5 @@
 /**
- * Shared read model for the right-rail design variants (prototype).
+ * Shared read model for the right rail's two modes.
  *
  * Every variant sees the same session through this one hook: the agent
  * fleet flattened from the forest, the session-wide pending queue, the main

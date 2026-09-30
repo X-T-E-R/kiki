@@ -13,6 +13,14 @@ import { RightRail, type SubagentRailContext } from './RightRail';
 import { PreviewFocusBridge } from './SessionView';
 import { useInspectorFocusTracking } from './inspectorFocus';
 
+// The profile head and capability block read the agent panel over the
+// connection; these fixtures have none, so they render as plain stand-ins.
+vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rail-variants/DefaultSections')>()),
+  ProfileHead: ({ label }: { label: string }) => <div data-rail-profile-head>{label}</div>,
+  CapabilitiesBlock: () => null,
+}));
+
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ part = 'all', agentId }: { part?: string; agentId: string }) =>
     <div data-panel-props={part} data-panel-agent={agentId} />,
@@ -115,9 +123,9 @@ async function renderRail({
   return container;
 }
 
-/** Data-driven chapters (the always-present setup / session chapters excluded). */
+/** Data-driven chapters: the fixed sections between the pinned head and the folded tail. */
 function sharedChapters(container: Element) {
-  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] .rail-page > section:not([data-inspector-now])')]
+  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] > .rail-page > div > section:not([data-inspector-now])')]
     .map((section) => ({
       title: section.querySelector(':scope > div span.font-medium')?.textContent,
       className: section.className,
@@ -166,9 +174,11 @@ describe('RightRail shared chapters', () => {
     expect(childOwner?.getAttribute('data-rail-owner-name')).toBe('Researcher');
     expect(childOwner?.querySelector('[aria-current="page"]')?.textContent).toContain('Researcher');
     expect(childOwner?.querySelector('[data-inspect-main]')?.textContent).toBe('Main agent');
-    // The head leads the scroll content in both focus states.
+    // The pinned head leads the scroll content in both focus states.
     for (const rail of [main, child]) {
-      expect(rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild?.hasAttribute('data-rail-owner')).toBe(true);
+      const head = rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild;
+      expect(head?.hasAttribute('data-rail-pinned')).toBe(true);
+      expect(head?.firstElementChild?.hasAttribute('data-rail-owner')).toBe(true);
     }
   });
 
@@ -242,18 +252,17 @@ describe('RightRail shared chapters', () => {
     expect(now?.textContent).toContain('Needs you');
     expect(child.querySelector('[data-subagent-context] [data-rail-locate]')).not.toBeNull();
     expect(child.querySelector('[data-agent-tree]')).toBeNull();
-    // Reading order: the profile card first, then now, the resident
-    // overview, the agent's work slice, tasks and the folded session row.
-    // The old "Model and capabilities" chapter is gone.
+    // Reading order: the pinned profile head and Now, then the agent's own
+    // checklist, its tasks, context and cost, and the folded tail.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
     const order = [
-      scroll.querySelector('[data-panel-props="profile"]'),
+      scroll.querySelector('[data-rail-profile-head]'),
       now,
-      scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-panel-props="work"]'),
       scroll.querySelector('[data-tasks-scroll]'),
-      scroll.querySelector('[data-inspector-session]') ?? scroll.querySelector('[data-tasks-scroll]'),
+      scroll.querySelector('[data-rail-agent-panel-slot]'),
+      scroll.querySelector('[data-inspector-tail]'),
     ];
     expect(order.every((node) => node !== null)).toBe(true);
     for (let index = 1; index < order.length; index += 1) {
@@ -299,10 +308,10 @@ describe('RightRail shared chapters', () => {
     expect(shallow.querySelector('[data-inspect-parent]')).toBeNull();
   });
 
-  it('leads with the profile card and folds only the session row', async () => {
+  it('leads with the profile head and folds only the session row', async () => {
     const rail = await renderRail();
-    const page = rail.querySelector('.rail-page')!;
-    expect(page.firstElementChild?.querySelector('[data-panel-props="profile"]')).not.toBeNull();
+    const page = rail.querySelector('[data-rail-pinned] .rail-page')!;
+    expect(page.firstElementChild?.hasAttribute('data-rail-profile-head')).toBe(true);
     expect(rail.querySelector('[data-inspector-setup]')).toBeNull();
     const session = rail.querySelector('[data-inspector-session]');
     expect(session === null || session.querySelector('[aria-expanded="false"]') !== null).toBe(true);
@@ -367,9 +376,11 @@ describe('RightRail shared chapters', () => {
       onResolveApproval: async (id, decision) => { decided.push(`${id}:${decision}`); },
     });
     const block = rail.querySelector('[data-inspector-needs-you]')!;
-    expect(block.textContent).toContain('From Lead › Worker');
-    // It leads the page, above Now.
-    expect(block.compareDocumentPosition(rail.querySelector('[data-inspector-now]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The row names who asked; the full trail rides its title.
+    expect(block.querySelector('[data-needs-you-from="worker"]')?.getAttribute('title')).toBe('Lead › Worker');
+    // It sits above the team, under the pinned Now.
+    expect(rail.querySelector('[data-inspector-now]')!.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.compareDocumentPosition(rail.querySelector('[data-inspector-agents]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await act(async () => { rail.querySelector<HTMLButtonElement>('[data-needs-you-approve="a1"]')!.click(); });
     expect(decided).toEqual(['a1:approved']);
     // The lead's folded row says a descendant waits.

@@ -1,6 +1,5 @@
 /**
- * The default rail (prototype): the current inspector, reordered for the
- * first screen of a coordinator. Top to bottom:
+ * The default rail: the inspector in a coordinator's reading order. Top to bottom:
  *
  *   head       who this page is about, the mode switch, close
  *   等你处理    decision stack (first as a card, the rest one line each)
@@ -14,7 +13,7 @@
  *   后台任务 · 会话信息
  *
  * Every part except the decision stack, the todo pointer, the activity
- * stream and the capability block is the current rail's own component.
+ * stream and the capability block comes from the shared agent-panel parts.
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';

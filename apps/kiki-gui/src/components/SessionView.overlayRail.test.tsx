@@ -112,7 +112,6 @@ function StubRail({ onOpenSubagent }: { onOpenSubagent: (agentId: string) => voi
   );
 }
 vi.mock('./RightRail', () => ({ RightRail: StubRail }));
-vi.mock('./rail-variants/RailSwitch', () => ({ RightRail: StubRail }));
 
 let narrow = true;
 beforeAll(() => {

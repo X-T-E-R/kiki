@@ -1,8 +1,8 @@
 /**
- * The default rail's own sections (prototype): the profile head over Now,
+ * The default rail's own sections: the profile head over Now,
  * Needs you as plain rows, the activity feed, and capabilities as a folded
- * block of its own. Everything else on the default rail reuses the current
- * inspector's parts unchanged.
+ * block of its own. Everything else on the default rail reuses the shared
+ * inspector parts (agent-panel/*).
  */
 
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
@@ -58,7 +58,7 @@ function useAgentState(sessionId: string, agentId: string): SessionViewState | u
     () => controller === undefined ? undefined : agentId === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(agentId),
     [controller, agentId],
   );
-  return useSyncExternalStore(subscribe, read);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** Done items fold to one line once there are at least this many. */
@@ -99,7 +99,7 @@ export function RailTodos({ sessionId, agentId }: { sessionId: string; agentId: 
                 className={`-ml-1.5 flex h-7 w-[calc(100%+0.375rem)] items-center gap-2 rounded-md pl-1.5 text-left text-[12.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
               >
                 <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] bg-ink/[0.08] text-ink-soft"><Icon name="check" size={12} /></span>
-                <span className="flex-1">{showDone ? '收起已完成' : `已完成 ${doneCount} 项`}</span>
+                <span className="flex-1">{showDone ? t('rail.todos.hideDone') : t('rail.todos.doneCount', { count: doneCount })}</span>
                 <InspectorChevron open={showDone} />
               </button>
             </li>
@@ -119,7 +119,7 @@ export function RailTodos({ sessionId, agentId }: { sessionId: string; agentId: 
               <span className={`text-[13px] leading-snug break-words ${
                 todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
               }`}>
-                <span className="sr-only">{todo.status === 'done' ? '已完成：' : todo.status === 'in_progress' ? '进行中：' : '未开始：'}</span>
+                <span className="sr-only">{t(todo.status === 'done' ? 'rail.todo.srDone' : todo.status === 'in_progress' ? 'rail.todo.srInProgress' : 'rail.todo.srPending')}</span>
                 {todo.title}
               </span>
             </li>
@@ -148,6 +148,7 @@ export const NeedsYouList = memo(function NeedsYouList({
   onReview?: (kind: 'approval' | 'question', id: string) => void;
   onInspect: (agentId: string) => void;
 }) {
+  const { t, locale } = useI18n();
   const now = useNow();
   const { sending, decide, canDecide } = useDecide(onResolveApproval);
   const [showAll, setShowAll] = useState(false);
@@ -159,9 +160,9 @@ export const NeedsYouList = memo(function NeedsYouList({
   const shown = showAll || ordered.length <= SHOWN_ROWS + 1 ? ordered : ordered.slice(0, SHOWN_ROWS);
   const hidden = ordered.length - shown.length;
   return (
-    <section data-inspector-needs-you="" aria-label="等你处理">
+    <section data-inspector-needs-you="" aria-label={t('inspector.needsYou')}>
       <h3 className="flex h-7 items-center gap-1.5">
-        <span className={`${SECTION_HEAD} text-attention`}>等你处理</span>
+        <span className={`${SECTION_HEAD} text-attention`}>{t('inspector.needsYou')}</span>
         <span className="text-[12px] font-medium text-attention tabular-nums">{ordered.length}</span>
       </h3>
       <ul className="border-l-2 border-attention pl-2.5">
@@ -169,7 +170,7 @@ export const NeedsYouList = memo(function NeedsYouList({
           const id = pendingId(item);
           const origin = item.originUnknown === true ? undefined : item.originAgentId;
           const node = origin !== undefined && origin !== MAIN_AGENT_ID ? forest.byId[origin] : undefined;
-          const trail = node !== undefined ? [...agentTrail(forest, node.agentId), node.label].join(' › ') : '主智能体';
+          const trail = node !== undefined ? [...agentTrail(forest, node.agentId), node.label].join(' › ') : t('rail.ownerMain');
           const busy = sending.has(id);
           return (
             <li key={id} data-needs-you-item={id} className="flex min-w-0 items-center gap-2 py-1.5">
@@ -178,27 +179,27 @@ export const NeedsYouList = memo(function NeedsYouList({
                 <span className="flex min-w-0 items-baseline gap-1.5 leading-5">
                   {node !== undefined ? (
                     <button type="button" data-needs-you-from={node.agentId} title={trail} onClick={() => { onInspect(node.agentId); }} className={`min-w-0 truncate rounded text-[13px] text-ink hover:underline ${FOCUS_RING}`}>{node.label}</button>
-                  ) : <span className="text-[13px] text-ink">主智能体</span>}
-                  <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums">{age(now - Date.parse(item.request.created_at), 'zh')}</span>
+                  ) : <span className="text-[13px] text-ink">{t('rail.ownerMain')}</span>}
+                  <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums">{age(now - Date.parse(item.request.created_at), locale)}</span>
                 </span>
                 <span className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
-                  {item.kind === 'approval' ? `${item.request.tool_name} ` : '问 '}{pendingSubject(item)}
+                  {item.kind === 'approval' ? item.request.tool_name : t('rail.questionTag')} {pendingSubject(item)}
                 </span>
               </span>
               {decidable(item) && canDecide ? (
                 <span className="flex shrink-0 items-center gap-0.5">
-                  <button type="button" data-needs-you-approve={id} disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`${APPROVE} disabled:opacity-50 ${FOCUS_RING}`}>批准</button>
-                  <button type="button" data-needs-you-reject={id} disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`${REJECT} disabled:opacity-50 ${FOCUS_RING}`}>拒绝</button>
+                  <button type="button" data-needs-you-approve={id} disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`${APPROVE} disabled:opacity-50 ${FOCUS_RING}`}>{t('inspector.approveInline')}</button>
+                  <button type="button" data-needs-you-reject={id} disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`${REJECT} disabled:opacity-50 ${FOCUS_RING}`}>{t('inspector.rejectInline')}</button>
                 </span>
               ) : (
-                <button type="button" data-inspector-review={id} onClick={() => { onReview?.(item.kind, id); }} className={`${APPROVE} ${FOCUS_RING}`}>{item.kind === 'question' ? '去回答' : '查看'}</button>
+                <button type="button" data-inspector-review={id} onClick={() => { onReview?.(item.kind, id); }} className={`${APPROVE} ${FOCUS_RING}`}>{item.kind === 'question' ? t('inspector.answer') : t('inspector.review')}</button>
               )}
             </li>
           );
         })}
       </ul>
       {hidden > 0 ? (
-        <button type="button" onClick={() => { setShowAll(true); }} className={`mt-0.5 h-7 rounded-md px-1.5 text-[12.5px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>还有 {hidden} 件</button>
+        <button type="button" onClick={() => { setShowAll(true); }} className={`mt-0.5 h-7 rounded-md px-1.5 text-[12.5px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.needsYou.more', { count: hidden })}</button>
       ) : null}
     </section>
   );
@@ -344,6 +345,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
   onOpenFile?: (path: string) => void;
   onOpenAgent: (agentId: string) => void;
 }) {
+  const { t, locale } = useI18n();
   const now = useNow();
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState(false);
@@ -364,16 +366,16 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
       case 'command':
         return { mark: <span className="font-mono text-[11px] text-ink-faint">$</span>, body: <span className="truncate font-mono text-[11.5px] text-ink-soft">{entry.command}</span>, title: entry.command };
       case 'dispatch':
-        return { mark: <Icon name="arrowRight" size={12} className="text-ink-faint" />, body: <span className="truncate"><span className="text-ink-faint">派出 </span><span className="font-mono text-[11.5px] text-ink">{entry.label}</span></span>, title: entry.label, onClick: () => { onOpenAgent(entry.agentId); } };
+        return { mark: <Icon name="arrowRight" size={12} className="text-ink-faint" />, body: <span className="truncate"><span className="text-ink-faint">{t('rail.feed.dispatched')} </span><span className="font-mono text-[11.5px] text-ink">{entry.label}</span></span>, title: entry.label, onClick: () => { onOpenAgent(entry.agentId); } };
       case 'report':
         return {
           mark: <StateMark state={entry.failed ? 'failed' : 'done'} className="h-1.5 w-1.5" />,
-          body: <span className="truncate"><span className="font-mono text-[11.5px] text-ink">{entry.label}</span><span className="text-ink-faint"> {entry.failed ? '失败' : '回报'} · {entry.summary ?? ''}</span></span>,
+          body: <span className="truncate"><span className="font-mono text-[11.5px] text-ink">{entry.label}</span><span className="text-ink-faint"> {t(entry.failed ? 'rail.feed.failed' : 'rail.feed.reported')} · {entry.summary ?? ''}</span></span>,
           title: `${entry.label}\n${entry.summary ?? ''}`,
           onClick: () => { onOpenAgent(entry.agentId); },
         };
       case 'compaction':
-        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">上下文已压缩</span>, title: '上下文已压缩' };
+        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">{t('rail.feed.compacted')}</span>, title: t('rail.feed.compacted') };
     }
   };
   const head = feed[0]!;
@@ -383,7 +385,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
     : line(head).title.split('\n', 1)[0];
   return (
     <section data-inspector-recent="">
-      <FoldHead title="动态" count={feed.length} summary={newest} open={open} onToggle={() => { setOpen((v) => !v); }} />
+      <FoldHead title={t('rail.feed.title')} count={feed.length} summary={newest} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <ol className="mt-0.5">
           {shown.map((entry) => {
@@ -392,7 +394,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
               <>
                 <span className="flex w-3 shrink-0 justify-center">{item.mark}</span>
                 <span className="flex min-w-0 flex-1 text-[12.5px]">{item.body}</span>
-                <span className="w-9 shrink-0 text-right text-[11px] text-ink-faint tabular-nums">{age(now - entry.at, 'zh')}</span>
+                <span className="w-9 shrink-0 text-right text-[11px] text-ink-faint tabular-nums">{age(now - entry.at, locale)}</span>
               </>
             );
             return (
@@ -404,7 +406,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
             );
           })}
           {feed.length > shown.length ? (
-            <li><button type="button" onClick={() => { setAll(true); }} className={`ml-3.5 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>更早的 {feed.length - shown.length} 条</button></li>
+            <li><button type="button" onClick={() => { setAll(true); }} className={`ml-3.5 h-7 rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.feed.earlier', { count: feed.length - shown.length })}</button></li>
           ) : null}
         </ol>
       ) : null}
@@ -418,6 +420,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
  * card reads (same query key), so opening it starts no extra request.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
+  const { t } = useI18n();
   const { klient } = useConnection();
   const [open, setOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
@@ -432,10 +435,10 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   if (read.data?.tools === undefined || read.data.skills === undefined) return null;
   const counts = capabilityCounts(tools, skills, targets);
-  const summary = `工具 ${counts.toolsOn} · 技能 ${counts.skills} · 子智能体 ${counts.subagents} · 扩展 ${counts.extensions}`;
+  const summary = t('rail.capabilities.summary', { tools: counts.toolsOn, skills: counts.skills, subagents: counts.subagents, extensions: counts.extensions });
   return (
     <section data-rail-capabilities="">
-      <FoldHead title="能力" summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
+      <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <div className="pt-1">
           <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={read.data.profile?.name} />

@@ -35,6 +35,14 @@ import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
 import { resolveRunningSubagentTask } from './agent-workspace';
 
+// The profile head and capability block read the agent panel over the
+// connection; these fixtures have none, so they render as plain stand-ins.
+vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rail-variants/DefaultSections')>()),
+  ProfileHead: ({ label }: { label: string }) => <div data-rail-profile-head>{label}</div>,
+  CapabilitiesBlock: () => null,
+}));
+
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
     <div data-panel-props>{state.todos.map((todo) => todo.title).join('\n')}</div>,
@@ -1625,8 +1633,9 @@ describe('agent tree chrome', () => {
     );
     expect(html).toContain('data-agent-status="failed"');
     expect(html).toContain('model request failed: upstream timeout');
-    // A failure is stated, not emphasized: no danger colour in the rail.
-    expect(html).not.toContain('text-danger');
+    // A failure is stated, not emphasized: no danger colour in the rail (as a
+    // class token; the overview's selector that remaps danger is not one).
+    expect(html).not.toMatch(/[\s"]text-danger[\s"]/);
   });
 
   it('lists the team, clickable task rows, and the bulk stop button', () => {

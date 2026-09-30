@@ -1,5 +1,5 @@
 /**
- * The cockpit rail mode (prototype). An instrument panel for a coordinator,
+ * The cockpit rail mode (optional). An instrument panel for a coordinator,
  * drawn in the theme's own colours: a caution bar for what needs you, three
  * gauges (context, cache, running share), the cost / compaction / turn
  * strip, the agent array (one cell per agent, by model family), then 运行中
@@ -9,6 +9,7 @@
 import { useMemo, useState } from 'react';
 
 import { useI18n } from '../../i18n';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { useLayoutPreferences } from '../../lib/layoutHooks';
 import { RAIL_MAX_WIDTH } from '@kiki/session-core/settings';
 import { Icon } from '../icons';
@@ -27,8 +28,22 @@ import {
 } from './model';
 import { FOCUS_RING, ModeSwitch, StateMark, useDecide, type ModeProps } from './shell';
 
-const FAMILY_NAME: Record<Family, string> = { opus: 'Opus', sol: 'Sol', luna: 'Luna', ds: 'DeepSeek', other: '其他' };
-const STATE_NAME: Record<FleetAgent['state'], string> = { waiting: '等你', running: '运行中', done: '已完成', failed: '失败', stopped: '已停止' };
+const FAMILY_NAME: Record<Exclude<Family, 'other'>, string> = { opus: 'Opus', sol: 'Sol', luna: 'Luna', ds: 'DeepSeek' };
+const STATE_KEY: Record<FleetAgent['state'], I18nKey> = {
+  waiting: 'rail.cockpit.state.waiting',
+  running: 'rail.cockpit.state.running',
+  done: 'rail.cockpit.state.done',
+  failed: 'rail.cockpit.state.failed',
+  stopped: 'rail.cockpit.state.stopped',
+};
+
+function useNames() {
+  const { t } = useI18n();
+  return {
+    family: (family: Family) => (family === 'other' ? t('rail.cockpit.familyOther') : FAMILY_NAME[family]),
+    state: (state: FleetAgent['state']) => t(STATE_KEY[state]),
+  };
+}
 
 const CELL: Record<FleetAgent['state'], string> = {
   waiting: 'bg-attention ring-2 ring-attention/30',
@@ -72,6 +87,8 @@ function RunningLanes({ agents, compactions, now, onOpen }: {
   now: number;
   onOpen: (id: string) => void;
 }) {
+  const { t } = useI18n();
+  const names = useNames();
   const start = now - WINDOW_MS;
   const x = (t: number) => `${Math.min(100, Math.max(0, ((t - start) / WINDOW_MS) * 100))}%`;
   const ticks = Array.from({ length: WINDOW_HOURS + 1 }, (_, i) => now - (WINDOW_HOURS - i) * 3_600_000);
@@ -89,9 +106,9 @@ function RunningLanes({ agents, compactions, now, onOpen }: {
       <div className="relative flex h-5 items-end pb-0.5">
         <span className="w-[136px] shrink-0" />
         <span className="relative h-full flex-1">
-          {ticks.map((t, i) => (
-            <span key={t} className={`absolute bottom-0 font-mono text-[10px] whitespace-nowrap tabular-nums ${i === 0 ? 'text-ink-faint' : i === ticks.length - 1 ? '-translate-x-full font-semibold text-ink' : '-translate-x-1/2 text-ink-faint'}`} style={{ left: x(t) }}>
-              {i === ticks.length - 1 ? '现在' : `-${WINDOW_HOURS - i}h`}
+          {ticks.map((tick, i) => (
+            <span key={tick} className={`absolute bottom-0 font-mono text-[10px] whitespace-nowrap tabular-nums ${i === 0 ? 'text-ink-faint' : i === ticks.length - 1 ? '-translate-x-full font-semibold text-ink' : '-translate-x-1/2 text-ink-faint'}`} style={{ left: x(tick) }}>
+              {i === ticks.length - 1 ? t('rail.cockpit.now') : `-${WINDOW_HOURS - i}h`}
             </span>
           ))}
         </span>
@@ -100,7 +117,7 @@ function RunningLanes({ agents, compactions, now, onOpen }: {
         <section key={band.family} className="relative pt-1.5">
           {rules}
           <h4 className="relative flex h-5 items-center gap-1.5 text-[11px] font-semibold text-section-ink">
-            <span className={`h-2 w-2 rounded-sm ${FAMILY_TONE[band.family].fill}`} />{FAMILY_NAME[band.family]}<span className="font-normal text-ink-faint tabular-nums">{band.rows.length}</span>
+            <span className={`h-2 w-2 rounded-sm ${FAMILY_TONE[band.family].fill}`} />{names.family(band.family)}<span className="font-normal text-ink-faint tabular-nums">{band.rows.length}</span>
           </h4>
           <ul className="relative">
             {band.rows.map((agent) => {
@@ -128,6 +145,8 @@ function RunningLanes({ agents, compactions, now, onOpen }: {
 
 /** 运行中 as a list: waiting first, then longest-running; elapsed on the right. */
 function RunningList({ agents, now, onOpen }: { agents: readonly FleetAgent[]; now: number; onOpen: (id: string) => void }) {
+  const { locale } = useI18n();
+  const names = useNames();
   return (
     <ul data-cockpit-list className="divide-y divide-hairline">
       {agents.map((agent) => (
@@ -138,8 +157,8 @@ function RunningList({ agents, now, onOpen }: { agents: readonly FleetAgent[]; n
               <span className={`block truncate font-mono text-[12.5px] ${agent.state === 'waiting' ? 'font-semibold text-attention' : 'text-ink'}`}>{agent.label}</span>
               <span className="block truncate text-[11.5px] text-ink-faint">{agent.description}</span>
             </span>
-            <span className={`shrink-0 rounded px-1 text-[10.5px] font-semibold ${FAMILY_TONE[agent.family].soft} ${FAMILY_TONE[agent.family].text}`}>{FAMILY_NAME[agent.family]}</span>
-            <span className={`w-11 shrink-0 text-right font-mono text-[12px] tabular-nums ${agent.state === 'waiting' ? 'text-attention' : 'text-ink-soft'}`}>{agent.startedAt !== undefined ? age(now - agent.startedAt, 'zh') : '—'}</span>
+            <span className={`shrink-0 rounded px-1 text-[10.5px] font-semibold ${FAMILY_TONE[agent.family].soft} ${FAMILY_TONE[agent.family].text}`}>{names.family(agent.family)}</span>
+            <span className={`w-11 shrink-0 text-right font-mono text-[12px] tabular-nums ${agent.state === 'waiting' ? 'text-attention' : 'text-ink-soft'}`}>{agent.startedAt !== undefined ? age(now - agent.startedAt, locale) : '—'}</span>
           </button>
         </li>
       ))}
@@ -148,7 +167,8 @@ function RunningList({ agents, now, onOpen }: { agents: readonly FleetAgent[]; n
 }
 
 export function CockpitRail(props: ModeProps) {
-  useI18n();
+  const { t, locale } = useI18n();
+  const names = useNames();
   const layout = useLayoutPreferences();
   const width = Math.min(RAIL_MAX_WIDTH, Math.max(layout.railWidth, 340));
   const data = useRailData(props.state, props.forest, props.sessionPending ?? []);
@@ -163,7 +183,7 @@ export function CockpitRail(props: ModeProps) {
   );
   const lastCompaction = data.compactions.at(-1);
   const caution = data.pending.length > 0;
-  const who = (origin: string | undefined) => (origin !== undefined ? (props.forest.byId[origin]?.label ?? origin) : '主智能体');
+  const who = (origin: string | undefined) => (origin !== undefined ? (props.forest.byId[origin]?.label ?? origin) : t('rail.ownerMain'));
 
   return (
     <div className="app-rail-shell">
@@ -174,12 +194,12 @@ export function CockpitRail(props: ModeProps) {
         data-rail-mode-current="cockpit"
       >
         <header className="flex h-12 shrink-0 items-center gap-2 px-4">
-          <h2 className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">驾驶舱</h2>
-          <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{data.agents.length} 个智能体</span>
+          <h2 className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('rail.mode.cockpit')}</h2>
+          <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{t('rail.cockpit.agentCount', { count: data.agents.length })}</span>
           <span className="flex-1" />
           <ModeSwitch mode={props.mode} onChoose={props.onChooseMode} />
           {props.onClose !== undefined ? (
-            <button type="button" onClick={props.onClose} data-rail-close title="收起右栏" aria-label="收起右栏" className={`-mr-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-ink/[0.05] hover:text-ink lg:h-7 lg:w-7 ${FOCUS_RING}`}>
+            <button type="button" onClick={props.onClose} data-rail-close title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')} className={`-mr-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-ink/[0.05] hover:text-ink lg:h-7 lg:w-7 ${FOCUS_RING}`}>
               <Icon name="close" size={16} />
             </button>
           ) : null}
@@ -187,9 +207,9 @@ export function CockpitRail(props: ModeProps) {
 
         <div data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
           {/* Caution: lit only when something waits on you. */}
-          <section aria-label="等你处理" className={`rounded-xl p-2.5 ${caution ? 'bg-attention-soft ring-1 ring-attention/40 ring-inset' : 'bg-ink/[0.035]'}`}>
+          <section aria-label={t('inspector.needsYou')} className={`rounded-xl p-2.5 ${caution ? 'bg-attention-soft ring-1 ring-attention/40 ring-inset' : 'bg-ink/[0.035]'}`}>
             <div className="flex items-center gap-2">
-              <span className={`text-[12px] font-semibold ${caution ? 'text-attention' : 'text-ink-faint'}`}>{caution ? '等你处理' : '没有等你的事'}</span>
+              <span className={`text-[12px] font-semibold ${caution ? 'text-attention' : 'text-ink-faint'}`}>{caution ? t('inspector.needsYou') : t('rail.cockpit.nothingWaiting')}</span>
               <span className={`ml-auto font-mono text-[24px] leading-none font-semibold tabular-nums ${caution ? 'text-attention' : 'text-ink-faint'}`}>{String(data.pending.length).padStart(2, '0')}</span>
             </div>
             {caution ? (
@@ -201,19 +221,19 @@ export function CockpitRail(props: ModeProps) {
                     <li key={id} data-needs-you-item={id} className="flex min-w-0 items-center gap-2 rounded-lg bg-panel/80 py-1.5 pr-1.5 pl-2">
                       <span className="min-w-0 flex-1">
                         <span className="flex min-w-0 items-baseline gap-1.5">
-                          <span className="shrink-0 font-mono text-[11px] font-semibold text-attention">{item.kind === 'approval' ? item.request.tool_name : '问'}</span>
+                          <span className="shrink-0 font-mono text-[11px] font-semibold text-attention">{item.kind === 'approval' ? item.request.tool_name : t('rail.questionTag')}</span>
                           <button type="button" onClick={() => { if (item.originAgentId !== undefined) props.onOpenSubagent(item.originAgentId); }} className={`min-w-0 truncate rounded font-mono text-[11.5px] text-ink-soft hover:text-ink ${FOCUS_RING}`}>{who(item.originAgentId)}</button>
-                          <span className="shrink-0 text-[11px] text-ink-faint tabular-nums">{age(data.now - Date.parse(item.request.created_at), 'zh')}</span>
+                          <span className="shrink-0 text-[11px] text-ink-faint tabular-nums">{age(data.now - Date.parse(item.request.created_at), locale)}</span>
                         </span>
                         <span className="block truncate font-mono text-[11.5px] text-ink" title={pendingSubject(item)}>{pendingSubject(item)}</span>
                       </span>
                       {decidable(item) && canDecide ? (
                         <>
-                          <button type="button" disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft hover:bg-danger/[0.08] hover:text-danger disabled:opacity-50 ${FOCUS_RING}`}>拒绝</button>
-                          <button type="button" disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`h-7 shrink-0 rounded-md bg-attention px-2.5 text-[12px] font-semibold text-on-accent hover:bg-accent-deep disabled:opacity-50 ${FOCUS_RING}`}>批准</button>
+                          <button type="button" disabled={busy} onClick={() => { decide(item, 'rejected'); }} className={`h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft hover:bg-danger/[0.08] hover:text-danger disabled:opacity-50 ${FOCUS_RING}`}>{t('inspector.rejectInline')}</button>
+                          <button type="button" disabled={busy} onClick={() => { decide(item, 'approved'); }} className={`h-7 shrink-0 rounded-md bg-attention px-2.5 text-[12px] font-semibold text-on-accent hover:bg-accent-deep disabled:opacity-50 ${FOCUS_RING}`}>{t('inspector.approveInline')}</button>
                         </>
                       ) : (
-                        <button type="button" onClick={() => { props.onReviewPending?.(item.kind, id); }} className={`h-7 shrink-0 rounded-md bg-attention px-2.5 text-[12px] font-semibold text-on-accent hover:bg-accent-deep ${FOCUS_RING}`}>{item.kind === 'question' ? '去回答' : '查看'}</button>
+                        <button type="button" onClick={() => { props.onReviewPending?.(item.kind, id); }} className={`h-7 shrink-0 rounded-md bg-attention px-2.5 text-[12px] font-semibold text-on-accent hover:bg-accent-deep ${FOCUS_RING}`}>{item.kind === 'question' ? t('inspector.answer') : t('inspector.review')}</button>
                       )}
                     </li>
                   );
@@ -223,32 +243,32 @@ export function CockpitRail(props: ModeProps) {
           </section>
           {/* Gauges and the strip under them. */}
           <div className="mt-4 grid grid-cols-3">
-            <Gauge ratio={ctx} warn={ctx > 0.8} label="上下文" value={`${Math.round(ctx * 100)}%`} sub={`${tokens(data.contextTokens)}/${tokens(data.contextLimit)}`} />
-            <Gauge ratio={data.cacheRate ?? 0} label="缓存命中" value={`${Math.round((data.cacheRate ?? 0) * 100)}%`} />
-            <Gauge ratio={running.length / Math.max(1, data.agents.length)} label="运行中" value={String(running.length)} sub={`/ ${data.agents.length}`} />
+            <Gauge ratio={ctx} warn={ctx > 0.8} label={t('rail.context')} value={`${Math.round(ctx * 100)}%`} sub={`${tokens(data.contextTokens)}/${tokens(data.contextLimit)}`} />
+            <Gauge ratio={data.cacheRate ?? 0} label={t('rail.cockpit.cacheHit')} value={`${Math.round((data.cacheRate ?? 0) * 100)}%`} />
+            <Gauge ratio={running.length / Math.max(1, data.agents.length)} label={t('rail.cockpit.state.running')} value={String(running.length)} sub={`/ ${data.agents.length}`} />
           </div>
           <dl className="mt-2 grid grid-cols-3 divide-x divide-hairline rounded-lg bg-ink/[0.03] py-2 text-center">
-            <div><dt className="text-[11px] text-ink-faint">费用</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{money(data.costUsd) ?? '—'}</dd></div>
-            <div><dt className="text-[11px] text-ink-faint">压缩</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{data.compactions.length}<span className="ml-1 text-[10.5px] font-normal text-ink-faint">{lastCompaction !== undefined ? `${age(data.now - lastCompaction, 'zh')}前` : ''}</span></dd></div>
-            <div><dt className="text-[11px] text-ink-faint">轮</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{data.turns ?? '—'}</dd></div>
+            <div><dt className="text-[11px] text-ink-faint">{t('rail.cost')}</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{money(data.costUsd) ?? '—'}</dd></div>
+            <div><dt className="text-[11px] text-ink-faint">{t('rail.cockpit.compactions')}</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{data.compactions.length}<span className="ml-1 text-[10.5px] font-normal text-ink-faint">{lastCompaction !== undefined ? t('rail.cockpit.ago', { age: age(data.now - lastCompaction, locale) }) : ''}</span></dd></div>
+            <div><dt className="text-[11px] text-ink-faint">{t('rail.turns')}</dt><dd className="font-mono text-[15px] font-semibold text-ink tabular-nums">{data.turns ?? '—'}</dd></div>
           </dl>
 
           {/* The array: one cell per agent, by family. */}
           <h3 className="mt-5 mb-1.5 flex items-center text-[12px] font-medium text-ink-soft">
-            智能体阵列
+            {t('rail.cockpit.array')}
             <span className="ml-auto flex items-center gap-2.5 text-[11px] font-normal text-ink-faint">
               {(['waiting', 'running', 'done', 'failed'] as const).map((state) => (
-                <span key={state} className="flex items-center gap-1"><span className={`h-2 w-2 rounded-[2px] ${CELL[state]}`} />{STATE_NAME[state]} {data.byState[state]}</span>
+                <span key={state} className="flex items-center gap-1"><span className={`h-2 w-2 rounded-[2px] ${CELL[state]}`} />{names.state(state)} {data.byState[state]}</span>
               ))}
             </span>
           </h3>
           <div className="space-y-1.5">
             {FAMILIES.filter((f) => data.byFamily[f] > 0).map((family) => (
               <div key={family} className="flex items-start gap-2">
-                <span className="w-16 shrink-0 text-[11px] leading-[14px] text-ink-faint">{FAMILY_NAME[family]}</span>
+                <span className="w-16 shrink-0 text-[11px] leading-[14px] text-ink-faint">{names.family(family)}</span>
                 <div className="flex flex-1 flex-wrap gap-[3px]">
                   {data.agents.filter((a) => a.family === family).map((agent) => (
-                    <button key={agent.id} type="button" data-rail-open-agent={agent.id} aria-label={`${agent.label} · ${STATE_NAME[agent.state]}`} title={`${agent.label} · ${STATE_NAME[agent.state]}`} onClick={() => { props.onOpenSubagent(agent.id); }} className={`h-3.5 w-3.5 rounded-[3px] transition-transform hover:scale-125 ${CELL[agent.state]} ${FOCUS_RING}`} />
+                    <button key={agent.id} type="button" data-rail-open-agent={agent.id} aria-label={`${agent.label} · ${names.state(agent.state)}`} title={`${agent.label} · ${names.state(agent.state)}`} onClick={() => { props.onOpenSubagent(agent.id); }} className={`h-3.5 w-3.5 rounded-[3px] transition-transform hover:scale-125 ${CELL[agent.state]} ${FOCUS_RING}`} />
                   ))}
                 </div>
               </div>
@@ -257,15 +277,15 @@ export function CockpitRail(props: ModeProps) {
 
           {/* 运行中: list or lanes. */}
           <div className="mt-5 mb-1 flex items-center gap-2">
-            <h3 className="text-[12px] font-medium text-ink-soft">运行中</h3>
+            <h3 className="text-[12px] font-medium text-ink-soft">{t('rail.cockpit.state.running')}</h3>
             <span className="text-[12px] text-ink-faint tabular-nums">{running.length}</span>
-            <div role="radiogroup" aria-label="运行中视图" className="ml-auto flex items-center rounded-lg bg-ink/[0.05] p-0.5">
-              {([['list', '列表'], ['lanes', '泳道']] as const).map(([value, label]) => (
-                <button key={value} type="button" role="radio" aria-checked={view === value} data-cockpit-view={value} onClick={() => { setView(value); }} className={`h-6 rounded-md px-2 text-[12px] ${view === value ? 'bg-panel font-medium text-ink shadow-[0_0_0_1px_var(--color-hairline)]' : 'text-ink-faint hover:text-ink'} ${FOCUS_RING}`}>{label}</button>
+            <div role="radiogroup" aria-label={t('rail.cockpit.viewAria')} className="ml-auto flex items-center rounded-lg bg-ink/[0.05] p-0.5">
+              {([['list', t('rail.cockpit.viewList')], ['lanes', t('rail.cockpit.viewLanes')]] as const).map(([value, label]) => (
+                <button key={value} type="button" role="radio" aria-checked={view === value} data-cockpit-view={value} onClick={() => { setView(value); }} className={`h-6 rounded-md px-2 text-[12px] ${view === value ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink'} ${FOCUS_RING}`}>{label}</button>
               ))}
             </div>
           </div>
-          {running.length === 0 ? <p className="py-2 text-[12.5px] text-ink-faint">现在没有在运行的智能体。</p> : view === 'list'
+          {running.length === 0 ? <p className="py-2 text-[12.5px] text-ink-faint">{t('rail.cockpit.noneRunning')}</p> : view === 'list'
             ? <RunningList agents={running} now={data.now} onOpen={props.onOpenSubagent} />
             : <RunningLanes agents={running} compactions={data.compactions} now={data.now} onOpen={props.onOpenSubagent} />}
         </div>

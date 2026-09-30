@@ -165,7 +165,7 @@ export const GLOBAL_STORAGE_KEYS = [
   'kiki.desktopPrefs',
   'kiki.previewPanelWidth',
   'kiki.terminalPanel.v1',
-  // Device-level rail prototype switch; not in §6.4 because it selects UI, not
+  // Device-level rail mode (standard / cockpit); not in §6.4 because it selects UI, not
   // a space's data. Classified here so the scan stays exhaustive.
   'kiki.railMode',
 ] as const;
