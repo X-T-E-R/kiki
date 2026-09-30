@@ -20,8 +20,11 @@ import { canWriteBack, inferConfigSync, sshHostInput, sshTargetLabel } from '../
 import { sshHostFromAction } from './SshApprovalBody';
 
 const submitApproval = vi.fn(async () => ({ resolved: true as const }));
+// ApprovalCard reads the optional connection (for "always allow"); the SSH body reads the required one.
+const connection = { client: { klient: { rest: { ssh: { submitApproval } } } } };
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { klient: { rest: { ssh: { submitApproval } } } } }),
+  useConnection: () => connection,
+  useOptionalConnection: () => connection,
 }));
 
 const containers: HTMLDivElement[] = [];
