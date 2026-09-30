@@ -6,7 +6,7 @@ import { AsyncQueue } from '../src/asyncQueue';
 import { CodexAppServerClient } from '../src/client';
 import type { HostProcessLike, HostProcessServiceLike } from '../src/types';
 
-function scriptedProcess(): {
+function scriptedProcess(userAgent?: string): {
   readonly process: HostProcessLike;
   readonly stdout: PassThrough;
   readonly dispose: ReturnType<typeof vi.fn>;
@@ -28,7 +28,7 @@ function scriptedProcess(): {
         input = input.slice(newline + 1);
         const frame = JSON.parse(line) as { id?: string; method?: string; params?: unknown };
         if (frame.method === 'initialize' && frame.id !== undefined) {
-          stdout.write(`${JSON.stringify({ id: frame.id, result: {} })}\n`);
+          stdout.write(`${JSON.stringify({ id: frame.id, result: { userAgent } })}\n`);
         }
         if (frame.method === 'model/list' && frame.id !== undefined) {
           stdout.write(`${JSON.stringify({
@@ -99,6 +99,14 @@ describe('CodexAppServerClient limits and observers', () => {
     await client.shutdown();
     expect(client.status().state).toBe('closed');
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it.each([['codex_cli_rs/1.2.3 (Windows)', '1.2.3'], ['unknown', undefined], [undefined, undefined]])('captures the initialize agent version %s', async (userAgent, expected) => {
+    const fixture = scriptedProcess(userAgent);
+    const client = new CodexAppServerClient({ spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture' });
+    await client.connect();
+    expect(client.status().agentVersion).toBe(expected);
+    await client.shutdown();
   });
 
   it('fails the connection on repeated model cursors', async () => {

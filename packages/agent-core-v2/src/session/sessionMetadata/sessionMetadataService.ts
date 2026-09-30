@@ -203,6 +203,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           custom: this.data.custom,
           lastTurnReason: this.data.lastTurnReason,
           usage: this.data.usage,
+          agents: this.data.agents,
         }),
       );
     } catch (error) {
@@ -267,6 +268,8 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.thinkingEffort === b.thinkingEffort &&
     a.executor === b.executor &&
     a.executorProtocol === b.executorProtocol &&
+    JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated) &&
+    a.allowKikiSubagents === b.allowKikiSubagents &&
     a.status === b.status &&
     a.completedAt === b.completedAt &&
     a.resultSummary === b.resultSummary &&

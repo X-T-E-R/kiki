@@ -10,6 +10,14 @@ import { tokenUsageSchema } from '../agent/schemas.js';
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
+export const negotiatedExecutorSchema = z.object({
+  agentVersion: z.string().optional(), image: z.boolean().optional(), audio: z.boolean().optional(),
+  fork: z.boolean().optional(), nativeSteering: z.boolean().optional(), questionForm: z.boolean().optional(),
+  planApproval: z.boolean().optional(), models: z.array(z.string()).optional(),
+  thinkingLevels: z.array(z.string()).optional(), authMethods: z.array(z.string()).optional(),
+  resume: z.boolean().optional(), load: z.boolean().optional(), permissionModes: z.array(z.string()).optional(),
+});
+
 export const agentMetaSchema = z.object({
   homedir: z.string().optional(),
   type: z.enum(['main', 'sub', 'independent']).optional(),
@@ -27,6 +35,8 @@ export const agentMetaSchema = z.object({
   thinkingEffort: z.string().optional(),
   executor: z.string().optional(),
   executorProtocol: z.string().optional(),
+  negotiated: negotiatedExecutorSchema.optional(),
+  allowKikiSubagents: z.boolean().optional(),
   status: z.enum(['completed', 'failed', 'cancelled']).optional(),
   completedAt: z.number().optional(),
   resultSummary: z.string().optional(),

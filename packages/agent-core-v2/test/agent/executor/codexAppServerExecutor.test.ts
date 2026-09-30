@@ -7,6 +7,7 @@ import {
   type NormalizedExecutorEvent,
 } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
@@ -205,6 +206,7 @@ function createHarness(options: HarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IWireService, wire],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
+    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn() }],
   ]);
   const context: AgentExecutorContext = {
     agent: {
@@ -398,6 +400,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
       provider: { create: harness.createSession },
     }),
   } as unknown as IAgentExecutorRegistry);
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn() });
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => harness.context.binding,

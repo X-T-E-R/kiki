@@ -1,3 +1,4 @@
+import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { SessionUsageSummary } from '#/app/sessionIndex/sessionIndex';
@@ -18,6 +19,8 @@ export interface AgentMeta {
   readonly thinkingEffort?: string;
   readonly executor?: string;
   readonly executorProtocol?: string;
+  readonly negotiated?: NegotiatedExecutorCapabilities;
+  readonly allowKikiSubagents?: boolean;
   readonly status?: 'completed' | 'failed' | 'cancelled';
   readonly completedAt?: number;
   readonly resultSummary?: string;

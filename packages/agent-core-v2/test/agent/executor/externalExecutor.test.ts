@@ -15,6 +15,7 @@ import type {
   NormalizedExecutorEvent,
 } from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
@@ -313,6 +314,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
+    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn() }],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
   let elicitationHandler: AcpElicitationHandler | undefined;
@@ -532,6 +534,7 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
       provider: { create: harness.createSession },
     }),
   } as unknown as IAgentExecutorRegistry);
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn() });
   ix.set(IAgentPermissionModeService, harness.permissionMode);
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
@@ -1209,6 +1212,19 @@ describe('ACP external executor', () => {
     expect(harness.opens[0]?.systemPromptOverride).toBe('Changed profile');
     expect(harness.starts[0]?.prompt).toContain('work');
     expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+  });
+
+  it('records handshake capabilities on the owning agent before running the turn', async () => {
+    const harness = createHarness();
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.executorContext.agent.accessor.get(ISessionMetadata).registerAgent).toHaveBeenCalledWith(
+        harness.executorContext.agent.id,
+        expect.objectContaining({ executor: 'example-acp', negotiated: expect.objectContaining({ image: false, audio: false,
+          fork: false, nativeSteering: false, questionForm: false, planApproval: false }) }),
+      );
+    } finally { await harness.session.shutdown(); }
   });
 
   it('records unsupported continuation negotiation for the local catalog without starting a turn', async () => {

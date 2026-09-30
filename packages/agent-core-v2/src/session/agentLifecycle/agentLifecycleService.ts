@@ -375,8 +375,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
         model: profile.modelAlias,
         thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
-        executor: profile.executorId,
+        executor: profile.executorId ?? 'native',
         executorProtocol: profile.executorProtocol,
+        negotiated: priorAgentMeta?.executor === profile.executorId ? priorAgentMeta?.negotiated : undefined,
+        allowKikiSubagents: profile.allowKikiSubagents,
       });
       this.assertCreateStillCurrent(agentId, slot, generation);
       slot.handle = handle;

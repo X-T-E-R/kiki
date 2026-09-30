@@ -26,6 +26,20 @@ describe('sessionHarnessOf', () => {
     expect(harness).toMatchObject({ executorId: 'claude-acp', label: 'Claude Code', version: '0.84.0', kikiSubagents: true });
   });
 
+  it('uses the session snapshot after a profile executor change or deletion', () => {
+    const session = { executor_id: 'claude-acp', negotiated: { agent_version: 'session-version', image: false }, allow_kiki_subagents: true };
+    for (const profiles of [[profile({ executor: 'codex-app-server' })], []]) {
+      expect(sessionHarnessOf('lead', profiles, [claude], session)).toMatchObject({
+        executorId: 'claude-acp', version: 'session-version', negotiated: { image: false }, kikiSubagents: true,
+      });
+    }
+  });
+
+  it('does not borrow a different session handshake or turn a native binding external', () => {
+    expect(sessionHarnessOf('lead', [profile({ executor: 'claude-acp' })], [claude], { executor_id: 'native' })).toBeUndefined();
+    expect(sessionHarnessOf('lead', [], [claude], { executor_id: 'claude-acp' })?.negotiated).toBeUndefined();
+  });
+
   it('keeps the raw id when the catalog has not loaded', () => {
     expect(sessionHarnessOf('lead', [profile({ executor: 'grok-acp' })], [])).toMatchObject({ label: 'grok-acp', negotiated: undefined });
   });

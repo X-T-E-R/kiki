@@ -27,7 +27,8 @@ import { antigravityProcessService } from '#/app/agentExecutor/antigravityProces
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp } from './harnessMcpLease';
 import { acpAttachments, externalAttachments } from './externalAttachments';
-import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
+import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
@@ -244,22 +245,24 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const configured = await this.#configure(opened, options.signal, losses);
+    const negotiated: NegotiatedExecutorCapabilities = {
+      models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
+      thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
+      authMethods: opened.initialize.authMethods?.map((method) => method.id),
+      agentVersion: opened.initialize.agentInfo?.version,
+      image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
+      audio: opened.capabilities.promptCapabilities?.audio === true,
+      fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
+      nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
+      questionForm: ['codex-acp', 'deepseek-acp'].includes(this.context.descriptor.id),
+      planApproval: this.context.descriptor.id === 'grok-acp',
+      resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
+      load: opened.capabilities.loadSession === true,
+      permissionModes: opened.availableModes,
+    };
+    await recordNegotiatedSnapshot(this.context, negotiated);
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
-      this.context.descriptor.id, this.context.descriptor.version, {
-        models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
-        thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
-        authMethods: opened.initialize.authMethods?.map((method) => method.id),
-        agentVersion: opened.initialize.agentInfo?.version,
-        image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
-        audio: opened.capabilities.promptCapabilities?.audio === true,
-        fork: opened.capabilities.sessionCapabilities?.fork !== undefined && opened.capabilities.sessionCapabilities?.fork !== null,
-        nativeSteering: (opened.initialize._meta?.['steering'] as { supported?: unknown } | undefined)?.supported === true,
-        questionForm: ['codex-acp', 'deepseek-acp'].includes(this.context.descriptor.id),
-        planApproval: this.context.descriptor.id === 'grok-acp',
-        resume: opened.capabilities.sessionCapabilities?.resume !== undefined && opened.capabilities.sessionCapabilities?.resume !== null,
-        load: opened.capabilities.loadSession === true,
-        permissionModes: opened.availableModes,
-      },
+      this.context.descriptor.id, this.context.descriptor.version, negotiated,
     );
     const prior = this.#states.get(externalExecutorKey);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);

@@ -564,6 +564,22 @@ export interface SessionStateSnapshot {
       readonly thinkingEffort?: string;
       readonly executor?: string;
       readonly executorProtocol?: string;
+      readonly negotiated?: /* NegotiatedExecutorCapabilities — packages/agent-core-v2/src/app/agentExecutor/capabilities.ts */ {
+        readonly agentVersion?: string;
+        readonly image?: boolean;
+        readonly audio?: boolean;
+        readonly fork?: boolean;
+        readonly nativeSteering?: boolean;
+        readonly questionForm?: boolean;
+        readonly planApproval?: boolean;
+        readonly models?: readonly string[];
+        readonly thinkingLevels?: readonly string[];
+        readonly authMethods?: readonly string[];
+        readonly resume?: boolean;
+        readonly load?: boolean;
+        readonly permissionModes?: readonly string[];
+      };
+      readonly allowKikiSubagents?: boolean;
       readonly status?: 'completed' | 'cancelled' | 'failed';
       readonly completedAt?: number;
       readonly resultSummary?: string;

@@ -96,6 +96,19 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).custom).toEqual(custom);
   });
 
+  it('persists per-session handshake snapshots and restores them without a catalog lookup', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: true,
+      nativeSteering: false, questionForm: true, planApproval: false };
+    await meta.registerAgent('main', { executor: 'example-acp', negotiated });
+    expect((await createFreshMetadata(ix).read()).agents?.['main']).toEqual({ executor: 'example-acp', negotiated });
+    expect(mirror.recorded.at(-1)).toMatchObject({ executorId: 'example-acp', negotiated });
+    await meta.registerAgent('main', { executor: 'example-acp', negotiated: { ...negotiated, image: true } });
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.negotiated?.image).toBe(true);
+    await meta.registerAgent('main', { executor: 'native' });
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.negotiated).toBeUndefined();
+  });
+
   it('keeps the first live usage record incomplete without a known baseline', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.ready;

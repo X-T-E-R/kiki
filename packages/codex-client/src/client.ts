@@ -56,6 +56,7 @@ export class CodexAppServerClient {
   readonly #stderr: StderrRing;
   #process: HostProcessLike | undefined;
   #state: CodexClientStatus['state'] = 'cold';
+  #agentVersion: string | undefined;
   #stdoutBuffer = '';
   #requestSequence = 0;
   #frameSequence = 0;
@@ -77,6 +78,7 @@ export class CodexAppServerClient {
   status(): CodexClientStatus {
     return {
       state: this.#state,
+      agentVersion: this.#agentVersion,
       pid: this.#process?.pid,
       threadId: this.#activeTurn?.threadId,
       turnId: this.#activeTurn?.turnId,
@@ -112,7 +114,7 @@ export class CodexAppServerClient {
       );
       this.#attachProcess(this.#process);
       this.#setState('initializing');
-      await this.#requestCore('initialize', {
+      const initialized = await this.#requestCore('initialize', {
         clientInfo: {
           name: this.descriptor.clientName ?? 'kiki-agent-core-v2',
           title: 'Kiki',
@@ -120,6 +122,9 @@ export class CodexAppServerClient {
         },
         capabilities: { experimentalApi: false, requestAttestation: false },
       }, this.descriptor.startupTimeoutMs, signal);
+      const userAgent = initialized !== null && typeof initialized === 'object'
+        ? (initialized as Record<string, unknown>)['userAgent'] : undefined;
+      this.#agentVersion = typeof userAgent === 'string' ? /^\S+\/([^\s]+)/.exec(userAgent)?.[1] : undefined;
       await this.#write({ method: 'initialized' });
       this.#setState('ready');
     } catch (error) {

@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
@@ -36,6 +37,9 @@ export interface SessionSummary {
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly usage?: SessionUsageSummary;
+  readonly executorId?: string;
+  readonly negotiated?: NegotiatedExecutorCapabilities;
+  readonly allowKikiSubagents?: boolean;
 }
 
 export interface SessionListQuery {

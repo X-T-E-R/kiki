@@ -58,6 +58,7 @@ export type CodexClientState =
 
 export interface CodexClientStatus {
   readonly state: CodexClientState;
+  readonly agentVersion?: string;
   readonly pid?: number;
   readonly threadId?: string;
   readonly turnId?: string;

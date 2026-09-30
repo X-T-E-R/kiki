@@ -12,7 +12,8 @@ import {
   type HostProcessServiceLike,
 } from '@kiki/codex-client';
 
-import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
+import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
 import { codexAttachments, externalAttachments } from './externalAttachments';
@@ -454,13 +455,22 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         { cause: error },
       );
     }
+    const negotiated: NegotiatedExecutorCapabilities = {
+      models: listed.data.map((candidate) => candidate.id),
+      thinkingLevels: [...new Set(listed.data.flatMap((candidate) =>
+        (candidate.supportedReasoningEfforts ?? []).flatMap((entry) => entry.reasoningEffort === undefined ? [] : [entry.reasoningEffort])))],
+      agentVersion: this.#client.status().agentVersion,
+      image: true,
+      audio: false,
+      fork: false,
+      nativeSteering: true,
+      questionForm: true,
+      planApproval: false,
+      resume: true,
+    };
+    await recordNegotiatedSnapshot(this.context, negotiated);
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
-      this.context.descriptor.id, this.context.descriptor.version, {
-        models: listed.data.map((candidate) => candidate.id),
-        thinkingLevels: [...new Set(listed.data.flatMap((candidate) =>
-          (candidate.supportedReasoningEfforts ?? []).flatMap((entry) => entry.reasoningEffort === undefined ? [] : [entry.reasoningEffort])))],
-        resume: true,
-      },
+      this.context.descriptor.id, this.context.descriptor.version, negotiated,
     );
     const advertised = model === undefined ? undefined : listed.data.find((candidate) => candidate.id === model);
     if (model !== undefined && advertised === undefined) {

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import type { AgentMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
 import { rmdir } from 'node:fs/promises';
@@ -668,7 +670,7 @@ export function registerSessionsRoutes(
         const profile = await readPersistedAgentProfileSnapshot(core, summary.workspaceId, session_id, MAIN_AGENT_ID, undefined);
         const persona = profile?.persona?.definition;
         if (profile !== undefined) {
-          facts = { ...facts, agentConfig: {
+          facts = { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
             model: profile.modelAlias ?? '', profile: profile.profileName,
             persona: persona === undefined ? undefined : {
               id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
@@ -1445,6 +1447,10 @@ export interface SessionWireFields {
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly delivery?: 'reply' | 'message';
+  readonly agents?: Readonly<Record<string, AgentMeta>>;
+  readonly executorId?: string;
+  readonly negotiated?: NegotiatedExecutorCapabilities;
+  readonly allowKikiSubagents?: boolean;
 }
 
 export function toWireSession(
@@ -1454,7 +1460,18 @@ export function toWireSession(
   lastSeq?: number,
   ephemeral = false,
 ): Session {
+  const mainMeta = fields.agents?.[MAIN_AGENT_ID];
+  const persistedExecutor = fields.executorId ?? mainMeta?.executor;
+  const executorId = facts.executorId ?? persistedExecutor;
+  const negotiated = executorId === persistedExecutor ? fields.negotiated ?? mainMeta?.negotiated : undefined;
   return {
+    executor_id: executorId,
+    allow_kiki_subagents: facts.allowKikiSubagents ?? fields.allowKikiSubagents ?? mainMeta?.allowKikiSubagents,
+    negotiated: negotiated === undefined ? undefined : {
+      agent_version: negotiated.agentVersion, image: negotiated.image, audio: negotiated.audio,
+      fork: negotiated.fork, native_steering: negotiated.nativeSteering,
+      question_form: negotiated.questionForm, plan_approval: negotiated.planApproval,
+    },
     id: fields.id,
     workspace_id: fields.workspaceId,
     delivery: facts.delivery ?? fields.delivery ?? 'reply',
@@ -1495,6 +1512,8 @@ export interface SessionFacts {
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly delivery?: 'reply' | 'message';
   readonly agentConfig?: Session['agent_config'];
+  readonly executorId?: string;
+  readonly allowKikiSubagents?: boolean;
   readonly usage?: SessionUsage;
   /** Why `usage` is missing or short: reading it failed, so the wire's zero
    *  usage is a placeholder (or an understated total) rather than a measured
@@ -1550,6 +1569,8 @@ export function resolveSessionFacts(
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
     delivery: handle.accessor.get(ISessionDeliveryService).mode(),
+    executorId: profile === undefined ? undefined : profile.executorId ?? 'native',
+    allowKikiSubagents: profile?.allowKikiSubagents,
     agentConfig: profile === undefined
       ? undefined
       : {

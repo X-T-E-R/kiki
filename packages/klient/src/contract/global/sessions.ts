@@ -6,6 +6,7 @@
 import { z } from 'zod';
 
 import { maybe, pageOf } from '../helpers.js';
+import { negotiatedExecutorSchema } from '../session/metadata.js';
 import type { ServiceContract } from '../types.js';
 
 export const sessionSummarySchema = z.object({
@@ -21,6 +22,9 @@ export const sessionSummarySchema = z.object({
   archivedAt: z.number().optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  executorId: z.string().optional(),
+  negotiated: negotiatedExecutorSchema.optional(),
+  allowKikiSubagents: z.boolean().optional(),
 });
 
 export const sessionListQuerySchema = z.object({

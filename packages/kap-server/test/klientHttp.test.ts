@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  ISessionManager,
+  ISessionMetadata,
   IAgentLifecycleService,
   IAgentLoopService,
   IModelService,
@@ -136,6 +138,33 @@ describe('klient HTTP host', () => {
     } finally {
       await klient.close();
     }
+  });
+
+  it('restores session harness fields on REST and klient snapshots after closing and resuming', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Harness snapshot' });
+      const handle = await resumeSessionById(server.core.accessor, created.id);
+      if (handle === undefined) throw new Error('session missing');
+      await ensureMainAgent(handle);
+      const metadata = handle.accessor.get(ISessionMetadata);
+      const current = (await metadata.read()).agents?.['main'];
+      const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: false,
+        nativeSteering: true, questionForm: false, planApproval: true };
+      await metadata.registerAgent('main', { ...current, negotiated });
+      const expected = { executor_id: 'native', negotiated: { agent_version: '1.2.3', image: false, audio: true,
+        fork: false, native_steering: true, question_form: false, plan_approval: true } };
+      const readRest = async () => {
+        const response = await fetch(`${endpoint}/api/sessions/${created.id}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+        expect(await response.json()).toMatchObject({ code: 0, data: expected });
+      };
+      await readRest();
+      expect((await klient.session(created.id).view.snapshot()).session).toMatchObject(expected);
+      await server.core.accessor.get(ISessionManager).close(created.id);
+      await readRest();
+      expect((await klient.session(created.id).view.snapshot()).session).toMatchObject(expected);
+    } finally { await klient.close(); }
   });
 
   it('rebuilds main-agent context through the klient route, preserves history, and rejects busy sessions', async () => {

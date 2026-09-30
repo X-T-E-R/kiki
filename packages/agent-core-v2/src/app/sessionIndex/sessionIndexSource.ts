@@ -1,3 +1,4 @@
+import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -114,6 +115,7 @@ export function buildSessionSummary(fields: {
   custom?: Record<string, unknown>;
   lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   usage?: SessionUsageSummary;
+  agents?: Readonly<Record<string, AgentMeta>>;
 }): SessionSummary {
   return {
     id: fields.id,
@@ -130,6 +132,9 @@ export function buildSessionSummary(fields: {
     custom: fields.custom,
     lastTurnReason: fields.lastTurnReason,
     usage: fields.usage,
+    executorId: fields.agents?.['main']?.executor,
+    negotiated: fields.agents?.['main']?.negotiated,
+    allowKikiSubagents: fields.agents?.['main']?.allowKikiSubagents,
   };
 }
 
@@ -165,7 +170,10 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.archivedAt === b.archivedAt &&
     a.lastTurnReason === b.lastTurnReason &&
     JSON.stringify(a.custom) === JSON.stringify(b.custom) &&
-    JSON.stringify(a.usage) === JSON.stringify(b.usage)
+    JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
+    a.executorId === b.executorId &&
+    JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated) &&
+    a.allowKikiSubagents === b.allowKikiSubagents
   );
 }
 
@@ -296,6 +304,8 @@ function summaryFromMetadata(
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
     usage: parseSessionUsageSummary(meta['usage']),
+    agents: meta['agents'] !== null && typeof meta['agents'] === 'object' && !Array.isArray(meta['agents'])
+      ? meta['agents'] as Readonly<Record<string, AgentMeta>> : undefined,
   });
 }
 

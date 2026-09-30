@@ -1785,7 +1785,7 @@ export function SessionView({
   const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
   // An external engine bound as main: what its handshake agreed to gates the
   // entries it cannot serve and feeds the quiet engine line in the header.
-  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? []);
+  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);

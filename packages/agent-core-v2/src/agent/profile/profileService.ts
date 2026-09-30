@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { applyFileCallerCeiling, freezeBoundProfile } from './boundProfile';
 import { assertResearchExecutor, RESEARCH_READONLY_TOOLS } from './executionRestriction';
 import { Disposable } from '#/_base/di/lifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -287,6 +288,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentAgentsMdReminderService private readonly agentsMdReminder: IAgentAgentsMdReminderService,
     @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IPersonaStore private readonly personas?: IPersonaStore,
   ) {
     super();
@@ -713,6 +715,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
+    await this.syncBindingMetadata();
+  }
+
+  private async syncBindingMetadata(): Promise<void> {
+    const current = (await this.metadata.read()).agents?.[this.agentScope.agentId];
+    if (current === undefined) return;
+    const binding = this.data();
+    await this.metadata.registerAgent(this.agentScope.agentId, {
+      ...current, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
+      negotiated: current.executor === binding.executorId ? current.negotiated : undefined,
+      allowKikiSubagents: binding.allowKikiSubagents,
+    });
   }
 
   private async bindExternal(
@@ -877,6 +891,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       systemPrompt: assembled.text,
       disallowedTools: [],
     });
+    await this.syncBindingMetadata();
     if (validation.ok) for (const advisory of validation.advisories ?? []) {
       await this.dispatcher.dispatch(new WarningIssued({ code: advisory.code, message: advisory.message }));
     }

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
+import type { ExecutorCatalogItem, NamedAgentProfile, Session } from '@kiki/protocol';
 
 import { isExternalExecutor } from '../settings/profileEditor/profileDraft';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
@@ -28,9 +28,22 @@ export function sessionHarnessOf(
   profileName: string | undefined,
   profiles: readonly NamedAgentProfile[],
   catalog: readonly ExecutorCatalogItem[],
+  session?: Pick<Session, 'executor_id' | 'negotiated' | 'allow_kiki_subagents'>,
 ): SessionHarness | undefined {
-  if (profileName === undefined) return undefined;
   const profile = profiles.find((item) => item.name === profileName && item.main);
+  if (session?.executor_id !== undefined) {
+    if (!isExternalExecutor(session.executor_id)) return undefined;
+    const item = catalog.find((entry) => entry.id === session.executor_id);
+    return {
+      executorId: session.executor_id,
+      label: item?.label ?? session.executor_id,
+      protocol: item?.protocol ?? '',
+      version: session.negotiated?.agent_version ?? item?.version,
+      negotiated: session.negotiated,
+      kikiSubagents: session.allow_kiki_subagents ?? (profile?.allow_kiki_subagents === true),
+    };
+  }
+  if (profileName === undefined) return undefined;
   if (profile === undefined || !isExternalExecutor(profile.executor)) return undefined;
   const item = catalog.find((entry) => entry.id === profile.executor);
   const negotiated = item?.capabilities?.negotiated;
@@ -44,9 +57,9 @@ export function sessionHarnessOf(
   };
 }
 
-export function useSessionHarness(profileName: string | undefined, profiles: readonly NamedAgentProfile[]): SessionHarness | undefined {
+export function useSessionHarness(profileName: string | undefined, profiles: readonly NamedAgentProfile[], session?: Session): SessionHarness | undefined {
   const catalog = useExecutorCatalog();
-  return useMemo(() => sessionHarnessOf(profileName, profiles, catalog), [profileName, profiles, catalog]);
+  return useMemo(() => sessionHarnessOf(profileName, profiles, catalog, session), [profileName, profiles, catalog, session]);
 }
 
 /** Only a handshake that said no removes an entry; unknown keeps the native one. */

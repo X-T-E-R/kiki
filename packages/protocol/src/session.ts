@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { executorCapabilitiesSchema } from './rest/executor';
 
 import {
   promptPermissionModeSchema,
@@ -139,6 +140,9 @@ export const sessionDeliverySchema = z.enum(['reply', 'message']);
 export type SessionDelivery = z.infer<typeof sessionDeliverySchema>;
 
 export const sessionSchema = z.object({
+  executor_id: z.string().optional(),
+  negotiated: executorCapabilitiesSchema.shape.negotiated,
+  allow_kiki_subagents: z.boolean().optional(),
   delivery: sessionDeliverySchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,

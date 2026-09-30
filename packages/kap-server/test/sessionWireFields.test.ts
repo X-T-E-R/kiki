@@ -206,3 +206,27 @@ describe('resolveSessionFacts usage failures', () => {
     ]);
   });
 });
+
+describe('toWireSession harness snapshot', () => {
+  const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: false,
+    nativeSteering: true, questionForm: false, planApproval: true };
+  const expected = { agent_version: '1.2.3', image: false, audio: true, fork: false,
+    native_steering: true, question_form: false, plan_approval: true };
+
+  it('projects the same persisted snapshot from metadata and cold list summaries', () => {
+    for (const data of [{ agents: { main: { executor: 'example-acp', negotiated } } },
+      { executorId: 'example-acp', negotiated }]) {
+      expect(toWireSession({ ...fields, ...data }, '/tmp/ws', coldFacts)).toMatchObject({ executor_id: 'example-acp', negotiated: expected });
+    }
+  });
+
+  it('clears obsolete capabilities when a live binding switches executors', () => {
+    const wire = toWireSession({ ...fields, executorId: 'example-acp', negotiated }, '/tmp/ws', { ...coldFacts, executorId: 'native' });
+    expect(wire.executor_id).toBe('native');
+    expect(wire.negotiated).toBeUndefined();
+  });
+
+  it('keeps old sessions without a handshake compatible', () => {
+    expect(toWireSession(fields, '/tmp/ws', coldFacts).negotiated).toBeUndefined();
+  });
+});
