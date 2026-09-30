@@ -15,6 +15,7 @@ import type { LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
+import { searchSortedHistory, type HistorySortedCursor } from './historySortedSearch';
 import type { TranscriptService } from '../transcript/transcriptService';
 
 export const HISTORY_NAV_COLLECTION = 'history_navigation_v1';
@@ -62,6 +63,9 @@ export interface HistoryNavScan {
   readonly incarnation: string;
   readonly incompleteReason?: string;
   readonly hits?: readonly HistoryHit[];
+  readonly ordered?: boolean;
+  readonly orderedNext?: HistorySortedCursor;
+  readonly gaps?: readonly string[];
 }
 
 export interface HistoryNavSearch {
@@ -73,6 +77,8 @@ export interface HistoryNavSearch {
   readonly pageSize: number;
   readonly asOf?: number;
   readonly cursor?: { readonly offset: number; readonly incarnation: string };
+  readonly sort?: 'relevance' | 'newest' | 'oldest';
+  readonly orderedCursor?: HistorySortedCursor;
 }
 
 export interface HistoryNavBlock {
@@ -181,6 +187,8 @@ export class HistoryLocatorStore {
   constructor(private readonly store: Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>,
     private readonly transcript: TranscriptService) {}
 
+  get supportsSortedSearch(): boolean { return 'ready' in this.store; }
+
   get retainedBodyChars(): number {
     let chars = 0;
     for (const scanner of this.scanners.values()) chars += scanner.adapter.retainedBodyChars;
@@ -209,6 +217,13 @@ export class HistoryLocatorStore {
         await previous;
         signal?.throwIfAborted();
         const input = { workspace, session, agent, wirePath, incarnation, key, signal };
+        if (search?.sort !== undefined && 'ready' in this.store) {
+          return await searchSortedHistory({ ...input, search,
+            db: await (this.store as LazyHistoryNavigationDb).ready(),
+            maxBytes: HISTORY_NAV_SCAN_BYTES, maxRecords: HISTORY_NAV_SCAN_RECORDS,
+            prepare: (asOf) => this.scanSlice({ ...input, stopAt: asOf }),
+            textOf: originalText, refOf: (row, focus) => this.ref(row, focus) });
+        }
         return await (search !== undefined && 'ready' in this.store
           ? this.scanSearchSlice(input, search) : this.scanSlice({ ...input, search }));
       } catch (error) {
@@ -401,12 +416,13 @@ export class HistoryLocatorStore {
     let pendingBytes = 0;
     const read = await streamWireRecordsAwaited(input.wirePath, {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: input.stopAt === undefined && input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
-        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, (input.stopAt ?? input.search!.asOf!) - scanner.offset)),
+      maxBytes: input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
+        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, input.search.asOf - scanner.offset)),
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: async (record, span, raw) => {
+        if (input.stopAt !== undefined && span.endByteOffset > input.stopAt) throw new Error('stale_scan_cursor');
         const projected = scanner.adapter.add(record);
         pending.push({ operations: projected, span,
           digest: hashHistoryRecord(raw!), recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
@@ -434,7 +450,7 @@ export class HistoryLocatorStore {
         }
         const pageFull = input.search !== undefined && matchedRecords >= input.search.pageSize;
         if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
-        return !pageFull;
+        return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
       },
     });
     async function flushPending(): Promise<void> {

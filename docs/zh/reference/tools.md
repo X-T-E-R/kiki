@@ -62,6 +62,10 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 **从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent；此前默认在整个工作区进行词元 AND 检索。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
 
+在服务端的 transcript 回退检索中，`sort: "newest"` 和 `"oldest"` 按时间戳排列命中文本，跨页用稳定来源 ID 处理同时间命中；缺失的时间戳按零排序。导航先构建到固定来源水位，确认当前可见性，因此冷态大会话可能先返回空的 `navigation_building` 准备页，再返回命中。用 `next_cursor` 继续；投影准备和原文读取共享每次调用的预算。导航就绪后，最新优先检索会直接读取近期文本片段，不再从 wire 开头扫起。
+
+默认的 `sort: "relevance"` 只在当前有界页收集到的命中之间按词法得分排序：完整查询命中和更多词组命中提高分值，再以较新时间戳和稳定 ID 打破平分。跨页按最新时间优先扫描，并非全局相关度排序；后续页可能有更相关的命中。部分页会在 coverage 中披露 `page_local_relevance`。新版扫描 cursor 绑定查询、来源指纹和导航 generation；来源追加、undo、clear 或改写都会使其失效，失效后应重新发起查询。旧版扫描 cursor 仍能按来源顺序续扫，但会提示重新查询以使用排序导航。
+
 省略新版的 scope 和 mode 参数时，会按当前 session 和 `auto` 模式处理。不要假定旧版默认值，请读取响应中的 `scope_used` 和 `mode_used`；如果结果范围太窄，按 `expand_hint.next_call` 的建议改用 `scope: "workspace"` 重试。
 
 不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。

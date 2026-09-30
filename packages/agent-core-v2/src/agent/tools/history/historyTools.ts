@@ -23,7 +23,7 @@ export const HistorySearchInputSchema = z.object({
   role: z.enum(['user', 'assistant', 'tool']).optional().describe('Optional exact source role; by default search all three.'),
   after: z.iso.datetime({ offset: true }).optional().describe('Include matches at or after this RFC3339 timestamp with timezone.'),
   before: z.iso.datetime({ offset: true }).optional().describe('Exclude matches at or after this RFC3339 timestamp with timezone.'),
-  sort: z.enum(['relevance', 'newest', 'oldest']).optional().describe('Defaults to relevance; newest/oldest sort matched text by time.'),
+  sort: z.enum(['relevance', 'newest', 'oldest']).optional().describe('Defaults to relevance. Transcript fallback ranks lexical match scores only within each bounded page and scans newest-first across pages; later pages may have stronger matches. newest/oldest order matched text by time with stable ID ties. A cold navigation projection may need preparation pages before hits. Peer scope always uses newest-first.'),
   source: z.enum(['auto', 'transcript']).optional().describe('Defaults to auto; transcript scans one specified session beyond indexed tool-output tails.'),
   cursor: z.string().min(1).max(4096).optional().describe('Continue a result or scan page; pass alone, or repeat only matching query parameters.'),
   limit: z.number().int().min(1).max(20).optional().describe('Number of hits per page, defaults to 5.'),
@@ -238,7 +238,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
-  readonly description = 'Find earlier user, assistant, or tool text. Defaults to this session and this agent, with auto phrase matching. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
+  readonly description = 'Find earlier user, assistant, or tool text. Defaults to this session and this agent, with auto phrase matching. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
   });

@@ -63,6 +63,11 @@ export class HistoryNavigationDb implements NavigationStore {
         CREATE INDEX IF NOT EXISTS nav_turn ON rows(workspace, session, agent, kind, active, turn);
         CREATE INDEX IF NOT EXISTS nav_position ON rows(workspace, session, agent, turn, active, position);
         CREATE INDEX IF NOT EXISTS nav_time ON rows(workspace, session, agent, kind, active, time);
+        CREATE INDEX IF NOT EXISTS nav_search_order ON rows(workspace, session, agent, coalesce(time,0), key)
+          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
+        CREATE INDEX IF NOT EXISTS nav_search_role_order ON rows(workspace, session, agent,
+          coalesce(json_extract(value,'$.role'),'user'), coalesce(time,0), key)
+          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
         CREATE INDEX IF NOT EXISTS nav_source ON rows(
           workspace, session, agent, active, json_extract(value, '$.anchor.start')
         );
@@ -218,6 +223,32 @@ export class HistoryNavigationDb implements NavigationStore {
       AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
       .all(workspace, session, agent, start) as Array<{ value: string }>;
     return rows.map((row) => JSON.parse(row.value) as HistoryNavRow);
+  }
+
+  searchRows(input: { workspace: string; session: string; agent: string; direction: 'asc' | 'desc';
+    after?: { time: number; key: string }; role?: 'user' | 'assistant' | 'tool';
+    startTime?: number; endTime?: number; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 64) throw new Error('invalid history navigation page');
+    const where = ["r.workspace=? AND r.session=? AND r.agent=? AND r.active=1",
+      "json_extract(r.value,'$.part') IN ('prompt','text','output')",
+      "EXISTS (SELECT 1 FROM rows p WHERE p.workspace=r.workspace AND p.session=r.session AND p.agent=r.agent AND p.kind='turn' AND p.turn=r.turn AND p.active=1)"];
+    const values: Array<string | number> = [input.workspace, input.session, input.agent];
+    if (input.role !== undefined) {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
+      values.push(input.role);
+    }
+    if (input.startTime !== undefined) { where.push('r.time>=?'); values.push(input.startTime); }
+    if (input.endTime !== undefined) { where.push('r.time<?'); values.push(input.endTime); }
+    const direction = input.direction === 'asc' ? 'ASC' : 'DESC';
+    const comparator = input.direction === 'asc' ? '>' : '<';
+    if (input.after !== undefined) {
+      where.push(`(coalesce(r.time,0),r.key) ${comparator} (?,?)`);
+      values.push(input.after.time, input.after.key);
+    }
+    const rows = this.db.prepare(`SELECT r.key,coalesce(r.time,0) AS time,r.value FROM rows r
+      WHERE ${where.join(' AND ')} ORDER BY coalesce(r.time,0) ${direction},r.key ${direction} LIMIT ?`)
+      .all(...values, input.limit) as Array<{ key: string; time: number; value: string }>;
+    return rows.map(({ key, time, value }) => ({ key, time, row: JSON.parse(value) as HistoryNavRow }));
   }
 
   async get<T>(collection: string, key: string): Promise<T | undefined> {

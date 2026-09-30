@@ -343,23 +343,24 @@ describe('history navigation source rows', () => {
       const cancelled = new AbortController();
       cancelled.abort();
       await expect(archive.search({ ...request, signal: cancelled.signal })).rejects.toThrow();
-      const first = await archive.search(request);
-      expect(first).toMatchObject({ items: [{ turn: 3, ref: expect.any(String) }],
+      const first = await archive.search({ ...request, sort: 'newest' });
+      expect(first).toMatchObject({ items: [], incomplete: 'navigation_building',
         continuation: 'scan', hasMore: true, coverage: { complete: false } });
-      const second = await archive.search({ ...request, pageToken: first.pageToken });
-      expect(second).toMatchObject({ items: [{ turn: 8, ref: expect.any(String) }],
-        hasMore: false, coverage: { complete: true } });
-      expect(second.coverage?.scanned?.bytes).toBeGreaterThan(0);
+      const second = await archive.search({ ...request, sort: 'newest', pageToken: first.pageToken });
+      expect(second).toMatchObject({ items: [{ turn: 8, ref: expect.any(String) }], hasMore: true });
+      const third = await archive.search({ ...request, sort: 'newest', pageToken: second.pageToken });
+      expect(third.items.map((hit) => hit.turn)).toEqual([3]);
       expect((await archive.readRef?.(second.items[0]!.ref!))).toMatchObject({
         status: 'ok', text: expect.stringContaining('needle'), turn: 8,
       });
-      expect(first.fallback).toMatchObject({ maxBytes: 8 << 20, maxRecords: 50_000 });
-      expect(first.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
-      expect(second.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
+      for (const page of [first, second, third]) {
+        expect(page.fallback).toMatchObject({ maxBytes: 8 << 20, maxRecords: 50_000 });
+        expect(page.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
+        expect(page.coverage?.scanned?.records).toBeLessThanOrEqual(50_000);
+      }
       const recent = await archive.search({ ...request, query: 'tailmarker', sort: 'newest' });
-      expect(recent).toMatchObject({ items: [], continuation: 'scan', hasMore: true, coverage: { complete: false } });
-      const recentTail = await archive.search({ ...request, query: 'tailmarker', sort: 'newest', pageToken: recent.pageToken });
-      expect(recentTail).toMatchObject({ items: [{ turn: 8, time: 1008 }], hasMore: false, coverage: { complete: true } });
+      expect(recent).toMatchObject({ items: [{ turn: 8, time: 1008 }], hasMore: true });
+      expect(recent.coverage?.scanned?.bytes).toBeLessThan(2 << 20);
       const absent = await archive.search({ ...request, query: 'absentmarker' });
       expect(absent).toMatchObject({ items: [], continuation: 'scan', hasMore: true,
         coverage: { complete: false }, incomplete: 'wire_scan_limit' });
@@ -367,12 +368,116 @@ describe('history navigation source rows', () => {
       expect(absentTail).toMatchObject({ items: [], hasMore: false, coverage: { complete: true } });
       expect(absentTail.pageToken).toBeUndefined();
       const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
-      expect(alternate.items.map((hit) => hit.turn)).toEqual([3]);
+      expect(alternate.items.map((hit) => hit.turn)).toEqual([8]);
       const manifestScopes = (await db.ready()).db.prepare('SELECT scope FROM manifest').all() as Array<{ scope: string }>;
       expect(manifestScopes).toEqual([{ scope: 'ws\0s\0main' }]);
       await appendFile(wirePath, line({ type: 'context.clear', time: 1011 }));
       await nav.scan('s', 'main');
-      await expect(archive.search({ ...request, pageToken: first.pageToken })).rejects.toThrow('stale_scan_cursor');
+      await expect(archive.search({ ...request, sort: 'newest', pageToken: first.pageToken })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('returns the newest cold-session hit on the first call when preparation and text fit the shared budget', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-sort-cold-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const filler = 'f'.repeat(1 << 20);
+      await writeFile(wirePath, Array.from({ length: 6 }, (_unused, turnId) => line({ type: 'turn.prompt', turnId,
+        promptId: `p${turnId}`, time: turnId + 1000, input: [{ type: 'text', text: `${turnId === 5 ? 'tailmarker ' : ''}${filler}` }] })).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const page = await archive.search({ query: 'tailmarker', mode: 'auto', sort: 'newest', workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 });
+      expect(page.items).toMatchObject([{ turn: 5, time: 1005 }]);
+      expect(page.coverage?.scanned?.bytes).toBeLessThanOrEqual(8 << 20);
+      expect(page.coverage?.scanned?.bytes).toBeGreaterThan(6 << 20);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('sorts SQLite hits by time and stable key across pages, ranks page-local relevance and rejects mutated cursors', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-sort-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const times = [3000, 1000, 3000, 2000];
+      const wire = times.map((time, turnId) => line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, time,
+        input: [{ type: 'text', text: turnId === 1 ? 'needle extra' : 'needle' }] })).join('');
+      await writeFile(wirePath, wire);
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', mode: 'auto' as const, workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 };
+      for (const sort of ['newest', 'oldest'] as const) {
+        const turns: number[] = [];
+        let pageToken: string | undefined;
+        do {
+          const page = await archive.search({ ...request, sort, pageToken });
+          turns.push(...page.items.map((item) => item.turn!));
+          pageToken = page.pageToken;
+        } while (pageToken !== undefined);
+        expect(turns).toEqual(sort === 'newest' ? [2, 0, 3, 1] : [1, 3, 0, 2]);
+      }
+      const filtered = await archive.search({ ...request, sort: 'newest', role: 'user', after: 2000, before: 3000, pageSize: 5 });
+      expect(filtered.items.map((hit) => hit.turn)).toEqual([3]);
+      expect((await archive.search({ ...request, sort: 'newest', role: 'assistant' })).items).toEqual([]);
+      const relevance = await archive.search({ ...request, query: 'needle extra', pageSize: 4 });
+      expect(relevance.items.map((hit) => hit.turn)).toEqual([1, 2, 0, 3]);
+      const partial = await archive.search({ ...request, query: 'needle extra', pageSize: 2 });
+      expect(partial.coverage?.gaps).toContain('page_local_relevance');
+      expect(partial.warning).toContain('only this page');
+      const newest = await archive.search({ ...request, sort: 'newest' });
+      const identity = JSON.parse(Buffer.from(newest.pageToken!, 'base64url').toString('utf8')) as { incarnation: string; asOf: number };
+      const oldCursor = Buffer.from(JSON.stringify({ v: 1, offset: 0, incarnation: identity.incarnation, asOf: identity.asOf })).toString('base64url');
+      const legacy = await archive.search({ ...request, sort: 'newest', pageToken: oldCursor });
+      expect(legacy.items.map((hit) => hit.turn)).toEqual([0]);
+      expect(legacy.coverage?.gaps).toContain('legacy_source_order');
+      expect(legacy.warning).toContain('source order');
+      const reopenedDb = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+      try {
+        const reopenedNav = new HistoryLocatorStore(reopenedDb, transcript);
+        const reopenedArchive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+          () => transcript, () => reopenedNav)[0]![1] as IHistoryArchive;
+        expect((await reopenedArchive.search({ ...request, sort: 'newest', pageToken: newest.pageToken })).items.map((hit) => hit.turn)).toEqual([0]);
+      } finally { await reopenedDb.close(); }
+      const database = (await db.ready()).db;
+      const version = database.prepare('PRAGMA user_version').get();
+      expect(version).toEqual({ user_version: 2 });
+      const plan = database.prepare(`EXPLAIN QUERY PLAN SELECT key,value FROM rows WHERE workspace='ws' AND session='s' AND agent='main'
+        AND active=1 AND json_extract(value,'$.part') IN ('prompt','text','output') ORDER BY coalesce(time,0) DESC,key DESC LIMIT 64`).all() as Array<{ detail: string }>;
+      expect(plan.some((row) => row.detail.includes('nav_search_order'))).toBe(true);
+      expect(plan.some((row) => row.detail.includes('TEMP B-TREE'))).toBe(false);
+      await expect(archive.search({ ...request, sort: 'oldest', pageToken: newest.pageToken })).rejects.toThrow('stale_scan_cursor');
+      await expect(archive.search({ ...request, query: 'other', sort: 'newest', pageToken: newest.pageToken })).rejects.toThrow('stale_scan_cursor');
+      const decoded = JSON.parse(Buffer.from(newest.pageToken!, 'base64url').toString('utf8')) as Record<string, unknown>;
+      await expect(archive.search({ ...request, sort: 'newest', pageToken: Buffer.from(JSON.stringify({ ...decoded, after: { time: 0, key: '' } })).toString('base64url') })).rejects.toThrow('invalid_scan_cursor');
+      await writeFile(wirePath, wire.replace('needle', 'absent'));
+      await expect(archive.search({ ...request, sort: 'newest', pageToken: newest.pageToken })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('finishes undo and clear visibility before sorted search returns any hits', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-sort-visibility-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, [0, 1].map((turnId) => line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`,
+        origin: { kind: 'user' }, time: 1000 + turnId, input: [{ type: 'text', text: 'needle' }] })).join('') + line({ type: 'context.undo', count: 1 }));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const, workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 5 };
+      expect((await archive.search(request)).items.map((item) => item.turn)).toEqual([0]);
+      await appendFile(wirePath, line({ type: 'context.clear' }));
+      expect((await archive.search(request)).items).toEqual([]);
+      await appendFile(wirePath, line({ type: 'turn.prompt', turnId: 0, promptId: 'replacement', time: 5000,
+        input: [{ type: 'text', text: 'needle replacement' }] }));
+      const replaced = await archive.search(request);
+      expect(replaced.items).toMatchObject([{ turn: 0, time: 5000 }]);
+      expect((await archive.readRef?.(replaced.items[0]!.ref!))).toMatchObject({ status: 'ok', text: 'needle replacement' });
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 

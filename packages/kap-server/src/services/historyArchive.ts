@@ -19,6 +19,7 @@ import { SearchWorkerError } from '../search/worker/host';
 import { makeSnippet } from '../search/snippet';
 import { matchHistoryText, planHistoryQuery } from './history/historyQuery';
 import type { HistoryLocatorStore } from './history/historyLocatorStore';
+import { decodeHistorySortedCursor } from './history/historySortedSearch';
 import type {
   BoundedTranscriptSnapshot,
   TranscriptColdReadLimits,
@@ -195,6 +196,39 @@ function parseScanCursor(value: string | undefined): ScanCursor | undefined {
 }
 
 async function navigationSearch(transcript: TranscriptService, nav: HistoryLocatorStore,
+  input: FallbackInput, pageToken?: string, signal?: AbortSignal): Promise<HistorySearchPage> {
+  let version: unknown;
+  if (pageToken !== undefined) {
+    try { version = (JSON.parse(Buffer.from(pageToken, 'base64url').toString('utf8')) as { v?: unknown })?.v; }
+    catch { throw new Error('invalid_scan_cursor'); }
+  }
+  if (!nav.supportsSortedSearch || version === 1) {
+    const page = await legacyNavigationSearch(transcript, nav, input, pageToken, signal);
+    return { ...page, warning: 'Legacy transcript scans use source order rather than sort; restart without cursor for sorted navigation.',
+      coverage: page.coverage === undefined ? undefined : { ...page.coverage,
+        gaps: [...(page.coverage.gaps ?? []), 'legacy_source_order'] } };
+  }
+  const cursor = pageToken === undefined ? undefined : decodeHistorySortedCursor(pageToken);
+  const scan = await nav.scan(input.sessionId!, input.agentId!, signal, {
+    query: input.query, mode: input.mode ?? 'auto', role: input.role, after: input.after, before: input.before,
+    sort: input.sort ?? 'relevance', pageSize: input.pageSize, orderedCursor: cursor,
+  });
+  if (scan === undefined) return { items: [], hasMore: false, source: 'fallback',
+    indexState: { state: 'unavailable' }, incomplete: 'source_missing',
+    coverage: { complete: false, domain: 'full_text', gaps: ['source_missing'] } };
+  const next = scan.orderedNext === undefined ? undefined : Buffer.from(JSON.stringify(scan.orderedNext)).toString('base64url');
+  const gaps = [...new Set([...(scan.gaps ?? []), scan.complete ? undefined : scan.incompleteReason]
+    .filter((gap): gap is string => gap !== undefined))];
+  return { items: scan.hits ?? [], hasMore: next !== undefined, pageToken: next,
+    source: 'fallback', continuation: next === undefined ? undefined : 'scan', incomplete: scan.incompleteReason,
+    coverage: { complete: scan.complete, domain: 'full_text', gaps, scanned: { bytes: scan.bytesRead, records: scan.recordsRead } },
+    warning: gaps.includes('page_local_relevance') ? 'Transcript relevance ranks only this page; continuation scans newest-first and may find stronger matches.' : undefined,
+    indexState: { state: 'unavailable', stale: true, degraded: SEARCH_INDEX_UNAVAILABLE },
+    fallback: { reason: SEARCH_INDEX_UNAVAILABLE, scope: 'requested_session_wire', maxBytes: 8 << 20,
+      maxRecords: 50_000, bytesRead: scan.bytesRead, recordsRead: scan.recordsRead, truncated: !scan.complete } };
+}
+
+async function legacyNavigationSearch(transcript: TranscriptService, nav: HistoryLocatorStore,
   input: FallbackInput, pageToken?: string, signal?: AbortSignal): Promise<HistorySearchPage> {
   signal?.throwIfAborted();
   const location = await transcript.historyWireLocation(input.sessionId!, input.agentId!);
