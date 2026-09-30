@@ -1554,20 +1554,18 @@ fn desktop_space_statuses(manager: State<'_, SpaceBackendManager>) -> Result<Vec
 
 #[tauri::command]
 fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32) -> Result<(), String> {
-    let (space, total) = {
+    let total = {
         let mut state = manager.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
         state.unread_count = n as usize;
-        let space = state.slots.get(&state.active).ok_or("Active space is unavailable")?.0.clone();
-        (space, combined_space_attention(state.unread_count, &state.active, &state.attention))
+        combined_space_attention(state.unread_count, &state.active, &state.attention)
     };
-    set_unread_overlay(&app, &space, total);
+    set_unread_overlay(&app, total);
     Ok(())
 }
 
 #[cfg(windows)]
-fn space_overlay_icon(space: &DesktopSpace, pending: usize) -> Option<Image<'static>> {
-    let rgb = space_badge::space_rgb(space.color.as_deref());
-    let rgba = space_badge::render(space.home_id == "main", rgb, pending)?;
+fn unread_overlay_icon(pending: usize) -> Option<Image<'static>> {
+    let rgba = space_badge::render(pending)?;
     Some(Image::new_owned(rgba, space_badge::OVERLAY_SIZE, space_badge::OVERLAY_SIZE))
 }
 
@@ -1576,14 +1574,12 @@ fn combined_space_attention(current: usize, active: &str, attention: &HashMap<St
         .fold(current, |sum, (_, sessions)| sum.saturating_add(sessions.len()))
 }
 
-fn set_unread_overlay(app: &AppHandle, space: &DesktopSpace, total: usize) {
+fn set_unread_overlay(app: &AppHandle, total: usize) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(windows)]
-        let _ = window.set_overlay_icon(space_overlay_icon(space, total));
+        let _ = window.set_overlay_icon(unread_overlay_icon(total));
         #[cfg(not(windows))]
         let _ = window.set_badge_count((total > 0).then_some(total.min(i64::MAX as usize) as i64));
-        #[cfg(not(windows))]
-        let _ = space;
     }
 }
 
@@ -1594,7 +1590,7 @@ fn set_space_identity(app: &AppHandle, space: &DesktopSpace) {
         if let Some(manager) = app.try_state::<SpaceBackendManager>() {
             if let Ok(state) = manager.inner.lock() {
                 let total = combined_space_attention(state.unread_count, &state.active, &state.attention);
-                set_unread_overlay(app, space, total);
+                set_unread_overlay(app, total);
             }
         }
     }

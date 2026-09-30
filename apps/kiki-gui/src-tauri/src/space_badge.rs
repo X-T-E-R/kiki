@@ -1,29 +1,16 @@
-//! Taskbar overlay for the active space: a round, anti-aliased dot in the
-//! space's colour, ringed so it separates from any taskbar ground, and — when
-//! something waits on the user — a round count badge in the top-right corner.
+//! Taskbar overlay showing only a round pending-count badge in the top-right
+//! corner. Every space keeps the plain app icon when nothing waits on the user.
 //!
 //! Drawn at 32×32 (Windows scales the overlay to the small-icon size, and at
 //! 150 % / 200 % DPI it shows at 24 / 32 px, where a 16 px source goes soft).
 //! Shapes are 4×4 supersampled for coverage; the digits are a 5×7 pixel font
 //! placed on whole pixels so they stay crisp instead of being smoothed away.
 
-/// Token A ink-blue (`--color-selected-ink`): the dot for a space without a colour.
-pub const DEFAULT_SPACE_RGB: [u8; 3] = [0x1d, 0x4d, 0x6d];
 /// Token A attention vermilion (`--color-attention`): the "needs you" badge.
 const BADGE_RGB: [u8; 3] = [0xb3, 0x3a, 0x12];
 const RING_RGB: [u8; 3] = [0xff, 0xff, 0xff];
 const SIZE: usize = 32;
 const SAMPLES: usize = 4;
-
-/// Parse `#rrggbb`; anything else falls back to the default ink-blue.
-pub fn space_rgb(color: Option<&str>) -> [u8; 3] {
-    color
-        .and_then(|value| value.strip_prefix('#'))
-        .filter(|value| value.len() == 6)
-        .and_then(|value| u32::from_str_radix(value, 16).ok())
-        .map(|value| [(value >> 16) as u8, (value >> 8) as u8, value as u8])
-        .unwrap_or(DEFAULT_SPACE_RGB)
-}
 
 /// A filled circle in pixel coordinates (centre, radius).
 #[derive(Clone, Copy)]
@@ -102,32 +89,21 @@ fn stamp(rgba: &mut [u8], glyph: &[u8; 7], left: usize, top: usize, width: usize
     }
 }
 
-/// The overlay as 32×32 RGBA, or `None` when there is nothing to show (the
-/// main space with nothing pending keeps the plain app icon).
-pub fn render(is_main: bool, rgb: [u8; 3], pending: usize) -> Option<Vec<u8>> {
-    if is_main && pending == 0 {
+/// The pending-count overlay as 32×32 RGBA, or `None` when nothing is pending.
+pub fn render(pending: usize) -> Option<Vec<u8>> {
+    if pending == 0 {
         return None;
     }
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    if !is_main {
-        // Space dot: a white ring 2 px wide around the colour, so a dark space
-        // colour still reads on a dark taskbar and a light one on a light bar.
-        paint(&mut rgba, Circle { cx: 16.0, cy: 16.0, r: 15.0 }, RING_RGB);
-        paint(&mut rgba, Circle { cx: 16.0, cy: 16.0, r: 12.5 }, rgb);
-    }
-    if pending > 0 {
-        // Count badge, top-right, ringed the same way so it cuts cleanly into
-        // the dot beneath it.
-        let (cx, cy) = (22.0, 10.0);
-        paint(&mut rgba, Circle { cx, cy, r: 10.0 }, RING_RGB);
-        paint(&mut rgba, Circle { cx, cy, r: 8.5 }, BADGE_RGB);
-        if pending > 9 {
-            // "9+": the nine and a narrow plus, centred as one 9-px word.
-            stamp(&mut rgba, &GLYPHS[9], 17, 7, 5);
-            stamp(&mut rgba, &GLYPHS[10], 22, 7, 5);
-        } else {
-            stamp(&mut rgba, &GLYPHS[pending], 20, 7, 5);
-        }
+    let (cx, cy) = (22.0, 10.0);
+    paint(&mut rgba, Circle { cx, cy, r: 10.0 }, RING_RGB);
+    paint(&mut rgba, Circle { cx, cy, r: 8.5 }, BADGE_RGB);
+    if pending > 9 {
+        // "9+": the nine and a narrow plus, centred as one 9-px word.
+        stamp(&mut rgba, &GLYPHS[9], 17, 7, 5);
+        stamp(&mut rgba, &GLYPHS[10], 22, 7, 5);
+    } else {
+        stamp(&mut rgba, &GLYPHS[pending], 20, 7, 5);
     }
     Some(rgba)
 }
@@ -144,38 +120,37 @@ mod tests {
     }
 
     #[test]
-    fn main_space_without_pending_keeps_the_plain_icon() {
-        assert!(render(true, DEFAULT_SPACE_RGB, 0).is_none());
-        assert!(render(true, DEFAULT_SPACE_RGB, 3).is_some());
+    fn no_pending_keeps_the_plain_icon_in_every_space() {
+        assert!(render(0).is_none());
+        assert!(render(3).is_some());
     }
 
     #[test]
-    fn a_space_without_a_colour_takes_token_a_ink_blue() {
-        assert_eq!(space_rgb(None), DEFAULT_SPACE_RGB);
-        assert_eq!(space_rgb(Some("nope")), DEFAULT_SPACE_RGB);
-        assert_eq!(space_rgb(Some("#0f766e")), [0x0f, 0x76, 0x6e]);
-    }
-
-    #[test]
-    fn the_dot_is_round_ringed_and_anti_aliased() {
-        let rgba = render(false, [0x0f, 0x76, 0x6e], 0).unwrap();
-        // Corners are empty: a circle, not a square.
-        assert_eq!(pixel(&rgba, 0, 0)[3], 0);
-        assert_eq!(pixel(&rgba, 31, 31)[3], 0);
-        // The centre is the space colour, fully opaque.
-        assert_eq!(pixel(&rgba, 16, 16), [0x0f, 0x76, 0x6e, 255]);
-        // The ring is white just inside the rim.
-        assert_eq!(pixel(&rgba, 16, 2), [255, 255, 255, 255]);
-        // The rim has partial alpha somewhere: edges are smoothed.
+    fn only_the_round_ringed_count_badge_is_painted() {
+        let rgba = render(3).unwrap();
+        assert_eq!(rgba.len(), OVERLAY_SIZE as usize * OVERLAY_SIZE as usize * 4);
+        for y in 0..SIZE {
+            for x in 0..12 {
+                assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0]);
+            }
+        }
+        for y in 20..SIZE {
+            for x in 0..SIZE {
+                assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0]);
+            }
+        }
+        assert_eq!(pixel(&rgba, 31, 0)[3], 0);
+        assert_eq!(pixel(&rgba, 22, 0), [255, 255, 255, 255]);
         assert!((0..SIZE).any(|x| { let a = pixel(&rgba, x, 1)[3]; a > 0 && a < 255 }));
     }
 
     #[test]
     fn counts_cap_at_nine_plus_and_draw_white_digits_on_the_badge() {
-        let one = render(false, DEFAULT_SPACE_RGB, 1).unwrap();
-        let many = render(false, DEFAULT_SPACE_RGB, 42).unwrap();
+        let one = render(1).unwrap();
+        let many = render(42).unwrap();
         assert_ne!(one, many);
-        assert_eq!(render(false, DEFAULT_SPACE_RGB, 10), render(false, DEFAULT_SPACE_RGB, 99));
+        assert_eq!(render(10), render(99));
+        assert_eq!(render(10), render(usize::MAX));
         // Badge ground at its edge is the attention colour.
         assert_eq!(&pixel(&one, 15, 10)[..3], &BADGE_RGB);
         // A white digit pixel inside the badge: the 1's stem.
@@ -188,17 +163,9 @@ mod tests {
     #[ignore]
     fn dump_variants_for_preview() {
         let Ok(dir) = std::env::var("KIKI_BADGE_DUMP") else { return };
-        let variants: [(&str, bool, [u8; 3], usize); 7] = [
-            ("space-default", false, DEFAULT_SPACE_RGB, 0),
-            ("space-teal", false, space_rgb(Some("#0f766e")), 0),
-            ("space-stone", false, space_rgb(Some("#78716c")), 0),
-            ("space-teal-3", false, space_rgb(Some("#0f766e")), 3),
-            ("space-purple-9plus", false, space_rgb(Some("#7e22ce")), 27),
-            ("main-1", true, DEFAULT_SPACE_RGB, 1),
-            ("main-7", true, DEFAULT_SPACE_RGB, 7),
-        ];
-        for (name, main, rgb, pending) in variants {
-            let rgba = render(main, rgb, pending).unwrap();
+        let variants = [("pending-1", 1), ("pending-3", 3), ("pending-7", 7), ("pending-9plus", 27)];
+        for (name, pending) in variants {
+            let rgba = render(pending).unwrap();
             std::fs::write(format!("{dir}/{name}.rgba"), rgba).unwrap();
         }
     }
