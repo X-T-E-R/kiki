@@ -24,6 +24,16 @@ export const listWorkspacesResponseSchema = z.object({
 });
 export type ListWorkspacesResponse = z.infer<typeof listWorkspacesResponseSchema>;
 
+export const inspectWorkspaceRequestSchema = z.object({
+  root: z.string().min(1),
+});
+export type InspectWorkspaceRequest = z.infer<typeof inspectWorkspaceRequestSchema>;
+
+export const inspectWorkspaceResponseSchema = z.object({
+  isGit: z.boolean(),
+});
+export type InspectWorkspaceResponse = z.infer<typeof inspectWorkspaceResponseSchema>;
+
 export const createWorkspaceRequestSchema = workspaceCreateSchema;
 export type CreateWorkspaceRequest = z.infer<typeof createWorkspaceRequestSchema>;
 

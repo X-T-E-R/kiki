@@ -59,7 +59,7 @@ function referenced(): Session {
 
 const workspace: Workspace = {
   id: 'wd_kiki', root: 'C:/src/kiki', name: 'kiki', created_at: '2026-01-01T00:00:00.000Z',
-  last_opened_at: '2026-01-01T00:00:00.000Z', session_count: 1, pinned: false,
+  last_opened_at: '2026-01-01T00:00:00.000Z', session_count: 1, pinned: false, isGit: true,
 };
 
 beforeAll(() => {

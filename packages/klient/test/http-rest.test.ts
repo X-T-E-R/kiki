@@ -13,6 +13,19 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('inspects a workspace path through the authenticated REST facade', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: JSON.parse(String(init?.body)) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ isGit: true });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.workspaces.inspect('C:/example/project')).resolves.toEqual({ isGit: true });
+      expect(calls).toEqual([{ path: '/api/workspaces:inspect', method: 'POST', body: { root: 'C:/example/project' } }]);
+    } finally { await channel.close(); }
+  });
   it('lists room rows and sends pin, archive, rename and delete through authenticated room routes', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

@@ -17,6 +17,7 @@ const sampleWorkspace: Workspace = {
   last_opened_at: '2026-06-08T09:30:00.000Z',
   session_count: 3,
   pinned: false,
+  isGit: true,
 };
 
 describe('workspaceIdSchema', () => {

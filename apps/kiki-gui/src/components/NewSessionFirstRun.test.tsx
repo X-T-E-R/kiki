@@ -189,6 +189,7 @@ describe('WorkspacePickerFields first-run affordances', () => {
             last_opened_at: '2026-01-01T00:00:00.000Z',
             session_count: 0,
             pinned: false,
+            isGit: false,
           },
         ],
       }),
@@ -205,13 +206,13 @@ describe('WorkspacePickerFields first-run affordances', () => {
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false,
+        session_count: 0, pinned: false, isGit: false,
       },
       workspaces: [{
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false,
+        session_count: 0, pinned: false, isGit: false,
       }],
       selectWorkspace,
     }));

@@ -57,7 +57,7 @@ import { runNewSessionHandoff } from '../lib/newSessionHandoff';
 import { spaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
-import { useWorktreeAvailability } from '../lib/worktrees';
+import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
@@ -279,7 +279,11 @@ export function useNewSessionDraft({
   const worktreeRoot = cwd.trim() !== ''
     ? (isAbsoluteCwdPath(cwd.trim()) ? cwd.trim() : undefined)
     : effectiveWorkspace?.root;
-  const worktreeAvailability = useWorktreeAvailability(client, { root: worktreeRoot, remote: sshLabel !== null });
+  const worktreeAvailability = useWorktreeAvailability(client, {
+    root: worktreeRoot,
+    remote: sshLabel !== null,
+    isGit: workspaceGitState(worktreeRoot, workspaces),
+  });
   const worktree = worktreeRequested && worktreeAvailability.kind === 'ready';
 
   const configQuery = useQuery({

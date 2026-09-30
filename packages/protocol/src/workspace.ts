@@ -18,6 +18,7 @@ export const workspaceSchema = z.object({
   last_opened_at: isoDateTimeSchema,
   session_count: z.number().int().nonnegative(),
   pinned: z.boolean(),
+  isGit: z.boolean(),
 });
 
 export type Workspace = z.infer<typeof workspaceSchema>;

@@ -18,8 +18,18 @@ export const worktreeKeys = {
   all: ['worktrees'] as const,
   list: () => ['worktrees', 'list'] as const,
   inspect: (id: string) => ['worktrees', 'inspect', id] as const,
-  gitProbe: (root: string) => ['worktrees', 'git-probe', root] as const,
+  workspaceInspect: (root: string) => ['workspaces', 'inspect', root] as const,
 };
+
+export function workspaceGitState(root: string | undefined, workspaces: readonly { readonly root: string; readonly isGit: boolean }[]): boolean | undefined {
+  if (root === undefined) return undefined;
+  const pathKey = (path: string): string => {
+    const windows = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path);
+    const normalized = windows ? path.replaceAll('\\', '/').toLowerCase() : path;
+    return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
+  };
+  return workspaces.find((workspace) => pathKey(workspace.root) === pathKey(root))?.isGit;
+}
 
 type WorktreeRest = NonNullable<KikiClient['klient']['rest']>['worktrees'];
 
@@ -81,31 +91,26 @@ export type WorktreeAvailability =
   | { readonly kind: 'not-git' }
   | { readonly kind: 'remote' };
 
-/**
- * The server rejects a source that is not a Git root, and exposes no
- * "is this a repository" field on workspaces, so the probe lists the folder
- * through the host folder browser and looks for a `.git` directory. A failed
- * listing counts as unknown and hides the option: it is advisory, and the
- * create call still validates.
- */
+/** Registered roots reuse list metadata; other paths are inspected without registration. */
 export function useWorktreeAvailability(
   client: KikiClient,
-  input: { readonly root: string | undefined; readonly remote: boolean },
+  input: { readonly root: string | undefined; readonly remote: boolean; readonly isGit: boolean | undefined },
 ): WorktreeAvailability {
   const root = input.root;
-  const probe = useQuery({
-    queryKey: worktreeKeys.gitProbe(root ?? ''),
-    queryFn: async () => {
-      const listing = await client.klient.global.hostFs.browse(root);
-      return listing.entries.some((entry) => entry.name === '.git');
+  const inspection = useQuery({
+    queryKey: worktreeKeys.workspaceInspect(root ?? ''),
+    queryFn: () => {
+      const rest = client.klient.rest;
+      if (rest === undefined) throw new Error('Workspace inspection needs an HTTP connection to the server.');
+      return rest.workspaces.inspect(root!);
     },
-    enabled: root !== undefined && !input.remote,
-    staleTime: 60_000,
+    enabled: root !== undefined && input.isGit === undefined && !input.remote,
+    staleTime: 30_000,
     retry: false,
   });
   if (input.remote) return { kind: 'remote' };
   if (root === undefined) return { kind: 'hidden' };
-  // Unknown (pending, or the listing failed) shows nothing rather than guess.
-  if (probe.isPending || probe.isError) return { kind: 'hidden' };
-  return probe.data === true ? { kind: 'ready', root } : { kind: 'not-git' };
+  const isGit = input.isGit ?? (inspection.isError ? undefined : inspection.data?.isGit);
+  if (isGit === undefined) return { kind: 'hidden' };
+  return isGit ? { kind: 'ready', root } : { kind: 'not-git' };
 }

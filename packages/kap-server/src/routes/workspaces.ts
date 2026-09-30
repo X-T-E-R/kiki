@@ -7,6 +7,8 @@ import {
   type Scope,
   type Workspace,
 } from '@kiki/agent-core-v2';
+import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { IGitService } from '@kiki/agent-core-v2/app/git/git';
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
@@ -19,6 +21,8 @@ import {
   createWorkspaceRequestSchema,
   createWorkspaceResponseSchema,
   deleteWorkspaceResponseSchema,
+  inspectWorkspaceRequestSchema,
+  inspectWorkspaceResponseSchema,
   listWorkspacesResponseSchema,
   updateWorkspaceRequestSchema,
   updateWorkspaceResponseSchema,
@@ -83,6 +87,26 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<WorkspaceRouteHost['get']>[2]);
+
+  const inspectRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/workspaces::inspect',
+      body: inspectWorkspaceRequestSchema,
+      success: { data: inspectWorkspaceResponseSchema },
+      errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema } },
+      description: 'Inspect a workspace directory without registering it',
+      tags: ['workspaces'],
+    },
+    async (req, reply) => {
+      if (!isAbsolute(req.body.root)) {
+        reply.send(buildValidationEnvelope([{ path: 'root', message: 'root must be an absolute path' }], req.id));
+        return;
+      }
+      reply.send(okEnvelope({ isGit: await isGitRoot(core, req.body.root) }, req.id));
+    },
+  );
+  app.post(inspectRoute.path, inspectRoute.options, inspectRoute.handler as Parameters<WorkspaceRouteHost['post']>[2]);
 
   const createRoute = defineRoute(
     {
@@ -306,7 +330,13 @@ async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWir
     last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
     session_count: sessionCount,
     pinned: ws.pinned,
+    isGit: await isGitRoot(core, ws.root),
   };
+}
+
+async function isGitRoot(core: Scope, root: string): Promise<boolean> {
+  const worktree = await core.accessor.get(IGitService).findWorkTree(root);
+  return worktree !== null && workspaceRootKey(worktree.root) === workspaceRootKey(root);
 }
 
 function buildValidationEnvelope(

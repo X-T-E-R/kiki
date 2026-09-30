@@ -154,6 +154,7 @@ function workspace(id: string, name: string): Workspace {
     last_opened_at: '2026-01-02T00:00:00.000Z',
     session_count: 0,
     pinned: false,
+    isGit: false,
   };
 }
 

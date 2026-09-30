@@ -346,6 +346,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     workspaces: {
       list: () => transport.json('/workspaces'),
+      inspect: (root: string) => transport.json('/workspaces:inspect', {
+        method: 'POST', body: { root },
+      }),
       rename: (workspaceId: string, name: string) => transport.json(
         `/workspaces/${encodeURIComponent(workspaceId)}`,
         { method: 'PATCH', body: { name } },

@@ -2370,6 +2370,10 @@ class FixtureServer {
         skills: this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [],
       });
     }
+    if (path === '/workspaces:inspect' && method === 'POST') {
+      const root = String(body?.root ?? '').replaceAll('\\', '/').replace(/\/+$/, '');
+      return this.envelope(res, { isGit: this.gitRoots.has(root) });
+    }
     if (path === '/workspaces') {
       const items =
         this.workspaces.length > 0
@@ -2377,7 +2381,10 @@ class FixtureServer {
           : this.scenario?.data.workspaces ?? [
               { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length, pinned: false },
             ];
-      return this.envelope(res, { items });
+      return this.envelope(res, { items: items.map((workspace) => ({
+        ...workspace,
+        isGit: this.gitRoots.has(String(workspace.root).replaceAll('\\', '/').replace(/\/+$/, '')),
+      })) });
     }
     const workspaceMatch = /^\/workspaces\/([^/]+)$/.exec(path);
     if (workspaceMatch !== null && method === 'PATCH') {
@@ -2387,7 +2394,10 @@ class FixtureServer {
       }
       if (body?.name !== undefined) target.name = String(body.name);
       if (body?.pinned !== undefined) target.pinned = body.pinned === true;
-      return this.envelope(res, target);
+      return this.envelope(res, {
+        ...target,
+        isGit: this.gitRoots.has(String(target.root).replaceAll('\\', '/').replace(/\/+$/, '')),
+      });
     }
     if (workspaceMatch !== null && method === 'DELETE') {
       const index = this.workspaces.findIndex((ws) => ws.id === workspaceMatch[1]);

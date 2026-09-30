@@ -5,7 +5,7 @@
  *   worktrees: WorktreeRecord[]          // registry rows, wire shape
  *   worktreeInspections: { [id]: WorktreeInspection-without-inspectedAt }
  *   worktreeRemoveFailures: { [id]: 'failed' | 'failed_busy' }  // removal fails, checkout kept
- *   gitRoots: [absolute folder, …]       // folders the host browser lists with `.git`
+ *   gitRoots: [absolute folder, …]       // workspace roots reported as Git checkouts
  *
  * Removal follows the server's order of checks: active owner → retained_in_use,
  * a scripted failure → failed / failed_busy (state remove_failed), loss without

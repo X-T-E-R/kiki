@@ -385,6 +385,7 @@ export interface HttpRestFacade {
 
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
+    inspect(root: string): Promise<import('@kiki/protocol').InspectWorkspaceResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;
     setPinned(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').Workspace>;
     remove(workspaceId: string): Promise<{ readonly deleted: true }>;

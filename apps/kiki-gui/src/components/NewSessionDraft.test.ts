@@ -22,6 +22,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', label: null as string | null },
   client: {
     listWorkspaces: vi.fn(),
+    klient: { rest: { workspaces: { inspect: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
     listNamedAgentProfiles: vi.fn(),
@@ -61,6 +62,7 @@ beforeEach(() => {
   localStorage.clear();
   navigate.mockReset();
   client.listWorkspaces.mockReset().mockResolvedValue({ items: [] });
+  client.klient.rest.workspaces.inspect.mockReset().mockResolvedValue({ isGit: false });
   client.getConfig.mockReset().mockResolvedValue({});
   client.listModels.mockReset().mockResolvedValue({ items: [] });
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [] });
@@ -265,6 +267,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     name,
     root: `/workspace/${name.toLowerCase()}`,
     pinned: false,
+    isGit: false,
     last_opened_at: '2026-09-05T00:00:00.000Z',
     session_count: 0,
   });
@@ -297,6 +300,58 @@ describe('useNewSessionDraft agent profile scope', () => {
     await settleDraft(() => client.createSession.mock.calls.length > 0);
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
+
+  it('uses workspace Git metadata and refreshes it with the workspace list', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    const queryClient = await renderDraft();
+    let state = await settleDraft((value) => !value.workspacesLoading);
+    expect(state.worktreeAvailability).toEqual({ kind: 'not-git' });
+    expect(client.klient.rest.workspaces.inspect).not.toHaveBeenCalled();
+    client.listWorkspaces.mockResolvedValue({ items: [{ ...workspace('wd_alpha', 'Alpha'), isGit: true }] });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['workspaces'] }); });
+    state = await settleDraft((value) => value.worktreeAvailability.kind === 'ready');
+    expect(state.worktreeAvailability).toEqual({ kind: 'ready', root: '/workspace/alpha' });
+    expect(client.klient.rest.workspaces.inspect).not.toHaveBeenCalled();
+    await act(async () => { state.setCwd('/workspace/alpha/'); });
+    state = await settleDraft((value) => value.cwd === '/workspace/alpha/');
+    expect(state.worktreeAvailability.kind).toBe('ready');
+    expect(client.klient.rest.workspaces.inspect).not.toHaveBeenCalled();
+  });
+
+  it('inspects unregistered cwd on the backend and hides an unavailable result', async () => {
+    const inspection = deferred<{ isGit: boolean }>();
+    client.klient.rest.workspaces.inspect.mockReturnValue(inspection.promise);
+    const queryClient = await renderDraft();
+    let state = await settleDraft((value) => !value.workspacesLoading);
+    expect(state.worktreeAvailability.kind).toBe('hidden');
+    await act(async () => { state.setCwd('C:/example/project'); });
+    state = await settleDraft(() => client.klient.rest.workspaces.inspect.mock.calls.length > 0);
+    expect(state.worktreeAvailability.kind).toBe('hidden');
+    expect(client.klient.rest.workspaces.inspect).toHaveBeenCalledExactlyOnceWith('C:/example/project');
+    inspection.resolve({ isGit: true });
+    state = await settleDraft((value) => value.worktreeAvailability.kind === 'ready');
+    expect(state.worktreeAvailability).toEqual({ kind: 'ready', root: 'C:/example/project' });
+    client.klient.rest.workspaces.inspect.mockResolvedValue({ isGit: false });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['workspaces'] }); });
+    state = await settleDraft((value) => value.worktreeAvailability.kind === 'not-git');
+    expect(client.klient.rest.workspaces.inspect).toHaveBeenCalledTimes(2);
+    client.klient.rest.workspaces.inspect.mockRejectedValue(new Error('unavailable'));
+    await act(async () => { state.setCwd('C:/example/other'); });
+    await settleDraft(() => client.klient.rest.workspaces.inspect.mock.calls.length === 3);
+    expect(latestDraftState?.worktreeAvailability.kind).toBe('hidden');
+    expect(latestDraftState?.workspaces).toEqual([]);
+  });
+
+  it('does not inspect remote cwd', async () => {
+    scope.id = 'ssh:example';
+    scope.label = 'example';
+    await renderDraft();
+    let state = await settleDraft((value) => !value.workspacesLoading);
+    await act(async () => { state.setCwd('/home/example/project'); });
+    state = await settleDraft((value) => value.cwd === '/home/example/project');
+    expect(state.worktreeAvailability.kind).toBe('remote');
+    expect(client.klient.rest.workspaces.inspect).not.toHaveBeenCalled();
+  });
 
   it('uses unscoped profiles and creates without a target on first run', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();

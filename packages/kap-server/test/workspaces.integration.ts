@@ -30,6 +30,7 @@ interface WorkspaceWire {
   last_opened_at: string;
   session_count: number;
   pinned: boolean;
+  isGit: boolean;
 }
 
 interface ListWire {
@@ -122,6 +123,47 @@ describe('server-v2 /api/workspaces', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
     expect(Number.isNaN(Date.parse(body.data.last_opened_at))).toBe(false);
     expect(body.data.pinned).toBe(false);
+    expect(body.data.isGit).toBe(false);
+  });
+
+  it('refreshes Git status on list and update without re-registering the workspace', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
+    expect(created.body.data.isGit).toBe(false);
+    const marker = join(root, '.git');
+    await mkdir(marker);
+    const listed = await getJson<ListWire>('/api/workspaces');
+    expect(listed.body.data.items.find((workspace) => workspace.id === created.body.data.id)?.isGit).toBe(true);
+    const updated = await patchJson<WorkspaceWire>(`/api/workspaces/${created.body.data.id}`, { name: 'renamed' });
+    expect(updated.body.data.isGit).toBe(true);
+    await rm(marker, { recursive: true });
+    const refreshed = await getJson<ListWire>('/api/workspaces');
+    expect(refreshed.body.data.items.find((workspace) => workspace.id === created.body.data.id)?.isGit).toBe(false);
+  });
+
+  it('inspects unregistered roots and Git pointers without creating catalog entries', async () => {
+    const root = join(home as string, 'checkout');
+    await mkdir(root);
+    const inspect = () => postJson<{ isGit: boolean }>('/api/workspaces:inspect', { root });
+    expect((await inspect()).body.data.isGit).toBe(false);
+    await writeFile(join(root, '.git'), 'gitdir: ../control\n');
+    expect((await inspect()).body.data.isGit).toBe(true);
+    const child = join(root, 'src');
+    await mkdir(child);
+    const nested = await postJson<{ isGit: boolean }>('/api/workspaces:inspect', { root: child });
+    expect(nested.body.data.isGit).toBe(false);
+    await writeFile(join(root, '.git'), 'not a git pointer');
+    expect((await inspect()).body.data.isGit).toBe(false);
+    const missing = await postJson<{ isGit: boolean }>('/api/workspaces:inspect', { root: join(root, 'missing') });
+    expect(missing.body.data.isGit).toBe(false);
+    const listed = await getJson<ListWire>('/api/workspaces');
+    expect(listed.body.data.items).toHaveLength(0);
+  });
+
+  it('rejects relative paths on inspection', async () => {
+    const result = await postJson<null>('/api/workspaces:inspect', { root: 'relative/path' });
+    expect(result.body.code).toBe(40001);
+    expect(result.body.details?.[0]?.path).toBe('root');
   });
 
   it('derives the default name from the root when name is omitted', async () => {

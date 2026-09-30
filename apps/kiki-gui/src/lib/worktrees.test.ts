@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorktreeInspection, WorktreeRecord } from '@kiki/protocol';
 
-import { hasLoss, sameInspection, visibleWorktrees, worktreeLoss } from './worktrees';
+import { hasLoss, sameInspection, visibleWorktrees, worktreeLoss, workspaceGitState } from './worktrees';
 
 const clean: WorktreeInspection = {
   inspectedAt: 1, failed: false, dirtyFiles: 0, untrackedFiles: 0, aheadOfBase: 0, unpushedCommits: 0, ignoredNonDisposable: [],
@@ -41,5 +41,16 @@ describe('visibleWorktrees', () => {
   it('drops removed rows and puts the most recently changed first', () => {
     const rows = visibleWorktrees([record('a', 'ready', 1), record('b', 'removed', 5), record('c', 'remove_failed', 3)]);
     expect(rows.map((row) => row.id)).toEqual(['c', 'a']);
+  });
+});
+
+describe('workspaceGitState', () => {
+  it('uses registered metadata with Windows case and separator equivalence', () => {
+    const workspaces = [{ root: 'C:\\Example\\Project', isGit: true }, { root: '/example/plain', isGit: false }];
+    expect(workspaceGitState('c:/example/project/', workspaces)).toBe(true);
+    expect(workspaceGitState('/example/plain/', workspaces)).toBe(false);
+    expect(workspaceGitState('/example/Plain', workspaces)).toBeUndefined();
+    expect(workspaceGitState('/unregistered', workspaces)).toBeUndefined();
+    expect(workspaceGitState(undefined, workspaces)).toBeUndefined();
   });
 });
