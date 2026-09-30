@@ -23,7 +23,7 @@ import type { ExecutorPromptDraft } from './executorPromptDraft';
 import { AliasChips, EffortPicker, Field, ModelPicker, Section } from './fields';
 import { ModelProfilesField } from './ModelProfilesField';
 import {
-  changedFields, draftFromProfile, draftProblems, EFFORTS, EMPTY_SPAWN_CONSTRAINTS, isExternalExecutor, patchBody, spawnConstraintsSet,
+  changedFields, draftFromProfile, draftProblems, EFFORTS, EMPTY_SPAWN_CONSTRAINTS, isExternalExecutor, kikiSubagentsApplicable, patchBody, spawnConstraintsSet,
   type ProfileDraft, type SpawnConstraintsDraft, type ToolFieldMode, type ToolFieldValue,
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
@@ -217,6 +217,14 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       <Toggle layout="row" label={t('st.profiles.mainToggle')} checked={draft.main} disabled={disabled} onChange={(value) => set('main', value)} />
       <p className="text-[11.5px] leading-snug text-ink-faint">{t(draft.main ? 'st.profiles.mainOnHint' : 'st.profiles.mainOffHint')}</p>
     </div>
+    {kikiSubagentsApplicable(draft) ? <div data-profile-field="allowKikiSubagents" className="space-y-1">
+      <Toggle layout="row" label={t('st.profiles.kikiSubagents')} checked={draft.allowKikiSubagents} disabled={disabled}
+        onChange={(value) => set('allowKikiSubagents', value)} />
+      <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.kikiSubagentsHint', { engine })}</p>
+      {draft.allowKikiSubagents && draft.executor === 'codex-app-server' ? <p data-kiki-subagents-codex className="text-[11.5px] leading-snug text-amber-ink">
+        {t('st.profiles.kikiSubagentsCodex')}
+      </p> : null}
+    </div> : null}
     <div>
       <Section title={t('st.executorPrompt.title')} dataSection="executor-prompt" defaultOpen={external}
         count={executorPromptCount(draft.executorPrompt)}

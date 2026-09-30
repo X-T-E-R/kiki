@@ -54,6 +54,8 @@ export interface ProfileDraft {
   readonly main: boolean;
   /** '' = native (field absent). */
   readonly executor: string;
+  /** External main only: inject the Kiki MCP bridge so the engine can dispatch Kiki subagents. */
+  readonly allowKikiSubagents: boolean;
   readonly modelAlias: string;
   readonly effort: string;
   readonly allowedModels: readonly string[];
@@ -112,6 +114,15 @@ export function isExternalExecutor(executor: string | undefined): boolean {
   return executor !== undefined && executor !== '' && executor !== 'native';
 }
 
+/** Whether the draft's Kiki-subagents switch applies: only an external engine running as main. */
+export function kikiSubagentsApplicable(draft: Pick<ProfileDraft, 'executor' | 'main'>): boolean {
+  return draft.main && isExternalExecutor(draft.executor);
+}
+
+function kikiSubagentsEffective(draft: ProfileDraft): boolean {
+  return draft.allowKikiSubagents && kikiSubagentsApplicable(draft);
+}
+
 export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
   const subagents = profile.subagents;
   return {
@@ -120,6 +131,7 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     prompt: profile.prompt ?? '',
     main: profile.main,
     executor: isExternalExecutor(profile.executor) ? profile.executor! : '',
+    allowKikiSubagents: profile.allow_kiki_subagents === true,
     modelAlias: profile.pinned_model_alias ?? '',
     effort: profile.thinking_effort ?? '',
     allowedModels: profile.allowed_models ?? [],
@@ -181,6 +193,14 @@ export function patchBody(
   if (changed.has('prompt')) body.prompt = draft.prompt;
   if (changed.has('main')) body.main = draft.main;
   if (changed.has('executor')) body.executor = textOrNull(draft.executor);
+  // Off deletes the key: an absent flag and `false` keep the same binding
+  // fingerprint. The flag only means something on an external main, so a
+  // draft that stops being one clears it instead of saving a binding the
+  // engine would refuse.
+  const kikiSubagents = kikiSubagentsEffective(draft);
+  if (kikiSubagents !== kikiSubagentsEffective(baseline) || (changed.has('allowKikiSubagents') && kikiSubagents !== (profile.allow_kiki_subagents === true))) {
+    body.allow_kiki_subagents = kikiSubagents ? true : null;
+  }
   if (changed.has('modelAlias')) body.pinned_model_alias = textOrNull(draft.modelAlias);
   if (changed.has('effort')) body.thinking_effort = textOrNull(draft.effort);
   if (changed.has('allowedModels')) body.allowed_models = listOrNull(draft.allowedModels);

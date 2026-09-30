@@ -25,3 +25,29 @@ describe('profile draft subagent_policy', () => {
     expect(patchBody(base, unset, { ...unset, subagentPolicy: 'strict' }).subagent_policy).toBe('strict');
   });
 });
+
+describe('profile draft allow_kiki_subagents', () => {
+  const lead: NamedAgentProfile = { ...base, main: true, executor: 'claude-acp' };
+
+  it('writes true to enable and null to disable, never false', () => {
+    const baseline = draftFromProfile(lead);
+    expect(baseline.allowKikiSubagents).toBe(false);
+    expect(patchBody(lead, baseline, { ...baseline, allowKikiSubagents: true }).allow_kiki_subagents).toBe(true);
+    const on = { ...lead, allow_kiki_subagents: true };
+    const onDraft = draftFromProfile(on);
+    expect(patchBody(on, onDraft, { ...onDraft, allowKikiSubagents: false }).allow_kiki_subagents).toBeNull();
+    expect('allow_kiki_subagents' in patchBody(on, onDraft, onDraft)).toBe(false);
+  });
+
+  it('clears the flag when the profile stops being an external main', () => {
+    const on = { ...lead, allow_kiki_subagents: true };
+    const draft = draftFromProfile(on);
+    expect(patchBody(on, draft, { ...draft, main: false }).allow_kiki_subagents).toBeNull();
+    expect(patchBody(on, draft, { ...draft, executor: '' }).allow_kiki_subagents).toBeNull();
+  });
+
+  it('does not write the flag for a native or subagent profile', () => {
+    const native = draftFromProfile({ ...base, main: true });
+    expect('allow_kiki_subagents' in patchBody({ ...base, main: true }, native, { ...native, allowKikiSubagents: true })).toBe(false);
+  });
+});
