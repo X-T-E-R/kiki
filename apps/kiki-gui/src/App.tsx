@@ -350,7 +350,7 @@ export function App() {
     () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
     [sessionsQuery.data],
   );
-  const conversations = useConversationList(sessions, layoutPrefs.sortBy);
+  const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
   const sessionGroups = useMemo<readonly SessionGroup[]>(() => {
     const sorted = sortSessionItems(filterSessions(sessions, listFilters), layoutPrefs.sortBy);
     const nowMs = Date.now();

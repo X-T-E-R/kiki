@@ -400,7 +400,7 @@ export function Sidebar({
   const activity = useSessionActivity(sessions);
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
-  const inbox = useMemo(() => buildConversationInbox(sessions, rooms, seen), [sessions, rooms, seen]);
+  const inbox = useMemo(() => buildConversationInbox(sessions, rooms, seen, workspaceOptions), [sessions, rooms, seen, workspaceOptions]);
   // Blocked-only keeps the "needs you" wording; once finished runs are in the
   // count too, the label says "new items" instead of overstating urgency.
   const activityLabel = inbox.total === 0

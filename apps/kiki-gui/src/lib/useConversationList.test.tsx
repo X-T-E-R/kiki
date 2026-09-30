@@ -32,8 +32,8 @@ afterEach(async () => {
 const room: RoomListItem = { kind: 'room', id: 'example', title: 'Room', workspace: 'room-workspace', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-03T00:00:00Z', lastSeq: 2, memberCount: 2, busy: false, needsYou: false, pendingInteraction: 'none', failed: false, pinned: false, archived: false };
 const sessions = [{ id: 'session_example', title: 'Thread', metadata: { cwd: '/example' }, workspace_id: 'thread-workspace', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', busy: false, last_seq: 1 }] as Session[];
 function List() {
-  const { items, roomsQuery } = useConversationList(sessions);
-  return <div data-error={roomsQuery.isError}>{items.map((item) => <span key={item.key}>{item.key}:{item.unread_count};</span>)}</div>;
+  const { items, roomsQuery } = useConversationList(sessions, 'updated-desc', [{ id: 'room-workspace', root: '/rooms' }]);
+  return <div data-error={roomsQuery.isError}>{items.map((item) => <span key={item.key} data-workspace={item.workspace_id}>{item.key}:{item.unread_count};</span>)}</div>;
 }
 async function mount(content: React.ReactNode) {
   const container = document.createElement('div');
@@ -50,9 +50,10 @@ async function mount(content: React.ReactNode) {
 
 describe('conversation source', () => {
   it('returns rooms mixed with threads and responds to the shared read store and deletion event', async () => {
-    mock.listItems.mockResolvedValue([room]);
+    mock.listItems.mockResolvedValue([{ ...room, workspace: '/rooms' }]);
     const container = await mount(<List />);
     expect(container.textContent).toBe('room:example:2;session:session_example:1;');
+    expect(container.querySelector('[data-workspace="room-workspace"]')?.textContent).toBe('room:example:2;');
     expect(mock.on).toHaveBeenCalledWith('room.changed', expect.any(Function));
     await act(async () => { markRoomSeen(room.id, room.lastSeq); });
     expect(container.textContent).toBe('room:example:0;session:session_example:1;');

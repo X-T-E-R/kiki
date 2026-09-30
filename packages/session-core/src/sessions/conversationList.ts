@@ -20,8 +20,24 @@ export type ConversationListItem = ConversationFields & (
   | { readonly kind: 'room'; readonly room: RoomListItem; readonly member_count: number }
 );
 
+export type ConversationWorkspace = Pick<Workspace, 'id'> & Partial<Pick<Workspace, 'root'>>;
+
+/** Resolve the room's own workspace reference, never a member thread's workspace. */
+export function roomWorkspaceId(workspace: string, workspaces: readonly ConversationWorkspace[]): string {
+  const byId = workspaces.find((entry) => entry.id === workspace);
+  if (byId !== undefined) return byId.id;
+  const key = workspacePathKey(workspace);
+  return workspaces.find((entry) => entry.root !== undefined && workspacePathKey(entry.root) === key)?.id ?? workspace;
+}
+
+function workspacePathKey(root: string): string {
+  const windows = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(root);
+  const path = windows ? root.replaceAll('\\', '/').toLowerCase() : root;
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
+}
+
 /** Merge only loaded thread pages with room summaries; preserve the session cursor separately. */
-export function mergeConversationItems(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, order: SessionSortOrder = 'updated-desc'): ConversationListItem[] {
+export function mergeConversationItems(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []): ConversationListItem[] {
   const threads: ConversationListItem[] = sessions.map((session) => ({
     ...session, kind: 'session', session, key: `session:${session.id}`, href: `/s/${session.id}`,
     unread_count: Math.max(0, session.last_seq - (seen[session.id] ?? 0)),
@@ -30,7 +46,7 @@ export function mergeConversationItems(sessions: readonly Session[], rooms: read
   }));
   const roomItems: ConversationListItem[] = rooms.map((room) => ({
     kind: 'room', room, id: room.id, key: roomSeenKey(room.id), href: roomRefLink(room.id),
-    title: room.title, workspace_id: room.workspace, created_at: room.createdAt, updated_at: room.updatedAt,
+    title: room.title, workspace_id: roomWorkspaceId(room.workspace, workspaces), created_at: room.createdAt, updated_at: room.updatedAt,
     metadata: { cwd: '', [SESSION_PIN_META_KEY]: room.pinned }, archived: room.archived,
     busy: room.busy, pending_interaction: room.pendingInteraction,
     last_seq: room.lastSeq, unread_count: roomUnreadCount(room.id, room.lastSeq, seen),
@@ -49,7 +65,10 @@ export function groupConversationItems(items: readonly ConversationListItem[], o
   readonly labels?: TimeGroupLabels;
   readonly ungroupedLabel?: string;
 }): SessionGroup<ConversationListItem>[] {
-  const visible = filterSessions(items, { ...options.filters, status: [] }).filter((item) =>
+  const resolved = items.map((item) => item.kind === 'room'
+    ? { ...item, workspace_id: roomWorkspaceId(item.room.workspace, options.workspaces) }
+    : item);
+  const visible = filterSessions(resolved, { ...options.filters, status: [] }).filter((item) =>
     options.filters.status.length === 0 || options.filters.status.includes(item.needs_you ? 'needs-me' : item.busy ? 'running' : 'idle'));
   const sorted = sortSessionItems(visible, options.order ?? 'updated-desc');
   if (options.groupBy === 'time') return groupSessionsByTime(sorted, options.nowMs, options.labels);
@@ -57,9 +76,9 @@ export function groupConversationItems(items: readonly ConversationListItem[], o
   return sorted.length === 0 ? [] : [{ key: 'all', label: '', items: sorted }];
 }
 
-export function buildConversationInbox(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap) {
+export function buildConversationInbox(sessions: readonly Session[], rooms: readonly RoomListItem[], seen: SessionSeenMap, workspaces: readonly ConversationWorkspace[] = []) {
   const roomSources: InboxSource[] = rooms.map((room) => ({
-    id: roomSeenKey(room.id), roomId: room.id, title: room.title, workspace_id: room.workspace,
+    id: roomSeenKey(room.id), roomId: room.id, title: room.title, workspace_id: roomWorkspaceId(room.workspace, workspaces),
     updated_at: room.updatedAt, last_seq: room.lastSeq, archived: room.archived, busy: room.busy,
     pending_interaction: room.pendingInteraction, needsYouReason: room.needsYou && room.pendingInteraction === 'none' ? 'budget' : undefined,
     last_turn_reason: room.failed ? 'failed' : 'completed',

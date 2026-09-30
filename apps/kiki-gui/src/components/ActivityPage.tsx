@@ -182,7 +182,7 @@ function InboxGroup({
 export interface ActivityPageProps {
   readonly sessions: readonly Session[];
   readonly rooms?: readonly RoomListItem[];
-  readonly workspaceOptions: readonly { readonly id: string; readonly name: string }[];
+  readonly workspaceOptions: readonly { readonly id: string; readonly name: string; readonly root?: string }[];
   readonly onToggleSidebar: () => void;
 }
 
@@ -190,7 +190,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const seen = useSessionSeen();
-  const model = useMemo(() => buildConversationInbox(sessions, rooms, seen), [sessions, rooms, seen]);
+  const model = useMemo(() => buildConversationInbox(sessions, rooms, seen, workspaceOptions), [sessions, rooms, seen, workspaceOptions]);
   const workspaceNames = useMemo(
     () => new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name])),
     [workspaceOptions],

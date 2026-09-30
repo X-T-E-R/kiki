@@ -310,7 +310,7 @@ Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首�
 
 ### 房间会话条目
 
-`GET /api/rooms/items` 独立于分页会话列表返回房间摘要。每条包含 `kind: "room"`、`id`、`title`、`workspace`、ISO 时间 `createdAt` / `updatedAt`、`lastSeq`、`memberCount`、`busy`、`needsYou`、`pendingInteraction`（`none`、`approval` 或 `question`）、`failed`、`pinned` 和 `archived`。客户端按活动时间把它们与已加载的线程合并；`workspace` 是房间自己的分类工作区，不是成员的工作区。置顶条目优先排列。接口包含已归档房间，供客户端应用与线程相同的归档筛选。
+`GET /api/rooms/items` 独立于分页会话列表返回房间摘要。每条包含 `kind: "room"`、`id`、`title`、`workspace`、ISO 时间 `createdAt` / `updatedAt`、`lastSeq`、`memberCount`、`busy`、`needsYou`、`pendingInteraction`（`none`、`approval` 或 `question`）、`failed`、`pinned` 和 `archived`。客户端按活动时间把它们与已加载的线程合并。`workspace` 保留房间自己的工作区根路径，不是成员的工作区 ID；分组或筛选前，客户端根据已注册工作区的根路径解析归属。未匹配的根路径保留在未分组条目中，不借用成员的工作区。置顶条目优先排列。接口包含已归档房间，供客户端应用与线程相同的归档筛选。
 
 通过 `PATCH /api/rooms/{id}` 修改 `name`、`pinned` 或 `archived`；传 `false` 取消置顶或恢复归档。归档会取消房间排队的唤醒并停止其正在执行的房间工作，不会归档成员线程。`DELETE /api/rooms/{id}` 删除房间及其日志投影；房间不存在或补丁非法时返回 `40001`。
 

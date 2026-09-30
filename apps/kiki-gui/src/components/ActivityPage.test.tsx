@@ -61,7 +61,7 @@ async function render(sessions: readonly Session[], path = '/activity', rooms: r
           <ActivityPage
             sessions={sessions}
             rooms={rooms}
-            workspaceOptions={[{ id: 'ws-1', name: 'fixture' }, { id: 'ws-2', name: 'other' }]}
+            workspaceOptions={[{ id: 'ws-1', name: 'fixture', root: '/w' }, { id: 'ws-2', name: 'other', root: '/rooms' }]}
             onToggleSidebar={() => {}}
           />
         </I18nProvider>
@@ -99,9 +99,11 @@ describe('ActivityPage', () => {
     expect(page.querySelector('[data-activity-comms-empty]')).not.toBeNull();
   });
   it('shares mark-all-read with rooms but leaves blocked and archived rooms out of that operation', async () => {
-    const room: RoomListItem = { kind: 'room', id: 'example-room', title: 'Room', workspace: 'ws-2', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T05:00:00Z', lastSeq: 4, memberCount: 2, busy: false, needsYou: false, pendingInteraction: 'none', failed: true, pinned: false, archived: false };
+    const room: RoomListItem = { kind: 'room', id: 'example-room', title: 'Room', workspace: '/rooms', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T05:00:00Z', lastSeq: 4, memberCount: 2, busy: false, needsYou: false, pendingInteraction: 'none', failed: true, pinned: false, archived: false };
     const page = await render([session({ id: 'thread' })], '/activity', [room, { ...room, id: 'budget-room', needsYou: true }, { ...room, id: 'archived-room', archived: true }]);
     expect(page.querySelector('[data-activity-item="room:example-room"]')?.getAttribute('data-activity-reason')).toBe('failed');
+    expect(page.querySelector('[data-activity-item="room:example-room"]')?.textContent).toContain('other');
+    expect(page.querySelector('[data-activity-item="room:example-room"]')?.textContent).not.toContain('/rooms');
     expect(page.querySelector('[data-activity-item="room:budget-room"]')?.getAttribute('data-activity-reason')).toBe('budget');
     expect(page.querySelector('[data-activity-item="room:archived-room"]')).toBeNull();
     await act(async () => { page.querySelector<HTMLButtonElement>('[data-activity-mark-all-read]')!.click(); });

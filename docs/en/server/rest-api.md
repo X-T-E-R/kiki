@@ -310,7 +310,7 @@ Peer messages are no longer evicted by the mailbox's former 512-message limit. T
 
 ### Room conversation entries
 
-`GET /api/rooms/items` returns room summaries independently of the paginated session list. Each entry contains `kind: "room"`, `id`, `title`, `workspace`, ISO `createdAt` / `updatedAt`, `lastSeq`, `memberCount`, `busy`, `needsYou`, `pendingInteraction` (`none`, `approval`, or `question`), `failed`, `pinned`, and `archived`. Combine these entries with loaded sessions by activity time; `workspace` is the room's own classification, not a member's workspace. Pinned entries sort first. The endpoint includes archived rooms so clients can apply the same archive filters as threads.
+`GET /api/rooms/items` returns room summaries independently of the paginated session list. Each entry contains `kind: "room"`, `id`, `title`, `workspace`, ISO `createdAt` / `updatedAt`, `lastSeq`, `memberCount`, `busy`, `needsYou`, `pendingInteraction` (`none`, `approval`, or `question`), `failed`, `pinned`, and `archived`. Combine these entries with loaded sessions by activity time. `workspace` preserves the room's own workspace root path, not a member's workspace ID. Clients resolve it against registered workspace roots before grouping or filtering; unmatched roots stay ungrouped rather than borrowing a member's workspace. Pinned entries sort first. The endpoint includes archived rooms so clients can apply the same archive filters as threads.
 
 Use `PATCH /api/rooms/{id}` with `name`, `pinned`, or `archived`; `false` unpins or restores. Archiving cancels the room's queued wakes and stops its active room work without archiving member threads. `DELETE /api/rooms/{id}` removes the room and its log projections; missing rooms and invalid patches return `40001`.
 

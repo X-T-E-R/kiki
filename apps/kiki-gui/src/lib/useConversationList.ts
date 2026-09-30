@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
-import { mergeConversationItems, type SessionSortOrder } from '@kiki/session-core/sessions';
+import { mergeConversationItems, type ConversationWorkspace, type SessionSortOrder } from '@kiki/session-core/sessions';
 import { forgetRoomSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 import { ROOMS_QUERY_KEY } from './botRooms';
@@ -9,7 +9,7 @@ import { ROOMS_QUERY_KEY } from './botRooms';
 export const ROOM_ITEMS_QUERY_KEY = ['rooms', 'items'] as const;
 
 /** The logical sidebar source; sessions retain their independent load-more cursor. */
-export function useConversationList(sessions: readonly Session[], order: SessionSortOrder = 'updated-desc') {
+export function useConversationList(sessions: readonly Session[], order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []) {
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
@@ -32,6 +32,6 @@ export function useConversationList(sessions: readonly Session[], order: Session
     return () => { subscription.dispose(); };
   }, [client, queryClient]);
   const rooms = roomsQuery.data ?? [];
-  const items = useMemo(() => mergeConversationItems(sessions, rooms, seen, order), [sessions, rooms, seen, order]);
+  const items = useMemo(() => mergeConversationItems(sessions, rooms, seen, order, workspaces), [sessions, rooms, seen, order, workspaces]);
   return { items, rooms, roomsQuery, seen };
 }

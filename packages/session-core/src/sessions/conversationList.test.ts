@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
-import { buildConversationInbox, groupConversationItems, mergeConversationItems } from './conversationList';
+import { buildConversationInbox, groupConversationItems, mergeConversationItems, roomWorkspaceId } from './conversationList';
 import { parseConversationLink, roomRefLink } from './conversationLinks';
 import { forgetRoomSeen, markRoomSeen, markSessionSeen, resetSessionSeen, roomUnreadCount, sessionSeenSnapshot } from '../settings';
 
@@ -10,11 +10,34 @@ function room(patch: Partial<RoomListItem> = {}): RoomListItem {
 function session(patch: Partial<Session> = {}): Session {
   return { id: 'example', title: 'Thread', workspace_id: 'ws-thread', created_at: '2026-01-01T00:00:00Z', updated_at: new Date(2026, 0, 3, 10).toISOString(), metadata: { cwd: '/example' }, busy: false, last_seq: 10, ...patch } as Session;
 }
-const workspaces = [{ id: 'ws-thread', name: 'Threads' }, { id: 'ws-room', name: 'Rooms' }] as Workspace[];
+const workspaces = [{ id: 'ws-thread', name: 'Threads', root: '/example' }, { id: 'ws-room', name: 'Rooms', root: '/rooms' }] as Workspace[];
 const filters = { archived: 'hide' as const, status: [], workspaces: [] };
 afterEach(() => resetSessionSeen());
 
 describe('conversation list and read state', () => {
+  it('resolves the room own root for projections, grouping, filtering and inbox without borrowing a thread workspace', () => {
+    const rooms = [room({ workspace: '/rooms' }), room({ id: 'unknown', workspace: '/unregistered' })];
+    const items = mergeConversationItems([session()], rooms, {}, 'updated-desc', workspaces);
+    expect(items.find((item) => item.key === 'room:example')?.workspace_id).toBe('ws-room');
+    expect(items.find((item) => item.key === 'room:unknown')?.workspace_id).toBe('/unregistered');
+    expect(rooms[0]!.workspace).toBe('/rooms');
+    const unresolved = mergeConversationItems([session()], rooms, {});
+    const groups = groupConversationItems(unresolved, { groupBy: 'workspace', workspaces, filters, nowMs: 0 });
+    expect(groups.find((group) => group.key === 'ws-room')?.items.map((item) => item.key)).toEqual(['room:example']);
+    expect(groups.find((group) => group.key === '__none')?.items.map((item) => item.key)).toEqual(['room:unknown']);
+    expect(groupConversationItems(unresolved, { groupBy: 'none', workspaces, filters: { ...filters, workspaces: ['ws-room'] }, nowMs: 0 })[0]?.items.map((item) => item.key)).toEqual(['room:example']);
+    expect(groupConversationItems(unresolved, { groupBy: 'time', workspaces, filters: { ...filters, workspaces: ['ws-thread'] }, nowMs: 0 })[0]?.items.map((item) => item.key)).toEqual(['session:example']);
+    expect(buildConversationInbox([session()], rooms, {}, workspaces).unread.map((item) => [item.sessionId, item.workspaceId])).toEqual([
+      ['room:example', 'ws-room'], ['room:unknown', '/unregistered'], ['example', 'ws-thread'],
+    ]);
+  });
+  it.each([
+    ['ws-room', 'ws-room'], ['/rooms/', 'ws-room'], ['/ROOMS', '/ROOMS'], ['/rooms/nested', '/rooms/nested'],
+    ['c:/EXAMPLE/project/', 'ws-windows'], ['C:\\example\\project', 'ws-windows'],
+    ['\\\\HOST\\Share\\Project', 'ws-unc'], ['ssh://other/project', 'ssh://other/project'],
+  ])('resolves only registered room workspace identities: %s', (reference, expected) => {
+    expect(roomWorkspaceId(reference, [...workspaces, { id: 'ws-windows', root: 'C:/Example/Project' }, { id: 'ws-unc', root: '//host/share/project' }])).toBe(expected);
+  });
   it('interleaves rooms by activity and shares pins, workspace and archive filters', () => {
     const items = mergeConversationItems([session(), session({ id: 'newer', updated_at: new Date(2026, 0, 3, 14).toISOString() })], [room(), room({ id: 'hidden', archived: true }), room({ id: 'pin', pinned: true, updatedAt: '2025-12-01T00:00:00Z' })], {});
     const none = groupConversationItems(items, { groupBy: 'none', workspaces, filters, nowMs: new Date(2026, 0, 3, 23).getTime() });
