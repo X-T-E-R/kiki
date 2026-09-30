@@ -4871,6 +4871,12 @@ async function scenarioFirstRun() {
   console.log(`[check] onboarding offers ${offered} permission modes`);
   await shot('onboarding-5-permissions');
 
+  // The wizard gained a capabilities page after permissions, so the primary
+  // button on the permissions step advances rather than finishes.
+  await wizardButton(S.onboardingNext).click();
+  await wizard().locator('[data-onboarding-capabilities]').waitFor({ timeout: 5000 });
+  await shot('onboarding-5-capabilities');
+
   await wizardButton(S.onboardingFinish).click();
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
   await page.waitForSelector('textarea', { timeout: 15_000 });
