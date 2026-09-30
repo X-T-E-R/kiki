@@ -152,6 +152,36 @@ const GROUPS = [
       await shot('btw-header-menu');
     },
   },
+  {
+    name: 'catalog',
+    fixture: 'models-page',
+    async run({ page, open, shot }) {
+      await open('/settings/ai?tab=providers#st-card-account-quota', '[data-quota-row]');
+      await page.locator('#st-card-account-quota').scrollIntoViewIfNeeded();
+      await shot('catalog-quota');
+      await page.locator('#st-card-catalog-import').scrollIntoViewIfNeeded();
+      await page.waitForSelector('[data-catalog-row="amazon-bedrock"]');
+      await shot('catalog-list');
+      await page.fill('#st-card-catalog-import input[type="search"]', 'zzz');
+      await page.waitForSelector('[data-catalog-no-match]');
+      await shot('catalog-no-match');
+      await page.fill('#st-card-catalog-import input[type="search"]', 'azure');
+      await page.click('[data-catalog-row="azure"] button');
+      await page.waitForSelector('[data-catalog-form="azure"]');
+      await page.click('[data-catalog-import]');
+      await page.waitForSelector('[data-catalog-base-url][aria-invalid="true"]');
+      await page.locator('[data-catalog-form="azure"]').scrollIntoViewIfNeeded();
+      await shot('catalog-needs-base-url');
+      await page.fill('[data-catalog-base-url]', 'https://example-resource.openai.azure.com/openai/v1');
+      await page.click('[data-catalog-import]');
+      await page.waitForSelector('#st-card-catalog-import [data-feedback-tone="success"]');
+      await page.fill('#st-card-catalog-import input[type="search"]', 'azure');
+      await page.click('[data-catalog-row="azure"] button');
+      await page.waitForSelector('[data-catalog-refresh]');
+      await page.locator('[data-catalog-form="azure"]').scrollIntoViewIfNeeded();
+      await shot('catalog-reimport');
+    },
+  },
   //@@MORE@@
 ];
 

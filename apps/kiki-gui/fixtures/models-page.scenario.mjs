@@ -42,6 +42,15 @@ export default {
     { id: 'deepseek', type: 'openai', base_url: 'https://api.deepseek.com/v1', has_api_key: true, status: 'error', default_model: 'deepseek/deepseek-chat', models: ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'] },
     { id: 'ollama', type: 'openai', base_url: 'http://localhost:11434/v1', has_api_key: false, status: 'connected', models: ['ollama/qwen3-8b', 'ollama/llava-13b-vision-instruct-with-a-rather-long-local-tag'] },
   ],
+  // /oauth/usage for Kimi Code: a weekly limit near its cap, a 5-hour window, and a balance.
+  oauthUsage: {
+    'managed:kimi-code': {
+      kind: 'ok',
+      summary: { name: 'Weekly limit', window: { duration: 7, unit: 'day' }, used: 1_860, limit: 2_200, reset_at: '2026-09-28T00:00:00Z' },
+      limits: [{ name: '5-hour window', window: { duration: 5, unit: 'hour' }, used: 42, limit: 200, reset_at: '2026-09-22T18:00:00Z' }],
+      extra_usage: { balance_cents: 1_250, total_cents: 5_000, monthly_charge_limit_enabled: true, monthly_charge_limit_cents: 10_000, monthly_used_cents: 3_750, currency: 'CNY' },
+    },
+  },
   oauthMethods: [
     { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
       account: { state: 'known', id: 'dev@example.test' },

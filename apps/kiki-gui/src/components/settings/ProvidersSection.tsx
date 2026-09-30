@@ -13,6 +13,8 @@ import { Icon } from '../icons';
 import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '../ProviderFields';
 import { connectionKind, type ConnectionKind } from '../providerPresets';
 import { SECONDARY_BUTTON } from '../ui';
+import { AccountQuotaCard } from './AccountQuotaCard';
+import { CatalogImportCard } from './CatalogImportCard';
 import { ExternalEnginesList } from './ExternalEnginesSection';
 import { SectionCard } from './SectionCard';
 
@@ -126,6 +128,10 @@ export function ConnectionsTab() {
           <FeedbackLine feedback={signOutFeedback} />
         </div>
       </SectionCard>
+
+      <AccountQuotaCard methods={methods} />
+
+      <CatalogImportCard configuredIds={new Set(providerItems.map((provider) => provider.id))} onImported={refreshProviderData} />
 
       <SectionCard id="st-card-engines" title={t('st.engines.title')}><ExternalEnginesList /></SectionCard>
 

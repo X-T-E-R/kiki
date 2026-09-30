@@ -1563,6 +1563,21 @@ export class KikiClient {
     return this.run(this.klient.global.kosong.listProviders().then((items) => ({ items: [...items] })));
   }
 
+  /** The models.dev directory: every provider the server can import, with why some cannot be. */
+  listCatalogProviders(): Promise<import('@kiki/protocol').ListCatalogProvidersResponse> {
+    return this.run(() => this.rest.catalog.list());
+  }
+
+  /** Import (or re-import, refreshing config and aliases) one directory entry as a configured provider. */
+  importCatalogProvider(body: { catalog_id: string; id?: string; api_key?: string; base_url?: string }): Promise<import('@kiki/protocol').ImportCatalogProviderResponse> {
+    return this.run(() => this.rest.catalog.importProvider(body, { timeoutMs: 90_000 }));
+  }
+
+  /** A managed account's quota as the vendor reports it (Kimi Code). Not session token usage. */
+  getManagedUsage(provider: string): Promise<import('@kiki/protocol').ManagedUsageResult> {
+    return this.run(() => this.rest.oauth.usage(provider));
+  }
+
   getCatalogProvider(providerId: string): Promise<GetCatalogProviderResponse> {
     return this.run(this.rest.catalog.provider(providerId));
   }
