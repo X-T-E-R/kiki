@@ -1676,6 +1676,25 @@ export class KikiClient {
     return this.run(this.rest.executors.list());
   }
 
+  /** Bounded local Claude/Codex history for one executor; read-only, imports nothing. */
+  listLocalSessions(executorId: string, limit?: number): Promise<import('@kiki/protocol').LocalSessionDirectory> {
+    return this.run(() => this.rest.executors.listLocalSessions(executorId, { limit }));
+  }
+
+  /** Bounded transcript preview of one local session (`partial` / `warnings` are not completeness claims). */
+  getLocalSession(executorId: string, localSessionId: string): Promise<import('@kiki/protocol').LocalSessionDetail> {
+    return this.run(() => this.rest.executors.getLocalSession(executorId, localSessionId));
+  }
+
+  /** Attach a local session to Kiki; `created: false` returns the session it is already bound to. */
+  resumeLocalSession(
+    executorId: string,
+    localSessionId: string,
+    body: import('@kiki/protocol').ResumeLocalSessionRequest,
+  ): Promise<import('@kiki/protocol').ResumeLocalSessionResponse> {
+    return this.run(() => this.rest.executors.resumeLocalSession(executorId, localSessionId, body));
+  }
+
   /** One page of cross-thread messages (`GET /threads/messages`); an empty page may still carry a cursor. */
   listThreadMessages(
     query: import('@kiki/protocol').ListThreadMessagesQuery,

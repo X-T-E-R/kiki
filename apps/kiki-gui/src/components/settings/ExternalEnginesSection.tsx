@@ -8,6 +8,8 @@ import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import type { ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
+import { localSessionEngine } from '../../lib/localSessions';
+import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
@@ -597,6 +599,15 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           </dl>
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.capsDeclared')}</p>
         </div>
+        {localSessionEngine(item.id) !== undefined ? (
+          <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
+              <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
+            </div>
+            <LocalSessionsEntry executorId={item.id} variant="button" />
+          </div>
+        ) : null}
         {check !== undefined && check.diagnostics.length > 0 ? (
           <div data-engine-diagnostics className="space-y-1 border-t border-hairline pt-3">
             <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>

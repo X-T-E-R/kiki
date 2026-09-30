@@ -550,6 +550,7 @@ class FixtureServer {
     this.modelsDeclared = Array.isArray(data.models);
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
+    this.localAttachments = undefined;
     this.workspaces = structuredClone(data.workspaces ?? []);
     loadWorktrees(this, data);
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
@@ -1952,6 +1953,51 @@ class FixtureServer {
     }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
+    }
+    // kap-server local executor sessions: scenario `localSessions[executorId]`
+    // = { root, exists, truncated, unreadable_files, resume_enabled, items,
+    // details: { [localId]: { messages, warnings } } }. Resume mints a Kiki
+    // session once per local id (`created: false` afterwards, like the
+    // deterministic server id) and `localSessionErrors[localId]` forces one.
+    const localMatch = /^\/executors\/([^/]+)\/local-sessions(?:\/([^/]+)(\/resume)?)?$/.exec(path);
+    if (localMatch !== null) {
+      const executorId = decodeURIComponent(localMatch[1]);
+      const catalog = this.scenario?.data.localSessions?.[executorId];
+      if (catalog === undefined) return this.envelope(res, null, 40404, 'Local session catalog is unavailable for this executor');
+      const { details = {}, ...directory } = catalog;
+      if (localMatch[2] === undefined && method === 'GET') {
+        return this.envelope(res, structuredClone({ root: '', exists: true, truncated: false, unreadable_files: 0, resume_enabled: true, ...directory, items: directory.items ?? [] }));
+      }
+      const localId = decodeURIComponent(localMatch[2]);
+      const summary = (directory.items ?? []).find((item) => item.id === localId);
+      if (summary === undefined) return this.envelope(res, null, 40401, 'Local session was not found');
+      if (localMatch[3] === undefined && method === 'GET') {
+        const detail = details[localId] ?? { messages: [], warnings: [] };
+        return setTimeout(() => this.envelope(res, structuredClone({ summary, ...detail })), 250);
+      }
+      if (localMatch[3] !== undefined && method === 'POST') {
+        const forced = this.scenario?.data.localSessionErrors?.[localId];
+        if (forced !== undefined) return this.envelope(res, null, forced.code, forced.msg);
+        if (catalog.resume_enabled === false || !summary.resume.supported) return this.envelope(res, null, 40925, summary.resume.reason ?? 'Local session continuation is disabled');
+        if (body?.source_home !== summary.source_home) return this.envelope(res, null, 40001, 'Local session source home changed');
+        this.localAttachments ??= new Map(Object.entries(this.scenario?.data.localAttachmentsSeed ?? {})
+          .map(([local, sessionId]) => [local, { session_id: sessionId, executor_id: executorId }]));
+        const existing = this.localAttachments.get(localId);
+        if (existing !== undefined) return this.envelope(res, { ...existing, created: false });
+        const id = `session_fixture_local_${[...this.localAttachments.values()].filter((entry) => entry.session_id.startsWith('session_fixture_local_') && /_\d+$/.test(entry.session_id)).length + 1}`;
+        const record = {
+          id, workspace_id: this.workspaces[0]?.id ?? 'wd_fixture_000000000000',
+          title: summary.title ?? summary.last_prompt ?? '', created_at: now(), updated_at: now(),
+          busy: false, pending_interaction: 'none', archived: false,
+          metadata: { cwd: summary.cwd ?? 'C:/fixture' }, agent_config: { model: '', executor: executorId },
+          usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
+          permission_rules: [], message_count: 0, last_seq: 0,
+        };
+        this.sessions.set(id, new FixtureSession(record, {}));
+        const result = { session_id: id, executor_id: executorId };
+        this.localAttachments.set(localId, result);
+        return setTimeout(() => this.envelope(res, { ...result, created: true }), 400);
+      }
     }
     // `GET /executors/{id}` and `POST /executors/{id}/check`: a check result
     // comes from the scenario's `executorChecks[id]` (or is derived from the

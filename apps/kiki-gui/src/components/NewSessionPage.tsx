@@ -32,6 +32,7 @@ import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
+import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
 import { useI18n } from '../i18n';
 import { staggerStyle } from '../lib/motion';
 import { useConnection } from '../state/connection';
@@ -396,6 +397,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
             <span className="-ml-2.5 inline-flex"><HeroWorkspaceChip state={state} /></span>
             <EphemeralOption state={state} />
             <WorktreeOption state={state} />
+            <span className="ml-auto inline-flex"><LocalSessionsEntry /></span>
           </div>
           {showTargetHint ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
