@@ -238,6 +238,8 @@ export * from '#/app/agentExecutor/executorOverrides';
 export * from '#/app/agentExecutor/agentExecutorRegistryService';
 export * from '#/app/agentExecutor/managedAdapterRegistry';
 export * from '#/app/agentExecutor/managedAdapterService';
+export * from '#/app/agentExecutor/localSessionCatalog';
+export * from '#/app/agentExecutor/localSessionParser';
 export * from '#/app/agentExecutor/preflight';
 export { expandExecutorText } from '#/app/agentExecutor/binaryDiscovery';
 export * from '#/app/agentProfileCatalog/agentProfileCatalog';

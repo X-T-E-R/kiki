@@ -9,6 +9,9 @@ import {
   IAgentExecutorRegistry,
   IAgentExecutorPreflightService,
   IManagedAdapterService,
+  ILocalSessionCatalog,
+  localSessionEngine,
+  type LocalSessionSummary,
   MANAGED_ADAPTER_RELEASES,
   IBootstrapService,
   EXECUTOR_OVERRIDE_SOURCE_ID,
@@ -105,6 +108,22 @@ function projectManagedStatus(status: Awaited<ReturnType<IManagedAdapterService[
     active: installation(status.active), previous: installation(status.previous),
     phase: status.phase, error: status.error,
   };
+}
+
+const localSessionSummarySchema = z.object({
+  id: z.string(), engine: z.enum(['claude', 'codex']), external_id: z.string(), source_path: z.string(),
+  cwd: z.string().optional(), title: z.string().optional(), created_at: z.string().optional(),
+  updated_at: z.string(), last_prompt: z.string().optional(), parent_id: z.string().optional(), partial: z.boolean(),
+});
+const localSessionMessageSchema = z.object({
+  id: z.string(), role: z.enum(['user', 'assistant', 'system']), timestamp: z.string().optional(),
+  blocks: z.array(z.object({ kind: z.enum(['text', 'thought', 'tool_call', 'tool_result', 'image']),
+    text: z.string().optional(), name: z.string().optional() })),
+});
+function projectLocalSession(summary: LocalSessionSummary) {
+  return { id: summary.id, engine: summary.engine, external_id: summary.externalId, source_path: summary.sourcePath,
+    cwd: summary.cwd, title: summary.title, created_at: summary.createdAt, updated_at: summary.updatedAt,
+    last_prompt: summary.lastPrompt, parent_id: summary.parentId, partial: summary.partial };
 }
 
 /** Registers the `/agents` routes — named agent-profile catalog and validated write-back. GET merges
@@ -245,6 +264,51 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.post(rollbackRoute.path, rollbackRoute.options,
     rollbackRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const localSessionsRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/local-sessions', params: executorParams,
+    querystring: z.object({ limit: z.coerce.number().int().min(1).max(200).default(100) }),
+    success: { data: z.object({ root: z.string(), exists: z.boolean(), items: z.array(localSessionSummarySchema),
+      truncated: z.boolean(), unreadable_files: z.number().int().nonnegative() }) },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Read the local Claude/Codex session directory without importing into Kiki', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    if (localSessionEngine(req.params.id) === undefined || core.accessor.get(IAgentExecutorRegistry).get(req.params.id) === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Local session catalog is unavailable for this executor', req.id));
+      return;
+    }
+    const directory = await core.accessor.get(ILocalSessionCatalog).list(req.params.id, req.query.limit);
+    reply.send(okEnvelope({ root: directory.root, exists: directory.exists,
+      items: directory.items.map(projectLocalSession), truncated: directory.truncated,
+      unreadable_files: directory.unreadableFiles }, req.id));
+  });
+  app.get(localSessionsRoute.path, localSessionsRoute.options,
+    localSessionsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const localSessionDetailRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/local-sessions/{local_session_id}',
+    params: executorParams.extend({ local_session_id: z.string().min(1) }),
+    success: { data: z.object({ summary: localSessionSummarySchema, messages: z.array(localSessionMessageSchema),
+      warnings: z.array(z.string()) }) },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {}, [ErrorCode.SESSION_NOT_FOUND]: {} },
+    description: 'Read a bounded vendor transcript preview; no Kiki session is created', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    if (localSessionEngine(req.params.id) === undefined || core.accessor.get(IAgentExecutorRegistry).get(req.params.id) === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Local session catalog is unavailable for this executor', req.id));
+      return;
+    }
+    const detail = await core.accessor.get(ILocalSessionCatalog).get(req.params.id, req.params.local_session_id);
+    if (detail === undefined) {
+      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Local session was not found', req.id));
+      return;
+    }
+    reply.send(okEnvelope({ summary: projectLocalSession(detail.summary), messages: detail.messages,
+      warnings: detail.warnings }, req.id));
+  });
+  app.get(localSessionDetailRoute.path, localSessionDetailRoute.options,
+    localSessionDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
 
   const listRoute = defineRoute(
     {
