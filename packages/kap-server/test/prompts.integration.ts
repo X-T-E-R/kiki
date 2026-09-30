@@ -2380,86 +2380,115 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('restores a disposed agent and starts the submitted prompt as a new turn', async () => {
-    const id = await createSession(home as string);
-    await createMainAgent(id);
+    const provider = createHttpServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({
+        id: 'chatcmpl-restored-child',
+        choices: [{ index: 0, delta: { content: 'completed before release' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })}\n\ndata: [DONE]\n\n`);
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    try {
+      await server!.close();
+      server = undefined;
+      await writeConfigToml(home as string, PROMPT_TOML
+        .replace('http://127.0.0.1:9999', `http://127.0.0.1:${String(address.port)}/v1`)
+        .replaceAll('max_context_size = 1000', 'max_context_size = 100000'));
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home as string, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      const id = await createSession(home as string);
+      await createMainAgent(id);
 
-    const session = getLiveSessionById(server!.core.accessor, id);
-    if (session === undefined) throw new Error(`session ${id} not found`);
-    const lifecycle = session.accessor.get(IAgentLifecycleService);
-    const child = await lifecycle.fork('main');
-    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'before release' }],
-      agent_id: child.id,
-      profile: 'agent',
-      model: 'stub',
-      thinking: 'high',
-    });
-    expect(first.body.code).toBe(0);
-    await child.accessor.get(IAgentExecutionService).settled();
-    await lifecycle.remove(child.id);
-    expect(lifecycle.get(child.id)).toBeUndefined();
-    const parent = lifecycle.get('main')!;
-    const observed: string[] = [];
-    const eventSubscription = parent.accessor.get(IEventBus).subscribe((event) => {
-      if (
-        event.type === 'task.started' ||
-        event.type === 'task.terminated' ||
-        event.type === 'subagent.spawned' ||
-        event.type === 'subagent.started' ||
-        event.type === 'subagent.failed'
-      ) observed.push(event.type);
-    });
-    const createSubscription = lifecycle.onDidCreate((handle) => {
-      if (handle.id !== child.id) return;
-      handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register(
-        'hold-restored-child-turn',
-        async (context) => {
-          await new Promise<void>((resolve) => {
-            if (context.signal.aborted) resolve();
-            else context.signal.addEventListener('abort', () => resolve(), { once: true });
-          });
-          context.signal.throwIfAborted();
-        },
-        { before: 'context-injector' },
-      );
-    });
-
-    const resumed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'after release' }],
-      agent_id: child.id,
-    });
-
-    expect(resumed.body.code, resumed.body.msg).toBe(0);
-    const restored = lifecycle.get(child.id);
-    expect(restored).toBeDefined();
-    expect(restored).not.toBe(child);
-    expect(
-      restored!.accessor.get(IAgentContextMemoryService).get().some(
-        (message) => message.role === 'user' && message.content.some(
-          (part) => part.type === 'text' && part.text === 'after release',
-        ),
-      ),
-    ).toBe(true);
-    const tasks = parent.accessor.get(IAgentTaskService);
-    const task = await vi.waitFor(() => {
-      const found = tasks.list(true).find((item) => item.kind === 'agent' && item.agentId === child.id);
-      expect(found).toBeDefined();
-      return found!;
-    });
-    await vi.waitFor(() => {
-      expect(observed).toEqual(expect.arrayContaining([
-        'task.started',
-        'subagent.spawned',
-        'subagent.started',
+      const session = getLiveSessionById(server.core.accessor, id);
+      if (session === undefined) throw new Error(`session ${id} not found`);
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.fork('main');
+      const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'before release' }],
+        agent_id: child.id,
+        profile: 'agent',
+        model: 'stub',
+        thinking: 'high',
+      });
+      expect(first.body.code).toBe(0);
+      await child.accessor.get(IAgentExecutionService).settled();
+      expect(child.accessor.get(IAgentContextMemoryService).get()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: 'completed before release' }] }),
       ]));
-    });
-    await tasks.stopByUser(task.taskId);
-    await vi.waitFor(() => {
-      expect(tasks.getTask(task.taskId)?.status).toBe('killed');
-      expect(observed).toEqual(expect.arrayContaining(['task.terminated', 'subagent.failed']));
-    });
-    createSubscription.dispose();
-    eventSubscription.dispose();
+      await lifecycle.remove(child.id);
+      expect(lifecycle.get(child.id)).toBeUndefined();
+      const parent = lifecycle.get('main')!;
+      const observed: string[] = [];
+      const eventSubscription = parent.accessor.get(IEventBus).subscribe((event) => {
+        if (
+          event.type === 'task.started' ||
+          event.type === 'task.terminated' ||
+          event.type === 'subagent.spawned' ||
+          event.type === 'subagent.started' ||
+          event.type === 'subagent.failed'
+        ) observed.push(event.type);
+      });
+      const createSubscription = lifecycle.onDidCreate((handle) => {
+        if (handle.id !== child.id) return;
+        handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register(
+          'hold-restored-child-turn',
+          async (context) => {
+            await new Promise<void>((resolve) => {
+              if (context.signal.aborted) resolve();
+              else context.signal.addEventListener('abort', () => resolve(), { once: true });
+            });
+            context.signal.throwIfAborted();
+          },
+          { before: 'context-injector' },
+        );
+      });
+
+      const resumed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'after release' }],
+        agent_id: child.id,
+      });
+
+      expect(resumed.body.code, resumed.body.msg).toBe(0);
+      const restored = lifecycle.get(child.id);
+      expect(restored).toBeDefined();
+      expect(restored).not.toBe(child);
+      expect(
+        restored!.accessor.get(IAgentContextMemoryService).get().some(
+          (message) => message.role === 'user' && message.content.some(
+            (part) => part.type === 'text' && part.text === 'after release',
+          ),
+        ),
+      ).toBe(true);
+      const tasks = parent.accessor.get(IAgentTaskService);
+      const task = await vi.waitFor(() => {
+        const found = tasks.list(true).find((item) => item.kind === 'agent' && item.agentId === child.id);
+        expect(found).toBeDefined();
+        return found!;
+      });
+      await vi.waitFor(() => {
+        expect(observed).toEqual(expect.arrayContaining([
+          'task.started',
+          'subagent.spawned',
+          'subagent.started',
+        ]));
+      });
+      await tasks.stopByUser(task.taskId);
+      await vi.waitFor(() => {
+        expect(tasks.getTask(task.taskId)?.status).toBe('killed');
+        expect(observed).toEqual(expect.arrayContaining(['task.terminated', 'subagent.failed']));
+      });
+      createSubscription.dispose();
+      eventSubscription.dispose();
+    } finally {
+      await new Promise<void>((resolve, reject) => provider.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      }));
+    }
   });
 
   it('reports incomplete persisted binding metadata for a known disposed agent', async () => {
