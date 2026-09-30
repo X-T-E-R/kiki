@@ -354,9 +354,10 @@ with the `AgentRun` dispatch, or the pin on the profile, route, or caller lease
 that the dispatch selects. The caller's model and `default_model` are not silent
 fallbacks: without a parameter or effective pin, dispatch fails with
 `model.not_configured` before creating a child. Set `model_alias: inherit` on a
-subagent profile, route, or caller lease, or pass `model_alias: "inherit"` to
-`AgentRun`, to explicitly bind the caller's current resolved model. A main-agent
-profile cannot use `inherit` because it has no caller.
+subagent profile, route, or caller lease to explicitly bind the caller's current
+resolved model. `AgentRun` rejects `model_alias: "inherit"`: specify a concrete
+configured model name, or omit the parameter to use the target default. A
+main-agent profile cannot use `inherit` because it has no caller.
 
 Thinking effort may stay unset. With `model_alias: inherit`, it follows the
 caller's effective thinking effort unless an explicit tool `effort` or an

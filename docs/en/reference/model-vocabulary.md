@@ -11,7 +11,7 @@ Kiki keeps three things separate when selecting models: the model keys in your c
 ## Current vocabulary
 
 - **Configured model key**: the key of an entry under `[models]` in `config.toml`. Resolution results use it as the canonical runtime identifier.
-- **`model_alias`**: the model selector used by `AgentRun` calls, agent files, and profile routes; its value is a configured model key or the subagent-only reserved value `inherit`.
+- **`model_alias`**: the model selector used by `AgentRun` calls, agent files, and profile routes; `AgentRun` accepts a concrete configured model name, while subagent profiles, routes, and caller leases may also use the reserved value `inherit`.
 - **Wire model identifier**: the `model` value actually sent to the provider endpoint. It does not have to equal the configured key — the same provider model can be registered under several purpose-specific keys.
 - **Thinking effort**: the dispatch parameter `effort`, or `thinking_effort` on a profile or route. It resolves independently from `model_alias`, except that explicit model inheritance also follows the caller's effective effort unless an applicable effort pin wins.
 
@@ -22,9 +22,9 @@ A newly spawned subagent gets its model from exactly two sources:
 1. The `model_alias` passed at dispatch time.
 2. The `model_alias` pin on the effective profile, route, or caller lease (constraints an external delegating host pre-sets for the caller).
 
-When both are present, the dispatch value wins. When neither names a model, the spawn fails with `model.not_configured`; neither the caller's model nor `default_model` is a silent fallback. Explicit `model_alias: inherit` on the profile, route, or caller lease, or `model_alias: "inherit"` on `AgentRun`, binds the caller's current resolved model and effective thinking effort unless explicit tool `effort` or an applicable profile, route, lease, or matching `model_profiles` effort pin wins. Unknown concrete aliases and machine-denied models fail before the child starts. A model outside role guidance, or different from a route or caller-lease pin, continues when executable and produces a structured binding advisory.
+When both are present, the dispatch value wins. When neither names a model, the spawn fails with `model.not_configured`; neither the caller's model nor `default_model` is a silent fallback. Explicit `model_alias: inherit` on the profile, route, or caller lease binds the caller's current resolved model and effective thinking effort unless explicit tool `effort` or an applicable profile, route, lease, or matching `model_profiles` effort pin wins. `AgentRun` rejects `model_alias: "inherit"`: specify a concrete configured model name, or omit the parameter to use the target default. Unknown concrete aliases and machine-denied models fail before the child starts. A model outside role guidance, or different from a route or caller-lease pin, continues when executable and produces a structured binding advisory.
 
-A resumed or retried subagent keeps its persisted binding unless the `AgentRun` `resume` explicitly requests a change. Omitting both `model_alias` and `effort` keeps the current binding; an explicit effort applies to the next idle run. An explicit `model_alias: "inherit"` resolves against the current caller model and effective effort, subject to applicable saved or explicit effort pins. Switching to a different canonical model requires `allow_model_change: true`; an alias resolving to the same canonical model is a no-op.
+A resumed or retried subagent keeps its persisted binding unless the `AgentRun` `resume` explicitly requests a change. Omitting both `model_alias` and `effort` keeps the current binding; an explicit effort applies to the next idle run. `AgentRun` rejects `model_alias: "inherit"` on resume as well; specify a concrete model name for an explicit change, or omit it to keep the saved model. Switching to a different canonical model requires `allow_model_change: true`; an alias resolving to the same canonical model is a no-op.
 
 ## Agent files and routes
 
