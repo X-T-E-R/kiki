@@ -1,3 +1,4 @@
+import { personaAvatarDataSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from '#/_base/utils/isoDateTime';
@@ -35,6 +36,7 @@ export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
   profile: z.string().min(1).optional(),
+  persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
   swarm_mode: z.boolean().optional(),

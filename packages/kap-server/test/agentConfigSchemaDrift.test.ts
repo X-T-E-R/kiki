@@ -26,6 +26,19 @@ describe('agent_config schema drift between the engine and the protocol package'
     expect(protocol.safeParse({ not_a_field: 'x' }).success).toBe(false);
   });
 
+  it('preserves the persona projection and validates it identically on both reads', () => {
+    const input = {
+      model: 'stub',
+      persona: { id: 'lin-lan', name: 'Lin Lan', avatarUrl: '/api/personas/lin-lan/avatar' },
+    };
+    for (const schema of [engineReadSchema, protocolReadSchema]) {
+      expect(schema.parse(input)).toEqual(input);
+      expect(schema.parse({ model: 'stub' })).toEqual({ model: 'stub' });
+      expect(schema.safeParse({ ...input, persona: { ...input.persona, name: '' } }).success).toBe(false);
+      expect(schema.safeParse({ ...input, persona: { ...input.persona, secret: 'hidden' } }).success).toBe(false);
+    }
+  });
+
   it('keeps the write-only controls out of the read shape', () => {
     for (const key of ['thinking', 'goal_objective', 'goal_control']) {
       expect(engineReadSchema.shape).not.toHaveProperty(key);
