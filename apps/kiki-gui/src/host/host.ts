@@ -1,4 +1,4 @@
-import type { DesktopNativePrefs } from '@kiki/session-core/settings';
+import type { DesktopLogLevel, DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { ResolvedTheme } from '../lib/theme';
 
@@ -46,6 +46,17 @@ export interface DesktopSpaceStatus {
   /** Sessions waiting on an approval or a question. */
   readonly pendingCount: number;
   readonly busyCount: number;
+}
+
+/** `desktop_log_info`: where the desktop backend log lives and the level its next launch uses. */
+export interface DesktopLogInfo {
+  readonly directory: string;
+  readonly backendLogPath: string;
+  readonly maxBytes: number;
+  readonly backups: number;
+  readonly logLevel: DesktopLogLevel;
+  /** A level change reaches the backend on its next desktop-owned launch, never the running one. */
+  readonly appliesOnNextLaunch: boolean;
 }
 
 export interface DesktopUpdate {
@@ -142,6 +153,10 @@ interface HostCapabilities {
   openSpace?: (homeId: string) => Promise<void>;
   restartSpace?: (homeId: string) => Promise<void>;
   restartServer?: () => Promise<void>;
+  /** Desktop backend log location and level (`desktop_log_info`). */
+  desktopLogInfo?: () => Promise<DesktopLogInfo>;
+  /** Open the active space's log folder in the OS file manager. */
+  openDesktopLogDirectory?: () => Promise<void>;
   supportsDesktopUpdates?: () => Promise<boolean>;
   checkDesktopUpdate?: () => Promise<DesktopUpdate | null>;
   onTrayNewSession?: (callback: () => void) => () => void;

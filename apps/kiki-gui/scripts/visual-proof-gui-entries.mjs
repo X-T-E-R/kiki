@@ -100,6 +100,34 @@ const GROUPS = [
       await shot('shortcuts-reset-confirm');
     },
   },
+  {
+    name: 'desktop-log',
+    fixture: 'settings',
+    desktop: true,
+    async run({ page, open, shot }) {
+      // The running backend was launched at warn, whatever gets saved later.
+      await page.addInitScript(() => { sessionStorage.setItem('kiki.proof.launchLogLevel', 'warn'); });
+      await open('/settings/about#st-card-desktop-log', '[data-desktop-log-path]');
+      await page.locator('#st-card-desktop-log').scrollIntoViewIfNeeded();
+      await shot('desktop-log-default');
+      await page.click('[data-desktop-log-level] [aria-haspopup="listbox"]');
+      await page.waitForSelector('[role="option"]');
+      await shot('desktop-log-levels');
+      await page.click('[role="option"]:has-text("debug")');
+      await page.waitForSelector('[data-desktop-log-pending]');
+      await page.locator('#st-card-desktop-log').scrollIntoViewIfNeeded();
+      await shot('desktop-log-pending');
+    },
+  },
+  {
+    name: 'desktop-log-browser',
+    fixture: 'settings',
+    async run({ page, open, shot }) {
+      await open('/settings/about', '[data-settings-card="st-card-about"]');
+      if (await page.locator('#st-card-desktop-log').count() !== 0) throw new Error('desktop log card must be hidden in the browser');
+      await shot('desktop-log-browser-hidden');
+    },
+  },
   //@@MORE@@
 ];
 

@@ -7,6 +7,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 
 import type {
+  DesktopLogInfo,
   DesktopSpaceStatus,
   DesktopUpdate,
   TauriHostAdapter,
@@ -236,6 +237,10 @@ export const tauriHost: TauriHostAdapter = {
   },
   async restartServer() {
     await invoke('restart_server');
+  },
+  desktopLogInfo: () => invoke<DesktopLogInfo>('desktop_log_info'),
+  async openDesktopLogDirectory() {
+    await invoke('open_desktop_log_directory');
   },
   async supportsDesktopUpdates() {
     return invoke<boolean>('supports_desktop_updates');

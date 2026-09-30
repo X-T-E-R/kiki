@@ -14,6 +14,7 @@ import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
+import { DesktopLogCard } from './settings/DesktopLogCard';
 import { AppearanceSection } from './settings/AppearanceSection';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
@@ -285,7 +286,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />
-    : <AboutSection />;
+    : <><AboutSection /><DesktopLogCard /></>;
 
   // A feature page ends with the experimental flags that change it; tabbed
   // pages show them on one tab only, so a hit on the rows lands where they are.
