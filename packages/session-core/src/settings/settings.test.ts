@@ -1051,7 +1051,7 @@ describe('settings nav groups (IA v2)', () => {
     expect(new Set(placed).size).toBe(placed.length);
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'connection']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(sectionsOf('work')).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
     expect(sectionsOf('system')).toEqual(['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about']);
@@ -1212,14 +1212,15 @@ describe('settings route resolver', () => {
 
   it('redirects the legacy models/providers sections to the merged ai entry with their tab', () => {
     // Redesign §10.3: /settings/models → /settings/ai?tab=models,
-    // /settings/providers → /settings/ai?tab=providers; request identity and
-    // thinking cards land on the defaults tab regardless of the legacy page.
+    // /settings/providers → /settings/ai?tab=providers; the thinking card lands
+    // on the defaults tab regardless of the legacy page, and the request
+    // identity card follows its own Request identity section.
     expect(resolveSettingsRoute('models', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'models' });
     expect(resolveSettingsRoute('providers', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
     expect(resolveSettingsRoute('models', '#st-card-request-identity'))
-      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-request-identity', tab: 'defaults' });
+      .toEqual({ status: 'ok', section: 'identity', cardId: 'st-card-request-identity', tab: undefined });
     expect(resolveSettingsRoute('models', '#st-card-thinking'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-thinking', tab: 'defaults' });
     expect(resolveSettingsRoute('providers', '#st-card-auth'))

@@ -231,19 +231,31 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
 
 export type RequestIdentityPreset = NonNullable<RequestIdentityPolicyWire['preset']>;
 
+/** `profile:<id>` selects a custom identity from the request-identity catalog. */
 export type RequestIdentityChoice =
   | 'inherit'
   | 'custom_overrides'
-  | RequestIdentityPreset;
+  | RequestIdentityPreset
+  | `profile:${string}`;
 
 export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
   'inherit',
   'custom_overrides',
   'codex_compatible',
+  'claude_code_compatible',
   'grok_build_compatible',
   'kimi_code',
   'none',
 ];
+
+export function requestIdentityProfileChoice(id: string): RequestIdentityChoice {
+  return `profile:${id}`;
+}
+
+/** The custom profile id a choice selects, or undefined for inherit/presets/overrides-only. */
+export function requestIdentityChoiceProfile(choice: RequestIdentityChoice): string | undefined {
+  return choice.startsWith('profile:') ? choice.slice('profile:'.length) : undefined;
+}
 
 export interface RequestIdentityLayerDraft {
   requestIdentityChoice: RequestIdentityChoice;
@@ -1132,7 +1144,9 @@ export function requestIdentityLayerDraftFromPolicy(
 ): RequestIdentityLayerDraft {
   return {
     requestIdentityChoice:
-      policy?.preset ?? (policy?.overrides === undefined ? 'inherit' : 'custom_overrides'),
+      policy?.preset
+      ?? (policy?.profile === undefined ? undefined : requestIdentityProfileChoice(policy.profile))
+      ?? (policy?.overrides === undefined ? 'inherit' : 'custom_overrides'),
     requestIdentityOverridesJson:
       policy?.overrides === undefined ? '' : JSON.stringify(policy.overrides, null, 2),
   };
@@ -1166,6 +1180,7 @@ export function requestIdentityPolicyFromDraft(
     preset: isRequestIdentityPreset(draft.requestIdentityChoice)
       ? draft.requestIdentityChoice
       : undefined,
+    profile: requestIdentityChoiceProfile(draft.requestIdentityChoice),
     overrides,
   };
   const result = requestIdentityPolicySchema.safeParse(candidate);
@@ -1783,7 +1798,6 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-catalog-refresh': 'models',
   'st-card-model-migration': 'models',
   'st-card-global-defaults': 'defaults',
-  'st-card-request-identity': 'defaults',
   'st-card-thinking': 'defaults',
   'st-card-auto-compact': 'defaults',
   'st-card-loop-limits': 'defaults',
@@ -1865,6 +1879,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'ai', labelKey: 'st.section.ai' },
+  { id: 'identity', labelKey: 'st.section.identity' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'subagents', labelKey: 'st.section.subagents' },
   { id: 'sessions', labelKey: 'st.section.sessions' },
@@ -1910,7 +1925,7 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'connection'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'hooks'] },
   { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about'] },
@@ -1946,6 +1961,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   appearance: { scopes: ['app'], purposeKey: 'st.purpose.appearance' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
+  identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
   sessions: { scopes: ['server'], purposeKey: 'st.purpose.sessions' },
@@ -2078,7 +2094,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
-  { section: 'ai', tab: 'defaults', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
+  { section: 'identity', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'], synonyms: ['请求身份', 'request identity', 'User-Agent', 'UA', 'header', '请求头', 'fingerprint', '指纹'] },
+  { section: 'identity', cardId: 'st-card-identity-profiles', titleKey: 'st.identity.listTitle', keywordKeys: ['st.identity.userAgentLabel', 'st.identity.headersLabel', 'st.identity.paramsLabel', 'st.identity.duplicate'], synonyms: ['Codex', 'Claude Code', 'Grok', 'originator', 'X-Stainless'] },
+  { section: 'identity', cardId: 'st-card-identity-tracks', titleKey: 'st.identity.tracksTitle', keywordKeys: ['st.identity.checkNpm', 'st.identity.checkLocal', 'st.identity.pin', 'st.identity.manifestLabel'], synonyms: ['client version', '客户端版本', 'npm', 'rollback', '回滚'] },
+  { section: 'identity', cardId: 'st-card-identity-usage', titleKey: 'st.identity.usageTitle', keywordKeys: ['st.identity.usageEffective'] },
+  { section: 'identity', cardId: 'st-card-identity-recent', titleKey: 'st.identity.recentTitle', keywordKeys: ['st.identity.recentEmpty'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint', 'st.thinking.keep'], synonyms: ['thinking keep', '保留思考'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-auto-compact', titleKey: 'st.compact.globalTitle', keywordKeys: ['st.compact.globalLabel', 'st.compact.reserveLabel'], synonyms: ['auto compact', 'autocompact', 'compaction', '自动压缩', '压缩点', 'context window', '上下文窗口'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.maxAttempts', 'st.loopLimits.subagentStrategy'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'loop control', '步数上限', '尝试次数'] },
@@ -2348,7 +2368,7 @@ export function msUnitFor(ms: number): MsUnit {
 }
 
 function isRequestIdentityPreset(value: RequestIdentityChoice): value is RequestIdentityPreset {
-  return ['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
+  return ['codex_compatible', 'claude_code_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
 }
 
 function isPermissionMode(value: unknown): value is DesktopSettings['defaultPermissionMode'] {
