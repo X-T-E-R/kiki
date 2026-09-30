@@ -32,12 +32,12 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
         <p className="min-w-0 truncate text-[13px] font-medium text-ink">{skill.name}</p>
         <span className={BADGE_CLASS}>{sourceLabel}</span>
         {skill.type ? (
-          <span className="shrink-0 rounded bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[9px] text-ink-soft">
+          <span className="shrink-0 rounded bg-paper border border-hairline px-1.5 py-0.5 font-mono text-[9px] text-ink-soft">
             {skill.type}
           </span>
         ) : null}
         {skill.disable_model_invocation ? (
-          <span className="shrink-0 rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.2 font-mono text-[9px] text-amber-ink">
+          <span className="shrink-0 rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.5 font-mono text-[9px] text-amber-ink">
             {t('agentPanel.disableModelInvocationBadge')}
           </span>
         ) : null}

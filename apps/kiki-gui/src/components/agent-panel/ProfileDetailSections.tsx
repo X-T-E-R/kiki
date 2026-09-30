@@ -288,7 +288,7 @@ export function ProfileDetailSections({
               <div className="text-right">
                 {modelOrigin.locked ? (
                   <span
-                    className="inline-block break-words rounded border border-amber-rule/30 bg-amber-card px-1 py-0.2 text-[9px] text-amber-ink"
+                    className="inline-block break-words rounded border border-amber-rule/30 bg-amber-card px-1 py-0.5 text-[9px] text-amber-ink"
                     title={t('agentPanel.locked')}
                   >
                     {t('agentPanel.locked')}
@@ -312,7 +312,7 @@ export function ProfileDetailSections({
               <div className="text-right">
                 {effortOrigin.locked ? (
                   <span
-                    className="inline-block break-words rounded border border-amber-rule/30 bg-amber-card px-1 py-0.2 text-[9px] text-amber-ink"
+                    className="inline-block break-words rounded border border-amber-rule/30 bg-amber-card px-1 py-0.5 text-[9px] text-amber-ink"
                     title={t('agentPanel.locked')}
                   >
                     {t('agentPanel.locked')}
@@ -422,7 +422,7 @@ export function ProfileDetailSections({
                 {disallowedTools.map((name: string) => (
                   <span
                     key={name}
-                    className="rounded bg-danger/10 border border-danger/20 px-1.5 py-0.2 text-[9.5px] text-danger font-medium"
+                    className="rounded bg-danger/10 border border-danger/20 px-1.5 py-0.5 text-[9.5px] text-danger font-medium"
                   >
                     {name}
                   </span>

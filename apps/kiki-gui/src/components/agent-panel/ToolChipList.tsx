@@ -132,7 +132,7 @@ export const ToolChipList = memo(function ToolChipList({
           </>
         );
         const baseClass =
-          'rounded bg-paper border border-hairline px-1.5 py-0.2 text-[9.5px] text-ink font-medium inline-flex items-center';
+          'rounded bg-paper border border-hairline px-1.5 py-0.5 text-[9.5px] text-ink font-medium inline-flex items-center';
 
         return item.onOpen ? (
           <button

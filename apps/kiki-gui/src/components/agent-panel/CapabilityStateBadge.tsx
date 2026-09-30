@@ -35,7 +35,7 @@ export const CapabilityStateBadge = memo(function CapabilityStateBadge({
     <span
       data-capability-state={state}
       title={title}
-      className={`rounded px-1.5 py-0.2 font-mono text-[9.5px] ${STATE_BADGE_CLASS[state]} ${className}`}
+      className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] ${STATE_BADGE_CLASS[state]} ${className}`}
     >
       {t(CAPABILITY_STATE_LABEL_KEYS[state])}
     </span>
