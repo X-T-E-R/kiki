@@ -612,7 +612,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           dir: this.storeDir,
           shardCount: existingTopology ? undefined : SHARD_COUNT,
           valueCodec: 'json',
-          valueMode: 'memory',
+          valueMode: 'disk',
           fsyncPolicy: 'always',
           recovery: 'strict',
           activeExpireIntervalMs: 0,
