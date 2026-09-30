@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { RoomDocument, RoomLogEntry, RoomUsage } from '@kiki/protocol';
+import { markRoomSeen } from '@kiki/session-core/settings';
 
 import type { BotRoomApi } from '../../lib/botRooms';
 
@@ -40,13 +41,16 @@ export function useRoomLog(api: BotRoomApi, roomId: string): RoomLogState {
       try {
         const fresh: RoomLogEntry[] = [];
         let after = lastId.current;
+        let lastSeq: number | undefined;
         for (;;) {
           const page = await api.roomLog(roomId, { afterId: after, limit: PAGE });
           fresh.push(...page.entries);
+          lastSeq = page.lastSeq;
           after = page.entries.at(-1)?.id ?? after;
           if (page.nextCursor === undefined || page.entries.length === 0) break;
         }
         if (!alive.current) return;
+        if (lastSeq !== undefined && document.visibilityState !== 'hidden') markRoomSeen(roomId, lastSeq);
         if (fresh.length > 0) {
           lastId.current = fresh.at(-1)?.id;
           setEntries((current) => {

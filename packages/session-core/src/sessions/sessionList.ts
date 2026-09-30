@@ -16,7 +16,9 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
-export function isPinnedSession(session: Session): boolean {
+export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'pending_interaction'>;
+
+export function isPinnedSession(session: Pick<Session, 'metadata'>): boolean {
   return session.metadata[SESSION_PIN_META_KEY] === true;
 }
 
@@ -93,19 +95,19 @@ export function isSessionSortOrder(value: unknown): value is SessionSortOrder {
   return value === 'updated-desc' || value === 'updated-asc' || value === 'created-desc' || value === 'title';
 }
 
-function byUpdatedDesc(a: Session, b: Session): number {
+function byUpdatedDesc(a: SessionListEntry, b: SessionListEntry): number {
   return b.updated_at.localeCompare(a.updated_at);
 }
 
-function byUpdatedAsc(a: Session, b: Session): number {
+function byUpdatedAsc(a: SessionListEntry, b: SessionListEntry): number {
   return a.updated_at.localeCompare(b.updated_at);
 }
 
-function byCreatedDesc(a: Session, b: Session): number {
+function byCreatedDesc(a: SessionListEntry, b: SessionListEntry): number {
   return b.created_at.localeCompare(a.created_at) || byUpdatedDesc(a, b);
 }
 
-function byTitle(a: Session, b: Session): number {
+function byTitle(a: SessionListEntry, b: SessionListEntry): number {
   const an = a.title.trim();
   const bn = b.title.trim();
   if (an !== bn) {
@@ -130,12 +132,12 @@ export function arrangePinnedFirst(sessions: readonly Session[]): Session[] {
  * then the unpinned remainder by the requested order (`updated-desc` mirrors
  * `arrangePinnedFirst` exactly).
  */
-export function sortSessionItems(
-  sessions: readonly Session[],
+export function sortSessionItems<T extends SessionListEntry>(
+  sessions: readonly T[],
   order: SessionSortOrder,
-): Session[] {
-  const pinned: Session[] = [];
-  const rest: Session[] = [];
+): T[] {
+  const pinned: T[] = [];
+  const rest: T[] = [];
   for (const session of sessions) {
     (isPinnedSession(session) ? pinned : rest).push(session);
   }
@@ -147,7 +149,7 @@ export function sortSessionItems(
   return [...pinned, ...rest];
 }
 
-export interface SessionGroup {
+export interface SessionGroup<T = Session> {
   /**
    * Stable bucket key. Time grouping: `pinned` / `today` / `yesterday` /
    * `week` / `month` / `older` (pinned rows all report `pinned`). Workspace
@@ -157,7 +159,7 @@ export interface SessionGroup {
   readonly key: string;
   /** Human label for the group header (baked in so the renderer stays dumb). */
   readonly label: string;
-  readonly items: Session[];
+  readonly items: T[];
 }
 
 /**
@@ -165,7 +167,7 @@ export interface SessionGroup {
  * all report `pinned`).
  */
 export type TimeGroupKey = 'pinned' | 'today' | 'yesterday' | 'week' | 'month' | 'older';
-export type TimeGroup = SessionGroup & { readonly key: TimeGroupKey };
+export type TimeGroup<T = Session> = SessionGroup<T> & { readonly key: TimeGroupKey };
 
 export type TimeGroupLabels = Partial<Record<TimeGroupKey, string>>;
 
@@ -186,15 +188,15 @@ function startOfLocalDay(ms: number): number {
  * overrides the group header labels for localization; when omitted, bare keys
  * are used (tests).
  */
-export function groupSessionsByTime(
-  sessions: readonly Session[],
+export function groupSessionsByTime<T extends SessionListEntry>(
+  sessions: readonly T[],
   nowMs: number,
   labels: TimeGroupLabels = {},
-): TimeGroup[] {
+): TimeGroup<T>[] {
   const keys: readonly TimeGroupKey[] = ['pinned', 'today', 'yesterday', 'week', 'month', 'older'];
-  const buckets = keys.map<TimeGroup>((key) => ({ key, label: labels[key] ?? key, items: [] }));
+  const buckets = keys.map<TimeGroup<T>>((key) => ({ key, label: labels[key] ?? key, items: [] }));
   const [pinnedBucket, today, yesterday, week, month, older] = buckets as [
-    TimeGroup, TimeGroup, TimeGroup, TimeGroup, TimeGroup, TimeGroup,
+    TimeGroup<T>, TimeGroup<T>, TimeGroup<T>, TimeGroup<T>, TimeGroup<T>, TimeGroup<T>,
   ];
   const todayStart = startOfLocalDay(nowMs);
   const yesterdayStart = todayStart - DAY_MS;
@@ -203,7 +205,7 @@ export function groupSessionsByTime(
   const weekStart = todayStart - 6 * DAY_MS;
   const monthStart = todayStart - 29 * DAY_MS;
   for (const session of sessions) {
-    let group: TimeGroup;
+    let group: TimeGroup<T>;
     if (isPinnedSession(session)) {
       group = pinnedBucket;
     } else {
@@ -234,22 +236,22 @@ export const WORKSPACE_UNGROUPED_KEY = '__none';
  * workspace bucket into one leading global `pinned` group — pinning means
  * "keep this at the top of my list", which a per-workspace bucket would bury.
  */
-export function groupSessionsByWorkspace(
-  sessions: readonly Session[],
+export function groupSessionsByWorkspace<T extends SessionListEntry>(
+  sessions: readonly T[],
   workspaces: readonly Workspace[],
   resolveName: (workspace: Workspace) => string = (workspace) => workspace.name,
   ungroupedLabel = 'ungrouped',
   pinnedLabel?: string,
-): SessionGroup[] {
-  const pinned: SessionGroup | undefined =
+): SessionGroup<T>[] {
+  const pinned: SessionGroup<T> | undefined =
     pinnedLabel === undefined ? undefined : { key: 'pinned', label: pinnedLabel, items: [] };
   const order = new Map<string, number>(workspaces.map((workspace, index) => [workspace.id, index]));
   const named = new Map<string, string>();
   for (const workspace of workspaces) named.set(workspace.id, resolveName(workspace));
 
   // Preserve the workspaces-list order for buckets that actually have rows.
-  const buckets = new Map<string, SessionGroup>();
-  const ensure = (key: string, label: string): SessionGroup => {
+  const buckets = new Map<string, SessionGroup<T>>();
+  const ensure = (key: string, label: string): SessionGroup<T> => {
     let bucket = buckets.get(key);
     if (bucket === undefined) {
       bucket = { key, label, items: [] };
@@ -269,7 +271,7 @@ export function groupSessionsByWorkspace(
     else ensure(WORKSPACE_UNGROUPED_KEY, ungroupedLabel).items.push(session);
   }
 
-  const result: SessionGroup[] = [];
+  const result: SessionGroup<T>[] = [];
   for (const [index, workspace] of workspaces.entries()) {
     const bucket = buckets.get(workspace.id);
     if (bucket !== undefined) result[index] = bucket;
@@ -277,12 +279,12 @@ export function groupSessionsByWorkspace(
   const orphan = buckets.get(WORKSPACE_UNGROUPED_KEY);
   if (orphan !== undefined) result.push(orphan);
 
-  const ordered = result.filter((group): group is SessionGroup => group !== undefined);
+  const ordered = result.filter((group): group is SessionGroup<T> => group !== undefined);
   return pinned !== undefined && pinned.items.length > 0 ? [pinned, ...ordered] : ordered;
 }
 
 /** Status buckets the filter chips read (mirrors the sidebar row dot). */
-export function sessionStatusOf(session: Session): 'running' | 'needs-me' | 'idle' {
+export function sessionStatusOf(session: Pick<Session, 'busy' | 'pending_interaction'>): 'running' | 'needs-me' | 'idle' {
   const pending = session.pending_interaction;
   if (pending === 'approval' || pending === 'question') return 'needs-me';
   return session.busy ? 'running' : 'idle';
@@ -299,7 +301,7 @@ export interface SessionFilterInput {
  * entries within one dimension OR. Archived `hide` also drops archived rows a
  * caller may still hold from an earlier include fetch.
  */
-export function filterSessions(sessions: readonly Session[], filters: SessionFilterInput): Session[] {
+export function filterSessions<T extends SessionListEntry>(sessions: readonly T[], filters: SessionFilterInput): T[] {
   const status = new Set(filters.status);
   const workspaces = new Set(filters.workspaces);
   return sessions.filter((session) => {

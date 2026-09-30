@@ -45,6 +45,8 @@ import {
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
 import { ActivityPage } from './components/ActivityPage';
+import { useConversationList } from './lib/useConversationList';
+import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { ConversationShell } from './components/ConversationShell';
 import { MemoryPage } from './components/MemoryPage';
@@ -348,6 +350,7 @@ export function App() {
     () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
     [sessionsQuery.data],
   );
+  const conversations = useConversationList(sessions, layoutPrefs.sortBy);
   const sessionGroups = useMemo<readonly SessionGroup[]>(() => {
     const sorted = sortSessionItems(filterSessions(sessions, listFilters), layoutPrefs.sortBy);
     const nowMs = Date.now();
@@ -553,6 +556,7 @@ export function App() {
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}
+        rooms={conversations.rooms}
         sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}
         workspaceOptions={workspaceOptions}
@@ -622,6 +626,7 @@ export function App() {
             element={
               <ActivityPage
                 sessions={sessions}
+                rooms={conversations.rooms}
                 workspaceOptions={workspaceOptions}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
@@ -665,6 +670,7 @@ export function App() {
             path="/personas"
             element={<PersonasPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
+          <Route path="/r/:id" element={<RoomLinkRedirect />} />
           <Route
             path="/rooms/:id"
             element={<RoomPage sessions={sessions} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}

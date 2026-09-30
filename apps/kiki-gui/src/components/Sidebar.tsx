@@ -25,7 +25,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
 
 import {
   compactSessionContext,
@@ -43,7 +43,7 @@ import {
   isPinnedSession,
   isSearchable,
   pinMetadataPatch,
-  buildInboxModel,
+  buildConversationInbox,
   sessionRowState,
   type SessionRowState,
   SESSION_SORT_ORDERS,
@@ -293,6 +293,7 @@ function PrimaryNav({
 export function Sidebar({
   activeSessionId,
   sessions,
+  rooms = [],
   sessionGroups: allSessionGroups,
   sessionsQuery,
   workspaceOptions,
@@ -309,6 +310,7 @@ export function Sidebar({
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
   sessions: readonly Session[];
+  rooms?: readonly RoomListItem[];
   /** Filtered, sorted, grouped rows for the list. */
   sessionGroups: readonly SessionGroup[];
   sessionsQuery: {
@@ -398,7 +400,7 @@ export function Sidebar({
   const activity = useSessionActivity(sessions);
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
-  const inbox = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
+  const inbox = useMemo(() => buildConversationInbox(sessions, rooms, seen), [sessions, rooms, seen]);
   // Blocked-only keeps the "needs you" wording; once finished runs are in the
   // count too, the label says "new items" instead of overstating urgency.
   const activityLabel = inbox.total === 0

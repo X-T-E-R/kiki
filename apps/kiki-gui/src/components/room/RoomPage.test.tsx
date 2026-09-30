@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PersonaSummary, RoomDocument, RoomLogEntry, RoomUsage } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
+import { resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
 import { mentionAtCaret, mentionOptions } from './roomLog';
 import { RoomPage } from './RoomPage';
 
@@ -101,6 +102,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
   document.body.innerHTML = '';
+  resetSessionSeen();
 });
 
 async function flush(): Promise<void> {
@@ -156,6 +158,27 @@ describe('room mention helpers', () => {
 });
 
 describe('RoomPage', () => {
+  it('marks only the successfully loaded room log high-water as read', async () => {
+    rooms.log.mockResolvedValue({ entries: [], lastSeq: 7 });
+    await renderRoom();
+    await flush();
+    expect(sessionSeenSnapshot()['room:release-031']).toBe(7);
+  });
+
+  it('does not mark a room read when its log failed or the document is hidden', async () => {
+    rooms.log.mockRejectedValue(new Error('Log unavailable'));
+    await renderRoom();
+    await flush();
+    expect(sessionSeenSnapshot()['room:release-031']).toBeUndefined();
+    rooms.log.mockResolvedValue({ entries: [], lastSeq: 9 });
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      await renderRoom();
+      await flush();
+      expect(sessionSeenSnapshot()['room:release-031']).toBeUndefined();
+    } finally { visibility.mockRestore(); }
+  });
+
   it.each([
     ['auth.login_required', '模型登录'],
     ['provider.connection_error', '检查网络'],

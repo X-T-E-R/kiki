@@ -308,6 +308,16 @@ Klient provides `klient.rest.threads.messages(query, options)` with these snake_
 
 Peer messages are no longer evicted by the mailbox's former 512-message limit. The first upgraded mailbox owner resumes a checkpointed backfill of records still present in the mailbox; messages already evicted by older versions are not reconstructed from session wires. Restart older processes sharing the same Kiki home before relying on the new retention behavior.
 
+### Room conversation entries
+
+`GET /api/rooms/items` returns room summaries independently of the paginated session list. Each entry contains `kind: "room"`, `id`, `title`, `workspace`, ISO `createdAt` / `updatedAt`, `lastSeq`, `memberCount`, `busy`, `needsYou`, `pendingInteraction` (`none`, `approval`, or `question`), `failed`, `pinned`, and `archived`. Combine these entries with loaded sessions by activity time; `workspace` is the room's own classification, not a member's workspace. Pinned entries sort first. The endpoint includes archived rooms so clients can apply the same archive filters as threads.
+
+Use `PATCH /api/rooms/{id}` with `name`, `pinned`, or `archived`; `false` unpins or restores. Archiving cancels the room's queued wakes and stops its active room work without archiving member threads. `DELETE /api/rooms/{id}` removes the room and its log projections; missing rooms and invalid patches return `40001`.
+
+Unread marks are local to the client and space, like thread marks. `lastSeq` advances for messages, wake failures, and budget exhaustion, not renaming or pinning. `GET /api/rooms/{id}/log` returns `lastSeq` for the entries actually fetched, so opening a partially fetched log must not mark unseen pages read. The GUI uses `/rooms/{id}` links, with `/r/{id}` as a short route alias.
+
+Klient exposes `rest.rooms.listItems()` and `global.rooms.listItems()`. `klient.events.on("room.changed", handler)` carries `{ roomId, room, entry?, deleted? }`; the existing WebSocket event is `event.room.changed` with `room_id`. A deletion has `deleted: true` and includes the final room document for invalidation, not an existing-room claim.
+
 ### File system
 
 In-session file operations go through `POST /api/sessions/{session_id}/fs:{action}` with JSON bodies; actions are `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`. In addition:

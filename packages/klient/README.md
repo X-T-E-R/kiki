@@ -162,6 +162,16 @@ Standard ACP updates already project into ordinary transcript tool progress, pla
 
 Invoke `desktop_log_info` for `{ directory, backendLogPath, maxBytes, backups, logLevel, appliesOnNextLaunch }`, and `open_desktop_log_directory` to open the active local space's log directory. `read_desktop_prefs`/`write_desktop_prefs({ prefs: { logLevel } })` persist the level; allowed values are `fatal`, `error`, `warn` (default), `info`, `debug`, `trace`, `silent`. The next desktop-owned backend launch receives it; an attached external daemon is not reconfigured. The current `desktop-backend.log` rotates at 5 MiB with three backups. Browser/remote clients have no local directory-opening equivalent. Add the commands to the GUI host adapter when connecting the controls.
 
+## Conversation list client projection
+
+Room summaries are `global.rooms.listItems()` (all transports) or `rest.rooms.listItems()` (HTTP). The wire fields and lifecycle operations are documented in [Room conversation entries](../../docs/en/server/rest-api.md#room-conversation-entries); `RoomListItem` in `@kiki/protocol` is their canonical schema. Session pagination remains unchanged: merge summaries with the loaded session pages, not into their `before_id` cursor.
+
+The GUI's `useConversationList(sessions, order?)` hook returns `{ items, rooms, roomsQuery, seen }`, polls room summaries every 15 seconds, and invalidates `['rooms']` on the public `room.changed` event. Read `roomsQuery.isError` rather than treating a failed room fetch as a successful empty inventory. Its item union has `kind: 'session' | 'room'`, a collision-free `key`, `id`, `title`, `workspace_id`, `created_at`, `updated_at`, `href`, `last_seq`, `unread_count`, `needs_you`, `failed`, `pinned`, `archived`, and `busy`. A room also has `member_count` and its raw `room` summary; a thread retains its raw `session`. Branch on `kind` before calling lifecycle operations; room rows are not session records.
+
+Framework-free `mergeConversationItems` / `groupConversationItems` in `@kiki/session-core/sessions` share thread ordering, calendar-time grouping, workspace grouping, pinning, and archive filters. `buildConversationInbox` uses the same read store as threads. Room marks use `room:<id>` keys through `markRoomSeen` / `forgetRoomSeen` / `roomUnreadCount` in `@kiki/session-core/settings`. Only a successfully loaded, visible room log is marked read. Mark-all-read clears finished room items but never dismisses blocked room attention. Renaming, pinning, or archiving does not advance room unread activity.
+
+`roomRefLink(id)` produces `/rooms/<id>`; `parseConversationLink` also accepts `/r/<id>` and `kiki://rooms/<id>` / `kiki://r/<id>` text. The GUI redirects the short route while preserving query and fragment. These are in-app link contracts; no new operating-system protocol registration is provided.
+
 ## Local executor sessions (HTTP)
 
 `klient.rest.executors` browses local Claude/Codex history and attaches a selected

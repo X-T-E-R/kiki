@@ -23,9 +23,10 @@
 import { useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import type { Session } from '@kiki/protocol';
+import type { RoomListItem, Session } from '@kiki/protocol';
 import {
-  buildInboxModel,
+  buildConversationInbox,
+  roomRefLink,
   type InboxItem,
   type InboxReason,
 } from '@kiki/session-core/sessions';
@@ -56,6 +57,7 @@ export function useSessionSeen() {
 const REASON_LABEL: Record<InboxReason, string> = {
   approval: 'activity.reason.approval',
   question: 'activity.reason.question',
+  budget: 'activity.reason.budget',
   completed: 'activity.reason.completed',
   failed: 'activity.reason.failed',
   cancelled: 'activity.reason.cancelled',
@@ -63,12 +65,12 @@ const REASON_LABEL: Record<InboxReason, string> = {
 
 /** A blocked item opens the session where the answer is asked for. */
 function itemHref(item: InboxItem): string {
-  return `/s/${item.sessionId}`;
+  return item.roomId === undefined ? `/s/${item.sessionId}` : roomRefLink(item.roomId);
 }
 
 /** Same status dot as the sidebar row, still: an inbox is a list of rows. */
 function ReasonMark({ item }: { item: InboxItem }) {
-  const life = item.reason === 'approval' || item.reason === 'question'
+  const life = item.reason === 'approval' || item.reason === 'question' || item.reason === 'budget'
     ? 'waiting'
     : item.reason === 'completed' ? 'done' : 'failed';
   return (
@@ -93,7 +95,7 @@ function InboxRow({
   onOpen: (href: string) => void;
 }) {
   const { t } = useI18n();
-  const waiting = item.reason === 'approval' || item.reason === 'question';
+  const waiting = item.reason === 'approval' || item.reason === 'question' || item.reason === 'budget';
   return (
     <li>
       <button
@@ -179,15 +181,16 @@ function InboxGroup({
 
 export interface ActivityPageProps {
   readonly sessions: readonly Session[];
+  readonly rooms?: readonly RoomListItem[];
   readonly workspaceOptions: readonly { readonly id: string; readonly name: string }[];
   readonly onToggleSidebar: () => void;
 }
 
-export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: ActivityPageProps) {
+export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleSidebar }: ActivityPageProps) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const seen = useSessionSeen();
-  const model = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
+  const model = useMemo(() => buildConversationInbox(sessions, rooms, seen), [sessions, rooms, seen]);
   const workspaceNames = useMemo(
     () => new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name])),
     [workspaceOptions],

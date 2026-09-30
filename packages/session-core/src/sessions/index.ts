@@ -2,6 +2,8 @@ export * from './activity';
 export * from './awayAttention';
 export * from './busySessions';
 export * from './inbox';
+export * from './conversationList';
+export * from './conversationLinks';
 export * from './quickSwitcher';
 export * from './search';
 export * from './sessionList';

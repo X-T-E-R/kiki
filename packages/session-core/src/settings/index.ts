@@ -4,5 +4,6 @@ export * from './mcp';
 export * from './nbSearch';
 export * from './onboarding';
 export * from './sessionReadState';
+export * from './roomReadState';
 export * from './settings';
 export * from './terminalPrefs';

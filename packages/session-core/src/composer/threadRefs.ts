@@ -62,7 +62,7 @@ export function threadRefLink(sessionId: string): string {
  * second `/`, so a token like this can never name a command.
  */
 export function isAppRouteLink(token: string): boolean {
-  return /^\/(?:s|settings|board|cron|memory|usage|activity|capabilities)\/\S/.test(token);
+  return /^\/(?:s|r|rooms|settings|board|cron|memory|usage|activity|capabilities)\/\S/.test(token);
 }
 
 /** A short, stable stand-in label for a thread with no title. */

@@ -25,13 +25,17 @@
 import type { Session } from '@kiki/protocol';
 
 import type { SessionSeenMap } from '../settings/sessionReadState';
+
 import { pendingKindOf } from './activity';
 
+export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
+
 /** Why a session is in the inbox. */
-export type InboxReason = 'approval' | 'question' | 'completed' | 'failed' | 'cancelled';
+export type InboxReason = 'approval' | 'question' | 'budget' | 'completed' | 'failed' | 'cancelled';
 
 export interface InboxItem {
   readonly sessionId: string;
+  readonly roomId?: string;
   readonly title: string;
   readonly workspaceId: string;
   readonly reason: InboxReason;
@@ -57,14 +61,14 @@ export interface InboxModel {
 export const EMPTY_INBOX: InboxModel = { needsYou: [], unread: [], total: 0 };
 
 /** True when the session has events the user has not opened yet. */
-export function isSessionUnread(session: Session, seen: SessionSeenMap): boolean {
+export function isSessionUnread(session: InboxSource, seen: SessionSeenMap): boolean {
   // A session with no events yet (a fresh draft) is never "unread".
   if (session.last_seq <= 0) return false;
   const mark = seen[session.id];
   return mark === undefined || mark < session.last_seq;
 }
 
-function finishedReason(session: Session): InboxReason | undefined {
+function finishedReason(session: InboxSource): InboxReason | undefined {
   switch (session.last_turn_reason) {
     case 'failed':
       return 'failed';
@@ -89,7 +93,7 @@ function ascending(left: InboxItem, right: InboxItem): number {
  * `seen` is the local read-state snapshot.
  */
 export function buildInboxModel(
-  sessions: readonly Session[],
+  sessions: readonly InboxSource[],
   seen: SessionSeenMap,
 ): InboxModel {
   const needsYou: InboxItem[] = [];
@@ -98,6 +102,7 @@ export function buildInboxModel(
     if (session.archived === true) continue;
     const base = {
       sessionId: session.id,
+      roomId: session.roomId,
       title: session.title,
       workspaceId: session.workspace_id,
       at: session.updated_at,
@@ -110,6 +115,10 @@ export function buildInboxModel(
     const pending = pendingKindOf(session);
     if (pending !== 'none') {
       needsYou.push({ ...base, reason: pending });
+      continue;
+    }
+    if (session.needsYouReason !== undefined) {
+      needsYou.push({ ...base, reason: session.needsYouReason });
       continue;
     }
     // Work in flight is not an item to act on.
@@ -132,7 +141,7 @@ export type SessionRowState = 'needs-me' | 'running' | 'unread' | 'read';
  * the thing to act on even while a subagent works), running beats unread, and
  * a session with nothing outstanding is plain `read`.
  */
-export function sessionRowState(session: Session, seen: SessionSeenMap): SessionRowState {
+export function sessionRowState(session: InboxSource, seen: SessionSeenMap): SessionRowState {
   if (pendingKindOf(session) !== 'none') return 'needs-me';
   if (session.busy) return 'running';
   return isSessionUnread(session, seen) ? 'unread' : 'read';

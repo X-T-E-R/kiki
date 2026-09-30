@@ -4915,6 +4915,7 @@ export const zh = {
   'activity.unreadOrder': '最新的在前',
   'activity.reason.approval': '待批准',
   'activity.reason.question': '待回答',
+  'activity.reason.budget': '房间预算已用尽',
   'activity.reason.completed': '已完成',
   'activity.reason.failed': '已失败',
   'activity.reason.cancelled': '已停止',

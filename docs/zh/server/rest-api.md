@@ -308,6 +308,16 @@ Klient 提供 `klient.rest.threads.messages(query, options)`，参数和结果�
 
 Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首个邮箱 owner 会按持久检查点回填仍在邮箱中的记录；旧版本已淘汰的消息不会从会话 wire 重建。依赖新保留规则前，应重启共享同一 Kiki home 的旧进程。
 
+### 房间会话条目
+
+`GET /api/rooms/items` 独立于分页会话列表返回房间摘要。每条包含 `kind: "room"`、`id`、`title`、`workspace`、ISO 时间 `createdAt` / `updatedAt`、`lastSeq`、`memberCount`、`busy`、`needsYou`、`pendingInteraction`（`none`、`approval` 或 `question`）、`failed`、`pinned` 和 `archived`。客户端按活动时间把它们与已加载的线程合并；`workspace` 是房间自己的分类工作区，不是成员的工作区。置顶条目优先排列。接口包含已归档房间，供客户端应用与线程相同的归档筛选。
+
+通过 `PATCH /api/rooms/{id}` 修改 `name`、`pinned` 或 `archived`；传 `false` 取消置顶或恢复归档。归档会取消房间排队的唤醒并停止其正在执行的房间工作，不会归档成员线程。`DELETE /api/rooms/{id}` 删除房间及其日志投影；房间不存在或补丁非法时返回 `40001`。
+
+与线程一样，已读标记保存在客户端并按空间隔离。`lastSeq` 只随消息、唤醒失败及预算耗尽推进，重命名和置顶不会制造未读。`GET /api/rooms/{id}/log` 返回实际已取条目的 `lastSeq`，因此只加载部分日志时不能把尚未取到的页面标成已读。GUI 使用 `/rooms/{id}` 链接，`/r/{id}` 为短路由别名。
+
+Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.events.on("room.changed", handler)` 携带 `{ roomId, room, entry?, deleted? }`；已有 WebSocket 事件为 `event.room.changed`，ID 字段为 `room_id`。删除时 `deleted: true`，附带最后的房间文档供缓存失效使用，不表示房间仍然存在。
+
 ### 文件系统
 
 会话内文件操作为 `POST /api/sessions/{session_id}/fs:{action}`，动作包括 `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`，请求体为 JSON。另有：

@@ -4983,6 +4983,7 @@ export const en = {
   'activity.unreadOrder': 'Newest first',
   'activity.reason.approval': 'Awaiting approval',
   'activity.reason.question': 'Awaiting answer',
+  'activity.reason.budget': 'Room budget exhausted',
   'activity.reason.completed': 'Finished',
   'activity.reason.failed': 'Failed',
   'activity.reason.cancelled': 'Stopped',

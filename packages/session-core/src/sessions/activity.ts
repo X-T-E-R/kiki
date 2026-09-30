@@ -53,7 +53,7 @@ export interface ActivityModel {
   readonly runningTaskTotal: number;
 }
 
-export function pendingKindOf(session: Session): 'approval' | 'question' | 'none' {
+export function pendingKindOf(session: Pick<Session, 'pending_interaction'>): 'approval' | 'question' | 'none' {
   return session.pending_interaction === 'approval' || session.pending_interaction === 'question'
     ? session.pending_interaction
     : 'none';
