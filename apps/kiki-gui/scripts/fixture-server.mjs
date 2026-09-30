@@ -983,13 +983,18 @@ class FixtureServer {
     session.pendingSteers = [];
     const turnId = boundary.payload?.turnId;
     const step = boundary.payload?.step ?? 1;
+    const boundaryAgent = boundary.payload?.agentId ?? 'main';
     for (const steer of pending) {
-      // Another turn's boundary is not this steer's delivery point.
-      if (steer.turnId !== undefined && turnId !== undefined && steer.turnId !== turnId) {
+      // Another agent's or another turn's boundary is not this steer's delivery point.
+      if ((steer.agentId ?? 'main') !== boundaryAgent
+        || (steer.turnId !== undefined && turnId !== undefined && steer.turnId !== turnId)) {
         session.pendingSteers.push(steer);
         continue;
       }
-      this.emitTranscriptFromFrame(session, {
+      const deliver = boundaryAgent === 'main'
+        ? (frame) => this.emitTranscriptFromFrame(session, frame)
+        : (frame) => this.emitSideFrame(session, boundaryAgent, frame, { promptId: steer.promptId, userMessageId: steer.userMessageId, content: steer.content });
+      deliver({
         type: 'context.append_message',
         payload: {
           message: {
@@ -1217,18 +1222,30 @@ class FixtureServer {
         session.pendingQuestions.push({ ...payload });
         session.record.pending_interaction = 'question';
         break;
-      case 'turn.started':
+      case 'turn.started': {
+        const agentId = frame.agentId ?? payload.agentId ?? 'main';
+        if (agentId !== 'main') {
+          // A native child's running turn: prompts to it park and can steer.
+          (session.childTurns ??= {})[agentId] = payload.turnId;
+          break;
+        }
         session.record.busy = true;
         session.activeTurnId = payload.turnId;
         break;
+      }
       case 'turn.ended':
+        if ((frame.agentId ?? payload.agentId ?? 'main') !== 'main') {
+          const agentId = frame.agentId ?? payload.agentId;
+          delete session.childTurns?.[agentId];
+          session.pendingSteers = session.pendingSteers.filter((steer) => steer.agentId !== agentId);
+        }
         if ((frame.agentId ?? payload.agentId ?? 'main') === 'main') {
           session.record.busy = false;
           session.record.pending_interaction = 'none';
           // A turn that ends before its next step never accepts its steers: the
           // engine drops unlaunched steer requests, so a stale prompt must not
           // land in an unrelated later turn.
-          session.pendingSteers = [];
+          session.pendingSteers = session.pendingSteers.filter((steer) => (steer.agentId ?? 'main') !== 'main');
           session.activeTurnId = undefined;
         }
         break;
@@ -2946,10 +2963,26 @@ class FixtureServer {
       })();
       return this.envelope(res, { prompt_id: promptId, user_message_id: promptId, status: 'running', content: body.content, created_at: createdAt });
     }
+    if (tail === '/prompts' && body !== undefined && typeof body.agent_id === 'string'
+      && body.agent_id !== 'main' && session.childTurns?.[body.agent_id] !== undefined) {
+      // A native child mid-turn parks the prompt in ITS queue (agent-scoped
+      // like kap-server); `:steer?agent_id=` then hands it to that turn.
+      const agentId = body.agent_id;
+      const promptId = typeof body.prompt_id === 'string' && body.prompt_id !== '' ? body.prompt_id : nextId('msg');
+      const createdAt = now();
+      const item = { prompt_id: promptId, user_message_id: promptId, content: body.content, created_at: createdAt };
+      ((session.childQueues ??= {})[agentId] ??= []).push(item);
+      this.emitSideFrame(session, agentId, {
+        type: 'prompt.queued',
+        payload: { promptId, userMessageId: promptId, content: body.content, createdAt },
+      }, { promptId, userMessageId: promptId, content: body.content });
+      return this.envelope(res, { ...item, status: 'queued' });
+    }
     if (tail === '/prompts' && body !== undefined) {
       // v2 currently uses one stable id for the prompt, user message, and
-      // durable context message. Keep the stand-in aligned with that graph.
-      const promptId = nextId('msg');
+      // durable context message. Keep the stand-in aligned with that graph;
+      // a client-chosen `prompt_id` is that id, as on kap-server.
+      const promptId = typeof body.prompt_id === 'string' && body.prompt_id !== '' ? body.prompt_id : nextId('msg');
       const userMessageId = promptId;
       const createdAt = now();
       const text = (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -3073,7 +3106,38 @@ class FixtureServer {
       // gains its user frame there and not one frame earlier. The turn keeps
       // running and the steered prompt settles with it. Without an active
       // prompt the real route answers PROMPT_NOT_FOUND (40402).
+      // A scenario can hold the receipt so the walker sees the in-flight
+      // phase of "send now" (the request is on the wire, not yet accepted).
+      const replyDelay = this.scenario?.data.steerReplyDelayMs ?? 0;
+      if (replyDelay > 0 && body?.__held !== true) {
+        setTimeout(() => { this.route(res, path, query, { ...(body ?? {}), __held: true }, method); }, replyDelay);
+        return undefined;
+      }
       const promptId = steerMatch[1];
+      const steerAgent = query.get('agent_id');
+      if (steerAgent !== null && steerAgent !== 'main') {
+        // Agent-scoped steer: the child's parked prompt joins the child's
+        // running turn at its next step boundary, same as main.
+        const queue = session.childQueues?.[steerAgent] ?? [];
+        const index = queue.findIndex((item) => item.prompt_id === promptId);
+        const turnId = session.childTurns?.[steerAgent];
+        if (index < 0 || turnId === undefined) return this.envelope(res, null, 40402, 'prompt.not_found');
+        const [item] = queue.splice(index, 1);
+        this.emitSideFrame(session, steerAgent, {
+          type: 'prompt.steered',
+          payload: { promptIds: [promptId], content: item.content, steeredAt: now() },
+        });
+        session.pendingSteers.push({
+          agentId: steerAgent,
+          promptId,
+          userMessageId: item.user_message_id,
+          content: item.content,
+          origin: { kind: 'user' },
+          turnId,
+        });
+        this.resolveWaiters(session, 'advance');
+        return this.envelope(res, { steered: true, prompt_ids: [promptId] });
+      }
       const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
       if (queuedIndex < 0 || session.activePrompt === null) {
         return this.envelope(res, null, 40402, 'prompt.not_found');

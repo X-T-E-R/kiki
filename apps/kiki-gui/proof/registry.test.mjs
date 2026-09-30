@@ -9,7 +9,7 @@ import { scenarios } from '../scripts/visual-proof.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('the proof registry owns every GUI fixture scenario', () => {
-  assert.equal(scenarios.length, 72);
+  assert.equal(scenarios.length, 73);
   assert.equal(new Set(scenarios.map((entry) => entry.name)).size, scenarios.length);
   for (const entry of scenarios) {
     assert.equal(typeof entry.run, 'function', `${entry.name} has no run`);

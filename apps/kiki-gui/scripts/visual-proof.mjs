@@ -37,6 +37,7 @@ import { createSettingsIaWalker } from './visual-proof-settings-ia.mjs';
 import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
+import { createSteerWalker } from './visual-proof-steer.mjs';
 
 /**
  * Scenarios whose walk exercises the transcript list (streaming, folding,
@@ -46,7 +47,7 @@ import { createExternalMainWalker } from './visual-proof-external-main.mjs';
  */
 const TIMELINE_GATED = new Set([
   'long-transcript', 'subagents', 'subagents-burst', 'subagent-approval',
-  'goal-swarm', 'tool-pipeline', 'rewrite-flow', 'error-abort',
+  'goal-swarm', 'tool-pipeline', 'rewrite-flow', 'error-abort', 'steer',
 ]);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -68,6 +69,7 @@ const MATRIX = {
   'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
   skins: ['theme'],
+  steer: ['width'],
   worktrees: ['theme', 'width'],
 };
 
@@ -4251,6 +4253,14 @@ async function scenarioExternalMain() {
   await walk();
 }
 
+/** Send now into a running main / child turn (scripts/visual-proof-steer.mjs). */
+async function scenarioSteer() {
+  const walk = createSteerWalker({
+    page, shot, control, view: job().view, webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 /** Settings › Models & providers (scripts/visual-proof-models-page.mjs). */
 const modelsPageWalker = () => createModelsPageWalker({
   page, shot, resizeViewport, setProofTheme, view: job().view,
@@ -5065,6 +5075,7 @@ const BODIES = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
   ['queue', scenarioQueue],
+  ['steer', scenarioSteer],
   ['subagents', scenarioSubagents],
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
