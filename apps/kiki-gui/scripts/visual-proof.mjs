@@ -1135,10 +1135,15 @@ async function scenarioRailScale() {
   if (await summary.locator('[data-roster-filter="failed"]').count() !== 0) throw new Error('roster still filters by failure');
   const railText = await page.locator('[data-session-rail]').innerText();
   if (/\{"|"\s*:\s*[{"\d]/.test(railText)) throw new Error('rail shows a raw JSON payload');
-  // The profile card leads the rail and opens onto the capability tabs.
-  await page.locator('[data-session-rail] [data-profile-toggle]').click();
-  await page.locator('[data-session-rail] [data-capability-tab-button="skills"]').click();
-  await page.locator('[data-session-rail] [data-capability-source="global"]').first().waitFor({ timeout: 10_000 });
+  // The rail head names who its page is about; the reference section below it
+  // unfolds onto the capability tabs.
+  const rail = page.locator('[data-session-rail]');
+  await rail.locator('[data-rail-profile-head]').waitFor({ timeout: 10_000 });
+  const capabilities = rail.locator('[data-rail-capabilities]');
+  await capabilities.evaluate((node) => { node.scrollIntoView({ block: 'center' }); });
+  await capabilities.locator('button').first().click();
+  await rail.locator('[data-capability-tab-button="skills"]').click();
+  await rail.locator('[data-capability-source="global"]').first().waitFor({ timeout: 10_000 });
   await page.locator('[data-roster-toggle="agent-docs"]').click();
   await page.waitForTimeout(300);
   await shot('rail-scale');
