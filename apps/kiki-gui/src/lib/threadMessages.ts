@@ -29,8 +29,9 @@ export type RoomSourcedMessage = ThreadMessage & { readonly source: { readonly k
 export interface ThreadMessagesPage {
   readonly items: readonly ThreadMessage[];
   readonly nextCursor?: string;
-  /** The last hop stopped at the server's scan budget. */
+  /** The last hop stopped at the scan budget or has unproven history coverage. */
   readonly incomplete: boolean;
+  readonly history?: ListThreadMessagesResponse['history'];
 }
 
 /** Filters without the cursor; a continuation must repeat them unchanged. */
@@ -62,9 +63,9 @@ export async function readThreadMessagesPage(
     const page = await list({ ...filter, cursor: next });
     const items = page.items;
     next = page.next_cursor;
-    incomplete = page.incomplete === 'scan_budget';
-    if (items.length > 0 || next === undefined || hop + 1 >= MAX_EMPTY_HOPS) {
-      return { items, nextCursor: next, incomplete };
+    incomplete = page.incomplete !== undefined;
+    if (page.incomplete === 'history_preparing' || items.length > 0 || next === undefined || hop + 1 >= MAX_EMPTY_HOPS) {
+      return { items, nextCursor: next, incomplete, history: page.history };
     }
   }
 }

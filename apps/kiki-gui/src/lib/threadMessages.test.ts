@@ -31,6 +31,13 @@ function message(id: string, from: string, to: string, at: number, patch: Partia
 }
 
 describe('readThreadMessagesPage', () => {
+  it.each(['preparing', 'error'] as const)('preserves %s coverage and does not chase an incomplete history cursor', async (state) => {
+    const history = { state, generation: 'example-generation', processedMessages: 2, completedShards: 1, totalShards: 16,
+      pending: 'room' as const, error: state === 'error' ? 'example failure' : undefined };
+    const list = vi.fn(async () => ({ items: [], next_cursor: 'old-cursor', incomplete: 'history_preparing' as const, history }));
+    expect(await readThreadMessagesPage(list, {})).toMatchObject({ items: [], incomplete: true, history });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
   it('follows empty pages that still carry a cursor, repeating the same filters', async () => {
     const pages: ListThreadMessagesResponse[] = [
       { items: [], next_cursor: 'c1', incomplete: 'scan_budget' },

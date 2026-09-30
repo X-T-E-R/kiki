@@ -6043,6 +6043,8 @@ export const en = {
   'comms.loadOlder': 'Load earlier messages',
   'comms.loading': 'Loading…',
   'comms.scanning': 'Still searching earlier messages.',
+  'comms.historyPreparing': 'Preparing earlier history… Records shown may be incomplete.',
+  'comms.historyFailed': 'Earlier history could not be prepared. Records shown may be incomplete.',
   'comms.loadFailed': 'Thread messages could not be loaded.',
   'comms.showAllPeers': 'Show all {count}',
   'comms.showFewer': 'Show fewer',

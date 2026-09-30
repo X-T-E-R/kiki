@@ -5988,6 +5988,8 @@ export const zh = {
   'comms.loadOlder': '加载更早的消息',
   'comms.loading': '正在加载…',
   'comms.scanning': '还在查找更早的消息。',
+  'comms.historyPreparing': '正在准备早期记录，当前显示可能不完整。',
+  'comms.historyFailed': '早期记录准备失败，当前显示可能不完整。',
   'comms.loadFailed': '沟通记录加载失败。',
   'comms.showAllPeers': '显示全部 {count} 个',
   'comms.showFewer': '收起',

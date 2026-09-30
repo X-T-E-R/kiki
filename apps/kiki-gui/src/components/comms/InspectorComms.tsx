@@ -19,7 +19,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { InspectorSection } from '../agent-panel/InspectorSection';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
-import { EndpointState, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
+import { EndpointState, HistoryNote, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
 import { roomHref, useRoomNames } from './roomNames';
 import { ThreadConversationDialog } from './ThreadConversationDialog';
 
@@ -139,13 +139,14 @@ export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
       </InspectorSection>
     );
   }
-  if (total === 0 && !query.hasNextPage) return null;
+  if (total === 0 && !query.hasNextPage && !query.historyIncomplete) return null;
 
   const visible = showAll ? groups : groups.slice(0, PEER_PREVIEW);
   return (
     <InspectorSection title={t('comms.title')} count={total} data-inspector-comms="">
+      {query.historyIncomplete ? <HistoryNote state={query.history?.state === 'error' ? 'error' : 'preparing'} /> : null}
       {total === 0 ? (
-        <p className="text-[12.5px] text-ink-faint">{t('comms.scanning')}</p>
+        query.historyIncomplete ? null : <p className="text-[12.5px] text-ink-faint">{t('comms.scanning')}</p>
       ) : (
         <ul className="space-y-0.5">
           {roomGroups.map((group) => {

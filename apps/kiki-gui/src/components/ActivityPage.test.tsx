@@ -72,6 +72,31 @@ async function render(sessions: readonly Session[], path = '/activity') {
 }
 
 describe('ActivityPage', () => {
+  it.each(['preparing', 'error'] as const)('does not show empty history while coverage is %s', async (state) => {
+    client.listThreadMessages.mockReset();
+    client.listThreadMessages.mockResolvedValue({ items: [], incomplete: 'history_preparing',
+      history: { generation: 'example-generation', state, processedMessages: 0, completedShards: 0, totalShards: 16 } });
+    const page = await render([], '/activity?view=comms');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(page.querySelector('[data-comms-history]')?.getAttribute('data-comms-history')).toBe(state);
+    expect(page.querySelector('[data-activity-comms-empty]')).toBeNull();
+  });
+
+  it('refreshes the first page after preparation instead of continuing an incomplete cursor', async () => {
+    client.listThreadMessages.mockReset();
+    client.listThreadMessages.mockResolvedValueOnce({ items: [], next_cursor: 'incomplete-cursor', incomplete: 'history_preparing',
+      history: { generation: 'old-generation', state: 'preparing', processedMessages: 0, completedShards: 0, totalShards: 16 } });
+    client.listThreadMessages.mockResolvedValue({ items: [],
+      history: { generation: 'new-generation', state: 'complete', processedMessages: 2, completedShards: 16, totalShards: 16 } });
+    const page = await render([], '/activity?view=comms');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(page.querySelector('[data-comms-load-older]')).toBeNull();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
+    expect(client.listThreadMessages.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(client.listThreadMessages.mock.calls.every(([query]) => query.cursor === undefined)).toBe(true);
+    expect(page.querySelector('[data-comms-history]')).toBeNull();
+    expect(page.querySelector('[data-activity-comms-empty]')).not.toBeNull();
+  });
   it('lists blocked sessions before finished ones and names each order', async () => {
     const page = await render([
       session({ id: 'finished', last_turn_reason: 'completed', updated_at: '2026-01-01T05:00:00.000Z' }),

@@ -22,7 +22,7 @@ import {
 import { roomHref, useRoomNames } from './roomNames';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
-import { DeliveryNote, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
+import { DeliveryNote, HistoryNote, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
 
 function EndpointLink({ endpoint, onOpen }: { readonly endpoint: ThreadEndpoint; readonly onOpen: (href: string) => void }) {
   const name = useEndpointName();
@@ -142,7 +142,8 @@ export function ActivityComms({
           </button>
         </p>
       ) : null}
-      {query.isSuccess && messages.length === 0 && !query.hasNextPage ? (
+      {query.historyIncomplete ? <HistoryNote state={query.history?.state === 'error' ? 'error' : 'preparing'} /> : null}
+      {query.isSuccess && messages.length === 0 && !query.hasNextPage && !query.historyIncomplete ? (
         <div data-activity-comms-empty className="px-3 pt-8">
           <p className="text-[14px] text-ink">{t('comms.emptyTitle')}</p>
           <p className="mt-1 text-[12.5px] text-ink-soft">{t(workspaceId === undefined ? 'comms.emptyBody' : 'comms.emptyScoped')}</p>

@@ -9,7 +9,8 @@
  * log asks the user to act.
  */
 
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 
 import { useI18n } from '../../i18n';
 import {
@@ -33,15 +34,33 @@ export function useThreadMessages(filter: ThreadMessagesFilter, enabled = true) 
   // Optional: the rail also renders in connection-less previews and tests,
   // where the chapter simply stays empty.
   const client = useOptionalConnection()?.client;
-  return useInfiniteQuery({
-    queryKey: [...THREAD_MESSAGES_QUERY_KEY, filter],
-    queryFn: ({ pageParam }) => readThreadMessagesPage((query) => client!.listThreadMessages(query), filter, pageParam),
+  const queryClient = useQueryClient();
+  const queryKey = [...THREAD_MESSAGES_QUERY_KEY, filter];
+  const query = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam }) => readThreadMessagesPage((input) => client!.listThreadMessages(input), filter, pageParam),
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (page) => page.nextCursor,
+    getNextPageParam: (page) => page.history?.state !== undefined && page.history.state !== 'complete' ? undefined : page.nextCursor,
+    refetchInterval: (current) => current.state.data?.pages[0]?.history?.state === 'preparing' ? 1000 : false,
     enabled: enabled && typeof client?.listThreadMessages === 'function',
     staleTime: 15_000,
     retry: false,
   });
+  useEffect(() => {
+    const error = query.error;
+    if (error !== null && 'code' in error && error.code === 40931) {
+      void queryClient.resetQueries({ queryKey: [...THREAD_MESSAGES_QUERY_KEY, filter], exact: true });
+    }
+  }, [query.error, queryClient, filter]);
+  const history = query.data?.pages[0]?.history;
+  return { ...query, history, historyIncomplete: history !== undefined && history.state !== 'complete' };
+}
+
+export function HistoryNote({ state }: { readonly state: 'preparing' | 'error' }) {
+  const { t } = useI18n();
+  return <p role="status" data-comms-history={state} className="text-[12.5px] text-ink-faint">
+    {t(state === 'error' ? 'comms.historyFailed' : 'comms.historyPreparing')}
+  </p>;
 }
 
 /** Loaded rows across pages, in server order (newest first). */

@@ -25,7 +25,7 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
-import { DeliveryNote, EndpointState, LoadOlder, loadedPeerMessages, useEndpointName, useThreadMessages } from './commsShared';
+import { DeliveryNote, EndpointState, HistoryNote, LoadOlder, loadedPeerMessages, useEndpointName, useThreadMessages } from './commsShared';
 
 const LINK =
   'inline-flex h-7 items-center gap-1 rounded-md px-1.5 -mx-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11';
@@ -126,7 +126,8 @@ export function ThreadConversationDialog({
         ) : null}
         {query.isPending ? <p className="text-[13px] text-ink-faint">{t('comms.loading')}</p> : null}
         {query.isError ? <p role="alert" className="text-[13px] text-danger">{t('comms.loadFailed')}</p> : null}
-        {query.isSuccess && messages.length === 0 && !query.hasNextPage ? (
+        {query.historyIncomplete ? <HistoryNote state={query.history?.state === 'error' ? 'error' : 'preparing'} /> : null}
+        {query.isSuccess && messages.length === 0 && !query.hasNextPage && !query.historyIncomplete ? (
           <p data-comms-pair-empty className="text-[13px] text-ink-soft">{t('comms.pairEmpty')}</p>
         ) : null}
         <ol className="space-y-3">
