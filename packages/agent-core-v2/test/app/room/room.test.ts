@@ -18,7 +18,7 @@ import { renderRoomPrompt, RoomService } from '#/app/room/roomService';
 import { IRoomService, type RoomDocument, type RoomLogEntry, type RoomMessage } from '#/app/room/room';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ISessionMetadata as SessionMetadataId } from '#/session/sessionMetadata/sessionMetadata';
-import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { ISessionActivityView, type SessionActivityState } from '#/session/sessionActivity/sessionActivity';
 
 class MemoryDocuments implements IAtomicDocumentStore {
   readonly _serviceBrand = undefined;
@@ -115,6 +115,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
   closeMember(sessionId: string): void;
+  setActivity(sessionId: string, state: SessionActivityState): void;
   legacyReads(): number;
   seedRoom(room: RoomDocument): Promise<void>;
   room: Promise<RoomDocument>;
@@ -122,6 +123,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
   const documents = new MemoryDocuments(flatListing);
   const logs = new MemoryAppendLog();
   const sessions = new Map<string, FakeSession>();
+  const activities = new Map<string, SessionActivityState>();
   const summaries = new Map<string, { id: string; workspaceId: string; cwd: string; createdAt: number; updatedAt: number; archived: boolean; usage: { total: { inputOther: number; inputCacheRead: number; inputCacheCreation: number; output: number } } }>();
   const calls: Array<{ target: ThreadRef; content: string; id: string }> = [];
   const waiters = new Map<string, () => void>();
@@ -151,7 +153,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
         id,
         kind: 'session',
         metadata,
-        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : service === ISessionActivityView ? { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) } : undefined as T) },
+        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : service === ISessionActivityView ? { state: () => activities.get(id) ?? { busy: false, mainTurnActive: false, pendingInteraction: 'none' } } : undefined as T) },
         dispose: () => {},
       } as unknown as FakeSession;
       sessions.set(id, session);
@@ -222,6 +224,7 @@ function setup(enabled = true, wakeError?: unknown, flatListing = false): {
     service,
     calls,
     closeMember: (sessionId) => { sessions.delete(sessionId); },
+    setActivity: (sessionId, state) => { activities.set(sessionId, state); },
     legacyReads: () => logs.reads,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
     release: (messageId) => {
@@ -275,6 +278,18 @@ describe('RoomService', () => {
     await service.update(created.id, { name: 'Only metadata', pinned: true });
     expect((await service.listItems())[0]).toMatchObject({ lastSeq: after.lastSeq, updatedAt: after.updatedAt });
     expect((await service.log(created.id)).lastSeq).toBe(after.lastSeq);
+  });
+
+  it('reads live member work and approval facts without resuming cold members', async () => {
+    const { service, room, setActivity, closeMember } = setup();
+    const created = await room;
+    const member = created.members[0]!.sessionId;
+    setActivity(member, { busy: true, mainTurnActive: true, pendingInteraction: 'approval' });
+    expect((await service.listItems())[0]).toMatchObject({ busy: true, needsYou: true, pendingInteraction: 'approval' });
+    setActivity(member, { busy: true, mainTurnActive: true, pendingInteraction: 'none' });
+    expect((await service.listItems())[0]).toMatchObject({ busy: true, needsYou: false, pendingInteraction: 'none' });
+    closeMember(member);
+    expect((await service.listItems())[0]).toMatchObject({ busy: false, needsYou: false, pendingInteraction: 'none' });
   });
 
   it('projects budget and question attention without treating manual pause as attention', async () => {
