@@ -5977,5 +5977,6 @@ export const en = {
   'message.deliveryReplyHint': 'Its ordinary replies show up for you directly.',
   'message.deliveryNextTurn': 'Takes effect next turn',
   'message.deliverySwitchFailed': 'Delivery was not switched: {detail}',
+  'st.profiles.policyInherit': 'Inherit default',
 
 } as const;

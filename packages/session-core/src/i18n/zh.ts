@@ -5913,4 +5913,5 @@ export const zh = {
   'room.usageNone': '还没有用量',
   'room.system.workspaceChanged': '工作区已更换，成员会话已重建',
   'room.system.renamed': '房间改名为「{name}」',
+  'st.profiles.policyInherit': '继承默认',
 };

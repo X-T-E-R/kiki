@@ -28,6 +28,7 @@ import {
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
 import { SubagentsField } from './SubagentsField';
+import { SUBAGENT_POLICY_CHOICES, subagentPolicyLabelKey, type SubagentPolicyChoice } from '../subagentPolicy';
 import { useSavedTick } from '../useSavedTick';
 
 type Mode = 'form' | 'raw';
@@ -154,7 +155,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const subagentSummary = draft.subagentsMode === 'unrestricted' ? t('st.profiles.subagentsAny')
     : draft.subagentsMode === 'none' ? t('st.profiles.subagentsNone') : draft.subagents.map((entry) => entry.name).join(', ');
   const advancedSet = [draft.serviceTier !== '', draft.autoCompact !== undefined, draft.denyModels.length > 0,
-    draft.allowedEfforts.length > 0, draft.subagentPolicy === 'strict', profile.routes.length > 0,
+    draft.allowedEfforts.length > 0, draft.subagentPolicy !== 'inherit', profile.routes.length > 0,
     spawnConstraintsSet(draft.spawnConstraints)].filter(Boolean).length;
 
   // Desktop: the body stays in view (sticky, viewport-tall) while the rail scrolls past it.
@@ -260,9 +261,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       </Section>
       <Section title={t('st.profiles.advanced')} dataSection="advanced" count={advancedSet} summary={t('st.profiles.advancedSummary')}>
         <Field label={t('st.profiles.policy')} hint={t('st.profiles.policyHint')} dataField="subagentPolicy">
-          <SettingsSegmented<'advisory' | 'strict'> ariaLabel={t('st.profiles.policy')} value={draft.subagentPolicy} disabled={disabled}
-            onChange={(value) => set('subagentPolicy', value)}
-            choices={[{ value: 'advisory', label: t('agentPanel.subagentPolicy.advisory') }, { value: 'strict', label: t('agentPanel.subagentPolicy.strict') }]} />
+          <SettingsSegmented<SubagentPolicyChoice> ariaLabel={t('st.profiles.policy')} value={draft.subagentPolicy} disabled={disabled}
+            dataAttr="data-policy-choice" onChange={(value) => set('subagentPolicy', value)}
+            choices={SUBAGENT_POLICY_CHOICES.map((value) => ({ value, label: t(subagentPolicyLabelKey(value)) }))} />
         </Field>
         <Field label={t('st.profiles.allowedEfforts')} dataField="allowedEfforts">
           <div className="flex flex-wrap gap-1.5">

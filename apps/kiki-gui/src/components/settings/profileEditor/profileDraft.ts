@@ -1,5 +1,6 @@
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
 import type { NamedAgentProfile, UpdateNamedAgentProfileRequest } from '../../../lib/client';
+import { subagentPolicyBody, subagentPolicyChoice, type SubagentPolicyChoice } from '../subagentPolicy';
 import {
   executorPromptBody, executorPromptDraftFrom, executorPromptIncludesValid, type ExecutorPromptDraft,
 } from './executorPromptDraft';
@@ -60,7 +61,7 @@ export interface ProfileDraft {
   readonly allowedEfforts: readonly string[];
   readonly subagentsMode: SubagentsMode;
   readonly subagents: readonly SubagentDraft[];
-  readonly subagentPolicy: 'advisory' | 'strict';
+  readonly subagentPolicy: SubagentPolicyChoice;
   readonly modelProfiles: readonly ModelProfileDraft[];
   readonly serviceTier: '' | NonNullable<NamedAgentProfile['service_tier']>;
   readonly autoCompact: number | undefined;
@@ -131,7 +132,7 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
           name: entry.name, modelAlias: entry.model_alias ?? '', effort: entry.thinking_effort ?? '',
           source: entry.source, status: entry.status, allowedModels: entry.allowed_models,
         }),
-    subagentPolicy: profile.subagent_policy ?? 'advisory',
+    subagentPolicy: subagentPolicyChoice(profile.subagent_policy),
     modelProfiles: (profile.model_profiles ?? []).map((entry) => ({
       alias: entry.alias, when: entry.when ?? '', effort: entry.thinking_effort ?? '',
     })),
@@ -185,7 +186,7 @@ export function patchBody(
   if (changed.has('allowedModels')) body.allowed_models = listOrNull(draft.allowedModels);
   if (changed.has('denyModels')) body.deny_models = listOrNull(draft.denyModels);
   if (changed.has('allowedEfforts')) body.allowed_efforts = listOrNull(draft.allowedEfforts);
-  if (changed.has('subagentPolicy')) body.subagent_policy = draft.subagentPolicy;
+  if (changed.has('subagentPolicy')) body.subagent_policy = subagentPolicyBody(draft.subagentPolicy);
   if (changed.has('subagentsMode') || changed.has('subagents')) {
     const before = new Map(baseline.subagents.map((entry) => [entry.name, entry]));
     body.subagents = draft.subagentsMode === 'unrestricted' ? null
