@@ -3016,12 +3016,18 @@ async function scenarioReminder() {
   }
   const reminders = page.locator('[role="log"] button', { hasText: S.systemReminder });
   if ((await reminders.count()) !== 2) throw new Error(`expected 2 collapsed reminders, saw ${await reminders.count()}`);
-  if ((await page.locator('text=The same tool call has been repeated').count()) !== 0) {
+  // The folded row names the reminder by its first readable line; the rest of
+  // the body is rendered only once the row is opened.
+  const firstLine = await reminders.first().innerText();
+  if (!firstLine.includes('The same tool call has been repeated')) {
+    throw new Error(`collapsed reminder must name its first line, saw "${firstLine}"`);
+  }
+  if ((await page.locator('text=Before making your next call').count()) !== 0) {
     throw new Error('collapsed reminder content rendered before expansion');
   }
   await shot('reminder-collapsed');
   await reminders.first().click();
-  await waitForText('The same tool call has been repeated');
+  await waitForText('Before making your next call');
   await page.waitForTimeout(300);
   await shot('reminder-expanded');
 }

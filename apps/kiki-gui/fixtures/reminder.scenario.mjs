@@ -16,7 +16,7 @@ export default {
       messages: [
         userMsg(
           SID,
-          'Fix the flaky integration test.\n\n<system-reminder>\nThe same tool call has been repeated several times in a row. Before making your next call, write one sentence stating what new information you expect it to produce.\n</system-reminder>',
+          'Fix the flaky integration test.\n\n<system-reminder>\nThe same tool call has been repeated several times in a row.\nBefore making your next call, write one sentence stating what new information you expect it to produce.\n</system-reminder>',
           4,
         ),
         assistantMsg(SID, ['Fixed — the flake was a missing await on the fixture client.'], 3),
