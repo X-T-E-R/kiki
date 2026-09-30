@@ -206,6 +206,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/gui/shortcuts",
+    ],
+    [
+      "GET",
       "/api/gui/store/getItem",
     ],
     [
@@ -642,6 +646,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/gui/shortcuts/reset",
+    ],
+    [
+      "POST",
       "/api/gui/store/clear",
     ],
     [
@@ -959,6 +967,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/worktrees/{tail}",
+    ],
+    [
+      "PUT",
+      "/api/gui/shortcuts",
     ],
     [
       "PUT",

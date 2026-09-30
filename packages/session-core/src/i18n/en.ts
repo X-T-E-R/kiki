@@ -700,6 +700,10 @@ export const en = {
 
   // ---- shortcuts overlay (Ctrl+/) ----
   'shortcuts.title': 'Keyboard shortcuts',
+  'shortcuts.undo': 'Undo composer edit',
+  'shortcuts.redo': 'Redo composer edit',
+  'composer.history.previous': 'Previous prompt',
+  'composer.history.next': 'Next prompt',
   'shortcuts.hint': 'Esc closes this panel · Ctrl+/ opens it anywhere',
   'shortcuts.group.global': 'Global',
   'shortcuts.group.session': 'Session',

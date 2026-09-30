@@ -65,3 +65,4 @@ export * from './rest/skin';
 export * from './rest/appearance';
 export * from './rest/plugin';
 export * from './rest/persona';
+export * from './shortcuts';

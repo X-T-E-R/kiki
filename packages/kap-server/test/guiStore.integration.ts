@@ -187,6 +187,37 @@ describe('server-v2 gui store routes', () => {
     ).toBe('y');
   });
 
+  it('persists shortcuts, rejects conflicts without mutation, and resets per action/platform', async () => {
+    const api = appOf(server as RunningServer);
+    const url = '/api/gui/shortcuts?platform=windows';
+    const initial = envelopeOf<{ preferences: unknown; conflicts: unknown[] }>((await api.inject({ method: 'GET', url })).json());
+    expect(initial.data?.preferences).toEqual({ version: 1, overrides: {} });
+    expect(initial.data?.conflicts).toEqual([]);
+    const preferences = { version: 1, overrides: { windows: { switcher: [{ key: 'j', modifier: 'mod', shift: false, alt: false }] }, macos: { switcher: [] } } };
+    expect(envelopeOf((await api.inject({ method: 'PUT', url, payload: { preferences } })).json()).code).toBe(0);
+    expect(await readFile(join(home as string, 'gui.toml'), 'utf-8')).toContain('shortcuts.v1');
+    const read = () => api.inject({ method: 'GET', url });
+    expect(envelopeOf<{ preferences: unknown }>((await read()).json()).data?.preferences).toEqual(preferences);
+    const bad = { version: 1, overrides: { windows: { switcher: [{ key: 'f', modifier: 'ctrl' }] } } };
+    const conflict = (await api.inject({ method: 'PUT', url, payload: { preferences: bad } })).json() as { code: number; details: { conflicts: unknown[] } };
+    expect(conflict.code).toBe(40001);
+    expect(conflict.details.conflicts).toHaveLength(1);
+    expect(envelopeOf<{ preferences: unknown }>((await read()).json()).data?.preferences).toEqual(preferences);
+    expect(envelopeOf((await api.inject({ method: 'PUT', url, payload: { preferences: { version: 2, overrides: {} } } })).json()).code).toBe(40001);
+    const reset = envelopeOf<{ preferences: { overrides: unknown } }>((await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: { platform: 'windows', action: 'switcher' } })).json());
+    expect(reset.data?.preferences.overrides).toEqual({ windows: {}, macos: { switcher: [] } });
+    await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: {} });
+    expect(envelopeOf<{ preferences: unknown }>((await read()).json()).data?.preferences).toEqual({ version: 1, overrides: {} });
+    const moved = { version: 1, overrides: { windows: { switcher: [{ key: 'f', modifier: 'mod', shift: false, alt: false }], find: [] } } };
+    expect(envelopeOf((await api.inject({ method: 'PUT', url, payload: { preferences: moved } })).json()).code).toBe(0);
+    const conflictingReset = await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: { platform: 'windows', action: 'find' } });
+    expect(envelopeOf(conflictingReset.json()).code).toBe(40001);
+    expect(envelopeOf<{ preferences: unknown }>((await read()).json()).data?.preferences).toEqual(moved);
+    await setItem(api, 'shortcuts.v1', 'not-json');
+    expect(envelopeOf((await read()).json()).code).toBe(50001);
+    expect(envelopeOf((await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: {} })).json()).code).toBe(0);
+  });
+
   it.skipIf(process.platform === 'win32')('writes gui.toml with 0600 permissions', async () => {
     await setItem(appOf(server as RunningServer), 'theme', 'modern');
     const mode = (await stat(join(home as string, 'gui.toml'))).mode & 0o777;

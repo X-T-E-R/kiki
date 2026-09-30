@@ -688,6 +688,10 @@ export const zh = {
 
   // ---- shortcuts overlay (Ctrl+/) ----
   'shortcuts.title': '键盘快捷键',
+  'shortcuts.undo': '撤销输入编辑',
+  'shortcuts.redo': '重做输入编辑',
+  'composer.history.previous': '上一条输入',
+  'composer.history.next': '下一条输入',
   'shortcuts.hint': 'Esc 关闭本面板 · Ctrl+/ 随时随地打开',
   'shortcuts.group.global': '全局',
   'shortcuts.group.session': '会话',

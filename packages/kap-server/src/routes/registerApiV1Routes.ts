@@ -25,6 +25,7 @@ import { registerPersonasRoutes } from './personas';
 import { registerBotRoomRoutes } from './botRooms';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
+import { registerShortcutRoutes } from './shortcuts';
 import { registerHomesRoutes } from './homes';
 import { registerMessagesRoutes } from './messages';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
@@ -258,6 +259,7 @@ export async function registerApiV1Routes(
       );
       registerFsRoutes(apiV1 as unknown as Parameters<typeof registerFsRoutes>[0], core);
       registerGuiStoreRoutes(apiV1 as unknown as Parameters<typeof registerGuiStoreRoutes>[0], opts.guiStore);
+      registerShortcutRoutes(apiV1 as unknown as Parameters<typeof registerShortcutRoutes>[0], opts.guiStore);
       registerToolsRoutes(apiV1 as unknown as Parameters<typeof registerToolsRoutes>[0], core);
       if (opts.enableTerminals !== false) {
         registerTerminalsRoutes(
