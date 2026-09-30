@@ -185,6 +185,7 @@ import type {
   TurnEndedEvent,
   TurnStartedEvent,
   WarningEvent,
+  managedUsageResultSchema,
 } from '@kiki/protocol';
 
 import {
@@ -398,6 +399,7 @@ import {
 
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 import type { AgentFacade } from '../src/core/facade/agent.js';
+import type { ManagedUsageResult as EngineManagedUsageResult } from '@kiki/agent-core-v2/app/auth/oauthProtocol';
 
 /** One-directional: the engine type must be assignable TO the schema's infer. */
 type AssertEngineToWire<TSchema extends z.ZodType, TEngine> = [MutableDeep<TEngine>] extends [
@@ -426,6 +428,7 @@ type RefreshOAuthProviderModelsResponse = Awaited<
 type ConfigTargetValues = `${ConfigTarget}`;
 
 // sessions.ts
+const _managedQuota: AssertWire<typeof managedUsageResultSchema, EngineManagedUsageResult> = true;
 const _sessionSummary: AssertWire<typeof sessionSummarySchema, SessionSummary> = true;
 const _sessionListQuery: AssertWire<typeof sessionListQuerySchema, SessionListQuery> = true;
 const _sessionActivity: AssertWire<typeof sessionActivityStateSchema, SessionActivityState> = true;

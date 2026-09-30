@@ -12,6 +12,50 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('exposes shortcut read, replacement and scoped reset with explicit client platform', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname + new URL(String(input)).search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      return envelope({ preferences: { version: 1, overrides: {} }, bindings: {}, conflicts: [] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.shortcuts.read('macos');
+      await channel.rest.shortcuts.write('windows', { version: 1, overrides: {} });
+      await channel.rest.shortcuts.reset('macos', { platform: 'windows', action: 'switcher' });
+      expect(calls).toEqual([
+        { path: '/api/gui/shortcuts?platform=macos', method: 'GET', body: undefined },
+        { path: '/api/gui/shortcuts?platform=windows', method: 'PUT', body: { preferences: { version: 1, overrides: {} } } },
+        { path: '/api/gui/shortcuts/reset?platform=macos', method: 'POST', body: { platform: 'windows', action: 'switcher' } },
+      ]);
+    } finally { await channel.close(); }
+  });
+  it('exposes catalog listing/import and standalone managed quota, preserving business errors', async () => {
+    const calls: { path: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname + url.search, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      if (url.pathname === '/api/catalog/providers') return envelope({ items: [] });
+      if (url.pathname === '/api/oauth/usage') return envelope({ kind: 'error', message: 'Not signed in' });
+      if (url.pathname === '/api/providers:import_catalog') return envelope({ provider: { id: 'example' }, models_imported: 2 });
+      if (url.pathname === '/api/providers:import_registry') return envelope(null, 40001);
+      throw new Error('unexpected path');
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.catalog.list()).resolves.toEqual({ items: [] });
+      await expect(channel.rest.catalog.importProvider({ catalog_id: 'example', id: 'local', base_url: 'https://example.test', api_key: 'YOUR_API_KEY' })).resolves.toMatchObject({ models_imported: 2 });
+      await expect(channel.rest.catalog.importRegistry({ url: 'https://example.test/api.json' })).rejects.toMatchObject({ code: 40001 });
+      await expect(channel.rest.oauth.usage('example')).resolves.toEqual({ kind: 'error', message: 'Not signed in' });
+      expect(calls).toEqual([
+        { path: '/api/catalog/providers', body: undefined },
+        { path: '/api/providers:import_catalog', body: { catalog_id: 'example', id: 'local', base_url: 'https://example.test', api_key: 'YOUR_API_KEY' } },
+        { path: '/api/providers:import_registry', body: { url: 'https://example.test/api.json' } },
+        { path: '/api/oauth/usage?provider=example', body: undefined },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('uses the auth-exempt unversioned health endpoint', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/healthz');

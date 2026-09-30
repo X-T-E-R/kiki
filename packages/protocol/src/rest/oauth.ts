@@ -96,3 +96,25 @@ export const oauthLogoutResponseSchema = z.object({
   provider: z.string().min(1),
 });
 export type OAuthLogoutResponse = z.infer<typeof oauthLogoutResponseSchema>;
+
+export const managedUsageRowSchema = z.object({
+  name: z.string().optional(),
+  window: z.object({ duration: z.number().int(), unit: z.enum(['minute', 'hour', 'day', 'week']) }).optional(),
+  used: z.number().int(),
+  limit: z.number().int(),
+  reset_at: z.string().optional(),
+});
+export const managedUsageResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    summary: managedUsageRowSchema.nullable(),
+    limits: z.array(managedUsageRowSchema),
+    extra_usage: z.object({
+      balance_cents: z.number().int(), total_cents: z.number().int(),
+      monthly_charge_limit_enabled: z.boolean(), monthly_charge_limit_cents: z.number().int(),
+      monthly_used_cents: z.number().int(), currency: z.string(),
+    }).nullable(),
+  }),
+  z.object({ kind: z.literal('error'), message: z.string(), status: z.number().int().optional() }),
+]);
+export type ManagedUsageResult = z.infer<typeof managedUsageResultSchema>;

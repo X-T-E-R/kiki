@@ -132,6 +132,36 @@ and IPC reject these HTTP-only commands rather than silently emulating them.
 Inputs and outputs reuse the protocol schemas. Submission waits without the
 generic HTTP deadline; other commands use the normal request deadline.
 
+## GUI entry contracts
+
+These HTTP-only capabilities use `klient.rest` and the authenticated `/api` REST envelope. They do not promise memory/IPC parity.
+
+### Shortcut preferences
+
+`rest.shortcuts.read(platform)`, `write(platform, preferences)`, and `reset(platform, target?)` map to `GET/PUT /api/gui/shortcuts?platform=…` and `POST /api/gui/shortcuts/reset?platform=…`. The platform is the client's `windows`, `macos`, or `linux`, never inferred from the server host. Writes replace `{ version: 1, overrides: { windows?, macos?, linux? } }`; each platform maps action IDs to at most four `{ key, modifier, shift, alt }` chords. Missing actions use shipped defaults; `[]` disables an action. Reset target `{ platform?, action? }` narrows the reset; `{}` resets everything. Responses contain `{ preferences, bindings, conflicts }`. Invalid input, overlapping chords, reserved keys, and partial resets that introduce a conflict return `40001` without writing; conflict details are in `details.conflicts`. Corrupt saved preferences fail visibly; full reset repairs them. Writes persist under `shortcuts.v1` in the current server home's `gui.toml` via its existing store.
+
+The framework-free catalog and helpers are exported from `@kiki/session-core/settings/shortcuts` (canonical definitions in `@kiki/protocol`). `SHORTCUT_CATALOG` includes remappable actions and fixed interaction keys; `SHORTCUT_DEFINITIONS` contains only remappable actions. `mod` means Ctrl **or** Meta on every platform, preserving existing GUI semantics; display labels differ on macOS. The GUI owner must replace the hard-coded handlers and shortcut overlay with `resolveShortcutBindings`/`matchesShortcut`, retaining route, desktop-only, editable-target, overlay, IME and priority guards. This backend does not attach listeners or change current key behavior. Send/newline remain managed by the existing `sendShortcut`/`composerEnterAction`; layered Escape, text triggers, navigation inside controls, and the native show/hide key are not remapping actions. Reserved-key checks protect those fixed lanes and a small platform-specific OS set; they are not a guarantee that a browser can intercept every chord.
+
+### Models.dev directory and quota
+
+`rest.catalog.list(options?)` → `GET /api/catalog/providers`, `provider(id)` → `GET /api/catalog/providers/{id}`, `importProvider({ catalog_id, id?, api_key?, base_url? }, options?)` → `POST /api/providers:import_catalog`, and `importRegistry({ url, api_key? }, options?)` → `POST /api/providers:import_registry`. List/detail expose `wire_type`, `guessed`, `needs_base_url`, `rejected`, `reject_reason`, `env_key`, and models. Import is an explicit write: re-import refreshes the target's configuration and aliases; registry re-import may remove providers absent upstream. Imports return `models_imported` and the imported provider(s). Existing default pointers stay unchanged, except a fresh setup may seed a missing default model. Respect rejected entries and collect a base URL when required.
+
+`rest.oauth.usage(provider?, options?)` → `GET /api/oauth/usage?provider=…` returns `{ kind: 'ok', summary, limits, extra_usage }` or `{ kind: 'error', message, status? }`. It is managed-account quota, not local session token usage. Treat `used`/`limit` as provider quota units rather than session token counts; some adapters normalize ratios to a 100-point limit. Render the returned window/reset metadata and handle a zero limit without division. `global.oauth.methods()` also exposes provider sign-in/account/quota summaries. Both use the existing host-managed credential lifecycle.
+
+### Side questions, native tasks and attention
+
+`session(id).btw.start()` returns a side-question agent ID (all transports); REST `POST /api/sessions/{id}:btw` returns `{ agent_id }`. The side agent forks the main context and refuses tool execution. Open its ordinary agent view and submit the question through its prompt API.
+
+Native task baseline reads are `rest.sessions.listTasks(sessionId, { status?, page_size?, offset? })` and `getTask(sessionId, taskId, { with_output?, output_bytes?, agent_id? })`; cancel via `session(id).commands.cancelTask(taskId)`. `session(id).view.snapshot()` carries tasks and task references; its ordered transcript stream publishes `task.upsert`/`taskref.upsert`. Use that recoverable view rather than inventing a second task event lane. List/get/cancel REST paths are `/api/sessions/{id}/tasks`, `/tasks/{task_id}`, and `/tasks/{task_id}:cancel`; already-finished cancellation is `40904`. No global task-list endpoint is promised.
+
+Permissions/questions use the same pending interactions in the session view and `commands.approve`/`answer`. Session work facts (`busy`, `main_turn_active`, `pending_interaction`, `last_turn_reason`) arrive through the existing global `event.session.work_changed`/session view. Framework-free attention classification and rate limiting live in `@kiki/session-core/sessions/awayAttention`; native notification delivery belongs to the host. `rest.notifications` configures outbound notification providers/channels and reads delivery results; it is not an ACP toast inbox.
+
+Standard ACP updates already project into ordinary transcript tool progress, plan/runtime notes, turn failure/completion, and external permission interactions. External harness background-task parity and its capability matrix are owned by the harness integration, not by an invented ACP extension here. The frontend can reuse the native task and attention contracts when that integration supplies the same facts.
+
+### Desktop diagnostics (Tauri)
+
+Invoke `desktop_log_info` for `{ directory, backendLogPath, maxBytes, backups, logLevel, appliesOnNextLaunch }`, and `open_desktop_log_directory` to open the active local space's log directory. `read_desktop_prefs`/`write_desktop_prefs({ prefs: { logLevel } })` persist the level; allowed values are `fatal`, `error`, `warn` (default), `info`, `debug`, `trace`, `silent`. The next desktop-owned backend launch receives it; an attached external daemon is not reconfigured. The current `desktop-backend.log` rotates at 5 MiB with three backups. Browser/remote clients have no local directory-opening equivalent. Add the commands to the GUI host adapter when connecting the controls.
+
 ## Local executor sessions (HTTP)
 
 `klient.rest.executors` browses local Claude/Codex history and attaches a selected

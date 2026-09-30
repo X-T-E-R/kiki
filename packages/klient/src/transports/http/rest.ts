@@ -93,6 +93,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     usage: (query) => transport.json('/usage', { query }),
 
+    shortcuts: {
+      read: (platform) => transport.json('/gui/shortcuts', { query: { platform } }),
+      write: (platform, preferences) => transport.json('/gui/shortcuts', { method: 'PUT', query: { platform }, body: { preferences } }),
+      reset: (platform, target = {}) => transport.json('/gui/shortcuts/reset', { method: 'POST', query: { platform }, body: target }),
+    },
+
     ssh: {
       list: (workspaceId) => transport.json('/ssh/hosts', { query: { workspace_id: workspaceId } }),
       discover: () => transport.json('/ssh/hosts:discover'),
@@ -373,9 +379,22 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     catalog: {
+      list: (options) => transport.json('/catalog/providers', { signal: options?.signal, timeoutMs: options?.timeoutMs }),
       provider: (providerId: string) => transport.json<GetCatalogProviderResponse>(
         `/catalog/providers/${encodeURIComponent(providerId)}`,
       ),
+      importProvider: (input, options) => transport.json('/providers:import_catalog', {
+        method: 'POST', body: input, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+      importRegistry: (input, options) => transport.json('/providers:import_registry', {
+        method: 'POST', body: input, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
+    },
+
+    oauth: {
+      usage: (provider, options) => transport.json('/oauth/usage', {
+        query: { provider }, signal: options?.signal, timeoutMs: options?.timeoutMs,
+      }),
     },
 
     providers: {

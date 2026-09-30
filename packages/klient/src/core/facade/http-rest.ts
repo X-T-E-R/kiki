@@ -279,6 +279,12 @@ export interface HttpRestFacade {
   } | undefined>;
   usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
 
+  readonly shortcuts: {
+    read(platform: import('@kiki/protocol').ShortcutPlatform): Promise<import('@kiki/protocol').ShortcutResponse>;
+    write(platform: import('@kiki/protocol').ShortcutPlatform, preferences: import('@kiki/protocol').ShortcutPreferences): Promise<import('@kiki/protocol').ShortcutResponse>;
+    reset(platform: import('@kiki/protocol').ShortcutPlatform, target?: { platform?: import('@kiki/protocol').ShortcutPlatform; action?: import('@kiki/protocol').ShortcutAction }): Promise<import('@kiki/protocol').ShortcutResponse>;
+  };
+
   readonly ssh: {
     list(workspaceId?: string): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
     discover(): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
@@ -400,7 +406,14 @@ export interface HttpRestFacade {
   };
 
   readonly catalog: {
+    list(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListCatalogProvidersResponse>;
     provider(providerId: string): Promise<GetCatalogProviderResponse>;
+    importProvider(input: { catalog_id: string; id?: string; api_key?: string; base_url?: string }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ImportCatalogProviderResponse>;
+    importRegistry(input: { url: string; api_key?: string }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ImportCustomRegistryResponse>;
+  };
+
+  readonly oauth: {
+    usage(provider?: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ManagedUsageResult>;
   };
 
   readonly providers: {
