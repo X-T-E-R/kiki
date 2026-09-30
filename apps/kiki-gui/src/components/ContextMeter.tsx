@@ -8,7 +8,7 @@
  * against that point (amber from 80% of it, red once it is reached) while the
  * percent keeps reading "share of the usable window". Without one (older
  * engines, external executors) it falls back to fixed window ratios:
- *   - < 50%  accent (normal)
+ *   - < 50%  ink-soft (normal: nothing to do yet)
  *   - ≥ 50%  amber (warn, and the minimum at which manual compaction is advised)
  *   - ≥ 80%  red (danger / over the keep-under threshold)
  *
@@ -90,7 +90,7 @@ export function contextUsageLevel(used: number, limit: number): ContextUsageLeve
 }
 
 const LEVEL_STROKE: Record<ContextUsageLevel, string> = {
-  ok: 'var(--color-accent)',
+  ok: 'var(--color-ink-soft)',
   warn: 'var(--color-amber-rule)',
   danger: 'var(--color-danger)',
 };
