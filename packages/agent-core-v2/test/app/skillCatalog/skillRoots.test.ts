@@ -1,8 +1,9 @@
+import { promises as fs } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configuredRoots, projectRoots, userRoots } from '#/app/skillCatalog/skillRoots';
 
@@ -14,6 +15,7 @@ describe('skillRoots', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -22,6 +24,28 @@ describe('skillRoots', () => {
   }
 
   describe('projectRoots', () => {
+    it.each(['ENOENT', 'ENOTDIR'])('continues to the generic root when a checked brand root disappears (%s)', async (code) => {
+      await markGitRoot();
+      await mkdir(join(root, '.kiki/skills'), { recursive: true });
+      const generic = join(root, '.agents/skills');
+      await mkdir(generic, { recursive: true });
+      const canonicalGeneric = (await realpath(generic)).replaceAll('\\', '/');
+      vi.spyOn(fs, 'realpath').mockRejectedValueOnce(Object.assign(new Error('root disappeared'), { code }));
+
+      await expect(projectRoots(root)).resolves.toEqual([
+        { path: canonicalGeneric, source: 'project', scanMode: undefined },
+      ]);
+    });
+
+    it('does not hide a realpath permission error after the directory check', async () => {
+      await markGitRoot();
+      await mkdir(join(root, '.kiki/skills'), { recursive: true });
+      const denied = Object.assign(new Error('access denied'), { code: 'EACCES' });
+      vi.spyOn(fs, 'realpath').mockRejectedValueOnce(denied);
+
+      await expect(projectRoots(root)).rejects.toBe(denied);
+    });
+
     it('resolves the brand .kiki/skills directory at the .git root', async () => {
       await markGitRoot();
       await mkdir(join(root, '.kiki/skills/commit'), { recursive: true });

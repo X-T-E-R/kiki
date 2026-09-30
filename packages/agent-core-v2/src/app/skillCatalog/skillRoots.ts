@@ -119,7 +119,14 @@ async function pushExistingRoot(
   source: SkillSource,
 ): Promise<boolean> {
   if (!(await isDir(dir))) return false;
-  const resolved = await realpath(dir);
+  let resolved: string;
+  try {
+    resolved = await realpath(dir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
+  }
   if (!out.some((root) => root.path === resolved)) {
     out.push({ path: resolved, source, scanMode: path.basename(dir) === 'commands' ? 'commands' : undefined });
   }
