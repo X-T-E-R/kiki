@@ -1283,7 +1283,7 @@ describe('AgentRun and dispatch parity golden', () => {
   });
 
   it('binds an inherit profile to the caller model and current effective effort', async () => {
-    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined });
+    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined, allowedModels: ['main-model'] });
     const lane = createLane(disposables, 'internal', { profile, mainModel: 'main-model' });
     Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
       thinkingLevel: 'low', effectiveThinkingLevel: 'high',
@@ -1299,7 +1299,7 @@ describe('AgentRun and dispatch parity golden', () => {
   });
 
   it('rejects tool inherit while resolving configured route and caller-lease pins', async () => {
-    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'other-model', thinkingEffort: 'low' });
+    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'other-model', thinkingEffort: 'low', allowedModels: ['other-model', 'main-model'], allowedEfforts: ['low', 'high'] });
     const lane = createLane(disposables, 'internal', { profile, mainModel: 'main-model' });
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, { thinkingLevel: 'high' });
@@ -1343,10 +1343,10 @@ describe('AgentRun and dispatch parity golden', () => {
 
   it('requires a concrete model override when changing a saved child binding', async () => {
     const lane = createLane(disposables, 'internal', {
-      profile: normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined }),
+      profile: normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined, allowedModels: ['main-model', 'next-model'] }),
       mainModel: 'main-model',
     });
-    const initial = await lane.runInternal({ profile: 'coder', name: 'saved_child', prompt: 'work',
+    const initial = await lane.runInternal({ profile: 'coder', name: 'saved_child', effort: 'high', prompt: 'work',
       description: 'Spawn saved child', background: true });
     expect(initial.isError).not.toBe(true);
     await complete(lane, 0);
@@ -1585,7 +1585,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
     const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\nthinking_effort: high\ntools: [Read, Write, Bash]\nsubagents: [coder, outside]\n---\nFILE INSTRUCTIONS');
     Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
-    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { activeToolNames: ['Read'], disallowedTools: ['Bash'] });
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { activeToolNames: ['Read'], disallowedTools: ['Bash'], spawnPolicy: undefined, subagentLeases: undefined });
     const original = lane.ix.get(ISessionAgentProfileCatalog).get('coder');
     const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
     expect(result.isError).not.toBe(true);
