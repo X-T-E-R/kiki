@@ -23,8 +23,12 @@ import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/main
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
-import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import { ISessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
+import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionContext, makeSessionContext } from '@kiki/agent-core-v2/session/sessionContext/sessionContext';
+import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { join } from 'node:path';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 import { readPersistedPlan } from '@kiki/agent-core-v2/features/plan/planRead';
@@ -247,6 +251,29 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         }
       }
       if (service === 'agentPlanService' && method === 'status' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
+        const live = getLiveSessionById(root.accessor, scope.sessionId);
+        if (live === undefined) {
+          const summary = await root.accessor.get(ISessionIndex).get(scope.sessionId);
+          if (summary === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+          const sessionScope = `sessions/${summary.workspaceId}/${scope.sessionId}`;
+          const metadata = await root.accessor.get(IAtomicDocumentStore).get<SessionMeta>(sessionScope, 'state.json');
+          if (!/^[a-zA-Z0-9_-]+$/.test(scope.agentId) ||
+              (scope.agentId !== 'main' && !Object.hasOwn(metadata?.agents ?? {}, scope.agentId))) {
+            throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+          }
+          const context = makeSessionContext({
+            sessionId: scope.sessionId, workspaceId: summary.workspaceId, sessionScope,
+            sessionDir: join(root.accessor.get(IBootstrapService).homeDir, sessionScope), cwd: summary.cwd ?? '',
+          });
+          try {
+            const plan = await readPersistedPlan(context, scope.agentId,
+              root.accessor.get(IAppendLogStore), root.accessor.get(IHostFileSystem), options?.signal);
+            options?.signal?.throwIfAborted();
+            return wireClone(plan);
+          } catch (error) {
+            throw toRPCError(error);
+          }
+        }
         const session = (await resolveScope({ sessionId: scope.sessionId })).like;
         if (session.accessor.get(IAgentLifecycleService).get(scope.agentId) === undefined && scope.agentId !== 'main') {
           const metadata = await session.accessor.get(ISessionMetadata).read();
@@ -255,7 +282,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           try {
             const plan = await readPersistedPlan(
               session.accessor.get(ISessionContext), scope.agentId,
-              root.accessor.get(IAppendLogStore), root.accessor.get(IHostFileSystem),
+              root.accessor.get(IAppendLogStore), root.accessor.get(IHostFileSystem), options?.signal,
             );
             options?.signal?.throwIfAborted();
             return wireClone(plan);

@@ -31,13 +31,14 @@ export async function readPlanData(hostFs: IHostFileSystem, sessionDir: string, 
 }
 
 /** Read the canonical plan folds, including conversation undo, without creating an agent or rewriting its journal. The caller establishes agent identity. */
-export async function readPersistedPlan(context: ISessionContext, agentId: string, log: IAppendLogStore, hostFs: IHostFileSystem): Promise<PlanData> {
+export async function readPersistedPlan(context: ISessionContext, agentId: string, log: IAppendLogStore, hostFs: IHostFileSystem, signal?: AbortSignal): Promise<PlanData> {
   const folds = new Map([...expandedStateFolds(planKey)].map(([event, fold]) => [event.type, { event, fold }]));
   let state: PlanState = planKey.initial();
   let checkpoints: PlanState[] = [];
   let migrations: readonly WireMigration[] = [];
   let first = true;
-  for await (const candidate of log.read<unknown>(context.scope(`agents/${agentId}`), AGENT_WIRE_RECORD_KEY)) {
+  for await (const candidate of log.read<unknown>(context.scope(`agents/${agentId}`), AGENT_WIRE_RECORD_KEY, { signal })) {
+    signal?.throwIfAborted();
     if (!isWireRecord(candidate)) throw new StorageError(StorageErrors.codes.STORAGE_CORRUPTED, 'Malformed plan history record');
     if (first) {
       first = false;

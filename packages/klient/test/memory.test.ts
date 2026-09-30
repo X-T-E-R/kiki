@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, ISessionManager } from '@kiki/agent-core-v2';
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 
 import { defineKlientConformance } from './helpers/conformance.js';
@@ -36,6 +36,34 @@ defineKlientConformance('memory', async () => {
 });
 
 describe('memory dispatcher specifics', () => {
+  it('reads a persisted cold plan without resuming and rejects missing agents and cancelled reads', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    const dispatcher = createMemoryDispatcher(app);
+    try {
+      const created = await klient.global.sessions.create({ workDir: process.cwd() });
+      const session = klient.session(created.id);
+      await session.agent('main').enterPlan();
+      const expected = await session.agent('main').getPlan();
+      expect(expected).not.toBeNull();
+      await session.close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      await expect(session.agent('main').getPlan()).resolves.toEqual(expected);
+      await expect(session.agent('missing-child').getPlan()).rejects.toMatchObject({ code: 40404 });
+      await expect(klient.session('missing-session').agent('main').getPlan()).rejects.toMatchObject({ code: 40404 });
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled plan read'));
+      await expect(dispatcher.call({ sessionId: created.id, agentId: 'main' }, 'agentPlanService', 'status', [],
+        { signal: controller.signal })).rejects.toThrow('cancelled plan read');
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
   it('acknowledges only attached subscriptions and cancels pending attach on dispose', async () => {
     const dispose = vi.fn();
     const attach = vi.fn(() => ({ dispose }));

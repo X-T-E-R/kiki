@@ -28,7 +28,7 @@ export const AgentPlanSection = memo(function AgentPlanSection({
   const query = useQuery({
     queryKey: ['agentPlan', sessionId, agentId, planMode],
     queryFn: () => klient.session(sessionId).agent(agentId).getPlan(),
-    enabled: loaded && !resyncing,
+    enabled: loaded && !resyncing && planMode === true,
     retry: false,
     refetchOnWindowFocus: false,
   });
