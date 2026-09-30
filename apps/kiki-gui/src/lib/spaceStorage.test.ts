@@ -304,10 +304,8 @@ function scannedSources(): readonly ScannedSource[] {
 
 /** True when the module reads or writes `localStorage`, code rather than prose. */
 function usesRawLocalStorage(file: ScannedSource): boolean {
-  return (
-    /\blocalStorage\s*\.\s*(getItem|setItem|removeItem|clear|key|length)\b/.test(file.source) ||
-    /\blocalStorage\b/.test(file.code)
-  );
+  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*[.\[])/g, '');
+  return /\blocalStorage\b/.test(withoutAvailabilityChecks);
 }
 
 function quotedKeyLiterals(code: string): string[] {
@@ -337,6 +335,19 @@ function isSpaceScoped(key: string): boolean {
 
 describe('storage source scan', () => {
   const sources = scannedSources();
+
+  it.each([
+    ["typeof localStorage !== 'undefined'", false],
+    ["// localStorage.getItem('kiki.drafts')\nspaceStorage.getItem('kiki.drafts')", false],
+    ["localStorage.getItem('kiki.drafts')", true],
+    ["typeof localStorage.getItem === 'function'", true],
+    ["typeof localStorage['getItem'] === 'function'", true],
+    ['const storage = localStorage', true],
+    ["window.localStorage.getItem('kiki.drafts')", true],
+    ["typeof localStorage !== 'undefined' && localStorage.getItem('kiki.drafts')", true],
+  ])('detects raw storage use in %s', (source, expected) => {
+    expect(usesRawLocalStorage({ path: 'example.ts', source, code: stripComments(source) })).toBe(expected);
+  });
 
   it('has sources to scan', () => {
     expect(sources.length).toBeGreaterThan(100);
