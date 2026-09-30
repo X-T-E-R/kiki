@@ -37,7 +37,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
           {/* Running Subagents */}
           {runningSubagents.length > 0 ? (
             <div>
-              <span className="text-[10px] font-mono font-medium text-accent uppercase">
+              <span className="text-[12px] leading-4 font-medium text-ink-soft">
                 {t('agentPanel.runningChildren', { count: runningSubagents.length })}
               </span>
               <ul className="mt-1 space-y-1">
@@ -45,7 +45,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
                   <li
                     key={item.id}
                     onClick={() => onOpenItem?.(item)}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-accent/40 bg-accent-soft/30 p-2 cursor-pointer hover:bg-accent-soft/50 transition-colors"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-ink/[0.03] p-2 cursor-pointer hover:bg-ink/[0.06] transition-colors"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 font-medium text-ink truncate">
@@ -120,11 +120,11 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="font-mono text-[10.5px] font-semibold text-accent uppercase tracking-wider">
+            <span className="text-[12px] leading-4 font-medium text-ink-soft">
               {t('agentPanel.workboard')}
             </span>
             {summary ? (
-              <span className="rounded-full bg-accent-soft px-1.5 py-0.2 font-mono text-[9.5px] text-accent">
+              <span className="text-[12px] leading-4 text-ink-faint tabular-nums">
                 {t('agentPanel.boardSummary', {
                   inProgress: summary.inProgressCount,
                   total: summary.totalTasksCount,

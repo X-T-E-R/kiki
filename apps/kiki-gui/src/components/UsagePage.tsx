@@ -914,7 +914,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               {showAllHistoryChip || summary?.cost_unknown === true ? (
                 <div className="flex flex-wrap items-center gap-2">
                   {showAllHistoryChip ? (
-                    <span data-usage-all-history className="rounded-full border border-accent/30 bg-accent-soft px-2.5 py-0.5 text-[12px] font-medium text-accent-deep">
+                    <span data-usage-all-history className="rounded-md bg-ink/[0.05] px-2 py-0.5 text-[12px] font-medium text-ink-soft">
                       {t('usage.allHistoryChip')}
                     </span>
                   ) : null}
@@ -993,7 +993,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   </div>
                   {tab === 'sessions' && sessionLocator !== undefined ? (
                     <p className="ml-auto flex items-center gap-2 pb-1 text-[12px] text-ink-soft">
-                      <span className="rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 font-medium text-accent-deep">
+                      <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
                         {t('usage.sessions.deepLinkChip')}
                       </span>
                       <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>

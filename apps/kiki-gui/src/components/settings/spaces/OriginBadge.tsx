@@ -54,8 +54,8 @@ export function OriginBadge({ config, domain, keyPath = [], label, onRestored }:
   };
   return (
     <span data-origin="home" className="inline-flex flex-wrap items-center gap-1.5">
-      <span className="inline-flex items-center gap-1 rounded-[4px] bg-accent-soft px-1.5 text-[11.5px] font-medium text-accent-ink">
-        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />{t('st.origin.local')}
+      <span className="inline-flex items-center gap-1 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ink-faint" />{t('st.origin.local')}
       </span>
       <button type="button" data-origin-restore={[domain, ...keyPath].join('.')} disabled={busy}
         aria-label={t('st.origin.restoreAria', { name: label })}

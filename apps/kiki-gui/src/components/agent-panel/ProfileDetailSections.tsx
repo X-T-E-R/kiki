@@ -470,7 +470,7 @@ export function ProfileDetailSections({
           ) : null}
 
           {executionRestriction === 'research-readonly' ? (
-            <div className="rounded bg-accent-soft border border-accent/30 p-1.5 text-accent font-medium text-[10px]">
+            <div className="rounded-md bg-ink/[0.04] px-2 py-1.5 text-[12px] leading-4 text-ink-soft">
               {t('agentPanel.researchReadonly')}
             </div>
           ) : null}

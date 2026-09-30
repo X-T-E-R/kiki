@@ -238,7 +238,7 @@ export function DimensionBreakdown({
                 <button
                   type="button"
                   onClick={() => { toggle(row.key); }}
-                  className="mb-2 ml-10 inline-flex min-h-7 items-center gap-2 rounded-md px-2 text-[12px] text-accent hover:bg-accent-soft"
+                  className="mb-2 ml-10 inline-flex min-h-7 items-center gap-2 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.05] hover:text-ink"
                 >
                   {t('usage.agent.subagents', { count: children.length })}
                   <span className="font-mono text-ink-faint tabular-nums">

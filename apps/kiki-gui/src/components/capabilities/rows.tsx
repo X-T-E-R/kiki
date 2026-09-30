@@ -42,7 +42,7 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
           </span>
         ) : null}
         {skill.prompt_command ? (
-          <span className="shrink-0 rounded bg-accent-soft px-1.5 py-0.2 font-mono text-[9px] text-accent">
+          <span className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
             {t('agentPanel.promptCommandBadge')}
           </span>
         ) : null}

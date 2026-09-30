@@ -33,7 +33,7 @@ export const SourceBadge = memo(function SourceBadge({
   const label = sourceBadgeLabel(t, source);
   const variantClass =
     variant === 'accent'
-      ? 'rounded bg-accent-soft px-1.5 py-0.2 font-mono text-[9.5px] font-medium text-accent uppercase'
+      ? 'rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft'
       : 'rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint';
 
   return (

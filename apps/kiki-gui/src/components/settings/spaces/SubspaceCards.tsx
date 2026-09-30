@@ -183,8 +183,8 @@ export function SpaceOverridesCard() {
           <ul className="divide-y divide-hairline rounded-lg border border-hairline bg-paper" data-space-overrides>
             {rows.map((row) => (
               <li key={row.label} data-space-override={row.label} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-accent-soft px-1.5 text-[11.5px] font-medium text-accent-ink">
-                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />{t('st.origin.local')}
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ink-faint" />{t('st.origin.local')}
                 </span>
                 <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink" title={row.label}>{row.label}</code>
                 <button type="button" data-origin-restore={row.label} disabled={busy !== null} className={SECONDARY_BUTTON}

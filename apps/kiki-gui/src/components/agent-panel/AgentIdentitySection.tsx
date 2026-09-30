@@ -395,7 +395,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         onClick={() => { setExpanded((open) => !open); }}
         className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-2.5 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
-        <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-ink">
+        <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name="agent" size={12} />
         </span>
         <span data-profile-name className="min-w-0 shrink truncate font-display text-[14.5px] leading-5 font-semibold tracking-tight text-ink">{profileLabel}</span>

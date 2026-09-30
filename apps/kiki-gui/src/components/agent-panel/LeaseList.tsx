@@ -70,7 +70,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
             <>
               <div className="font-medium text-ink flex items-center gap-1.5">
                 {summary.scoped ? (
-                  <span className="rounded bg-accent-soft px-1 text-[8.5px] text-accent uppercase font-bold">
+                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
                     {t('st.namedAgents.scopedBadge')}
                   </span>
                 ) : null}
@@ -140,7 +140,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
             >
               <span>{leaseSummary.headline}</span>
               {leaseSummary.scoped ? (
-                <span className="rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-accent">
+                <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
                   {t('st.namedAgents.scopedBadge')}
                 </span>
               ) : null}
@@ -181,7 +181,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
             <p>
               {t('st.namedAgents.subagentLease')}:
               {leaseSummary.scoped ? (
-                <span className="mx-1 rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-accent">
+                <span className="mx-1 align-middle rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
                   {t('st.namedAgents.scopedBadge')}
                 </span>
               ) : null}{' '}

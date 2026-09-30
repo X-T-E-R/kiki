@@ -102,7 +102,7 @@ export const ToolChipList = memo(function ToolChipList({
               )}
               <div className="flex items-center gap-1 shrink-0">
                 {item.readOnly ? (
-                  <span className="rounded-sm bg-accent-soft px-1 text-[9px] font-mono text-accent">
+                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
                     {t('agentPanel.readOnly')}
                   </span>
                 ) : null}
