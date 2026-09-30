@@ -3689,7 +3689,7 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.worktrees.hint':
     '在新的 worktree 中启动的会话会使用独立的分支和检出目录。移除 worktree 会删除检出目录，但会话仍保留在历史记录中。',
   'st.worktrees.cleanupRule':
-    '清理会移除已归档 7 天或更久的会话对应的 worktree。凡是有未提交改动、未推送提交、非构建产物的忽略文件，或被其他工具锁定的 worktree，都会保留。',
+    '清理会移除已归档 {days} 天或更久的会话对应的 worktree。凡是有未提交改动、未推送提交、非构建产物的忽略文件，或被其他工具锁定的 worktree，都会保留。',
   'st.worktrees.cleanup': '清理',
   'st.worktrees.cleanupChecking': '检查中…',
   'st.worktrees.cleanupNone': '现在没有需要清理的内容。',
