@@ -188,6 +188,15 @@ interface ContextAppendMessagePayload {
     origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
+    source?: {
+      ref?: string;
+      turnId?: number;
+      stepId?: string;
+      step?: number;
+      frameId?: string;
+      toolCallId?: string;
+    };
+    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
   };
   delivery?: {
     deliveryId: string;
@@ -687,6 +696,15 @@ interface PromptEnqueuedPayload {
     origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
+    source?: {
+      ref?: string;
+      turnId?: number;
+      stepId?: string;
+      step?: number;
+      frameId?: string;
+      toolCallId?: string;
+    };
+    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
   };
   /** PromptExecutionBinding */
   execution?: {
@@ -766,6 +784,15 @@ interface PromptReplacedPayload {
     origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
+    source?: {
+      ref?: string;
+      turnId?: number;
+      stepId?: string;
+      step?: number;
+      frameId?: string;
+      toolCallId?: string;
+    };
+    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
   };
   /** PromptExecutionBinding */
   execution?: {

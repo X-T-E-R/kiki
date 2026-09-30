@@ -1398,6 +1398,22 @@ export interface AgentStateSnapshot {
     };
     readonly isError?: boolean;
     readonly note?: string;
+    readonly source?: /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly ref?: string;
+      readonly turnId?: number;
+      readonly stepId?: string;
+      readonly step?: number;
+      readonly frameId?: string;
+      readonly toolCallId?: string;
+    };
+    readonly toolCallSources?: Readonly<Record<string, /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly ref?: string;
+      readonly turnId?: number;
+      readonly stepId?: string;
+      readonly step?: number;
+      readonly frameId?: string;
+      readonly toolCallId?: string;
+    }>>;
   })[];
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
@@ -2067,6 +2083,7 @@ export interface AgentStateSnapshot {
         readonly contributionRoot: string;
         readonly private: boolean;
         readonly allowParentNotify?: boolean;
+        readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
         readonly description: string;
         readonly whenToUse?: string;
         readonly override: boolean;
@@ -2209,7 +2226,7 @@ export interface AgentStateSnapshot {
         readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
         readonly prompt: string;
         readonly path: string;
-        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
+        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
         readonly delegationNotice?: 'off' | 'auto';
       };
       readonly routeDefinition?: /* AgentProfileRouteDefinition — packages/agent-profiles/src/agentProfile.ts */ {
@@ -2239,6 +2256,7 @@ export interface AgentStateSnapshot {
       readonly override?: boolean;
       readonly private?: boolean;
       readonly allowParentNotify?: boolean;
+      readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
       readonly main?: boolean;
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly (readonly string[])[];
@@ -2458,6 +2476,7 @@ export interface AgentStateSnapshot {
           readonly contributionRoot: string;
           readonly private: boolean;
           readonly allowParentNotify?: boolean;
+          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;
@@ -2600,7 +2619,7 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -2636,6 +2655,7 @@ export interface AgentStateSnapshot {
           readonly thinkingEffortSource?: 'forced' | 'adjusted';
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
+          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
           readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
             readonly version: 1;
             readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
@@ -2942,6 +2962,7 @@ export interface AgentStateSnapshot {
             readonly contributionRoot: string;
             readonly private: boolean;
             readonly allowParentNotify?: boolean;
+            readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
             readonly description: string;
             readonly whenToUse?: string;
             readonly override: boolean;
@@ -3084,7 +3105,7 @@ export interface AgentStateSnapshot {
             readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
             readonly prompt: string;
             readonly path: string;
-            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
+            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
             readonly delegationNotice?: 'off' | 'auto';
           };
           readonly diagnostic?: /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
@@ -3107,6 +3128,7 @@ export interface AgentStateSnapshot {
           readonly contributionRoot: string;
           readonly private: boolean;
           readonly allowParentNotify?: boolean;
+          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;
@@ -3249,7 +3271,7 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'replace' | 'append' | 'inherit' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         }>>;
         readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;
@@ -3641,7 +3663,7 @@ export interface AgentStateSnapshot {
       readonly title: string;
       readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'in_progress' | 'done';
     }[];
-    readonly notes?: Partial<Record<'goal' | 'decided' | 'rejected' | 'evidence' | 'files' | 'next' | 'open', string>>;
+    readonly notes?: Partial<Record<'goal' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'files' | 'next' | 'open', string>>;
     readonly notesMeta?: /* NotesMeta — packages/agent-core-v2/src/session/todo/todoNotes.ts */ {
       readonly rev: number;
       readonly hash: string;
