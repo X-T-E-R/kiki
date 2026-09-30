@@ -1018,6 +1018,8 @@ describe('settings search index', () => {
     for (const tab of SEARCH_SETTINGS_TABS) {
       expect(searchEntries.some((entry) => entry.tab === tab), tab).toBe(true);
     }
+    expect(searchTabForCard('st-card-search-index')).toBe('advanced');
+    expect(searchTabForCard('st-card-search-unknown')).toBeUndefined();
   });
 
   it('resolves every indexed target back to its own section and card anchor', () => {

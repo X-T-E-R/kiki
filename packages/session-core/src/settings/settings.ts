@@ -1837,6 +1837,7 @@ const SEARCH_TAB_BY_CARD: Readonly<Record<string, SearchSettingsTab>> = {
   'st-card-search-fetch': 'fetch',
   'st-card-search-providers': 'providers',
   'st-card-search-execution': 'advanced',
+  'st-card-search-index': 'advanced',
   'st-card-search-diagnostics': 'advanced',
   'st-card-exp-search': 'advanced',
 };

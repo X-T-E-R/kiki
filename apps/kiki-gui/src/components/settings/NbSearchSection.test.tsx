@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NbSearchCapabilities } from '@kiki/protocol';
-import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
+import { SETTINGS_SEARCH_SPEC, searchTabForCard } from '@kiki/session-core/settings';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
@@ -1025,6 +1025,9 @@ describe('search-leaf targets match the settings search index', () => {
     expect(entries.length).toBeGreaterThan(0);
     for (const entry of entries) {
       expect(entry.tab, entry.cardId).toBe(CARD_ID_TO_TAB[entry.cardId]);
+    }
+    for (const [cardId, tab] of Object.entries(CARD_ID_TO_TAB)) {
+      expect(searchTabForCard(cardId), cardId).toBe(tab);
     }
     for (const tab of NB_SEARCH_TABS) {
       expect(entries.some((entry) => entry.tab === tab), tab).toBe(true);
