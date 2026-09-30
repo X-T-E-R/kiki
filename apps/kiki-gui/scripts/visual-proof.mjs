@@ -1662,16 +1662,25 @@ async function scenarioSettings() {
   if ((await storedRow.locator('#provider-field-id').count()) !== 0) {
     throw new Error('a stored connection must not offer an editable provider id');
   }
-  if ((await storedRow.locator('input[type="password"]').count()) !== 1) {
+  // The API key is a write-only secret field: one masked slot whose value
+  // rests behind the token layer, and it names where the value comes from.
+  const storedKey = storedRow.locator('[data-secret-field]').filter({
+    has: page.locator(`label:text-is("${S.providerApiKey}")`),
+  });
+  if ((await storedKey.count()) !== 1) {
     throw new Error('a stored API connection must render its API-key field');
+  }
+  if ((await storedKey.getAttribute('data-secret-source')) !== 'kiki') {
+    throw new Error('the stored API connection must show its key comes from Kiki');
   }
   await storedRow.getByRole('button', { name: S.saveProvider }).waitFor({ timeout: 5000 });
   await storedRow.locator('[data-advanced^="provider-"] > button').click();
-  const storedIdentity = storedRow.locator('[data-advanced^="provider-"] select', {
-    has: page.locator('option[value="kimi_code"]'),
-  });
-  if ((await storedIdentity.inputValue()) !== 'kimi_code') {
-    throw new Error(`stored provider request identity should echo kimi_code, got ${await storedIdentity.inputValue()}`);
+  // The identity picker is a list box now; its wrapper carries the live value.
+  const storedIdentity = storedRow.locator('[data-request-identity-choice]');
+  await storedIdentity.waitFor({ timeout: 5000 });
+  const identityValue = await storedIdentity.getAttribute('data-request-identity-choice');
+  if (identityValue !== 'kimi_code') {
+    throw new Error(`stored provider request identity should echo kimi_code, got ${identityValue}`);
   }
   await storedRow.evaluate((element) => { element.scrollIntoView({ block: 'start' }); });
   await page.waitForTimeout(200);
@@ -1689,21 +1698,22 @@ async function scenarioSettings() {
   await shot('settings-providers-oauth');
   await page.locator('[data-oauth-method="kimi-code"]').getByRole('button', { name: S.oauthCancel }).click();
 
-  // New-connection form: the API-key lane's Anthropic protocol, pointed at
-  // the fixture server's mock upstream, pulls its model list in the browser.
+  // New-connection form: the API-key lane's Anthropic protocol. "Test
+  // connection & pull models" probes the unsaved fields on the server
+  // (`POST /providers:probe`) and answers the remote model ids.
   await page.click('[data-connection-choice="api"]');
   await page.click('[data-provider-protocol="anthropic"]');
   await page.locator('#provider-field-base-url').fill(`${fixtureUrl()}/provider-mock/v1`);
   await page.locator('#st-card-providers-add input[type="password"]').fill('fixture-key');
   await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
-  // Fetched models stay unsaved suggestions: they surface inside the model
+  // Probed models stay unsaved suggestions: they surface inside the model
   // picker's listbox, not as page text, until one is picked and saved.
   const modelPicker = page.locator('#provider-model-0-id:visible');
   await modelPicker.click();
   await page.locator('[role="listbox"]:visible').waitFor({ timeout: 5000 });
   await page
     .locator('[role="listbox"]:visible')
-    .locator('text=mock-pro')
+    .locator('text=fixture-probe-model')
     .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(300);
   await shot('settings-providers-wizard');
@@ -1720,12 +1730,10 @@ async function scenarioSettings() {
   // Batch 3 split the capabilities leaf into skills / mcp / automation under
   // "Capabilities & extensions". Nav leaf ids are stable, so click them
   // directly (the app sidebar no longer carries a capabilities entry).
+  // The connection wizard is a side panel: Escape closes it (dropping its
+  // draft) rather than arming the shared dirty guard, so the navigation needs
+  // no confirmation here; the guard itself is walked in `settings-agents`.
   await page.locator('nav [data-settings-nav-leaf="skills"]').click();
-  // The unsaved wizard draft arms the dirty guard: confirm the discard so the
-  // navigation proceeds (the dialog itself is proof the guard fired).
-  await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
-  await shot('settings-dirty-guard');
-  await page.click(`text=${S.dirtyDiscard}`);
   // Capability leaves hold server defaults only; browsing, installing and
   // inspecting live on /capabilities (walked by the `capabilities` scenario),
   // so each leaf proves its defaults card plus the link there.
@@ -1934,30 +1942,34 @@ async function scenarioConnectionToken() {
   const card = page.locator('#st-card-conn-server');
   await card.waitFor({ state: 'visible', timeout: 10_000 });
   const input = card.locator('#st-conn-token');
-  if (await input.inputValue() !== FIXTURE_TOKEN || await input.getAttribute('type') !== 'password') {
-    throw new Error('fixture connection token must be prefilled and masked');
+  // The token lives in this browser and is fetched only on request: the field
+  // rests on its fixed mask, so the value never sits in the DOM unasked.
+  const masked = await input.inputValue();
+  if (masked === FIXTURE_TOKEN || masked === '') {
+    throw new Error(`the stored connection token must rest masked, saw "${masked}"`);
+  }
+  const reveal = card.locator('[data-secret-reveal]');
+  if (await reveal.count() !== 1) {
+    throw new Error('expected one accessible token visibility control');
   }
   await card.scrollIntoViewIfNeeded();
   await shot('settings-connection-token-masked');
-  const toggle = card.locator('button[aria-label]');
-  if (await toggle.count() !== 1) {
-    throw new Error('expected one accessible token visibility control');
-  }
-  await toggle.click();
-  if (await input.getAttribute('type') !== 'text') {
-    throw new Error('saved connection token did not become visible');
-  }
+  await reveal.click();
+  await page.waitForFunction((token) => document.querySelector('#st-conn-token')?.value === token, FIXTURE_TOKEN, { timeout: 5000 });
   await shot('settings-connection-token-revealed');
-  await toggle.click();
-  if (await input.getAttribute('type') !== 'password') {
-    throw new Error('saved connection token did not become masked again');
+  await reveal.click();
+  await page.waitForFunction((token) => document.querySelector('#st-conn-token')?.value !== token, FIXTURE_TOKEN, { timeout: 5000 });
+  if (await input.inputValue() !== masked) {
+    throw new Error('hiding the saved connection token must restore the mask');
   }
 }
 
 async function scenarioSettingsInvalid() {
   // Client-side validation with no server round-trip: the plan-enter approval
-  // timeout floor (5s) rejects an under-floor draft on Save, retains it for
-  // correction, and Discard restores the server-known value.
+  // timeout floor (5s) rejects an under-floor value when the field commits
+  // (blur / Enter), keeps it for correction, and Escape restores the
+  // server-known value. The card saves each control itself — there is no
+  // Save/Discard transaction to click.
   await page.goto(`${WEB_URL}/settings/sessions?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
@@ -1970,16 +1982,16 @@ async function scenarioSettingsInvalid() {
   }
   const timeout = page.locator('#plan-gate-timeout');
   await timeout.fill('2');
-  await page.locator('#st-card-defaults').getByRole('button', { name: S.save, exact: true }).click();
-  await page.waitForSelector('[role="alert"]', { timeout: 5000 });
+  await timeout.press('Enter');
+  await page.waitForSelector('[data-field-issue]', { timeout: 5000 });
   await waitForText(S.planGateTimeoutInvalid);
   if (await timeout.inputValue() !== '2') {
-    throw new Error('invalid timeout draft must remain editable after a failed Save');
+    throw new Error('invalid timeout draft must remain editable after a failed commit');
   }
   await shot('settings-invalid-inline-error');
-  await page.locator('#st-card-defaults').getByRole('button', { name: 'Discard changes' }).click();
+  await timeout.press('Escape');
   if (await timeout.inputValue() !== '60') {
-    throw new Error('Discard must restore the server-known timeout');
+    throw new Error('Escape must restore the server-known timeout');
   }
 }
 
@@ -2139,7 +2151,7 @@ async function scenarioSettingsAgents() {
   await shot('settings-reviewer-jev-consent');
   await page.locator('#st-card-reviewer input[type="checkbox"]').first().check();
   await shot('settings-reviewer-jev-ready');
-  await page.locator('#st-card-reviewer').getByRole('button', { name: 'Discard changes' }).click();
+  await page.locator('#st-card-reviewer').getByRole('button', { name: S.discardChanges, exact: true }).click();
   await resizeViewport(390);
   await page.locator('#st-card-reviewer').scrollIntoViewIfNeeded();
   const reviewerOverflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
@@ -2209,7 +2221,8 @@ async function scenarioSettingsShipped() {
   await generalRow.locator('[data-shipped-restore="general"]').click();
   await dialog.locator('button', { hasText: S.shippedRestore }).click();
   await generalRow.locator('[data-shipped-status="clean"]').waitFor({ timeout: 5000 });
-  await page.getByText(S.shippedRestored, { exact: false }).waitFor({ timeout: 5000 });
+  // The editor sheet affirms the restore with the shared transient ✓ Saved.
+  await page.locator('[data-settings-draft-saved] [data-saved-tick]').waitFor({ timeout: 5000 });
   await generalRow.locator('[data-agent-back]').click();
   await page.waitForSelector('[data-profile-editor]', { state: 'detached', timeout: 5000 });
 
@@ -5014,11 +5027,14 @@ async function scenarioSettingsAppearance() {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  // Controls reach <html> immediately and "Restore defaults" appears.
+  // Controls reach <html> immediately and "Restore defaults" appears. The
+  // prose font is a select over the registered presets now.
   await setLook('paper', 'light');
   await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-appearance-preview]', { timeout: 15_000 });
-  await page.locator('[data-prose-choice="sans"]').click();
+  await page.locator(`[data-font-role="prose"] [aria-label="${S.proseFontLabel}"]`).click();
+  await page.waitForSelector('[role="listbox"] [role="option"]', { timeout: 5000 });
+  await page.getByRole('option', { name: S.proseSans, exact: true }).click();
   await page.locator('[data-motion-choice="reduce"]').click();
   const attrs = await page.evaluate(() => ({
     motion: document.documentElement.dataset.kikiMotion,

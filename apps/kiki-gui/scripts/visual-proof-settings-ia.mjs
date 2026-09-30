@@ -68,7 +68,7 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
     await open('/settings/permissions');
     if (await page.locator('nav [data-settings-nav-storage]').count() > 0) throw new Error('nav still draws scope blocks');
     const groups = await page.locator('nav [data-settings-nav-tree] > *').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-settings-nav-group')));
-    if (groups.join(',') !== 'device,models-agents,work,capabilities,system') throw new Error(`nav groups: ${groups.join(',')}`);
+    if (groups.join(',') !== 'device,connection,models-agents,work,capabilities,workspace,advanced') throw new Error(`nav groups: ${groups.join(',')}`);
     const navText = await page.locator('nav').first().innerText();
     if (HOST_PORT.test(navText) || SCOPE_WORDS.test(navText)) throw new Error(`nav shows scope or host: ${navText.slice(0, 160)}`);
     await shot(`ia-nav-${theme}-1440`);
@@ -124,7 +124,10 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
   async function search(theme) {
     await open('/settings/general');
     const field = page.locator('nav [data-settings-search]');
-    await field.fill('notify');
+    // A synonym of the card under test: "notify" now leads with the newer
+    // System notifications leaf, and the point here is that Enter lands on the
+    // hit's own card and flashes it.
+    await field.fill('AgentNotify');
     await page.waitForSelector('nav [role="option"]', { timeout: 5000 });
     await shot(`ia-search-${theme}-1440`);
     await page.keyboard.press('Enter');

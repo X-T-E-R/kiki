@@ -154,7 +154,7 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
     await page.waitForTimeout(250);
     await shot(`cap-mcp-error-${tag}`);
     await page.locator('[data-mcp-add]').click();
-    await page.waitForSelector('[data-mcp-manager] fieldset', { timeout: 5000 });
+    await page.waitForSelector('[data-mcp-editor]', { timeout: 5000 });
     await shot(`cap-mcp-add-${tag}`);
     await go('/capabilities?tab=tools', '[data-tools-view] [data-tool-row]');
     await shot(`cap-tools-${tag}`);
