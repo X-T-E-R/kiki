@@ -9,6 +9,9 @@
  * reuse the mounted element, and overlapping picks that end on the last one.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BACKGROUND_LOOK } from '@kiki/protocol';
@@ -41,6 +44,41 @@ afterEach(() => {
   setBackdropMediaResolver((ref) => getMedia(ref.id));
   resetDisplayMedia();
   vi.unstubAllGlobals();
+});
+
+describe('wallpaper material', () => {
+  const css = readFileSync(resolve(import.meta.dirname, '../../styles/skin.css'), 'utf8');
+  const rule = (selector: string) => {
+    const start = css.indexOf(`${selector} {`);
+    expect(start, selector).toBeGreaterThanOrEqual(0);
+    return css.slice(start, css.indexOf('\n}', start));
+  };
+
+  it('frosts the entire scoped backdrop, including the gaps outside sheets', () => {
+    const frost = rule(':root[data-kiki-bg] [data-kiki-backdrop]::after');
+    expect(frost).toContain("content: '';");
+    expect(frost).toContain('position: absolute;');
+    expect(frost).toContain('inset: 0;');
+    expect(frost).toContain('-webkit-backdrop-filter: var(--kiki-surface-filter);');
+    expect(frost).toContain('\n  backdrop-filter: var(--kiki-surface-filter);');
+    expect(frost).not.toMatch(/background(?:-color)?:/);
+  });
+
+  it('keeps one opacity dial and does not blur the wallpaper twice under panels', () => {
+    for (const [selector, surface] of [
+      [":root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar", 'canvas'],
+      [":root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell .conversation-center", 'paper'],
+      [":root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, .preview-workspace)", 'panel'],
+    ]) {
+      const panel = rule(selector!);
+      expect(panel).toContain(`var(--kiki-surface-${surface})`);
+      expect(panel).not.toContain('backdrop-filter:');
+      expect(panel).toContain('isolation: isolate;');
+      expect(css).toContain(`--kiki-surface-${surface}: color-mix(in srgb, var(--color-${surface}) var(--kiki-surface-alpha, 100%), transparent);`);
+    }
+    expect(css).not.toContain('blur(12px)');
+    expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-surface-filter: none;');
+  });
 });
 
 describe('wallpaper switching', () => {

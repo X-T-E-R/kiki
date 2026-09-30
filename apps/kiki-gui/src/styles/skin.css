@@ -56,9 +56,10 @@
  * The media lives in one fixed layer at z-index -1, under every block in
  * #root; the body paints the theme's canvas as the ground beneath it. The
  * reading surfaces (sidebar, conversation sheet, page sheet, inspector,
- * preview) become a wash of their own color at --kiki-surface-alpha with a
- * backdrop blur. That alpha is floored in JS so the faintest text token keeps
- * WCAG AA over the darkest and lightest pixel the media can show. Popovers,
+ * preview) become a wash of their own color at --kiki-surface-alpha. One frost
+ * layer covers the scoped media, including stage padding and gaps between
+ * sheets; blurring each sheet separately would leave those gaps sharp. The
+ * text layer is solved in JS for WCAG AA over the media. Popovers,
  * dialogs, the composer card and dock sheets keep their solid fills: they
  * carry the controls a user must never misread. */
 [data-kiki-backdrop] {
@@ -68,6 +69,15 @@
   overflow: hidden;
   pointer-events: none;
   contain: strict;
+}
+/* Blur the media and scrim once, before any surface wash. The fixed scope
+ * covers every gap without stacking extra opacity or changing sheet layout. */
+:root[data-kiki-bg] [data-kiki-backdrop]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
 }
 [data-kiki-backdrop][data-scope='main'] {
   left: var(--kiki-backdrop-sidebar, 0px);
@@ -116,15 +126,14 @@
 /* Sidebar: translucent in window and sidebar scope. */
 :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar {
   background-color: var(--kiki-surface-canvas);
-  -webkit-backdrop-filter: var(--kiki-surface-filter);
-  backdrop-filter: var(--kiki-surface-filter);
+  isolation: isolate;
 }
 /* Sticky group headers would otherwise be opaque bands; they get the same
  * wash, and their blur hides the rows scrolling beneath them. */
 :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar .sticky.bg-canvas {
   background-color: var(--kiki-surface-canvas);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
 }
 /* Sidebar scope: the media sits only under the sidebar; the stage beside it
  * keeps the solid canvas ground. (Repainting the whole root would cover the
@@ -143,8 +152,8 @@
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center,
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell .conversation-center {
   background: var(--kiki-surface-paper);
-  -webkit-backdrop-filter: var(--kiki-surface-filter);
-  backdrop-filter: var(--kiki-surface-filter);
+  /* Keep negative-z reading layers inside the sheet without a second blur. */
+  isolation: isolate;
 }
 /* The session header sits on the sheet's own ground; over a picture that
  * ground is the translucent sheet, not a second opaque band. */
@@ -157,8 +166,7 @@
 }
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, .preview-workspace) {
   background-color: var(--kiki-surface-panel);
-  -webkit-backdrop-filter: var(--kiki-surface-filter);
-  backdrop-filter: var(--kiki-surface-filter);
+  isolation: isolate;
 }
 /* The composer seat's fade band keeps scrolled text out from under the card.
  * Over a picture it covers only the reading column (where text scrolls), so
@@ -202,10 +210,8 @@
 
 /* Reading band: the transcript's reading column, the full height of the
  * viewport (not the content, which would end in a hard line on a short
- * conversation). Soft edges from a mask, not
- * a hard rectangle. It has no blur of its own: a backdrop-filter inside the
- * canvas sheet only sees the sheet (the sheet is its backdrop root), so the
- * picture under the words is softened by the canvas blur. */
+ * conversation). Soft edges from a mask, not a hard rectangle. It adds only
+ * opacity; the shared backdrop frost already softens the picture underneath. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center div:has(> [data-transcript-scroll])::before {
   content: '';
   position: absolute;
