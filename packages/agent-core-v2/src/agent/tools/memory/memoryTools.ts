@@ -72,7 +72,7 @@ export const IMemoryWriteTool = createDecorator<IMemoryWriteTool>('memoryWriteTo
 export class MemoryWriteTool implements IMemoryWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryWrite';
-  readonly description = 'Save reusable preferences, feedback, project facts, or reference pointers. With a bound persona, omitted scope saves to that persona memory; use workspace for project facts and global for cross-persona user preferences.';
+  readonly description = 'Save or change durable memory that later sessions receive at start. Write without asking when the user states a preference, corrects how you work, sets, tightens, relaxes, or revokes a standing rule or limit (models, concurrency, tools, process), or settles a decision meant to outlast this task. When such a rule changes, `update` or `supersede` the existing entry, or `archive` a revoked one, in the same turn; do not leave a stale value active. `update`, `supersede`, and `archive` need `id` and `expected_revision` from MemorySearch or MemoryRead. Types: `feedback` for how to work, `user` for who the user is, `project` for project facts the repository does not record, `reference` for pointers. Keep one fact per entry, written as a dated declarative statement close to the user\'s words; never store secrets, task progress, or facts the repository already holds. With a bound persona, omitted scope saves to that persona memory; otherwise it saves to the workspace. Use `global` for rules about how the user wants you to work anywhere (models, delegation, concurrency, reply style); use `workspace` only for facts tied to this project.';
   readonly parameters = toInputJsonSchema(writeSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -107,7 +107,7 @@ export const IMemorySearchTool = createDecorator<IMemorySearchTool>('memorySearc
 export class MemorySearchTool implements IMemorySearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemorySearch';
-  readonly description = 'Search reusable preferences, feedback, project facts, and reference pointers visible to this persona.';
+  readonly description = 'Search saved memory visible to this persona: before relying on a remembered rule, when the user refers to an earlier preference or decision, and before MemoryWrite to find an entry to update instead of duplicating it. Returns up to 8 active hits with `id`, `revision`, and a snippet; `include_superseded` also shows replaced entries.';
   readonly parameters = toInputJsonSchema(searchSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -125,7 +125,7 @@ export class MemorySearchTool implements IMemorySearchTool {
         if (parsed.data.scope !== undefined) assertReadable(parsed.data.scope, persona);
         const targets = parsed.data.scope === undefined ? scopes(this.session, persona) : [resolveScope(parsed.data.scope, this.session, persona)];
         const hits = await this.store.search(targets, parsed.data.query, parsed.data.type as MemoryType | undefined, parsed.data.include_superseded);
-        return { output: JSON.stringify(hits.filter((hit) => hit.status === 'active' || (parsed.data.include_superseded === true && hit.status === 'superseded')).slice(0, 8).map(({ id, title, body, type, source, scope, score }) => ({ id, title, type, snippet: body.slice(0, 200), source, scope, score }))) };
+        return { output: JSON.stringify(hits.filter((hit) => hit.status === 'active' || (parsed.data.include_superseded === true && hit.status === 'superseded')).slice(0, 8).map(({ id, title, body, type, source, scope, score, revision, status }) => ({ id, title, type, status, revision, snippet: body.slice(0, 200), source, scope, score }))) };
       } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
     } };
   }
@@ -136,7 +136,7 @@ export const IMemoryReadTool = createDecorator<IMemoryReadTool>('memoryReadTool'
 export class MemoryReadTool implements IMemoryReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryRead';
-  readonly description = 'Read saved preferences, feedback, project facts, or reference pointers visible to this persona by memory ID.';
+  readonly description = 'Read full saved memory entries visible to this persona by `id` or `ids` (up to 10), including the `revision` that update, supersede, and archive require.';
   readonly parameters = toInputJsonSchema(readSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,

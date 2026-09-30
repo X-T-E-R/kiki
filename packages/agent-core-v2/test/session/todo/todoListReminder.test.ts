@@ -183,7 +183,13 @@ const freshMeta = { rev: 1, hash: 'test', writtenTurn: 1, writtenStep: 't1.0', w
 const baseReminder = { active: true, todos: [], epoch: 0 };
 
 describe('event-driven continuity reminders', () => {
-  it.each(['以后直接 pin 模型', 'Always use the selected model'])('recognizes default instruction cues: %s', (text) => {
+  it.each([
+    '以后直接 pin 模型',
+    'Always use the selected model',
+    '减少一下所有的并发，你只能有四并发了',
+    '之前那个是临时的，现在放开：Opus 最多 3 个',
+    'That cap was temporary; lift it',
+  ])('recognizes default instruction cues: %s', (text) => {
     const tracker = new TodoListReminderTracker();
     const history = [user(text, 1)];
     expect(tracker.evaluate({ ...baseReminder, history })?.disclosure.triggers).toEqual(['E1']);

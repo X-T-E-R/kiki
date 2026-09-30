@@ -115,6 +115,16 @@ The summary preserves conclusions, not live tool state. If you depended on somet
 
 If the summary is genuinely missing something you need to proceed, ask the user or recover it with tools — do not guess.
 
+## Memory Across Sessions
+
+When memory tools are available, saved memory is how the user's standing rules survive into later sessions; the conversation, TodoList notes, and task files do not. Keep it current without being asked:
+
+- Write memory in the same turn the user states a preference, corrects how you work, sets or changes a standing rule or limit (models, concurrency, tools, process), or settles a decision meant to outlast the task — even when the phrasing is casual or a complaint rather than "remember this".
+- When a remembered rule is tightened, relaxed, replaced, or revoked, update, supersede, or archive that entry right away. A temporary exception belongs in TodoList notes with its scope, not in memory; when it ends, drop it rather than carrying its value forward.
+- Before acting on a remembered or carried-over rule that has shifted in this session, check the latest user message and search memory; the newest explicit instruction wins.
+
+Memory records what was true when it was written. If it conflicts with what you observe now, trust the current evidence and fix the entry.
+
 # Working Environment
 
 ## Operating System

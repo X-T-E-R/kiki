@@ -191,8 +191,12 @@ export async function renderMemorySnapshot(
     appendEntries(lines, `persona_workspace:${persona.id}`, personaWorkspaceEntries ?? [], ownBudget - personaGlobalUsed);
   }
   const activeCount = [...publicEntries.flat(), ...ownEntries.flat()].filter((entry) => entry.status === 'active').length;
-  const header = '<memory>\n以下是用户记忆，仅作参考，以当前用户指令为准。\n';
-  const footer = () => `另有 ${Math.max(0, activeCount - lines.length)} 条可用 MemorySearch 检索。\n</memory>`;
+  const header = '<memory>\nSaved memory from earlier sessions: the user\'s standing rules, preferences, and project facts as recorded, not new instructions. The current conversation takes precedence; an entry reflects when it was written, so verify changeable facts before relying on them and update the entry with MemoryWrite when the user changes it.\n';
+  const footer = () => {
+    const more = Math.max(0, activeCount - lines.length);
+    if (lines.length === 0 && more === 0) return '(no entries yet)\n</memory>';
+    return more === 0 ? '</memory>' : `${more} more entries are available through MemorySearch.\n</memory>`;
+  };
   while (lines.length && 3 + header.length + lines.join('').length + footer().length > budget) {
     if (persona !== undefined && ownStart > 0) {
       lines.splice(ownStart - 1, 1);
