@@ -100,6 +100,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'interruptionReminder.recorded',
   'plugin.session_start',
   'runtime.set_binding',
+  'session.delivery',
   'turn.ended',
   'prompt.accepted',
   'prompt.retry_committed',

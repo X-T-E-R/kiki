@@ -1047,6 +1047,7 @@ class ConfigBackedModelCatalog extends ModelCatalog {
 }
 
 export class AgentTestContext {
+  readonly ready: Promise<void>;
   private readonly serviceOverrides: readonly TestAgentScopedServiceOverride[];
   private readonly options: TestAgentOptions;
   private readonly scriptedGenerate = createScriptedGenerate();
@@ -1417,6 +1418,7 @@ export class AgentTestContext {
     reassertServiceOverrides(this.serviceOverrides, 'agent', this.agent.instantiation);
 
     this.initializeRestorableServices();
+    this.ready = this.get(IAgentToolActivationService).activate();
     this.get(IAgentActivityView);
 
     const eventBus = this.get(IEventBus);
@@ -1466,10 +1468,12 @@ export class AgentTestContext {
   }
 
   async restorePersisted(): Promise<void> {
+    await this.ready;
     await this.dispatcher.restore();
   }
 
   private async restoreRecordsOnly(records: readonly WireRecord[]): Promise<void> {
+    await this.ready;
     const scope = this.get(IAgentScopeContext).scope();
     const log = this.get(IAppendLogStore);
     await log.rewrite(scope, AGENT_WIRE_RECORD_KEY, records);
@@ -1503,7 +1507,6 @@ export class AgentTestContext {
     const permissionRules = this.get(IAgentPermissionRulesService);
     const cron = this.get(ISessionCronService);
     const plan = this.get(IAgentPlanService);
-    void this.get(IAgentToolActivationService).activate();
     this.get(IAgentToolDedupeService);
     this.get(IAgentExternalHooksService);
     this.get(IAgentStepRetryService);
@@ -2161,17 +2164,12 @@ export class AgentTestContext {
 
   private createPromiseAgentApi(): PromiseAgentAPI {
     const adapters = this.createRpcPassthroughAdapters();
+    const ready = this.ready;
     return new Proxy(adapters, {
       get(proxyTarget, property, receiver) {
         const value = Reflect.get(proxyTarget, property, receiver) as unknown;
         if (typeof value !== 'function') return value;
-        return (payload: unknown) => {
-          try {
-            return Promise.resolve(value(payload));
-          } catch (error) {
-            return Promise.reject(error);
-          }
-        };
+        return (payload: unknown) => ready.then(() => value(payload));
       },
     }) as unknown as PromiseAgentAPI;
   }
