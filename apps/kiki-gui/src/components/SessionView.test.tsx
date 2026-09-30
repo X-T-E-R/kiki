@@ -677,7 +677,7 @@ describe('optimistic submission', () => {
     const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false };
     const render = (slow: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
       <Transcript
-        state={{ ...state, loaded: true, blocks: withOptimisticUserBlock(state.blocks, { ...pending, slow }) }}
+        state={{ ...state, loaded: true, transcriptReady: true, blocks: withOptimisticUserBlock(state.blocks, { ...pending, slow }) }}
         onLoadOlder={async () => false}
         onResolveApproval={async () => {}}
         onAnswerQuestion={async () => {}}
@@ -1301,7 +1301,7 @@ describe('agent tree chrome', () => {
       <MemoryRouter initialEntries={['/s/sess-1/agent/agent-1']}>
         <I18nProvider>
           <Transcript
-            state={{ ...createViewState('sess-1'), loaded: true, blocks: [grandchild] }}
+            state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, blocks: [grandchild] }}
             onLoadOlder={async () => false}
             onResolveApproval={async () => {}}
             onAnswerQuestion={async () => {}}

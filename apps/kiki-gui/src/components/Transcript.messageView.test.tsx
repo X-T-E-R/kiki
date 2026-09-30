@@ -67,7 +67,9 @@ const LIN = { id: 'lin-lan', name: '林岚' };
 const BOT_CONTEXT: MessageViewContextValue = { persona: LIN, sessionId: 'session_bot', internalProse: true };
 
 function state(blocks: Block[], overrides: Partial<SessionViewState> = {}): SessionViewState {
-  return { ...createViewState('session_bot'), loaded: true, blocks, ...overrides };
+  // Transcript gates on `loaded && transcriptReady`; the shell flips `loaded`
+  // alone, so an established transcript must also mark `transcriptReady`.
+  return { ...createViewState('session_bot'), loaded: true, transcriptReady: true, blocks, ...overrides };
 }
 
 async function render(node: ReactNode): Promise<{ container: HTMLDivElement; rerender: (next: ReactNode) => Promise<void> }> {

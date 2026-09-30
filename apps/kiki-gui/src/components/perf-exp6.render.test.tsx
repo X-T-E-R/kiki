@@ -70,6 +70,7 @@ function buildSession(blockCount: number): { state: SessionViewState; liveTurnId
   const state: SessionViewState = {
     ...createViewState(`perf-${blockCount}`),
     loaded: true,
+    transcriptReady: true,
     blocks,
   };
 
@@ -92,6 +93,7 @@ function buildLongMarkdownState(): { state: SessionViewState; liveTurnId: string
   const state: SessionViewState = {
     ...createViewState('perf-long-markdown'),
     loaded: true,
+    transcriptReady: true,
     blocks: [
       {
         kind: 'user',

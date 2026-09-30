@@ -108,7 +108,9 @@ function foldedSession(): Block[] {
 }
 
 function state(blocks: Block[], overrides: Partial<SessionViewState> = {}): SessionViewState {
-  return { ...createViewState('session_find'), loaded: true, blocks, ...overrides };
+  // Transcript gates on `loaded && transcriptReady`; a mounted timeline must
+  // mark both, or the fold, rows and find host never render.
+  return { ...createViewState('session_find'), loaded: true, transcriptReady: true, blocks, ...overrides };
 }
 
 async function mount(node: ReactNode): Promise<{ root: Root; container: HTMLDivElement }> {
