@@ -38,6 +38,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/homes/{id}",
+    ],
+    [
+      "DELETE",
       "/api/mcp/servers/{name}",
     ],
     [
@@ -50,11 +54,27 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/notifications/channels/{id}",
+    ],
+    [
+      "DELETE",
+      "/api/notifications/instances/{id}",
+    ],
+    [
+      "DELETE",
       "/api/oauth/login",
     ],
     [
       "DELETE",
+      "/api/personas/{id}",
+    ],
+    [
+      "DELETE",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "DELETE",
+      "/api/rooms/{id}",
     ],
     [
       "DELETE",
@@ -103,6 +123,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/auth",
+    ],
+    [
+      "GET",
+      "/api/bots",
     ],
     [
       "GET",
@@ -186,6 +210,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/executors/{id}/local-sessions",
+    ],
+    [
+      "GET",
+      "/api/executors/{id}/local-sessions/{local_session_id}",
+    ],
+    [
+      "GET",
+      "/api/executors/installations",
+    ],
+    [
+      "GET",
       "/api/external-delegation/seats",
     ],
     [
@@ -219,6 +255,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/healthz",
+    ],
+    [
+      "GET",
+      "/api/homes",
+    ],
+    [
+      "GET",
+      "/api/homes/{id}/ssh-copy-candidates",
     ],
     [
       "GET",
@@ -298,6 +342,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/notifications/deliveries",
+    ],
+    [
+      "GET",
+      "/api/notifications/providers",
+    ],
+    [
+      "GET",
+      "/api/notifications/settings",
+    ],
+    [
+      "GET",
       "/api/oauth/login",
     ],
     [
@@ -311,6 +367,22 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/oauth/userinfo",
+    ],
+    [
+      "GET",
+      "/api/personas",
+    ],
+    [
+      "GET",
+      "/api/personas/{id}",
+    ],
+    [
+      "GET",
+      "/api/personas/{id}/avatar",
+    ],
+    [
+      "GET",
+      "/api/personas/{id}/export",
     ],
     [
       "GET",
@@ -351,6 +423,26 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "GET",
+      "/api/rooms",
+    ],
+    [
+      "GET",
+      "/api/rooms/{id}",
+    ],
+    [
+      "GET",
+      "/api/rooms/{id}/log",
+    ],
+    [
+      "GET",
+      "/api/rooms/{id}/usage",
+    ],
+    [
+      "GET",
+      "/api/search/status",
     ],
     [
       "GET",
@@ -450,6 +542,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/transcript/detail",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/transcript/details",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/transcript/ops",
     ],
     [
@@ -463,6 +563,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/sessions/{session_id}/warnings",
+    ],
+    [
+      "GET",
+      "/api/sessions/ephemeral",
     ],
     [
       "GET",
@@ -499,6 +603,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/threads",
+    ],
+    [
+      "GET",
+      "/api/threads/messages",
     ],
     [
       "GET",
@@ -550,6 +658,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/bots/{id}",
+    ],
+    [
+      "PATCH",
+      "/api/homes/{id}",
+    ],
+    [
+      "PATCH",
       "/api/memory/settings",
     ],
     [
@@ -563,6 +679,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "PATCH",
+      "/api/rooms/{id}",
     ],
     [
       "PATCH",
@@ -598,6 +718,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/bots/{id}/enable",
+    ],
+    [
+      "POST",
+      "/api/bots/{id}/home",
+    ],
+    [
+      "POST",
       "/api/capabilities/{tail}",
     ],
     [
@@ -611,6 +739,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/config/model-generation-migration/restore",
+    ],
+    [
+      "POST",
+      "/api/config/overrides{remove}",
     ],
     [
       "POST",
@@ -631,6 +763,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/executors/{id}/check",
+    ],
+    [
+      "POST",
+      "/api/executors/{id}/install",
+    ],
+    [
+      "POST",
+      "/api/executors/{id}/local-sessions/{local_session_id}/resume",
+    ],
+    [
+      "POST",
+      "/api/executors/{id}/rollback",
     ],
     [
       "POST",
@@ -659,6 +803,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/gui/store/setItem",
+    ],
+    [
+      "POST",
+      "/api/homes",
+    ],
+    [
+      "POST",
+      "/api/homes{attach}",
+    ],
+    [
+      "POST",
+      "/api/homes/{tail}",
     ],
     [
       "POST",
@@ -730,11 +886,35 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/notifications/channels/{id}:{test}",
+    ],
+    [
+      "POST",
+      "/api/notifications/instances/{id}:{check}",
+    ],
+    [
+      "POST",
       "/api/oauth/login",
     ],
     [
       "POST",
       "/api/oauth/logout",
+    ],
+    [
+      "POST",
+      "/api/personas/{id}:archive",
+    ],
+    [
+      "POST",
+      "/api/personas/{id}:duplicate",
+    ],
+    [
+      "POST",
+      "/api/personas/import",
+    ],
+    [
+      "POST",
+      "/api/personas/import/preview",
     ],
     [
       "POST",
@@ -778,7 +958,35 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/rooms",
+    ],
+    [
+      "POST",
+      "/api/rooms/{id}/continue",
+    ],
+    [
+      "POST",
+      "/api/rooms/{id}/messages",
+    ],
+    [
+      "POST",
+      "/api/rooms/{id}/pause",
+    ],
+    [
+      "POST",
+      "/api/rooms/{id}/stop",
+    ],
+    [
+      "POST",
       "/api/search",
+    ],
+    [
+      "POST",
+      "/api/search/retry",
+    ],
+    [
+      "POST",
+      "/api/secrets{reveal}",
     ],
     [
       "POST",
@@ -807,6 +1015,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/children",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/ephemeral/end",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/ephemeral/save",
     ],
     [
       "POST",
@@ -926,6 +1142,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/skills/kiki-as-subagent{install}",
+    ],
+    [
+      "POST",
+      "/api/skills/kiki-as-subagent{preview}-install",
+    ],
+    [
+      "POST",
+      "/api/ssh/credentials{copy}-to-isolated",
+    ],
+    [
+      "POST",
       "/api/ssh/hosts/{tail}",
     ],
     [
@@ -979,6 +1207,30 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/memory/{scope}/{id}",
+    ],
+    [
+      "PUT",
+      "/api/notifications/channels/{id}",
+    ],
+    [
+      "PUT",
+      "/api/notifications/credentials/{id}",
+    ],
+    [
+      "PUT",
+      "/api/notifications/instances/{id}",
+    ],
+    [
+      "PUT",
+      "/api/notifications/settings",
+    ],
+    [
+      "PUT",
+      "/api/personas/{id}",
+    ],
+    [
+      "PUT",
+      "/api/personas/{id}/avatar",
     ],
     [
       "PUT",
