@@ -89,30 +89,35 @@ export function defineKlientConformance(
 
     it('Bot and room management round-trip through every registered transport', async () => {
       const { personas, bots, rooms, kosong } = target.klient.global;
-      await kosong.addProvider({ id: 'room-test-model', model: 'room-test-model', protocol: 'openai', baseUrl: 'http://127.0.0.1:1', maxContextSize: 1000, auth: { method: 'api-key', apiKey: 'test-key' } });
-      for (const id of ['room-guide', 'room-reviewer']) {
-        await personas.put({ definition: { id, name: id, description: 'Test identity', modelAlias: 'room-test-model', homeWorkspace: id === 'room-guide' ? undefined : process.cwd() } });
+      const roomWorkspace = await mkdtemp(join(tmpdir(), 'klient-conf-room-'));
+      try {
+        await kosong.addProvider({ id: 'room-test-model', model: 'room-test-model', protocol: 'openai', baseUrl: 'http://127.0.0.1:1', maxContextSize: 1000, auth: { method: 'api-key', apiKey: 'test-key' } });
+        for (const id of ['room-guide', 'room-reviewer']) {
+          await personas.put({ definition: { id, name: id, description: 'Test identity', modelAlias: 'room-test-model', homeWorkspace: id === 'room-guide' ? undefined : roomWorkspace } });
+        }
+        const bot = await bots.enable('room-guide');
+        expect(bot.homeSessionId).toBeDefined();
+        expect((await bots.ensureHomeSession('room-guide')).homeSessionId).toBe(bot.homeSessionId);
+        expect((await bots.update('room-guide', { pinned: true })).pinned).toBe(true);
+        expect((await bots.list()).some((item) => item.personaId === 'room-guide')).toBe(true);
+        const room = await rooms.create({ name: 'Conformance room', workspace: roomWorkspace, members: [{ personaId: 'room-guide' }, { personaId: 'room-reviewer' }] });
+        expect((await rooms.get(room.id))?.members).toHaveLength(2);
+        expect((await rooms.list()).some((item) => item.id === room.id)).toBe(true);
+        const updated = await rooms.update(room.id, { budget: { botMessagesPerUserMessage: 3 }, members: [{ personaId: 'room-guide' }, { personaId: 'room-reviewer', muted: true }] });
+        expect(updated.budget.botMessagesPerUserMessage).toBe(3);
+        expect(updated.members[1]?.muted).toBe(true);
+        expect((await rooms.pause(room.id)).paused).toBe(true);
+        const message = await rooms.postUserMessage(room.id, { text: 'Stay paused', idempotencyKey: 'paused-message' });
+        expect((await rooms.postUserMessage(room.id, { text: 'Stay paused', idempotencyKey: 'paused-message' })).id).toBe(message.id);
+        expect((await rooms.log(room.id)).entries.some((row) => row.id === message.id)).toBe(true);
+        expect((await rooms.usage(room.id)).userMessages).toBe(1);
+        expect((await rooms.continue(room.id)).paused).toBe(false);
+        await rooms.stop(room.id);
+        await rooms.delete(room.id);
+        expect(await rooms.get(room.id)).toBeUndefined();
+      } finally {
+        await rm(roomWorkspace, { recursive: true, force: true });
       }
-      const bot = await bots.enable('room-guide');
-      expect(bot.homeSessionId).toBeDefined();
-      expect((await bots.ensureHomeSession('room-guide')).homeSessionId).toBe(bot.homeSessionId);
-      expect((await bots.update('room-guide', { pinned: true })).pinned).toBe(true);
-      expect((await bots.list()).some((item) => item.personaId === 'room-guide')).toBe(true);
-      const room = await rooms.create({ name: 'Conformance room', workspace: process.cwd(), members: [{ personaId: 'room-guide' }, { personaId: 'room-reviewer' }] });
-      expect((await rooms.get(room.id))?.members).toHaveLength(2);
-      expect((await rooms.list()).some((item) => item.id === room.id)).toBe(true);
-      const updated = await rooms.update(room.id, { budget: { botMessagesPerUserMessage: 3 }, members: [{ personaId: 'room-guide' }, { personaId: 'room-reviewer', muted: true }] });
-      expect(updated.budget.botMessagesPerUserMessage).toBe(3);
-      expect(updated.members[1]?.muted).toBe(true);
-      expect((await rooms.pause(room.id)).paused).toBe(true);
-      const message = await rooms.postUserMessage(room.id, { text: 'Stay paused', idempotencyKey: 'paused-message' });
-      expect((await rooms.postUserMessage(room.id, { text: 'Stay paused', idempotencyKey: 'paused-message' })).id).toBe(message.id);
-      expect((await rooms.log(room.id)).entries.some((row) => row.id === message.id)).toBe(true);
-      expect((await rooms.usage(room.id)).userMessages).toBe(1);
-      expect((await rooms.continue(room.id)).paused).toBe(false);
-      await rooms.stop(room.id);
-      await rooms.delete(room.id);
-      expect(await rooms.get(room.id)).toBeUndefined();
     });
 
     it('env() aggregates the host snapshot', async () => {

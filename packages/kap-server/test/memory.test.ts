@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MemoryConfigSchema, IConfigService, IMemoryStore, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
+import { MemoryConfigSchema, IConfigService, IMemoryStore, ISessionIndex, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
 import { registerMemoryRoutes } from '../src/routes/memory';
 import { startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -96,6 +96,7 @@ describe('memory REST', () => {
       const undo = await request('POST', '/global/undo', { operation_id: write.envelope.data.operationId });
       expect(undo.envelope.code).toBe(0);
       expect((await request('GET', `/global/${id}`)).envelope.code).toBe(40423);
+      await server.core.accessor.get(ISessionIndex).prepare();
       const workspace = await server.core.accessor.get(IWorkspaceService).createOrTouch(process.cwd());
       for (const scope of ['persona', 'persona_workspace']) {
         const query = `persona_id=example-role${scope === 'persona_workspace' ? `&workspace_id=${workspace.id}` : ''}`;
