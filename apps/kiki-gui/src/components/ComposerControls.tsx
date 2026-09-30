@@ -103,6 +103,19 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       root.style.setProperty('--cp-left', `${cardRect.left - rootRect.left}px`);
       root.style.setProperty('--cp-right', `${rootRect.right - cardRect.right}px`);
       root.style.setProperty('--cp-max-w', `${cardRect.width}px`);
+      // Room above the card inside the nearest clipping ancestor (the hero's
+      // scroll region, the page sheet): a panel taller than that would lose
+      // its first lines under the page header, so it caps here and its list
+      // scrolls instead.
+      let clipTop = 0;
+      for (let node = origin.parentElement; node !== null; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.overflowY !== 'visible' || style.overflowX !== 'visible') {
+          clipTop = node.getBoundingClientRect().top;
+          break;
+        }
+      }
+      root.style.setProperty('--cp-max-h', `${Math.max(160, cardRect.top - clipTop - PANEL_GAP_PX - 8)}px`);
     };
     measure();
     // The ref lands in the same commit, after this effect; one frame later it

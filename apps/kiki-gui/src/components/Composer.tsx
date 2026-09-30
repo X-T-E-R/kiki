@@ -2781,7 +2781,11 @@ function ModelChip({
       density="compact"
       placement="above"
       hideChevron
-      panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+      // Capped at the room above the card (`--cp-max-h`): the provenance line,
+      // filter and effort row keep their height and the list scrolls, so a
+      // tall catalog on the centred /new hero never slides its first line
+      // under the page header.
+      panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
       buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}
