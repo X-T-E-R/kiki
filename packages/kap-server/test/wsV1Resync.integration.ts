@@ -18,7 +18,9 @@ import {
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
   type TranscriptCursor,
+  type TranscriptDetailListResponse,
   type TranscriptOperation,
+  type TranscriptTask,
 } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
@@ -309,14 +311,21 @@ describe('server-v2 /api/ws resync', () => {
         await c.next((frame) => frame.type === 'ack' && frame.id === 'hello');
         c.send({ type: 'subscribe_v2', id: 'seed', payload: { session_id: sid, transcript: { '*': 'off', main: 'delta' }, transcript_coverage_version: 2 } });
         const reset = await c.next((frame) => frame.type === 'transcript.reset', 20_000);
-        expect(Buffer.byteLength(JSON.stringify(reset))).toBeGreaterThan(4 << 20);
+        expect(Buffer.byteLength(JSON.stringify(reset))).toBeLessThan(4 << 20);
         const payload = transcriptResetPayload(reset);
         const transcript = new AgentTranscript('main');
         applyTranscriptFrame(transcript, reset);
-        expect(transcript.snapshot().tasks).toHaveLength(438);
-        const tasks = new Map(transcript.snapshot().tasks.map((task) => [task.taskId, task]));
-        for (let index = 0; index < 438; index += 1) {
-          expect(tasks.get(`example-task-${index}`)?.resultSummary).toBe(`${index}:${summary}`);
+        expect(transcript.snapshot().tasks).toHaveLength(64);
+        expect(payload.snapshot.globalCoverage?.tasks).toEqual({ returned: 64, total: 438, hasMore: true });
+        expect(payload.snapshot.taskRefs).toHaveLength(374);
+        const represented = [
+          ...payload.snapshot.tasks.map((task) => task.taskId),
+          ...payload.snapshot.taskRefs!.map((ref) => ref.kind === 'task' ? ref.taskId : undefined),
+        ];
+        expect(represented.sort()).toEqual(integerRange(0, 437).map((index) => `example-task-${index}`).sort());
+        for (const task of transcript.snapshot().tasks) {
+          const index = Number(task.taskId.slice('example-task-'.length));
+          expect(task.resultSummary).toBe(`${index}:${summary}`);
         }
         expect(transcript.snapshot().items.filter((item) => item.kind === 'turn')).toHaveLength(20);
         expect(payload.coverage.hasMoreOlder).toBe(true);
@@ -326,6 +335,28 @@ describe('server-v2 /api/ws resync', () => {
         c.ws.close();
         await c.closed;
       }
+    }
+    const tasks = new Map<string, TranscriptTask>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const params = new URLSearchParams({ agent_id: 'main', kind: 'task', limit: '100' });
+      if (cursor !== undefined) params.set('cursor', cursor);
+      const details = await fetch(`${base}/api/sessions/${sid}/transcript/details?${params}`, {
+        headers: authHeaders(server as RunningServer),
+      });
+      const body = await details.json() as { code: number; data: Extract<TranscriptDetailListResponse, { kind: 'task' }> };
+      expect(body.code).toBe(0);
+      for (const task of body.data.items) {
+        expect(tasks.has(task.taskId)).toBe(false);
+        tasks.set(task.taskId, task);
+      }
+      if (!body.data.has_more) break;
+      expect(body.data.next_cursor).toBeTypeOf('string');
+      cursor = body.data.next_cursor;
+    }
+    expect(tasks.size).toBe(438);
+    for (let index = 0; index < 438; index += 1) {
+      expect(tasks.get(`example-task-${index}`)?.resultSummary).toBe(`${index}:${summary}`);
     }
     const history = new Set(integerRange(230, 249).map((id) => `t${id}`));
     let before = 't230';
