@@ -2,7 +2,7 @@ import type {
   HttpRestPersonaCardInput,
   HttpRestPersonaImportInput,
 } from '../../core/facade/http-rest.js';
-import type { PersonaCardFormat } from '@kiki/protocol';
+import type { PersonaAvatarShape, PersonaCardFormat } from '@kiki/protocol';
 
 export function personaCardForm(input: HttpRestPersonaCardInput | HttpRestPersonaImportInput): FormData {
   const format = input.format ?? inferCardFormat(input.filename);
@@ -15,10 +15,11 @@ export function personaCardForm(input: HttpRestPersonaCardInput | HttpRestPerson
   return form;
 }
 
-export function personaAvatarForm(data: Uint8Array, mimeType?: string): FormData {
+export function personaAvatarForm(data: Uint8Array, mimeType?: string, shape?: PersonaAvatarShape): FormData {
   const normalized = mimeType ?? 'application/octet-stream';
   const extension = normalized === 'image/jpeg' ? 'jpg' : normalized === 'image/webp' ? 'webp' : 'png';
   const form = new FormData();
+  if (shape !== undefined) form.append('shape', shape);
   form.append('file', new Blob([copyBytes(data)], { type: normalized }), `avatar.${extension}`);
   return form;
 }

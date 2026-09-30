@@ -366,8 +366,9 @@ export interface HttpRestFacade {
     importCard(input: HttpRestPersonaImportInput): Promise<PersonaImportResponse>;
     exportCard(id: string, format: PersonaCardFormat, options?: HttpRestRequestOptions & { readonly includeMemory?: boolean }): Promise<HttpRestBinaryFile>;
     getAvatar(id: string, options?: HttpRestRequestOptions): Promise<HttpRestBinaryFile>;
-    putAvatar(id: string, data: Uint8Array, mimeType?: string): Promise<import('@kiki/protocol').PersonaAvatarUploadResponse>;
-    avatar(input: { readonly id: string; readonly name: string; readonly avatarMime?: string }): PersonaAvatarData;
+    putAvatar(id: string, data: Uint8Array, mimeType?: string, shape?: import('@kiki/protocol').PersonaAvatarShape): Promise<import('@kiki/protocol').PersonaAvatarUploadResponse>;
+    deleteAvatar(id: string): Promise<import('@kiki/protocol').PersonaAvatarDeleteResponse>;
+    avatar(input: { readonly id: string; readonly name: string; readonly avatarMime?: string; readonly avatarShape?: import('@kiki/protocol').PersonaAvatarShape }): PersonaAvatarData;
   };
 
   readonly skills: {

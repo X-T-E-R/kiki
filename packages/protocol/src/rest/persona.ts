@@ -36,6 +36,10 @@ export const personaSnapshotSchema = z.object({
 }).strict();
 export type PersonaSnapshot = z.infer<typeof personaSnapshotSchema>;
 
+/** How the face is framed; the image itself is always a square crop. */
+export const personaAvatarShapeSchema = z.enum(['circle', 'square']);
+export type PersonaAvatarShape = z.infer<typeof personaAvatarShapeSchema>;
+
 export const personaSummarySchema = z.object({
   id: personaIdSchema,
   name: z.string().min(1),
@@ -44,6 +48,7 @@ export const personaSummarySchema = z.object({
   revision: z.string().min(1),
   archived: z.boolean(),
   avatarMime: z.string().min(1).optional(),
+  avatarShape: personaAvatarShapeSchema.optional(),
 }).strict();
 export type PersonaSummary = z.infer<typeof personaSummarySchema>;
 
@@ -168,13 +173,21 @@ export const personaAvatarUploadResponseSchema = z.object({
   id: personaIdSchema,
   mimeType: z.string().min(1),
   size: z.number().int().nonnegative(),
+  shape: personaAvatarShapeSchema.optional(),
 }).strict();
 export type PersonaAvatarUploadResponse = z.infer<typeof personaAvatarUploadResponseSchema>;
+
+export const personaAvatarDeleteResponseSchema = z.object({
+  id: personaIdSchema,
+  deleted: z.boolean(),
+}).strict();
+export type PersonaAvatarDeleteResponse = z.infer<typeof personaAvatarDeleteResponseSchema>;
 
 export const personaAvatarDataSchema = z.object({
   id: personaIdSchema,
   name: z.string().min(1),
   avatarUrl: z.string().min(1).optional(),
+  avatarShape: personaAvatarShapeSchema.optional(),
 }).strict();
 export type PersonaAvatarData = z.infer<typeof personaAvatarDataSchema>;
 export type PersonaAvatar = PersonaAvatarData;

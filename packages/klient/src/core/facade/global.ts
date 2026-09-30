@@ -193,13 +193,14 @@ export interface GlobalPersonasFacade {
   duplicate(id: string, options?: { id?: string; name?: string }): Promise<PersonaSnapshot>;
   archive(id: string, archived?: boolean): Promise<{ version: 1; archived: boolean }>;
   delete(id: string, options?: { expectedRevision?: string }): Promise<PersonaDeleteResponse>;
-  avatar(input: { id: string; name: string; avatarMime?: string }): PersonaAvatarData;
+  avatar(input: { id: string; name: string; avatarMime?: string; avatarShape?: PersonaAvatarData['avatarShape'] }): PersonaAvatarData;
 }
 
 export function createPersonaAvatarData(input: {
   id: string;
   name: string;
   avatarMime?: string;
+  avatarShape?: PersonaAvatarData['avatarShape'];
 }): PersonaAvatarData {
   return {
     id: input.id,
@@ -207,6 +208,7 @@ export function createPersonaAvatarData(input: {
     avatarUrl: input.avatarMime === undefined
       ? undefined
       : `/api/personas/${encodeURIComponent(input.id)}/avatar`,
+    avatarShape: input.avatarMime === undefined ? undefined : input.avatarShape,
   };
 }
 

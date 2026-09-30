@@ -308,13 +308,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       getAvatar: (id, options) => readBinary(transport, `/personas/${encodeURIComponent(id)}/avatar`, {
         signal: options?.signal, timeoutMs: options?.timeoutMs,
       }),
-      putAvatar: (id, data, mimeType) => transport.json(`/personas/${encodeURIComponent(id)}/avatar`, {
-        method: 'PUT', rawBody: personaAvatarForm(data, mimeType),
+      putAvatar: (id, data, mimeType, shape) => transport.json(`/personas/${encodeURIComponent(id)}/avatar`, {
+        method: 'PUT', rawBody: personaAvatarForm(data, mimeType, shape),
       }),
-      avatar: ({ id, name, avatarMime }) => ({
+      deleteAvatar: (id) => transport.json(`/personas/${encodeURIComponent(id)}/avatar`, { method: 'DELETE' }),
+      avatar: ({ id, name, avatarMime, avatarShape }) => ({
         id,
         name,
         avatarUrl: avatarMime === undefined ? undefined : `/api/personas/${encodeURIComponent(id)}/avatar`,
+        avatarShape: avatarMime === undefined ? undefined : avatarShape,
       }),
     },
 
