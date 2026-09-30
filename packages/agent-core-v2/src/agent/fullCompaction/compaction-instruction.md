@@ -71,7 +71,10 @@ move.
 
 In the handoff, include a `## Standing directives` section containing the user's
 still-effective instructions in their own words, including corrections delivered
-while you were working. Keep task-only instructions here; do not create permanent
+while you were working. When the user tightened, relaxed, or revoked an earlier
+instruction, record only the current value with its turn, and mark a temporary
+exception as temporary with the condition that ends it; do not carry a withdrawn
+value forward. Keep task-only instructions here; do not create permanent
 memory from the summary. Include this section even when there are no such
 instructions (write `(none)`).
 

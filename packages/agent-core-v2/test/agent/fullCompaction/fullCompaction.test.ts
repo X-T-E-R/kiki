@@ -321,7 +321,7 @@ describe('FullCompaction', () => {
         compacted_count: 6,
         retry_count: 0,
         thinking_effort: 'off',
-        input_tokens: 1268, // The standing-directives instruction adds 87 estimated input tokens.
+        input_tokens: 1326, // The standing-directives instruction adds 145 estimated input tokens.
         output_tokens: 8,
         input_cache_read: 0,
         input_cache_creation: 0,
