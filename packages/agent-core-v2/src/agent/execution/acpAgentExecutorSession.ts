@@ -19,6 +19,8 @@ import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   agentExecutorBindingFingerprint,
   type AgentExecutionStatus,
@@ -160,7 +162,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
     this.#spawnPermissionMode = this.#permissionMode.mode;
     this.#client = clientFactory(
-      processService,
+      wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
+        () => context.agent.accessor.get(IBootstrapService)),
       (request, options) => this.#requestPermission(request, options),
     );
   }

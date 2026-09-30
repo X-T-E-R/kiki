@@ -45,6 +45,7 @@ import {
   type AgentExecutorConfig,
   type AgentExecutorsConfig,
 } from './configSection';
+import { wrapWindowsNodeShims } from './windowsNodeShim';
 
 const NATIVE_DESCRIPTOR: AgentExecutorDescriptor = {
   id: 'native',
@@ -220,7 +221,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     if (resolved.descriptor.id === 'native') return resolved;
     const probes = await resolveExecutorSource(
       resolved.descriptor,
-      this.processService,
+      this.#probeProcessService(),
       this.fs,
       this.bootstrap,
     );
@@ -262,10 +263,15 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     }
     return discoverExecutorSources(
       descriptor,
-      this.processService,
+      this.#probeProcessService(),
       this.fs,
       this.bootstrap,
     );
+  }
+
+  #probeProcessService(): IHostProcessService {
+    if (this.bootstrap.platform !== 'win32') return this.processService;
+    return wrapWindowsNodeShims(this.processService, this.fs, () => this.bootstrap);
   }
 
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined {

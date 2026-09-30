@@ -15,6 +15,8 @@ import {
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   agentExecutorBindingFingerprint,
   type AgentExecutionStatus,
@@ -155,7 +157,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#client = clientFactory(
-      processService,
+      wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
+        () => context.agent.accessor.get(IBootstrapService)),
       (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
     );
   }
