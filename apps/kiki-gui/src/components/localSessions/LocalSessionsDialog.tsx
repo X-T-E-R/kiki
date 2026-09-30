@@ -271,7 +271,7 @@ export function LocalSessionsDialog({
     >
       <header className="flex shrink-0 items-start gap-3 px-5 pt-4 pb-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <h2 className="font-display text-[17px] font-semibold tracking-tight text-ink">{title}</h2>
+          <h2 className="font-display text-[18px] font-semibold tracking-tight text-ink">{title}</h2>
           <p className="text-[12.5px] leading-5 text-ink-soft">{t('localSessions.intro')}</p>
         </div>
         <button type="button" onClick={onClose} disabled={resuming} aria-label={t('common.close')}

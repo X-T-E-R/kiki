@@ -272,7 +272,7 @@ function AgentWorkspaceHeader({
           {/* Name in the display serif; model · effort as one quiet line
               beneath it. The scope notes ride the tooltip — they explain,
               they do not change what to do next. */}
-          <h1 className="truncate font-display text-[16px] leading-tight font-semibold tracking-tight text-ink">
+          <h1 className="truncate font-display text-[15px] leading-tight font-semibold tracking-tight text-ink">
             {name}
           </h1>
           {model !== undefined || effort !== undefined ? (

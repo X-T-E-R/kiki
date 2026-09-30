@@ -30,7 +30,7 @@ function statusDot(status: AgentStatus): string {
   switch (status) {
     case 'running':
     case 'background':
-      return 'bg-accent';
+      return 'bg-ink-soft';
     case 'completed':
       return 'bg-success';
     case 'failed':

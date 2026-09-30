@@ -46,9 +46,12 @@
 
   /* Focal roles. Two hues, one job each, so a glance says where you are and
    * what is waiting for you:
-   *   selected      ink-blue, "you are here": the current session / nav /
-   *                 settings row (wash + mark), keyboard focus, a switch or
-   *                 option that is on. The one cool hue on a warm page.
+   *   selected      ink-blue, "you are here": the mark on the current
+   *                 session / nav / settings row (the row itself is a paper
+   *                 sheet, never a wash), keyboard focus, a switch or option
+   *                 that is on. The one cool hue on a warm page. The
+   *                 `selected` wash is for small marks (a toggle track, a
+   *                 tag), not for row grounds.
    *   attention /   vermilion, "needs you": approvals, questions, waiting
    *   accent        marks, and the one primary button per screen. Never for
    *                 "running", "done", links or decoration.
@@ -630,7 +633,8 @@ body[data-pane-resizing='true'] {
  * the settings nav, the inspector's agent roster. Each state has one signal,
  * and none of them moves or covers the row's content:
  *   hover / peek    a light ink wash, nothing else.
- *   selected        (aria-current) the selected wash plus a short mark in the
+ *   selected        (aria-current) a paper sheet lifted off its ground (paper
+ *                   + sheet shadow, no colour block) plus a short mark in the
  *                   row's left padding, inset from the corners so the radius
  *                   never cuts it and clear of the status-mark column.
  *   focus-visible   an ink-blue ring (--focus-ring-width) drawn inside the
@@ -655,16 +659,21 @@ body[data-pane-resizing='true'] {
 .row-interactive[data-agent-peek]:not([aria-current]) {
   background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
+/* Selected is a sheet of paper lifted off the ground it sits on — the same
+ * vocabulary as every raised pane — never a colour block. The ink-blue mark
+ * is the one "you are here" hue, kept short and thin so it reads as a tab
+ * stop, not a stripe. */
 .row-interactive[aria-current] {
-  background-color: var(--color-selected);
+  background-color: var(--color-paper);
+  box-shadow: var(--kiki-sheet-shadow);
 }
 .row-interactive[aria-current]::before {
   content: '';
   position: absolute;
-  top: 7px;
-  bottom: 7px;
-  left: 2px;
-  width: 3px;
+  top: 9px;
+  bottom: 9px;
+  left: 3px;
+  width: 2px;
   border-radius: 999px;
   background-color: var(--color-selected-ink);
   pointer-events: none;

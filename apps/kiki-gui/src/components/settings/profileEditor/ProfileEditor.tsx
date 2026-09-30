@@ -350,7 +350,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         <span className="flex rotate-180"><Icon name="chevron" size={12} /></span>{t('st.profiles.team')}
       </button>
       <div className="min-w-0 flex-1 basis-[16rem]">
-        <h3 className="flex flex-wrap items-baseline gap-x-2 font-display text-[20px] leading-tight text-ink">
+        <h3 className="flex flex-wrap items-baseline gap-x-2 font-display text-[18px] leading-tight text-ink">
           <span className="min-w-0 break-words">{profile.name}</span>
           <span className="font-sans text-[12.5px] font-normal text-ink-faint">
             {t(draft.main ? 'st.agentManager.main' : 'st.agentManager.subagent')} · {engine}

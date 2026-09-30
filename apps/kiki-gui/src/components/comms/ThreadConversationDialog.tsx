@@ -101,7 +101,7 @@ export function ThreadConversationDialog({
     >
       <header data-comms-pair-head className="flex shrink-0 items-start gap-3 border-b border-hairline px-5 pt-4 pb-3">
         <div className="min-w-0 flex-1">
-          <h2 className="flex min-w-0 items-baseline gap-2 font-display text-[17px] font-semibold tracking-tight text-ink">
+          <h2 className="flex min-w-0 items-baseline gap-2 font-display text-[18px] font-semibold tracking-tight text-ink">
             <span className="min-w-0 truncate">{title}</span>
             <EndpointState endpoint={peer} />
           </h2>

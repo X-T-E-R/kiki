@@ -91,7 +91,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
       overlayData={{ 'data-persona-import-dialog': preview === null ? 'pick' : 'preview' }}
     >
       <div className="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3.5">
-        <h2 className="min-w-0 flex-1 truncate font-display text-[17px] font-semibold text-ink">{t('persona.importPreview')}</h2>
+        <h2 className="min-w-0 flex-1 truncate font-display text-[18px] font-semibold text-ink">{t('persona.importPreview')}</h2>
         <button type="button" onClick={onClose} aria-label={t('common.close')} className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11">
           <Icon name="close" size={14} />
         </button>
@@ -112,7 +112,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
             <div className="flex min-w-0 items-start gap-4">
               <PersonaAvatar persona={avatar ?? { id: definition.id, name: definition.name }} size={56} decorative />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-display text-[20px] leading-7 font-semibold text-ink">{definition.name}</p>
+                <p className="truncate font-display text-[18px] leading-7 font-semibold text-ink">{definition.name}</p>
                 <p className="truncate text-[13px] text-ink-soft">{[definition.title, definition.job].filter(Boolean).join(' · ') || file?.name}</p>
                 <p className="mt-1 text-[12px] text-ink-faint">
                   {preview.memoryEntries.length > 0 ? t('persona.importMemories', { count: preview.memoryEntries.length }) : t('persona.importMemoryNone')}

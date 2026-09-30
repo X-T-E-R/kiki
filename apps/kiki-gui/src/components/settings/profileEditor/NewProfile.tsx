@@ -84,7 +84,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
         className="-ml-1 inline-flex min-h-9 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft hover:text-ink">
         <span className="flex rotate-180"><Icon name="chevron" size={12} /></span>{t('st.profiles.team')}
       </button>
-      <h3 className="font-display text-[20px] leading-tight text-ink">{t('st.agentManager.new')}</h3>
+      <h3 className="font-display text-[18px] leading-tight text-ink">{t('st.agentManager.new')}</h3>
     </header>
     <div className="flex flex-wrap gap-2" role="group" aria-label={t('st.agentManager.template')}>
       {startCard('copy', 'agent')}{startCard('template', 'notes')}{startCard('blank', 'edit')}

@@ -58,9 +58,9 @@ export function capabilitySourceLabel(
   }
 }
 
-/** Label chip classes: workspace-local reads warmer than shared sources. */
+/** Label chip classes: every source is a neutral tag; the label text says which. */
 export const SOURCE_TONE_CLASS: Readonly<Record<SourceTone, string>> = {
-  workspace: 'bg-accent-soft text-accent-ink',
+  workspace: 'bg-ink/[0.06] text-ink-soft',
   global: 'bg-ink/[0.06] text-ink-soft',
   plugin: 'bg-ink/[0.06] text-ink-soft',
   builtin: 'text-ink-faint',

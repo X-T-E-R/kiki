@@ -91,7 +91,7 @@ export function WorktreeRemoveDialog({
 
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="worktree-remove-dialog" role="alertdialog">
-      <h2 className="font-display text-[17px] font-semibold text-ink">{title}</h2>
+      <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
       <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">
         {t('st.worktrees.removeBody')}
       </p>

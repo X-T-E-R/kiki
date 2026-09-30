@@ -243,7 +243,7 @@ function WorkspaceRenameDialog({
 
   return (
     <Dialog onClose={onClose} ariaLabel={t('st.workspaces.renameTitle')} overlayId="workspace-rename-dialog">
-      <h2 className="font-display text-[16px] font-semibold text-ink">{t('st.workspaces.renameTitle')}</h2>
+      <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.workspaces.renameTitle')}</h2>
       <input
         data-autofocus
         className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"

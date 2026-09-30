@@ -71,7 +71,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
   return (
     <Dialog onClose={() => { if (!create.isPending) onClose(); }} ariaLabel={t('room.new')} overlayId="create-room-dialog">
       <form data-create-room onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('room.new')}</h2>
+        <h2 className="font-display text-[18px] font-semibold text-ink">{t('room.new')}</h2>
 
         <label className="mt-4 block">
           <span className="text-[12.5px] font-medium text-ink-soft">{t('room.name')}</span>

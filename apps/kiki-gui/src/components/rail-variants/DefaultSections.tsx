@@ -253,7 +253,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           data-rail-profile-name
           title={profile?.description ?? t('inspector.details')}
           onClick={() => { setDrawer({ kind: 'profile', identity }); }}
-          className={`-ml-1 min-w-0 truncate rounded px-1 text-left font-display text-[16px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
+          className={`-ml-1 min-w-0 truncate rounded px-1 text-left font-display text-[15px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
         >
           {profileName ?? label}
         </button>

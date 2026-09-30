@@ -116,7 +116,7 @@ export function CreateSpaceDialog({ mainPath, canOpen, onClose, onCreated }: {
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.createTitle')} overlayId="space-create-dialog"
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
       <form data-space-create onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('st.spaces.createTitle')}</h2>
+        <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.createTitle')}</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
           <div className="min-w-0">
             <label htmlFor={nameId} className={FORM_LABEL}>{t('st.spaces.name')}</label>

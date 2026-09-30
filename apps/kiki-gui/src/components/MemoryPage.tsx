@@ -460,7 +460,7 @@ function MemoryScopeView({
                   </>
                 ) : (
                   <>
-                    <p className="font-display text-[17px] text-ink">{t('memory.empty.title')}</p>
+                    <p className="font-display text-[18px] text-ink">{t('memory.empty.title')}</p>
                     <p className="mt-1 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.empty.body')}</p>
                   </>
                 )}

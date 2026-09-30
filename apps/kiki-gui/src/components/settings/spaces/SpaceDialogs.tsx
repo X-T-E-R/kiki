@@ -41,7 +41,7 @@ export function AttachSpaceDialog({ onClose, onAttached }: {
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.attachTitle')} overlayId="space-attach-dialog">
       <form data-space-attach onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('st.spaces.attachTitle')}</h2>
+        <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.attachTitle')}</h2>
         <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.attachBody')}</p>
         <label htmlFor={pathId} className={`${FORM_LABEL} mt-4`}>{t('st.spaces.location')}</label>
         <div className="mt-1.5 flex gap-2">
@@ -97,7 +97,7 @@ export function DeleteSpaceDialog({ space, onClose, onDeleted }: {
   return (
     <Dialog role="alertdialog" onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.deleteTitle', { name: space.name })} overlayId="space-delete-dialog">
       <form data-space-delete={space.id} onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="flex items-center gap-2 font-display text-[17px] font-semibold text-ink">
+        <h2 className="flex items-center gap-2 font-display text-[18px] font-semibold text-ink">
           <SpaceDot color={space.color} />
           <span className="min-w-0 break-words">{t('st.spaces.deleteTitle', { name: space.name })}</span>
         </h2>
@@ -178,7 +178,7 @@ export function SpaceCredentialsDialog({ space, onClose, onDone }: {
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.credDialogTitle', { name: space.name })} overlayId="space-credentials-dialog"
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
       <div data-space-credentials={space.id} data-space-credentials-target={target}>
-        <h2 className="flex items-center gap-2 font-display text-[17px] font-semibold text-ink">
+        <h2 className="flex items-center gap-2 font-display text-[18px] font-semibold text-ink">
           <SpaceDot color={space.color} />
           <span className="min-w-0 break-words">{t('st.spaces.credDialogTitle', { name: space.name })}</span>
         </h2>

@@ -2042,7 +2042,7 @@ function AnnotationNotes({ annotations, align }: { annotations: readonly Timelin
             data-annotation-ref={annotation.id}
             data-annotation-note
             aria-label={t('transcript.annotation.openAria', { quote: annotation.quote.replace(/\s+/g, ' ').trim() })}
-            className="flex min-h-8 max-w-full flex-col gap-0.5 rounded-md sm:flex-row sm:items-baseline sm:gap-2 border-l-2 border-accent/60 bg-accent-soft/40 py-1 pr-2 pl-2 text-left text-[12px] leading-snug transition-colors hover:bg-accent-soft/80 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+            className="flex min-h-8 max-w-full flex-col gap-0.5 rounded-md sm:flex-row sm:items-baseline sm:gap-2 bg-ink/[0.03] py-1 pr-2 pl-2 text-left text-[12px] leading-snug transition-colors hover:bg-ink/[0.06] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
           >
             <span className="max-w-full truncate text-ink-faint sm:max-w-[16rem]">“{annotation.quote.replace(/\s+/g, ' ').trim()}”</span>
             <span className="min-w-0 text-ink-soft [overflow-wrap:anywhere]">{annotation.comment}</span>

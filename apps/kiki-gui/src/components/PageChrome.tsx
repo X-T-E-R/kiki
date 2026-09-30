@@ -36,7 +36,7 @@ export function PageHeader({
       >
         <Icon name="menu" size={16} />
       </button>
-      <h1 className="min-w-0 flex-1 truncate font-display text-[20px] font-semibold tracking-tight text-ink">
+      <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
         {title}
       </h1>
       {children}

@@ -247,7 +247,7 @@ export const TaskBoard = memo(function TaskBoard({
 
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="font-display text-[19px] font-semibold text-ink leading-none">
+              <h2 className="font-display text-[15px] font-semibold text-ink leading-none">
                 {t('taskBoard.title')}
               </h2>
               {loading ? (
@@ -331,7 +331,7 @@ export const TaskBoard = memo(function TaskBoard({
           data-task-board-unavailable
           className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3.5 overflow-y-auto px-6 py-12 text-center"
         >
-          <h3 className="font-display text-[17px] font-semibold text-ink">
+          <h3 className="font-display text-[18px] font-semibold text-ink">
             {t('taskBoard.unavailable.title')}
           </h3>
           <p className="max-w-xl text-[13px] leading-relaxed text-ink-soft">

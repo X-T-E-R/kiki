@@ -33,9 +33,11 @@ import {
 
 type Metric = 'cost' | 'tokens' | 'cache';
 
-/** Series fills, strongest first; the last slot is the "other" remainder. */
-const SERIES_FILLS = ['bg-accent', 'bg-amber-rule', 'bg-accent-deep/60', 'bg-ink-soft/45'] as const;
-const OTHER_FILL = 'bg-hairline-strong';
+/** Series fills, strongest first, on an ink ladder with one amber step so
+ * neighbours stay apart; the accent is kept for "needs you", never a series.
+ * The last slot is the "other" remainder. */
+const SERIES_FILLS = ['bg-ink-soft', 'bg-amber-rule', 'bg-ink-faint/55', 'bg-ink/20'] as const;
+const OTHER_FILL = 'bg-hairline';
 const SERIES_LIMIT = SERIES_FILLS.length;
 
 export function TrendChart({

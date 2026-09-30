@@ -119,8 +119,8 @@ export function ComposerNotes({
           clearTimer();
           setOpen((current) => (current === 'pinned' ? null : 'pinned'));
         }}
-        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-accent-ink transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
-          open !== null ? 'bg-accent-soft' : 'bg-accent-soft/70 hover:bg-accent-soft'
+        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
+          open !== null ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
         }`}
       >
         <Icon name="edit" size={12} className="text-accent-ink/80" />

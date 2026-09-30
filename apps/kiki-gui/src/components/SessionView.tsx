@@ -457,7 +457,7 @@ export function SessionTitle({
             }
           }}
           onBlur={commit}
-          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-display text-[16px] font-semibold tracking-tight text-ink outline-none focus:border-accent"
+          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-display text-[15px] font-semibold tracking-tight text-ink outline-none focus:border-accent"
         />
       ) : (
         <h1 className="-ml-1.5 min-w-0 max-w-full">
@@ -467,7 +467,7 @@ export function SessionTitle({
             onClick={() => { onEditingChange(true); }}
             title={t('sv.renameAria')}
             aria-label={`${shown} — ${t('sv.renameAria')}`}
-            className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[16px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
+            className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[15px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
           >
             {shown}
           </button>

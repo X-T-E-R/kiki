@@ -37,7 +37,7 @@ export function UsageCard({ title, aside, children, className = '', ...rest }: {
       {title !== undefined || aside !== undefined ? (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
           {title !== undefined ? (
-            <h2 className="font-display text-[17px] leading-tight font-semibold text-ink">{title}</h2>
+            <h2 className="font-display text-[18px] leading-tight font-semibold text-ink">{title}</h2>
           ) : null}
           {aside}
         </div>

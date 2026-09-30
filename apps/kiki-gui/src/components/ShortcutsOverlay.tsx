@@ -136,7 +136,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
       overlayId="shortcuts-overlay"
       panelClassName="anim-enter w-full max-w-[440px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
     >
-      <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
+      <h2 className="font-display text-[18px] font-semibold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
         {shortcutsGroups(sendShortcut, desktop, current).map((group) => (
           <section key={group.titleKey}>

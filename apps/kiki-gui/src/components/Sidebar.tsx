@@ -1178,7 +1178,7 @@ export function Sidebar({
                     type="button"
                     data-session-group-more={group.key}
                     onClick={() => { toggleGroupExpanded(group.key); }}
-                    className="row-interactive h-7 self-start pr-2 pl-[23px] text-[12px] text-ink-faint hover:text-ink"
+                    className="row-interactive h-7 self-start pr-2 pl-6 text-[12px] text-ink-faint hover:text-ink"
                   >
                     {hidden > 0 ? t('sidebar.showMoreInGroup', { count: hidden }) : t('sidebar.showLessInGroup')}
                   </button>
@@ -2516,7 +2516,7 @@ function RenameDialog({
 
   return (
     <Dialog onClose={onClose} ariaLabel={t('rename.title')} overlayId="rename-dialog">
-      <h2 className="font-display text-[16px] font-semibold text-ink">{t('rename.title')}</h2>
+      <h2 className="font-display text-[18px] font-semibold text-ink">{t('rename.title')}</h2>
       <input
         data-autofocus
         className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"

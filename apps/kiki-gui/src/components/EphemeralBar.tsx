@@ -135,7 +135,7 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
   const title = t('ephemeral.endTitle');
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="ephemeral-end">
-      <h2 className="font-display text-[17px] font-semibold text-ink">{title}</h2>
+      <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('ephemeral.endBody')}</p>
       {(check.kind === 'loss' || check.kind === 'clean') && worktree !== undefined ? (
         <fieldset data-ephemeral-end-worktree={check.kind} className="mt-4 rounded-lg border border-hairline px-3 py-2.5">

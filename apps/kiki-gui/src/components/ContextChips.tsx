@@ -73,7 +73,7 @@ export function AnnotationChip({
       data-annotation-chip
       tabIndex={0}
       aria-label={t('composer.annotationChipAria', { quote: oneLine(quote), comment })}
-      className={`group ${TILE} max-w-[24rem] bg-accent-soft/80 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
+      className={`group ${TILE} max-w-[24rem] bg-ink/[0.05] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
         onRemove === undefined ? 'pr-2.5' : 'pr-1'
       } pl-2`}
     >
@@ -156,7 +156,7 @@ export function SkillChip({ name, description, onRemove }: { name: string; descr
     <div
       data-skill-chip={name}
       title={description}
-      className={`${TILE} max-w-[18rem] bg-accent-soft/70 ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} pl-2`}
+      className={`${TILE} max-w-[18rem] bg-ink/[0.05] ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} pl-2`}
     >
       <span aria-hidden className="flex shrink-0 text-accent-ink/80">
         <Icon name="skill" size={12} />

@@ -138,9 +138,9 @@ function ProviderSetupCard() {
   return (
     <div
       data-provider-setup
-      className="mx-auto mt-2 w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-[10px] border-l-2 border-accent bg-panel px-4 py-3 text-left"
+      className="mx-auto mt-2 w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-[var(--kiki-sheet-radius)] bg-panel px-4 py-3 text-left shadow-[var(--kiki-sheet-shadow)]"
     >
-      <p className="font-display text-[16px] font-semibold tracking-tight text-ink">
+      <p className="font-display text-[15px] font-semibold tracking-tight text-ink">
         {t('new.setupTitle')}
       </p>
       <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">{t('new.setupBody')}</p>

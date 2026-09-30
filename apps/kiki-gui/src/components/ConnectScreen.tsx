@@ -91,7 +91,6 @@ function Card({ children }: { children: ReactNode }) {
     <div className="flex h-full items-center justify-center overflow-y-auto bg-paper px-4 py-4">
       <div className="anim-enter w-full max-w-[420px]">
         <div className="rounded-2xl border border-hairline bg-panel shadow-[0_1px_2px_rgba(28,25,23,0.04),0_12px_32px_-16px_rgba(28,25,23,0.12)]">
-          <div className="h-[3px] rounded-t-2xl bg-accent" />
           {children}
         </div>
       </div>

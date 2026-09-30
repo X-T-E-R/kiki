@@ -46,7 +46,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
       ? 'bg-danger'
       : contextPct !== null && contextPct >= 50
         ? 'bg-amber-rule'
-        : 'bg-accent';
+        : 'bg-ink-soft';
 
   const cacheRate = agentUsageCacheHitRate(usage);
   const cacheTooltip =

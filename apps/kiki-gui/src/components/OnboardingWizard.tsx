@@ -669,7 +669,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           <span className="inline-flex" aria-hidden>
             <Wordmark size="md" />
           </span>
-          <h2 className="mt-1.5 font-display text-[19px] font-semibold tracking-tight text-ink">
+          <h2 className="mt-1.5 font-display text-[18px] font-semibold tracking-tight text-ink">
             {t('onboarding.title')}
           </h2>
           <p className="mt-0.5 text-[12px] text-ink-soft">{t('onboarding.subtitle')}</p>

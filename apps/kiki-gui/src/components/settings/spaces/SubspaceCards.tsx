@@ -116,7 +116,7 @@ function CopySshHereDialog({ onClose, onCopied }: { onClose: () => void; onCopie
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.copySshHereTitle')} overlayId="space-copy-ssh-here">
       <div data-space-copy-here-dialog>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('st.spaces.copySshHereTitle')}</h2>
+        <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.copySshHereTitle')}</h2>
         <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.copySshHereBody')}</p>
         {hosts.isError ? <div className="mt-3"><InlineError error={hosts.error} /></div> : null}
         {hosts.isSuccess && list.length === 0 ? <p className="mt-3 text-[12px] text-ink-faint">{t('st.spaces.copySshNoHosts')}</p> : null}

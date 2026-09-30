@@ -71,7 +71,7 @@ function EmptyBoardState({ loading, onOpenSettings }: {
         <p role="status" className="text-[13px] text-ink-soft">{t('hero.workspaceLoading')}</p>
       ) : (
         <>
-          <h2 className="font-display text-[20px] font-semibold text-ink">{t('new.noWorkspaces')}</h2>
+          <h2 className="font-display text-[18px] font-semibold text-ink">{t('new.noWorkspaces')}</h2>
           <p className="max-w-md text-[13px] leading-relaxed text-ink-soft">{t('taskBoard.empty.description')}</p>
           <button
             type="button"
