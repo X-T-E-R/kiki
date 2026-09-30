@@ -14,6 +14,7 @@ import { CapabilityTags, ChannelStatus } from './ChannelStatus';
 import { DeliveryLog } from './DeliveryLog';
 import { channelState, channelsUsing, errorKindKey, lastDelivery, providerLabel, reasonKey } from './model';
 import { useNotificationWrites } from './useNotifications';
+import { LIST_ROW_HEIGHT, type ListDensity } from '../list';
 
 const SCENES = ['work_complete', 'question_pending'] as const;
 
@@ -22,13 +23,14 @@ const SCENES = ['work_complete', 'question_pending'] as const;
  * that matters, and its switch on one line; the schema-driven fields,
  * scenes, checks and recent activity open underneath. Instant apply.
  */
-export function ChannelRow({ channelId, channel, settings, provider, deliveries, defaultOpen }: {
+export function ChannelRow({ channelId, channel, settings, provider, deliveries, defaultOpen, density }: {
   channelId: string;
   channel: NotificationChannel;
   settings: NotificationSettings;
   provider: NotificationProviderDescriptor | undefined;
   deliveries: readonly NotificationDelivery[];
   defaultOpen: boolean;
+  density: ListDensity;
 }) {
   const { t, time } = useI18n();
   const { api, apply, refresh, refreshDeliveries } = useNotificationWrites();
@@ -103,18 +105,21 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
     if (ok) setConfirming(false);
   };
 
+  const compact = density === 'compact';
   return (
-    <div data-notify-channel={channelId} data-open={open ? 'true' : undefined} className="border-t border-hairline first:border-t-0">
-      <div className="flex min-h-12 items-center gap-3 px-3 py-2">
+    <div data-notify-channel={channelId} data-open={open ? 'true' : undefined}>
+      <div className={`flex items-center gap-3 px-3 ${compact ? 'py-0.5' : 'py-2'}`} style={{ minHeight: LIST_ROW_HEIGHT[density] }}>
         <button type="button" aria-expanded={open} aria-controls={bodyId} aria-label={t('st.notify.expandAria', { name })}
           onClick={() => { setOpen((value) => !value); }}
           className="-my-1 -ml-1 flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
           <DisclosureChevron open={open} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 truncate text-[13px] font-medium text-ink">{name}</span>
-          {name !== typeName ? <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{typeName}</span> : null}
-          <span className="ml-1 hidden min-w-0 items-center gap-1.5 md:inline-flex">
-            <CapabilityTags sendOnly={provider?.can_send === true && !provider.can_receive} unverified={provider?.status === 'unverified'} />
-          </span>
+          {name !== typeName && !compact ? <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{typeName}</span> : null}
+          {!compact ? (
+            <span className="ml-1 hidden min-w-0 items-center gap-1.5 md:inline-flex">
+              <CapabilityTags sendOnly={provider?.can_send === true && !provider.can_receive} unverified={provider?.status === 'unverified'} />
+            </span>
+          ) : null}
         </button>
         <ChannelStatus state={state} />
         {status('enabled')}

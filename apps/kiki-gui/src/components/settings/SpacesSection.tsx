@@ -166,7 +166,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
     { id: 'isolated', label: t('st.spaces.filter.isolated'), test: (space) => space.credentials_shared === false },
   ], [t, statuses.data]);
   const sorts = useMemo<readonly ListSortSpec<SpaceListItem>[]>(() => [
-    { id: 'order', label: t('st.spaces.sort.order'), compare: () => 0 },
+    { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
     {
       id: 'name', label: t('st.list.sort.name'),
       compare: (a, b) => Number(b.id === MAIN_SPACE_ID) - Number(a.id === MAIN_SPACE_ID) || spaceLabel(a).localeCompare(spaceLabel(b)),
