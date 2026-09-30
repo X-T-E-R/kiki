@@ -38,6 +38,7 @@ import { resolveCatalogModel } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
+import type { PlanReviewResponse } from '../Interactions';
 import { useConnection } from '../../state/connection';
 import { locateInTimeline } from '../../lib/timelineLocate';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
@@ -444,8 +445,9 @@ function ChildAgentWorkspace({
       decision: 'approved' | 'rejected' | 'cancelled',
       scope?: 'session',
       selectedOptionId?: string,
+      review?: PlanReviewResponse,
     ) =>
-      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId) ??
+      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId, review) ??
       Promise.resolve(),
     [controller],
   );

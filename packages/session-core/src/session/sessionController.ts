@@ -1776,6 +1776,8 @@ export class SessionController {
     decision: ApprovalDecision,
     scope?: ApprovalScope,
     selectedOptionId?: string,
+    /** Plan review: the reviewer's note and the chosen review option (`Revise`, `Reject and Exit`). */
+    review?: { readonly feedback?: string; readonly selectedLabel?: string },
   ): Promise<void> {
     const resolvedAt = new Date().toISOString();
     try {
@@ -1783,6 +1785,8 @@ export class SessionController {
         decision,
         scope,
         selected_option_id: selectedOptionId,
+        ...(review?.feedback === undefined ? {} : { feedback: review.feedback }),
+        ...(review?.selectedLabel === undefined ? {} : { selected_label: review.selectedLabel }),
       });
       this.setState(markApprovalResolved(this.state, approvalId, { decision, resolvedAt }));
     } catch (error) {

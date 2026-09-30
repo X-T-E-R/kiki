@@ -35,6 +35,32 @@ import { SshApprovalCard } from './ssh/SshApprovalCard';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'allow-rule' | 'reject-once';
 
+/** What a plan review sends besides the decision (native ExitPlanMode and external `exit_plan_mode`). */
+export interface PlanReviewResponse {
+  readonly feedback?: string;
+  /** `Revise` keeps planning with the note; `Reject and Exit` leaves plan mode. */
+  readonly selectedLabel?: string;
+}
+
+interface PlanReviewDisplay {
+  readonly plan: string;
+  readonly path?: string;
+  readonly options?: readonly { readonly label: string; readonly description: string }[];
+}
+
+/** The `plan_review` display, or undefined for any other approval. */
+export function planReviewFromDisplay(display: unknown): PlanReviewDisplay | undefined {
+  if (typeof display !== 'object' || display === null) return undefined;
+  const record = display as Record<string, unknown>;
+  if (record['kind'] !== 'plan_review' || typeof record['plan'] !== 'string') return undefined;
+  const options = Array.isArray(record['options'])
+    ? record['options'].filter((option): option is { label: string; description: string } =>
+        typeof option === 'object' && option !== null && typeof (option as { label?: unknown }).label === 'string')
+      .map((option) => ({ label: option.label, description: typeof option.description === 'string' ? option.description : '' }))
+    : undefined;
+  return { plan: record['plan'], path: typeof record['path'] === 'string' ? record['path'] : undefined, options };
+}
+
 /* Shared decision-strip styling for approvals and questions. The accent is
  * ONE left rule (the "needs you" mark) on a flat surface — no tint: the tray
  * around the strip is already the container, and a tinted card inside it was
@@ -229,7 +255,7 @@ export function ApprovalCard({
   showShortcutHints = false,
 }: {
   block: ApprovalBlock;
-  onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string) => Promise<void>;
+  onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string, review?: PlanReviewResponse) => Promise<void>;
   /** Display name of the subagent that issued the request, when not main. */
   originAgentName?: string;
   /** y/n hints show on every pending card (focused or topmost visible wins). */
@@ -306,6 +332,12 @@ export function ApprovalCard({
   // SSH login / host-key requests answer through their own route (ssh/SshApprovalCard).
   if (block.request.ssh !== undefined) {
     return <SshApprovalCard block={block} ssh={block.request.ssh} originAgentName={originAgentName} />;
+  }
+
+  const planReview = planReviewFromDisplay(block.request.tool_input_display);
+  if (planReview !== undefined) {
+    return <PlanReviewCard key={approvalId} block={block} plan={planReview} originAgentName={originAgentName}
+      showShortcutHints={showShortcutHints} onResolve={onResolve} />;
   }
 
   const external = externalPermissionFromDisplay(block.request.tool_input_display);
@@ -570,6 +602,111 @@ export function ApprovalCard({
         </p>
       )}
       {answered !== null && savedRule !== null ? <SavedRuleNote rule={savedRule} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Plan review — the same strip as any approval, shaped for a plan: the plan
+ * reads as Markdown in a bounded well, alternatives (when the agent offered
+ * them) are a pick-one list, and the note travels with Revise. Serves native
+ * ExitPlanMode and an external engine's `exit_plan_mode` alike: both resolve
+ * through the one approval route with `feedback` + `selected_label`.
+ */
+function PlanReviewCard({
+  block,
+  plan,
+  originAgentName,
+  showShortcutHints,
+  onResolve,
+}: {
+  block: ApprovalBlock;
+  plan: PlanReviewDisplay;
+  originAgentName?: string;
+  showShortcutHints: boolean;
+  onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string, review?: PlanReviewResponse) => Promise<void>;
+}) {
+  const { t, time } = useI18n();
+  const options = plan.options !== undefined && plan.options.length >= 2 ? plan.options : undefined;
+  const [choice, setChoice] = useState<string | undefined>(options?.[0]?.label);
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState<'approve' | 'revise' | 'exit' | null>(null);
+  const [answered, setAnswered] = useState<'approve' | 'revise' | 'exit' | null>(null);
+  const [failed, setFailed] = useState(false);
+  const noteId = `plan-note-${block.request.approval_id}`;
+  const trimmed = note.trim();
+
+  const send = (action: 'approve' | 'revise' | 'exit') => {
+    if (sending !== null || answered !== null) return;
+    setSending(action);
+    setFailed(false);
+    const review: PlanReviewResponse = action === 'approve'
+      ? { selectedLabel: choice }
+      : { selectedLabel: action === 'revise' ? 'Revise' : 'Reject and Exit', ...(trimmed === '' ? {} : { feedback: trimmed }) };
+    void onResolve(action === 'approve' ? 'approved' : 'rejected', undefined, undefined, review)
+      .then(() => { setAnswered(action); }, () => { setFailed(true); })
+      .finally(() => { setSending(null); });
+  };
+
+  return (
+    <div data-approval-id={block.request.approval_id} data-plan-review className={STRIP_CLASS}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
+        <span className="font-medium text-accent-ink">{t('ia.plan.title')}</span>
+        {originAgentName !== undefined ? <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span> : null}
+        {plan.path !== undefined ? <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-faint" title={plan.path}>· {plan.path}</span> : null}
+        {deadlineIsNear(block.request.expires_at) ? (
+          <span className="ml-auto text-ink-faint tabular-nums">{time.timeUntil(block.request.expires_at)}</span>
+        ) : null}
+      </div>
+      <div data-plan-body tabIndex={0} aria-label={t('ia.plan.bodyLabel')}
+        className="mt-2 max-h-64 overflow-y-auto rounded-md bg-ink/[0.03] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+        <Markdown text={plan.plan} mode="static" />
+      </div>
+      {answered === null ? (
+        <>
+          {options !== undefined ? (
+            <fieldset className="mt-2.5 space-y-1" disabled={sending !== null}>
+              <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('ia.plan.choose')}</legend>
+              {options.map((option) => (
+                <label key={option.label} data-plan-option={option.label}
+                  className={`flex min-h-9 cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-1.5 transition-colors ${choice === option.label ? 'bg-selected-ink/[0.07]' : 'hover:bg-ink/[0.04]'}`}>
+                  <input type="radio" name={`plan-choice-${block.request.approval_id}`} checked={choice === option.label}
+                    onChange={() => { setChoice(option.label); }} className="mt-1 h-3.5 w-3.5 accent-[var(--color-selected-ink)]" />
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-ink">{option.label}</span>
+                    {option.description !== '' ? <span className="block text-[12px] leading-snug text-ink-soft">{option.description}</span> : null}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+          <label htmlFor={noteId} className="mt-2.5 block text-[12px] font-medium text-ink-soft">{t('ia.plan.note')}</label>
+          <textarea id={noteId} data-plan-note rows={2} value={note} disabled={sending !== null}
+            onChange={(event) => { setNote(event.target.value); }} placeholder={t('ia.plan.notePlaceholder')}
+            className="mt-1 w-full resize-y rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[13px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink disabled:opacity-60" />
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={sending !== null}>
+            <button type="button" data-plan-approve disabled={sending !== null} onClick={() => { send('approve'); }} className={PRIMARY_BUTTON}>
+              {sending === 'approve' ? t('ia.approving') : options !== undefined && choice !== undefined ? t('ia.plan.approveChoice', { option: choice }) : t('ia.plan.approve')}
+              {showShortcutHints ? <kbd className="ml-1.5 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium">y</kbd> : null}
+            </button>
+            <button type="button" data-plan-revise disabled={sending !== null || trimmed === ''} title={trimmed === '' ? t('ia.plan.reviseNeedsNote') : undefined}
+              onClick={() => { send('revise'); }} className={SECONDARY_BUTTON}>
+              {sending === 'revise' ? t('ia.sending') : t('ia.plan.revise')}
+            </button>
+            <button type="button" data-plan-exit disabled={sending !== null} onClick={() => { send('exit'); }}
+              className={`${SECONDARY_BUTTON} hover:text-danger`}>
+              {sending === 'exit' ? t('ia.rejecting') : t('ia.plan.rejectExit')}
+            </button>
+          </div>
+          {failed ? <p role="alert" className="mt-2 text-[12px] text-danger">{t('ia.sendFailed')}</p> : null}
+        </>
+      ) : (
+        <p role="status" data-plan-answered={answered}
+          className={`mt-2.5 flex items-center gap-1.5 text-[13px] font-medium ${answered === 'exit' ? 'text-danger' : 'text-ink-soft'}`}>
+          {answered === 'exit' ? <Icon name="cross" /> : null}
+          {t(answered === 'approve' ? 'ia.plan.sentApproved' : answered === 'revise' ? 'ia.plan.sentRevise' : 'ia.plan.sentExit')}
+        </p>
+      )}
     </div>
   );
 }

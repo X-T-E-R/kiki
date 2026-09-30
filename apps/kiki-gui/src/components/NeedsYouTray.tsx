@@ -20,7 +20,7 @@ import { useI18n } from '../i18n';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { Icon } from './icons';
-import { ApprovalCard, QuestionCard } from './Interactions';
+import { ApprovalCard, QuestionCard, type PlanReviewResponse } from './Interactions';
 import { LifeMark } from './LifeMark';
 
 type PendingItem = ApprovalBlock | QuestionBlock;
@@ -57,6 +57,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
     decision: 'approved' | 'rejected' | 'cancelled',
     scope?: 'session',
     selectedOptionId?: string,
+    review?: PlanReviewResponse,
   ) => Promise<void>;
   readonly onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   readonly onDismissQuestion: (questionId: string) => Promise<void>;
@@ -167,8 +168,8 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
       block={current}
       originAgentName={originName(current)}
       showShortcutHints
-      onResolve={(decision, scope, selectedOptionId) =>
-        onResolveApproval(currentId, decision, scope, selectedOptionId)
+      onResolve={(decision, scope, selectedOptionId, review) =>
+        onResolveApproval(currentId, decision, scope, selectedOptionId, review)
       }
     />
   ) : (
@@ -312,8 +313,8 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
               block={current}
               originAgentName={originName(current)}
               showShortcutHints
-              onResolve={(decision, scope, selectedOptionId) =>
-                onResolveApproval(currentId, decision, scope, selectedOptionId)
+              onResolve={(decision, scope, selectedOptionId, review) =>
+                onResolveApproval(currentId, decision, scope, selectedOptionId, review)
               }
             />
           ) : (
