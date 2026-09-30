@@ -83,6 +83,7 @@ describe('navigation', () => {
   it('gives no link for a deleted recipient or an undelivered message', () => {
     expect(messageJumpHref(message('m', 'a', 'b', 1, { target: endpoint('b', { deleted: true }) }))).toBeUndefined();
     expect(messageJumpHref(message('m', 'a', 'b', 1, { delivery: 'pending' }))).toBeUndefined();
+    expect(messageJumpHref(message('m', 'a', 'b', 1, { delivery: 'undeliverable' }))).toBeUndefined();
     expect(endpointHref(endpoint('x', { deleted: true }))).toBeUndefined();
     expect(endpointHref(endpoint('x', { archived: true }))).toBe('/s/x');
   });

@@ -7,8 +7,9 @@
  *     its scan budget), so a read keeps following the cursor until it has
  *     rows or the cursor runs out; an empty page is never the end;
  *   - a continuation repeats the exact same filters;
- *   - navigation targets the recipient's prompt by `message_id` in the
- *     target session (`?block=user-<message_id>`); `target_seq` is a mailbox
+ *   - the protocol guarantees `message_id` equals the recipient main-agent
+ *     prompt and user-message id, including steered delivery and retries;
+ *     navigation uses `?block=user-<message_id>`; `target_seq` is a mailbox
  *     sequence number and is never used as a turn;
  *   - a deleted endpoint is never a link;
  *   - `source.kind === 'room'` is reserved and skipped until rooms land.

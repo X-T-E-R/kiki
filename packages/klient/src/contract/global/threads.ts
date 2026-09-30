@@ -122,7 +122,7 @@ export const threadMessageEndpointSchema = z.object({
   ref: threadRefSchema, title: z.string().optional(), deleted: z.boolean(), archived: z.boolean(),
 });
 export const threadCommunicationMessageSchema = z.object({
-  messageId: z.string(),
+  messageId: z.string().describe('Stable recipient main-agent prompt id and user-message id, including steered delivery and retries; navigate only delivered records.'),
   source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
     z.object({ kind: z.literal('room'), roomId: z.string() }),

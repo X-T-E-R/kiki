@@ -326,6 +326,10 @@ describe('ThreadCommunicationService', () => {
       expect(first.delivery).toBe('delivered');
       const duplicate = await send[SEND_PEER_THREAD_MESSAGE]({ source, target, content: 'first handoff', idempotencyKey: 'one' });
       expect(duplicate).toMatchObject({ messageId: first.messageId, deduplicated: true });
+      expect(promptEnqueue).toHaveBeenCalledTimes(1);
+      expect(promptEnqueue.mock.calls[0]?.[0]).toMatchObject({
+        id: first.messageId, message: { id: first.messageId, origin: { messageId: first.messageId } },
+      });
       await send[SEND_PEER_THREAD_MESSAGE]({ source: target, target: source, content: 'reply', idempotencyKey: 'two' });
       resume.mockRejectedValueOnce(new Error('resume failed'));
       const failed = await send[SEND_PEER_THREAD_MESSAGE]({ source, target, content: 'failed handoff', idempotencyKey: 'three' });
@@ -566,7 +570,10 @@ describe('ThreadCommunicationService', () => {
 
     expect(result.delivery).toBe('delivered');
     expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']);
-    expect(promptSteer).toHaveBeenCalledWith(['message-1']);
+    expect(promptSteer).toHaveBeenCalledWith([result.messageId]);
+    expect(promptEnqueue.mock.calls[0]?.[0]).toMatchObject({
+      id: result.messageId, message: { id: result.messageId, origin: { messageId: result.messageId } },
+    });
     expect(promptInject).not.toHaveBeenCalled();
     await expect(service.shutdown()).resolves.toBeUndefined();
     expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']);

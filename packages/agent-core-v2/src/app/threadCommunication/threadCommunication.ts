@@ -176,6 +176,8 @@ export const THREAD_DELIVERY_REASON_CODES = [
 export type ThreadDeliveryReasonCode = typeof THREAD_DELIVERY_REASON_CODES[number];
 
 export interface ThreadCommunicationMessage {
+  /** Stable recipient main-agent prompt id and user-message id, including steered delivery and retries.
+   * Only delivered records are navigation targets; targetSeq is never a transcript turn id. */
   readonly messageId: string;
   readonly source: ThreadMessageSource;
   readonly target: ThreadMessageEndpoint;

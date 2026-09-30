@@ -123,7 +123,7 @@ export const threadDeliveryReasonCodeSchema = z.enum([
 ]);
 
 export const threadCommunicationMessageSchema = z.object({
-  message_id: z.string(),
+  message_id: z.string().describe('Stable recipient main-agent prompt id and user-message id, including steered delivery and retries; navigate only delivered records.'),
   source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('thread'), thread: threadMessageEndpointSchema }),
     z.object({ kind: z.literal('room'), room_id: z.string() }),

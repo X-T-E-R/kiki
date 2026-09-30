@@ -283,7 +283,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 标准 envelope 的 `data` 为 `{ items, next_cursor?, incomplete? }`。每条消息包含 `message_id`、`source: { kind: "thread", thread: { ref, title?, deleted, archived } }`、`target: { ref, title?, deleted, archived }`、`content`、`accepted_at`（Unix 毫秒时间戳）、`target_seq`、`delivery` 和可选的 `reason`。引用使用主机、工作区、会话三元组。来源联合类型预留了 `{ kind: "room", room_id }`，当前尚不包含房间消息。记录按最新时间优先排列；同时间戳按稳定的消息 ID 排序。达到扫描预算时，空页也可能带 `next_cursor`，应继续读取直到没有游标。续页改动筛选条件返回 `40931`（`thread.cursor_invalid`）；选中的会话不存在时返回 `40421`（`thread.not_found`）。
 
-`delivery` 为 `pending`、`delivered` 或 `undeliverable`。Delivered 表示输入已交给对方 prompt，不代表对方已完成回复。邮箱接收前被拒绝的发送，例如目标不存在，不会生成沟通记录。导航时用 `message_id` 定位对方 prompt；`target_seq` 是邮箱序号，不是会话轮次号。已删除的端点标记为 `deleted: true`，另一侧仍存在时记录保留；两侧都删除后，记录从这个视图中消失。
+`delivery` 为 `pending`、`delivered` 或 `undeliverable`。Delivered 表示输入已交给对方 prompt，不代表对方已完成回复。邮箱接收前被拒绝的发送，例如目标不存在，不会生成沟通记录。契约保证 `message_id` 同时等于接收方 main agent 的 prompt ID 和对应 User 消息 ID，包括 steer 投递和幂等重试。仅对 `delivered` 记录使用目标会话的 `?block=user-<message_id>` 跳转；`target_seq` 是邮箱序号，不是会话轮次号。已删除的端点标记为 `deleted: true`，另一侧仍存在时记录保留；两侧都删除后，记录从这个视图中消失。
 
 对于 `undeliverable` 记录，`reason_code` 是稳定的本地化键，`reason_detail` 是诊断原文。旧字段 `reason` 保留为 `reason_detail` 的别名。其他投递状态不返回这些字段。没有代码的旧失败记录返回 `delivery_failed`；连接旧服务器的客户端也应使用这个兜底值，而不是翻译诊断原文。
 
