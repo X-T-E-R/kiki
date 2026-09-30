@@ -1501,8 +1501,9 @@ function EndedRow({
  * stretch of process rows between two messages reads as one quiet line that
  * still counts what happened ("Worked · 8 steps · 2 thoughts · 1 failed").
  * Opening it lays the original rows back on a hairline spine in their own
- * order; a failure is counted in the line's neutral summary, the failed row
- * itself carries the warning once opened.
+ * order. A failure is counted in the line's neutral summary and marked in
+ * the outcome column the way a read run marks one (success stays silent);
+ * the failed row itself carries the warning once opened.
  */
 function HistoryFoldRow({
   fold,
@@ -1543,6 +1544,7 @@ function HistoryFoldRow({
           ? time.formatDuration(fold.durationMs)
           : undefined
       }
+      status={<OutcomeMark state={fold.failed > 0 ? 'failed' : 'done'} labels={activityOutcomeLabels(t)} />}
       expanded={expanded}
       onToggle={() => { onToggle(fold.id); }}
       ariaLabel={t('transcript.fold.aria', { summary })}

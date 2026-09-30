@@ -3892,6 +3892,14 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(container.querySelector('[data-block-id="s3"]')?.closest('[data-history-fold]')).toBeNull();
   });
 
+  it('marks a fold holding a failure in the outcome column and keeps a clean fold silent', async () => {
+    const failed: Block = { ...step('s2'), status: 'error', isError: true } as Block;
+    const bad = await renderTranscript([user, step('s1'), failed, step('s3')], undefined, { busy: true });
+    expect(bad.querySelector('[data-history-fold] [data-outcome="failed"]')).not.toBeNull();
+    const clean = await renderTranscript([user, step('s1'), step('s2'), step('s3')], undefined, { busy: true });
+    expect(clean.querySelector('[data-history-fold] [data-outcome]')).toBeNull();
+  });
+
   it('never closes a fold the reader opened when the turn moves on', async () => {
     const { root, container } = makeRoot();
     const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
