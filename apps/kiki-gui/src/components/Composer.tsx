@@ -29,7 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode, PromptPlanGate } from '@kiki/protocol';
+import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -273,6 +273,7 @@ export function Composer({
   contextUsage,
   contextAutoCompact,
   sessionUsage,
+  sessionUsageError,
   busyPlaceholder,
   sessionId,
   workspaceId,
@@ -383,6 +384,8 @@ export function Composer({
    * subagent variant passes that agent's projected totals (no cost pricing).
    */
   sessionUsage?: ContextMeterUsage;
+  /** Why the session's cumulative usage is missing or short (wire `usage_error`). */
+  sessionUsageError?: SessionUsageError;
   /** Placeholder while busy (queue steering on /s, creation progress on /new). */
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
@@ -2488,6 +2491,7 @@ export function Composer({
                   used={contextUsage.used}
                   limit={contextUsage.limit}
                   usage={sessionUsage}
+                  usageError={sessionUsageError}
                   usageScope={variant === 'subagent' ? 'agent' : 'session'}
                   sessionId={sessionId}
                   onCompact={onCompactContext}

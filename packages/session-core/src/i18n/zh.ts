@@ -731,6 +731,8 @@ export const zh = {
   'context.sessionUsage': '本会话累计',
   'context.agentUsage': '子智能体累计',
   'context.sessionUsageHint': '累计',
+  'context.usageReadFailed': '累计用量读取失败，因此不显示数字。',
+  'context.agentUsageIncomplete': '部分子智能体的用量读取失败，以下合计不完整。',
   'context.windowTitle': '上下文窗口',
   'context.windowHint': '当前',
   'context.breakdownTitle': '分段明细',

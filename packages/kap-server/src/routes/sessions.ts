@@ -20,6 +20,7 @@ import {
   IAgentLifecycleService,
   IAgentUsageService,
   IAuthSummaryService,
+  ILogService,
   ISessionActivityView,
   ISessionAgentProfileCatalog,
   SessionAgentProfileCatalogService,
@@ -56,6 +57,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
@@ -84,6 +86,7 @@ import {
   type Session,
   type SessionPendingInteraction,
   type SessionUsage,
+  type SessionUsageError,
 } from '../protocol/session';
 import { workspaceIdSchema } from '../protocol/workspace';
 import { z } from 'zod';
@@ -1477,6 +1480,7 @@ export function toWireSession(
     },
     agent_config: facts.agentConfig ?? { model: '' },
     usage: facts.usage ?? emptySessionUsage(),
+    usage_error: facts.usageError,
     permission_rules: [],
     message_count: 0,
     last_seq: lastSeq ?? 0,
@@ -1492,6 +1496,10 @@ export interface SessionFacts {
   readonly delivery?: 'reply' | 'message';
   readonly agentConfig?: Session['agent_config'];
   readonly usage?: SessionUsage;
+  /** Why `usage` is missing or short: reading it failed, so the wire's zero
+   *  usage is a placeholder (or an understated total) rather than a measured
+   *  "no usage". */
+  readonly usageError?: SessionUsageError;
   /** False when no live handle exists (cold session); live warm sessions
    *  always report their own outcome, never the persisted fallback. */
   readonly live?: boolean;
@@ -1530,6 +1538,15 @@ export function resolveSessionFacts(
   const sessionUsage = handle.accessor.get(ISessionMetadata).usage() ?? persistedUsage;
   const profile = main?.accessor.get(IAgentProfileService).data();
   const persona = profile?.persona?.definition;
+  const usage: SessionUsageReadResult = main === undefined
+    ? {}
+    : readSessionUsage(
+        main,
+        agents,
+        core.accessor.get(IModelPricingService),
+        core.accessor.get(ILogService),
+        sessionUsage,
+      );
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
     delivery: handle.accessor.get(ISessionDeliveryService).mode(),
@@ -1542,15 +1559,8 @@ export function resolveSessionFacts(
             ? undefined
             : { id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar` },
         },
-    usage:
-      main === undefined
-        ? undefined
-        : readSessionUsage(
-            main,
-            agents,
-            core.accessor.get(IModelPricingService),
-            sessionUsage,
-          ),
+    usage: usage.usage,
+    usageError: usage.error,
     live: true,
   };
 }
@@ -1631,15 +1641,21 @@ function readPersistedSessionUsage(
   return usage;
 }
 
+interface SessionUsageReadResult {
+  readonly usage?: SessionUsage;
+  readonly error?: SessionUsageError;
+}
+
 function readSessionUsage(
   main: IAgentScopeHandle,
   agents: readonly IAgentScopeHandle[],
   pricing: IModelPricingService,
+  log: ILogService,
   persisted?: SessionUsageSummary,
-): SessionUsage | undefined {
+): SessionUsageReadResult {
   try {
     const status = readLegacyStatus(main, { contextBreakdown: false });
-    if (status === undefined) return undefined;
+    if (status === undefined) return {};
     const total = persisted?.total ?? status.usage?.total;
     const byModel = new Map<string, MutableModelTokenUsage>();
     addModelUsage(byModel, persisted?.byModel ?? status.usage?.byModel);
@@ -1655,6 +1671,7 @@ function readSessionUsage(
       context_limit: status.maxContextTokens ?? 0,
       turn_count: latestTurnId === undefined ? 0 : latestTurnId + 1,
     };
+    let agentUsageUnavailable = false;
     if (persisted === undefined) {
       for (const agent of agents) {
         if (agent.id === MAIN_AGENT_ID) continue;
@@ -1666,14 +1683,23 @@ function readSessionUsage(
           usage.cache_read_tokens += agentTotal?.inputCacheRead ?? 0;
           usage.cache_creation_tokens += agentTotal?.inputCacheCreation ?? 0;
           addModelUsage(byModel, agentStatus.byModel);
-        } catch {}
+        } catch (error) {
+          agentUsageUnavailable = true;
+          log.warn('session usage: agent usage unavailable', {
+            agent_id: agent.id,
+            error: toErrorMessage(error),
+          });
+        }
       }
     }
 
     applyModelPricing(usage, byModel, pricing);
-    return usage;
-  } catch {
-    return undefined;
+    return agentUsageUnavailable
+      ? { usage, error: 'agent-read-failed' }
+      : { usage };
+  } catch (error) {
+    log.warn('session usage: read failed', { error: toErrorMessage(error) });
+    return { error: 'read-failed' };
   }
 }
 

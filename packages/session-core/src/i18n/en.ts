@@ -743,6 +743,8 @@ export const en = {
   'context.sessionUsage': 'Session cumulative',
   'context.agentUsage': 'Agent cumulative',
   'context.sessionUsageHint': 'lifetime',
+  'context.usageReadFailed': 'Cumulative usage could not be read, so it is not shown.',
+  'context.agentUsageIncomplete': 'Some agents’ usage could not be read, so these totals are incomplete.',
   'context.windowTitle': 'Context window',
   'context.windowHint': 'right now',
   'context.breakdownTitle': 'Breakdown',

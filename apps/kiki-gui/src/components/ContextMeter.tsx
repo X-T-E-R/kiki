@@ -15,14 +15,16 @@
  * The detail card keeps the two §9.5 semantics apart: a "Context window"
  * section (the compaction track, or used / available / limit) and a "This session —
  * cumulative" section (lifetime input / output / cache-read / cache-write
- * tokens + cost), plus a prefiltered deep link to the session on /usage.
+ * tokens + cost), plus a prefiltered deep link to the session on /usage. When
+ * the server could not read that usage, the cumulative section says so instead
+ * of presenting the zero placeholder as a measurement.
  */
 
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import { Link } from 'react-router-dom';
 
-import type { SessionUsage } from '@kiki/protocol';
+import type { SessionUsage, SessionUsageError } from '@kiki/protocol';
 
 import { sessionActionErrorText } from '@kiki/session-core/commands';
 import { formatCostUsd } from '@kiki/session-core/util';
@@ -124,6 +126,7 @@ export function ContextMeter({
   used,
   limit,
   usage,
+  usageError,
   usageScope = 'session',
   sessionId,
   onCompact,
@@ -134,6 +137,12 @@ export function ContextMeter({
   limit: number;
   /** Lifetime cumulative usage for the detail card (session record, or an agent's projected totals). */
   usage?: ContextMeterUsage;
+  /**
+   * Why the cumulative numbers are missing or short. `read-failed` means they
+   * are placeholders and the card says so instead of showing zeros;
+   * `agent-read-failed` keeps the numbers and marks them incomplete.
+   */
+  usageError?: SessionUsageError;
   /**
    * Whose cumulative usage the detail card reports: the whole session, or the
    * one agent whose composer carries this meter. Only changes the section
@@ -345,28 +354,37 @@ export function ContextMeter({
                 </p>
                 <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
-              <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
-              <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
-              <TokenRow label={t('usage.tokens.cacheRead')} value={usage.cache_read_tokens} title={String(usage.cache_read_tokens)} />
-              <TokenRow label={t('usage.tokens.cacheWrite')} value={usage.cache_creation_tokens} title={String(usage.cache_creation_tokens)} />
-              {usage.total_cost_usd !== null ? (
-                <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
-                  <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
-                  <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
-                </div>
+              {usageError !== undefined ? (
+                <p data-context-usage-error title={usageError} className="text-[12px] text-amber-ink">
+                  {t(usageError === 'read-failed' ? 'context.usageReadFailed' : 'context.agentUsageIncomplete')}
+                </p>
               ) : null}
-              {usageTotal !== undefined ? (
-                <div
-                  className={`flex items-center justify-between gap-3 ${
-                    // With a priced session the cost row carries the separator;
-                    // cost-less projections (per-agent totals) move it here.
-                    usage.total_cost_usd === null ? 'border-t border-hairline pt-1.5' : ''
-                  }`}
-                >
-                  <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
-                  <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
-                </div>
-              ) : null}
+              {usageError === 'read-failed' ? null : (
+                <>
+                  <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
+                  <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
+                  <TokenRow label={t('usage.tokens.cacheRead')} value={usage.cache_read_tokens} title={String(usage.cache_read_tokens)} />
+                  <TokenRow label={t('usage.tokens.cacheWrite')} value={usage.cache_creation_tokens} title={String(usage.cache_creation_tokens)} />
+                  {usage.total_cost_usd !== null ? (
+                    <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
+                      <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
+                      <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
+                    </div>
+                  ) : null}
+                  {usageTotal !== undefined ? (
+                    <div
+                      className={`flex items-center justify-between gap-3 ${
+                        // With a priced session the cost row carries the separator;
+                        // cost-less projections (per-agent totals) move it here.
+                        usage.total_cost_usd === null ? 'border-t border-hairline pt-1.5' : ''
+                      }`}
+                    >
+                      <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
+                      <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
+                    </div>
+                  ) : null}
+                </>
+              )}
               {sessionId !== undefined ? (
                 <Link
                   data-context-usage-link

@@ -87,6 +87,7 @@ interface SessionWire {
     context_limit: number;
     turn_count: number;
   };
+  usage_error?: 'read-failed' | 'agent-read-failed';
   permission_rules: unknown[];
   message_count: number;
   last_seq: number;
@@ -1138,8 +1139,10 @@ describe('server-v2 /api/sessions', () => {
     };
     const got = await getJson<SessionWire>(`/api/sessions/${id}`);
     expect(got.body.data.usage).toMatchObject(expected);
+    expect(got.body.data.usage_error).toBeUndefined();
     const listed = await getJson<PageWire>('/api/sessions');
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage_error).toBeUndefined();
 
     const metadata = session.accessor.get(ISessionMetadata);
     expect(metadata.usage()?.wireComplete).toBeUndefined();
@@ -1390,6 +1393,40 @@ describe('server-v2 /api/sessions', () => {
       cache_read_tokens: 1,
       cache_creation_tokens: 4,
     });
+    expect(got.body.data.usage_error).toBeUndefined();
+  });
+
+  it('reports a failed usage read instead of an empty one', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const usageService = main.accessor.get(IAgentUsageService);
+    usageService.record('example-model', {
+      inputOther: 11,
+      output: 7,
+      inputCacheRead: 5,
+      inputCacheCreation: 3,
+    });
+    vi.spyOn(usageService, 'status').mockImplementation(() => {
+      throw new Error('usage store offline');
+    });
+
+    const got = await getJson<SessionWire>(`/api/sessions/${id}`);
+    expect(got.body.code).toBe(0);
+    expect(got.body.data.usage_error).toBe('read-failed');
+    expect(got.body.data.usage).toMatchObject({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      turn_count: 0,
+    });
+    const listed = await getJson<PageWire>('/api/sessions');
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage_error).toBe('read-failed');
   });
 
   it('returns best-effort status for a live session', async () => {

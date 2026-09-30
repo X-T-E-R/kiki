@@ -2878,6 +2878,7 @@ export function SessionView({
   );
   // The composer footer's mini meter reads the same usage fields as the rail.
   const usage = state.session?.usage;
+  const usageError = state.session?.usage_error;
   const contextUsed = state.contextTokens ?? usage?.context_tokens;
   const contextLimit =
     state.maxContextTokens ??
@@ -3158,6 +3159,7 @@ export function SessionView({
             }
             contextAutoCompact={contextAutoCompact}
             sessionUsage={usage}
+            sessionUsageError={usageError}
             sessionId={sessionId}
             workspaceId={profileWorkspaceId}
             agentProfileCatalogMode={agentProfileCatalogMode}

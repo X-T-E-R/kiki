@@ -27,6 +27,14 @@ export const sessionUsageSchema = z.object({
 
 export type SessionUsage = z.infer<typeof sessionUsageSchema>;
 
+/**
+ * Why a session's usage numbers are missing or short. `read-failed` means the
+ * read threw and `usage` is the zero placeholder; `agent-read-failed` means a
+ * sub-agent's usage was skipped, so the totals understate.
+ */
+export const sessionUsageErrorSchema = z.enum(['read-failed', 'agent-read-failed']);
+export type SessionUsageError = z.infer<typeof sessionUsageErrorSchema>;
+
 export function emptySessionUsage(): SessionUsage {
   return {
     input_tokens: 0,
@@ -78,6 +86,7 @@ export const sessionSchema = z.object({
   worktree: sessionWorktreeSchema.optional(),
   agent_config: wireSessionAgentConfigSchema,
   usage: sessionUsageSchema,
+  usage_error: sessionUsageErrorSchema.optional(),
   permission_rules: z.array(permissionRuleSchema),
   message_count: z.number().int().nonnegative(),
   last_seq: z.number().int().nonnegative(),

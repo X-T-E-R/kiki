@@ -220,6 +220,66 @@ describe('ContextMeter interaction', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('never shows placeholder zeros when the usage read failed', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter
+            used={40_000}
+            limit={200_000}
+            usage={{ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: null }}
+            usageError="read-failed"
+          />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const usage = container.querySelector('[data-context-usage]');
+    expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('could not be read');
+    expect(container.querySelector('[data-context-usage-error]')?.getAttribute('title')).toBe('read-failed');
+    // The zeros the server falls back to are placeholders, not a measurement.
+    expect(usage?.textContent).not.toContain('Input');
+    expect(usage?.textContent).not.toContain('Total tokens');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps the numbers and marks them incomplete when one agent’s usage was skipped', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter
+            used={40_000}
+            limit={200_000}
+            usage={{ input_tokens: 900, output_tokens: 100, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: null }}
+            usageError="agent-read-failed"
+          />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const usage = container.querySelector('[data-context-usage]');
+    expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('incomplete');
+    expect(usage?.textContent).toContain('Input');
+    expect(usage?.textContent).toContain('Total tokens');
+    await act(async () => { root.unmount(); });
+  });
+
   it('titles agent-scoped usage as the agent and hides the unpriced cost row', async () => {
     const container = document.createElement('div');
     document.body.append(container);
