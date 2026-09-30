@@ -6537,4 +6537,9 @@ export const zh = {
   'st.notify.filter.attention': '需要注意',
   'st.notify.noMatchTitle': '没有匹配的渠道',
   'st.notify.noMatches': '没有匹配“{query}”的渠道。',
+  'st.perm.search': '搜索规则',
+  'st.perm.searchPlaceholder': '按模式或理由搜索…',
+  'st.perm.noMatchTitle': '没有匹配的规则',
+  'st.perm.noMatches': '没有匹配“{query}”的规则。',
+  'st.perm.reorderNarrowed': '清除搜索后才能调整顺序',
 };

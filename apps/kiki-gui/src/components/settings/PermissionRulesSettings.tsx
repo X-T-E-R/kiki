@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { permissionRuleConfigSchema } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -11,12 +11,15 @@ import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec } from './list';
 import { FieldIssue, FORM_LABEL, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 type PermissionRule = NonNullable<NonNullable<KikiConfigResponse['permission']>['rules']>[number];
 type RuleDraft = { decision: PermissionRule['decision']; pattern: string; scope: PermissionRule['scope']; reason: string };
+type RuleItem = { rule: PermissionRule; index: number };
 const NEW_RULE: RuleDraft = { decision: 'ask', pattern: '', scope: 'user', reason: '' };
+const DECISIONS = ['allow', 'deny', 'ask'] as const;
 
 function toDraft(rule: PermissionRule): RuleDraft {
   return { decision: rule.decision, pattern: rule.pattern, scope: rule.scope, reason: rule.reason ?? '' };
@@ -28,6 +31,16 @@ export function PermissionRulesSettings() {
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const rules = configQuery.data?.permission?.rules ?? [];
+  const ruleItems = useMemo<readonly RuleItem[]>(() => rules.map((rule, index) => ({ rule, index })), [rules]);
+  const keyOf = useCallback((item: RuleItem) => `${item.index}:${item.rule.pattern}:${item.rule.decision}`, []);
+  const textOf = useCallback((item: RuleItem) => [item.rule.pattern, item.rule.reason], []);
+  const filters = useMemo<readonly ListFilterSpec<RuleItem>[]>(
+    () => DECISIONS.map((decision) => ({ id: decision, label: t(`st.perm.decision.${decision}`), test: (item) => item.rule.decision === decision })),
+    [t],
+  );
+  // Order is the semantics here: the first matching rule wins, so the list
+  // offers search and decision filters but no resorting.
+  const view = useListView({ listId: 'permission-rules', items: ruleItems, keyOf, textOf, filters });
   const [editing, setEditing] = useState<{ index: number | null; draft: RuleDraft } | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -96,28 +109,56 @@ export function PermissionRulesSettings() {
     <div className="space-y-3" data-permission-rules>
       <Hint>{t('st.perm.rulesHint')}</Hint>
       {configQuery.isLoading ? <Hint>{t('st.perm.loading')}</Hint> : rules.length === 0
-        ? <Hint>{t('st.perm.rulesEmpty')}</Hint>
-        : <ol className="divide-y divide-hairline" aria-label={t('st.perm.rulesTitle')}>
-          {rules.map((rule, index) => <li key={index} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px]">
-            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 break-all text-ink"><span className="font-mono text-[12px]">{rule.pattern}</span>
-              <Icon name="arrowRight" size={12} className="text-ink-faint" /><span>{t(`st.perm.decision.${rule.decision}`)}</span></span>
-            <span className="text-[12px] text-ink-faint">{t(`st.perm.scope.${rule.scope}`)}</span>
-            <div className="flex flex-wrap items-center gap-1">
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null || index === 0}
-                aria-label={t('st.perm.moveUp')} onClick={() => void move(index, -1)}><Icon name="arrowUp" size={14} /></button>
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null || index === rules.length - 1}
-                aria-label={t('st.perm.moveDown')} onClick={() => void move(index, 1)}><Icon name="arrowDown" size={14} /></button>
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
-                onClick={() => { setEditing({ index, draft: toDraft(rule) }); setFeedback(null); }}>{t('st.perm.edit')}</button>
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
-                aria-label={`${t('st.perm.delete')} ${rule.pattern}`} onClick={() => void remove(index)}>{t('st.perm.delete')}</button>
-            </div>
-          </li>)}</ol>}
-      <div className="flex items-center gap-3">
-        <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-          onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
+        ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} />
+        : <>
+          <ListToolbar view={view} total={ruleItems.length} filters={filters}
+            searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')}
+            actions={
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
+                onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
+            } />
+          {view.visible.length === 0 ? (
+            <ListEmpty kind="no-match" title={t('st.perm.noMatchTitle')}
+              body={view.query.trim() !== '' ? t('st.perm.noMatches', { query: view.query.trim() }) : undefined}
+              onClear={view.clear} />
+          ) : (
+            <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.perm.rulesTitle')}
+              renderRow={({ rule, index }) => {
+                const reorderBlocked = saving || editing !== null || view.narrowed;
+                return (
+                  <div className="flex items-center gap-3 px-3 py-1.5 text-[13px]" style={{ minHeight: LIST_ROW_HEIGHT[view.density] }}>
+                    <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ink">
+                      <span className="min-w-0 truncate font-mono text-[12px]" title={rule.pattern}>{rule.pattern}</span>
+                      <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
+                      <span className="shrink-0">{t(`st.perm.decision.${rule.decision}`)}</span>
+                    </span>
+                    <span className="shrink-0 text-[12px] text-ink-faint">{t(`st.perm.scope.${rule.scope}`)}</span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button type="button" className={SECONDARY_BUTTON} disabled={reorderBlocked || index === 0}
+                        title={view.narrowed ? t('st.perm.reorderNarrowed') : undefined}
+                        aria-label={t('st.perm.moveUp')} onClick={() => void move(index, -1)}><Icon name="arrowUp" size={14} /></button>
+                      <button type="button" className={SECONDARY_BUTTON} disabled={reorderBlocked || index === rules.length - 1}
+                        title={view.narrowed ? t('st.perm.reorderNarrowed') : undefined}
+                        aria-label={t('st.perm.moveDown')} onClick={() => void move(index, 1)}><Icon name="arrowDown" size={14} /></button>
+                      <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
+                        onClick={() => { setEditing({ index, draft: toDraft(rule) }); setFeedback(null); }}>{t('st.perm.edit')}</button>
+                      <button type="button" className={SECONDARY_BUTTON} disabled={saving || editing !== null}
+                        aria-label={`${t('st.perm.delete')} ${rule.pattern}`} onClick={() => void remove(index)}>{t('st.perm.delete')}</button>
+                    </div>
+                  </div>
+                );
+              }} />
+          )}
+        </>}
+      {rules.length === 0 ? (
+        <div className="flex items-center gap-3">
+          <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
+            onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
+          <SaveStatus saving={saving} saved={saved} />
+        </div>
+      ) : (
         <SaveStatus saving={saving} saved={saved} />
-      </div>
+      )}
       {/* A rule is four fields: a short dialog, not a block pushed into the list. */}
       {editing !== null ? <Dialog
         onClose={() => { setEditing(null); setFeedback(null); }}

@@ -6600,4 +6600,9 @@ export const en = {
   'st.notify.filter.attention': 'Needs attention',
   'st.notify.noMatchTitle': 'No channels match',
   'st.notify.noMatches': 'No channels match “{query}”.',
+  'st.perm.search': 'Search rules',
+  'st.perm.searchPlaceholder': 'Search pattern or reason…',
+  'st.perm.noMatchTitle': 'No rules match',
+  'st.perm.noMatches': 'No rules match “{query}”.',
+  'st.perm.reorderNarrowed': 'Clear the search to reorder rules',
 } as const;
