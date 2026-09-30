@@ -1882,6 +1882,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
   { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'ssh', labelKey: 'st.section.ssh' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'identity', labelKey: 'st.section.identity' },
   { id: 'agents', labelKey: 'st.section.agents' },
@@ -1897,21 +1898,22 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'hooks', labelKey: 'st.section.hooks' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
-  { id: 'ssh', labelKey: 'st.section.ssh' },
+  { id: 'spaces', labelKey: 'st.section.spaces' },
   { id: 'developer', labelKey: 'st.section.developer' },
   { id: 'labs', labelKey: 'st.section.labs' },
   { id: 'about', labelKey: 'st.section.about' },
-  { id: 'spaces', labelKey: 'st.section.spaces' },
 ];
 
 // ---- grouped navigation (settings IA v2) ----
 
 /**
- * Five intent groups in one list, ordered by what a person came to do: set
- * up the app itself, pick the brain (models, agents), decide how work runs
- * and what it may touch (sessions, permissions, tasks), extend what it can
- * reach (capabilities), and maintain the system (workspaces, developer, labs,
- * about).
+ * Seven intent groups in one list, ordered by what a person came to do: set
+ * up the app itself, reach a server (this one, or remote hosts over SSH),
+ * pick the brain (models, agents), decide how work runs and what it may touch
+ * (sessions, permissions, tasks), extend what it can reach (capabilities),
+ * organize where work lives (workspaces, spaces), and, last, the advanced
+ * pages (developer tools, the Labs index, about). Experimental flags are
+ * switched on their feature's own page; Labs only lists them.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1928,11 +1930,13 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'connection'] },
+  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'hooks'] },
-  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about'] },
+  { kind: 'group', id: 'workspace', labelKey: 'st.group.workspace', sections: ['workspaces', 'spaces'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 
 /** Whether a section writes only to this device (its primary scope is the app). */

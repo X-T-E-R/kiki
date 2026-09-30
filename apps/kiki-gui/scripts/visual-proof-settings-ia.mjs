@@ -150,7 +150,7 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
   async function mobileNav(theme) {
     await open('/settings/sessions');
     await page.locator('[data-settings-nav-trigger]').click();
-    await page.waitForSelector('[role="dialog"] [data-settings-nav-group="system"]', { timeout: 5000 });
+    await page.waitForSelector('[role="dialog"] [data-settings-nav-group="advanced"]', { timeout: 5000 });
     if (await page.locator('[role="dialog"] [data-settings-nav-storage]').count() > 0) throw new Error('drawer still draws scope blocks');
     await page.waitForTimeout(300);
     await shot(`ia-nav-drawer-${theme}-390`);

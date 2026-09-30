@@ -1036,10 +1036,10 @@ describe('settings search index', () => {
 });
 
 describe('settings nav groups (IA v2)', () => {
-  it('lists five intent groups in one tree and knows which pages stay on this device', () => {
+  it('lists seven intent groups in one tree and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'system']);
+      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'workspace', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
@@ -1052,11 +1052,15 @@ describe('settings nav groups (IA v2)', () => {
     expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
     expect(new Set(placed).size).toBe(placed.length);
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
-    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'connection']);
+    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
+    expect(sectionsOf('connection')).toEqual(['connection', 'ssh']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(sectionsOf('work')).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
-    expect(sectionsOf('system')).toEqual(['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about']);
+    expect(sectionsOf('workspace')).toEqual(['workspaces', 'spaces']);
+    // About closes the list.
+    expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
+    expect(placed.at(-1)).toBe('about');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
@@ -1085,8 +1089,9 @@ describe('settings nav groups (IA v2)', () => {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
       expect(meta!.scopes.length).toBeGreaterThan(0);
-      // Only the App group's pages are device-only.
-      expect(settingsSectionIsDeviceOnly(section.id), section.id).toBe(settingsGroupForSection(section.id)?.id === 'device');
+      // Only the App group's pages and this app's own connection are device-only.
+      expect(settingsSectionIsDeviceOnly(section.id), section.id)
+        .toBe(settingsGroupForSection(section.id)?.id === 'device' || section.id === 'connection');
     }
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
@@ -1148,7 +1153,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     const models = index.find((entry) => entry.cardId === 'st-card-models');
     expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
-    expect(about?.groupLabel).toBe('System');
+    expect(about?.groupLabel).toBe('Advanced');
     expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
     expect(searchSettings(index, 'Models & agents').some((hit) => hit.section === 'ai')).toBe(true);
   });

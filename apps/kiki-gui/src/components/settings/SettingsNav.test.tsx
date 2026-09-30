@@ -75,16 +75,18 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'system']);
+      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'workspace', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Models & agents', 'How work runs', 'Capabilities', 'System']);
+      .toEqual(['App', 'Connection & remote', 'Models & agents', 'How work runs', 'Capabilities', 'Workspaces', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'connection']);
-    expect(leaves(1)).toEqual(['ai', 'identity', 'agents', 'subagents']);
-    expect(leaves(2)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
-    expect(leaves(4)).toEqual(['spaces', 'workspaces', 'ssh', 'developer', 'labs', 'about']);
+    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
+    expect(leaves(1)).toEqual(['connection', 'ssh']);
+    expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
+    expect(leaves(3)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
+    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'hooks']);
+    expect(leaves(5)).toEqual(['workspaces', 'spaces']);
+    expect(leaves(6)).toEqual(['developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -94,7 +96,7 @@ describe('SettingsNav grouped tree', () => {
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
     expect(active.map((button) => button.textContent)).toEqual(['Skills']);
-    // Selection is the shared row rule (selected wash + inset mark from
+    // Selection is the shared row rule (a paper sheet + inset mark from
     // .row-interactive[aria-current]), not an accent fill.
     expect(active[0]!.classList.contains('row-interactive')).toBe(true);
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
