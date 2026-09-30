@@ -869,20 +869,60 @@ body[data-pane-resizing='true'] {
   }
 }
 
-/* Collapse strategy between lg and 1360px: conversation + preview + inspector
- * cannot all dock at a readable width, so with the preview open the
- * inspector floats over the right edge as a raised sheet instead of pushing
- * the conversation under its minimum. */
-@media (min-width: 1024px) and (max-width: 1359px) {
-  .app-sheet > .conversation-shell .conversation-row:has(.preview-workspace:not([hidden]):not([data-preview-fullscreen])) .conversation-rail-slot .app-rail-shell {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 30;
+/* Room for the preview, between md and 1360px. Sidebar + conversation +
+ * preview + inspector cannot all dock at a readable width, so an open docked
+ * preview takes the room it needs instead of anything floating over it:
+ *   - the inspector steps aside (it comes back when the preview closes);
+ *   - the sidebar folds away (its own open/closed choice is untouched, so it
+ *     returns as it was when the preview closes). Opening it by hand while
+ *     the preview is open lays it over the page, over a scrim that closes it
+ *     on click (App renders the scrim).
+ * Priority: preview first, then the conversation, then the inspector. */
+@media (min-width: 768px) and (max-width: 1359px) {
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-sheet > .conversation-shell .conversation-rail-slot {
+    display: none;
   }
-  .app-sheet > .conversation-shell .conversation-row:has(.preview-workspace:not([hidden]):not([data-preview-fullscreen])) .conversation-rail-slot .app-rail {
-    box-shadow: var(--kiki-sheet-shadow), -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-sidebar:not(.open) {
+    width: 0;
+    overflow: hidden;
+    visibility: hidden;
+  }
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-sidebar.open {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 40;
+    max-width: calc(100vw - 3rem);
+    box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+    animation: kiki-sidebar-in 200ms ease-out both;
+  }
+  /* With the sidebar folded away the stage needs its own left margin, and
+   * the header offers the menu button that brings the sidebar back. */
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-stage {
+    padding-left: var(--kiki-stage-gap);
+  }
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) [data-sidebar-menu] {
+    display: flex;
+  }
+  html:not(:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen]))) [data-sidebar-scrim='preview'] {
+    display: none;
+  }
+}
+
+@media (min-width: 1360px) {
+  [data-sidebar-scrim='preview'] {
+    display: none;
+  }
+}
+
+@keyframes kiki-sidebar-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html .app-sidebar.open {
+    animation: none;
   }
 }
 

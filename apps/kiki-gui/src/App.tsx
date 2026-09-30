@@ -692,16 +692,29 @@ export function App() {
 
 
       {sidebarOpen ? (
-        <div
-          role="button"
-          tabIndex={-1}
-          aria-label={t('app.closeSidebar')}
-          className="app-overlay-backdrop md:hidden"
-          onClick={() => { setSidebarOpen(false); }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setSidebarOpen(false);
-          }}
-        />
+        <>
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-label={t('app.closeSidebar')}
+            className="app-overlay-backdrop md:hidden"
+            onClick={() => { setSidebarOpen(false); }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setSidebarOpen(false);
+            }}
+          />
+          {/* md and up: only while an open preview folded the sidebar away
+              (index.css hides it otherwise), so a sidebar opened by hand
+              over the preview closes on a click outside. */}
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-label={t('app.closeSidebar')}
+            data-sidebar-scrim="preview"
+            className="app-overlay-backdrop z-[39] hidden md:block"
+            onClick={() => { setSidebarOpen(false); }}
+          />
+        </>
       ) : null}
 
       {quickSwitcherOpen ? (

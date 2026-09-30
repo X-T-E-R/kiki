@@ -268,6 +268,7 @@ function Header({
         type="button"
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
+        data-sidebar-menu=""
         className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >
         <Icon name="menu" size={16} />
