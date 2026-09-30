@@ -6547,4 +6547,8 @@ export const zh = {
   'st.connections.filter.attention': '需要注意',
   'st.connections.noMatchTitle': '没有匹配的连接',
   'st.connections.noMatches': '没有匹配“{query}”的连接。',
+  'st.identity.search': '搜索身份档案',
+  'st.identity.searchPlaceholder': '按名称或 ID 搜索…',
+  'st.identity.noMatchTitle': '没有匹配的档案',
+  'st.identity.noMatches': '没有匹配“{query}”的档案。',
 };

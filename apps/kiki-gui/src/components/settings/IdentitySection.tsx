@@ -25,6 +25,7 @@ import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
 import { AdvancedDetails, SettingField } from './fields';
 import { GlobalRequestIdentityCard } from './ModelsSection';
 import { SectionCard } from './SectionCard';
+import { groupItems, ListEmpty, ListGroup, ListToolbar, useListView } from './list';
 import {
   CommitInput,
   FORM_LABEL,
@@ -169,8 +170,6 @@ function ProfilesCard({ catalog }: { catalog: RequestIdentityCatalog | undefined
   const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
   const [feedback, setFeedback] = useState<Feedback>(null);
   const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0];
-  const builtins = profiles.filter((profile) => profile.builtin);
-  const customs = profiles.filter((profile) => !profile.builtin);
 
   const duplicate = async (from: RequestIdentityProfile) => {
     setFeedback(null);
@@ -191,23 +190,43 @@ function ProfilesCard({ catalog }: { catalog: RequestIdentityCatalog | undefined
         onClick={() => { setSelectedId(profile.id); setNarrowPane('detail'); }}
         className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pl-3 pr-2 text-left">
         <span className="max-w-full truncate text-[13px] text-ink">{profile.label}</span>
-        <span className="max-w-full truncate font-mono text-[11px] text-ink-faint">{profile.id}</span>
+        {view.density === 'compact' ? null : (
+          <span className="max-w-full truncate font-mono text-[11px] text-ink-faint">{profile.id}</span>
+        )}
       </button>
     </li>
   );
 
+  const keyOf = (profile: RequestIdentityProfile) => profile.id;
+  const textOf = (profile: RequestIdentityProfile) => [profile.label, profile.id];
+  const view = useListView({ listId: 'identity-profiles', items: profiles, keyOf, textOf });
+  const groups = useMemo(
+    () => groupItems(profiles, view.visible, (profile) => [
+      profile.builtin
+        ? { key: 'builtin', label: t('st.identity.builtinGroup') }
+        : { key: 'custom', label: t('st.identity.customGroup') },
+    ], ['builtin', 'custom']),
+    [profiles, view.visible, t],
+  );
+
   const list = (
-    <nav aria-label={t('st.identity.listTitle')} className="space-y-4">
-      <div>
-        <p className="mb-1 px-3 text-[12px] font-medium text-ink-soft">{t('st.identity.builtinGroup')}</p>
-        <ul className="space-y-0.5">{builtins.map(row)}</ul>
-      </div>
-      <div>
-        <p className="mb-1 px-3 text-[12px] font-medium text-ink-soft">{t('st.identity.customGroup')}</p>
-        {customs.length === 0
-          ? <p className="px-3 text-[12px] leading-snug text-ink-faint">{t('st.identity.customEmpty')}</p>
-          : <ul className="space-y-0.5">{customs.map(row)}</ul>}
-      </div>
+    <nav aria-label={t('st.identity.listTitle')} className="space-y-2">
+      <ListToolbar view={view} total={profiles.length}
+        searchLabel={t('st.identity.search')} searchPlaceholder={t('st.identity.searchPlaceholder')} />
+      {profiles.length > 0 && view.visible.length === 0 ? (
+        <ListEmpty kind="no-match" title={t('st.identity.noMatchTitle')}
+          body={view.query.trim() !== '' ? t('st.identity.noMatches', { query: view.query.trim() }) : undefined}
+          onClear={view.clear} />
+      ) : (
+        groups.map((group) => (
+          <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
+            folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}>
+            {group.key === 'custom' && group.items.length === 0 && !view.narrowed
+              ? <p className="px-3 text-[12px] leading-snug text-ink-faint">{t('st.identity.customEmpty')}</p>
+              : <ul className="space-y-0.5">{group.items.map(row)}</ul>}
+          </ListGroup>
+        ))
+      )}
     </nav>
   );
 

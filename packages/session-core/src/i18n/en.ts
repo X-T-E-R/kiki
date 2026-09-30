@@ -6610,4 +6610,8 @@ export const en = {
   'st.connections.filter.attention': 'Needs attention',
   'st.connections.noMatchTitle': 'No connections match',
   'st.connections.noMatches': 'No connections match “{query}”.',
+  'st.identity.search': 'Search profiles',
+  'st.identity.searchPlaceholder': 'Search label or id…',
+  'st.identity.noMatchTitle': 'No profiles match',
+  'st.identity.noMatches': 'No profiles match “{query}”.',
 } as const;
