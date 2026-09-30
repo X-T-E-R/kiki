@@ -7,7 +7,8 @@ import { acpFormFields, acpFormResponse } from '#/agent/execution/acpElicitation
 import { acquireHarnessMcp } from '#/agent/execution/harnessMcpLease';
 import { externalAcpForkRecords } from '#/workspace/sessionLifecycle/internal/externalFork';
 import { antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
-import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, type AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
 
 const form: AcpElicitationRequest = {
   mode: 'form', sessionId: 'remote', message: 'Choose configuration', requestedSchema: {
@@ -21,6 +22,13 @@ const form: AcpElicitationRequest = {
 };
 
 describe('external native harness adapters', () => {
+  it('preserves legacy local-resume fingerprints when delegation is omitted or explicitly disabled', () => {
+    const binding: ProfileBindingSnapshot = { thinkingLevel: 'off', systemPrompt: 'Frozen profile' };
+    const legacy = createHash('sha256').update(JSON.stringify({ thinkingLevel: 'off', systemPrompt: 'Frozen profile' })).digest('hex');
+    expect(agentExecutorBindingFingerprint(binding)).toBe(legacy);
+    expect(agentExecutorBindingFingerprint({ ...binding, allowKikiSubagents: false })).toBe(legacy);
+    expect(agentExecutorBindingFingerprint({ ...binding, allowKikiSubagents: true })).not.toBe(legacy);
+  });
   it('maps a complete ACP form into product questions and preserves typed wire values', () => {
     const fields = acpFormFields(form)!;
     expect(fields.map((field) => field.question.options.map((option) => option.label))).toEqual([
