@@ -96,6 +96,8 @@ Kiki attaches its MCP tools (the bridge through which a harness calls Kiki) to t
 
 Child completion is queued back to the same main agent without blocking the child. If the main agent is busy, delivery waits until its turn settles; if it is idle, the queued receipt wakes it. Parent notifications use the same conversation and remain subject to `allow_parent_notify` and the configured notification policy.
 
+Codex app-server MCP tool calls can require a separate vendor approval, mapped to Kiki's persistent approval interaction. Use manual or auto mode (`on-request`) to answer it. YOLO mode uses `never` but retains the workspace-write sandbox; Codex can reject MCP calls that require approval in that combination. Kiki does not silently widen the sandbox or bypass vendor approval.
+
 External interaction support depends on the harness's negotiated capabilities. ACP historical forks use `session/fork` when available; exact assistant-message positions additionally require the AIR fork-point extension supported by the Claude, Codex, or DeepSeek adapters. Unsupported positions use a new remote session with a bounded conversation handoff, never continue the source remote session. Codex and DeepSeek ACP form questions use Kiki's persistent question interaction; unsupported complex forms and URL-mode requests are declined. Grok's plan approval uses the persistent plan-review interaction. These mappings do not turn a harness's unsupported feature into a native one.
 
 ### Rebuilding a session context

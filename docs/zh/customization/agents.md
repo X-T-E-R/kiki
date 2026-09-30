@@ -96,6 +96,8 @@ Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，�
 
 子 Agent 完成后，回执会非阻塞地排入同一 main agent 的收件队列。main agent 忙碌时，等待当前轮次结束再投递；空闲时，队列回执会唤醒它。父级通知也使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
 
+Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 会将其映射为持久化审批交互。请使用 manual 或 auto 模式（`on-request`）回答。YOLO 模式使用 `never`，但仍保留 workspace-write 沙箱；在这种组合下，Codex 可能拒绝需要审批的 MCP 调用。Kiki 不会静默扩大沙箱权限或绕过厂商审批。
+
 外部交互取决于 harness 握手声明的能力。ACP 历史 fork 在支持时使用 `session/fork`；精确定位到 Assistant 消息还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展。不支持的位置会新建远端会话并附上有长度限制的对话交接，绝不会继续源远端会话。Codex 与 DeepSeek 的 ACP 表单问题映射到 Kiki 持久化问题交互；不支持的复杂表单和 URL 模式请求会被拒绝。Grok 的计划审批映射到持久化计划审阅交互。这些映射不会把 harness 本身不支持的功能变成原生能力。
 
 ### 重建会话上下文
