@@ -436,3 +436,26 @@ describe('loadAgentsMd space inheritance', () => {
     );
   });
 });
+
+
+describe('stable dynamic prefix layout', () => {
+  it('keeps the rendered system hash stable while runtime, memory and catalogs change', async () => {
+    const { stablePromptContext, promptSectionHash, dynamicPromptContent } = await import('#/agent/profile/dynamicPrompt');
+    const { renderSystemPromptResult } = await import('@kiki/agent-profiles/profileShared');
+    const first = { cwd: '/workspace/a', cwdListing: 'first directory', additionalDirsInfo: 'extra-a', agentsMd: 'rule A',
+      memory: 'memory A', skills: 'skill A', pluginSections: 'plugin A', now: '2026-01-01T01:00:00.000Z', timeZone: 'UTC', osKind: 'Linux' };
+    const second = { ...first, cwd: '/workspace/b', cwdListing: 'second directory', additionalDirsInfo: 'extra-b', agentsMd: 'rule B',
+      memory: 'memory B', skills: 'skill B', pluginSections: 'plugin B', now: '2026-01-02T01:00:00.000Z' };
+    const render = (context: typeof first) => renderSystemPromptResult('', stablePromptContext(context), { skillActive: true }).text;
+    expect(promptSectionHash(render(first))).toBe(promptSectionHash(render(second)));
+    expect(render(first)).not.toContain('first directory');
+    expect(dynamicPromptContent(first)).not.toBe(dynamicPromptContent(second));
+    expect(dynamicPromptContent(first)).not.toContain('01:00:00.000Z');
+  });
+  it('freezes legacy environment without freezing a changed policy', async () => {
+    const { legacyEnvironmentContext } = await import('#/agent/profile/dynamicPrompt');
+    const first = { cwd: '/workspace/a', cwdListing: 'first directory', now: '2026-01-01T01:00:00.000Z', agentsMd: 'rule A' };
+    const second = { cwd: '/workspace/b', cwdListing: 'second directory', now: '2026-01-02T01:00:00.000Z', agentsMd: 'rule B' };
+    expect(legacyEnvironmentContext(second, '', first)).toEqual({ ...second, cwd: first.cwd, cwdListing: first.cwdListing, now: first.now, timeZone: undefined, additionalDirsInfo: undefined });
+  });
+});

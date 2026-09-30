@@ -219,7 +219,7 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 describe('SessionTodoService', () => {
   it('injects T2 under the default summarize strategy and persists its epoch latch', () => {
     const reminders = new Map<string, () => string | undefined>();
-    const main = makeFakeAgent('main', reminders, [], 86_000);
+    const main = makeFakeAgent('main', reminders, [{ role: 'assistant', content: [{ type: 'text', text: 'uncovered work' }], toolCalls: [] }], 86_000);
     makeTodoService(makeLifecycleStub([main.handle]).service);
     const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
     expect(provider()).toContain('The context window will be renewed soon');
@@ -229,7 +229,7 @@ describe('SessionTodoService', () => {
       (record as { value?: number }).value === 0)).toBe(true);
   });
 
-  it('reminds on a keyword-free PromptSteered only after its input materializes', async () => {
+  it('does not promote a keyword-free steer into a persistent directive', async () => {
     const history: ContextMessage[] = [];
     const reminders = new Map<string, () => string | undefined>();
     const main = makeFakeAgent('main', reminders, history);
@@ -239,7 +239,7 @@ describe('SessionTodoService', () => {
     await main.dispatcher.dispatch(new PromptSteered({ activePromptId: 'active', promptIds: ['steer'], content, steeredAt: new Date().toISOString() }));
     expect(provider()).toBeUndefined();
     history.push({ role: 'user', content, toolCalls: [], origin: { kind: 'user' }, source: { turnId: 424 } });
-    expect(provider()).toContain('standing instruction');
+    expect(provider()).toBeUndefined();
     expect(provider()).toBeUndefined();
   });
 
@@ -265,10 +265,10 @@ describe('SessionTodoService', () => {
     const service = makeTodoService(lifecycle.service);
     service.setTodos([{ title: 'main private task', status: 'pending' }]);
     const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
-    expect(provider()).not.toContain('main private task');
+    expect(provider()).toBeUndefined();
     service.setTodos([{ title: 'child task', status: 'pending' }], 'child');
-    expect(provider()).toContain('child task');
-    expect(provider()).not.toContain('main private task');
+    expect(provider()).toBeUndefined();
+    expect(service.getTodos('child')).toEqual([{ title: 'child task', status: 'pending' }]);
     lifecycle.fireDispose('child');
     expect(reminders.size).toBe(0);
   });

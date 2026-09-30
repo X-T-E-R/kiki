@@ -119,6 +119,58 @@ describe('AgentProfileService.applyProfile', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
+  it('keeps a fresh binding byte-stable while clock and directory snapshots change', async () => {
+    const { ctx: host, profile: svc } = buildContext();
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { profileKey } = await import('#/agent/profile/profileOps');
+    const { dynamicPromptKey, IDynamicPromptInjection } = await import('#/agent/profile/dynamicPrompt');
+    const { IAgentContextInjectorService } = await import('#/agent/contextInjector/contextInjector');
+    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
+    const { IHostClock } = await import('#/os/interface/hostClock');
+    const states = host.get(IAgentStateService);
+    states.set(profileKey, { ...states.get(profileKey), systemPrompt: '', renderGeneration: 0 });
+    const native = normalizeAgentProfile({ name: 'stable-runtime', tools: [], renderSystemPrompt: (context) =>
+      renderPromptTemplateResult('BASE ${now}|${cwd}|${cwd_listing}|${agents_md}', context, { skillActive: false }) });
+    await svc.applyProfile(native);
+    host.get(IDynamicPromptInjection);
+    const injector = host.get(IAgentContextInjectorService);
+    await injector.reconcileAllAtSafeBoundary();
+    const first = svc.data().systemPrompt;
+    const original = [...host.get(IAgentContextMemoryService).get()];
+    vi.spyOn(host.get(IHostClock), 'now').mockReturnValue(new Date('2030-01-01T00:00:00.000Z'));
+    await writeFile(join(workDir, 'changed.txt'), 'new work');
+    await svc.refreshSystemPrompt();
+    expect(svc.data().systemPrompt).toBe(first);
+    expect(states.get(dynamicPromptKey)?.content).toContain('changed.txt');
+    await injector.reconcileAllAtSafeBoundary();
+    expect(host.get(IAgentContextMemoryService).get().slice(0, original.length)).toEqual(original);
+    expect(host.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot')).toHaveLength(2);
+    await injector.reconcileAllAtSafeBoundary();
+    expect(host.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot')).toHaveLength(2);
+  });
+
+  it('migrates a legacy layout only when a natural compaction lands', async () => {
+    const { ctx: host, profile: svc } = buildContext();
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
+
+    const native = normalizeAgentProfile({ name: 'legacy-runtime', tools: [], renderSystemPrompt: (context) =>
+      renderPromptTemplateResult('BASE ${now}|${cwd}|${cwd_listing}', context, { skillActive: false }) });
+    await svc.applyProfile(native);
+    expect(host.get(IAgentStateService).get(dynamicPromptKey)?.enabled).toBe(false);
+    const prior = svc.data().systemPrompt;
+    await writeFile(join(workDir, 'new-file.txt'), 'new work');
+    await svc.refreshSystemPrompt();
+    expect(svc.data().systemPrompt).toBe(prior);
+    const context = host.get(IAgentContextMemoryService);
+    context.append({ role: 'user', content: [{ type: 'text', text: 'request' }], toolCalls: [], origin: { kind: 'user' } });
+    context.applyCompaction({ summary: 'handoff', compactedCount: context.get().length, tokensBefore: 100 });
+    await svc.refreshSystemPrompt();
+    expect(host.get(IAgentStateService).get(dynamicPromptKey)?.enabled).toBe(true);
+    expect(svc.data().systemPrompt).not.toBe(prior);
+  });
+
   it.each(['main-role', 'standalone-role'])('renders configured variables in %s without inheriting SYSTEM.md', async (name) => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);

@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { normalize } from 'node:path';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { join } from 'pathe';
 
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
@@ -383,9 +383,11 @@ describe('FullCompaction', () => {
       await profile.applyProfile(EXACT_COMPACTION_REFRESH_PROFILE);
       profile.update({ activeToolNames: ['Read'] });
 
-      expect(profile.data().systemPrompt).toBe(
-        exactCompactionRefreshPrompt(workDir, 'old project instructions'),
-      );
+      const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+      const states = ctx.get(IAgentStateService);
+      const stableSystem = profile.data().systemPrompt;
+      expect(stableSystem).toContain('cwd:See runtime snapshot');
+      expect(states.get(dynamicPromptKey)?.content).toContain('old project instructions');
 
       const refreshSpy = vi.spyOn(profile, 'refreshSystemPrompt');
       const memory = ctx.get(IAgentMemorySnapshot);
@@ -401,9 +403,9 @@ describe('FullCompaction', () => {
 
       expect(refreshSpy).toHaveBeenCalledTimes(1);
       expect(memoryInvalidation).not.toHaveBeenCalled();
-      expect(profile.data().systemPrompt).toBe(
-        exactCompactionRefreshPrompt(workDir, 'new project instructions'),
-      );
+      expect(profile.data().systemPrompt).toBe(stableSystem);
+      expect(states.get(dynamicPromptKey)?.content).toContain('new project instructions');
+      expect(states.get(dynamicPromptKey)?.content).not.toContain('old project instructions');
       expect(profile.getActiveToolNames()).toEqual(['Read']);
     } finally {
       rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -1668,7 +1670,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nTreat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.` },
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nApply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.` },
       { role: 'user', text: 'new user while compacting' },
     ]);
     await ctx.expectResumeMatches();
@@ -1926,7 +1928,7 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "old user one\\n\\nold user two"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nTreat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions."
+          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences."
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2729,7 +2731,7 @@ describe('FullCompaction', () => {
       ## User input since notes
       - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
 
-      Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.",
+      Apply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.",
           "user: Retry after provider overflow",
         ],
       ]
@@ -3499,7 +3501,7 @@ describe('FullCompaction', () => {
       ## User input since notes
       - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
 
-      Treat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.",
+      Apply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.",
           "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         ],
       ]
@@ -3689,17 +3691,6 @@ function countEvents(events: ReturnType<TestAgentContext['newEvents']>, type: st
     if (typeof event !== 'object' || event === null) return false;
     return (event as { readonly event?: unknown }).event === type;
   }).length;
-}
-
-function exactCompactionRefreshPrompt(workDir: string, agentsMd: string): string {
-  return [
-    `cwd:${normalize(workDir)}`,
-    'os:Linux',
-    'shell:bash:/bin/bash',
-    `agents:<!-- From: ${join(workDir, 'AGENTS.md')} -->\n${agentsMd}`,
-    'ls:\u2514\u2500\u2500 AGENTS.md',
-    'extra:',
-  ].join('\n');
 }
 
 function oauthTestAgentOptions(

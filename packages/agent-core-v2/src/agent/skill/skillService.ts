@@ -165,6 +165,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       origin: {
         kind: 'user',
         skillActivations: prepared.map((activation) => activation.entry),
+        originalInput: input.input.filter((part) => part.type === 'text'),
       },
     }, input.execution, input.deferredDisabledTools, input.appendTiming);
     if (handle.state === 'pending') {

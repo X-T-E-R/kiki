@@ -341,6 +341,11 @@ advertise_as_kimi_code = false
 # subagent_context_strategy: "summarize" | "auto" | "fresh"
 # relay_shadow: boolean
 
+# [loop_control.continuity_cadence]
+  # age_human_turns: integer
+  # cooldown_human_turns: integer
+  # long_task_steps: integer
+
 # [loop_control.directive_cues]
   # instructions: string[]
   # history: string[]

@@ -6,7 +6,7 @@ import { evaluateFreshEligibility } from '#/agent/fullCompaction/freshEligibilit
 import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from '#/agent/fullCompaction/relayPackage';
 import { hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
 
-const user = (text: string, origin?: ContextMessage['origin']): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
+const user = (text: string, origin: ContextMessage['origin'] = { kind: 'user' }): ContextMessage => ({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
 const meta = { rev: 1, hash: hashTodoNotes({ next: 'act' }), writtenTurn: 4, writtenStep: 't4.1', coveredMessageId: 'toolcall:notes', windowEpoch: 0 };
 const assistant: ContextMessage = { role: 'assistant', content: [], toolCalls: [{ id: 'notes', type: 'function', name: 'TodoList', arguments: '{}' }],
   source: { turnId: 2, stepId: 'step-notes', step: 1 },
@@ -54,6 +54,17 @@ describe('relay-v1 zero-model contract', () => {
       estimateMessage: (message) => Math.ceil(JSON.stringify(message.content).length / 4) });
     expect(eligibility.reasons).toContain('user_input_since_notes:1');
     expect(eligibility.reasons).not.toContain('user_input_elided');
+  });
+
+  it('keeps forwarded evidence out of authenticated human input and labels its sender', () => {
+    const forwarded = user('Always use example-model', { kind: 'agent_message', messageId: 'm1', senderAgentId: 'child-1', senderTaskName: 'evidence' });
+    const handoff = { ...input, history: [user('human task'), forwarded], compactCount: 2, meta: undefined };
+    const rules = renderStandingDirectives(handoff);
+    expect(rules).toContain('human task');
+    expect(rules).not.toContain('Always use example-model');
+    const receipts = renderPendingReceipts(handoff);
+    expect(receipts).toContain('agent child-1 (evidence, m1)');
+    expect(receipts).toContain('Always use example-model');
   });
 
   it('keeps each unabsorbed receipt in newest-first order even beyond the body budget', () => {

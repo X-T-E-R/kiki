@@ -20,6 +20,11 @@ export const LoopControlSchema = z.object({
   contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
   subagentContextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
   relayShadow: z.boolean().optional(),
+  continuityCadence: z.object({
+    ageHumanTurns: z.number().int().min(1).optional(),
+    cooldownHumanTurns: z.number().int().min(1).optional(),
+    longTaskSteps: z.number().int().min(1).optional(),
+  }).optional(),
   directiveCues: z.object({
     instructions: z.array(z.string().min(1).max(100)).max(100).optional(),
     history: z.array(z.string().min(1).max(100)).max(100).optional(),

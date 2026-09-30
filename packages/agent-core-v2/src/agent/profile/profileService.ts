@@ -87,6 +87,9 @@ import type { LoopControl } from '#/agent/loop/configSection';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
+import { IEventBus } from '#/app/event/eventBus';
+import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
+import { dynamicPromptKey, ProfileDynamicSnapshot, dynamicPromptContent, promptSectionHash, stablePromptContext, legacyEnvironmentContext } from './dynamicPrompt';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -256,6 +259,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
   private systemPromptRefreshTail: Promise<void> = Promise.resolve();
+  private promptLayoutMigrationPending = false;
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -290,9 +294,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IPersonaStore private readonly personas?: IPersonaStore,
+    @IEventBus eventBus?: IEventBus,
   ) {
     super();
     this.states.contributeState(profileKey);
+    this.states.contributeState(dynamicPromptKey);
+    if (eventBus !== undefined) this._register(eventBus.subscribe(ContextSpliced, (event) => {
+      if (event.deleteCount > 0 && event.messages.some((message) => message.origin?.kind === 'compaction_summary')) {
+        this.promptLayoutMigrationPending = true;
+      }
+    }));
     this.states.contributeState(profileActiveToolsKey);
     this.states.contributeState(profileActiveToolNamesOverlayKey);
     this.states.contributeState(profileAgentsMdWarningKey);
@@ -1509,6 +1520,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       promptVariables,
       promptFields: promptFields.values,
     });
+    const dynamic = this.states.get(dynamicPromptKey);
+    const environment = dynamic?.enabled === true
+      ? profile.renderSystemPrompt({ ...dynamic.context, promptVariables, promptFields: promptFields.values }).environment
+      : rendered.environment;
     const withModel = applyMatchedModelProfilePrompt(
       rendered.text,
       profile.modelProfiles,
@@ -1545,8 +1560,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
     return {
       text: external ? finalBody : injectDelegationContext(finalBody, snippet),
-      environment: rendered.environment,
-      promptBase: { text: rendered.text, environment: rendered.environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
+      environment,
+      promptBase: { text: rendered.text, environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
       promptFields,
       personaPositionExplicit,
       personaBaseHasIdentity: hasDefaultIdentityParagraph(body),
@@ -2388,7 +2403,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const now = this.clock.now();
     const timeZone = this.clock.timeZone();
     const memory = await this.readMemoryForPersonaOverride(personaOverride);
-    return {
+    const context: SystemPromptContext = {
       ...base,
       cwd: view.workDir,
       osKind: env.osKind,
@@ -2404,6 +2419,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
+    const previous = this.states.get(dynamicPromptKey);
+    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending;
+    this.promptLayoutMigrationPending = false;
+    const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
+    const content = dynamicPromptContent(effective);
+    const hash = promptSectionHash(content);
+    if (previous?.hash !== hash || previous.enabled !== enabled) {
+      await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled, revision: (previous?.revision ?? 0) + 1, context: effective, content, hash }));
+    }
+    return enabled ? stablePromptContext(effective) : effective;
   }
 
   private async readMemoryForPersonaOverride(persona: PersonaSnapshot | null | undefined): Promise<string> {

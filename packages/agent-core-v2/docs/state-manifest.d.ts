@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 108 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 110 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -125,6 +125,7 @@
 //     profile.activeToolNamesOverlay                  src/agent/profile/profileService.ts
 //     profile.activeTools                             src/agent/profile/profileOps.ts
 //     profile.agentsMdWarning                         src/agent/profile/profileService.ts
+//     profile.dynamicSnapshot                         src/agent/profile/dynamicPrompt.ts
 //     profile.emittedPluginBudgetWarnings             src/agent/profile/profileService.ts
 //     profile.emittedThinkingEffortWarnings           src/agent/profile/profileService.ts
 //     profile.emittedToolPatternWarnings              src/agent/profile/profileService.ts
@@ -147,6 +148,7 @@
 //     task.notificationDelivery                       src/agent/task/taskService.ts
 //     task.scheduledNotificationKeys                  src/agent/task/taskService.ts
 //     todo                                            src/session/todo/todoOps.ts
+//     todo.continuityClock                            src/session/todo/continuityState.ts
 //     tokenCounting                                   src/agent/tokenCounting/tokenCountingOps.ts
 //     toolDedupe.activeStep                           src/agent/toolDedupe/toolDedupeService.ts
 //     toolDedupe.activeTurnId                         src/agent/toolDedupe/toolDedupeService.ts
@@ -916,6 +918,34 @@ export interface AgentStateSnapshot {
           readonly skillPath?: string;
           readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
         }[];
+        readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'text';
+          text: string;
+        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'think';
+          think: string;
+          encrypted?: string;
+        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'image_url';
+          imageUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'audio_url';
+          audioUrl: {
+            url: string;
+            id?: string;
+          };
+        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'video_url';
+          videoUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
         readonly activationId: string;
@@ -1074,6 +1104,34 @@ export interface AgentStateSnapshot {
         readonly skillPath?: string;
         readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
       }[];
+      readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'text';
+        text: string;
+      } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'think';
+        think: string;
+        encrypted?: string;
+      } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'image_url';
+        imageUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+        };
+      } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'audio_url';
+        audioUrl: {
+          url: string;
+          id?: string;
+        };
+      } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'video_url';
+        videoUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+        };
+      })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
       readonly activationId: string;
@@ -1164,6 +1222,34 @@ export interface AgentStateSnapshot {
           readonly skillPath?: string;
           readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
         }[];
+        readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'text';
+          text: string;
+        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'think';
+          think: string;
+          encrypted?: string;
+        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'image_url';
+          imageUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'audio_url';
+          audioUrl: {
+            url: string;
+            id?: string;
+          };
+        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'video_url';
+          videoUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
         readonly activationId: string;
@@ -1334,6 +1420,34 @@ export interface AgentStateSnapshot {
         readonly skillPath?: string;
         readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
       }[];
+      readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'text';
+        text: string;
+      } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'think';
+        think: string;
+        encrypted?: string;
+      } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'image_url';
+        imageUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+        };
+      } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'audio_url';
+        audioUrl: {
+          url: string;
+          id?: string;
+        };
+      } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'video_url';
+        videoUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+        };
+      })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
       readonly activationId: string;
@@ -1783,6 +1897,37 @@ export interface AgentStateSnapshot {
   };
   // src/agent/plugin/agentPluginService.ts
   'agentPlugin.sessionStartRefreshPending': boolean;
+  // src/agent/profile/dynamicPrompt.ts
+  // replayable · durable — folds: ProfileDynamicSnapshot
+  'profile.dynamicSnapshot': {
+    enabled: boolean;
+    revision: number;
+    context: /* SystemPromptContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+      readonly agentsMdWarning?: string;
+      readonly agentsMdPaths?: readonly string[];
+      readonly cwd?: string;
+      readonly cwdListing?: string;
+      readonly agentsMd?: string;
+      readonly memory?: string;
+      readonly persona?: string;
+      readonly additionalDirsInfo?: string;
+      readonly osKind?: string;
+      readonly shellName?: string;
+      readonly shellPath?: string;
+      readonly now?: string;
+      readonly timeZone?: string;
+      readonly skills?: string;
+      readonly skillActive?: boolean;
+      readonly pluginSections?: string;
+      readonly productName?: string;
+      readonly replyStyleGuide?: string;
+      readonly promptVariables?: Readonly<Record<string, string>>;
+      readonly promptFields?: Readonly<Record<string, string>>;
+      [key: string]: unknown;
+    };
+    content: string;
+    hash: string;
+  } | undefined;
   // src/agent/profile/profileOps.ts
   // replayable · durable — folds: ProfileBind, ConfigUpdate
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
@@ -3924,6 +4069,41 @@ export interface AgentStateSnapshot {
     readonly resolved: boolean;
     readonly response?: unknown;
   }>;
+  // src/session/todo/continuityState.ts
+  // replayable · durable — folds: TurnPrompt, TurnSteer, ContextAppendLoopEvent, ContextAppendMessage, ToolsUpdateStore
+  'todo.continuityClock': /* ContinuityClock — packages/agent-core-v2/src/session/todo/continuityState.ts */ {
+    readonly humanTurnOrdinal: number;
+    readonly humanInputRevision: number;
+    readonly workStepOrdinal: number;
+    readonly lastTodoU: number;
+    readonly lastNotesU: number;
+    readonly lastNotesStep: number;
+    readonly lastProgressU: number;
+    readonly lastProgressStep: number;
+    readonly progressCount: number;
+    readonly todoReminderCount: number;
+    readonly notesReminderCount: number;
+    readonly stateRevision: number;
+    readonly todoHash: string;
+    readonly notesHash: string;
+    readonly latestInput?: {
+      readonly id: string;
+      readonly text: string;
+      readonly turn?: number;
+    };
+    readonly humanBoundary: boolean;
+    readonly inputIds: readonly string[];
+    readonly stepIds: readonly string[];
+    readonly deliveredInputs: readonly string[];
+    readonly historyReferences?: readonly {
+      topic: string;
+      humanTurnOrdinal: number;
+      stateRevision: number;
+    }[];
+    readonly openStep?: string;
+    readonly pollingCalls: readonly string[];
+    readonly substantial: boolean;
+  };
   // src/session/todo/todoOps.ts
   // replayable · durable · undoable — folds: ToolsUpdateStore
   'todo': /* TodoState — packages/agent-core-v2/src/session/todo/todoOps.ts */ {

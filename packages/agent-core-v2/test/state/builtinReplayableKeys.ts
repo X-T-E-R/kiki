@@ -33,6 +33,8 @@ import { planKey } from '#/features/plan/planOps';
 import { cronKey } from '#/session/cron/cronOps';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { todoKey } from '#/session/todo/todoOps';
+import { continuityClockKey } from '#/session/todo/continuityState';
+import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
 
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
   contextMemoryKey,
@@ -69,4 +71,6 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   cronKey,
   interactionKey,
   todoKey,
+  continuityClockKey,
+  dynamicPromptKey,
 ];

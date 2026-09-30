@@ -19,7 +19,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IConfigService } from '#/app/config/config';
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
-import { PromptSteered } from '#/agent/prompt/promptService';
+import { continuityClockKey } from './continuityState';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { ISessionTodoService } from './sessionTodo';
@@ -29,7 +29,8 @@ import { hashTodoNotes, mergeTodoNotes, type NotesMeta, type TodoNotes } from '.
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
-import { TODO_LIST_REMINDER_VARIANT, TodoListReminderTracker } from './todoListReminder';
+import { TODO_LIST_REMINDER_VARIANT, TodoListReminderTracker, legacyDirectiveShadow } from './todoListReminder';
+import { ContinuityDecision } from './continuityDecision';
 
 const MAIN_AGENT_ID = 'main';
 
@@ -47,6 +48,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
   private readonly agentBindings = new Map<string, IDisposable[]>();
   private readonly lastKnownTodos = new Map<string, { items: readonly TodoItem[]; rev?: number }>();
   private readonly reminderTrackers = new Map<string, TodoListReminderTracker>();
+  private readonly decisionKeys = new Map<string, string>();
 
   constructor(
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
@@ -173,6 +175,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private prepareAgent(handle: IAgentScopeHandle): void {
     handle.accessor.get(IAgentStateService).contributeState(todoKey);
+    handle.accessor.get(IAgentStateService).contributeState(continuityClockKey);
     this.reminderTrackers.set(handle.id, new TodoListReminderTracker());
     const injector = handle.accessor.get(IAgentContextInjectorService);
     this.trackAgentBinding(
@@ -184,9 +187,6 @@ export class SessionTodoService extends Service implements ISessionTodoService {
   private activateAgent(handle: IAgentScopeHandle): void {
     const initial = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
     this.lastKnownTodos.set(handle.id, { items: initial.items, rev: initial.notesMeta?.rev });
-    this.trackAgentBinding(handle.id, handle.accessor.get(IEventBus).subscribe(PromptSteered, (event) => {
-      this.reminderTrackers.get(handle.id)?.steer(event.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n'));
-    }));
     this.trackAgentBinding(
       handle.id,
       handle.accessor.get(IEventBus).subscribe(ContextUndone, () => {
@@ -209,13 +209,26 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     const counting = handle.accessor.get(IAgentTokenCountingService);
     const config = handle.accessor.get(IConfigService);
     const settings = config.get<MemoryConfig>(MEMORY_SECTION);
+    const clock = handle.accessor.get(IAgentStateService).get(continuityClockKey);
+    const epoch = handle.accessor.get(IAgentStateService).get(contextWindowEpochKey);
+    const cues = config.get<LoopControl>(LOOP_CONTROL_SECTION).directiveCues;
     return this.reminderTrackers.get(handle.id)?.evaluate({
       active: toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin'),
       history: memory.get(), todos: state.items, notes: state.notes, notesMeta: state.notesMeta,
       threshold: compact.getAutoCompact().tokens, currentTokens: counting.get().size,
-      epoch: handle.accessor.get(IAgentStateService).get(contextWindowEpochKey),
-      remindedEpoch: state.remindedEpoch,
-      cues: config.get<LoopControl>(LOOP_CONTROL_SECTION).directiveCues,
+      epoch, remindedEpoch: state.remindedEpoch, clock,
+      cadence: config.get<LoopControl>(LOOP_CONTROL_SECTION).continuityCadence,
+      humanAuthorized: handle.id === MAIN_AGENT_ID,
+      cues,
+      onDecision: (decision) => {
+        const key = `${handle.id}:${decision.classId}`;
+        const signature = `${clock.humanInputRevision}/${clock.stateRevision}/${epoch}/${decision.reason}`;
+        if (this.decisionKeys.get(key) === signature) return;
+        this.decisionKeys.set(key, signature);
+        void handle.accessor.get(IEventDispatcher).dispatch(new ContinuityDecision({ ...decision, epoch,
+          inputRevision: clock.humanInputRevision, stateRevision: clock.stateRevision,
+          legacyCandidate: decision.classId === 'E1' && legacyDirectiveShadow(clock.latestInput?.text ?? '', cues) }));
+      },
       memoryAvailable: handle.id === MAIN_AGENT_ID && memoryEnabled(settings, handle.accessor.get(ISessionContext).workspaceId) && settings.approval !== 'off',
       estimateMessage: (message) => counting.estimateMessage(message),
       onNearWindow: (epoch) => { void handle.accessor.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo_reminder', value: epoch })); },
@@ -240,6 +253,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     this.agentBindings.delete(agentId);
     this.lastKnownTodos.delete(agentId);
     this.reminderTrackers.delete(agentId);
+    for (const classId of ['E1', 'E2', 'T0', 'T1']) this.decisionKeys.delete(`${agentId}:${classId}`);
   }
 }
 

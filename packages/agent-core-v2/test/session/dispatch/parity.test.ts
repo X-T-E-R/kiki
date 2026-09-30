@@ -1246,40 +1246,39 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables.dispose();
   });
 
-  it('echoes only successful parent directives, clips at 300 characters and caps each epoch at three', async () => {
+  it('never echoes standing directives in success/failure receipts or after epoch changes', async () => {
     const lane = createLane(disposables, 'internal');
     let directives: string | undefined = 'x'.repeat(350);
     lane.ix.stub(ISessionTodoService, { getNotes: () => ({ notes: { directives } }) });
     for (let index = 0; index < 4; index++) {
       const result = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
       expect(result.isError).not.toBe(true);
-      if (index < 3) expect(String(result.output).split('Standing directives in effect: ')[1]).toBe('x'.repeat(300));
-      else expect(String(result.output)).not.toContain('Standing directives in effect:');
+      expect(JSON.stringify(result.output)).not.toContain('Standing directives in effect:');
       await complete(lane, index);
     }
     expect(lane.context([...lane.handles.keys()].find((id) => id !== 'main')!)).not.toContain('x'.repeat(300));
     lane.ix.get(IAgentStateService).set(contextWindowEpochKey, 1);
     const failed = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'unknown' });
     expect(failed.isError).toBe(true);
-    expect(String(failed.output)).not.toContain('Standing directives in effect:');
+    expect(JSON.stringify(failed.output)).not.toContain('Standing directives in effect:');
     directives = undefined;
     const empty = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
-    expect(String(empty.output)).not.toContain('Standing directives in effect:');
+    expect(JSON.stringify(empty.output)).not.toContain('Standing directives in effect:');
     await complete(lane, 4);
     directives = 'Keep the selected model';
     const renewed = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
-    expect(String(renewed.output)).toContain('Standing directives in effect: Keep the selected model');
+    expect(JSON.stringify(renewed.output)).not.toContain('Standing directives in effect:');
     await complete(lane, 5);
   });
 
-  it('echoes live session feedback when task directives are absent', async () => {
+  it('does not replay live memory feedback in AgentRun results', async () => {
     const lane = createLane(disposables, 'internal');
     lane.ix.stub(IAgentMemorySnapshot, { liveSessionEntries: async () => [{
       id: 'm_feedback', type: 'feedback', title: 'Keep the selected model', body: 'body', status: 'active', pinned: false,
       created: 'now', updated: 'now', source: { writer: 'agent', session: 'session_test' }, reason: 'test', revision: 'r1',
     }] });
     const result = await lane.runInternal({ prompt: 'inspect', description: 'Inspect', profile: 'coder', background: true });
-    expect(String(result.output)).toContain('Standing directives in effect: [m_feedback] Keep the selected model');
+    expect(JSON.stringify(result.output)).not.toContain('Standing directives in effect:');
     await complete(lane, 0);
   });
 
