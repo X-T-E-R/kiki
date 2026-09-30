@@ -722,6 +722,24 @@ describe('server-v2 /api/config', () => {
     expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
   });
 
+  it('saves executor overrides and preserves executor ids and environment variable names', async () => {
+    await boot();
+    await patchConfig({ agent_executor_overrides: { example_acp: {
+      bin_path: 'adapter.js', home_dir: 'adapter-home', args: ['--verbose'],
+      env: { example_model: 'model-a', EXAMPLE_BASE_URL: 'https://example.test' },
+    } } });
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('agent_executor_overrides.example_acp');
+    expect(persisted).toContain('home_dir = "adapter-home"');
+    expect(persisted).toContain('example_model = "model-a"');
+    expect(persisted).toContain('EXAMPLE_BASE_URL = "https://example.test"');
+    await patchConfig({ agent_executor_overrides: { example_acp: { home_dir: null, env: { example_model: null } } } });
+    const cleared = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(cleared).not.toContain('home_dir');
+    expect(cleared).not.toContain('example_model');
+    expect(cleared).toContain('bin_path = "adapter.js"');
+  });
+
   it('validates every runtime domain with the core schemas and rejects unknown top-level fields', async () => {
     await boot();
 
@@ -738,6 +756,8 @@ describe('server-v2 /api/config', () => {
       { disabled_named_profiles: [42] },
       { mcp: { startup_timeout_ms: 0 } },
       { tools: { enabled: [42] } },
+      { agent_executor_overrides: { example_acp: { args: [42] } } },
+      { agent_executor_overrides: { example_acp: { unexpected_option: true } } },
       { unknown_runtime_domain: { enabled: true } },
     ];
 

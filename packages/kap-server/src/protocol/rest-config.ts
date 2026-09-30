@@ -299,5 +299,6 @@ export const patchConfigRequestSchema = z.object({
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
+  agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

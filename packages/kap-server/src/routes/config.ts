@@ -407,7 +407,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw']);
+const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env']);
 
 function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
   if (Array.isArray(obj)) {
