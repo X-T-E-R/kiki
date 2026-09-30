@@ -1057,6 +1057,27 @@ describe('AgentPromptService', () => {
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
 
+  it('delivers a steered prompt as a context message that keeps the prompt id', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const steers: SteerStepRequest[] = [];
+    const enqueue = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      if (request instanceof SteerStepRequest) steers.push(request);
+      return enqueue(request, options);
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    await prompt.enqueue({ id: 'send-now', message: message('change direction') });
+    await prompt.steer(['send-now']);
+    expect(steers).toHaveLength(1);
+    // The submitter's echo and the delivered frame share this one identity.
+    expect(steers[0]!.resolveContextMessages()).toEqual([
+      expect.objectContaining({ id: 'send-now', content: [{ type: 'text', text: 'change direction' }] }),
+    ]);
+    loop.settleActive();
+    await active.completion;
+  });
+
   it('preserves a queued prompt execution binding across replacement', async () => {
     const { prompt, profile, loop } = harness({ manualTurnResult: true });
     const inputs: ContentPart[][] = [];
