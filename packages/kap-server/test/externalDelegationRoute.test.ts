@@ -361,9 +361,12 @@ describe('external delegation Session bootstrap', () => {
         'external delegation Session bootstrap failed; disabling the edge and continuing server startup');
     expect(failure).toMatchObject({
       level: 40,
+      event_type: 'external_delegation_bootstrap_failed',
       reason: 'workspace_drift',
-      err: { message: expect.stringMatching(/workspace binding does not match/i) },
     });
+    expect(failure).not.toHaveProperty('err');
+    expect(JSON.stringify(failure)).not.toContain(workspaceA);
+    expect(JSON.stringify(failure)).not.toContain(workspaceB);
   });
 
   it('initializes different workspace authorities concurrently without cross-admission', async () => {
