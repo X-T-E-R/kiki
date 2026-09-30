@@ -64,7 +64,6 @@ import {
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
-import { restorePromptToDraft } from '../composer/drafts';
 
 export type Listener = () => void;
 
@@ -183,6 +182,7 @@ export class SessionController {
   private state: SessionViewState;
   private publishedState: SessionViewState;
   private readonly listeners = new Set<Listener>();
+  private readonly interruptedPromptListeners = new Set<(content: readonly MessageContent[]) => void>();
   private readonly scheduler: PublicationScheduler;
   private readonly usesBrowserScheduler: boolean;
   private readonly visibilityDocument: VisibilityDocument | undefined;
@@ -267,6 +267,11 @@ export class SessionController {
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  subscribeInterruptedPrompt = (listener: (content: readonly MessageContent[]) => void): (() => void) => {
+    this.interruptedPromptListeners.add(listener);
+    return () => this.interruptedPromptListeners.delete(listener);
   };
 
   getAgentState = (agentId: string): SessionViewState =>
@@ -1651,7 +1656,7 @@ export class SessionController {
       if (result.aborted && content !== undefined && this.lastRestoredPromptId !== promptId &&
           this.unansweredPromptContent(promptId, true) !== undefined) {
         this.lastRestoredPromptId = promptId;
-        restorePromptToDraft(this.sessionId, content);
+        for (const listener of this.interruptedPromptListeners) listener(content);
       }
       return;
     }

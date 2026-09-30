@@ -6,7 +6,7 @@ import type {
   AgentTranscriptResponse,
   SessionTransport as KikiClient,
 } from '../transport';
-import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, subscribeDraftAppends } from '../composer/drafts';
+import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, subscribeDraftAppends, restorePromptToDraft } from '../composer/drafts';
 import { buildPromptContent } from '../composer/attachments';
 import { resolveSelectedEffort } from '../settings/agentSettings';
 import { resolveEffectiveModel } from '../settings/settings';
@@ -1152,6 +1152,7 @@ describe('SessionController transcript authority', () => {
     writeDraft('session_test', 'unsent follow-up');
     const listener = vi.fn();
     const unsubscribe = subscribeDraftAppends(listener);
+    const stopRestoring = controller.subscribeInterruptedPrompt((parts) => restorePromptToDraft('session_test', parts));
     try {
       await Promise.all([controller.abortActive(), controller.abortActive()]);
       await controller.abortActive();
@@ -1161,6 +1162,7 @@ describe('SessionController transcript authority', () => {
       expect(client.abortPrompt).toHaveBeenCalledTimes(2);
     } finally {
       unsubscribe();
+      stopRestoring();
       controller.close();
       resetDraftMemoryForTests();
       resetComposerMemoryForTests();
@@ -1182,6 +1184,8 @@ describe('SessionController transcript authority', () => {
         : canonical;
     controller.handleTranscript(resetEvent('main', prepared, 1));
     writeDraft('session_test', 'keep my edits');
+    const restored = vi.fn();
+    const unsubscribe = controller.subscribeInterruptedPrompt(restored);
     if (condition === 'abort-failed') client.abortPrompt.mockRejectedValueOnce(new Error('abort unavailable'));
     if (condition === 'completed-race') client.abortPrompt.mockResolvedValueOnce({ aborted: false, at_seq: 2 });
     if (condition === 'reply-race') client.abortPrompt.mockImplementationOnce(async () => {
@@ -1192,7 +1196,9 @@ describe('SessionController transcript authority', () => {
       if (condition === 'abort-failed') await expect(controller.abortActive()).rejects.toThrow('abort unavailable');
       else await controller.abortActive();
       expect(readDraft('session_test')).toBe('keep my edits');
+      expect(restored).not.toHaveBeenCalled();
     } finally {
+      unsubscribe();
       controller.close();
       resetDraftMemoryForTests();
     }

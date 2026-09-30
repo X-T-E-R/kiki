@@ -58,6 +58,7 @@ import {
   readComposerState,
   readDraft,
   removeAnnotation,
+  restorePromptToDraft,
   subscribeDraftAppends,
   writeComposerState,
   writeDraft,
@@ -1406,6 +1407,10 @@ export function SessionView({
     setDraft(stored);
     return () => { flushDrafts(); };
   }, [sessionId]);
+  useEffect(() => controller?.subscribeInterruptedPrompt((content) => {
+    restorePromptToDraft(sessionId, content);
+  }), [controller, sessionId]);
+
   // Stable identity: the shell-seat memo depends on these (fresh functions per
   // render would re-publish the composer on every keystroke's render).
   const updateDraft = useCallback((text: string) => {
