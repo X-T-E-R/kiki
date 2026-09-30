@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
     close: ReturnType<typeof vi.fn>;
     global: { mcp: { list: ReturnType<typeof vi.fn> } };
     events: { on: ReturnType<typeof vi.fn> };
+    terminal: { onStatus: ReturnType<typeof vi.fn> };
   }>,
   terminalSubscriptions: [] as Array<{
     baseUrl: string;
@@ -339,6 +340,39 @@ describe('LiveControllerRegistry leases', () => {
 });
 
 describe('ConnectionProvider Klient ownership', () => {
+  it('refreshes index status only after restored subscription attachment', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'test-token' }));
+    mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    try {
+      await mountProvider(true);
+      const client = mocks.klients.find((entry) => !entry.closed)!;
+      const attached = deferred<void>();
+      client.events.on.mockImplementationOnce(() => ({ dispose: vi.fn(), ready: attached.promise }));
+      invalidate.mockClear();
+      const status = client.terminal.onStatus.mock.calls.at(-1)![0];
+      await act(async () => { status('open'); });
+      expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['search-index-state'] });
+      await act(async () => { attached.resolve(); });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['search-index-state'] });
+    } finally { invalidate.mockRestore(); }
+  });
+  it('cancels stale status reads and installs typed pushed index snapshots', async () => {
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'test-token' }));
+    mocks.meta.mockResolvedValue({ serverVersion: 'test' });
+    const cancel = vi.spyOn(QueryClient.prototype, 'cancelQueries');
+    const update = vi.spyOn(QueryClient.prototype, 'setQueryData');
+    try {
+      await mountProvider(true);
+      const client = mocks.klients.find((entry) => !entry.closed)!;
+      const registration = client.events.on.mock.calls.find(([name]) => name === 'search.indexStateChanged')!;
+      expect(registration).toBeDefined();
+      const state = { state: 'building', indexed_sessions: 2, total_sessions: 3, documents: 10 };
+      await act(async () => { registration[1](state); });
+      expect(cancel).toHaveBeenCalledWith({ queryKey: ['search-index-state'] });
+      expect(update).toHaveBeenCalledWith(['search-index-state'], state);
+    } finally { cancel.mockRestore(); update.mockRestore(); }
+  });
   it('refreshes model and provider queries from typed Klient global events', async () => {
     localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:41001', token: 'test-token' }));
     mocks.meta.mockResolvedValue({ serverVersion: 'test' });

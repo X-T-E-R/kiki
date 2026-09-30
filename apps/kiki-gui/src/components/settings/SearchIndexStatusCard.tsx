@@ -30,7 +30,7 @@ export function SearchIndexStatusCard() {
     queryKey: SEARCH_INDEX_STATE_KEY,
     queryFn: async () => (await client.searchIndexStatus()).index_state,
     staleTime: 10_000,
-    refetchInterval: (query) => (query.state.data?.state === 'building' ? 3_000 : 30_000),
+    refetchInterval: false,
   });
   const index = state.data;
 

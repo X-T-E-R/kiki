@@ -7,6 +7,7 @@ import {
   createDecorator,
   IBootstrapService,
   IConfigService,
+  IEventService,
   IFlagService,
   ILogService,
   ISessionIndex,
@@ -20,6 +21,7 @@ import {
   type SessionSummary,
 } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import type { SearchMessagesResponse } from '../protocol/rest-search';
 import type { TranscriptStore } from '@kiki/transcript';
 
 import {
@@ -52,6 +54,7 @@ import {
   type SearchBudgets,
 } from './match';
 import { makeSnippet } from './snippet';
+import { SearchIndexStateChanged } from './events';
 import { planHistoryQuery } from '../services/history/historyQuery';
 import { SEARCH_BACKEND_SECTION, type SearchConfig } from './searchConfig';
 import { SqliteSearchHost } from './sqlite/host';
@@ -322,6 +325,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   /** Max distinct query terms in terms mode (test knob). */
   maxQueryTerms = MAX_QUERY_TERMS;
 
+  private lastEmittedIndexState = '';
   private readonly backend: SearchBackend;
   private readonly sqliteHost?: SqliteSearchHost;
   private readonly sqliteDisabled: boolean;
@@ -363,6 +367,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     @ILogService private readonly log: ILogService,
     @IFlagService private readonly flags: IFlagService,
     @IConfigService private readonly config?: IConfigService,
+    @IEventService private readonly events?: IEventService,
   ) {
     const indexDir = join(this.bootstrap.homeDir, INDEX_DIR_NAME);
     const search = this.config?.get<SearchConfig>('search');
@@ -374,6 +379,19 @@ export class GlobalSearchService implements IGlobalSearchService {
     if (backend === 'sqlite') this.sqliteHost = new SqliteSearchHost({
       database: join(this.bootstrap.homeDir, 'search-index-v2', 'index.sqlite'),
       indexSubagents: search?.index_subagents === true,
+      onStateChange: (snapshot) => {
+        if (this.disposed) return;
+        const state: SearchMessagesResponse['index_state'] = {
+          state: this.sqliteDisabled ? 'unavailable' : snapshot.state,
+          reason: this.sqliteDisabled ? 'disabled' : snapshot.reason,
+          indexed_sessions: snapshot.indexedSessions, total_sessions: snapshot.totalSessions,
+          documents: snapshot.documents, stale: snapshot.stale,
+        };
+        const key = JSON.stringify(state);
+        if (key === this.lastEmittedIndexState) return;
+        this.lastEmittedIndexState = key;
+        this.events?.publish(new SearchIndexStateChanged({ payload: state }));
+      },
     });
     this.backend = this.flags.enabled(SEARCH_WORKER_FLAG_ID)
       ? new SearchWorkerHost({ dir: indexDir, log: this.log })

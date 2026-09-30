@@ -5,7 +5,9 @@ import { DatabaseSync } from 'node:sqlite';
 
 process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = '1';
 
-import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { IEventService, ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { createKlient } from '@kiki/klient/http';
+import { SearchIndexStateChanged } from '../../src/search/events';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -145,6 +147,23 @@ describe('server-v2 /api/search', () => {
     });
     return (await res.json()) as Envelope<SearchPageWire>;
   }
+
+  it('delivers index snapshots on the shared authenticated WebSocket without a session subscription', async () => {
+    const client = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    const received: unknown[] = [];
+    const subscription = client.events.on('search.indexStateChanged', (state) => received.push(state));
+    try {
+      await subscription.ready;
+      const state = { state: 'building' as const, indexed_sessions: 2, total_sessions: 3, documents: 100, stale: true };
+      server!.core.accessor.get(IEventService).publish(new SearchIndexStateChanged({ payload: state }));
+      for (let n = 0; received.length === 0 && n < 100; n++) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(received).toEqual([state]);
+      subscription.dispose();
+      server!.core.accessor.get(IEventService).publish(new SearchIndexStateChanged({ payload: { ...state, state: 'ready' } }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(received).toHaveLength(1);
+    } finally { subscription.dispose(); await client.close(); }
+  });
 
   it('searches across sessions and returns the wire-shaped page', { timeout: 20_000 }, async () => {
     let body: Envelope<SearchPageWire> | undefined;

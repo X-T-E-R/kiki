@@ -49,9 +49,29 @@ async function render() {
     );
   });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  return client;
 }
 
 describe('SearchIndexStatusCard', () => {
+  it('renders pushed progress and completion without polling', async () => {
+    searchIndexStatus.mockResolvedValue(page({ state: 'building' }));
+    const cache = await render();
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        cache.setQueryData(['search-index-state'], page({ state: 'building', indexed_sessions: 2 }).index_state);
+        await vi.advanceTimersByTimeAsync(3001);
+      });
+      expect(container.textContent).toContain('2 of 3');
+      expect(searchIndexStatus).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        cache.setQueryData(['search-index-state'], page({ state: 'ready', indexed_sessions: 3 }).index_state);
+        await vi.advanceTimersByTimeAsync(30_001);
+      });
+      expect(container.querySelector<HTMLElement>('[data-search-index-status]')!.dataset['searchIndexStatus']).toBe('ready');
+      expect(searchIndexStatus).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
   it('says the indexer ran out of memory and restarts it on request', async () => {
     searchIndexStatus.mockResolvedValueOnce(page({ state: 'unavailable', reason: 'memory_budget' }));
     searchIndexStatus.mockResolvedValue(page({ state: 'ready', indexed_sessions: 3 }));

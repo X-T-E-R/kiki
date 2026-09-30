@@ -221,13 +221,16 @@ it('keeps old rows searchable through memory-budget backoff without restarting t
   await waitFor(() => host.snapshot().pendingSessions === 0);
   await host.close();
   hosts.pop();
+  const states: string[] = [];
   const starving = new SqliteSearchHost({ database, indexerHardMb: 64, indexerSoftMb: 32,
-    backoffMs: [50, 50, 50], memoryBackoffMs: [50, 50, 50] });
+    backoffMs: [50, 50, 50], memoryBackoffMs: [50, 50, 50],
+    onStateChange: (snapshot) => states.push(snapshot.reason ?? snapshot.state) });
   hosts.push(starving);
   await starving.open();
-  await waitFor(() => starving.snapshot().reason === 'indexer_backoff');
+  await waitFor(() => states.includes('indexer_backoff'));
   expect((await starving.search(query)).stale).toBe(true);
   await waitFor(() => starving.snapshot().reason === 'memory_budget', 60_000);
+  expect(states.indexOf('indexer_backoff')).toBeLessThan(states.indexOf('memory_budget'));
   const result = await starving.search(query);
   expect(result.rows.map((hit) => hit.value.text)).toEqual(['needle here']);
   expect(result.stale).toBe(true);

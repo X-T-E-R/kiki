@@ -729,13 +729,34 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (socket === null || klient === null) return;
-    const offStatus = socket.onStatus(setWsStatus);
+    let active = true;
+    const subscribeSearchIndex = () => {
+      const subscription = klient.events.on('search.indexStateChanged', (state) => {
+        void queryClient.cancelQueries({ queryKey: ['search-index-state'] }).then(() => {
+          if (active && searchIndex === subscription) queryClient.setQueryData(['search-index-state'], state);
+        });
+      });
+      void subscription.ready.then(() => {
+        if (active && searchIndex === subscription) return queryClient.invalidateQueries({ queryKey: ['search-index-state'] });
+      }).catch(() => {});
+      return subscription;
+    };
+    let searchIndex = subscribeSearchIndex();
+    const offStatus = socket.onStatus((status) => {
+      setWsStatus(status);
+      if (status === 'open') {
+        searchIndex.dispose();
+        searchIndex = subscribeSearchIndex();
+      }
+    });
     const catalog = klient.events.on('kosong.changed', () => {
       handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient);
     });
     return () => {
+      active = false;
       offStatus();
       catalog.dispose();
+      searchIndex.dispose();
     };
   }, [socket, klient, queryClient]);
 

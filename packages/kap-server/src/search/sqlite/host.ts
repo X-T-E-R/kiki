@@ -22,6 +22,7 @@ export interface SqliteHostOptions {
   readonly memoryBackoffMs?: readonly number[];
   readonly queryTimeoutMs?: number;
   readonly indexSubagents?: boolean;
+  readonly onStateChange?: (snapshot: SqliteHostSnapshot) => void;
 }
 
 export interface SqliteHostSnapshot {
@@ -136,6 +137,7 @@ export class SqliteSearchHost {
     }
     this.startIndexer();
     this.flushPending();
+    this.options.onStateChange?.(this.snapshot());
   }
 
   async reindex(sessions: readonly SqliteSessionInput[]): Promise<{ sessions: number; documents: number }> {
@@ -309,6 +311,7 @@ export class SqliteSearchHost {
         if (message.message === 'disk_low' || message.message === 'sqlite_unavailable') this.reason = message.message;
         else process.stderr.write(`search indexer: ${message.message}\n`);
       }
+      if (message.type !== 'heartbeat') this.options.onStateChange?.(this.snapshot());
     });
     const onExit = (code: number | null, signal: string | null): void => {
       if (this.child !== child) return;
@@ -327,6 +330,7 @@ export class SqliteSearchHost {
       this.ready = false;
       if (this.reason === 'sqlite_unavailable' || this.reason === 'disk_low') {
         this.terminal = true;
+        this.options.onStateChange?.(this.snapshot());
         return;
       }
       this.failures++;
@@ -339,6 +343,7 @@ export class SqliteSearchHost {
       const terminal = memory && this.memoryFailures >= 3 + schedule.length;
       this.terminal = terminal;
       this.retryAt = terminal ? 0 : Date.now() + delay;
+      this.options.onStateChange?.(this.snapshot());
       process.stderr.write(`search indexer exited code=${code} signal=${signal} reason=${this.reason} backoffMs=${terminal ? 0 : delay}\n`);
       if (terminal) return;
       this.restart = setTimeout(() => { this.restart = undefined; this.startIndexer(); }, delay);

@@ -49,6 +49,7 @@ export interface KlientEventPayloads {
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'kosong.changed': CatalogChangedPayload;
+  'search.indexStateChanged': z.infer<typeof searchIndexStateSchema>;
 }
 
 export type KlientEventName = keyof KlientEventPayloads;
@@ -90,8 +91,20 @@ export const catalogChangedSchema = z.object({
   failed: z.array(z.object({ provider: z.string(), reason: z.string() })),
 });
 
+export const searchIndexStateSchema = z.object({
+  state: z.enum(['building', 'ready', 'readonly', 'unavailable']),
+  indexed_sessions: z.number(), total_sessions: z.number(), documents: z.number(),
+  stale: z.boolean().optional(), degraded: z.string().optional(),
+  reason: z.enum(['disabled', 'indexer_backoff', 'memory_budget', 'wal_stuck', 'disk_low',
+    'corrupt_rebuilding', 'sqlite_unavailable', 'runtime_disabled']).optional(),
+});
+
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
+  'search.indexStateChanged': {
+    kind: 'bus', type: 'event.search.index_state_changed',
+    schema: searchIndexStateSchema,
+  },
   'config.changed': {
     kind: 'emitter',
     service: 'configService',
