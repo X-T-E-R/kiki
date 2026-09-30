@@ -71,7 +71,10 @@ const DISTRIBUTION: &str = env!("KIKI_DISTRIBUTION");
 const STABLE_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
 const BETA_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/beta/latest.json";
 const TRAY_ID: &str = "main-tray";
-/// Filename (under the kimi home) the desktop backend's stderr is appended to.
+/// Subdirectory of a space home that holds that home's logs; kap-server writes
+/// its own `kimi-code.log` beside the desktop backend log here.
+const DESKTOP_LOG_DIR: &str = "logs";
+/// Filename (under the home's log directory) the desktop backend's stderr is appended to.
 const DESKTOP_BACKEND_LOG_FILE: &str = "desktop-backend.log";
 /// In-memory stderr lines kept for startup-failure diagnostics.
 const STDERR_TAIL_LINES: usize = 100;
@@ -177,6 +180,17 @@ fn describe_exit(payload: &TerminatedPayload) -> String {
     }
 }
 
+/// The home's log directory: where the desktop backend log, and the server's
+/// own `kimi-code.log`, live. "Open log folder" opens exactly this.
+fn desktop_log_dir(home: &Path) -> PathBuf {
+    home.join(DESKTOP_LOG_DIR)
+}
+
+/// The desktop backend's rotating stderr log inside the home's log directory.
+fn desktop_backend_log_path(home: &Path) -> PathBuf {
+    desktop_log_dir(home).join(DESKTOP_BACKEND_LOG_FILE)
+}
+
 /// Per-backend runtime diagnostics shared by the output pump and waiters:
 /// the stderr tail, its on-disk log, and the sidecar's exit status.
 struct BackendMonitor {
@@ -190,9 +204,9 @@ struct BackendMonitor {
 }
 
 impl BackendMonitor {
-    /// Open the append log under `home`; diagnostics stay in memory on failure.
+    /// Open the append log under `home`'s log directory; diagnostics stay in memory on failure.
     fn open(home: &Path) -> Self {
-        let path = home.join(DESKTOP_BACKEND_LOG_FILE);
+        let path = desktop_backend_log_path(home);
         let file = desktop_log::RotatingLog::open(&path, desktop_log::LOG_MAX_BYTES, desktop_log::LOG_BACKUPS).ok();
         let log_path = file.as_ref().map(|_| path);
         Self {
@@ -2157,8 +2171,8 @@ struct DesktopLogInfo {
 fn desktop_log_info(manager: State<'_, SpaceBackendManager>) -> Result<DesktopLogInfo, String> {
     let home = PathBuf::from(manager.active_space()?.path);
     Ok(DesktopLogInfo {
-        directory: home.to_string_lossy().into_owned(),
-        backend_log_path: home.join(DESKTOP_BACKEND_LOG_FILE).to_string_lossy().into_owned(),
+        directory: desktop_log_dir(&home).to_string_lossy().into_owned(),
+        backend_log_path: desktop_backend_log_path(&home).to_string_lossy().into_owned(),
         max_bytes: desktop_log::LOG_MAX_BYTES,
         backups: desktop_log::LOG_BACKUPS,
         log_level: read_desktop_prefs_for(&home).log_level,
@@ -2169,10 +2183,11 @@ fn desktop_log_info(manager: State<'_, SpaceBackendManager>) -> Result<DesktopLo
 #[tauri::command]
 async fn open_desktop_log_directory(manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
     let home = PathBuf::from(manager.active_space()?.path);
+    let dir = desktop_log_dir(&home);
     tauri::async_runtime::spawn_blocking(move || {
-        fs::create_dir_all(&home).map_err(|error| error.to_string())?;
-        check_host_path(&home, HostPathOp::Open)?;
-        open_with_default_app(&home)
+        fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        check_host_path(&dir, HostPathOp::Open)?;
+        open_with_default_app(&dir)
     }).await.map_err(|error| error.to_string())?
 }
 
@@ -3916,9 +3931,11 @@ mod tests {
             .message
             .contains(&format!("stderr (last {STDERR_TAIL_LINES} lines)")));
 
-        // Every stderr line was appended to the on-disk log as well.
+        // Every stderr line was appended to the on-disk log as well, in the
+        // home's log directory rather than the home itself.
         let log_path = failure.log_path.expect("log path should be reported");
         assert!(log_path.ends_with(DESKTOP_BACKEND_LOG_FILE));
+        assert_eq!(Path::new(&log_path).parent().unwrap(), desktop_log_dir(&root));
         let logged = fs::read_to_string(&log_path).unwrap();
         assert_eq!(logged.lines().count(), STDERR_TAIL_LINES + 20);
         assert!(logged.ends_with(&format!("line-{}\n", STDERR_TAIL_LINES + 19)));
@@ -3931,6 +3948,28 @@ mod tests {
         });
         assert_eq!(monitor.exit().map(|payload| payload.code), Some(Some(1)));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_log_directory_is_the_home_logs_folder() {
+        let home = Path::new("C:/home/space");
+        let dir = desktop_log_dir(home);
+        assert_eq!(dir, home.join(DESKTOP_LOG_DIR));
+        assert_eq!(
+            desktop_backend_log_path(home),
+            dir.join(DESKTOP_BACKEND_LOG_FILE)
+        );
+        // The reported folder is a real directory holding the log, so opening
+        // it shows the log rather than the bare home.
+        let temp = env::temp_dir().join(format!(
+            "kiki-log-dir-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        drop(BackendMonitor::open(&temp));
+        assert!(desktop_backend_log_path(&temp).is_file());
+        assert_eq!(fs::read_dir(desktop_log_dir(&temp)).unwrap().count(), 1);
+        fs::remove_dir_all(temp).unwrap();
     }
 
     /// Loopback HTTP stub answering each request with the canned response;

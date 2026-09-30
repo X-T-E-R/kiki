@@ -48,7 +48,7 @@ export interface DesktopSpaceStatus {
   readonly busyCount: number;
 }
 
-/** `desktop_log_info`: where the desktop backend log lives and the level its next launch uses. */
+/** `desktop_log_info`: the home's log folder (`logs`), where the desktop backend log lives, and the level its next launch uses. */
 export interface DesktopLogInfo {
   readonly directory: string;
   readonly backendLogPath: string;

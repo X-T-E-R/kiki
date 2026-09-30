@@ -31,7 +31,7 @@ beforeEach(() => {
   localStorage.clear();
   host.kind = 'tauri';
   host.desktopLogInfo.mockReset().mockResolvedValue({
-    directory: 'C:/Users/example/.kiki', backendLogPath: 'C:/Users/example/.kiki/desktop-backend.log',
+    directory: 'C:/Users/example/.kiki/logs', backendLogPath: 'C:/Users/example/.kiki/logs/desktop-backend.log',
     maxBytes: 5 * 1024 * 1024, backups: 3, logLevel: 'warn', appliesOnNextLaunch: true,
   });
   host.openDesktopLogDirectory.mockReset().mockResolvedValue(undefined);
