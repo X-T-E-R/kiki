@@ -772,6 +772,14 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       { role: 'user', content: [{ type: 'text', text: 'cached-c' }], toolCalls: [] },
     ]);
 
+    const tailReadsBeforeRebuild = tailReads;
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const originalRead = appendLog.read.bind(appendLog);
+    let fullReads = 0;
+    appendLog.read = ((...args: Parameters<IAppendLogStore['read']>) => {
+      fullReads += 1;
+      return originalRead(...args);
+    }) as IAppendLogStore['read'];
     const afterArchive = await getJson<PageWire>(`/api/sessions/${id}/messages`);
     expect(afterArchive.body.code).toBe(0);
     expect(afterArchive.body.data.items.map((m) => m.content[0]?.['text'])).toEqual([
@@ -779,7 +787,8 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       'cached-b',
       'cached-a',
     ]);
-    expect(tailReads).toBe(1);
+    expect(fullReads).toBe(1);
+    expect(tailReads - tailReadsBeforeRebuild).toBe(0);
   });
 
   it('serves an oversized history entry without retaining it in the cache', async () => {
