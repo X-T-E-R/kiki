@@ -157,6 +157,7 @@ export function buildWebCommand(cmd: Command): Command {
       '--web-title <title>',
       'Set a custom browser tab title for this web UI instance (default: "<workspace dir> | Kiki").',
     )
+    .option('--idle-exit <duration>', 'Exit once there are no GUI leases or busy sessions for this duration (e.g. 30m).')
     .option('--no-open', 'Do not open the web UI in the default browser.', true)
     .action(async (opts: WebCliOptions) => {
       try {
@@ -318,6 +319,7 @@ async function runServerInProcess(
     allowedHosts: options.allowedHosts,
     disableAuth: options.dangerousBypassAuth,
     webTitle: options.webTitle,
+    idleExitMs: options.idleExitMs,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');

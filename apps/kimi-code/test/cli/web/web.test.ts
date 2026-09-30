@@ -103,6 +103,7 @@ describe('kimi web', () => {
     expect(longs).toContain('--log-level');
     expect(longs).toContain('--debug-endpoints');
     expect(longs).toContain('--web-title');
+    expect(longs).toContain('--idle-exit');
     // web opens the browser by default → the option is the negative --no-open.
     expect(longs).toContain('--no-open');
     // The background/daemon era flags are gone: the server always runs in the
@@ -114,6 +115,16 @@ describe('kimi web', () => {
     expect(longs).not.toContain('--allow-remote-terminals');
   });
 
+  it('passes the optional idle-exit duration to the foreground server', async () => {
+    const { handleWebCommand } = await import('#/cli/sub/web/run');
+    const { runner, calls } = makeRunner();
+    const { stdout, stderr } = makeIo();
+    await handleWebCommand({ idleExit: '1s', open: false }, { startServerForeground: runner, openUrl: vi.fn(), stdout, stderr });
+    expect(calls.options?.idleExitMs).toBe(1000);
+    await expect(handleWebCommand({ idleExit: 'tomorrow', open: false }, { startServerForeground: runner, openUrl: vi.fn(), stdout, stderr })).rejects.toThrow('Invalid duration');
+    await handleWebCommand({ open: false }, { startServerForeground: runner, openUrl: vi.fn(), stdout, stderr });
+    expect(calls.options?.idleExitMs).toBeUndefined();
+  });
 });
 
 describe('`kimi web` ready banner', () => {

@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ServerLogLevel } from '@kiki/kap-server';
+import { parseDuration } from '#/kiki/serve';
 
 export const LOCAL_SERVER_HOST = '127.0.0.1';
 export const DEFAULT_LAN_HOST = '0.0.0.0';
@@ -46,6 +47,7 @@ export interface ParsedServerOptions {
   allowedHosts: readonly string[];
   /** Custom browser tab title for this web UI instance (`--web-title`). */
   webTitle?: string;
+  idleExitMs?: number;
 }
 
 export interface ServerCliOptions {
@@ -63,6 +65,7 @@ export interface ServerCliOptions {
   allowedHost?: string[];
   /** Custom browser tab title for this web UI instance (`--web-title`). */
   webTitle?: string;
+  idleExit?: string;
 }
 
 export function parseServerOptions(opts: ServerCliOptions): ParsedServerOptions {
@@ -76,6 +79,7 @@ export function parseServerOptions(opts: ServerCliOptions): ParsedServerOptions 
     dangerousBypassAuth: opts.dangerousBypassAuth === true,
     allowedHosts: parseAllowedHostArgs(opts.allowedHost),
     webTitle: opts.webTitle,
+    idleExitMs: opts.idleExit === undefined ? undefined : parseDuration(opts.idleExit),
   };
 }
 
