@@ -8,7 +8,7 @@ import {
   type GlobalSearchSource,
 } from './contract.ts';
 import type { MessageDoc, SearchDoc, TitleDoc } from './docs.ts';
-import { matchHistoryText, type HistoryQuery } from '../services/history/historyQuery';
+import { matchHistoryText, type HistoryQuery } from '../services/history/historyQuery.ts';
 
 export interface NormalizedQuery {
   readonly query: string;
