@@ -63,12 +63,16 @@ describe('SearchIndexStatusCard', () => {
         await vi.advanceTimersByTimeAsync(3001);
       });
       expect(container.textContent).toContain('2 of 3');
+      const bar = container.querySelector<HTMLElement>('[role="progressbar"]')!;
+      expect(bar.getAttribute('aria-valuenow')).toBe('2');
+      expect(bar.getAttribute('aria-valuemax')).toBe('3');
       expect(searchIndexStatus).toHaveBeenCalledTimes(1);
       await act(async () => {
         cache.setQueryData(['search-index-state'], page({ state: 'ready', indexed_sessions: 3 }).index_state);
         await vi.advanceTimersByTimeAsync(30_001);
       });
       expect(container.querySelector<HTMLElement>('[data-search-index-status]')!.dataset['searchIndexStatus']).toBe('ready');
+      expect(container.querySelector('[role="progressbar"]')).toBeNull();
       expect(searchIndexStatus).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
   });

@@ -74,6 +74,7 @@ export function SearchIndexStatusCard() {
         >
           {line}
         </p>
+        {index?.state === 'building' ? <IndexProgress indexed={index.indexed_sessions} total={index.total_sessions} label={t('st.searchIndex.title')} /> : null}
         {canRetry ? (
           <button type="button" className={SECONDARY_BUTTON} data-search-index-retry disabled={retrying} onClick={() => { void retry(); }}>
             {retrying ? t('st.searchIndex.retrying') : t('st.searchIndex.retry')}
@@ -86,5 +87,30 @@ export function SearchIndexStatusCard() {
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>
+  );
+}
+
+/**
+ * Sessions indexed so far, redrawn from the pushed `search.indexStateChanged`
+ * state. In-progress marks stay neutral ink; the bar does not ask for anything.
+ */
+function IndexProgress({ indexed, total, label }: { indexed: number; total: number; label: string }) {
+  const max = Math.max(total, 1);
+  const value = Math.min(Math.max(indexed, 0), max);
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={max}
+      aria-valuenow={value}
+      data-search-index-progress
+      className="h-1.5 w-full max-w-[28rem] overflow-hidden rounded-full bg-hairline"
+    >
+      <div
+        className="h-full rounded-full bg-ink-soft transition-[width] duration-[var(--kiki-motion-quick)] motion-reduce:transition-none"
+        style={{ width: `${(value / max) * 100}%` }}
+      />
+    </div>
   );
 }
