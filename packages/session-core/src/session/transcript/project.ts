@@ -61,6 +61,8 @@ import {
   type SubagentEventBlock,
   type SystemBlock,
   type SystemReminderBlock,
+  type ReminderCategory,
+  type ReminderCategoryKind,
   type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
@@ -98,6 +100,26 @@ export function agentStateToProjectionSource(
   };
 }
 
+const REMINDER_CATEGORY_KINDS = new Set<ReminderCategoryKind>(['directive', 'renew', 'rebuild', 'history', 'progress']);
+
+/**
+ * A reminder disclosure's category, validated: `disclosure` is untyped wire
+ * data, so only a known `kind` becomes a category; `triggers`, `epoch` and
+ * `userTurn` ride along when they have the expected shape.
+ */
+export function reminderCategory(disclosure: unknown): ReminderCategory | undefined {
+  if (typeof disclosure !== 'object' || disclosure === null) return undefined;
+  const record = disclosure as Record<string, unknown>;
+  const kind = record['kind'];
+  if (typeof kind !== 'string' || !REMINDER_CATEGORY_KINDS.has(kind as ReminderCategoryKind)) return undefined;
+  const triggers = Array.isArray(record['triggers'])
+    ? record['triggers'].filter((trigger): trigger is string => typeof trigger === 'string')
+    : [];
+  const epoch = typeof record['epoch'] === 'number' && Number.isFinite(record['epoch']) ? record['epoch'] : undefined;
+  const userTurn = typeof record['userTurn'] === 'string' && record['userTurn'] !== '' ? record['userTurn'] : undefined;
+  return { kind: kind as ReminderCategoryKind, triggers, epoch, userTurn };
+}
+
 /**
  * Daemon-injected <system-reminder> bodies, peeled out of the message they
  * rode in on: kept as their own quiet rows (collapsed, summary line only) so
@@ -110,6 +132,7 @@ function reminderBlocks(
   turnId?: string,
   origin?: PromptOriginLike,
 ): SystemReminderBlock[] {
+  const category = reminderCategory(origin?.disclosure);
   return reminders.map((reminder, index) => ({
     kind: 'system-reminder',
     id: `reminder-${id}-${index}`,
@@ -118,6 +141,7 @@ function reminderBlocks(
     turnId,
     variant: origin?.variant,
     disclosure: origin?.disclosure,
+    category,
   }));
 }
 

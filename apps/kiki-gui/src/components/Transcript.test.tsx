@@ -1102,6 +1102,36 @@ describe('live and event chrome', () => {
     expect(row?.textContent).not.toContain('Use SelectTools');
   });
 
+  it('heads a categorized reminder by its kind and keeps trigger facts for the open body', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'system-reminder',
+        id: 'reminder-renew',
+        text: 'The context window will be renewed soon.',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        variant: 'todo_list_reminder',
+        category: { kind: 'renew', triggers: ['T2', 'E1'], epoch: 2, userTurn: 't7' },
+      },
+      {
+        kind: 'system-reminder',
+        id: 'reminder-progress',
+        text: 'Update TodoList notes when convenient.',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        category: { kind: 'progress', triggers: [] },
+      },
+    ]);
+    const renew = container.querySelector<HTMLElement>('[data-reminder-kind="renew"]')!;
+    expect(renew.textContent).toContain('Reminder · context renewal ahead');
+    expect(renew.textContent).not.toContain('System reminder');
+    expect(renew.querySelector('[data-reminder-facts]')).toBeNull();
+    await act(async () => { click(renew.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(renew.querySelector('[data-reminder-facts]')?.textContent).toBe('Triggers T2 · E1  ·  Window 2  ·  For t7');
+    const progress = container.querySelector<HTMLElement>('[data-reminder-kind="progress"]')!;
+    expect(progress.textContent).toContain('Reminder · update notes');
+    await act(async () => { click(progress.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(progress.querySelector('[data-reminder-facts]')).toBeNull();
+  });
+
   it('keeps loaded skills compact until their details are explicitly expanded', async () => {
     const container = await renderTranscript([
       {

@@ -41,6 +41,7 @@ import {
   overlaySnapshotSubagentFields,
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
+  reminderCategory,
   queuedPromptPreviews,
   resolveActiveFloorId,
   rosterFromSnapshotSubagents,
@@ -4384,9 +4385,21 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const reminders = projected.blocks.filter((block) => block.kind === 'system-reminder');
     expect(reminders.map((block) => block.text)).toEqual(['TodoList has not been updated recently.', 'Image compressed to fit.']);
     expect(reminders[0]).toMatchObject({ variant: 'todo_list_reminder', disclosure: { kind: 'directive', triggers: ['E1'], epoch: 1 } });
+    expect(reminders[0]).toMatchObject({ category: { kind: 'directive', triggers: ['E1'], epoch: 1 } });
     expect(reminders[1]?.disclosure).toBeUndefined();
+    expect(reminders[1]?.category).toBeUndefined();
     expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Ship it.');
     expect(projected.blocks.some((block) => block.kind === 'system' && block.text === '')).toBe(false);
+  });
+
+  it('reads a reminder category only from a known disclosure kind', () => {
+    for (const kind of ['directive', 'renew', 'rebuild', 'history', 'progress'] as const) {
+      expect(reminderCategory({ kind, triggers: ['T2'], epoch: 3, userTurn: 't4' })).toEqual({ kind, triggers: ['T2'], epoch: 3, userTurn: 't4' });
+    }
+    expect(reminderCategory({ kind: 'progress', triggers: ['T0', 7], epoch: 'x', userTurn: '' })).toEqual({ kind: 'progress', triggers: ['T0'], epoch: undefined, userTurn: undefined });
+    expect(reminderCategory({ kind: 'handoff' })).toBeUndefined();
+    expect(reminderCategory('directive')).toBeUndefined();
+    expect(reminderCategory(undefined)).toBeUndefined();
   });
 
   it('names a model-loaded skill from its envelope and drops the XML', () => {

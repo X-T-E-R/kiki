@@ -79,6 +79,17 @@ export interface SystemReminderBlock {
   readonly turnId?: string;
   readonly variant?: string;
   readonly disclosure?: unknown;
+  /** The reminder's category and trigger facts, when its disclosure carries a known kind. */
+  readonly category?: ReminderCategory;
+}
+
+export type ReminderCategoryKind = 'directive' | 'renew' | 'rebuild' | 'history' | 'progress';
+
+export interface ReminderCategory {
+  readonly kind: ReminderCategoryKind;
+  readonly triggers: readonly string[];
+  readonly epoch?: number;
+  readonly userTurn?: string;
 }
 
 export type SystemVariant =

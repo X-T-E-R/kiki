@@ -595,9 +595,21 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
   );
 });
 
+/** Category heading per reminder disclosure kind (continuity reminders). */
+const REMINDER_CATEGORY_KEYS = {
+  directive: 'transcript.reminder.directive',
+  renew: 'transcript.reminder.renew',
+  rebuild: 'transcript.reminder.rebuild',
+  history: 'transcript.reminder.history',
+  progress: 'transcript.reminder.progress',
+} as const;
+
 /** Daemon-injected reminder peeled out of a user message — left lane, dimmed,
  * collapsed by default so the user's own bubble stays clean. The first line
- * rides the collapsed row so it never reads as an empty "System reminder". */
+ * rides the collapsed row so it never reads as an empty "System reminder".
+ * A reminder whose disclosure names its kind takes that kind as its heading
+ * (same weight and ink as the generic one, so it never outranks prose); the
+ * trigger facts wait in the expanded body. */
 const SystemReminderMessage = memo(function SystemReminderMessage({
   block,
 }: {
@@ -606,10 +618,17 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
+  const category = block.category;
+  const facts = category === undefined ? [] : [
+    category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: category.triggers.join(' · ') }) : undefined,
+    category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: category.epoch }) : undefined,
+    category.userTurn !== undefined ? t('transcript.reminder.userTurn', { turn: category.userTurn }) : undefined,
+  ].filter((fact): fact is string => fact !== undefined);
   return (
     <ActivityRow
+      attrs={{ 'data-reminder-kind': category?.kind }}
       glyph={<Icon name="system" />}
-      label={<span className="font-normal text-ink-faint">{t('transcript.systemReminder')}</span>}
+      label={<span className="font-normal text-ink-faint">{t(category === undefined ? 'transcript.systemReminder' : REMINDER_CATEGORY_KEYS[category.kind])}</span>}
       detail={<span className="text-ink-faint/80">{injectionSummary(block.text)}</span>}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
@@ -617,6 +636,9 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
     >
       {open ? (
         <div className="max-h-[140px] overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+          {facts.length > 0 ? (
+            <p data-reminder-facts className="mb-1 font-mono text-[11px] whitespace-normal text-ink-faint/80">{facts.join('  ·  ')}</p>
+          ) : null}
           {block.text}
         </div>
       ) : undefined}
