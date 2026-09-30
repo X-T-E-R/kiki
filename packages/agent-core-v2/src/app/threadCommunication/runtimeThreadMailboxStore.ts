@@ -22,6 +22,9 @@ import type { ThreadActivityKind, ThreadRef } from './threadCommunication';
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
+  type ReadMailboxMessagesInput,
+  type MailboxMessagesPage,
+  type MailboxMessageRecord,
   type StoredThreadActivity,
   type ThreadActivityPage,
   type ThreadDeliveryClaim,
@@ -61,6 +64,7 @@ function resolveTimeoutMs(raw: string | undefined, fallback: number): number {
 }
 
 export const THREAD_MAILBOX_RUNTIME_METHODS = {
+  readMessages: `${METHOD_PREFIX}.readMessages`,
   accept: `${METHOD_PREFIX}.accept`,
   claim: `${METHOD_PREFIX}.claim`,
   acknowledge: `${METHOD_PREFIX}.acknowledge`,
@@ -146,7 +150,26 @@ interface ActiveBackendDoc {
   readonly readyAt: number;
 }
 
+interface PeerIndexDoc {
+  readonly kind: 'peer_index';
+  readonly peerGroup: string;
+  readonly peerOrder: string;
+  readonly partition: string;
+  readonly messageKey: string;
+}
+
+interface PeerIndexMarkerDoc {
+  readonly kind: 'peer_index_marker';
+  readonly after: string;
+  readonly complete: boolean;
+}
+
+const PEER_INDEX_NAME = 'peer_history_v1';
+const PEER_INDEX_MARKER = `${SYSTEM_PARTITION}/peer-index-v1`;
+
 type StoredDoc =
+  | PeerIndexDoc
+  | PeerIndexMarkerDoc
   | TargetMetaDoc
   | MessageDoc
   | IdempotencyDoc
@@ -292,6 +315,15 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       join(bootstrap.storeDir, LEGACY_AGENT_DIR),
     ];
     this.registrations = [
+      this.register(THREAD_MAILBOX_RUNTIME_METHODS.readMessages, (payload, ctx) => {
+        const input = payload as ReadMailboxMessagesInput;
+        if (input === null || typeof input !== 'object' || typeof input.group !== 'string' ||
+            input.group.length === 0 || !Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100 ||
+            (input.before !== undefined && typeof input.before !== 'string')) {
+          throw new Error('Invalid mailbox message query.');
+        }
+        return this.readMessagesOwner(input, ctx);
+      }),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.accept, async (payload, ctx): Promise<AcceptRpcResult> => {
         try {
           return { ok: true, value: await this.acceptOwner(assertAcceptPayload(payload), ctx) };
@@ -345,6 +377,26 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       this.observedRuntimeEpoch = status.epoch;
       if (leftOwner) void this.queueOwnerRelease(priorEpoch);
     }));
+  }
+
+  readMessages(input: ReadMailboxMessagesInput, options?: ThreadMailboxMutationOptions): Promise<MailboxMessagesPage> {
+    return this.call(THREAD_MAILBOX_RUNTIME_METHODS.readMessages, input, options) as Promise<MailboxMessagesPage>;
+  }
+
+  private async readMessagesOwner(input: ReadMailboxMessagesInput, ctx: RuntimeMethodContext): Promise<MailboxMessagesPage> {
+    const db = await this.readyOwner(ctx);
+    const rows = await db.compoundRange(PEER_INDEX_NAME, input.group, {
+      lt: input.before, reverse: true, limit: input.limit + 1,
+    });
+    const items: MailboxMessageRecord[] = [];
+    for (const row of rows.slice(0, input.limit)) {
+      throwIfAborted(ctx.signal);
+      const pointer = row.value as PeerIndexDoc;
+      const doc = asMessage(await db.partitionGet(pointer.partition, pointer.messageKey));
+      if (doc === undefined || doc.message.producer.kind !== 'peer_thread') continue;
+      items.push({ message: doc.message, delivery: publicDeliveryState(doc.state), reason: doc.reason, order: pointer.peerOrder });
+    }
+    return { items, nextBefore: rows.length > input.limit ? rows[input.limit - 1]?.orderValue as string : undefined };
   }
 
   async acceptMessage(
@@ -595,6 +647,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
             value: { kind: 'active_backend', version: 3, ownerEpoch: epoch, readyAt: Date.now() },
           }]);
         }
+        await this.preparePeerIndex(openedDb, ctx);
         this.db = openedDb;
         this.quarantine.push(...openedQuarantine);
       } catch (error) {
@@ -610,6 +663,35 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       }]);
     }
     this.ownerEpoch = epoch;
+  }
+
+  private async preparePeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
+    if (!(await db.listCompoundIndexes()).some((index) => index.name === PEER_INDEX_NAME)) {
+      await db.createCompoundIndex(PEER_INDEX_NAME, { groupBy: 'peerGroup', orderBy: 'peerOrder', orderType: 'string' });
+    }
+    const stored = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_MARKER);
+    const checkpoint = stored?.kind === 'peer_index_marker' ? stored : undefined;
+    if (checkpoint?.complete === true) return;
+    let after = checkpoint?.after ?? 't/';
+    for (;;) {
+      throwIfAborted(ctx.signal);
+      const rows = await db.query({ key: { gt: after, lt: 't0' }, limit: 50 });
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        throwIfAborted(ctx.signal);
+        const doc = asMessage(row.value);
+        if (doc === undefined) continue;
+        const partition = targetPartition(doc.message.target);
+        const ops = peerIndexOps(partition, doc.message);
+        if (ops.length > 0) await db.partitionBatch(partition, ops);
+      }
+      after = rows.at(-1)!.key;
+      await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER,
+        value: { kind: 'peer_index_marker', after, complete: false } }]);
+      await delay(0);
+    }
+    await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER,
+      value: { kind: 'peer_index_marker', after, complete: true } }]);
   }
 
   private async hasPersistedTopology(): Promise<boolean> {
@@ -1200,10 +1282,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         },
       },
       this.receiptOp(receiptKey, method, ctx, input, result),
+      ...peerIndexOps(partition, message),
     ];
     const pruneKey = targetMessageKey(partition, message.targetSeq - MESSAGE_RETAINED_LIMIT);
     const prune = asMessage(await read(pruneKey));
-    if (prune !== undefined && isTerminalState(prune.state)) {
+    if (prune !== undefined && prune.message.producer.kind !== 'peer_thread' && isTerminalState(prune.state)) {
       ops.push({ op: 'del', key: pruneKey }, { op: 'del', key: prune.idempotencyStorageKey });
     }
     return { result, ops };
@@ -1867,3 +1950,17 @@ registerScopedService(
   ScopeActivation.OnScopeCreated,
   'threadCommunication',
 );
+
+function peerIndexOps(partition: string, message: AcceptedThreadMessage): BatchInputOp<StoredDoc>[] {
+  if (message.producer.kind !== 'peer_thread') return [];
+  const source = message.producer.source;
+  const groups = new Set(['all', `session:${source.sessionId}`, `session:${message.target.sessionId}`,
+    `workspace:${source.workspaceId}`, `workspace:${message.target.workspaceId}`]);
+  const order = `${message.acceptedAt.toString().padStart(16, '0')}/${message.messageId}`;
+  return [...groups].map((group) => ({
+    op: 'set',
+    key: `${partition}/peer/${createHash('sha256').update(JSON.stringify([group, message.messageId])).digest('base64url')}`,
+    value: { kind: 'peer_index', peerGroup: group, peerOrder: order, partition,
+      messageKey: targetMessageKey(partition, message.targetSeq) },
+  }));
+}

@@ -74,6 +74,8 @@ export interface ThreadActivityPage {
 export interface IThreadMailboxStore {
   readonly _serviceBrand: undefined;
 
+  readMessages(input: ReadMailboxMessagesInput, options?: ThreadMailboxMutationOptions): Promise<MailboxMessagesPage>;
+
   acceptMessage(input: {
     readonly producer: ThreadMessageProducer;
     readonly target: ThreadRef;
@@ -131,3 +133,21 @@ export interface IThreadMailboxStore {
 
 export const IThreadMailboxStore: ServiceIdentifier<IThreadMailboxStore> =
   createDecorator<IThreadMailboxStore>('threadMailboxStore');
+
+export interface ReadMailboxMessagesInput {
+  readonly group: string;
+  readonly before?: string;
+  readonly limit: number;
+}
+
+export interface MailboxMessageRecord {
+  readonly message: AcceptedThreadMessage;
+  readonly delivery: 'pending' | 'delivered' | 'undeliverable';
+  readonly reason?: string;
+  readonly order: string;
+}
+
+export interface MailboxMessagesPage {
+  readonly items: readonly MailboxMessageRecord[];
+  readonly nextBefore?: string;
+}

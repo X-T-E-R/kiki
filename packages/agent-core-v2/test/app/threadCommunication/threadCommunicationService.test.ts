@@ -14,6 +14,11 @@ import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
+import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
+import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
+import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
@@ -268,6 +273,71 @@ describe('ThreadCommunicationService', () => {
     disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
+
+  it('projects real durable peer sends, failures, pair pages, archive and deletion without cross-workspace leakage', async () => {
+    ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,
+      getEnv: () => undefined, scope: (name: string) => name });
+    ix.set(IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService));
+    ix.set(IHostFileSystem, new HostFileSystem());
+    ix.set(IThreadMailboxStore, new SyncDescriptor(RuntimeThreadMailboxStore));
+    const mailbox = ix.get(IThreadMailboxStore);
+    const runtime = ix.get(IHomeRuntimeService);
+    const service = ix.get(IThreadCommunicationService);
+    const source: ThreadRef = { hostId: service.hostId, workspaceId: 'workspace-a', sessionId: 'source' };
+    const target: ThreadRef = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    const send = peerSendCapability(service);
+    try {
+      const first = await send[SEND_PEER_THREAD_MESSAGE]({ source, target, content: 'first handoff', idempotencyKey: 'one' });
+      expect(first.delivery).toBe('delivered');
+      const duplicate = await send[SEND_PEER_THREAD_MESSAGE]({ source, target, content: 'first handoff', idempotencyKey: 'one' });
+      expect(duplicate).toMatchObject({ messageId: first.messageId, deduplicated: true });
+      await send[SEND_PEER_THREAD_MESSAGE]({ source: target, target: source, content: 'reply', idempotencyKey: 'two' });
+      resume.mockRejectedValueOnce(new Error('resume failed'));
+      const failed = await send[SEND_PEER_THREAD_MESSAGE]({ source, target, content: 'failed handoff', idempotencyKey: 'three' });
+      expect(failed.delivery).toBe('undeliverable');
+      await expect(send[SEND_PEER_THREAD_MESSAGE]({ source, target: { ...target, sessionId: 'absent' },
+        content: 'not accepted', idempotencyKey: 'absent' })).rejects.toMatchObject({ code: ErrorCodes.THREAD_NOT_FOUND });
+      await expect(service.listMessages({ workspaceId: 'workspace-c' })).resolves.toEqual({ items: [], nextCursor: undefined, incomplete: undefined });
+      const all = await service.listMessages({ workspaceId: 'workspace-a' });
+      expect(all.items).toHaveLength(3);
+      expect(all.items.find((message) => message.messageId === failed.messageId)).toMatchObject({
+        content: 'failed handoff', delivery: 'undeliverable', reason: 'resume failed',
+        source: { kind: 'thread', thread: { ref: source, title: 'Design review', deleted: false } }, target: { ref: target },
+      });
+      const page1 = await service.listMessages({ sessionId: 'source', peerSessionId: 'target', limit: 1 });
+      const page2 = await service.listMessages({ sessionId: 'source', peerSessionId: 'target', cursor: page1.nextCursor, limit: 1 });
+      const page3 = await service.listMessages({ sessionId: 'source', peerSessionId: 'target', cursor: page2.nextCursor, limit: 1 });
+      expect(new Set([...page1.items, ...page2.items, ...page3.items].map((message) => message.messageId)).size).toBe(3);
+      expect(page3.nextCursor).toBeUndefined();
+      await expect(service.listMessages({ sessionId: 'target', cursor: page1.nextCursor })).rejects.toMatchObject({ code: ErrorCodes.THREAD_CURSOR_INVALID });
+      const inventory: Record<string, SessionSummary> = { ...summaries, source: { ...summaries['source']!, archived: true } };
+      ix.stub(ISessionIndex, 'get', async (id: string) => inventory[id]);
+      const archived = await service.listMessages({ sessionId: 'source' });
+      expect(archived.items.find((message) => message.messageId === first.messageId)?.source).toMatchObject({ kind: 'thread', thread: { archived: true } });
+      await service.setWorkspaceOverride(source.workspaceId, false);
+      expect((await service.listMessages({ sessionId: 'source' })).items).toHaveLength(3);
+      delete inventory['source'];
+      const surviving = await service.listMessages({ sessionId: 'target' });
+      expect(surviving.items.find((message) => message.messageId === first.messageId)?.source).toMatchObject({ kind: 'thread', thread: { deleted: true } });
+      expect((await service.listMessages({ workspaceId: 'workspace-a' })).items).toEqual([]);
+      delete inventory['target'];
+      expect((await service.listMessages()).items).toEqual([]);
+      inventory['source'] = summaries['source']!;
+      await Promise.all(Array.from({ length: 501 }, (_, index) => mailbox.acceptMessage({
+        producer: { kind: 'peer_thread', source }, target: { ...target, hostId: 'another-host' },
+        content: 'foreign-host mailbox traffic', idempotencyKey: `foreign-${index}`,
+      })));
+      const budgetPage = await service.listMessages({ sessionId: 'source', limit: 1 });
+      expect(budgetPage).toMatchObject({ items: [], incomplete: 'scan_budget', nextCursor: expect.any(String) });
+      const continued = await service.listMessages({ sessionId: 'source', limit: 1, cursor: budgetPage.nextCursor });
+      expect(continued.items).toHaveLength(1);
+      expect(continued.items[0]?.target.ref.hostId).toBe(service.hostId);
+    } finally {
+      await service.shutdown();
+      await mailbox.close();
+      await runtime.close();
+    }
+  }, 30_000);
 
   it('waits for startup mailbox recovery during shutdown', async () => {
     let markRecoveryStarted!: () => void;
@@ -837,6 +907,7 @@ function inMemoryMailbox(options: { readonly activityRetainedLimit?: number } = 
   };
   return {
     _serviceBrand: undefined,
+    readMessages: async () => ({ items: [] }),
     acceptMessage: async () => { throw new Error('Unexpected mailbox accept.'); },
     claimNext: async () => undefined,
     acknowledgeDelivery: async () => false,

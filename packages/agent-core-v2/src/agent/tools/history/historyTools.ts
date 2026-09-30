@@ -15,7 +15,7 @@ const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) =>
 export const HistorySearchInputSchema = z.object({
   query: z.string().trim().min(1).max(1024).optional().describe('Distinctive words or a phrase; required on the first page. Omit when continuing with cursor.'),
   mode: z.enum(['auto', 'all', 'any', 'literal', 'terms']).optional().describe('Defaults to auto: matching complete phrases, without requiring every phrase. all requires every phrase; any allows one; literal is contiguous; terms preserves the legacy token-AND behavior.'),
-  scope: z.enum(['session', 'this_session', 'workspace']).optional().describe('Defaults to session (this session, this agent). workspace explicitly searches other sessions; this_session is the locked-current-session legacy alias.'),
+  scope: z.enum(['session', 'this_session', 'workspace', 'peer']).optional().describe('Defaults to session (this session, this agent). workspace searches other sessions; peer searches only cross-thread messages in this workspace, optionally narrowed by session_id, newest-first. this_session is the locked-current-session legacy alias.'),
   session_id: z.string().min(1).max(256).optional().describe('Choose a known session when scope=session; another session defaults to agent main.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Defaults to this workspace; another workspace requires access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent in the current session, or main in another session/workspace.'),
@@ -55,6 +55,7 @@ export interface HistoryHit {
   readonly ref?: string;
   readonly time?: number;
   readonly matched?: readonly string[];
+  readonly communication?: Omit<import('#/app/threadCommunication/threadCommunication').ThreadCommunicationMessage, 'content'>;
 }
 
 export interface HistorySearchPage {
@@ -73,7 +74,7 @@ export interface HistorySearchPage {
     readonly recordsRead: number;
     readonly truncated: boolean;
   };
-  readonly source: 'live' | 'index' | 'fallback';
+  readonly source: 'live' | 'index' | 'fallback' | 'mailbox';
   readonly coverage?: { readonly complete: boolean; readonly domain: 'indexed_text' | 'full_text'; readonly gaps?: readonly string[]; readonly scanned?: { readonly bytes: number; readonly records: number } };
   readonly continuation?: 'results' | 'scan';
 }
@@ -101,6 +102,7 @@ export interface IHistoryArchive {
   readonly _serviceBrand: undefined;
   search(query: {
     query: string;
+    peer?: boolean;
     mode?: 'auto' | 'all' | 'any' | 'literal' | 'terms';
     workspaceId: string;
     sessionId?: string;
@@ -236,7 +238,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
-  readonly description = 'Find earlier user, assistant, or tool text. Defaults to this session and this agent, with auto phrase matching. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. This is lexical search. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
+  readonly description = 'Find earlier user, assistant, or tool text. Defaults to this session and this agent, with auto phrase matching. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
   });
@@ -267,8 +269,13 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
     if (request.after !== undefined && request.before !== undefined && Date.parse(request.after) >= Date.parse(request.before)) {
       throw new Error('after must be earlier than before.');
     }
-    const sessionId = scope === 'workspace' ? undefined : request.session_id ?? this.session.sessionId;
-    const agentId = request.include_subagents ? undefined : request.agent_id ??
+    if (scope === 'peer' && (request.include_subagents === true ||
+        request.agent_id !== undefined && request.agent_id !== 'main' ||
+        request.source === 'transcript' || request.sort !== undefined && request.sort !== 'newest')) {
+      throw new Error('peer searches main-thread communication, newest-first; subagents and source=transcript are not supported.');
+    }
+    const sessionId = scope === 'workspace' ? undefined : scope === 'peer' ? request.session_id : request.session_id ?? this.session.sessionId;
+    const agentId = scope === 'peer' ? 'main' : request.include_subagents ? undefined : request.agent_id ??
       (sessionId === this.session.sessionId && scope !== 'workspace' ? this.caller.agentId : 'main');
     const target = await this.target(request.workspace_id);
     if (sessionId !== undefined) {
@@ -291,7 +298,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
         let page: HistorySearchPage;
         try {
           page = await this.archive.search({
-            query: request.query!, mode: request.mode ?? 'auto', workspaceId: target.id,
+            query: request.query!, peer: scope === 'peer', mode: request.mode ?? 'auto', workspaceId: target.id,
             sessionId, agentId, includeSubagents: request.include_subagents,
             role: request.role, after: request.after === undefined ? undefined : Date.parse(request.after),
             before: request.before === undefined ? undefined : Date.parse(request.before),
@@ -317,7 +324,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
         const next = page.pageToken === undefined ? undefined : Buffer.from(JSON.stringify({
           v: 2, request: { ...request, cursor: undefined }, page: page.pageToken,
         } satisfies SearchCursor)).toString('base64url');
-        const hits = page.items.filter((hit) => hit.turn !== undefined && hit.role !== 'title');
+        const hits = page.items.filter((hit) => (hit.turn !== undefined || scope === 'peer' && hit.communication !== undefined) && hit.role !== 'title');
         const expandedMode = request.mode === 'literal' || request.mode === 'terms' ? request.mode : 'terms';
         return { output: JSON.stringify({
           schema_version: 2, status: page.incomplete !== undefined ||
@@ -327,7 +334,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
           target: { workspace_id: target.id, session_id: sessionId, agent_id: agentId,
             all_agents: request.include_subagents === true ? true : undefined },
           scope_used: scope, mode_used: request.mode ?? 'auto',
-          expand_hint: scope !== 'workspace' && hits.length < (request.limit ?? SEARCH_DEFAULT_LIMIT)
+          expand_hint: scope !== 'workspace' && scope !== 'peer' && hits.length < (request.limit ?? SEARCH_DEFAULT_LIMIT)
             ? { message: expandedMode === (request.mode ?? 'auto')
               ? "Need results beyond this session? Retry with scope='workspace'."
               : "Need results beyond this session? Retry with scope='workspace', mode='terms' (indexed token-AND matching).",
@@ -336,7 +343,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
             : undefined,
           hits: hits.map((hit) => ({ session_id: hit.sessionId, agent_id: hit.agentId, role: hit.role,
               turn: hit.turn, step_id: hit.stepId, ref: hit.ref, time: hit.time,
-              snippet: hit.snippet, matched: hit.matched })),
+              snippet: hit.snippet, matched: hit.matched, communication: hit.communication })),
           next_cursor: next, has_more: next !== undefined, continuation: page.continuation,
           incomplete: page.incomplete, index_state: page.indexState,
           warning: page.warning, fallback: page.fallback, source: page.source,

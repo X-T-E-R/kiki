@@ -115,6 +115,7 @@ export interface IThreadCommunicationService {
   readonly _serviceBrand: undefined;
   readonly hostId: string;
 
+  listMessages(input?: ListThreadMessagesInput): Promise<ListThreadMessagesResult>;
   listThreads(input?: ListThreadsInput): Promise<ListThreadsResult>;
   readThread(input: ReadThreadInput): Promise<ReadThreadResult>;
   sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
@@ -129,3 +130,42 @@ export interface IThreadCommunicationService {
 
 export const IThreadCommunicationService: ServiceIdentifier<IThreadCommunicationService> =
   createDecorator<IThreadCommunicationService>('threadCommunicationService');
+
+export interface ThreadMessageEndpoint {
+  readonly ref: ThreadRef;
+  readonly title?: string;
+  readonly deleted: boolean;
+  readonly archived: boolean;
+}
+
+export type ThreadMessageSource =
+  | { readonly kind: 'thread'; readonly thread: ThreadMessageEndpoint }
+  | { readonly kind: 'room'; readonly roomId: string };
+
+export interface ThreadCommunicationMessage {
+  readonly messageId: string;
+  readonly source: ThreadMessageSource;
+  readonly target: ThreadMessageEndpoint;
+  readonly content: string;
+  readonly acceptedAt: number;
+  readonly targetSeq: number;
+  readonly delivery: 'pending' | 'delivered' | 'undeliverable';
+  readonly reason?: string;
+}
+
+/** Read-only communication history, including archived threads. Workspace filters match either
+ * surviving endpoint; a session selects both directions, and peerSessionId narrows that pair.
+ * Cursor conditions are immutable. Scan-budget pages may be empty but still have a nextCursor. */
+export interface ListThreadMessagesInput {
+  readonly workspaceId?: string;
+  readonly sessionId?: string;
+  readonly peerSessionId?: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export interface ListThreadMessagesResult {
+  readonly items: readonly ThreadCommunicationMessage[];
+  readonly nextCursor?: string;
+  readonly incomplete?: 'scan_budget';
+}

@@ -4,8 +4,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HistoryReadTool,
   HistorySearchTool,
-  type IHistoryArchive,
+  IHistoryArchive,
+  IHistorySearchTool,
 } from '../../../src/agent/tools/history/historyTools';
+import { SyncDescriptor } from '../../../src/_base/di/descriptors';
+import { TestInstantiationService } from '../../../src/_base/di/test';
+import { ISessionContext as SessionContextToken } from '../../../src/session/sessionContext/sessionContext';
+import { IAgentScopeContext as AgentScopeContextToken } from '../../../src/agent/scopeContext/scopeContext';
+import { ISessionIndex as SessionIndexToken } from '../../../src/app/sessionIndex/sessionIndex';
+import { IWorkspaceService as WorkspaceToken } from '../../../src/app/workspace/workspace';
 import { toolGroupForName } from '../../../src/agent/toolRegistry/toolGroups';
 import { isToolActive } from '../../../src/agent/toolPolicy/evaluate';
 import type { ISessionContext } from '../../../src/session/sessionContext/sessionContext';
@@ -56,6 +63,42 @@ async function run(tool: HistorySearchTool | HistoryReadTool, input: Record<stri
 }
 
 describe('history tools', () => {
+  it('routes peer scope to mailbox-only search, preserves message locators and binds cursor permissions', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    const communication = { messageId: 'handoff-one', source: { kind: 'thread' as const, thread: {
+      ref: { hostId: 'host', workspaceId: 'ws-a', sessionId: 'sender' }, deleted: false, archived: false,
+    } }, target: { ref: { hostId: 'host', workspaceId: 'ws-a', sessionId: 'receiver' }, deleted: false, archived: false },
+      acceptedAt: 100, targetSeq: 2, delivery: 'delivered' as const };
+    source.search = vi.fn(async () => ({ items: [{ sessionId: 'receiver', agentId: 'main', role: 'user' as const,
+      snippet: 'handoff', communication }], hasMore: true, pageToken: 'peer-page',
+      source: 'mailbox' as const, indexState: { state: 'ready' }, coverage: { complete: true, domain: 'full_text' as const } }));
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistorySearchTool, new SyncDescriptor(HistorySearchTool));
+    const tool = ix.get(IHistorySearchTool);
+    const execute = async (input: Record<string, unknown>) => {
+      const execution = await tool.resolveExecution(input as never);
+      if (!('execute' in execution)) throw new Error('Expected execute');
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'peer-search' });
+      return { result, data: JSON.parse(result.output as string) };
+    };
+    try {
+      const first = await execute({ query: 'handoff', scope: 'peer', workspace_id: 'ws-b' });
+      expect(source.search).toHaveBeenCalledWith(expect.objectContaining({ peer: true, workspaceId: 'ws-b', sessionId: undefined, agentId: 'main' }));
+      expect(first.data).toMatchObject({ scope_used: 'peer', source: 'mailbox', hits: [{ communication }] });
+      expect(first.data).not.toHaveProperty('expand_hint');
+      await execute({ cursor: first.data.next_cursor });
+      expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({ peer: true, workspaceId: 'ws-b', pageToken: 'peer-page' }));
+      const conflicting = await execute({ cursor: first.data.next_cursor, workspace_id: 'ws-a' });
+      expect(conflicting.result.isError).toBe(true);
+      await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', include_subagents: true })).rejects.toThrow('peer searches');
+      await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', sort: 'oldest' })).rejects.toThrow('peer searches');
+    } finally { ix.dispose(); }
+  });
   it('uses the existing profile tool-group gate', () => {
     expect(toolGroupForName('HistorySearch')).toBe('history');
     expect(toolGroupForName('HistoryRead')).toBe('history');

@@ -771,18 +771,53 @@ describe('runtime thread mailbox', () => {
     expect(failedClaim?.message.messageId).toBe(failed.message.messageId);
     expect(await item.store.markUndeliverable(failedClaim!, 'not found')).toBe(true);
     expect(await item.store.listPendingTargets()).toEqual([]);
+    await closeHarness(item, open);
+    const reopened = harness(homeDir);
+    open.push(reopened);
+    const page1 = await reopened.store.readMessages({ group: `workspace:${source.workspaceId}`, limit: 1 });
+    const page2 = await reopened.store.readMessages({ group: `workspace:${source.workspaceId}`, before: page1.nextBefore, limit: 1 });
+    expect([...page1.items, ...page2.items]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: delivered.message, delivery: 'delivered' }),
+      expect.objectContaining({ message: failed.message, delivery: 'undeliverable', reason: 'not found' }),
+    ]));
+    expect(page2.nextBefore).toBeUndefined();
+    expect((await reopened.store.readMessages({ group: 'workspace:unrelated', limit: 100 })).items).toEqual([]);
+    await closeHarness(reopened, open);
+    const current = harness(homeDir);
+    open.push(current);
 
-    const baseline = await item.store.readActivity(target, Number.MAX_SAFE_INTEGER, 1);
-    const activity = await item.store.appendActivity({ target, kind: 'message_undeliverable', reason: 'not found' });
-    expect(await item.store.readActivity(target, baseline.latestSeq, 8)).toMatchObject({
+    const baseline = await current.store.readActivity(target, Number.MAX_SAFE_INTEGER, 1);
+    const activity = await current.store.appendActivity({ target, kind: 'message_undeliverable', reason: 'not found' });
+    expect(await current.store.readActivity(target, baseline.latestSeq, 8)).toMatchObject({
       activities: [expect.objectContaining({ seq: activity.seq, epoch: activity.epoch, kind: activity.kind, reason: activity.reason })],
     });
-    expect(await item.store.getWorkspaceOverride(target.workspaceId)).toBeUndefined();
-    await item.store.setWorkspaceOverride(target.workspaceId, false);
-    expect(await item.store.getWorkspaceOverride(target.workspaceId)).toBe(false);
-    await item.store.clearWorkspaceOverride(target.workspaceId);
-    expect(await item.store.getWorkspaceOverride(target.workspaceId)).toBeUndefined();
+    expect(await current.store.getWorkspaceOverride(target.workspaceId)).toBeUndefined();
+    await current.store.setWorkspaceOverride(target.workspaceId, false);
+    expect(await current.store.getWorkspaceOverride(target.workspaceId)).toBe(false);
+    await current.store.clearWorkspaceOverride(target.workspaceId);
+    expect(await current.store.getWorkspaceOverride(target.workspaceId)).toBeUndefined();
   });
+
+  it('retains delivered peer history beyond 512 messages and pages equal-time messages once', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    const first = await item.store.acceptMessage(acceptInput('retained-first'));
+    const claim = await item.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 });
+    await item.store.acknowledgeDelivery(claim!);
+    const accepted = await Promise.all(Array.from({ length: 512 }, (_, index) => item.store.acceptMessage(acceptInput(`retained-${index}`))));
+    const expected = [first, ...accepted].map((result) => result.message).toSorted((left, right) =>
+      right.acceptedAt - left.acceptedAt || (left.messageId < right.messageId ? 1 : -1));
+    const observed: string[] = [];
+    let before: string | undefined;
+    do {
+      const page = await item.store.readMessages({ group: `session:${source.sessionId}`, before, limit: 100 });
+      observed.push(...page.items.map((row) => row.message.messageId));
+      before = page.nextBefore;
+    } while (before !== undefined);
+    expect(observed).toEqual(expected.map((message) => message.messageId));
+    const retry = await item.store.acceptMessage(acceptInput('retained-first'));
+    expect(retry).toMatchObject({ deduplicated: true, delivery: 'delivered', message: { messageId: first.message.messageId } });
+  }, 30_000);
 
   it('returns a stable path-free legacy-writer error immediately and retries initialization', async () => {
     const legacyDir = join(homeDir, 'store', 'thread-mailbox-v1');
@@ -842,6 +877,9 @@ describe('runtime thread mailbox', () => {
     expect(claim?.message.messageId).toBe(accepted.messageId);
     const page = await reopened.store.readActivity(target, 0, 8);
     expect(page.activities).toHaveLength(1);
+    expect((await reopened.store.readMessages({ group: 'all', limit: 100 })).items).toMatchObject([
+      { message: { messageId: accepted.messageId, content: accepted.content }, delivery: 'pending' },
+    ]);
   });
 
   it('never exposes MiniDb lock failures through the broker', async () => {

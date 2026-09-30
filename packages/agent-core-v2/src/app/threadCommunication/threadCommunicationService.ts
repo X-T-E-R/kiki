@@ -33,6 +33,10 @@ import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import {
   IThreadCommunicationService,
+  type ListThreadMessagesInput,
+  type ListThreadMessagesResult,
+  type ThreadCommunicationMessage,
+  type ThreadMessageEndpoint,
   type ListThreadsInput,
   type ListThreadsResult,
   type ReadThreadInput,
@@ -163,6 +167,71 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     while (this.detached.size > 0) {
       await Promise.all(this.detached);
     }
+  }
+
+  async listMessages(input: ListThreadMessagesInput = {}): Promise<ListThreadMessagesResult> {
+    const limit = boundedLimit(input.limit, 50, 100);
+    if (input.peerSessionId !== undefined && input.sessionId === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'peerSessionId requires sessionId.');
+    }
+    const conditions = JSON.stringify([input.workspaceId ?? null, input.sessionId ?? null, input.peerSessionId ?? null]);
+    let before: string | undefined;
+    if (input.cursor !== undefined) {
+      try {
+        const cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+        if (cursor['v'] !== 1 || cursor['kind'] !== 'messages' || cursor['conditions'] !== conditions ||
+            typeof cursor['before'] !== 'string' || !/^\d{16}\/[^/]+$/.test(cursor['before'])) throw new Error('invalid');
+        before = cursor['before'];
+      } catch { throw cursorError('Communication cursor is invalid or does not match the filters.'); }
+    }
+    if (input.sessionId !== undefined) {
+      const summary = await this.sessions.get(input.sessionId);
+      if (summary === undefined || input.workspaceId !== undefined && summary.workspaceId !== input.workspaceId) {
+        throw new Error2(ErrorCodes.THREAD_NOT_FOUND, 'Thread not found in the requested workspace.');
+      }
+    }
+    const summaries = new Map<string, Promise<SessionSummary | undefined>>();
+    const endpoint = async (ref: ThreadRef): Promise<ThreadMessageEndpoint> => {
+      let pending = summaries.get(ref.sessionId);
+      if (pending === undefined) {
+        pending = this.sessions.get(ref.sessionId);
+        summaries.set(ref.sessionId, pending);
+      }
+      const summary = await pending;
+      const exists = ref.hostId === this.hostId && summary?.workspaceId === ref.workspaceId;
+      return { ref, title: exists ? summary.title : undefined, deleted: !exists, archived: exists && summary.archived };
+    };
+    const group = input.sessionId !== undefined ? `session:${input.sessionId}` :
+      input.workspaceId !== undefined ? `workspace:${input.workspaceId}` : 'all';
+    const items: ThreadCommunicationMessage[] = [];
+    let scanned = 0;
+    let bytes = 0;
+    let hasMore = false;
+    while (items.length < limit && scanned < 500 && bytes < (2 << 20)) {
+      const page = await this.mailbox.readMessages({ group, before, limit: Math.min(20, limit - items.length) });
+      hasMore = page.nextBefore !== undefined;
+      scanned += Math.max(1, page.items.length);
+      for (const record of page.items) {
+        bytes += Buffer.byteLength(record.message.content);
+        before = record.order;
+        const message = record.message;
+        if (message.producer.kind !== 'peer_thread' || message.target.hostId !== this.hostId) continue;
+        const [source, target] = await Promise.all([endpoint(message.producer.source), endpoint(message.target)]);
+        if (source.deleted && target.deleted) continue;
+        if (input.workspaceId !== undefined && ![source, target].some((side) => !side.deleted && side.ref.workspaceId === input.workspaceId)) continue;
+        if (input.peerSessionId !== undefined && ![source, target].some((side) => side.ref.sessionId === input.peerSessionId)) continue;
+        items.push({ messageId: message.messageId, source: { kind: 'thread', thread: source }, target,
+          content: message.content, acceptedAt: message.acceptedAt, targetSeq: message.targetSeq,
+          delivery: record.delivery, reason: record.reason });
+      }
+      if (!hasMore) break;
+      before = page.nextBefore;
+    }
+    const incomplete = hasMore && items.length < limit && (scanned >= 500 || bytes >= (2 << 20)) ? 'scan_budget' as const : undefined;
+    if (incomplete !== undefined) this.log.warn('Communication history scan budget reached', { scanned, bytes });
+    return { items, incomplete, nextCursor: hasMore && before !== undefined ? Buffer.from(JSON.stringify({
+      v: 1, kind: 'messages', conditions, before,
+    })).toString('base64url') : undefined };
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
