@@ -6,6 +6,7 @@ import {
   resolveAuthoredRequestIdentity,
   resolveProviderRequestIdentity,
   resolveRequestIdentityLayers,
+  resolveRequestIdentityLayersWith,
   RequestIdentityPolicySchema,
   RequestIdentityPolicyWireSchema,
   type RequestIdentityPolicy,
@@ -55,6 +56,7 @@ function project(
 describe('request identity policy', () => {
   it.each([
     ['codex_compatible', 'codex', 'shared_session', 'codex'],
+    ['claude_code_compatible', 'claude_code', 'shared_session', 'claude_code'],
     ['grok_build_compatible', 'grok_build', 'agent_session', 'grok_build'],
     ['kimi_code', 'kimi_code', 'shared_session', 'kimi_code'],
     ['none', 'none', 'none', 'none'],
@@ -459,4 +461,94 @@ describe('request identity policy', () => {
       ).toBe(false);
     },
   );
+
+  it('maps each preset to its built-in identity profile and a profile layer to its base preset', () => {
+    expect(resolveAuthoredRequestIdentity({ preset: 'codex_compatible' }).profile).toBe('codex');
+    expect(resolveRequestIdentityLayers().profile).toBe('kimi_code');
+    const resolved = resolveAuthoredRequestIdentity({ profile: 'claude_code' });
+    expect(resolved).toMatchObject({ preset: 'claude_code_compatible', profile: 'claude_code' });
+  });
+
+  it('expands a custom profile through the lookup and layers overrides on top of its own', () => {
+    const lookup = (id: string) => id === 'custom:x-1'
+      ? { preset: 'codex_compatible' as const, overrides: { lineage: { subagentMarker: 'none' as const } } }
+      : undefined;
+    const resolved = resolveRequestIdentityLayersWith(lookup, { preset: 'none' }, {
+      profile: 'custom:x-1',
+      overrides: { lineage: { parentThread: 'none' } },
+    });
+    expect(resolved).toMatchObject({ profile: 'custom:x-1', preset: 'codex_compatible' });
+    expect(resolved.lineage).toMatchObject({ subagentMarker: 'none', parentThread: 'none', threadIdentity: 'agent' });
+    expect(() => resolveRequestIdentityLayersWith(lookup, { profile: 'custom:missing' })).toThrow('does not exist');
+  });
+
+  it.each([RequestIdentityPolicySchema, RequestIdentityPolicyWireSchema])(
+    'rejects preset together with profile, and malformed profile ids',
+    (schema) => {
+      expect(schema.safeParse({ profile: 'custom:x-1' }).success).toBe(true);
+      expect(schema.safeParse({ preset: 'none', profile: 'none' }).success).toBe(false);
+      expect(schema.safeParse({ profile: 'Custom X' }).success).toBe(false);
+      expect(schema.safeParse({ profile: 'custom:' }).success).toBe(false);
+    },
+  );
+
+  it('rejects Claude Code lineage on thread axes and on non-Messages protocols', () => {
+    expect(() => resolveAuthoredRequestIdentity({
+      preset: 'claude_code_compatible',
+      overrides: { lineage: { threadIdentity: 'agent' } },
+    })).toThrow('Claude Code projector does not support thread');
+    expect(() => project({ preset: 'claude_code_compatible' }, { protocol: 'openai_responses' }))
+      .toThrow('only supports Anthropic Messages');
+  });
+
+  it('projects Claude Code session header and a JSON metadata user id', () => {
+    const projected = project({ preset: 'claude_code_compatible' }, { protocol: 'anthropic' });
+    expect(projected.headers).toMatchObject({
+      'X-Claude-Code-Session-Id': SNAPSHOT.sharedSessionId,
+      'User-Agent': 'claude-cli/1.0.0 (external, cli)',
+    });
+    expect(JSON.parse(projected.cacheKey ?? '')).toMatchObject({ session_id: SNAPSHOT.sharedSessionId, account_uuid: '' });
+  });
+
+  it('lets a rendered profile replace, remove and add headers, but never under true none', () => {
+    const profile = {
+      profileId: 'custom:x-1',
+      version: '9.9.9',
+      versionOrigin: 'fixed',
+      userAgent: 'example/9.9.9',
+      headers: [{ name: 'Originator', value: '' }, { name: 'X-Example', value: 'on' }],
+      params: { service_tier: 'flex' },
+    };
+    const projected = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'codex_compatible' }),
+      protocol: 'openai_responses',
+      model: 'wire-model',
+      rawSessionId: 'raw-session',
+      rawAgentId: 'main',
+      isKimiProvider: false,
+      snapshot: SNAPSHOT,
+      runtimeVersion: '1.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      profile,
+    });
+    expect(projected.headers).toMatchObject({ 'User-Agent': 'example/9.9.9', 'X-Example': 'on' });
+    expect(projected.headers).not.toHaveProperty('originator');
+    expect(projected.params).toEqual({ service_tier: 'flex' });
+    const none = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'none' }),
+      protocol: 'openai_responses',
+      model: 'wire-model',
+      rawSessionId: 'raw-session',
+      rawAgentId: 'main',
+      isKimiProvider: false,
+      snapshot: SNAPSHOT,
+      runtimeVersion: '1.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      profile,
+    });
+    expect(none.headers).not.toHaveProperty('X-Example');
+    expect(none.params).toBeUndefined();
+  });
 });

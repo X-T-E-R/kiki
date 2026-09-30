@@ -5,18 +5,60 @@ import { RequestIdentityErrors } from './errors';
 
 export type RequestIdentityPreset =
   | 'codex_compatible'
+  | 'claude_code_compatible'
   | 'grok_build_compatible'
   | 'kimi_code'
   | 'none';
 
+export type RequestIdentityLineageFormat = 'codex' | 'claude_code' | 'grok_build' | 'kimi_code' | 'none';
+
+export type RequestIdentityUserAgentMode =
+  | 'codex'
+  | 'claude_code'
+  | 'grok_build'
+  | 'kimi_code'
+  | 'host'
+  | 'none';
+
 export type RequestIdentityPolicy = {
   preset?: RequestIdentityPreset;
+  profile?: string;
   overrides?: RequestIdentityOverrides;
 };
 
+/** Behaviour axes a named identity profile contributes when a layer selects it. */
+export interface RequestIdentityProfileAxes {
+  readonly preset: RequestIdentityPreset;
+  readonly overrides?: RequestIdentityOverrides;
+}
+
+export type RequestIdentityProfileLookup = (id: string) => RequestIdentityProfileAxes | undefined;
+
+/** Built-in ids are bare snake_case; user profiles live under `custom:`. */
+export const REQUEST_IDENTITY_PROFILE_ID_PATTERN =
+  /^(?:[a-z][a-z0-9_]{0,31}|custom:[a-z0-9][a-z0-9_-]{0,47})$/u;
+
+/** Built-in profile id each preset maps to. */
+export const BUILTIN_PROFILE_FOR_PRESET: Readonly<Record<RequestIdentityPreset, string>> = {
+  codex_compatible: 'codex',
+  claude_code_compatible: 'claude_code',
+  grok_build_compatible: 'grok_build',
+  kimi_code: 'kimi_code',
+  none: 'none',
+};
+
+export function builtinRequestIdentityProfileAxes(
+  id: string,
+): RequestIdentityProfileAxes | undefined {
+  for (const [preset, builtinId] of Object.entries(BUILTIN_PROFILE_FOR_PRESET)) {
+    if (builtinId === id) return { preset: preset as RequestIdentityPreset };
+  }
+  return undefined;
+}
+
 export type RequestIdentityOverrides = {
   lineage?: {
-    format?: 'codex' | 'grok_build' | 'kimi_code' | 'none';
+    format?: RequestIdentityLineageFormat;
     sessionScope?: 'shared_session' | 'agent_session' | 'none';
     threadIdentity?: 'agent' | 'none';
     parentThread?: 'immediate_agent' | 'none';
@@ -29,7 +71,7 @@ export type RequestIdentityOverrides = {
       | { mode: 'none' }
       | { mode: 'codex_default' }
       | { mode: 'custom'; value: string };
-    userAgent?: 'codex' | 'grok_build' | 'kimi_code' | 'host' | 'none';
+    userAgent?: RequestIdentityUserAgentMode;
   };
   request?: {
     logicalId?: 'turn' | 'none';
@@ -45,10 +87,13 @@ export type RequestIdentityOverrides = {
 
 const RequestIdentityPresetSchema = z.enum([
   'codex_compatible',
+  'claude_code_compatible',
   'grok_build_compatible',
   'kimi_code',
   'none',
 ]);
+
+export const RequestIdentityProfileIdSchema = z.string().regex(REQUEST_IDENTITY_PROFILE_ID_PATTERN);
 
 const RequestIdentityOriginatorSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }).strict(),
@@ -63,7 +108,7 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
         sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         threadIdentity: z.enum(['agent', 'none']).optional(),
         parentThread: z.enum(['immediate_agent', 'none']).optional(),
@@ -75,7 +120,7 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
       .object({
         installationIdentity: z.enum(['persistent_local', 'none']).optional(),
         originator: RequestIdentityOriginatorSchema.optional(),
-        userAgent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        userAgent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -99,18 +144,20 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
 export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z
   .object({
     preset: RequestIdentityPresetSchema.optional(),
+    profile: RequestIdentityProfileIdSchema.optional(),
     overrides: RequestIdentityOverridesSchema.optional(),
   })
   .strict()
-  .refine((policy) => policy.preset !== undefined || policy.overrides !== undefined, {
-    message: 'request identity policy must contain preset or overrides',
+  .refine(hasSelection, { message: 'request identity policy must contain preset, profile or overrides' })
+  .refine((policy) => policy.preset === undefined || policy.profile === undefined, {
+    message: 'request identity policy cannot set both preset and profile',
   });
 
 const RequestIdentityOverridesWireSchema = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -122,7 +169,7 @@ const RequestIdentityOverridesWireSchema = z
       .object({
         installation_identity: z.enum(['persistent_local', 'none']).optional(),
         originator: RequestIdentityOriginatorSchema.optional(),
-        user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -146,11 +193,13 @@ const RequestIdentityOverridesWireSchema = z
 export const RequestIdentityPolicyWireSchema = z
   .object({
     preset: RequestIdentityPresetSchema.optional(),
+    profile: RequestIdentityProfileIdSchema.optional(),
     overrides: RequestIdentityOverridesWireSchema.optional(),
   })
   .strict()
-  .refine((policy) => policy.preset !== undefined || policy.overrides !== undefined, {
-    message: 'request identity policy must contain preset or overrides',
+  .refine(hasSelection, { message: 'request identity policy must contain preset, profile or overrides' })
+  .refine((policy) => policy.preset === undefined || policy.profile === undefined, {
+    message: 'request identity policy cannot set both preset and profile',
   });
 
 export type RequestIdentityPolicyWire = z.infer<typeof RequestIdentityPolicyWireSchema>;
@@ -162,6 +211,7 @@ export function requestIdentityToWire(
   const overrides = policy.overrides;
   return {
     preset: policy.preset,
+    profile: policy.profile,
     overrides:
       overrides === undefined
         ? undefined
@@ -204,6 +254,7 @@ export function requestIdentityFromWire(
   const overrides = policy.overrides;
   return {
     preset: policy.preset,
+    profile: policy.profile,
     overrides:
       overrides === undefined
         ? undefined
@@ -242,7 +293,7 @@ export function requestIdentityFromWire(
 
 export type ResolvedRequestIdentityPolicy = {
   lineage: {
-    format: 'codex' | 'grok_build' | 'kimi_code' | 'none';
+    format: RequestIdentityLineageFormat;
     sessionScope: 'shared_session' | 'agent_session' | 'none';
     threadIdentity: 'agent' | 'none';
     parentThread: 'immediate_agent' | 'none';
@@ -255,7 +306,7 @@ export type ResolvedRequestIdentityPolicy = {
       | { mode: 'none' }
       | { mode: 'codex_default' }
       | { mode: 'custom'; value: string };
-    userAgent: 'codex' | 'grok_build' | 'kimi_code' | 'host' | 'none';
+    userAgent: RequestIdentityUserAgentMode;
   };
   request: {
     logicalId: 'turn' | 'none';
@@ -268,9 +319,11 @@ export type ResolvedRequestIdentityPolicy = {
   };
   responsesMetadata: 'codex' | 'none';
   preset: RequestIdentityPreset;
+  /** Identity profile whose client templates (version, User-Agent, headers, params) this policy renders. */
+  profile: string;
 };
 
-const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy, 'preset'>> = {
+const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy, 'preset' | 'profile'>> = {
   codex_compatible: {
     lineage: {
       format: 'codex',
@@ -305,6 +358,24 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     },
     request: { logicalId: 'turn', turnIndex: 'agent_session' },
     cache: { source: 'session', responses: 'prompt_cache_key', messages: 'none' },
+    responsesMetadata: 'none',
+  },
+  claude_code_compatible: {
+    lineage: {
+      format: 'claude_code',
+      sessionScope: 'shared_session',
+      threadIdentity: 'none',
+      parentThread: 'none',
+      subagentMarker: 'none',
+      turnAncestry: 'none',
+    },
+    client: {
+      installationIdentity: 'persistent_local',
+      originator: { mode: 'none' },
+      userAgent: 'claude_code',
+    },
+    request: { logicalId: 'none', turnIndex: 'none' },
+    cache: { source: 'session', responses: 'none', messages: 'metadata_user_id' },
     responsesMetadata: 'none',
   },
   kimi_code: {
@@ -345,17 +416,45 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
   },
 };
 
+let registeredProfileLookup: RequestIdentityProfileLookup | undefined;
+
+/**
+ * Install the process-wide lookup for custom identity profiles. The App-scope catalog owns the
+ * profiles; config validation that runs outside DI (model/provider writes) resolves through it.
+ * Returns a disposer that restores the previous lookup.
+ */
+export function registerRequestIdentityProfileLookup(lookup: RequestIdentityProfileLookup): () => void {
+  const previous = registeredProfileLookup;
+  registeredProfileLookup = lookup;
+  return () => {
+    if (registeredProfileLookup === lookup) registeredProfileLookup = previous;
+  };
+}
+
+function defaultProfileLookup(id: string): RequestIdentityProfileAxes | undefined {
+  return builtinRequestIdentityProfileAxes(id) ?? registeredProfileLookup?.(id);
+}
+
 export function resolveRequestIdentityLayers(
+  ...layers: readonly (RequestIdentityPolicy | undefined)[]
+): ResolvedRequestIdentityPolicy {
+  return resolveRequestIdentityLayersWith(defaultProfileLookup, ...layers);
+}
+
+/** Resolve layers, expanding each layer's `profile` reference through `lookup`; an unknown id is rejected. */
+export function resolveRequestIdentityLayersWith(
+  lookup: RequestIdentityProfileLookup,
   ...layers: readonly (RequestIdentityPolicy | undefined)[]
 ): ResolvedRequestIdentityPolicy {
   let resolved: ResolvedRequestIdentityPolicy = {
     ...structuredClone(PRESETS.kimi_code),
     preset: 'kimi_code',
+    profile: BUILTIN_PROFILE_FOR_PRESET.kimi_code,
   };
   validateResolvedRequestIdentity(resolved);
   for (const layer of layers) {
     if (layer === undefined) continue;
-    resolved = applyRequestIdentityLayer(resolved, layer);
+    resolved = applyRequestIdentityLayer(resolved, expandProfileLayer(layer, lookup));
     validateResolvedRequestIdentity(resolved);
   }
   return resolved;
@@ -373,6 +472,42 @@ export function resolveProviderRequestIdentity(
   return resolveRequestIdentityLayers(provider?.requestIdentity);
 }
 
+function expandProfileLayer(
+  layer: RequestIdentityPolicy,
+  lookup: RequestIdentityProfileLookup,
+): RequestIdentityPolicy {
+  if (layer.profile === undefined) return layer;
+  const axes = lookup(layer.profile);
+  if (axes === undefined) throw invalid(`request identity profile ${layer.profile} does not exist`);
+  const expanded: RequestIdentityPolicy = { preset: axes.preset, profile: layer.profile, overrides: axes.overrides };
+  const withProfile = applyRequestIdentityLayer(
+    { ...structuredClone(PRESETS[axes.preset]), preset: axes.preset, profile: layer.profile },
+    expanded,
+  );
+  validateResolvedRequestIdentity(withProfile);
+  return layer.overrides === undefined
+    ? expanded
+    : { ...expanded, overrides: mergeOverrides(axes.overrides, layer.overrides) };
+}
+
+function mergeOverrides(
+  base: RequestIdentityOverrides | undefined,
+  patch: RequestIdentityOverrides,
+): RequestIdentityOverrides {
+  return {
+    lineage: base?.lineage === undefined && patch.lineage === undefined ? undefined : { ...base?.lineage, ...definedOnly(patch.lineage) },
+    client: base?.client === undefined && patch.client === undefined ? undefined : { ...base?.client, ...definedOnly(patch.client) },
+    request: base?.request === undefined && patch.request === undefined ? undefined : { ...base?.request, ...definedOnly(patch.request) },
+    cache: base?.cache === undefined && patch.cache === undefined ? undefined : { ...base?.cache, ...definedOnly(patch.cache) },
+    responsesMetadata: patch.responsesMetadata ?? base?.responsesMetadata,
+  };
+}
+
+function definedOnly<T extends object>(value: T | undefined): Partial<T> {
+  if (value === undefined) return {};
+  return Object.fromEntries(Object.entries(value).filter(([, leaf]) => leaf !== undefined)) as Partial<T>;
+}
+
 function applyRequestIdentityLayer(
   inherited: ResolvedRequestIdentityPolicy,
   layer: RequestIdentityPolicy,
@@ -380,7 +515,11 @@ function applyRequestIdentityLayer(
   const base: ResolvedRequestIdentityPolicy =
     layer.preset === undefined
       ? structuredClone(inherited)
-      : { ...structuredClone(PRESETS[layer.preset]), preset: layer.preset };
+      : {
+          ...structuredClone(PRESETS[layer.preset]),
+          preset: layer.preset,
+          profile: layer.profile ?? BUILTIN_PROFILE_FOR_PRESET[layer.preset],
+        };
   const overrides = layer.overrides;
   if (overrides?.lineage !== undefined) assignDefined(base.lineage, overrides.lineage);
   if (overrides?.client !== undefined) assignDefined(base.client, overrides.client);
@@ -393,7 +532,7 @@ function applyRequestIdentityLayer(
 }
 
 export function validateResolvedRequestIdentity(
-  policy: Omit<ResolvedRequestIdentityPolicy, 'source' | 'preset'>,
+  policy: Omit<ResolvedRequestIdentityPolicy, 'preset' | 'profile'>,
 ): void {
   if (policy.request.turnIndex === 'agent_session' && policy.lineage.sessionScope !== 'agent_session') {
     throw invalid('request turnIndex=agent_session requires lineage sessionScope=agent_session');
@@ -404,20 +543,26 @@ export function validateResolvedRequestIdentity(
   if (policy.request.logicalId === 'turn' && !['codex', 'grok_build'].includes(policy.lineage.format)) {
     throw invalid('logicalId=turn requires a Codex or Grok Build projector');
   }
-  if (policy.cache.messages === 'metadata_user_id' && policy.lineage.format !== 'kimi_code') {
-    throw invalid('messages metadata_user_id is only supported by the Kimi Code projector');
+  if (
+    policy.cache.messages === 'metadata_user_id' &&
+    policy.lineage.format !== 'kimi_code' &&
+    policy.lineage.format !== 'claude_code'
+  ) {
+    throw invalid('messages metadata_user_id is only supported by the Kimi Code or Claude Code projector');
   }
   if (policy.responsesMetadata === 'codex' && policy.lineage.format !== 'codex') {
     throw invalid('responsesMetadata=codex requires the Codex projector');
   }
-  if (policy.lineage.format === 'grok_build') {
+  if (policy.lineage.format === 'grok_build' || policy.lineage.format === 'claude_code') {
     if (
       policy.lineage.threadIdentity !== 'none' ||
       policy.lineage.parentThread !== 'none' ||
       policy.lineage.subagentMarker !== 'none' ||
       policy.lineage.turnAncestry !== 'none'
     ) {
-      throw invalid('the Grok Build projector does not support thread or parent lineage');
+      throw invalid(
+        `the ${policy.lineage.format === 'grok_build' ? 'Grok Build' : 'Claude Code'} projector does not support thread or parent lineage`,
+      );
     }
   }
   if (
@@ -453,6 +598,7 @@ export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
   'x-grok-client-identifier',
   'x-grok-client-version',
   'x-grok-model-override',
+  'x-claude-code-session-id',
   'x-msh-platform',
   'x-msh-version',
   'x-msh-device-name',
@@ -462,6 +608,10 @@ export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
   'originator',
   'user-agent',
 ]);
+
+function hasSelection(policy: { preset?: unknown; profile?: unknown; overrides?: unknown }): boolean {
+  return policy.preset !== undefined || policy.profile !== undefined || policy.overrides !== undefined;
+}
 
 function hasDefinedLeaf(value: unknown): boolean {
   if (value === undefined) return false;

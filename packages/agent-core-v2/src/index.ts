@@ -204,6 +204,7 @@ export * from '#/app/room/room';
 export * from '#/app/room/roomService';
 import '#/app/room/roomMessageRouter';
 import '#/app/kosongConfig/configSection';
+import '#/app/requestIdentity/requestIdentityCatalog';
 export * from '#/kosong/provider/provider';
 export * from '#/kosong/provider/providerService';
 export * from '#/kosong/provider/providerDefinition';

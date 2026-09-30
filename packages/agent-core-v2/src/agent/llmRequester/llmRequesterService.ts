@@ -69,7 +69,6 @@ import type {
 import { getProviderDefinition, usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
-  resolveRequestIdentityLayers,
   type RequestIdentityPolicy,
   type ResolvedRequestIdentityPolicy,
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -98,6 +97,7 @@ import {
   type RequestIdentitySnapshot,
 } from '#/session/requestIdentity/requestIdentityRegistry';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
+import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 
 import {
   IAgentLLMRequesterService,
@@ -241,6 +241,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
     @IRequestIdentityRegistry private readonly requestIdentities: IRequestIdentityRegistry,
+    @IRequestIdentityCatalog private readonly identityCatalog: IRequestIdentityCatalog,
   ) {
     this.states.contributeState(llmRequestTraceKey);
     this.states.contributeState(llmRequesterLastConfigLogSignatureKey);
@@ -448,6 +449,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       };
       this.logRequest(logInput);
       this.recordRequest(logInput);
+      this.observeIdentity(request, params);
 
       let message: Message | undefined;
       let usage: TokenUsage | undefined;
@@ -548,6 +550,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       params = {
         ...params,
         headers: projection.headers ?? params.headers,
+        requestParams: withIdentityParams(params.requestParams, projection.params),
         requestIdentity: projection.wire ?? params.requestIdentity,
       };
     };
@@ -769,6 +772,22 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       platform: this.bootstrap.platform,
       arch: this.bootstrap.arch,
       hostRequestHeaders: identity.hostRequestHeaders,
+      profile: this.identityCatalog.render(identity.policy, requester.model.name),
+    });
+  }
+
+  private observeIdentity(request: ResolvedLLMRequest, params: ModelRequestParams): void {
+    this.identityCatalog.recordObservation({
+      providerId: request.model.providerName,
+      model: request.model.name,
+      protocol: request.model.protocol,
+      policy: request.identity.policy,
+      sessionId: this.sessionContext.sessionId,
+      agentId: this.agentContext.agentId,
+      headers: params.headers,
+      params: identityParamsOf(params.requestParams, request.identity.policy, this.identityCatalog, request.model.name),
+      cacheKey: params.cacheKey,
+      suppressedUserAgent: params.requestIdentity?.suppressUserAgent === true,
     });
   }
 
@@ -806,6 +825,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           : undefined,
     });
     const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+    await this.identityCatalog.ready;
     const providerConfig =
       turnConfig?.providerConfig ??
       this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
@@ -856,8 +876,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       params: {
         ...baseParams,
         cacheKey: identityProjection.cacheKey,
-        requestParams: stripRequestIdentityBodyParams(
-          stripKikiReservedRequestParams(baseParams.requestParams),
+        requestParams: withIdentityParams(
+          stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams)),
+          identityProjection.params,
         ),
         ...budgetParams,
         usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
@@ -947,7 +968,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   ): ResolvedRequestIdentityPolicy {
     const modelId = this.modelService.resolveId(resolved.modelAlias) ?? resolved.modelAlias;
     const modelConfig = this.modelService.get(modelId);
-    return resolveRequestIdentityLayers(
+    return this.identityCatalog.resolveLayers(
       this.config.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION),
       providerConfig?.requestIdentity,
       modelConfig?.requestIdentity,
@@ -1110,6 +1131,29 @@ function stripRequestIdentityBodyParams(
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+function withIdentityParams(
+  params: ModelRequestParams['requestParams'],
+  identity: Readonly<Record<string, string | number | boolean>> | undefined,
+): ModelRequestParams['requestParams'] {
+  if (identity === undefined) return params;
+  return { ...params, ...identity };
+}
+
+function identityParamsOf(
+  params: ModelRequestParams['requestParams'],
+  policy: ResolvedRequestIdentityPolicy,
+  catalog: IRequestIdentityCatalog,
+  model: string,
+): Record<string, string | number | boolean> {
+  const names = Object.keys(catalog.render(policy, model)?.params ?? {});
+  return Object.fromEntries(
+    names.flatMap((name) => {
+      const value = params?.[name];
+      return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? [[name, value]] : [];
+    }),
+  );
+}
+
 function isKimiProviderFamily(providerType: string | undefined): boolean {
   return (
     providerType !== undefined &&
@@ -1133,6 +1177,7 @@ function resolveRequestIdentityDimensions(
       policy.client.installationIdentity === 'persistent_local' &&
       (format === 'codex' ||
         format === 'grok_build' ||
+        format === 'claude_code' ||
         (format === 'kimi_code' && isKimiProvider && !hostHasDeviceIdentity)),
     sharedSessionIdentity:
       policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code',

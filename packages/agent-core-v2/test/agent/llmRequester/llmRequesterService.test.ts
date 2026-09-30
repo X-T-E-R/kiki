@@ -95,6 +95,10 @@ import {
   type RequestIdentityDimensions,
 } from '#/session/requestIdentity/requestIdentityRegistry';
 import {
+  IRequestIdentityCatalog,
+  RequestIdentityCatalog,
+} from '#/app/requestIdentity/requestIdentityCatalog';
+import {
   ISessionMetadata,
   type AgentMeta,
 } from '#/session/sessionMetadata/sessionMetadata';
@@ -224,6 +228,7 @@ function createService(
     readonly identitySnapshotCalls?: { value: number };
     readonly identityDimensions?: RequestIdentityDimensions[];
     readonly identityRegistry?: IRequestIdentityRegistry;
+    readonly identityCatalogDocument?: unknown;
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
     readonly env?: Record<string, string>;
     readonly nativeWebSearch?: boolean;
@@ -399,6 +404,7 @@ function createService(
     arch: 'x64',
     getEnv: (name) => options.env?.[name],
     args: { requestHeaders: hostRequestHeaders },
+    scope: () => 'store',
   });
   ix.stub(
     IRequestIdentityRegistry,
@@ -421,6 +427,18 @@ function createService(
   );
   ix.stub(ILogService, log);
   ix.stub(ITelemetryService, telemetry);
+  const identityDocs = new Map<string, unknown>(Object.entries(options.identityCatalogDocument === undefined ? {} : { 'request-identity-catalog.json': options.identityCatalogDocument }));
+  const catalog = new RequestIdentityCatalog(
+    ix.get(IBootstrapService),
+    {
+      get: async (_scope: string, key: string) => structuredClone(identityDocs.get(key)),
+      set: async (_scope: string, key: string, value: unknown) => {
+        identityDocs.set(key, structuredClone(value));
+      },
+    } as never,
+    ix.get(IConfigService),
+  );
+  ix.stub(IRequestIdentityCatalog, catalog);
   ix.stub(IModelCatalog, {
     _serviceBrand: undefined,
     get: () => requester.model,
@@ -442,6 +460,7 @@ function createService(
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
 
   return {
+    identityCatalog: catalog,
     service: ix.get(IAgentLLMRequesterService),
     dispatcher: ix.get(IEventDispatcher),
     records,
@@ -665,7 +684,8 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       'thread-id': '00000000-0000-4000-8000-000000000002',
       'x-client-request-id': '00000000-0000-4000-8000-000000000002',
       originator: 'codex_cli_rs',
-      'User-Agent': `codex_cli_rs/1.0.0 (Linux ${osRelease()}; x86_64)`,
+      'User-Agent': `codex_cli_rs/0.159.2 (Linux ${osRelease()}; x86_64)`,
+      version: '0.159.2',
     });
     expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000002');
     expect(captured[0]?.requestIdentity?.responsesClientMetadata).toMatchObject({
@@ -682,6 +702,82 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       turnIndex: false,
       turnState: true,
     }]);
+  });
+
+  it('projects Claude Code identity on Anthropic Messages with a JSON metadata user id', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'anthropic' });
+    const captured = captureRequestParams(requester);
+    const { service, identityCatalog } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { preset: 'claude_code_compatible' } } },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toMatchObject({
+      'User-Agent': 'claude-cli/2.1.285 (external, cli)',
+      'x-app': 'cli',
+      'X-Stainless-Package-Version': '0.94.0',
+      'X-Claude-Code-Session-Id': '00000000-0000-4000-8000-000000000002',
+    });
+    expect(JSON.parse(captured[0]?.cacheKey ?? '{}')).toEqual({
+      device_id: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      account_uuid: '',
+      session_id: '00000000-0000-4000-8000-000000000002',
+    });
+    const [observed] = identityCatalog.observations();
+    expect(observed).toMatchObject({ provider_id: 'p', profile: 'claude_code', preset: 'claude_code_compatible' });
+    expect(observed?.headers).toContainEqual({ name: 'User-Agent', value: 'claude-cli/2.1.285 (external, cli)' });
+  });
+
+  it('sends a custom identity profile verbatim: fixed version, edited User-Agent, removed and added headers, body params', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'anthropic' });
+    const captured = captureRequestParams(requester);
+    const { service, identityCatalog } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { profile: 'custom:claude-1' } } },
+      identityCatalogDocument: {
+        version: 1,
+        tracks: {},
+        profiles: [{
+          id: 'custom:claude-1',
+          builtin: false,
+          label: 'Claude pinned',
+          base_preset: 'claude_code_compatible',
+          track: 'claude_code',
+          version: { mode: 'fixed', value: '2.0.1' },
+          user_agent: 'claude-cli/{version} (external, sdk-cli)',
+          headers: [
+            { name: 'x-app', value: '' },
+            { name: 'X-Example-Client', value: '{version}/{model}' },
+          ],
+          params: [{ name: 'service_tier', value: 'standard_only' }],
+        }],
+      },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toMatchObject({
+      'User-Agent': 'claude-cli/2.0.1 (external, sdk-cli)',
+      'X-Example-Client': '2.0.1/wire-model',
+    });
+    expect(captured[0]?.headers).not.toHaveProperty('x-app');
+    expect(captured[0]?.requestParams).toMatchObject({ service_tier: 'standard_only' });
+    expect(identityCatalog.observations()[0]).toMatchObject({
+      profile: 'custom:claude-1',
+      params: { service_tier: 'standard_only' },
+    });
+  });
+
+  it('rejects a layer that names a missing identity profile before sending', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'anthropic' });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { profile: 'custom:gone' } } },
+    });
+
+    await expect(service.request({ source: { type: 'turn', turnId: 1, step: 1 } }))
+      .rejects.toThrow('request identity profile custom:gone does not exist');
+    expect(captured).toHaveLength(0);
   });
 
   it('replays a captured Codex turn-state token inside the turn and drops it on the next turn', async () => {

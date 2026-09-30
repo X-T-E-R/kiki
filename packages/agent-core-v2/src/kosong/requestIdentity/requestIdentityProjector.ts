@@ -1,10 +1,12 @@
 import type { RequestIdentityWireOptions } from '#/kosong/contract/provider';
+import { createHash } from 'node:crypto';
 import { arch as hostArch, hostname, release, type as osType } from 'node:os';
 import type { Protocol } from '#/kosong/protocol/protocol';
 import type { ResolvedRequestIdentityPolicy } from './requestIdentityPolicy';
 import type { RequestIdentitySnapshot } from '#/session/requestIdentity/requestIdentityRegistry';
 import { Error2 } from '#/_base/errors/errors';
 import { RequestIdentityErrors } from './errors';
+import type { RenderedRequestIdentityProfile } from './requestIdentityProfile';
 
 export const SUPPRESS_USER_AGENT_HEADER = 'x-kiki-internal-suppress-user-agent';
 export const SUPPRESS_REQUEST_IDENTITY_HEADER = 'x-kiki-internal-suppress-request-identity';
@@ -13,6 +15,8 @@ export interface RequestIdentityProjection {
   readonly headers?: Readonly<Record<string, string>>;
   readonly cacheKey?: string;
   readonly wire?: RequestIdentityWireOptions;
+  /** Top-level body fields the identity profile adds; adapters without a params seam ignore them. */
+  readonly params?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export function projectRequestIdentity(input: {
@@ -29,6 +33,7 @@ export function projectRequestIdentity(input: {
   readonly platform: NodeJS.Platform;
   readonly arch: string;
   readonly hostRequestHeaders?: Readonly<Record<string, string>>;
+  readonly profile?: RenderedRequestIdentityProfile;
 }): RequestIdentityProjection {
   preflightRequestIdentityProjection(input.policy, input.protocol);
   const protocol = protocolFamily(input.protocol);
@@ -43,7 +48,9 @@ export function projectRequestIdentity(input: {
       : protocol === 'responses' && policy.cache.responses === 'prompt_cache_key'
         ? sessionIdentity()
         : protocol === 'messages' && policy.cache.messages === 'metadata_user_id'
-          ? sessionIdentity()
+          ? policy.lineage.format === 'claude_code'
+            ? claudeCodeMetadataUserId(input, sessionIdentity())
+            : sessionIdentity()
           : protocol === 'other' && policy.preset === 'kimi_code'
             ? sessionIdentity()
             : undefined;
@@ -91,6 +98,10 @@ export function projectRequestIdentity(input: {
     headers['x-grok-client-identifier'] = 'grok-shell';
     headers['x-grok-client-version'] = input.runtimeVersion;
     headers['x-grok-model-override'] = input.model;
+  } else if (policy.lineage.format === 'claude_code') {
+    if (policy.lineage.sessionScope !== 'none') {
+      headers['X-Claude-Code-Session-Id'] = sessionIdentity();
+    }
   } else if (policy.lineage.format === 'kimi_code' && input.isKimiProvider) {
     if (policy.client.installationIdentity === 'persistent_local') {
       Object.assign(headers, kimiCodeDeviceHeaders(input));
@@ -103,6 +114,8 @@ export function projectRequestIdentity(input: {
   }
   if (policy.client.userAgent === 'codex') {
     headers['User-Agent'] = codexUserAgent(input);
+  } else if (policy.client.userAgent === 'claude_code') {
+    headers['User-Agent'] = `claude-cli/${asciiHeader(input.runtimeVersion)} (external, cli)`;
   } else if (policy.client.userAgent === 'grok_build') {
     headers['User-Agent'] = `grok-shell/${input.runtimeVersion} (${input.platform}; ${input.arch})`;
   } else if (policy.client.userAgent === 'kimi_code') {
@@ -110,6 +123,7 @@ export function projectRequestIdentity(input: {
   } else if (policy.client.userAgent === 'none') {
     headers[trueNone ? SUPPRESS_REQUEST_IDENTITY_HEADER : SUPPRESS_USER_AGENT_HEADER] = '1';
   }
+  if (input.profile !== undefined && !trueNone) applyProfileHeaders(headers, input.profile, policy);
   let responsesClientMetadata: Record<string, string> | undefined;
   if (policy.responsesMetadata === 'codex') {
     const canonical = codexTurnMetadata(input);
@@ -151,9 +165,13 @@ export function projectRequestIdentity(input: {
       responsesClientMetadata['root_turn_id'] = input.snapshot.rootTurnId;
     }
   }
+  const params = input.profile === undefined || trueNone || Object.keys(input.profile.params).length === 0
+    ? undefined
+    : { ...input.profile.params };
   return {
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     cacheKey,
+    params,
     wire: {
       suppressUserAgent: policy.client.userAgent === 'none',
       suppressIdentity: trueNone,
@@ -181,12 +199,46 @@ export function preflightRequestIdentityProjection(
   if (policy.lineage.format === 'codex' && protocol !== 'responses') {
     throw unsupported('Codex-compatible request identity only supports OpenAI Responses');
   }
+  if (policy.lineage.format === 'claude_code' && protocol !== 'messages') {
+    throw unsupported('Claude Code-compatible request identity only supports Anthropic Messages');
+  }
   if (policy.lineage.format === 'grok_build' && protocol === 'other') {
     throw unsupported('Grok Build-compatible request identity requires Responses or Messages');
   }
   if (policy.client.userAgent === 'none' && protocol === 'other') {
     throw unsupported('true none requires an adapter with a final fetch suppression seam');
   }
+}
+
+function applyProfileHeaders(
+  headers: Record<string, string>,
+  profile: RenderedRequestIdentityProfile,
+  policy: ResolvedRequestIdentityPolicy,
+): void {
+  const set = (name: string, value: string): void => {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === name.toLowerCase()) Reflect.deleteProperty(headers, key);
+    }
+    if (value.length > 0) headers[name] = value;
+  };
+  if (profile.userAgent !== undefined && policy.client.userAgent !== 'none') {
+    set('User-Agent', profile.userAgent);
+  }
+  for (const header of profile.headers) set(header.name, header.value);
+}
+
+function claudeCodeMetadataUserId(
+  input: Parameters<typeof projectRequestIdentity>[0],
+  sessionId: string,
+): string {
+  const installation = input.policy.client.installationIdentity === 'persistent_local'
+    ? requiredSnapshot(input.snapshot.installationId, 'installation identity')
+    : input.rawSessionId;
+  return JSON.stringify({
+    device_id: createHash('sha256').update(installation).digest('hex'),
+    account_uuid: '',
+    session_id: sessionId,
+  });
 }
 
 function codexTurnMetadata(input: Parameters<typeof projectRequestIdentity>[0]) {

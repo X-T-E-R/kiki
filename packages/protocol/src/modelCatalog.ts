@@ -7,11 +7,11 @@ export const providerCatalogStatusSchema = z.enum([
 ]);
 export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 
-const requestIdentityOverridesSchema = z
+export const requestIdentityOverridesSchema = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -32,7 +32,7 @@ const requestIdentityOverridesSchema = z
             }).strict(),
           ])
           .optional(),
-        user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -53,14 +53,32 @@ const requestIdentityOverridesSchema = z
   .strict()
   .refine(hasDefinedLeaf, { message: 'request identity overrides must contain a leaf value' });
 
+export const requestIdentityPresetSchema = z.enum([
+  'codex_compatible',
+  'claude_code_compatible',
+  'grok_build_compatible',
+  'kimi_code',
+  'none',
+]);
+export type RequestIdentityPresetWire = z.infer<typeof requestIdentityPresetSchema>;
+
+/** Built-in ids are bare snake_case; user profiles live under `custom:`. */
+export const requestIdentityProfileIdSchema = z
+  .string()
+  .regex(/^(?:[a-z][a-z0-9_]{0,31}|custom:[a-z0-9][a-z0-9_-]{0,47})$/u);
+
 export const requestIdentityPolicySchema = z
   .object({
-    preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']).optional(),
+    preset: requestIdentityPresetSchema.optional(),
+    profile: requestIdentityProfileIdSchema.optional(),
     overrides: requestIdentityOverridesSchema.optional(),
   })
   .strict()
-  .refine((policy) => policy.preset !== undefined || policy.overrides !== undefined, {
-    message: 'request identity policy must contain preset or overrides',
+  .refine((policy) => policy.preset !== undefined || policy.profile !== undefined || policy.overrides !== undefined, {
+    message: 'request identity policy must contain preset, profile or overrides',
+  })
+  .refine((policy) => policy.preset === undefined || policy.profile === undefined, {
+    message: 'request identity policy cannot set both preset and profile',
   });
 export type RequestIdentityPolicyWire = z.infer<typeof requestIdentityPolicySchema>;
 
