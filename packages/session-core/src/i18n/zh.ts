@@ -4945,6 +4945,8 @@ export const zh = {
   'st.perm.reason': '原因（选填）',
   'st.perm.add': '添加规则',
   'st.perm.edit': '编辑',
+  'st.perm.addTitle': '新建权限规则',
+  'st.perm.editTitle': '编辑权限规则',
   'st.perm.delete': '删除',
   'st.perm.moveUp': '上移',
   'st.perm.moveDown': '下移',

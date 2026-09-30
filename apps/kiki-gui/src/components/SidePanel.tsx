@@ -5,12 +5,14 @@
  * and an optional pinned footer for the form's actions.
  *
  * Which surface a form gets is decided by how much it asks:
- *   - one or two fields that edit a row in place: the row itself opens
- *     (`InlineEditor`, a card that expands with the grid-rows transition);
- *   - a short, self-contained form (a name, a pair of choices, a confirm):
- *     a Dialog at `sm` / `md`;
- *   - a long form, a table to edit, or anything the user compares against
- *     the page behind it: this SidePanel.
+ *   - a row that edits its own values: the row itself opens under it
+ *     (`InlineEditor`, an inset card that unfolds with the grid-rows
+ *     transition) — model rows, catalog imports, goals, price rows;
+ *   - a short, self-contained form that is not a row (a name, a rule, a
+ *     confirm): a Dialog at `sm` / `md`;
+ *   - a long or multi-step form, a table to edit, or anything the user
+ *     compares against the page behind it: this SidePanel — new connection,
+ *     new notification channel, MCP server editor, model prices.
  * Pages never append a bare form block into their own flow.
  */
 

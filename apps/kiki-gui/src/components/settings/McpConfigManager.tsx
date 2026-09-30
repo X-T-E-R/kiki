@@ -16,6 +16,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
+import { SidePanel } from '../SidePanel';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 import { CapabilityIcon } from '../capabilities/CapabilityIcon';
@@ -404,12 +405,7 @@ export function McpConfigManager({
   };
 
   const editor = draft === null ? null : (
-        <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3" disabled={saving || resetting}>
-          <p className="text-[12px] font-semibold text-ink">
-            {draft.original === undefined
-              ? t('st.mcp.add')
-              : t('st.mcp.formTitleEdit')}
-          </p>
+        <fieldset className="space-y-3" disabled={saving || resetting} data-mcp-editor>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.name')}
@@ -491,8 +487,9 @@ export function McpConfigManager({
           <div className="flex flex-wrap gap-2">
             <button type="button" className={PRIMARY_BUTTON} disabled={draft.name.trim() === ''} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
             <button type="button" className={SECONDARY_BUTTON} disabled={testing || draft.name.trim() === ''} onClick={() => void test()}>{testing ? t('st.mcp.testing') : t('st.mcp.test')}</button>
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft(null); }}>{t('common.cancel')}</button>
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { switchDraft(null); }}>{t('common.cancel')}</button>
           </div>
+          <FeedbackLine feedback={feedback} />
         </fieldset>
   );
 
@@ -534,14 +531,23 @@ export function McpConfigManager({
         </button>
       </div>
       <Hint>{t('st.mcp.configHint')}</Hint>
-      {draft !== null && draft.original === undefined ? editor : null}
+      {/* Add and edit share one side panel: the list stays where it was. */}
+      {draft !== null ? (
+        <SidePanel
+          title={draft.original === undefined ? t('st.mcp.add') : `${t('st.mcp.formTitleEdit')} · ${draft.original.name}`}
+          overlayId="settings-mcp-editor"
+          onClose={() => { switchDraft(null); }}
+          width="lg"
+        >
+          {editor}
+        </SidePanel>
+      ) : null}
       <div className="space-y-0.5">
         {ordered.map((entry) => {
           const live = runtimeFor(entry);
           const open = expanded === `${entry.source}:${entry.name}`;
           const tools = live === undefined ? [] : runtime?.toolsByServer.get(live.id) ?? [];
           const statusLabel = live === undefined ? t('st.mcp.status.notRunning') : t(`st.mcp.status.${live.status}`);
-          const editing = draft?.original?.name === entry.name && draft.original.source === entry.source;
           return (
             <div key={`${entry.source}:${entry.name}`} data-mcp-server={entry.name} data-mcp-status={live?.status ?? 'unknown'}>
               <div className="group flex min-h-14 min-w-0 items-center gap-3 rounded-lg px-2 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]">
@@ -585,9 +591,8 @@ export function McpConfigManager({
                   ) : null}
                 </div>
               </div>
-              {editing ? <div className="pl-2 pr-2 pb-3">{editor}</div> : null}
-              <div className="expand-collapse grid" style={{ gridTemplateRows: open && !editing ? '1fr' : '0fr' }}>
-                <div className="overflow-hidden" inert={!open || editing}>
+              <div className="expand-collapse grid" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
+                <div className="overflow-hidden" inert={!open}>
                   <div className="space-y-4 pb-4 pl-14 pr-2 pt-1" data-mcp-server-detail={entry.name}>
                     {live?.status === 'error' && live.last_error !== undefined ? (
                       <div className="space-y-1" data-mcp-error={entry.name}>
@@ -710,7 +715,8 @@ export function McpConfigManager({
         </Disclosure>
       </section>
       <SavedTick show={justSaved} />
-      <FeedbackLine feedback={feedback} />
+      {/* While the editor is open its own line carries the result. */}
+      <FeedbackLine feedback={draft === null ? feedback : null} />
       <FeedbackLine feedback={oauthFeedback} />
       <ConfirmDialog
         open={pendingReset !== null}

@@ -12,6 +12,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '../ProviderFields';
 import { connectionKind, type ConnectionKind } from '../providerPresets';
+import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
 import { AccountQuotaCard } from './AccountQuotaCard';
 import { CatalogImportCard } from './CatalogImportCard';
@@ -64,7 +65,11 @@ export function ConnectionsTab() {
   // The /new banner deep-links to account sign-in; open the add flow on it.
   const wantsAccount = hash === '#st-card-auth';
   const [adding, setAdding] = useState(false);
-  const addOpen = adding || empty || wantsAccount || hash === '#st-card-providers-add';
+  // A deep link opens the add flow once; closing it stays closed.
+  const [linkClosed, setLinkClosed] = useState<string | null>(null);
+  const linked = (wantsAccount || hash === '#st-card-providers-add') && linkClosed !== hash;
+  const addOpen = adding || empty || linked;
+  const closeAdd = () => { setAdding(false); setLinkClosed(hash); };
 
   const signOut = async (providerId: string) => {
     const method = methodFor(providerId);
@@ -135,24 +140,37 @@ export function ConnectionsTab() {
 
       <SectionCard id="st-card-engines" title={t('st.engines.title')}><ExternalEnginesList /></SectionCard>
 
-      {addOpen ? (
+      {/* With no connection yet the add flow is the page itself; otherwise it
+          opens beside the list in a side panel, so the list stays in view. */}
+      {addOpen && empty ? (
         <SectionCard id="st-card-providers-add" title={t('st.connections.addTitle')}>
           <span id="st-card-auth" aria-hidden className="block" />
-          <div className="space-y-3">
+          <NewProviderWizard
+            key={wantsAccount ? 'account' : 'api'}
+            initialMethod={wantsAccount ? 'account' : 'api'}
+            onSaved={async () => { await refreshProviderData(); closeAdd(); }}
+            onAccountChanged={refreshProviderData}
+          />
+        </SectionCard>
+      ) : null}
+      {addOpen && !empty ? (
+        <SidePanel
+          title={t('st.connections.addTitle')}
+          overlayId="settings-add-connection"
+          onClose={closeAdd}
+          width="lg"
+          data={{ 'data-add-connection-panel': '' }}
+        >
+          <div id="st-card-providers-add">
+            <span id="st-card-auth" aria-hidden className="block" />
             <NewProviderWizard
               key={wantsAccount ? 'account' : 'api'}
               initialMethod={wantsAccount ? 'account' : 'api'}
-              onSaved={async () => { await refreshProviderData(); setAdding(false); }}
+              onSaved={async () => { await refreshProviderData(); closeAdd(); }}
               onAccountChanged={refreshProviderData}
             />
-            {!empty && adding ? (
-              <button type="button" className="h-7 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
-                onClick={() => { setAdding(false); }}>
-                {t('common.cancel')}
-              </button>
-            ) : null}
           </div>
-        </SectionCard>
+        </SidePanel>
       ) : null}
     </div>
   );

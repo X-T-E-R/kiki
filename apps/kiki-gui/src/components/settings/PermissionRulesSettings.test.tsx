@@ -18,13 +18,13 @@ async function settle() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 async function click(label: string) {
-  const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label);
+  const button = [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label);
   expect(button).toBeDefined();
   await act(async () => button!.click());
   await settle();
 }
 async function typePattern(value: string) {
-  const input = container.querySelector<HTMLInputElement>('[data-permission-rule-editor] input')!;
+  const input = document.body.querySelector<HTMLInputElement>('[data-permission-rule-editor] input')!;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
 }
@@ -56,8 +56,8 @@ describe('persistent permission rule editor', () => {
     await render();
     await click('Add rule');
     await typePattern('Bash(unclosed');
-    expect(container.textContent).toContain('ToolName(argument-pattern)');
-    expect(container.querySelector<HTMLButtonElement>('[data-settings-draft="permission-rule"] button')?.disabled).toBe(true);
+    expect(document.body.textContent).toContain('ToolName(argument-pattern)');
+    expect(document.body.querySelector<HTMLButtonElement>('[data-settings-draft="permission-rule"] button')?.disabled).toBe(true);
     expect(client.patchConfig).not.toHaveBeenCalled();
     await typePattern('Bash(rm -rf*)');
     await click('Save');
@@ -65,7 +65,7 @@ describe('persistent permission rule editor', () => {
       { decision: 'ask', pattern: 'Bash(rm -rf*)', scope: 'user', reason: undefined },
     ] } });
     expect(config.permission.dangerousBash).toBe('on');
-    expect(container.textContent).toContain('Bash(rm -rf*)');
+    expect(document.body.textContent).toContain('Bash(rm -rf*)');
   });
 
   it('edits, reorders, and deletes the whole ordered rules array', async () => {
@@ -78,10 +78,10 @@ describe('persistent permission rule editor', () => {
     await typePattern('Bash(rm *)');
     await click('Save');
     expect(config.permission.rules[0]?.pattern).toBe('Bash(rm *)');
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Move up"]:not([disabled])')!.click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Move up"]:not([disabled])')!.click());
     await settle();
     expect(config.permission.rules.map((rule) => rule.pattern)).toEqual(['Read', 'Bash(rm *)']);
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Delete Read"]')!.click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Delete Read"]')!.click());
     await settle();
     expect(config.permission.rules.map((rule) => rule.pattern)).toEqual(['Bash(rm *)']);
   });

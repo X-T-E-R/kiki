@@ -397,8 +397,8 @@ describe('ModelCatalogCard row editor', () => {
 });
 
 /**
- * Collapsing a row is a peek, not a close: the editor stays mounted behind
- * `display: none` with its draft, baseline and dirty flag intact, and only an
+ * Collapsing a row is a peek, not a close: the editor stays mounted (folded
+ * and inert) with its draft, baseline and dirty flag intact, and only an
  * explicit Close — confirmed while dirty — drops the draft.
  */
 describe('ModelCatalogCard context window and compaction point', () => {
@@ -485,12 +485,12 @@ describe('ModelCatalogCard row editor draft retention', () => {
     expect(buttonByText(container, 'Save').disabled).toBe(false);
 
     await act(async () => { editToggle(container).click(); });
-    expect(editorWrapper(container)!.style.display).toBe('none');
+    expect(editorWrapper(container)!.querySelector('[data-inline-editor]')?.getAttribute('data-inline-editor')).toBe('closed');
     expect(nameInput(container).value).toBe('K2 Thinking');
     expect(container.querySelector('[data-collapsed-draft]')?.textContent).toBe('Unsaved');
 
     await act(async () => { editToggle(container).click(); });
-    expect(editorWrapper(container)!.style.display).toBe('');
+    expect(editorWrapper(container)!.querySelector('[data-inline-editor]')?.getAttribute('data-inline-editor')).toBe('open');
     expect(nameInput(container).value).toBe('K2 Thinking');
     expect(buttonByText(container, 'Save').disabled).toBe(false);
     expect(updateModel).not.toHaveBeenCalled();

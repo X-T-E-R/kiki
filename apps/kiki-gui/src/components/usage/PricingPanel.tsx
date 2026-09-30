@@ -19,6 +19,7 @@ import type { ModelPriceOverride, UsagePricingResponse } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
+import { InlineEditor } from '../InlineEditor';
 import { SidePanel } from '../SidePanel';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
@@ -254,10 +255,9 @@ function PricingRow({ item, open, configured, onToggle, onSaved }: {
           </span>
         ))}
       </button>
-      <div id={editorId} className="expand-collapse grid" style={{ gridTemplateRows: open ? '1fr' : '0fr' }} inert={!open}>
-        <div className="overflow-hidden">
+      <InlineEditor open={open} id={editorId} className="mb-3">
           <form
-            className="mb-3 space-y-3 rounded-lg bg-ink/[0.03] p-3"
+            className="space-y-3"
             onSubmit={(event) => { event.preventDefault(); save.mutate(); }}
           >
             <div className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
@@ -323,8 +323,7 @@ function PricingRow({ item, open, configured, onToggle, onSaved }: {
               ) : null}
             </div>
           </form>
-        </div>
-      </div>
+      </InlineEditor>
     </div>
   );
 }

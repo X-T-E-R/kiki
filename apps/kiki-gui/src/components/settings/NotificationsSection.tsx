@@ -6,6 +6,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { FeedbackLine } from '../controls';
 import { Icon } from '../icons';
+import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddChannelForm } from './notifications/AddChannelForm';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
@@ -77,10 +78,16 @@ export function NotificationsSection() {
         </div>
       </SectionCard>
       {adding ? (
-        <SectionCard id="st-card-notify-add" title={t('st.notify.addTitle')}>
-          <AddChannelForm settings={data} providers={registry}
-            onDone={(channelId) => { setAdding(false); if (channelId !== null) setOpened(channelId); }} />
-        </SectionCard>
+        <SidePanel
+          title={t('st.notify.addTitle')}
+          overlayId="settings-add-notify-channel"
+          onClose={() => { setAdding(false); }}
+        >
+          <div id="st-card-notify-add">
+            <AddChannelForm settings={data} providers={registry}
+              onDone={(channelId) => { setAdding(false); if (channelId !== null) setOpened(channelId); }} />
+          </div>
+        </SidePanel>
       ) : null}
     </>
   );

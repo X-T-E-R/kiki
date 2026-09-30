@@ -30,6 +30,7 @@ import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
+import { InlineEditor } from './InlineEditor';
 import { LifeMark } from './LifeMark';
 
 /** The armed cancel falls back to idle after this long without the second click. */
@@ -328,8 +329,8 @@ export function GoalCard({
           </span>
         )}
       </div>
-        {editing ? (
-          <div className="mt-2 space-y-2 pb-1 pl-[15px]" data-goal-editor>
+        <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-4 space-y-2">
+          <div className="space-y-2" data-goal-editor>
             <label className="block">
               <span className="mb-1 block text-[12px] font-medium text-ink-soft">
                 {t('goal.editObjective')}
@@ -408,7 +409,7 @@ export function GoalCard({
               </p>
             ) : null}
           </div>
-        ) : null}
+        </InlineEditor>
         {actionError !== null ? (
           <p role="alert" data-goal-error className="mt-1 pb-1 pl-[15px] break-words text-[12px] text-danger">
             {t('goal.actionFailed', { detail: actionError })}

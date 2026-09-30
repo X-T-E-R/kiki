@@ -86,7 +86,8 @@ async function render(settings = SETTINGS, entry = '/settings/notifications'): P
     root.render(<QueryClientProvider client={client}><I18nProvider><MemoryRouter initialEntries={[entry]}><NotificationsSection /></MemoryRouter></I18nProvider></QueryClientProvider>);
   });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return container;
+  // Editors open in a portaled side panel, so the whole document is the surface.
+  return document.body as HTMLDivElement;
 }
 
 const click = async (element: Element | null) => { await act(async () => { (element as HTMLElement).click(); }); };

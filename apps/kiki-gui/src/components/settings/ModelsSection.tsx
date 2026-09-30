@@ -24,6 +24,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { InlineEditor } from '../InlineEditor';
 import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import {
@@ -997,8 +998,8 @@ function ModelRow({
   onSaved: () => Promise<void>;
 }) {
   const { t } = useI18n();
-  // Collapsing the row hides the editor (`display: none`) instead of unmounting
-  // it, so a half-finished draft, its baseline and its dirty flag survive a peek
+  // Collapsing the row folds the editor away (InlineEditor, inert while
+  // closed) instead of unmounting it, so a half-finished draft, its baseline and its dirty flag survive a peek
   // at the catalog. Only the editor's own Close button unmounts it — after the
   // discard confirmation when the draft is dirty.
   const [editorOpen, setEditorOpen] = useState(false);
@@ -1025,7 +1026,7 @@ function ModelRow({
     <div
       data-model-row={item.id}
       data-default={isDefault ? 'true' : undefined}
-      className={`border-b border-hairline last:border-b-0 ${editorOpen ? 'bg-paper' : ''}`}
+      className="border-b border-hairline last:border-b-0"
       style={hidden ? { display: 'none' } : undefined}
     >
       <div className="flex min-h-11 items-center gap-2 py-1.5 pr-2 pl-1.5">
@@ -1072,14 +1073,16 @@ function ModelRow({
         </button>
       </div>
       {editorMounted ? (
-        <div data-model-row-editor={item.id} className="px-3 pb-3 sm:pl-12" style={editorOpen ? undefined : { display: 'none' }}>
-          <ModelCatalogRowEditor
-            item={item}
-            inheritedImageTypes={provider?.images?.accepted_types}
-            onSaved={onSaved}
-            onDirtyChange={setEditorDirty}
-            onClose={requestClose}
-          />
+        <div data-model-row-editor={item.id} className="px-2 sm:pl-12">
+          <InlineEditor open={editorOpen} className="mb-3">
+            <ModelCatalogRowEditor
+              item={item}
+              inheritedImageTypes={provider?.images?.accepted_types}
+              onSaved={onSaved}
+              onDirtyChange={setEditorDirty}
+              onClose={requestClose}
+            />
+          </InlineEditor>
         </div>
       ) : null}
       <ConfirmDialog

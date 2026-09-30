@@ -5012,6 +5012,8 @@ export const en = {
   'st.perm.reason': 'Reason (optional)',
   'st.perm.add': 'Add rule',
   'st.perm.edit': 'Edit',
+  'st.perm.addTitle': 'New permission rule',
+  'st.perm.editTitle': 'Edit permission rule',
   'st.perm.delete': 'Delete',
   'st.perm.moveUp': 'Move up',
   'st.perm.moveDown': 'Move down',

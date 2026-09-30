@@ -6,6 +6,7 @@ import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -108,15 +109,23 @@ export function PermissionRulesSettings() {
                 aria-label={`${t('st.perm.delete')} ${rule.pattern}`} onClick={() => void remove(index)}>{t('st.perm.delete')}</button>
             </div>
           </li>)}</ol>}
-      {editing === null ? <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3">
         <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
           onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
         <SaveStatus saving={saving} saved={saved} />
-      </div> :
-        <div className="space-y-3 border-l-2 border-hairline pl-3" data-permission-rule-editor>
+      </div>
+      {/* A rule is four fields: a short dialog, not a block pushed into the list. */}
+      {editing !== null ? <Dialog
+        onClose={() => { setEditing(null); setFeedback(null); }}
+        ariaLabel={editing.index === null ? t('st.perm.addTitle') : t('st.perm.editTitle')}
+        overlayId="settings-permission-rule"
+        panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md}`}
+      >
+        <div className="space-y-3" data-permission-rule-editor>
+          <h2 className="font-display text-[18px] font-semibold text-ink">{editing.index === null ? t('st.perm.addTitle') : t('st.perm.editTitle')}</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
-              <input className={INPUT} value={editing.draft.pattern} onChange={(event) => update({ pattern: event.target.value })}
+              <input data-autofocus className={INPUT} value={editing.draft.pattern} onChange={(event) => update({ pattern: event.target.value })}
                 aria-invalid={!patternValid} aria-describedby={!patternValid ? 'permission-rule-pattern-error' : undefined}
                 placeholder="Bash(rm -rf*)" /></label>
             <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.decision')}</span>
@@ -135,9 +144,11 @@ export function PermissionRulesSettings() {
           <SettingsDraftFooter id="permission-rule" dirty={dirty} saving={saving} saveDisabled={!patternValid}
             onSave={() => void saveDraft()} onDiscard={() => { setEditing(null); setFeedback(null); }} />
           {!dirty ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setEditing(null)}>{t('common.cancel')}</button> : null}
-        </div>}
+          <FeedbackLine feedback={feedback} />
+        </div>
+      </Dialog> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-      <FeedbackLine feedback={feedback} />
+      {editing === null ? <FeedbackLine feedback={feedback} /> : null}
     </div>
   </SectionCard>;
 }

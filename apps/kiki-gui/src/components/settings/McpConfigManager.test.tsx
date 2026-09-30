@@ -95,7 +95,8 @@ async function render(entries: readonly McpManagedServer[] = [remote, readOnly],
       </QueryClientProvider>,
     );
   });
-  return container;
+  // Editors open in a portaled side panel, so the whole document is the surface.
+  return document.body as HTMLDivElement;
 }
 
 async function click(element: Element): Promise<void> {
@@ -356,6 +357,8 @@ describe('MCP OAuth credential reset', () => {
     };
     const unique = await render([remote, readOnly, stdio]);
     expect(buttons(unique)).toHaveLength(1);
+    // One mount at a time: the query surface is the whole document.
+    await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
     const ambiguous = await render([remote, { ...readOnly, name: 'remote' }, stdio]);
     expect(buttons(ambiguous)).toHaveLength(0);
   });

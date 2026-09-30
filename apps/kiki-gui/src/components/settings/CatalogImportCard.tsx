@@ -17,6 +17,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { SearchField, Tag } from '../capabilities/primitives';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { InlineEditor } from '../InlineEditor';
 import { protocolLabel } from '../providerPresets';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
@@ -145,7 +146,7 @@ function CatalogRow({
     <li
       data-catalog-row={item.id}
       data-catalog-rejected={item.rejected ? 'true' : undefined}
-      className={`border-t border-hairline first:border-t-0 ${open ? 'bg-paper' : ''}`}
+      className="border-t border-hairline first:border-t-0"
     >
       <div className="flex min-h-12 items-center gap-3 px-3 py-2">
         <div className={`min-w-0 flex-1 ${item.rejected ? 'opacity-60' : ''}`}>
@@ -182,9 +183,9 @@ function CatalogRow({
           </button>
         ) : null}
       </div>
-      {open ? (
+      <InlineEditor open={open} lazy className="mx-3 mb-3">
         <ImportForm id={formId} item={item} configuredIds={configuredIds} onCancel={onClose} onImported={onImported} />
-      ) : null}
+      </InlineEditor>
     </li>
   );
 }
@@ -234,7 +235,7 @@ function ImportForm({
       id={id}
       data-catalog-form={item.id}
       noValidate
-      className="space-y-3 border-t border-hairline px-3 pb-3 pt-3"
+      className="space-y-3"
       onSubmit={(event) => { event.preventDefault(); void submit(); }}
     >
       {item.guessed ? <Hint>{t('st.catalog.guessedHint')}</Hint> : null}
