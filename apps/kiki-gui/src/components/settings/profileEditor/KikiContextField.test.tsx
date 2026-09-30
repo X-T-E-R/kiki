@@ -68,17 +68,17 @@ describe('KikiContextField', () => {
 
   it('lists delegation, the five tool groups and hooks, all off for an absent field', async () => {
     await render(lead);
-    expect([...container.querySelectorAll<HTMLElement>('[data-kiki-capability]')].map((node) => node.dataset.kikiCapability))
+    expect([...container.querySelectorAll<HTMLElement>('[data-kiki-capability]')].map((node) => node.dataset['kikiCapability']))
       .toEqual(['subagents', 'memory', 'board', 'cron', 'threads', 'history', 'hooks']);
     expect(container.querySelectorAll('[data-kiki-capability][data-on="true"]')).toHaveLength(0);
     expect(row('memory').textContent).toContain('kiki_memory_write');
-    expect(container.querySelector<HTMLElement>('[data-kiki-context-field]')?.dataset.kikiContextField).toBe('absent');
+    expect(container.querySelector<HTMLElement>('[data-kiki-context-field]')?.dataset['kikiContextField']).toBe('absent');
     expect(container.querySelector<HTMLElement>('[data-kiki-context-clear]')).toBeNull();
   });
 
   it('tells an explicit [] apart from an absent field and offers to remove it', async () => {
     const onChange = await render({ ...lead, kiki_context: [] });
-    expect(container.querySelector<HTMLElement>('[data-kiki-context-field]')?.dataset.kikiContextField).toBe('empty');
+    expect(container.querySelector<HTMLElement>('[data-kiki-context-field]')?.dataset['kikiContextField']).toBe('empty');
     expect(container.textContent).toContain('explicitly all off');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-kiki-context-clear]')!.click(); });
     expect(onChange).toHaveBeenLastCalledWith({ allowKikiSubagents: false, kikiContext: undefined });
@@ -86,7 +86,7 @@ describe('KikiContextField', () => {
 
   it('turns a group on into the list and keeps delegation on its own flag', async () => {
     const onChange = await render({ ...lead, allow_kiki_subagents: true, kiki_context: ['hooks'] });
-    expect(row('subagents').dataset.on).toBe('true');
+    expect(row('subagents').dataset['on']).toBe('true');
     await toggle('board');
     expect(onChange).toHaveBeenLastCalledWith({ allowKikiSubagents: true, kikiContext: ['board', 'hooks'] });
     await toggle('subagents');
@@ -95,9 +95,9 @@ describe('KikiContextField', () => {
 
   it('shows hook support for the current engine, PreCompact as prepare-only', async () => {
     await render(lead);
-    expect(container.querySelector<HTMLElement>('[data-hook-support]')?.dataset.hookSupport).toBe('supported');
+    expect(container.querySelector<HTMLElement>('[data-hook-support]')?.dataset['hookSupport']).toBe('supported');
     const preCompact = container.querySelector<HTMLElement>('[data-hook-moment="PreCompact"]')!;
-    expect(preCompact.dataset.hookEffect).toBe('prepare');
+    expect(preCompact.dataset['hookEffect']).toBe('prepare');
     expect(preCompact.textContent).toContain('injects nothing');
     expect(row('hooks').querySelector('input')!.disabled).toBe(false);
   });
@@ -107,7 +107,7 @@ describe('KikiContextField', () => {
     expect(container.querySelector<HTMLElement>('[data-hook-support]')?.textContent).toContain('untested');
     expect(row('hooks').querySelector('input')!.disabled).toBe(false);
     await render({ ...lead, executor: 'gemini-acp' });
-    expect(container.querySelector<HTMLElement>('[data-hook-support]')?.dataset.hookSupport).toBe('unsupported');
+    expect(container.querySelector<HTMLElement>('[data-hook-support]')?.dataset['hookSupport']).toBe('unsupported');
     expect(container.querySelector<HTMLElement>('[data-hook-moments]')).toBeNull();
     expect(row('hooks').querySelector('input')!.disabled).toBe(true);
   });
