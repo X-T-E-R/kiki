@@ -113,7 +113,7 @@ const IDE_DIAGNOSTIC = '这是 Antigravity IDE，不是 ACP CLI。请通过 Anti
 const executorChecks = {
   'antigravity-acp': {
     status: 'unavailable', command: '', resolved_args: [], login_status: 'unknown',
-    diagnostics: [{ severity: 'error', message: IDE_DIAGNOSTIC }],
+    diagnostics: [{ code: 'antigravity_ide_not_acp', severity: 'error', message: IDE_DIAGNOSTIC }],
     requirements: [{ id: 'antigravity-acp', label: 'Antigravity ACP CLI', role: 'program', status: 'missing',
       install_hint: 'Install Google Antigravity ACP CLI through the Antigravity executor binary cache (default 1.2.1); the Antigravity IDE is not an ACP CLI.' }],
   },
@@ -183,10 +183,13 @@ const grokInteractions = [
 
 const CODEX_EXEC = execution('codex-app-server', 'codex-app-server', { profileDelivery: 'developer_instructions' });
 const codexItems = [
-  turn(1, 'List the Kiki profiles you can dispatch.', [
-    { kind: 'tool', frameId: 'cx-t1-profiles', toolCallId: 'external:codex:profiles', name: 'kiki-harness.kiki_profiles', state: 'error',
-      input: {}, error: 'MCP tool call requires approval, which is disabled in this approval mode.' },
-    { kind: 'text', frameId: 'cx-t1-a', role: 'assistant', text: 'Codex refused the Kiki tool call because this session runs without approvals.' },
+  turn(1, 'List the Kiki profiles you can dispatch, then open the issue tracker.', [
+    { kind: 'tool', frameId: 'cx-t1-profiles', toolCallId: 'external:codex:profiles', name: 'kiki-harness/kiki_profiles', state: 'done',
+      input: {}, output: '{"profiles":[{"name":"reviewer"},{"name":"coder"}]}' },
+    { kind: 'tool', frameId: 'cx-t1-tracker', toolCallId: 'external:codex:tracker', name: 'tracker/list_issues', state: 'error',
+      input: { project: 'example' }, output: 'MCP tool call requires approval, but approval policy is never',
+      error: 'MCP tool call requires approval, but approval policy is never', errorCode: 'codex_mcp_approval_denied' },
+    { kind: 'text', frameId: 'cx-t1-a', role: 'assistant', text: 'Kiki lists two dispatchable profiles: reviewer and coder. The tracker server needs approval, which this mode does not ask for.' },
   ], { startAt: 0, endAt: 12, exec: CODEX_EXEC, stepUsage: usage(6_100, 380, 12_000) }),
 ];
 

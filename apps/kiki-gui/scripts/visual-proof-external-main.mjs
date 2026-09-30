@@ -42,7 +42,16 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await shot(name('grok-plan'));
 
     await openSession('session_fixture_external_codex');
+    if (await optional('[data-codex-mcp-note]')) throw new Error('codex YOLO still shows the Kiki-tools refusal note');
     await shot(name('codex-yolo'));
+    // Kiki's own tool ran under Full access; another MCP server's refusal reads by its code.
+    await page.locator('[data-history-fold] button, [data-history-fold][role="button"]').first().click();
+    const refused = page.locator('[data-tool-id$="tracker"]').first();
+    await refused.waitFor({ timeout: 5000 });
+    const refusedText = await refused.innerText();
+    if (!/Codex/.test(refusedText) || /approval policy is never/.test(refusedText)) throw new Error(`coded MCP refusal is not translated: ${refusedText}`);
+    await page.waitForTimeout(200);
+    await shot(name('codex-mcp-refused'));
     // Codex reports fork:false — the session menu must not offer it.
     await page.locator('[data-session-actions] > button').first().click();
     await page.waitForTimeout(250);
@@ -83,6 +92,10 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await shot(name('antigravity'));
     if (!(await optional('[data-antigravity-install]'))) return;
     await page.locator('[data-antigravity-install]').click();
+    await page.waitForSelector('[data-antigravity-progress="download"]', { timeout: 5000 });
+    await page.waitForFunction(() => Number(document.querySelector('[data-antigravity-progress] [role="progressbar"]')?.getAttribute('aria-valuenow')) >= 50, null, { timeout: 5000 });
+    await page.locator('[data-antigravity]').evaluate((element) => element.scrollIntoView({ block: 'start' }));
+    await shot(name('antigravity-progress'));
     await page.waitForSelector('[data-antigravity-version="1.2.1"]', { timeout: 8000 });
     await page.waitForTimeout(300);
     await page.locator('[data-antigravity]').evaluate((element) => element.scrollIntoView({ block: 'start' }));
@@ -101,6 +114,18 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.waitForFunction(() => !document.querySelector('[data-engine-check-button][aria-busy="true"]'), null, { timeout: 10_000 });
     await page.waitForTimeout(250);
     await shot(name('antigravity-signed-in'));
+    // A vendor rejection ends the flow; the translated line keeps the server's words in its tooltip.
+    await page.locator('[data-antigravity-logout]').click();
+    await page.waitForSelector('[data-antigravity-signin]', { timeout: 5000 });
+    await page.locator('[data-antigravity-signin]').click();
+    await page.waitForSelector('[data-antigravity-login="pending"]', { timeout: 5000 });
+    await page.locator('[data-antigravity-redirect]').fill('http://localhost:45289/oauth2callback?state=agy-login-2&code=denied');
+    await page.locator('[data-antigravity-complete]').click();
+    await page.waitForSelector('[data-antigravity-login="idle"] [data-antigravity-login-error]', { timeout: 5000 });
+    const title = await page.locator('[data-antigravity-login-error]').getAttribute('title');
+    if (title !== 'Antigravity sign-in failed: invalid_grant') throw new Error(`sign-in rejection tooltip is ${title}`);
+    await page.waitForTimeout(200);
+    await shot(name('antigravity-rejected'));
   }
 
   return async function scenarioExternalMain() {

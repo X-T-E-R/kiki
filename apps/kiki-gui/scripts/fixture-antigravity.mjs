@@ -12,8 +12,12 @@
  *
  * Scenario seed `antigravity` (optional):
  *   { versions, active_version, signed_in, install_delay_ms, expires_in_secs }
- * A pasted redirect URL containing `code=` signs in; anything else answers
- * `{ signed_in: false, retryable: true, message }` like the real service.
+ * A pasted redirect URL containing `code=` signs in; `code=denied` answers
+ * the vendor rejection (`message_code: signin_failed`) and anything else a
+ * callback mismatch (`message_code: callback_mismatch`), like the real service.
+ * An install pushes `event.executor.antigravity_install_progress` steps
+ * (download bytes, extract, activate, done) over the klient events socket;
+ * `install_hold_at` in the seed parks it at that many bytes for screenshots.
  * Mock data only.
  */
 
@@ -31,6 +35,7 @@ function state(server) {
       phase: 'idle',
       error: undefined,
       installDelayMs: seed.install_delay_ms ?? 900,
+      installHoldAt: seed.install_hold_at,
       expiresInSecs: seed.expires_in_secs ?? 300,
       flows: new Map(),
       counter: 0,
@@ -65,11 +70,24 @@ export function handleAntigravity(server, res, path, method, body) {
       return true;
     }
     ag.phase = 'installing';
+    const installId = `agy-install-${++ag.counter}`;
+    const push = (step) => server.klient?.emitGlobal('event.executor.antigravity_install_progress', { installId, version, ...step });
+    const totalBytes = 48_234_496;
+    const ticks = 8;
+    const tick = Math.max(20, Math.floor(ag.installDelayMs / (ticks + 2)));
+    for (let n = 0; n <= ticks; n++) {
+      const receivedBytes = Math.floor((totalBytes * n) / ticks);
+      setTimeout(() => { if (ag.installHoldAt === undefined || receivedBytes <= ag.installHoldAt) push({ stage: 'download', receivedBytes, totalBytes }); }, tick * n);
+    }
+    if (ag.installHoldAt !== undefined) return true;
+    setTimeout(() => { push({ stage: 'extract' }); }, tick * (ticks + 1));
     setTimeout(() => {
+      push({ stage: 'activate' });
       if (!ag.versions.includes(version)) ag.versions = [...ag.versions, version].sort();
       ag.active = ag.active ?? version;
       ag.phase = 'idle';
       ag.error = undefined;
+      push({ stage: 'done' });
       server.envelope(res, status(ag, version));
     }, ag.installDelayMs);
     return true;
@@ -103,8 +121,13 @@ export function handleAntigravity(server, res, path, method, body) {
       server.envelope(res, { signed_in: false, retryable: false, message: 'This sign-in expired. Start again.' });
       return true;
     }
+    if (String(body?.redirect_url ?? '').includes('code=denied')) {
+      ag.flows.delete(body.handle);
+      server.envelope(res, { signed_in: false, retryable: false, message: 'Antigravity sign-in failed: invalid_grant', message_code: 'signin_failed' });
+      return true;
+    }
     if (!String(body?.redirect_url ?? '').includes('code=')) {
-      server.envelope(res, { signed_in: false, retryable: true, message: 'The pasted address has no authorization code.' });
+      server.envelope(res, { signed_in: false, retryable: true, message: 'The callback does not match this pending sign-in.', message_code: 'callback_mismatch' });
       return true;
     }
     ag.flows.delete(body.handle);

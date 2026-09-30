@@ -874,6 +874,16 @@ export class FixtureKlient {
     }
   }
 
+  /** A global bus fact (`{ type, payload }`) to every core `events` subscriber, validated like the real server's. */
+  emitGlobal(type, payload) {
+    const schema = busEvents.get(type);
+    if (schema === undefined) throw new Error(`Unknown global bus event: ${type}`);
+    const data = { type, payload: parse(schema, payload) };
+    for (const [socket, state] of this.connections) {
+      for (const id of state.subscriptions.keys()) this.server.sendFrame(socket, { type: 'event', id, data });
+    }
+  }
+
   resync(session) {
     for (const [socket, state] of this.connections) for (const active of state.views.values()) {
       if (active.sessionId === session.record.id) this.signal(socket, active, { type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: session.seq, epoch: session.epoch } });
