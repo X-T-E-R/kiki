@@ -97,21 +97,3 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
     </span>
   );
 }
-
-/**
- * Codex refuses a Kiki tool call it cannot ask about. In Full access mode
- * there is no one to ask, so the note says what to switch to — shown only
- * while that combination holds.
- */
-export function CodexApprovalNote() {
-  const { t } = useI18n();
-  return (
-    <div className="px-6 pb-1.5">
-      <p data-codex-mcp-note role="note"
-        className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] items-start gap-2 text-[12px] leading-snug text-ink-soft">
-        <Icon name="warning" size={12} className="mt-0.5 shrink-0 text-amber-rule" />
-        <span>{t('harness.codexYolo')}</span>
-      </p>
-    </div>
-  );
-}

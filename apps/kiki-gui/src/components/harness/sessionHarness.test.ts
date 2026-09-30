@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 
-import { codexRefusesKikiTools, harnessDenies, sessionHarnessOf } from './sessionHarness';
+import { harnessDenies, sessionHarnessOf } from './sessionHarness';
 
 const profile = (fields: Partial<NamedAgentProfile>): NamedAgentProfile => ({
   name: 'lead', source: 'user', main: true, disabled: false, routes: [], ...fields,
@@ -52,13 +52,5 @@ describe('capability gates', () => {
     expect(harnessDenies(harness, 'image')).toBe(false);
     expect(harnessDenies(sessionHarnessOf('lead', [profile({ executor: 'x' })], []), 'fork')).toBe(false);
     expect(harnessDenies(undefined, 'fork')).toBe(false);
-  });
-
-  it('flags Codex with Kiki subagents in Full access only', () => {
-    const codex = sessionHarnessOf('lead', [profile({ executor: 'codex-app-server', allow_kiki_subagents: true })], []);
-    expect(codexRefusesKikiTools(codex, 'yolo')).toBe(true);
-    expect(codexRefusesKikiTools(codex, 'manual')).toBe(false);
-    const off = sessionHarnessOf('lead', [profile({ executor: 'codex-app-server' })], []);
-    expect(codexRefusesKikiTools(off, 'yolo')).toBe(false);
   });
 });

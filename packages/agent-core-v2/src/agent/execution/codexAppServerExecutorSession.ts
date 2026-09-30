@@ -109,7 +109,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   ]);
 
   readonly #runtimeLease;
-  readonly #client: CodexClientLike;
+  readonly #createClient: () => CodexClientLike;
+  #client: CodexClientLike;
+  #kikiToolsApproved = false;
   readonly #states: IAgentStateService;
   readonly #dispatcher: IEventDispatcher;
   readonly #workspace: ISessionWorkspaceContext;
@@ -163,11 +165,23 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
-    this.#client = clientFactory(
-      codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
-        () => context.agent.accessor.get(IBootstrapService)), () => this.#harnessMcp),
-      (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
-    );
+    const processes = codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
+      () => context.agent.accessor.get(IBootstrapService)), () => this.#harnessMcp, () => this.#kikiToolsApproved);
+    this.#createClient = () => clientFactory(processes,
+      (request, responder, signal) => this.#handleServerRequest(request, responder, signal));
+    this.#client = this.#createClient();
+  }
+
+  async #alignKikiToolApproval(): Promise<void> {
+    const wanted = this.#harnessMcp !== undefined &&
+      this.context.agent.accessor.get(IAgentPermissionModeService).mode === 'yolo';
+    if (wanted === this.#kikiToolsApproved) return;
+    const state = this.#client.status().state;
+    this.#kikiToolsApproved = wanted;
+    if (state === 'cold') return;
+    await this.#client.shutdown(new Error('Codex restarts to apply the Kiki tool approval for the new permission mode'));
+    this.#client = this.#createClient();
+    this.#threadId = undefined;
   }
 
   async run(
@@ -199,6 +213,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
     const roots = this.#roots();
     this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
+    await this.#alignKikiToolApproval();
     await this.#client.connect(controller.signal);
     await this.#validateModel(controller.signal);
     const opened = await this.#openThread(roots, controller.signal);

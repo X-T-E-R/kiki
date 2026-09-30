@@ -116,8 +116,8 @@ import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
 import { AnnotationTray } from './AnnotationTray';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
-import { CodexApprovalNote, HarnessMark } from './harness/HarnessMark';
-import { codexRefusesKikiTools, harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
+import { HarnessMark } from './harness/HarnessMark';
+import { harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
@@ -3412,7 +3412,6 @@ export function SessionView({
                 onSaved={() => { void controller?.refreshSession(); }}
               />
             ) : null}
-            {codexRefusesKikiTools(harness, permissionMode) ? <CodexApprovalNote /> : null}
             <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
           </>,
           rail: botSettingsOpen && botPersonaId !== undefined ? (

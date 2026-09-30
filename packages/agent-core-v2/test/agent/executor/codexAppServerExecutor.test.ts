@@ -50,6 +50,9 @@ import { ISessionQuestionService } from '#/session/question/question';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -74,6 +77,8 @@ interface HarnessOptions {
   readonly questionAnswers?: Readonly<Record<string, string>>;
   readonly deferTurnCompletion?: boolean;
   readonly steerResponse?: unknown;
+  readonly permissionMode?: { mode: 'manual' | 'auto' | 'yolo' };
+  readonly kikiSubagents?: boolean;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -195,7 +200,11 @@ function createHarness(options: HarnessOptions = {}) {
   } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
-    [IAgentPermissionModeService, { mode: 'manual' }],
+    [IAgentPermissionModeService, options.permissionMode ?? { mode: 'manual' }],
+    [IBootstrapService, { platform: 'linux' }],
+    [ISessionContext, { sessionId: 'session-1' }],
+    [IHarnessMcpService, { acquire: async () => ({ dispose: vi.fn(), server: {
+      name: 'kiki-harness', command: 'kiki', args: ['mcp', '--attached'], env: [{ name: 'KIKI_DELEGATION_TOKEN', value: 'fixture-token' }] } }) }],
     [IModelCatalog, modelCatalog],
     [IAgentUsageService, usage],
     [IEventDispatcher, dispatcher],
@@ -211,7 +220,7 @@ function createHarness(options: HarnessOptions = {}) {
   ]);
   const context: AgentExecutorContext = {
     agent: {
-      id: 'codex-agent',
+      id: options.kikiSubagents === true ? 'main' : 'codex-agent',
       accessor: { get: (id) => services.get(id) as never },
     },
     descriptor: {
@@ -229,6 +238,7 @@ function createHarness(options: HarnessOptions = {}) {
       executorId: 'codex-app-server',
       executorProtocol: 'codex-app-server',
       executorDescriptorRevision: 'r1',
+      allowKikiSubagents: options.kikiSubagents,
     },
   };
   const priorState = stateValues.get(externalExecutorKey) as Record<string, unknown>;
@@ -343,13 +353,27 @@ function createHarness(options: HarnessOptions = {}) {
     },
     shutdown: vi.fn(async () => {}),
   };
+  const spawns: (readonly string[])[] = [];
   const createSession = (executorContext: AgentExecutorContext) => new CodexAppServerExecutorSession(
     executorContext,
-    (_process, handler) => {
+    (processes, handler) => {
       serverHandler = handler;
-      return client;
+      let state: 'cold' | 'ready' = 'cold';
+      return {
+        ...client,
+        status: () => state === 'cold' ? { state: 'cold' as const } : client.status(),
+        connect: async () => {
+          if (state === 'ready') return;
+          await processes.spawn('codex', ['app-server'], {}).catch(() => undefined);
+          state = 'ready';
+        },
+      };
     },
   );
+  runtimeLease.runtime.process.spawn.mockImplementation(async (_command: string, args: readonly string[]) => {
+    spawns.push(args);
+    throw new Error('fixture-spawn');
+  });
   let session: CodexAppServerExecutorSession | undefined;
   const getSession = (): CodexAppServerExecutorSession => session ??= createSession(context);
   return {
@@ -378,6 +402,7 @@ function createHarness(options: HarnessOptions = {}) {
     modelCatalog,
     memory,
     loopEvents,
+    spawns,
     approval,
     dispatcher,
     usageRecords,
@@ -1015,6 +1040,63 @@ describe('Codex app-server external executor', () => {
       }
     },
   );
+});
+
+describe('Codex Kiki MCP approval under YOLO', () => {
+  const approvalFlags = (args: readonly string[]) => args.filter((arg) => arg.includes('default_tools_approval_mode'));
+
+  it('launches Codex with only the Kiki MCP server pre-approved in YOLO, keeping never and the workspace sandbox', async () => {
+    const harness = createHarness({ kikiSubagents: true, permissionMode: { mode: 'yolo' } });
+    try {
+      await (await harness.session.run({ kind: 'prompt', prompt: 'delegate' }, { signal: new AbortController().signal })).completion;
+      expect(harness.spawns).toHaveLength(1);
+      expect(approvalFlags(harness.spawns[0]!)).toEqual(['mcp_servers.kiki-harness.default_tools_approval_mode="approve"']);
+      expect(harness.spawns[0]!.join(' ')).not.toMatch(/mcp_servers\.(?!kiki-harness\.)[^.=]+\.default_tools_approval_mode/);
+      expect(harness.spawns[0]!.join(' ')).not.toMatch(/approval_policy|sandbox_mode|danger-full-access|bypass/);
+      expect(harness.starts[0]).toMatchObject({ approvalPolicy: 'never', sandbox: 'workspace-write' });
+      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } });
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('keeps Codex asking for the Kiki MCP server outside YOLO', async () => {
+    for (const mode of ['manual', 'auto'] as const) {
+      const harness = createHarness({ kikiSubagents: true, permissionMode: { mode } });
+      try {
+        await (await harness.session.run({ kind: 'prompt', prompt: 'delegate' }, { signal: new AbortController().signal })).completion;
+        expect(approvalFlags(harness.spawns[0]!)).toEqual([]);
+        expect(harness.spawns[0]!.join(' ')).toContain('mcp_servers.kiki-harness.command="kiki"');
+        expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'on-request' });
+      } finally { await harness.session.shutdown(); }
+    }
+  });
+
+  it('adds nothing when Kiki MCP is not injected, even in YOLO', async () => {
+    const harness = createHarness({ permissionMode: { mode: 'yolo' } });
+    try {
+      await (await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).completion;
+      expect(harness.spawns[0]).toEqual(['app-server']);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('restarts Codex and resumes the same thread when the mode crosses YOLO between turns', async () => {
+    const mode: { mode: 'manual' | 'auto' | 'yolo' } = { mode: 'manual' };
+    const harness = createHarness({ kikiSubagents: true, permissionMode: mode });
+    try {
+      await (await harness.session.run({ kind: 'prompt', prompt: 'one' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
+      await (await harness.session.run({ kind: 'prompt', prompt: 'two' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
+      expect(harness.spawns).toHaveLength(1);
+      mode.mode = 'yolo';
+      await (await harness.session.run({ kind: 'prompt', prompt: 'three' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
+      expect(harness.client.shutdown).toHaveBeenCalledOnce();
+      expect(harness.spawns).toHaveLength(2);
+      expect(approvalFlags(harness.spawns[1]!)).toHaveLength(1);
+      expect(harness.resumes.at(-1)).toMatchObject({ threadId: 'thread-new', approvalPolicy: 'never' });
+      mode.mode = 'auto';
+      await (await harness.session.run({ kind: 'prompt', prompt: 'four' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
+      expect(harness.spawns).toHaveLength(3);
+      expect(approvalFlags(harness.spawns[2]!)).toEqual([]);
+    } finally { await harness.session.shutdown(); }
+  });
 });
 
 describe('Codex native MCP elicitation', () => {

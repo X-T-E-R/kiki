@@ -41,6 +41,18 @@ describe('external native harness adapters', () => {
     ], { env: { BASE: 'keep', KIKI_DELEGATION_TOKEN: 'fixture-token', KIKI_SESSION_ID: 'original' }, shell: false }]);
     expect(spawn.mock.calls[1]?.[1]?.join(' ')).not.toContain('fixture-token');
   });
+  it('pre-approves only the Kiki MCP server when asked, never other servers or policies', async () => {
+    const spawn = vi.fn(async (..._args: Parameters<HostProcessServiceLike['spawn']>) => { throw new Error('fixture-child'); });
+    const lease: HarnessMcpLease = { server: { name: 'kiki-harness', command: 'kiki', args: [], env: [] }, dispose: () => {} };
+    let approve = true;
+    const wrapped = codexHarnessMcpProcess({ spawn }, () => lease, () => approve);
+    await expect(wrapped.spawn('codex', ['app-server', '-c', 'mcp_servers.other.command="x"'])).rejects.toThrow('fixture-child');
+    const args = spawn.mock.calls[0]![1]!;
+    expect(args.filter((arg) => arg.includes('approval'))).toEqual(['mcp_servers.kiki-harness.default_tools_approval_mode="approve"']);
+    approve = false;
+    await expect(wrapped.spawn('codex', ['app-server'])).rejects.toThrow('fixture-child');
+    expect(spawn.mock.calls[1]![1]!.some((arg) => arg.includes('approval'))).toBe(false);
+  });
   it('preserves legacy local-resume fingerprints when delegation is omitted or explicitly disabled', () => {
     const binding: ProfileBindingSnapshot = { thinkingLevel: 'off', systemPrompt: 'Frozen profile' };
     const legacy = createHash('sha256').update(JSON.stringify({ thinkingLevel: 'off', systemPrompt: 'Frozen profile' })).digest('hex');

@@ -66,8 +66,3 @@ export function useSessionHarness(profileName: string | undefined, profiles: rea
 export function harnessDenies(harness: SessionHarness | undefined, capability: 'fork' | 'image'): boolean {
   return harness?.negotiated?.[capability] === false;
 }
-
-/** Codex asks before every MCP tool call; with approvals off it refuses them instead. */
-export function codexRefusesKikiTools(harness: SessionHarness | undefined, permissionMode: string | undefined): boolean {
-  return harness?.executorId === 'codex-app-server' && harness.kikiSubagents && permissionMode === 'yolo';
-}
