@@ -27,6 +27,7 @@ interface Fixture {
   readonly retainedQueries: readonly RetainedUsageListQuery[];
   setWire(scope: string, records: readonly WireRecord[]): void;
   restart(): UsageAggregationService;
+  setAgentIds(ids: string[]): void;
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -132,9 +133,10 @@ function fixture(
     count: async () => sessions.length,
     remove: async () => {},
   };
+  let agentIds = ['main'];
   const storage = {
     _serviceBrand: undefined,
-    list: async () => ['main'],
+    list: async () => agentIds,
     size: async (wireScope: string) => wires.get(wireScope)?.length,
     mtime: async (wireScope: string) => wireMtimes.get(wireScope),
     read: async (storageScope: string, key: string) => {
@@ -199,6 +201,7 @@ function fixture(
     retainedQueries,
     setWire,
     restart: () => new UsageAggregationService(core, now, limits),
+    setAgentIds: (ids) => { agentIds = ids; },
   };
 }
 
@@ -475,7 +478,19 @@ describe('UsageAggregationService cache budgets', () => {
     const restored = await query(instance.restart());
 
     expect(restored.summary.tokens.output).toBe(2);
-    expect((instance.readBytes.get(wireScope) ?? 0) - bytesAfterInitialScan).toBeLessThanOrEqual(4_096);
+    expect((instance.readBytes.get(wireScope) ?? 0) - bytesAfterInitialScan).toBe(0);
+    expect(restored.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+  });
+
+  it('counts an empty agent inventory as complete zero usage without a session row', async () => {
+    const instance = fixture([summary('session-a', 'workspace-a')], {}, () => 0);
+    instance.setAgentIds([]);
+    for (const service of [instance.service, instance.restart()]) {
+      const result = await query(service);
+      expect(result.summary.tokens.output).toBe(0);
+      expect(result.sessions.items).toEqual([]);
+      expect(result.reliability).toMatchObject({ complete: true, incomplete_sessions: 0 });
+    }
   });
 
   it('resets a checkpoint when a wire is rewritten at the same size', async () => {

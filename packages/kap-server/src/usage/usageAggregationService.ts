@@ -342,7 +342,7 @@ export class UsageAggregationService {
     const agents: Record<string, WireCheckpoint> = {};
     let scannedRecordCount = 0;
     let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
-    let complete = agentIds.length > 0;
+    let complete = true;
 
     for (const agentId of agentIds) {
       if (this.now() >= deadlineAt) {
@@ -363,6 +363,12 @@ export class UsageAggregationService {
       const size = sizeValue ?? 0;
       const mtimeMs = mtimeValue ?? 0;
       let checkpoint = persisted.agents[agentId];
+      if (checkpoint !== undefined && checkpoint.offset === size &&
+        checkpoint.size === size && checkpoint.mtimeMs === mtimeMs) {
+        agents[agentId] = checkpoint;
+        if (!checkpoint.valid) complete = false;
+        continue;
+      }
       let reset = checkpoint !== undefined && size < checkpoint.offset;
       if (
         checkpoint !== undefined &&
