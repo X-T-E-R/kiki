@@ -217,6 +217,22 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 }
 
 describe('SessionTodoService', () => {
+  it('writes durable continuity decisions only for emitted reminders', async () => {
+    const { TurnPrompt } = await import('#/agent/loop/turnOps');
+    const reminders = new Map<string, () => string | undefined>();
+    const main = makeFakeAgent('main', reminders, []);
+    makeTodoService(makeLifecycleStub([main.handle]).service);
+    const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
+    expect(provider()).toBeUndefined();
+    await main.dispatcher.dispatch(new TurnPrompt({ turnId: 1, promptId: 'p1', origin: { kind: 'user' }, input: [{ type: 'text', text: 'never push to main' }] }));
+    expect(provider()).toContain('standing rule');
+    expect(provider()).toBeUndefined();
+    await main.dispatcher.dispatch(new TurnPrompt({ turnId: 2, promptId: 'p2', origin: { kind: 'user' }, input: [{ type: 'text', text: 'ordinary request' }] }));
+    expect(provider()).toBeUndefined();
+    const decisions = main.journal.filter((record) => record.type === 'todo.continuity_decision');
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ classId: 'E1', reason: 'emitted' });
+  });
   it('injects T2 under the default summarize strategy and persists its epoch latch', () => {
     const reminders = new Map<string, () => string | undefined>();
     const main = makeFakeAgent('main', reminders, [{ role: 'assistant', content: [{ type: 'text', text: 'uncovered work' }], toolCalls: [] }], 86_000);

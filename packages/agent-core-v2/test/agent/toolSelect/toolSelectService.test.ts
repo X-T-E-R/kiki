@@ -17,6 +17,7 @@ import type { MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { AgentContextInjectorService } from '#/agent/contextInjector/contextInjectorService';
+import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import { CompactionCompleted } from '#/agent/fullCompaction/compactionOps';
 import {
   IAgentLoopService,
@@ -453,7 +454,7 @@ function announcementText(message: ContextMessage): string {
 }
 
 function isNewAnnouncement(message: ContextMessage): boolean {
-  return message.origin?.kind === 'injection' && message.origin.variant === LOADABLE_TOOLS_VARIANT;
+  return capabilitySourceMessage(message, LOADABLE_TOOLS_VARIANT) !== undefined;
 }
 
 async function announce(h: Harness, step = 1): Promise<string | undefined> {
@@ -1236,10 +1237,8 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     await announce(h);
 
     registerMcp(h, new StubMcpTool(MCP_GAMMA));
-    expect(await announce(h, 2)).toBeUndefined();
-
-    h.eventBus.publish(new TurnStarted({ turnId: 99, origin: { kind: 'user' } }));
-    const diff = await announce(h);
+    const diff = await announce(h, 2);
+    expect(await announce(h, 3)).toBeUndefined();
     expect(diff).toContain(`<tools_added>\n${MCP_GAMMA} — ${MCP_GAMMA} desc\n</tools_added>`);
   });
 

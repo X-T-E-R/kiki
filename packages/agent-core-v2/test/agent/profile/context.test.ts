@@ -459,3 +459,31 @@ describe('stable dynamic prefix layout', () => {
     expect(legacyEnvironmentContext(second, '', first)).toEqual({ ...second, cwd: first.cwd, cwdListing: first.cwdListing, now: first.now, timeZone: undefined, additionalDirsInfo: undefined });
   });
 });
+
+describe('sampled directory and stable template boundaries', () => {
+  it('reuses directory samples without filesystem reads while instructions change', async () => {
+    const { vi } = await import('vitest');
+    const reads = vi.spyOn(fs, 'readdir');
+    const result = await prepareSystemPromptContext({ fs, homeDir }, workDir, undefined, {
+      cwdListing: 'sampled tree', additionalDirsInfo: '',
+      preloadedAgentsMd: { content: 'updated instructions', paths: [], warning: undefined },
+    });
+    expect(reads).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ cwdListing: 'sampled tree', agentsMd: 'updated instructions', additionalDirsInfo: '' });
+    reads.mockRestore();
+  });
+  it('renders the full SYSTEM with runtime references and no empty fences', async () => {
+    const { stablePromptContext, legacyEnvironmentContext } = await import('#/agent/profile/dynamicPrompt');
+    const { renderSystemPromptResult } = await import('@kiki/agent-profiles/profileShared');
+    const context = { osKind: 'Windows', shellName: 'bash', shellPath: '/bin/bash', now: '2026-01-01T00:00:00.000Z', cwd: '/example', cwdListing: 'private-tree', agentsMd: 'private-instructions', skills: 'private-skills', memory: 'private-memory', pluginSections: 'private-plugins', skillActive: true };
+    const text = renderSystemPromptResult('', stablePromptContext(context), { skillActive: true }).text;
+    expect(text).toContain('Session time reference: `See the versioned runtime snapshot in messages.`');
+    expect(text).toContain('Working-directory reference: `See runtime snapshot`');
+    expect(text).toContain('Directory tree is sampled at session start');
+    expect(text).not.toMatch(/(`{3,})\n\s*\n\1/);
+    expect(text).not.toContain('${');
+    expect(text).not.toContain('private-');
+    expect(legacyEnvironmentContext(context, 'memory time 1999-01-01T00:00:00.000Z\n## Date and Time\nSession time reference: `2025-01-01T00:00:00.000Z`\n## Working Directory\nother')).toMatchObject({ now: '2025-01-01T00:00:00.000Z' });
+    expect(legacyEnvironmentContext(context, '## Date and Time\nNo timestamp\n# Project Information\nmemory time 1999-01-01T00:00:00.000Z').now).toBe(context.now);
+  });
+});

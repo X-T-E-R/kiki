@@ -2382,6 +2382,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       workDir: this.sessionContext.cwd,
       additionalDirs: options?.additionalDirs ?? this.workspace.additionalDirs,
     });
+    const previous = this.states.get(dynamicPromptKey);
+    const sampled = previous?.context.cwd === view.workDir ? previous.context : undefined;
     let base: SystemPromptContext;
     try {
       base = !fsAvailable
@@ -2393,6 +2395,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             {
               additionalDirs: view.additionalDirs,
               preloadedAgentsMd,
+              cwdListing: sampled?.cwdListing,
+              additionalDirsInfo: sampled?.additionalDirsInfo !== undefined &&
+                JSON.stringify([...sampled.additionalDirsInfo.matchAll(/^### (.+)$/gm)].map((match) => match[1])) === JSON.stringify(view.additionalDirs)
+                ? sampled.additionalDirsInfo : undefined,
             },
           );
     } finally {
@@ -2419,7 +2425,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
-    const previous = this.states.get(dynamicPromptKey);
     const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending;
     this.promptLayoutMigrationPending = false;
     const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
@@ -2469,11 +2474,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async resolveSkillListing(): Promise<string> {
-    if (this.frozenSkillListing !== undefined) return this.frozenSkillListing;
+    const live = this.states.get(dynamicPromptKey)?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending;
+    if (!live && this.frozenSkillListing !== undefined) return this.frozenSkillListing;
     try {
       await this.skillCatalog.ready;
       const listing = this.skillCatalog.catalog.getModelSkillListing();
-      this.frozenSkillListing = listing;
+      if (!live) this.frozenSkillListing = listing;
       return listing;
     } catch {
       return '';

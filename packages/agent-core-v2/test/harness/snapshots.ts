@@ -302,6 +302,7 @@ function normalizeObjectField(key: string, value: unknown, labels: SnapshotLabel
     return '<protocol-version>';
   }
   if (key === 'cwd' && typeof value === 'string') return '<cwd>';
+  if (key === 'signature' && typeof value === 'string' && /^\[".*[\\/]plans[\\/][^"\\/]+\.md"\]$/.test(value)) return '["<plan-path>"]';
   return normalizeValue(value, labels);
 }
 

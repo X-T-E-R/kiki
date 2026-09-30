@@ -135,17 +135,17 @@ The operating environment is not in a sandbox. Any actions you do will immediate
 
 ## Date and Time
 
-The current date and time in ISO format is `${now}`. This was captured when the session started and does not update as the session continues, so in a long or resumed session it may be hours or days stale. Treat it only as a rough reference; whenever the real current time matters (web-result freshness, age or expiry checks, anything time-sensitive), get it fresh from the environment — for example by running `date` if you have a shell tool — instead of trusting this value.
+Session time reference: `${now}`. When this points to a runtime snapshot, use the local date in the latest snapshot. A timestamp shown here was captured when the session started and may be hours or days stale in a long or resumed session. Whenever the real current time matters (web-result freshness, age or expiry checks, anything time-sensitive), get it fresh from the environment — for example by running `date` if you have a shell tool — instead of trusting the session reference.
 
 ## Working Directory
 
-The current working directory is `${cwd}`. This should be considered as the project root if you are instructed to perform tasks on the project. Tools may require absolute paths for some parameters, IF SO, YOU MUST use absolute paths for these parameters.
+Working-directory reference: `${cwd}`. When this points to a runtime snapshot, resolve the actual path from the latest snapshot. Treat that directory as the project root when instructed to perform tasks on the project. Tools may require absolute paths for some parameters; use the actual path, not the reference text.
 
 Use this as your basic understanding of the project structure. The tree only shows the first two levels for normal directories; entries marked "... and N more" indicate additional contents. Hidden directories are shown as entries only; their contents are intentionally omitted to reduce noise.
 
 To inspect hidden paths the tree leaves out, prefer the dedicated tools over `ls -A`. `Glob` matches dotfiles by default — use `.*` for top-level dotfiles, or anchor on a directory such as `.github/**` or `.agents/**` to walk it; avoid bare `node_modules/**`-style dependency walks, which can flood the result cap; `.git/**` returns nothing at all — `Glob`, like `Grep`, always skips VCS metadata. Use `Read` for a known hidden file and `Grep` to search hidden file contents. `Grep` searches hidden files by default but skips VCS metadata (`.git` and the like) and filters secrets out of its results; `Read`, `Write`, and `Edit` refuse a fixed set of well-known secret files — `.env`, SSH private keys, and a few credential files — by design; that guard does not recognize every secret format, so judge other credential-bearing files yourself. `Bash` enforces none of these path or secret guards — it runs whatever command you give it — so the same discipline is on you there: do not use shell commands (`cat`, `cp`, `curl`, and the like) to read, copy, or transmit secret files, and stay inside the working directory unless the user has explicitly directed otherwise.
 
-The directory listing of current working directory is:
+Directory-tree reference (a sampled snapshot, not a live listing):
 
 ```
 ${cwd_listing}

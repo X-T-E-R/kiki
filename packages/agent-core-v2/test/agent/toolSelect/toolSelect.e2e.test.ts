@@ -159,6 +159,17 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.dispose();
   });
 
+  it('does not reannounce unchanged loadable tools on consecutive steps in one turn', async () => {
+    ctx.mockNextResponse(selectToolsCall('select-alpha', [MCP_ALPHA]));
+    ctx.mockNextResponse({ type: 'function', id: 'call-alpha', name: MCP_ALPHA, arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'load then call alpha' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(3);
+    for (const call of ctx.llmCalls) expect(historyText(call.history).match(/<tools_added>/g)).toHaveLength(1);
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) => capabilitySourceMessage(message, 'loadable-tools') !== undefined)).toHaveLength(1);
+  });
+
   it('exposes no discovery controls when no deferred tool is active', async () => {
     registration?.dispose();
     registration = undefined;
@@ -437,6 +448,9 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.untilTurnEnd();
     expect(notices()).toHaveLength(1);
     catalog.set('rapid', { skills: [{ ...skill, content: 'three' }] }, { priority: 50 });
+    await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+    expect(notices()).toHaveLength(1);
+    catalog.set('rapid', { skills: [{ ...skill, description: 'Changed description.' }] }, { priority: 50 });
     await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
     expect(notices()).toHaveLength(2);
   });

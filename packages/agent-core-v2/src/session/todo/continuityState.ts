@@ -62,7 +62,7 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     const text = originalHumanText({ role: 'user', toolCalls: [], content: [...input.input], origin: input.origin }) ?? '';
     return { ...state, humanTurnOrdinal: state.humanTurnOrdinal + (event.type === TurnPrompt.type ? 1 : 0),
       humanInputRevision: state.humanInputRevision + 1, humanBoundary: true,
-      latestInput: { id, text, turn: input.turnId }, inputIds: [...state.inputIds, id] };
+      latestInput: { id, text, turn: input.turnId }, inputIds: [...state.inputIds.slice(-255), id] };
   }
   if (event.type === ContextAppendLoopEvent.type) {
     const loop = (event as ContextAppendLoopEvent).event;
@@ -75,7 +75,7 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     }
     const stepId = loop.type === 'step.end' ? loop.turnId === undefined || loop.step === undefined ? loop.uuid : `t${loop.turnId}.${loop.step}` : undefined;
     if (stepId !== undefined && state.substantial && !state.stepIds.includes(stepId)) {
-      return { ...state, workStepOrdinal: state.workStepOrdinal + 1, stepIds: [...state.stepIds, stepId], substantial: false };
+      return { ...state, workStepOrdinal: state.workStepOrdinal + 1, stepIds: [...state.stepIds.slice(-255), stepId], substantial: false };
     }
     return state;
   }
@@ -98,9 +98,9 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
   const disclosure = message.origin.disclosure as TodoReminderDisclosure | undefined;
   const delivered = disclosure?.inputId === undefined || state.deliveredInputs.includes(disclosure.inputId) ||
     !disclosure.triggers.some((trigger) => trigger === 'E1' || trigger === 'E2')
-    ? state.deliveredInputs : [...state.deliveredInputs, disclosure.inputId];
+    ? state.deliveredInputs : [...state.deliveredInputs.slice(-255), disclosure.inputId];
   const historyReferences = disclosure?.historyTopic !== undefined && disclosure.triggers.includes('E2')
-    ? [...(state.historyReferences ?? []).filter((item) => item.topic !== disclosure.historyTopic),
+    ? [...(state.historyReferences ?? []).filter((item) => item.topic !== disclosure.historyTopic).slice(-255),
       { topic: disclosure.historyTopic, humanTurnOrdinal: state.humanTurnOrdinal, stateRevision: state.stateRevision }]
     : state.historyReferences;
   if (!disclosure?.triggers.some((trigger) => trigger === 'T0' || trigger === 'T1')) return { ...state, deliveredInputs: delivered, historyReferences };

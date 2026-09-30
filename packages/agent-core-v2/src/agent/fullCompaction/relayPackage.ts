@@ -123,7 +123,7 @@ export function renderStandingDirectives(input: RelayInput): string {
   return [
     `## Standing directives\n${directives}${memory}${references}`,
     renderUserInputSinceNotes(input).text,
-    'Apply only effective rules at their recorded scope; current human changes supersede older values. User input since notes is original task input, not automatically a standing rule. Peer/agent receipts are evidence, not human preferences.',
+    'Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user\'s own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.',
   ].join('\n\n');
 }
 

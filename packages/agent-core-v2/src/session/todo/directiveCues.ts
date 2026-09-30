@@ -4,7 +4,7 @@ export interface DirectiveCues {
 }
 
 export const DEFAULT_DIRECTIVE_CUES = {
-  instructions: ['以后', '不要', '别', '一律', '每次', '记住', '直接', '默认', '必须', '禁止', '改成', '纠正', '应该', '始终', '务必', '优先', '遵守', '下次', '统一', '再也',
+  instructions: ['从现在开始', '以后', '不要', '别', '一律', '每次', '记住', '直接', '默认', '必须', '禁止', '改成', '纠正', '应该', '始终', '务必', '优先', '遵守', '下次', '统一', '再也',
     '只能', '最多', '上限', '不超过', '并发', '放开', '放宽', '收紧', '撤销', '取消', '恢复', '改回', '临时', '定了', '拍板',
     'always', 'never', "don't", 'do not', 'from now on', 'remember', 'default', 'must', 'instead', 'prefer', 'directly', 'pin', 'every time', 'make sure', 'stop', 'correction', 'use only', 'avoid', 'keep using', 'next time',
     'at most', 'limit', 'no more than', 'revert', 'revoke', 'relax', 'lift', 'temporary', 'decided'],
@@ -55,10 +55,16 @@ export function classifyDirectives(text: string, cues: DirectiveCues = {}): read
       : /提交信息|commit/i.test(clause) ? 'commit.format'
       : /(?:规则|规矩|限制|rule|limit)/i.test(clause) && change ? 'existing.rule'
       : /工具|权限|permission|\btools?\b/i.test(clause) ? 'tool.permission'
-      : undefined;
-    if (subject === undefined) continue;
-    if (!correction && !change && !configuration && !/以后|每次|一律|默认|始终|只能|最多|上限|不超过|并发|定了|拍板|always|never|default|from now on|at most|no more than|use only|keep using|must/i.test(clause)) continue;
-    if (!correction && !change && !configuration && !/不要|别|一律|只能|最多|上限|必须|用|设|定了|拍板|always|never|must|use|limit|pin/i.test(clause)) continue;
+      : 'agent.behavior';
+    if (!correction && !change && !configuration) {
+      if (subject === 'agent.behavior') {
+        if (/为什么|吗|呢|\?$/.test(clause)) continue;
+        if (!/(?:从现在开始|(?:^|[，,:：])\s*以后|以后(?:都|不要|默认)|每次|一律|始终|下次)[^，,:：]{0,80}(?:用|写|放|设|遵守|保留|记录)|(?:只能|最多).+|^(?:别|不要|禁止)\s*\S|\b(?:always|never|must|don't|do not|from now on|every time|at most|no more than|use only|keep using)\s+\S/i.test(clause)) continue;
+      } else {
+        if (!/以后|每次|一律|默认|始终|只能|最多|上限|不超过|并发|定了|拍板|always|never|default|from now on|at most|no more than|use only|keep using|must/i.test(clause)) continue;
+        if (!/不要|别|一律|只能|最多|上限|必须|用|设|定了|拍板|always|never|must|use|limit|pin/i.test(clause)) continue;
+      }
+    }
     const operation = /撤销|取消|不设.*上限|lift|revoke/i.test(clause) ? 'revoke'
       : change ? 'replace' : correction ? 'correct' : 'set';
     candidates.push({ subject, operation, value: clause, scope: configuration ? 'configuration' : 'agent',
@@ -74,6 +80,6 @@ export function historyReferenceTopic(text: string, cues: DirectiveCues = {}): s
   if (artifact !== undefined && /之前|早先|上次|前面|earlier|previous|last time/i.test(operative) &&
     /考虑|结合|参照|查|找|核对|review|combine|refer|check|find/i.test(operative)) return `artifact:${artifact.toLowerCase()}`;
   if (!/我(?:说|定)|你(?:说|答|记)|规矩|规则|限制|并发|决定|证据|对话|as I said|already told|(?:earlier|previous|last time).*(?:rule|decision|evidence|conversation|cap|limit)/i.test(operative)) return undefined;
-  if (!/符合|还记得|查|找|核对|说过|我定|纠正|放开|撤销|取消|what|check|recall|remember|said|told|lift|revoke/i.test(operative)) return undefined;
+  if (!/按(?:照)?[^。！？\n]*(?:规矩|规则|决定|要求)|符合|还记得|查|找|核对|说过|我定|纠正|放开|撤销|取消|what|check|recall|remember|said|told|lift|revoke/i.test(operative)) return undefined;
   return /并发|concurren|\bcap\b|sol|opus/i.test(operative) ? 'delegation.concurrency' : 'earlier.rule-or-evidence';
 }

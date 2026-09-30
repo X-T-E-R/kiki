@@ -754,10 +754,10 @@ describe('Plan service', () => {
         [emit] context.spliced             { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Inspect without mutating files" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } } ] }
         [emit] prompt.started              { "time": "<time>", "agentId": "main", "promptId": "<msg-1>" }
         [wire] turn.prompt                 { "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Inspect without mutating files" } ], "origin": { "kind": "user" }, "managed": true, "time": "<time>" }
-        [emit] context.append_message      { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" } }
-        [emit] context.spliced             { "time": "<time>", "start": 1, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" } ] }
+        [emit] context.append_message      { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" } }
+        [emit] context.spliced             { "time": "<time>", "start": 1, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" } ] }
         [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "Inspect without mutating files" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } }, "delivery": { "deliveryId": "<dlv-1>", "messageId": "<msg-1>", "turnId": 0, "stepId": "<uuid-2>", "step": 1, "deliveredAt": "<time>", "origin": "user" }, "time": "<time>" }
-        [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" }, "time": "<time>" }
+        [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" }, "time": "<time>" }
         [wire] plugin.session_start        { "content": null, "time": "<time>" }
         [emit] turn.step.started           { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>" }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
@@ -851,10 +851,10 @@ describe('Plan service', () => {
         [emit] context.spliced             { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Remove forbidden.txt" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } } ] }
         [emit] prompt.started              { "time": "<time>", "agentId": "main", "promptId": "<msg-1>" }
         [wire] turn.prompt                 { "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Remove forbidden.txt" } ], "origin": { "kind": "user" }, "managed": true, "time": "<time>" }
-        [emit] context.append_message      { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" } }
-        [emit] context.spliced             { "time": "<time>", "start": 1, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" } ] }
+        [emit] context.append_message      { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" } }
+        [emit] context.spliced             { "time": "<time>", "start": 1, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" } ] }
         [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "Remove forbidden.txt" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>", "source": { "turnId": 0, "stepId": "<uuid-2>", "step": 1 } }, "delivery": { "deliveryId": "<dlv-1>", "messageId": "<msg-1>", "turnId": 0, "stepId": "<uuid-2>", "step": 1, "deliveredAt": "<time>", "origin": "user" }, "time": "<time>" }
-        [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" }, "time": "<time>" }
+        [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "<plan-mode-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "plan_mode", "disclosure": { "signature": "[\\\"<plan-path>\\\"]" } }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" }, "time": "<time>" }
         [wire] plugin.session_start        { "content": null, "time": "<time>" }
         [emit] turn.step.started           { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>" }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
@@ -909,7 +909,7 @@ describe('Plan service', () => {
   });
 
   describe('plan mode injection cadence', () => {
-    it('dedupes immediate repeats and emits sparse reminders after assistant turns', async () => {
+    it('discloses plan state once without assistant-turn heartbeat reminders', async () => {
       await plan.enter('test-plan', false);
 
       await injectDynamic();
@@ -924,8 +924,9 @@ describe('Plan service', () => {
       ctx.appendAssistantTurn(2, 'assistant two');
       await injectDynamic();
 
-      expect(lastUserText(context.get())).toContain('Plan mode still active');
-      expect(lastUserText(context.get())).toContain('Plan file:');
+      expect(context.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'plan_mode')).toHaveLength(1);
+      const origin = context.get().find((message) => message.origin?.kind === 'injection' && message.origin.variant === 'plan_mode')!.origin;
+      expect(origin?.kind === 'injection' ? origin.disclosure : undefined).toEqual({ signature: JSON.stringify([(await plan.status())?.path]) });
     });
 
     it('emits a reentry reminder when restored plan mode already has plan content', async () => {

@@ -221,6 +221,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
       humanAuthorized: handle.id === MAIN_AGENT_ID,
       cues,
       onDecision: (decision) => {
+        if (decision.reason !== 'emitted') return;
         const key = `${handle.id}:${decision.classId}`;
         const signature = `${clock.humanInputRevision}/${clock.stateRevision}/${epoch}/${decision.reason}`;
         if (this.decisionKeys.get(key) === signature) return;

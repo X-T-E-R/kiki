@@ -110,7 +110,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
 
   private async inject(isNewTurn: boolean): Promise<void> {
     const parts: CapabilityDeltaPart[] = [];
-    for (const entry of this.entries) {
+    for (const entry of [...this.entries].toSorted((a, b) => Number(a.name === 'runtime_snapshot') - Number(b.name === 'runtime_snapshot'))) {
       await this.injectEntry(entry, isNewTurn, parts);
     }
     this.appendCapabilities(parts);

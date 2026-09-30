@@ -27,6 +27,13 @@ function successfulStep(state: ContinuityClock, step: number, name = 'Read', isE
 describe('structural directive gates', () => {
   it.each([
     ['可以合并以后让我一起试玩', false],
+    ['合并以后', false],
+    ['应该怎么设计', false],
+    ['以后回答都用中文', true],
+    ['never push to main', true],
+    ['别用 emoji', true],
+    ['文档一律放 docs/', true],
+    ['从现在开始测试都用 vitest', true],
     ['如果是之前就已经完成的默认会被折叠，系统时间线应该展示子任务', false],
     ['本机的客户端你帮我配置，模型统一用 example-model', true],
     ['具体应该怎么设计，把注入时机放到文档里', false],
@@ -158,7 +165,6 @@ describe('continuity cadence', () => {
   });
   it('does not turn a steer into E1, and never suppresses a new modification/revocation', () => {
     const tracker = new TodoListReminderTracker();
-    tracker.steer('ordinary request');
     expect(tracker.evaluate({ ...base, history: [user('ordinary request')] })).toBeUndefined();
     for (const [index, text] of ['并发只能四个', '放开旧并发限制，最多五个', '取消旧并发限制'].entries()) {
       const history = [user(text, index + 2)];
@@ -205,5 +211,72 @@ describe('continuity cadence', () => {
     const history = [user('上次我定的并发规则，六个符合吗')];
     expect(new TodoListReminderTracker().evaluate({ ...base, history })?.disclosure.triggers).toEqual(['E2']);
     expect(new TodoListReminderTracker().evaluate({ ...base, history, notes: { directives: '并发最多五个' } })).toBeUndefined();
+  });
+});
+
+describe('review regression boundaries', () => {
+  it.each(['以后回答都用中文', 'never push to main', '别用 emoji', '文档一律放 docs/', '从现在开始测试都用 vitest'])('keeps an unrecognized standing behavior: %s', (text) => {
+    expect(classifyDirectives(text)[0]).toMatchObject({ subject: 'agent.behavior', scope: 'agent', lifetime: 'persistent' });
+    const result = new TodoListReminderTracker().evaluate({ ...base, history: [user(text)], memoryAvailable: true });
+    expect(result?.disclosure.triggers).toEqual(['E1']);
+    expect(result?.content).toContain('short quote + t1');
+    expect(result?.content).toContain('MemoryWrite type=feedback');
+    expect(result?.content).not.toContain('agent.behavior');
+  });
+  it('does not instruct unavailable TodoList notes writes', () => {
+    const result = new TodoListReminderTracker().evaluate({ ...base, active: false, history: [user('never push to main')], memoryAvailable: true });
+    expect(result?.content).toContain('MemoryWrite type=feedback');
+    expect(result?.content).not.toContain('notes.');
+    expect(result?.content).not.toContain('TodoList');
+  });
+  it('does not suppress a generic history reference with unrelated notes or human rules', () => {
+    const history = [user('以后模型只能用 example-model'), user('按我之前定的规矩来', 2)];
+    expect(new TodoListReminderTracker().evaluate({ ...base, history, notes: { directives: '并发最多五个', decided: 'use example-model' } })?.disclosure.triggers).toEqual(['E2']);
+  });
+  it.each(['(none)', '- t1: 以后回答都用中文'])('isolates the handoff user block from its closing prose: %s', (block) => {
+    const summary: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' }, content: [{ type: 'text', text: `## User input since notes\n${block}\n\nApply Standing directives at their recorded scope.\n\n## TODO List\n(none)` }] };
+    const input = { ...base, todos: [], epoch: 1, history: [summary], notes: { goal: 'task' }, notesMeta: { rev: 1, hash: 'h', coveredMessageId: 'none', writtenStep: 't1.0', writtenTurn: 1, windowEpoch: 0 } };
+    const result = new TodoListReminderTracker().evaluate(input);
+    expect(result?.disclosure.triggers.includes('P1') ?? false).toBe(block !== '(none)');
+  });
+  it('bounds replay deduplication and preserves the latest input and step retries', () => {
+    let state = initialContinuityClock();
+    for (let i = 0; i < 300; i++) {
+      state = advanceContinuityClock(state, new TurnPrompt({ turnId: i, promptId: `p${i}`, origin: { kind: 'user' }, input: [] }));
+      state = successfulStep(state, i);
+      state = advanceContinuityClock(state, new ContextAppendMessage({ message: { role: 'user', toolCalls: [], content: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: { triggers: ['E1'], inputId: `p${i}@0` } } } }));
+    }
+    expect(state.inputIds).toHaveLength(256);
+    expect(state.stepIds).toHaveLength(256);
+    expect(state.deliveredInputs).toHaveLength(256);
+    expect(state).toMatchObject({ humanTurnOrdinal: 300, workStepOrdinal: 300 });
+    expect(successfulStep(state, 299).workStepOrdinal).toBe(300);
+  });
+});
+
+describe('general behavior scope gates', () => {
+  it.each(['别用 emoji', '不要用 emoji', '禁止使用 emoji', 'never push to main', "don't push to main", 'do not push to main'])('keeps explicit prohibitions: %s', (text) => {
+    expect(classifyDirectives(text)[0]?.subject).toBe('agent.behavior');
+  });
+  it.each([
+    '默认白色主题会视觉疲劳没有重点、注意颜色的运用',
+    '工作区记忆也让用户选择开关，默认是放在某个地方',
+    '好的，我确定了',
+    '顶多减少压缩失败的默认重试次数',
+    '然后避免让用户每次输密码，我们默认策略还是记住的',
+    '上下文真实上限比如128k，然后里面做快捷值可以参考这些真实上限',
+    '如果我们默认不使用worktree直接改的语义按照这样来设计呢',
+    '等这波做完promote以后就可以用清空式压缩了',
+    '没问题，这其实是默认值的选择，然后用户手动切换还是听用户的',
+    '默认没必要筛选失败的，需要用户操作的倒是默认可以区分',
+    '回车语义可以设置，默认是发送',
+    '设置按钮为什么这么小，默认应该占据整个底部',
+    '我的记忆系统为什么现在默认禁用，他真的好了吗',
+    '让他帮我写个设计稿，然后默认的外观换一下',
+    '代码单纯的名字换一下，但是它必须是独立仓库',
+    '为什么默认配色是蓝色，之前定了方向你安排了吗',
+    '之前需要我拍板的example-space-design，考虑一下如何结合',
+  ])('rejects product discussions or acknowledgments: %s', (text) => {
+    expect(classifyDirectives(text)).toEqual([]);
   });
 });

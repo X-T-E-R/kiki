@@ -49,6 +49,9 @@ describe('relay-v1 zero-model contract', () => {
     expect(relay).toContain('t424 (user): 哦你也可以直接 pin grok 模型');
     expect(relay).toContain('HistoryRead {session_id:"s1", agent_id:"child", step_id:"t424.1"}');
     expect(renderStandingDirectives(handoff)).toContain('直接 pin grok');
+    expect(relay).toContain('apply any rule or correction in it unless later revoked');
+    expect(relay).toContain('Check these before choosing models, profiles, or irreversible actions.');
+    expect(relay).not.toContain('not automatically a standing rule');
     const eligibility = evaluateFreshEligibility({ history, compactCount: 3, notes: handoff.notes, meta: notesMeta,
       windowEpoch: 0, strategy: 'fresh', threshold: 1_000_000, projectedTokens: 1, historyAvailable: true,
       estimateMessage: (message) => Math.ceil(JSON.stringify(message.content).length / 4) });

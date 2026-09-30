@@ -29,6 +29,8 @@ export interface PrepareSystemPromptContextOptions {
   readonly additionalDirs?: readonly string[];
   readonly preloadedAgentsMd?: LoadedAgentsMd;
   readonly inheritance?: AgentsMdInheritance;
+  readonly cwdListing?: string;
+  readonly additionalDirsInfo?: string;
 }
 
 export async function prepareSystemPromptContext(
@@ -39,11 +41,11 @@ export async function prepareSystemPromptContext(
 ): Promise<PreparedSystemPromptContext> {
   const additionalDirs = dedupeDirs(options?.additionalDirs ?? []);
   const [cwdListing, agentsMdResult, additionalDirsInfo] = await Promise.all([
-    listDirectory(deps, workDir, { collapseHiddenDirs: true }),
+    options?.cwdListing ?? listDirectory(deps, workDir, { collapseHiddenDirs: true }),
     options?.preloadedAgentsMd !== undefined
       ? Promise.resolve(options.preloadedAgentsMd)
       : loadAgentsMdForRoots(deps, brandHome, [workDir], { inheritance: options?.inheritance }),
-    loadAdditionalDirsInfo(deps, additionalDirs),
+    options?.additionalDirsInfo ?? loadAdditionalDirsInfo(deps, additionalDirs),
   ]);
   return {
     cwdListing,
