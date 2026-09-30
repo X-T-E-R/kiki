@@ -63,6 +63,10 @@ export type ThinkingEffortSource = 'forced' | 'adjusted';
 export type ProfileBindingSource = 'registered' | 'profile-file';
 
 export interface ProfileData extends AgentConfigData {
+  readonly personaId?: string;
+  readonly personaRevision?: string;
+  readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
+  readonly roomPrompt?: string;
   readonly effectiveThinkingLevel?: ThinkingEffort;
   readonly thinkingEffortSource?: ThinkingEffortSource;
   readonly routeDetached?: boolean;
@@ -112,6 +116,10 @@ export type ProfileUpdateData = Partial<{
 }>;
 
 export interface ProfileBindingSnapshot {
+  readonly personaId?: string;
+  readonly personaRevision?: string;
+  readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
+  readonly roomPrompt?: string;
   readonly modelAlias?: string;
   readonly profileName?: string;
   readonly profileDefinitionId?: string;
@@ -197,6 +205,8 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly persona?: string;
+  readonly roomPrompt?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
   readonly profile?: string;

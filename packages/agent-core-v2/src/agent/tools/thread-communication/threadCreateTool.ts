@@ -27,6 +27,7 @@ export const ThreadCreateToolInputSchema = z.object({
   title: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   profile: z.string().min(1).optional(),
+  persona: z.string().trim().min(1).optional(),
   model_alias: z.string().trim().min(1).optional(),
   effort: z.string().trim().min(1).optional(),
   permission_mode: promptPermissionModeSchema.optional(),
@@ -75,10 +76,11 @@ export class ThreadCreateTool implements IThreadCreateTool {
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
         const handle = await this.sessions.create({
           workDir: input.cwd ?? this.session.cwd,
-          mainAgentBinding: input.profile === undefined && model === undefined && thinking === undefined
+          mainAgentBinding: input.profile === undefined && input.persona === undefined && model === undefined && thinking === undefined
             ? undefined
             : {
-                profile: input.profile ?? DEFAULT_AGENT_PROFILE_NAME,
+                profile: input.profile ?? (input.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
+                persona: input.persona,
                 model,
                 thinking,
                 strictThinking: thinking !== undefined,

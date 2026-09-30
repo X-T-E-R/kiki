@@ -69,6 +69,7 @@ export const THREAD_MAILBOX_RUNTIME_METHODS = {
   claim: `${METHOD_PREFIX}.claim`,
   acknowledge: `${METHOD_PREFIX}.acknowledge`,
   undeliverable: `${METHOD_PREFIX}.undeliverable`,
+  cancelProducer: `${METHOD_PREFIX}.cancelProducer`,
   pendingTargets: `${METHOD_PREFIX}.pendingTargets`,
   appendActivity: `${METHOD_PREFIX}.appendActivity`,
   readActivity: `${METHOD_PREFIX}.readActivity`,
@@ -196,6 +197,10 @@ interface ClaimPayload {
 interface UndeliverablePayload {
   readonly claim: ThreadDeliveryClaim;
   readonly reason: string;
+}
+
+interface CancelProducerPayload {
+  readonly producer: Extract<ThreadMessageProducer, { readonly kind: 'room' }>;
 }
 
 interface ActivityPayload {
@@ -339,6 +344,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         const input = assertUndeliverablePayload(payload);
         return this.finishOwner(input.claim, 'undeliverable', input.reason, ctx);
       }),
+      this.register(THREAD_MAILBOX_RUNTIME_METHODS.cancelProducer, (payload, ctx) =>
+        this.cancelProducerOwner(assertCancelProducerPayload(payload), ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets, (_payload, ctx) => this.pendingTargetsOwner(ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.appendActivity, (payload, ctx) => this.appendActivityOwner(assertActivityPayload(payload), ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.readActivity, async (payload, ctx): Promise<ReadActivityRpcResult> => {
@@ -433,6 +440,17 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       { claim, reason },
       options,
     ) as Promise<boolean>;
+  }
+
+  cancelProducer(
+    producer: Extract<ThreadMessageProducer, { readonly kind: 'room' }>,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<number> {
+    return this.call(
+      THREAD_MAILBOX_RUNTIME_METHODS.cancelProducer,
+      { producer },
+      options,
+    ) as Promise<number>;
   }
 
   listPendingTargets(options?: ThreadMailboxMutationOptions): Promise<readonly ThreadRef[]> {
@@ -934,6 +952,49 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       targets.set(threadIdentity(meta.target), meta.target);
     }
     return [...targets.values()];
+  }
+
+  private async cancelProducerOwner(
+    input: CancelProducerPayload,
+    ctx: RuntimeMethodContext,
+  ): Promise<number> {
+    const db = await this.readyOwner(ctx);
+    const method = THREAD_MAILBOX_RUNTIME_METHODS.cancelProducer;
+    const receiptKey = `${SYSTEM_PARTITION}/receipt/${hashJson({ method, callerHostId: ctx.callerHostId, requestId: ctx.requestId })}`;
+    const receipt = readReceipt(await db.partitionGet(SYSTEM_PARTITION, receiptKey), receiptKey, method, ctx, input);
+    if (receipt !== undefined) return receipt.result as number;
+    let cancelled = 0;
+    const metas = (await db.prefix('t/'))
+      .map((entry) => asTargetMeta(entry.value))
+      .filter((meta): meta is TargetMetaDoc => meta !== undefined);
+    for (const meta of metas) {
+      const partition = targetPartition(meta.target);
+      await this.withPartition(partition, ctx, async () => {
+        const messages = (await db.partitionPrefix(partition, targetMessagePrefix(partition)))
+          .map((entry) => ({ key: entry.key, message: asMessage(entry.value) }))
+          .filter((entry): entry is { readonly key: string; readonly message: MessageDoc } => entry.message !== undefined);
+        const matching = messages.filter((entry) =>
+          entry.message.state === 'pending' && sameProducer(entry.message.message.producer, input.producer),
+        );
+        if (matching.length === 0) return;
+        const currentMeta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
+        if (currentMeta === undefined) return;
+        const ops: BatchInputOp<StoredDoc>[] = matching.map(({ key, message }) => ({
+          op: 'set',
+          key,
+          value: { ...message, state: 'undeliverable', reason: 'room delivery cancelled' },
+        }));
+        ops.push({
+          op: 'set',
+          key: targetMetaKey(partition),
+          value: { ...currentMeta, pendingCount: Math.max(0, currentMeta.pendingCount - matching.length) },
+        });
+        await db.partitionBatch(partition, ops);
+        cancelled += matching.length;
+      });
+    }
+    await db.partitionBatch(SYSTEM_PARTITION, [buildReceiptOp(receiptKey, method, ctx, input, cancelled, RECEIPT_TTL_MS)]);
+    return cancelled;
   }
 
   private async appendActivityOwner(input: ActivityPayload, ctx: RuntimeMethodContext): Promise<StoredThreadActivity> {
@@ -1703,8 +1764,9 @@ function sameThread(left: ThreadRef, right: ThreadRef): boolean {
 
 function sameProducer(left: ThreadMessageProducer, right: ThreadMessageProducer): boolean {
   if (left.kind !== right.kind) return false;
-  if (left.kind === 'external_client') return true;
-  return right.kind === 'peer_thread' && sameThread(left.source, right.source);
+  if (left.kind === 'external_client' && right.kind === 'external_client') return true;
+  if (left.kind === 'peer_thread' && right.kind === 'peer_thread') return sameThread(left.source, right.source);
+  return left.kind === 'room' && right.kind === 'room' && left.roomId === right.roomId && left.generation === right.generation;
 }
 
 function sameMessage(left: AcceptedThreadMessage, right: AcceptedThreadMessage): boolean {
@@ -1827,6 +1889,13 @@ function assertUndeliverablePayload(value: unknown): UndeliverablePayload {
   return { claim: assertClaim(input['claim']), reason: input['reason'] };
 }
 
+function assertCancelProducerPayload(value: unknown): CancelProducerPayload {
+  const input = assertRecord(value);
+  const producer = asProducer(input['producer']);
+  if (producer === undefined || producer.kind !== 'room') throw new TypeError('Invalid room producer.');
+  return { producer };
+}
+
 function assertActivityPayload(value: unknown): ActivityPayload {
   const input = assertRecord(value);
   const target = asThreadRef(input['target']);
@@ -1865,7 +1934,13 @@ function asThreadRef(value: unknown): ThreadRef | undefined {
   if (value === null || typeof value !== 'object') return undefined;
   const ref = value as Record<string, unknown>;
   if (typeof ref['hostId'] !== 'string' || typeof ref['workspaceId'] !== 'string' || typeof ref['sessionId'] !== 'string') return undefined;
-  return { hostId: ref['hostId'], workspaceId: ref['workspaceId'], sessionId: ref['sessionId'] };
+  return {
+    hostId: ref['hostId'],
+    workspaceId: ref['workspaceId'],
+    sessionId: ref['sessionId'],
+    personaId: typeof ref['personaId'] === 'string' ? ref['personaId'] : undefined,
+    name: typeof ref['name'] === 'string' ? ref['name'] : undefined,
+  };
 }
 
 function asProducer(value: unknown): ThreadMessageProducer | undefined {
@@ -1874,9 +1949,37 @@ function asProducer(value: unknown): ThreadMessageProducer | undefined {
   if (producer['kind'] === 'external_client') return { kind: 'external_client' };
   if (producer['kind'] === 'peer_thread') {
     const source = asThreadRef(producer['source']);
-    if (source !== undefined) return { kind: 'peer_thread', source };
+    if (source !== undefined) return {
+      kind: 'peer_thread',
+      source,
+      sender: asSender(producer['sender']),
+      allowWhenDisabled: producer['allowWhenDisabled'] === true,
+    };
+  }
+  if (producer['kind'] === 'room' && typeof producer['roomId'] === 'string' && (producer['targeted'] === undefined || typeof producer['targeted'] === 'boolean')) {
+    const generation = producer['generation'];
+    if (generation === undefined || finiteNonNegativeInteger(generation) !== undefined) {
+      return {
+        kind: 'room',
+        roomId: producer['roomId'],
+        targeted: producer['targeted'] as boolean | undefined,
+        generation: generation as number | undefined,
+        sender: asSender(producer['sender']),
+      };
+    }
   }
   return undefined;
+}
+
+function asSender(value: unknown): { readonly sessionId: string; readonly personaId?: string; readonly name?: string } | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const sender = value as Record<string, unknown>;
+  if (typeof sender['sessionId'] !== 'string' || sender['sessionId'].length === 0) return undefined;
+  return {
+    sessionId: sender['sessionId'],
+    personaId: typeof sender['personaId'] === 'string' ? sender['personaId'] : undefined,
+    name: typeof sender['name'] === 'string' ? sender['name'] : undefined,
+  };
 }
 
 function normalizeDeliveryState(value: unknown): DeliveryState | undefined {

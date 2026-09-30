@@ -32,6 +32,7 @@ export interface PromptSubmitContext {
 export type DeferredAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
 
 export interface PromptExecutionBinding {
+  readonly personaGreetingReply?: boolean;
   readonly profile?: string;
   readonly model?: string;
   readonly thinking?: string;

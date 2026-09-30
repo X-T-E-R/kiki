@@ -33,9 +33,11 @@ export function deliveryOriginOf(origin: PromptOrigin | undefined): MessageDeliv
       return 'injection';
     case 'agent_message':
     case 'peer_thread':
+    case 'room_message':
       return 'mailbox';
     case 'retry':
       return 'recovery';
+    case 'persona_greeting':
     case 'system_trigger':
     case 'task':
     case 'cron_job':

@@ -16,6 +16,7 @@ import {
 import { subagentProfileName } from '#/session/agentLifecycle/subagentMetadata';
 
 type PersistedProfileFields = Pick<ProfileModelState,
+  'personaId' | 'personaRevision' | 'persona' | 'roomPrompt' |
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
@@ -143,6 +144,10 @@ async function scanPersistedAgentProfileSnapshot(
   if (!profileStateSeen) return undefined;
   return {
     source: 'wire',
+    personaId: state.personaId,
+    personaRevision: state.personaRevision,
+    persona: state.persona,
+    roomPrompt: state.roomPrompt,
     modelAlias: state.modelAlias,
     profileName: state.profileName,
     profileDefinitionId: state.profileDefinitionId,

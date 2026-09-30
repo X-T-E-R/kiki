@@ -700,10 +700,12 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
-    const peerMessageId =
-      input.message.origin?.kind === 'peer_thread' ? input.message.origin.messageId : undefined;
-    if (peerMessageId !== undefined) {
-      const existing = this.findPeerOriginHandle(peerMessageId);
+    const mailboxMessageId =
+      input.message.origin?.kind === 'peer_thread' || input.message.origin?.kind === 'room_message'
+        ? input.message.origin.messageId
+        : undefined;
+    if (mailboxMessageId !== undefined) {
+      const existing = this.findMailboxOriginHandle(mailboxMessageId);
       if (existing !== undefined) return existing;
     }
     const id = input.id ?? input.message.id ?? newMessageId();
@@ -776,12 +778,12 @@ export class AgentPromptService implements IAgentPromptService {
     );
   }
 
-  private findPeerOriginHandle(messageId: string): PromptHandle | undefined {
+  private findMailboxOriginHandle(messageId: string): PromptHandle | undefined {
     const live = [this.active, ...this.pending]
       .filter((item): item is Record => item !== undefined)
       .find(
         (item) =>
-          item.message.origin?.kind === 'peer_thread' &&
+          (item.message.origin?.kind === 'peer_thread' || item.message.origin?.kind === 'room_message') &&
           item.message.origin.messageId === messageId,
       );
     if (live !== undefined) return live.handle;
@@ -789,7 +791,8 @@ export class AgentPromptService implements IAgentPromptService {
       .get()
       .find(
         (message) =>
-          message.origin?.kind === 'peer_thread' && message.origin.messageId === messageId,
+          (message.origin?.kind === 'peer_thread' || message.origin?.kind === 'room_message') &&
+          message.origin.messageId === messageId,
       );
     if (persisted === undefined) return undefined;
     const id = persisted.id ?? messageId;

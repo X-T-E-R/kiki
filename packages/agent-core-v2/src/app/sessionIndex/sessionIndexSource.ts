@@ -106,6 +106,7 @@ export function buildSessionSummary(fields: {
   worktree?: SessionWorktree;
   title?: string;
   lastPrompt?: string;
+  delivery?: 'reply' | 'message';
   createdAt: number;
   updatedAt: number;
   archived: boolean;
@@ -121,6 +122,7 @@ export function buildSessionSummary(fields: {
     worktree: fields.worktree,
     title: fields.title,
     lastPrompt: fields.lastPrompt,
+    delivery: fields.delivery,
     createdAt: fields.createdAt,
     updatedAt: fields.updatedAt,
     archived: fields.archived,
@@ -156,6 +158,7 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     JSON.stringify(a.worktree) === JSON.stringify(b.worktree) &&
     a.title === b.title &&
     a.lastPrompt === b.lastPrompt &&
+    a.delivery === b.delivery &&
     a.createdAt === b.createdAt &&
     a.updatedAt === b.updatedAt &&
     a.archived === b.archived &&
@@ -285,6 +288,7 @@ function summaryFromMetadata(
     worktree: parseSessionWorktree(meta['worktree']),
     title: typeof meta['title'] === 'string' ? meta['title'] : undefined,
     lastPrompt: typeof meta['lastPrompt'] === 'string' ? meta['lastPrompt'] : undefined,
+    delivery: meta['delivery'] === 'reply' || meta['delivery'] === 'message' ? meta['delivery'] : undefined,
     createdAt: parseTime(meta['createdAt']),
     updatedAt: parseTime(meta['updatedAt']),
     archived: meta['archived'] === true,

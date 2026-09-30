@@ -15,6 +15,7 @@ export interface CreateSessionOptions {
   readonly worktree?: SessionWorktree;
   readonly ephemeral?: boolean;
   readonly additionalDirs?: readonly string[];
+  readonly delivery?: 'reply' | 'message';
   readonly mainAgentBinding?: BindAgentInput;
   readonly localSession?: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource;
   readonly waitForSessionMs?: number;

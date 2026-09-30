@@ -56,6 +56,7 @@ import type {
   SessionCreatedEvent,
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
@@ -92,6 +93,7 @@ describe('ThreadCommunicationService', () => {
   let promptState: PromptHandle['state'];
   let promptEnqueue: Mock<IAgentPromptService['enqueue']>;
   let promptInject: ReturnType<typeof vi.fn>;
+  let promptAbort: ReturnType<typeof vi.fn>;
   let promptSteer: ReturnType<typeof vi.fn>;
   let steerBehavior: 'success' | 'prompt-not-found';
   let resume: ReturnType<typeof vi.fn>;
@@ -148,7 +150,8 @@ describe('ThreadCommunicationService', () => {
       } as PromptHandle;
       return handle;
     });
-    const prompt = { enqueue: promptEnqueue, inject: promptInject, steer: promptSteer } as unknown as IAgentPromptService;
+    promptAbort = vi.fn();
+    const prompt = { enqueue: promptEnqueue, inject: promptInject, steer: promptSteer, abort: promptAbort } as unknown as IAgentPromptService;
     const agent: IAgentScopeHandle = {
       id: 'main',
       kind: LifecycleScope.Agent,
@@ -202,6 +205,12 @@ describe('ThreadCommunicationService', () => {
           for (const record of wireRecords) yield record as R;
         })(),
     });
+    const receiptDocs = new Map<string, unknown>();
+    ix.stub(IAtomicDocumentStore, {
+      get: async <T>(_scope: string, key: string) => receiptDocs.get(key) as T | undefined,
+      set: async (_scope: string, key: string, value: unknown) => { receiptDocs.set(key, value); },
+      delete: async (_scope: string, key: string) => { receiptDocs.delete(key); },
+    });
     ix.stub(ILogService, stubLog());
     ix.stub(IThreadMailboxStore, {
       acceptMessage: async (input) => {
@@ -239,6 +248,7 @@ describe('ThreadCommunicationService', () => {
         return true;
       },
       markUndeliverable: async () => true,
+      cancelProducer: async () => 0,
       listPendingTargets,
       appendActivity: async (input) => {
         const activity = {
@@ -338,6 +348,60 @@ describe('ThreadCommunicationService', () => {
       await runtime.close();
     }
   }, 30_000);
+  it.each(['pending', 'running'] as const)('cancels only pending room prompts, not %s active work', async (initialState) => {
+    promptState = initialState;
+    let complete!: (value: Awaited<PromptHandle['completion']>) => void;
+    const completion = new Promise<Awaited<PromptHandle['completion']>>((resolve) => { complete = resolve; });
+    promptEnqueue.mockImplementationOnce(async (input) => ({
+      id: input.id!, userMessageId: input.id!, createdAt: new Date().toISOString(),
+      get state() { return promptState; }, message: input.message,
+      launched: initialState === 'pending' ? new Promise(() => {}) : Promise.resolve(undefined), completion,
+    }));
+    promptAbort.mockImplementation((id: string) => { promptState = 'cancelled'; complete({ promptId: id, state: 'cancelled', result: undefined }); });
+    const service = ix.get(IThreadCommunicationService);
+    const target = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    const receipt = await service.sendRoomMessage({ target, roomId: 'room-test', content: 'Room turn', idempotencyKey: 'cancel-room', targeted: true, generation: 2 });
+    const waiting = service.waitRoomDelivery({ target, messageId: receipt.messageId });
+    const observed = waiting.then(() => 'completed', () => 'cancelled');
+    await service.cancelRoomDeliveries({ roomId: 'room-test' });
+    if (initialState === 'pending') {
+      expect(promptAbort).toHaveBeenCalledOnce();
+      expect(await observed).toBe('cancelled');
+    } else {
+      expect(promptAbort).not.toHaveBeenCalled();
+      complete({ promptId: receipt.messageId, state: 'completed', result: undefined });
+      expect(await observed).toBe('completed');
+    }
+    await service.shutdown();
+  });
+
+  it('waits for actual room turn completion beyond the receipt retention duration', async () => {
+    globalEnabled = false;
+    let complete!: (value: Awaited<PromptHandle['completion']>) => void;
+    const completion = new Promise<Awaited<PromptHandle['completion']>>((resolve) => { complete = resolve; });
+    promptEnqueue.mockImplementationOnce(async (input) => ({
+      id: input.id!, userMessageId: input.id!, createdAt: new Date().toISOString(),
+      state: 'running', message: input.message, launched: Promise.resolve(undefined), completion,
+    }));
+    const service = ix.get(IThreadCommunicationService);
+    const target = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    await service.listThreads();
+    vi.useFakeTimers();
+    try {
+      const receipt = await service.sendRoomMessage({ target, roomId: 'room-test', content: 'Room turn', idempotencyKey: 'room-1', targeted: false });
+      expect(promptEnqueue.mock.calls[0]?.[0].message.origin).toMatchObject({ kind: 'room_message', targeted: false });
+      let settled = false;
+      const waited = service.waitRoomDelivery({ target, messageId: receipt.messageId }).then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(settled).toBe(false);
+      complete({ promptId: receipt.messageId, state: 'completed', result: undefined });
+      await waited;
+      expect(settled).toBe(true);
+      await service.shutdown();
+    } finally { vi.useRealTimers(); }
+  });
 
   it('waits for startup mailbox recovery during shutdown', async () => {
     let markRecoveryStarted!: () => void;
@@ -912,6 +976,7 @@ function inMemoryMailbox(options: { readonly activityRetainedLimit?: number } = 
     claimNext: async () => undefined,
     acknowledgeDelivery: async () => false,
     markUndeliverable: async () => false,
+    cancelProducer: async () => 0,
     listPendingTargets: async () => [],
     appendActivity: async (input) => {
       const state = activityState(input.target);

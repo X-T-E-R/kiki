@@ -109,6 +109,19 @@ export interface AgentMessageOrigin {
   readonly senderTaskName: string;
 }
 
+export interface PersonaGreetingOrigin {
+  readonly kind: 'persona_greeting';
+  readonly personaId: string;
+}
+
+export interface RoomMessageOrigin {
+  readonly kind: 'room_message';
+  readonly roomId: string;
+  readonly messageId: string;
+  readonly targeted: boolean;
+  readonly generation?: number;
+}
+
 export type PromptOrigin =
   | UserPromptOrigin
   | SkillActivationOrigin
@@ -123,7 +136,9 @@ export type PromptOrigin =
   | HookResultOrigin
   | RetryOrigin
   | PeerThreadOrigin
-  | AgentMessageOrigin;
+  | AgentMessageOrigin
+  | PersonaGreetingOrigin
+  | RoomMessageOrigin;
 
 export interface ContextMessageSource {
   readonly ref?: string;

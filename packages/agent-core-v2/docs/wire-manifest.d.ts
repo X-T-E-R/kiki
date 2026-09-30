@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (76 record types)
+// Index (77 record types)
 //   auto_compact.override_changed      autoCompactOverride                                                             src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                                         src/agent/profile/profileOps.ts
 //   context_strategy.override_changed  contextStrategyOverride                                                         src/agent/fullCompaction/contextStrategyOps.ts
@@ -71,6 +71,7 @@
 //   prompt.steered                     promptResolution                                                                src/agent/prompt/promptService.ts
 //   prompt.timing_changed              (none)                                                                          src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                                  src/agent/runtimeBinding/runtimeBindingOps.ts
+//   session.delivery                   (none)                                                                          src/agent/delivery/deliveryReminder.ts
 //   staleGuard.cleared                 staleGuard                                                                      src/features/staleGuard/staleGuardOps.ts
 //   staleGuard.recorded                staleGuard                                                                      src/features/staleGuard/staleGuardOps.ts
 //   subagent.completed                 (none)                                                                          src/session/subagent/mirrorAgentRun.ts
@@ -184,7 +185,7 @@ interface ContextAppendMessagePayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
   };
@@ -578,6 +579,10 @@ interface PluginSessionStartPayload {
  */
 interface ProfileBindPayload {
   _name: 'profile.bind';
+  personaId?: string;
+  personaRevision?: string;
+  persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
+  roomPrompt?: string;
   modelAlias?: string;
   profileName?: string;
   profileDefinitionId?: string;
@@ -679,12 +684,13 @@ interface PromptEnqueuedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
   };
   /** PromptExecutionBinding */
   execution?: {
+    personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
     thinking?: string;
@@ -757,12 +763,13 @@ interface PromptReplacedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message' | undefined;
     isError?: boolean;
     note?: string;
   };
   /** PromptExecutionBinding */
   execution?: {
+    personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
     thinking?: string;
@@ -824,6 +831,15 @@ interface RuntimeSetBindingPayload {
   _name: 'runtime.set_binding';
   workspaceId: string;
   runtimeId: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/delivery/deliveryReminder.ts
+ */
+interface SessionDeliveryPayload {
+  _name: 'session.delivery';
+  delivery: 'reply' | 'message';
 }
 
 /**
@@ -1155,7 +1171,7 @@ interface TurnPromptPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message';
   managed?: boolean;
 }
 
@@ -1175,7 +1191,7 @@ interface TurnSteerPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | 'persona_greeting' | 'room_message';
   managed?: boolean;
 }
 
@@ -1284,6 +1300,7 @@ interface WirePayloadMap {
   "prompt.steered": PromptSteeredPayload;
   "prompt.timing_changed": PromptTimingChangedPayload;
   "runtime.set_binding": RuntimeSetBindingPayload;
+  "session.delivery": SessionDeliveryPayload;
   "staleGuard.cleared": StaleGuardClearedPayload;
   "staleGuard.recorded": StaleGuardRecordedPayload;
   "subagent.completed": SubagentCompletedPayload;

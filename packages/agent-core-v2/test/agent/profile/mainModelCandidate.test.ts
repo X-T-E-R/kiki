@@ -6,7 +6,7 @@ import {
 } from '#/agent/profile/mainModelCandidate';
 
 describe('main bind candidate ladder', () => {
-  it('prefers explicit input, then route lock, then profile alias, then default', () => {
+  it('prefers explicit input, then persona, then route lock, profile alias, and default', () => {
     expect(
       resolveMainModelCandidate({
         inputModel: 'cli-model',
@@ -15,6 +15,14 @@ describe('main bind candidate ladder', () => {
         defaultModel: 'default-model',
       }),
     ).toEqual({ alias: 'cli-model', source: 'input' });
+    expect(
+      resolveMainModelCandidate({
+        personaModelAlias: 'persona-model',
+        routeLockedAlias: 'route-model',
+        profileModelAlias: 'profile-model',
+        defaultModel: 'default-model',
+      }),
+    ).toEqual({ alias: 'persona-model', source: 'persona' });
     expect(
       resolveMainModelCandidate({
         routeLockedAlias: 'route-model',
@@ -37,6 +45,7 @@ describe('main bind candidate ladder', () => {
 
   it('resolves current request and profile defaults without a session-history fallback', () => {
     expect(resolveMainThinkingCandidate({ inputThinking: 'high', routeLockedThinking: 'max', modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('high');
+    expect(resolveMainThinkingCandidate({ personaThinking: 'persona', routeLockedThinking: 'max', modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('persona');
     expect(resolveMainThinkingCandidate({ routeLockedThinking: 'max', modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('max');
     expect(resolveMainThinkingCandidate({ modelProfileThinking: 'low', profileThinking: 'medium' })).toBe('low');
     expect(resolveMainThinkingCandidate({ profileThinking: 'medium' })).toBe('medium');

@@ -6,6 +6,7 @@ export const ProfileErrors = {
     MODEL_CONFIG_INVALID: 'model.config_invalid',
     THINKING_ALIAS_CONFLICT: 'profile.thinking_alias_conflict',
     PROFILE_UNKNOWN: 'profile.unknown',
+    PERSONA_UNKNOWN: 'persona.unknown',
     PROFILE_ALREADY_BOUND: 'profile.already_bound',
     PROFILE_NOT_BOUND: 'profile.not_bound',
     COGNITION_FILE_MISSING: 'profile.cognition_file_missing',

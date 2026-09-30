@@ -46,6 +46,7 @@ export interface SessionMeta {
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;
+  readonly delivery?: 'reply' | 'message';
   readonly worktree?: SessionWorktree;
   readonly forkedFrom?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;

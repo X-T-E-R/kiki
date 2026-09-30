@@ -26,6 +26,7 @@ export interface IShippedAgentProfileManager {
   readonly ready: Promise<void>;
   readonly onDidChange: Event<void>;
   status(): Promise<readonly ShippedAgentProfileStatusEntry[]>;
+  isCleanActivePath(path: string): boolean;
   restoreOriginal(templateId: string): Promise<ShippedAgentProfileStatusEntry>;
 }
 

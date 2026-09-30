@@ -28,6 +28,7 @@ tools:
   - HistoryRead
   - HistoryList
   - ReadMediaFile
+  - SendMessage
   - TodoList
   - Skill
   - WebSearch

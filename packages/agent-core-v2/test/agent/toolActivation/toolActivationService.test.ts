@@ -16,7 +16,9 @@ import {
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { Emitter, Event } from '#/_base/event';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -76,6 +78,7 @@ const IBetaTool = createDecorator<AgentTool>('activationTestBetaTool');
 const IGammaTool = createDecorator<AgentTool>('activationTestGammaTool');
 const IAgentStubTool = createDecorator<AgentTool>('activationTestAgentTool');
 const INotifyStubTool = createDecorator<AgentTool>('activationTestNotifyTool');
+const ISendMessageStubTool = createDecorator<AgentTool>('activationTestSendMessageTool');
 
 let alphaConstructions = 0;
 let betaConstructions = 0;
@@ -111,6 +114,12 @@ class AgentStubTool extends StubTool {
 class NotifyStubTool extends StubTool {
   constructor() {
     super('AgentNotify');
+  }
+}
+
+class SendMessageStubTool extends StubTool {
+  constructor() {
+    super('SendMessage');
   }
 }
 
@@ -156,7 +165,10 @@ describe('AgentToolActivationService', () => {
     disallowedTools?: readonly string[];
     disabledToolGroups?: readonly string[];
     allowParentNotify?: boolean;
+    profileName?: string;
+    profileDefinitionId?: string;
   } = {};
+  let deliveryMode: 'reply' | 'message' = 'reply';
   const gateData: { disabledTools: readonly string[] } = { disabledTools: [] };
   const runtimeChangeEmitter = new Emitter<void>();
   const configChangeEmitter = new Emitter<ConfigSectionChangedEvent>();
@@ -209,6 +221,15 @@ describe('AgentToolActivationService', () => {
           },
           onDidChange: Event.None as Event<void>,
         } satisfies ISessionToolPolicyGate);
+        reg.definePartialInstance(ISessionDeliveryService, {
+          effectiveMode: () => deliveryMode,
+          onDidChangeEffective: Event.None as Event<'reply' | 'message'>,
+        });
+        reg.definePartialInstance(IShippedAgentProfileManager, {
+          ready: Promise.resolve(),
+          isCleanActivePath: (path: string) => path.includes('/agents/builtin/'),
+          onDidChange: Event.None as Event<void>,
+        });
         reg.define(IAgentToolRegistryService, AgentToolRegistryService);
         reg.define(IAgentToolActivationService, AgentToolActivationService);
         reg.define(IAlphaTool, AlphaTool);
@@ -216,6 +237,7 @@ describe('AgentToolActivationService', () => {
         reg.define(IGammaTool, GammaTool);
         reg.define(IAgentStubTool, AgentStubTool);
         reg.define(INotifyStubTool, NotifyStubTool);
+        reg.define(ISendMessageStubTool, SendMessageStubTool);
       },
     });
     disposables.add(ix.createInstance(TestContributionAssembly));
@@ -238,6 +260,9 @@ describe('AgentToolActivationService', () => {
     delete profileData.disallowedTools;
     delete profileData.disabledToolGroups;
     delete profileData.allowParentNotify;
+    delete profileData.profileName;
+    delete profileData.profileDefinitionId;
+    deliveryMode = 'reply';
     gateData.disabledTools = [];
     scopeContext = mainScopeContext;
     notifyParent = true;
@@ -384,6 +409,38 @@ describe('AgentToolActivationService', () => {
     expect(registry.resolve('Alpha')).toBeInstanceOf(AlphaTool);
     expect(registry.resolve('Beta')).toBeUndefined();
     expect(betaConstructions).toBe(0);
+  });
+
+  it('adds SendMessage for an old clean shipped binding in message delivery mode', async () => {
+    profileData.activeToolNames = ['Read'];
+    profileData.profileName = 'agent';
+    profileData.profileDefinitionId = '/home/.kiki/agents/builtin/agent.md';
+    deliveryMode = 'message';
+    registerAgentToolService(ISendMessageStubTool, SendMessageStubTool, {
+      name: 'SendMessage',
+      when: () => deliveryMode === 'message',
+    });
+    const ix = createActivationHost();
+
+    await ix.get(IAgentToolActivationService).activate();
+
+    expect(ix.get(IAgentToolRegistryService).resolve('SendMessage')).toBeInstanceOf(SendMessageStubTool);
+  });
+
+  it('does not add SendMessage for a custom profile with the same delivery mode', async () => {
+    profileData.activeToolNames = ['Read'];
+    profileData.profileName = 'custom-agent';
+    profileData.profileDefinitionId = '/home/.kiki/agents/custom-agent.md';
+    deliveryMode = 'message';
+    registerAgentToolService(ISendMessageStubTool, SendMessageStubTool, {
+      name: 'SendMessage',
+      when: () => deliveryMode === 'message',
+    });
+    const ix = createActivationHost();
+
+    await ix.get(IAgentToolActivationService).activate();
+
+    expect(ix.get(IAgentToolRegistryService).resolve('SendMessage')).toBeUndefined();
   });
 
   it('honors the profile disallowedTools', async () => {
@@ -698,14 +755,29 @@ describe('AgentToolActivationService', () => {
 
     function createScopeTree(agentExtra: ScopeSeed = []) {
       const app = createAppScope({
-        seeds: [[
-          IConfigService,
-          {
-            _serviceBrand: undefined,
-            get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
-            onDidSectionChange: configChangeEmitter.event,
-          },
-        ]],
+        seeds: [
+          [
+            IConfigService,
+            {
+              _serviceBrand: undefined,
+              get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
+              onDidSectionChange: configChangeEmitter.event,
+            },
+          ],
+          [
+            IShippedAgentProfileManager,
+            {
+              _serviceBrand: undefined,
+              ready: Promise.resolve(),
+              onDidChange: Event.None as Event<void>,
+              status: async () => [],
+              isCleanActivePath: () => false,
+              restoreOriginal: async () => {
+                throw new Error('restoreOriginal is not available in this harness');
+              },
+            },
+          ],
+        ],
       });
       const session = app.createChild(LifecycleScope.Session, 'session', {
         seeds: [
@@ -718,6 +790,14 @@ describe('AgentToolActivationService', () => {
               },
               onDidChange: Event.None as Event<void>,
             } satisfies ISessionToolPolicyGate,
+          ],
+          [
+            ISessionDeliveryService,
+            {
+              _serviceBrand: undefined,
+              effectiveMode: () => deliveryMode,
+              onDidChangeEffective: Event.None as Event<'reply' | 'message'>,
+            },
           ],
         ],
       });

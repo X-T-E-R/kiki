@@ -5,6 +5,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import { IMemoryReadTool, IMemorySearchTool, IMemoryWriteTool, MemoryWriteTool } from '#/agent/tools/memory/memoryTools';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IConfigService } from '#/app/config/config';
 import { IMemoryStore } from '#/app/memory/memoryStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -15,6 +16,7 @@ describe('temporary session memory tools', () => {
     const put = vi.fn();
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ISessionContext, { workspaceId: 'example', sessionId: 'temporary', ephemeral: true });
+    ix.stub(IAgentMemorySnapshot, { getPersona: () => undefined });
     ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', workspaces: {} }) as T });
     ix.stub(IMemoryStore, { put });
     ix.set(IMemoryWriteTool, new SyncDescriptor(MemoryWriteTool));

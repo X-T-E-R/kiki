@@ -5,6 +5,7 @@ import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
@@ -41,6 +42,9 @@ import {
   type ListThreadsResult,
   type ReadThreadInput,
   type ReadThreadResult,
+  type SendRoomMessageInput,
+  type CancelRoomDeliveriesInput,
+  type WaitRoomDeliveryInput,
   type SendThreadMessageInput,
   type SendThreadMessageResult,
   type ThreadActivity,
@@ -78,6 +82,8 @@ const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
 const DELIVERY_LEASE_MS = 30_000;
+const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
+const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
 
 type CursorPayload = ListCursor | ReadCursor | ActivityCursor;
 
@@ -117,6 +123,27 @@ interface TargetDrainState {
   running?: Promise<SendThreadMessageResult['delivery']>;
 }
 
+interface RoomDeliveryTarget {
+  readonly target: ThreadRef;
+  readonly roomId: string;
+  readonly generation?: number;
+}
+
+interface PersistedRoomDeliveryReceipt {
+  readonly target: RoomDeliveryTarget;
+  readonly status: 'pending' | 'completed' | 'failed';
+  readonly error?: string;
+}
+
+interface RoomDeliveryReceipt {
+  readonly target: RoomDeliveryTarget;
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  cancelPending?: () => void;
+}
+
 export class ThreadCommunicationService extends Disposable implements IThreadCommunicationService, IThreadPeerSendCapability {
   declare readonly _serviceBrand: undefined;
   readonly hostId: string;
@@ -125,6 +152,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
   private readonly targetDrains = new Map<string, TargetDrainState>();
+  private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
+  private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
   private readonly mailboxController = new AbortController();
   private readonly shutdownSignal: Promise<void>;
   private resolveShutdown!: () => void;
@@ -139,6 +168,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     @ISessionManager private readonly sessionManager: ISessionManager,
     @IThreadMailboxStore private readonly mailbox: IThreadMailboxStore,
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
   ) {
     super();
@@ -160,6 +190,12 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async doShutdown(): Promise<void> {
     this.closing = true;
+    for (const receipt of this.roomDeliveryReceipts.values()) {
+      if (receipt.timer !== undefined) clearTimeout(receipt.timer);
+      receipt.reject(new Error('Thread communication is shutting down.'));
+    }
+    this.roomDeliveryReceipts.clear();
+    this.roomDeliveryTargets.clear();
     this.mailboxController.abort(new Error('Thread communication is shutting down.'));
     this.resolveShutdown();
     this.dispose();
@@ -314,20 +350,73 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     });
   }
 
+  async sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult> {
+    await this.ensureRecovery();
+    validateSendInput(input);
+    await this.requireThread(input.target, undefined, false);
+    return this.sendProducedMessage({
+      producer: { kind: 'room', roomId: input.roomId, targeted: input.targeted, generation: input.generation },
+      target: input.target,
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+    }, false);
+  }
+
+  async cancelRoomDeliveries(input: CancelRoomDeliveriesInput): Promise<void> {
+    await this.ensureRecovery();
+    requireNonEmpty(input.roomId, 'roomId');
+    await this.mailbox.cancelProducer({ kind: 'room', roomId: input.roomId, generation: input.generation }, {
+      signal: this.mailboxController.signal,
+    });
+    for (const [messageId, target] of this.roomDeliveryTargets) {
+      if (target.roomId !== input.roomId || (input.generation !== undefined && target.generation !== input.generation)) continue;
+      const receipt = this.roomDeliveryReceipts.get(messageId);
+      receipt?.cancelPending?.();
+      if (receipt === undefined) this.roomDeliveryTargets.delete(messageId);
+    }
+  }
+
+  async waitRoomDelivery(input: WaitRoomDeliveryInput): Promise<void> {
+    await this.ensureRecovery();
+    this.requireLocalHost(input.target);
+    requireNonEmpty(input.messageId, 'messageId');
+    let target = this.roomDeliveryTargets.get(input.messageId);
+    const persisted = await this.readRoomDeliveryReceipt(input.messageId);
+    if (persisted?.status === 'completed') return;
+    if (persisted?.status === 'failed') throw new Error(persisted.error ?? 'Room delivery failed.');
+    if (target === undefined) {
+      if (persisted === undefined) return;
+      target = persisted.target;
+      this.roomDeliveryTargets.set(input.messageId, target);
+    }
+    if (this.roomDeliveryReceipts.get(input.messageId) === undefined) {
+      this.ensureRoomDeliveryReceipt(input.messageId, target);
+    }
+    await this.requestTargetDrain(target.target, input.messageId);
+    const receipt = this.roomDeliveryReceipts.get(input.messageId);
+    if (receipt === undefined) return;
+    await waitWithSignal(receipt.promise, input.signal);
+  }
+
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    await this.requireThread(input.source, input.source);
+    await this.requireThread(input.source, input.source, input.allowWhenDisabled !== true);
     if (sameThread(input.source, input.target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
     }
     return this.sendProducedMessage({
-      producer: { kind: 'peer_thread', source: input.source },
+      producer: {
+        kind: 'peer_thread',
+        source: input.source,
+        sender: input.sender,
+        allowWhenDisabled: input.allowWhenDisabled,
+      },
       caller: input.source,
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
-    });
+    }, input.allowWhenDisabled !== true);
   }
 
   private async sendProducedMessage(input: {
@@ -336,10 +425,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly target: ThreadRef;
     readonly content: string;
     readonly idempotencyKey: string;
-  }): Promise<SendThreadMessageResult> {
+  }, requireCommunication = true): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    await this.requireThread(input.target, input.caller);
+    await this.requireThread(input.target, input.caller, requireCommunication);
     const storedInput = {
       producer: input.producer,
       target: input.target,
@@ -367,6 +456,21 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       );
     }
     let delivery = accepted.delivery;
+    if (input.producer.kind === 'room') {
+      const target = {
+        target: accepted.message.target,
+        roomId: input.producer.roomId,
+        generation: input.producer.generation,
+      } satisfies RoomDeliveryTarget;
+      this.roomDeliveryTargets.set(accepted.message.messageId, target);
+      if (!accepted.deduplicated) {
+        await this.persistRoomDeliveryReceipt(accepted.message.messageId, {
+          target,
+          status: 'pending',
+        });
+      }
+      if (delivery === 'undeliverable') this.roomDeliveryTargets.delete(accepted.message.messageId);
+    }
     if (delivery === 'pending') {
       delivery = await this.deliverMessage(accepted.message);
     }
@@ -487,9 +591,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
   }
 
-  private async requireThread(ref: ThreadRef, caller?: ThreadCaller): Promise<SessionSummary> {
+  private async requireThread(ref: ThreadRef, caller?: ThreadCaller, requireCommunication = true): Promise<SessionSummary> {
     this.requireLocalHost(ref);
-    if (!(await this.globalEnabled(caller)) || !(await this.workspaceEnabled(ref.workspaceId))) {
+    if (requireCommunication && (!(await this.globalEnabled(caller)) || !(await this.workspaceEnabled(ref.workspaceId)))) {
       throw threadDisabled(ref.workspaceId);
     }
     const summary = await this.sessions.get(ref.sessionId);
@@ -591,14 +695,94 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
   }
 
+  private ensureRoomDeliveryReceipt(
+    messageId: string,
+    target: RoomDeliveryTarget,
+  ): RoomDeliveryReceipt {
+    const existing = this.roomDeliveryReceipts.get(messageId);
+    if (existing !== undefined) return existing;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const receipt: RoomDeliveryReceipt = { target, promise, resolve, reject };
+    const retire = (): void => {
+      if (this.closing) return;
+      receipt.timer = setTimeout(() => {
+        if (this.roomDeliveryReceipts.get(messageId) !== receipt) return;
+        this.roomDeliveryReceipts.delete(messageId);
+        this.roomDeliveryTargets.delete(messageId);
+        void this.documents.delete(ROOM_DELIVERY_RECEIPT_SCOPE, messageId).catch(() => {});
+      }, ROOM_DELIVERY_RECEIPT_TTL_MS);
+      receipt.timer.unref?.();
+    };
+    void promise.then(retire, retire);
+    this.roomDeliveryReceipts.set(messageId, receipt);
+    return receipt;
+  }
+
+  private async persistRoomDeliveryReceipt(
+    messageId: string,
+    receipt: PersistedRoomDeliveryReceipt,
+  ): Promise<void> {
+    await this.documents.set(ROOM_DELIVERY_RECEIPT_SCOPE, messageId, receipt);
+  }
+
+  private readRoomDeliveryReceipt(messageId: string): Promise<PersistedRoomDeliveryReceipt | undefined> {
+    return this.documents.get<PersistedRoomDeliveryReceipt>(ROOM_DELIVERY_RECEIPT_SCOPE, messageId);
+  }
+
+  private resolveRoomDelivery(messageId: string): void {
+    const receipt = this.roomDeliveryReceipts.get(messageId);
+    const target = receipt?.target ?? this.roomDeliveryTargets.get(messageId);
+    if (target !== undefined) {
+      void this.persistRoomDeliveryReceipt(messageId, { target, status: 'completed' }).catch(() => {});
+    }
+    receipt?.resolve();
+  }
+
+  private rejectRoomDelivery(messageId: string, error: unknown): void {
+    const receipt = this.roomDeliveryReceipts.get(messageId);
+    const target = receipt?.target ?? this.roomDeliveryTargets.get(messageId);
+    if (target !== undefined) {
+      void this.persistRoomDeliveryReceipt(messageId, {
+        target,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {});
+    }
+    receipt?.reject(error);
+  }
+
+  private trackRoomPromptOutcome(messageId: string, handle: PromptHandle): void {
+    void handle.completion.then((completion) => {
+      if (completion.state === 'completed') this.resolveRoomDelivery(messageId);
+      else this.rejectRoomDelivery(messageId, new Error(`Room prompt ${completion.state}.`));
+    }, (error: unknown) => {
+      this.rejectRoomDelivery(messageId, error);
+    });
+  }
+
   private async deliverClaim(
     claim: ThreadDeliveryClaim,
   ): Promise<SendThreadMessageResult['delivery']> {
     const message = claim.message;
+    const roomReceipt = message.producer.kind === 'room'
+      ? this.ensureRoomDeliveryReceipt(message.messageId, {
+          target: message.target,
+          roomId: message.producer.roomId,
+          generation: message.producer.generation,
+        })
+      : undefined;
     let prompt: IAgentPromptService;
     let handle: PromptHandle;
     try {
-      await this.requireThread(message.target, message.target);
+      const allowWhenDisabled = message.producer.kind === 'peer_thread' && message.producer.allowWhenDisabled === true;
+      const requireCommunication = message.producer.kind !== 'room' && !allowWhenDisabled;
+      if (requireCommunication && !(await this.globalEnabled(message.target))) return 'pending';
+      await this.requireThread(message.target, message.target, requireCommunication);
       const session = await this.sessionManager.resume(message.target.sessionId);
       if (session === undefined) {
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
@@ -608,11 +792,23 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const origin: PromptOrigin = message.producer.kind === 'peer_thread'
         ? {
             kind: 'peer_thread',
-            source: message.producer.source,
+            source: {
+              ...message.producer.source,
+              personaId: message.producer.sender?.personaId ?? message.producer.source.personaId,
+              name: message.producer.sender?.name ?? message.producer.source.name,
+            },
             messageId: message.messageId,
             acceptedAt: message.acceptedAt,
           } satisfies PeerThreadOrigin
-        : USER_PROMPT_ORIGIN;
+        : message.producer.kind === 'room'
+          ? {
+              kind: 'room_message',
+              roomId: message.producer.roomId,
+              messageId: message.messageId,
+              targeted: message.producer.targeted === true,
+              generation: message.producer.generation,
+            }
+          : USER_PROMPT_ORIGIN;
       const text = message.producer.kind === 'peer_thread'
         ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
         : message.content;
@@ -627,8 +823,15 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         },
       });
     } catch (error) {
+      if (roomReceipt !== undefined) this.rejectRoomDelivery(message.messageId, error);
       if (this.closing) return 'pending';
       return this.recordUndeliverable(claim, error);
+    }
+    if (roomReceipt !== undefined) {
+      roomReceipt.cancelPending = () => {
+        if (handle.state === 'pending') prompt.abort(handle.id, new Error('Queued room delivery cancelled.'));
+      };
+      this.trackRoomPromptOutcome(message.messageId, handle);
     }
     if (handle.state === 'running' || handle.state === 'steered' || isTerminalPromptState(handle.state)) {
       return this.acknowledgeClaim(claim);
@@ -689,6 +892,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       signal: this.mailboxController.signal,
     });
     if (!changed) return 'pending';
+    if (claim.message.producer.kind === 'room') {
+      this.rejectRoomDelivery(claim.message.messageId, new Error(reason));
+    }
     await this.mailbox.appendActivity({
       target: claim.message.target,
       kind: 'message_undeliverable',
@@ -720,7 +926,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     });
     for (const target of targets) {
       if (this.closing) return;
-      if (target.hostId !== this.hostId || !(await this.globalEnabled(target))) continue;
+      if (target.hostId !== this.hostId) continue;
       await this.requestTargetDrain(target);
     }
   }
@@ -1152,6 +1358,25 @@ function isTerminalPromptState(state: PromptHandle['state']): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 registerScopedService(

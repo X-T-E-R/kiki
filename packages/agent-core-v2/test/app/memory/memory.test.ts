@@ -23,13 +23,16 @@ import { renderPrompt } from '@kiki/agent-profiles/renderPrompt';
 const workspaceId = 'wd_example_0123456789ab';
 const global: MemoryScope = { kind: 'global' };
 const workspace: MemoryScope = { kind: 'workspace', workspaceId };
+const personaGlobal: MemoryScope = { kind: 'persona', personaId: 'alpha' };
+const personaWorkspace: MemoryScope = { kind: 'persona_workspace', workspaceId, personaId: 'alpha' };
+const otherPersona: MemoryScope = { kind: 'persona', personaId: 'beta' };
 const source = { writer: 'user' as const };
 let home: string;
 let app: Scope | undefined;
 let settings: MemoryConfig;
 
-function start(): { store: IMemoryStore; snapshot: IAgentMemorySnapshot; storage: FileStorageService; writeTool: IMemoryWriteTool; searchTool: IMemorySearchTool; readTool: IMemoryReadTool } {
-  settings = MemoryConfigSchema.parse({ enabled: true });
+function start(config: Partial<MemoryConfig> = { enabled: true }): { store: IMemoryStore; snapshot: IAgentMemorySnapshot; storage: FileStorageService; writeTool: IMemoryWriteTool; searchTool: IMemorySearchTool; readTool: IMemoryReadTool } {
+  settings = MemoryConfigSchema.parse(config);
   _clearScopedRegistryForTests();
   registerScopedService(LifecycleScope.App, IMemoryStore, MemoryStore, ScopeActivation.OnDemand, 'memory');
   registerScopedService(LifecycleScope.Agent, IAgentMemorySnapshot, AgentMemorySnapshot, ScopeActivation.OnDemand, 'memory');
@@ -39,7 +42,14 @@ function start(): { store: IMemoryStore; snapshot: IAgentMemorySnapshot; storage
   const storage = new FileStorageService(home);
   app = createAppScope({ seeds: [
     [IFileSystemStorageService, storage],
-    [IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => scope.kind === 'global' ? 'memory/global' : `memory/workspaces/${scope.workspaceId}` }],
+    [IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => {
+      switch (scope.kind) {
+        case 'global': return 'memory/global';
+        case 'workspace': return `memory/workspaces/${scope.workspaceId}`;
+        case 'persona': return `memory/global/personas/${scope.personaId}`;
+        case 'persona_workspace': return `memory/workspaces/${scope.workspaceId}/personas/${scope.personaId}`;
+      }
+    }, listWorkspaceIds: async () => [workspaceId] }],
     [IConfigService, { _serviceBrand: undefined, get: () => settings }],
     [ICapabilitySnapshotService, { _serviceBrand: undefined, ready: Promise.resolve(), memoryAvailable: () => memoryEnabled(settings, workspaceId), threadEnabled: () => true, toolAvailable: () => true, refresh: () => ({ memory: true, thread: true }) }],
   ] });
@@ -98,6 +108,82 @@ describe('memory persistence and snapshot', () => {
     expect(await snapshot.liveSessionEntries()).toEqual([]);
   });
 
+  it('keeps the persona namespace across a profile or model restart', async () => {
+    const first = start();
+    first.snapshot.configurePersona({ id: 'alpha' });
+    const saved = await create(first.store, personaGlobal, 'Remember the alpha persona voice.');
+    app?.dispose();
+    app = undefined;
+    const second = start();
+    second.snapshot.configurePersona({ id: 'alpha' });
+    expect(await second.snapshot.get()).toContain(saved.entry.id);
+    expect(await second.snapshot.get()).toContain('Remember the alpha persona voice');
+    expect(await second.store.list({ kind: 'persona', personaId: 'beta' })).toEqual([]);
+  });
+
+  it('isolates persona memory and denies public reads when shared is empty', async () => {
+    const first = start();
+    const globalEntry = await create(first.store, global, 'Shared user preference.');
+    const workspaceEntry = await create(first.store, workspace, 'Shared workspace fact.');
+    const ownEntry = await create(first.store, personaGlobal, 'Alpha-only experience.');
+    await create(first.store, otherPersona, 'Beta-only experience.');
+    first.snapshot.configurePersona({ id: 'alpha', shared: [] });
+    const defaultWrite = first.writeTool.resolveExecution({ action: 'create', type: 'feedback', title: 'Persona default', body: 'Saved under alpha.', reason: 'Persona test' });
+    if (!('execute' in defaultWrite)) throw new Error('Write was rejected');
+    const defaultReceipt = JSON.parse((await defaultWrite.execute({ turnId: 1, toolCallId: 'write-default', signal: new AbortController().signal })).output as string) as { id: string; scope: string };
+    expect(defaultReceipt.scope).toBe('persona');
+    expect((await first.snapshot.liveSessionEntries()).map((entry) => entry.id)).toEqual([defaultReceipt.id]);
+    const references = await first.snapshot.resolveReferences(`[${defaultReceipt.id}] [${globalEntry.entry.id}] [${workspaceEntry.entry.id}]`);
+    expect(references[0]).toContain('Persona default');
+    expect(references.slice(1)).toEqual([`- [${globalEntry.entry.id}] (unavailable)`, `- [${workspaceEntry.entry.id}] (unavailable)`]);
+    expect((await first.store.get(personaGlobal, defaultReceipt.id))?.body).toBe('Saved under alpha.');
+    const snapshot = await first.snapshot.get();
+    expect(snapshot).toContain(ownEntry.entry.id);
+    expect(snapshot).toContain('Alpha-only experience');
+    expect(snapshot).not.toContain(globalEntry.entry.id);
+    expect(snapshot).not.toContain(workspaceEntry.entry.id);
+    expect(snapshot).not.toContain('Beta-only experience.');
+    const search = first.searchTool.resolveExecution({ query: 'Shared user' });
+    if (!('execute' in search)) throw new Error('Search was rejected');
+    expect(JSON.parse((await search.execute({ turnId: 1, toolCallId: 'search', signal: new AbortController().signal })).output as string)).toEqual([]);
+    const publicSearch = first.searchTool.resolveExecution({ query: 'Shared user', scope: 'global' });
+    if (!('execute' in publicSearch)) throw new Error('Search was rejected');
+    await expect(publicSearch.execute({ turnId: 1, toolCallId: 'search-public', signal: new AbortController().signal })).resolves.toMatchObject({ isError: true });
+    const read = first.readTool.resolveExecution({ id: globalEntry.entry.id });
+    if (!('execute' in read)) throw new Error('Read was rejected');
+    expect(JSON.parse((await read.execute({ turnId: 1, toolCallId: 'read-public', signal: new AbortController().signal })).output as string)).toEqual([{ id: globalEntry.entry.id, missing: true }]);
+  });
+
+  it('reserves forty percent of a persona snapshot budget for its own namespaces', async () => {
+    const current = start({ enabled: true, budget: 1_000 });
+    current.snapshot.configurePersona({ id: 'alpha' });
+    await create(current.store, global, 'Global memory');
+    await create(current.store, workspace, 'Workspace memory');
+    await create(current.store, personaGlobal, 'Persona memory');
+    const snapshot = await current.snapshot.get();
+    expect(snapshot).toContain('persona:alpha');
+    expect(snapshot).toContain('Persona memory');
+  });
+
+  it('lists, imports, and deletes every namespace for a persona', async () => {
+    const current = start();
+    const globalLore = await current.store.importLorebook(personaGlobal, [
+      { name: 'Origin', content: 'Alpha was born in the north.', constant: true },
+    ]);
+    const workspaceLore = await current.store.importLorebook(personaWorkspace, [
+      { title: 'Project', content: 'Alpha owns this workspace.' },
+    ]);
+    expect(globalLore[0]?.entry.pinned).toBe(true);
+    expect((await current.store.listPersonaEntries('alpha')).map((entry) => entry.id)).toEqual(expect.arrayContaining([
+      globalLore[0]!.entry.id,
+      workspaceLore[0]!.entry.id,
+    ]));
+    const deleted = await current.store.deletePersonaNamespaces('alpha');
+    expect(deleted.namespaceCount).toBe(2);
+    expect(deleted.entryCount).toBe(2);
+    expect(await current.store.listPersonaEntries('alpha')).toEqual([]);
+  });
+
   it('exposes silent tool write receipts through the existing tool result and honors explicit review', async () => {
     const { store, writeTool, searchTool, readTool } = start();
     const args = { action: 'create' as const, scope: 'workspace' as const, type: 'feedback' as const, title: 'Language', body: 'Reply in Chinese.', reason: 'User corrected a response' };
@@ -152,7 +238,11 @@ describe('memory persistence and snapshot', () => {
 
   it('waits for a write held by another storage instance', async () => {
     const { store, storage } = start();
-    const scopes = { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => scope.kind === 'global' ? 'memory/global' : `memory/workspaces/${scope.workspaceId}` };
+    const scopes = { _serviceBrand: undefined, resolve: async (scope: MemoryScope) => {
+      if (scope.kind === 'global') return 'memory/global';
+      if (scope.kind === 'workspace') return `memory/workspaces/${scope.workspaceId}`;
+      throw new Error('This fixture only supports public memory scopes.');
+    } };
     const other = new MemoryStore(new FileStorageService(home), scopes);
     const append = storage.append.bind(storage);
     let release!: () => void;

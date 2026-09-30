@@ -26,6 +26,7 @@ export interface SessionSummary {
   readonly worktree?: SessionWorktree;
   readonly title?: string;
   readonly lastPrompt?: string;
+  readonly delivery?: 'reply' | 'message';
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly archived: boolean;

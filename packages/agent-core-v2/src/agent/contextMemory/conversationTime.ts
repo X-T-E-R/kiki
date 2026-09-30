@@ -13,7 +13,8 @@ export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
     origin === undefined ||
     origin.kind === 'user' ||
     origin.kind === 'peer_thread' ||
-    origin.kind === 'agent_message'
+    origin.kind === 'agent_message' ||
+    (origin.kind === 'room_message' && origin.targeted)
   ) return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&

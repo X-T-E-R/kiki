@@ -49,6 +49,7 @@ export async function setColdSessionArchived(
       cwd: nextMeta.cwd ?? summary.cwd,
       title: nextMeta.title,
       lastPrompt: nextMeta.lastPrompt,
+      delivery: nextMeta.delivery,
       createdAt: nextMeta.createdAt,
       updatedAt: nextMeta.updatedAt,
       archived,

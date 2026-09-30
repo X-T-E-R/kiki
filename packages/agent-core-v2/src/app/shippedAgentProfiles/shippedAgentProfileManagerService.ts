@@ -130,6 +130,15 @@ export class ShippedAgentProfileManagerService
     return entries;
   }
 
+  isCleanActivePath(path: string): boolean {
+    const manifest = this.manifestValue;
+    if (manifest === undefined) return false;
+    const target = normalizedPath(path);
+    return Object.values(manifest.templates).some((record) =>
+      record.status === 'clean' && normalizedPath(this.toAbsolute(record.activePath)) === target,
+    );
+  }
+
   async restoreOriginal(templateId: string): Promise<ShippedAgentProfileStatusEntry> {
     await this.ready;
     const manifest = this.manifestValue;
@@ -546,6 +555,10 @@ function skippedEntry(
 
 function hashText(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+function normalizedPath(path: string): string {
+  return path.replaceAll('\\', '/').toLowerCase();
 }
 
 registerScopedService(

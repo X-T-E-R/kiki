@@ -16,6 +16,20 @@ export function estimateTokens(text: string): number {
   return Math.ceil(asciiCount / 4) + nonAsciiCount;
 }
 
+export function truncateTextToTokens(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return '';
+  let asciiCount = 0;
+  let nonAsciiCount = 0;
+  let end = 0;
+  for (const char of text) {
+    if (char.codePointAt(0)! <= 127) asciiCount++;
+    else nonAsciiCount++;
+    if (Math.ceil(asciiCount / 4) + nonAsciiCount > maxTokens) break;
+    end += char.length;
+  }
+  return text.slice(0, end);
+}
+
 export function estimateTokensForMessages(messages: readonly Message[]): number {
   let total = 0;
   for (const message of messages) {

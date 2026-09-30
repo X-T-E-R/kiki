@@ -7,6 +7,7 @@ import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentProfileService } from '#/agent/profile/profileService';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
@@ -272,6 +273,14 @@ function buildHost(key: string): {
     onDidChange: () => ({ dispose: () => {} }),
     disabledTools: () => [],
     setDisabledTools: () => Promise.resolve(),
+  });
+  host.stub(IAgentMemorySnapshot, {
+    _serviceBrand: undefined,
+    get: async () => '',
+    getSessionEntries: async () => [],
+    getPersona: () => undefined,
+    configurePersona: () => {},
+    invalidate: () => {},
   });
   host.set(IAgentStateService, new AgentStateService());
   host.set(IAgentProfileService, new SyncDescriptor(AgentProfileService));
@@ -539,6 +548,48 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       environmentDisclosure: environment,
       renderGeneration: 7,
     });
+    replay.ix.dispose();
+  });
+
+  it('persists and replays the frozen persona and room binding fields', async () => {
+    const persona = {
+      definition: {
+        id: 'lin-lan',
+        name: '林岚',
+        title: '发布协调',
+        description: '先给结论。',
+        memory: { shared: ['global'] as const },
+      },
+      revision: 'r1',
+      examples: '示例',
+    };
+    svc.applyBindingSnapshot({
+      personaId: 'lin-lan',
+      personaRevision: 'r1',
+      persona,
+      roomPrompt: '<room>发布</room>',
+      profileName: 'agent',
+      modelAlias: 'kimi-code',
+      thinkingLevel: 'off',
+      systemPrompt: 'persona prompt',
+    });
+    expect(svc.data()).toMatchObject({ personaId: 'lin-lan', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
+    const records = await readRecords();
+    expect(records).toContainEqual(expect.objectContaining({
+      type: 'profile.bind',
+      personaId: 'lin-lan',
+      personaRevision: 'r1',
+      persona,
+      roomPrompt: '<room>发布</room>',
+    }));
+    const replay = buildHost('profile-replay-persona');
+    await restoreTestEventDispatcher(
+      replay.dispatcher,
+      replay.log,
+      testWireScope(SCOPE, 'profile-replay-persona'),
+      records,
+    );
+    expect(replay.svc.data()).toMatchObject({ personaId: 'lin-lan', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
     replay.ix.dispose();
   });
 

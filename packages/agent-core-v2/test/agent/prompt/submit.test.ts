@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
@@ -10,6 +12,9 @@ import { IAgentPlanService } from '#/features/plan/plan';
 
 import { IEventService } from '#/app/event/event';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { createTestAgent, type TestAgentContext } from '../../harness';
 
@@ -22,6 +27,55 @@ describe('prompt submit', () => {
     } finally {
       await ctx.dispose();
     }
+  });
+
+  it('runs one delivery reminder continuation and never loops on ordinary text', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    const documents = ctx.get(IAtomicDocumentStore);
+    const scope = ctx.get(ISessionContext).metaScope;
+    expect(await documents.get(scope, 'delivery.json')).toBeUndefined();
+    await delivery.set('message');
+    expect(await documents.get(scope, 'delivery.json')).toEqual({ mode: 'message' });
+    ctx.mockNextResponse({ type: 'text', text: 'Private reasoning result.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Still no visible message.' });
+    const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+    const reminders = ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'message_delivery');
+    expect(reminders).toHaveLength(1);
+  });
+
+  it('materializes a frozen persona greeting only on explicit reply and only once', async () => {
+    ctx = createTestAgent();
+    const profile = ctx.get(IAgentProfileService);
+    profile.applyBindingSnapshot({ ...profile.data(), personaId: 'guide', personaRevision: 'revision-1',
+      persona: { definition: { id: 'guide', name: 'Guide', description: 'Be helpful.', greeting: 'Welcome aboard.' }, revision: 'revision-1' } });
+    const memory = ctx.get(IAgentContextMemoryService);
+    expect(memory.get()).toHaveLength(0);
+    const prompts = ctx.get(IAgentPromptService);
+    ctx.mockNextResponse({ type: 'text', text: 'First answer.' });
+    await prompts.submitAndWait({ input: [{ type: 'text', text: 'Ordinary message' }] });
+    expect(memory.get().some((message) => message.origin?.kind === 'persona_greeting')).toBe(false);
+    for (const text of ['Reply to greeting', 'Reply again']) {
+      ctx.mockNextResponse({ type: 'text', text: 'Acknowledged.' });
+      await prompts.submitAndWait({ input: [{ type: 'text', text }], execution: { personaGreetingReply: true } });
+    }
+    const history = memory.get();
+    const greetings = history.filter((message) => message.origin?.kind === 'persona_greeting');
+    expect(greetings).toHaveLength(1);
+    expect(greetings[0]).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: 'Welcome aboard.' }],
+      origin: { kind: 'persona_greeting', personaId: 'guide' } });
+    expect(history.indexOf(greetings[0]!)).toBeLessThan(history.findIndex((message) =>
+      message.content.some((part) => part.type === 'text' && part.text === 'Reply to greeting')));
+  });
+
+  it('rejects a greeting reply without a frozen persona greeting before any model call', async () => {
+    ctx = createTestAgent();
+    await expect(ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Reply' }],
+      execution: { personaGreetingReply: true } })).rejects.toMatchObject({ code: 'request.invalid' });
+    expect(ctx.llmCalls).toHaveLength(0);
   });
 
   it.each(['pause', 'cancel'] as const)('runs queued goal %s before a continuation after real normal completion', async (goalControl) => {

@@ -1,4 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { IAskUserQuestionTool } from '#/agent/tools/ask-user-question/ask-user-question';
+import { IAgentActivityView, type ActivityTurnState } from '#/agent/activityView/activityView';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { IRoomService } from '#/app/room/room';
+import { IConfigService as ConfigId } from '#/app/config/config';
+import { ISessionQuestionService as QuestionId } from '#/session/question/question';
 
 import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
@@ -80,6 +89,31 @@ function makeTool(
 }
 
 describe('AskUserQuestionTool', () => {
+  it('requires a targeted current room wake and keeps message-mode questions in background tasks', async () => {
+    const ix = new TestInstantiationService();
+    let turn: ActivityTurnState | undefined;
+    const registerTask = vi.fn(() => 'question-task');
+    ix.stub(QuestionId, { request: vi.fn(async () => null) });
+    ix.stub(ITelemetryService, { track2: vi.fn() });
+    ix.stub(IAgentTaskService, { registerTask, getTask: () => undefined });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ConfigId, { get: <T>() => ({ askUserQuestion: 'blocking' }) as T });
+    ix.stub(ISessionDeliveryService, { effectiveMode: () => 'message' });
+    ix.stub(ISessionMetadata, { read: async () => ({ id: 'member-session', createdAt: 0, updatedAt: 0, archived: false, custom: { room_member_of: 'room-a' } }) });
+    ix.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', turn, background: [] }) });
+    ix.stub(IRoomService, { runQuestion: async (_room, _session, request) => request() });
+    try {
+      ix.set(IAskUserQuestionTool, new SyncDescriptor(AskUserQuestionTool));
+      const tool = ix.get(IAskUserQuestionTool);
+      expect((await executeTool(tool, { turnId: 1, toolCallId: 'room-question', args: input(), signal })).isError).toBe(true);
+      expect(registerTask).not.toHaveBeenCalled();
+      turn = { turnId: 1, origin: { kind: 'room_message', roomId: 'room-a', messageId: 'row-1', targeted: true }, phase: 'tool_call', step: 1, pendingApprovals: [], activeToolCalls: [], since: 0, ending: false };
+      const result = await executeTool(tool, { turnId: 1, toolCallId: 'room-question', args: input(), signal });
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain('automatic_notification: true');
+      expect(registerTask).toHaveBeenCalledOnce();
+    } finally { ix.dispose(); }
+  });
   it('exposes current metadata and schema', () => {
     const { tool } = makeTool();
 

@@ -4,7 +4,11 @@ import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { isAbortError } from '#/_base/utils/abort';
-import type { ServicesAccessor } from '#/_base/di/instantiation';
+import { ref, type LiveRef, type ServicesAccessor } from '#/_base/di/instantiation';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { IRoomService } from '#/app/room/room';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -52,6 +56,10 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IConfigService private readonly config: IConfigService,
+    @ref(ISessionDeliveryService) private readonly delivery?: LiveRef<ISessionDeliveryService>,
+    @ref(ISessionMetadata) private readonly metadata?: LiveRef<ISessionMetadata>,
+    @ref(IAgentActivityView) private readonly activity?: LiveRef<IAgentActivityView>,
+    @ref(IRoomService) private readonly rooms?: LiveRef<IRoomService>,
   ) {
     this.description = this.isBlocking()
       ? DESCRIPTION
@@ -60,7 +68,8 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
   }
 
   private isBlocking(): boolean {
-    return this.config.get<InteractionConfig | undefined>(INTERACTION_SECTION)?.askUserQuestion === 'blocking';
+    return this.delivery?.current?.effectiveMode() !== 'message' &&
+      this.config.get<InteractionConfig | undefined>(INTERACTION_SECTION)?.askUserQuestion === 'blocking';
   }
 
   resolveExecution(args: AskUserQuestionInput): ToolExecution {
@@ -83,11 +92,24 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       return { isError: true, output: uniquenessError };
     }
 
-    if (args.background === true && !this.isBlocking()) {
-      return this.executeInBackground(args, { toolCallId, turnId, signal, trace });
+    const metadata = await this.metadata?.current?.read();
+    signal.throwIfAborted();
+    const roomId = metadata?.custom?.['room_member_of'];
+    let room: { id: string; sessionId: string } | undefined;
+    if (typeof roomId === 'string') {
+      const turn = this.activity?.current?.state().turn;
+      if (turn?.turnId !== turnId || turn.origin.kind !== 'room_message' || turn.origin.roomId !== roomId || !turn.origin.targeted) {
+        return { isError: true, output: 'Only the currently awakened room member may ask a question.' };
+      }
+      if (this.rooms?.current === undefined) return { isError: true, output: 'Room questions are unavailable.' };
+      room = { id: roomId, sessionId: metadata!.id };
+    }
+    const messageMode = this.delivery?.current?.effectiveMode() === 'message';
+    if (messageMode || (args.background === true && !this.isBlocking())) {
+      return this.executeInBackground({ ...args, background: true }, { toolCallId, turnId, signal, trace }, room);
     }
 
-    return this.executeQuestion(this.isBlocking() ? { ...args, background: false } : args, { toolCallId, turnId, signal, trace });
+    return this.executeQuestion(this.isBlocking() ? { ...args, background: false } : args, { toolCallId, turnId, signal, trace }, room);
   }
 
   private inputSchema(): z.ZodType<AskUserQuestionInput> {
@@ -102,6 +124,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       turnId,
       trace,
     }: Pick<ExecutableToolContext, 'toolCallId' | 'signal' | 'turnId' | 'trace'>,
+    room?: { readonly id: string; readonly sessionId: string },
   ): ExecutableToolResult {
     if (signal.aborted) {
       signal.throwIfAborted();
@@ -112,7 +135,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     try {
       taskId = this.tasks.registerTask(
         new QuestionBackgroundTask(
-          (taskSignal) => this.executeQuestion(args, { toolCallId, turnId, signal: taskSignal, trace }),
+          (taskSignal) => this.executeQuestion(args, { toolCallId, turnId, signal: taskSignal, trace }, room),
           description,
           { questionCount: args.questions.length, toolCallId },
         ),
@@ -145,9 +168,10 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       turnId,
       trace,
     }: Pick<ExecutableToolContext, 'toolCallId' | 'signal' | 'turnId' | 'trace'>,
+    room?: { readonly id: string; readonly sessionId: string },
   ): Promise<ExecutableToolResult> {
     try {
-      const result = await this.question.request(
+      const request = () => this.question.request(
         {
           turnId,
           toolCallId,
@@ -163,6 +187,9 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
         },
         { signal, agentId: this.scopeContext.agentId, detached: args.background === true },
       );
+      const result = room === undefined
+        ? await request()
+        : await this.rooms!.current!.runQuestion(room.id, room.sessionId, request, signal);
 
       const normalized = normalizeQuestionResult(result);
       if (normalized === null || Object.keys(normalized.answers).length === 0) {

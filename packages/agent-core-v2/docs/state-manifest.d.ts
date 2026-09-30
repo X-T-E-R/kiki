@@ -208,6 +208,7 @@ export interface WorkspaceStateSnapshot {
           [key: string]: unknown;
         };
         readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+        readonly sourceRoot?: string;
         readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
           readonly id: string;
           readonly instructions?: string;
@@ -247,6 +248,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -276,6 +278,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -313,6 +316,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -342,6 +346,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -371,6 +376,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -402,6 +408,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -431,6 +438,7 @@ export interface WorkspaceStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -528,6 +536,7 @@ export interface SessionStateSnapshot {
     readonly archived: boolean;
     readonly archivedAt?: number;
     readonly cwd?: string;
+    readonly delivery?: 'reply' | 'message';
     readonly worktree?: /* SessionWorktree — packages/agent-core-v2/src/app/git/worktreeModel.ts */ {
       readonly worktreeId: string;
       readonly branch: string;
@@ -609,6 +618,7 @@ export interface SessionStateSnapshot {
           [key: string]: unknown;
         };
         readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+        readonly sourceRoot?: string;
         readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
           readonly id: string;
           readonly instructions?: string;
@@ -648,6 +658,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -677,6 +688,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -714,6 +726,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -743,6 +756,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -772,6 +786,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -803,6 +818,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -832,6 +848,7 @@ export interface SessionStateSnapshot {
         [key: string]: unknown;
       };
       readonly source: /* SkillSource — packages/agent-core-v2/src/app/skillCatalog/types.ts */ 'project' | 'user' | 'extra' | 'builtin';
+      readonly sourceRoot?: string;
       readonly plugin?: /* SkillPluginContext — packages/agent-core-v2/src/app/skillCatalog/types.ts */ {
         readonly id: string;
         readonly instructions?: string;
@@ -941,6 +958,8 @@ export interface AgentStateSnapshot {
           readonly hostId: string;
           readonly workspaceId: string;
           readonly sessionId: string;
+          readonly personaId?: string;
+          readonly name?: string;
         };
         readonly messageId: string;
         readonly acceptedAt: number;
@@ -949,6 +968,15 @@ export interface AgentStateSnapshot {
         readonly messageId: string;
         readonly senderAgentId: string;
         readonly senderTaskName: string;
+      } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'persona_greeting';
+        readonly personaId: string;
+      } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'room_message';
+        readonly roomId: string;
+        readonly messageId: string;
+        readonly targeted: boolean;
+        readonly generation?: number;
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
       readonly stream?: 'tool_call' | 'assistant' | 'thinking';
@@ -1088,6 +1116,8 @@ export interface AgentStateSnapshot {
         readonly hostId: string;
         readonly workspaceId: string;
         readonly sessionId: string;
+        readonly personaId?: string;
+        readonly name?: string;
       };
       readonly messageId: string;
       readonly acceptedAt: number;
@@ -1096,6 +1126,15 @@ export interface AgentStateSnapshot {
       readonly messageId: string;
       readonly senderAgentId: string;
       readonly senderTaskName: string;
+    } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'persona_greeting';
+      readonly personaId: string;
+    } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'room_message';
+      readonly roomId: string;
+      readonly messageId: string;
+      readonly targeted: boolean;
+      readonly generation?: number;
     };
     snapshot: () => /* ActivityTurnState — packages/agent-core-v2/src/agent/activityView/activityView.ts */ {
       readonly turnId: number;
@@ -1167,6 +1206,8 @@ export interface AgentStateSnapshot {
           readonly hostId: string;
           readonly workspaceId: string;
           readonly sessionId: string;
+          readonly personaId?: string;
+          readonly name?: string;
         };
         readonly messageId: string;
         readonly acceptedAt: number;
@@ -1175,6 +1216,15 @@ export interface AgentStateSnapshot {
         readonly messageId: string;
         readonly senderAgentId: string;
         readonly senderTaskName: string;
+      } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'persona_greeting';
+        readonly personaId: string;
+      } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'room_message';
+        readonly roomId: string;
+        readonly messageId: string;
+        readonly targeted: boolean;
+        readonly generation?: number;
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
       readonly stream?: 'tool_call' | 'assistant' | 'thinking';
@@ -1326,6 +1376,8 @@ export interface AgentStateSnapshot {
         readonly hostId: string;
         readonly workspaceId: string;
         readonly sessionId: string;
+        readonly personaId?: string;
+        readonly name?: string;
       };
       readonly messageId: string;
       readonly acceptedAt: number;
@@ -1334,6 +1386,15 @@ export interface AgentStateSnapshot {
       readonly messageId: string;
       readonly senderAgentId: string;
       readonly senderTaskName: string;
+    } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'persona_greeting';
+      readonly personaId: string;
+    } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'room_message';
+      readonly roomId: string;
+      readonly messageId: string;
+      readonly targeted: boolean;
+      readonly generation?: number;
     };
     readonly isError?: boolean;
     readonly note?: string;
@@ -1691,6 +1752,34 @@ export interface AgentStateSnapshot {
   // src/agent/profile/profileOps.ts
   // replayable · durable — folds: ProfileBind, ConfigUpdate
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
+    readonly personaId?: string;
+    readonly personaRevision?: string;
+    readonly persona?: /* PersonaSnapshot — packages/agent-profiles/src/personaFile.ts */ {
+      readonly definition: /* PersonaDefinition — packages/agent-profiles/src/personaFile.ts */ {
+        readonly id: string;
+        readonly name: string;
+        readonly title?: string;
+        readonly job?: string;
+        readonly profile?: string;
+        readonly modelAlias?: string;
+        readonly thinkingEffort?: string;
+        readonly greeting?: string;
+        readonly greetings?: readonly string[];
+        readonly roomGreeting?: string;
+        readonly delivery?: 'reply' | 'message';
+        readonly memory?: /* PersonaMemoryDefinition — packages/agent-profiles/src/personaFile.ts */ {
+          readonly shared: readonly (/* PersonaSharedMemoryScope — packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
+        };
+        readonly skills?: readonly string[];
+        readonly tags?: readonly string[];
+        readonly notes?: string;
+        readonly homeWorkspace?: string;
+        readonly description: string;
+      };
+      readonly revision: string;
+      readonly examples?: string;
+    };
+    readonly roomPrompt?: string;
     readonly modelAlias?: string;
     readonly profileName?: string;
     readonly profileDefinitionId?: string;
@@ -1748,7 +1837,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
-    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
     readonly subagentPolicy?: 'strict' | 'advisory';
     readonly subagentDeclaration?: {
       readonly kind: 'inherit';
@@ -1984,7 +2073,7 @@ export interface AgentStateSnapshot {
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
-        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
         readonly subagentPolicy?: 'strict' | 'advisory';
         readonly subagentDeclaration?: {
           readonly kind: 'inherit';
@@ -2154,7 +2243,7 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
-      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
       readonly subagentDeclaration?: {
         readonly kind: 'inherit';
@@ -2297,6 +2386,7 @@ export interface AgentStateSnapshot {
         readonly cwdListing?: string;
         readonly agentsMd?: string;
         readonly memory?: string;
+        readonly persona?: string;
         readonly additionalDirsInfo?: string;
         readonly osKind?: string;
         readonly shellName?: string;
@@ -2317,6 +2407,7 @@ export interface AgentStateSnapshot {
         readonly cwdListing?: string;
         readonly agentsMd?: string;
         readonly memory?: string;
+        readonly persona?: string;
         readonly additionalDirsInfo?: string;
         readonly osKind?: string;
         readonly shellName?: string;
@@ -2373,7 +2464,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2513,6 +2604,34 @@ export interface AgentStateSnapshot {
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+          readonly personaId?: string;
+          readonly personaRevision?: string;
+          readonly persona?: /* PersonaSnapshot — packages/agent-profiles/src/personaFile.ts */ {
+            readonly definition: /* PersonaDefinition — packages/agent-profiles/src/personaFile.ts */ {
+              readonly id: string;
+              readonly name: string;
+              readonly title?: string;
+              readonly job?: string;
+              readonly profile?: string;
+              readonly modelAlias?: string;
+              readonly thinkingEffort?: string;
+              readonly greeting?: string;
+              readonly greetings?: readonly string[];
+              readonly roomGreeting?: string;
+              readonly delivery?: 'reply' | 'message';
+              readonly memory?: /* PersonaMemoryDefinition — packages/agent-profiles/src/personaFile.ts */ {
+                readonly shared: readonly (/* PersonaSharedMemoryScope — packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
+              };
+              readonly skills?: readonly string[];
+              readonly tags?: readonly string[];
+              readonly notes?: string;
+              readonly homeWorkspace?: string;
+              readonly description: string;
+            };
+            readonly revision: string;
+            readonly examples?: string;
+          };
+          readonly roomPrompt?: string;
           readonly effectiveThinkingLevel?: 'off' | 'on' | (string & {});
           readonly thinkingEffortSource?: 'forced' | 'adjusted';
           readonly routeDetached?: boolean;
@@ -2552,7 +2671,7 @@ export interface AgentStateSnapshot {
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2829,7 +2948,7 @@ export interface AgentStateSnapshot {
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
-            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
             readonly subagentPolicy?: 'strict' | 'advisory';
             readonly subagentDeclaration?: {
               readonly kind: 'inherit';
@@ -2994,7 +3113,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';

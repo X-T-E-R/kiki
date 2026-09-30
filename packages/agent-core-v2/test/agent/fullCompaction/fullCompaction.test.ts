@@ -3517,7 +3517,7 @@ describe('FullCompaction', () => {
         });
       }),
       agentService(IAgentMemorySnapshot, { _serviceBrand: undefined, get: async () => 'frozen memory', getSessionEntries: async () => [],
-        liveSessionEntries: async () => [], resolveReferences: references, invalidate: () => {} }),
+        liveSessionEntries: async () => [], resolveReferences: references, getPersona: () => undefined, configurePersona: () => {}, invalidate: () => {} }),
     );
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES, tools: ['HistoryRead', 'HistorySearch', 'TodoList'] });
     const registry = ctx.get(IAgentToolRegistryService);

@@ -62,6 +62,15 @@ import {
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IPersonaStore } from '#/app/persona/personaStore';
+import type { PersonaSnapshot } from '@kiki/agent-profiles/personaFile';
+import {
+  applyPersonaPrompt,
+  hasDefaultIdentityParagraph,
+  PERSONA_PROMPT_MARKER,
+  personaExamplesWereTruncated,
+  renderPersonaBlock,
+} from './personaPrompt';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import {
@@ -241,6 +250,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private delegationPosition: DelegationPosition = 'main';
   private promptFieldSnapshot: ResolvedPromptFieldOverrides = { values: {}, fields: [] };
 
+  private personaSnapshot: PersonaSnapshot | undefined;
+  private readonly emittedPersonaWarnings = new Set<string>();
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
   private systemPromptRefreshTail: Promise<void> = Promise.resolve();
@@ -276,6 +287,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentAgentsMdReminderService private readonly agentsMdReminder: IAgentAgentsMdReminderService,
     @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @IPersonaStore private readonly personas?: IPersonaStore,
   ) {
     super();
     this.states.contributeState(profileKey);
@@ -392,6 +404,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const executionRestriction = this.profileState.executionRestriction ?? snapshot.executionRestriction;
     const allowParentNotify = snapshot.allowParentNotify ?? this.profileState.allowParentNotify;
     assertResearchExecutor(executionRestriction, snapshot.executorId);
+    const persona = freezePersonaSnapshot(snapshot.persona);
+    this.personaSnapshot = persona;
+    this.memorySnapshot.configurePersona(memoryPersonaContext(persona));
     this.activeProfile = undefined;
     this.promptConfigurationSignature = undefined;
     this.activeProfileDefinitionId = snapshot.profileDefinitionId;
@@ -401,6 +416,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       new ProfileBind({
         executionRestriction,
         allowParentNotify,
+        personaId: snapshot.personaId,
+        personaRevision: snapshot.personaRevision,
+        persona,
+        roomPrompt: snapshot.roomPrompt,
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
         profileDefinitionId: snapshot.profileDefinitionId,
@@ -451,6 +470,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async bind(input: BindAgentInput): Promise<void> {
     await this.catalog.ready;
     await this.identity.resolved();
+    const persona = await this.loadPersonaSnapshot(input.persona);
+    const selectedProfileName = input.profile ?? persona?.definition.profile;
     const boundProfileName = this.profileName;
     if (
       boundProfileName !== undefined &&
@@ -465,18 +486,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             baseProfile: input.resolvedProfile,
             route: input.resolvedRoute,
           }
-        : input.route === undefined && input.profile === DEFAULT_AGENT_PROFILE_NAME
+        : input.route === undefined && (selectedProfileName === DEFAULT_AGENT_PROFILE_NAME ||
+            (selectedProfileName === undefined && persona !== undefined))
           ? (() => {
               const base = this.catalog.getDefault();
               return { profile: base, baseProfile: base, route: undefined };
             })()
-          : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
+          : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
     const inheritedAlias = [
       selection.baseProfile.modelAlias,
       selection.profile.modelAlias,
       selection.route?.lockedModelAlias,
       input.lease?.modelAlias,
       input.model,
+      persona?.definition.modelAlias,
     ].some((alias) => alias === INHERIT_MODEL_ALIAS);
     if (inheritedAlias) {
       if (this.agentScope.agentId === MAIN_AGENT_ID || input.delegationPosition === 'main') {
@@ -524,6 +547,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (external) {
       await this.bindExternal(
         input,
+        persona,
         selection,
         profile,
         allowParentNotify,
@@ -538,6 +562,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
     const requested = resolveMainModelCandidate({
       inputModel: input.model,
+      personaModelAlias: persona?.definition.modelAlias,
       routeLockedAlias: routeModelAlias,
       profileModelAlias: profile.modelAlias,
       defaultModel: this.config.get<string>('defaultModel'),
@@ -567,17 +592,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
 
     await this.sessionToolPolicy.ready;
-    const context = await this.buildSystemPromptContext(profile);
+    const context = await this.buildSystemPromptContext(profile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     this.delegationPosition =
       input.delegationPosition ??
       (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
-    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
 
     const requestedThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
+      personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
     });
@@ -634,6 +660,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.promptFieldSnapshot = assembled.promptFields;
     this.promptConfigurationSignature = this.promptFieldSignature(profile, alias, assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
+      personaId: persona?.definition.id,
+      personaRevision: persona?.revision,
+      persona,
+      roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
       modelAlias: alias,
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
@@ -668,6 +698,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       appliedLease: input.lease,
       boundProfile: freezeBoundProfile(profile, assembled.promptBase),
     }));
+    this.personaSnapshot = persona;
+    this.memorySnapshot.configurePersona(memoryPersonaContext(persona));
     this.afterConfigDispatch({
       modelAlias: alias,
       profileName: profile.name,
@@ -676,6 +708,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       disallowedTools: profile.disallowedTools ?? [],
     });
     this.seedAgentsMdReminder(systemPrompt, context);
+    this.publishPersonaWarnings(persona, assembled, selection.baseProfile.name);
 
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
@@ -683,6 +716,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async bindExternal(
     input: BindAgentInput,
+    persona: PersonaSnapshot | undefined,
     selection: {
       readonly baseProfile: ResolvedAgentProfile;
       readonly route?: ResolvedAgentProfileRoute;
@@ -693,6 +727,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     subagentLeases: Readonly<Record<string, SubagentLease>> | undefined,
     executor: ResolvedAgentExecutor,
   ): Promise<void> {
+    persona = persona ?? this.personaSnapshot ?? this.profileState.persona;
     this.delegationPosition =
       input.delegationPosition ??
       (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
@@ -707,6 +742,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const routeModelAlias = selection.route?.lockedModelAlias;
     const requested = resolveMainModelCandidate({
       inputModel: input.model,
+      personaModelAlias: persona?.definition.modelAlias,
       routeLockedAlias: routeModelAlias,
       profileModelAlias: profile.modelAlias,
     });
@@ -717,6 +753,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     const configuredThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
+      personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, requestedAlias ?? '', (id) => id),
     });
@@ -749,9 +786,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         });
     const normalizedRouteBinding = routeBinding?.ok === true ? routeBinding.binding : undefined;
     await this.sessionToolPolicy.ready;
-    const context = await this.buildSystemPromptContext(profile);
+    const context = await this.buildSystemPromptContext(profile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
-    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias ?? '');
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias ?? '', undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt);
     if (alias !== undefined) assertSubagentModelNotDenied(this.config, alias);
     const profileModelThinking = resolveModelProfileEntry(profile.modelProfiles, alias ?? '', (id) => id)?.thinkingEffort;
     const baseModelSelection = input.bindingSelection?.model ?? {
@@ -791,6 +828,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.promptFieldSnapshot = assembled.promptFields;
     this.promptConfigurationSignature = this.promptFieldSignature(profile, alias ?? '', assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
+      personaId: persona?.definition.id,
+      personaRevision: persona?.revision,
+      persona,
+      roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
       modelAlias: alias,
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
@@ -825,6 +866,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       appliedLease: input.lease,
       boundProfile: freezeBoundProfile(profile, assembled.promptBase),
     }));
+    this.personaSnapshot = persona;
+    this.memorySnapshot.configurePersona(memoryPersonaContext(persona));
     this.afterConfigDispatch({
       modelAlias: alias,
       profileName: profile.name,
@@ -837,6 +880,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     this.seedAgentsMdReminder(assembled.text, context);
     this.cacheAgentsMdWarning(context);
+    this.publishPersonaWarnings(persona, assembled, selection.baseProfile.name);
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
   }
@@ -933,9 +977,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const base = previous.boundProfile?.promptBase;
       if (base !== undefined) {
         const withModel = applyMatchedModelProfilePrompt(base.text, constraints?.modelProfiles, model, (id) => this.models.resolveId(id));
+        const withPersona = applyPersonaPrompt(
+          withModel,
+          this.currentPersona === undefined ? undefined : renderPersonaBlock(this.currentPersona),
+          this.profileState.roomPrompt,
+        );
         systemPrompt = this.isExternalExecutor
-          ? withModel
-          : injectDelegationContext(await this.applyCognitionOverlay(withModel, model), base.delegationSnippet);
+          ? withPersona
+          : injectDelegationContext(await this.applyCognitionOverlay(withPersona, model), base.delegationSnippet);
         environmentDisclosure = base.environment;
       } else if (this.declaresCognitionOverlay(previous.modelAlias) || this.declaresCognitionOverlay(model)
         || declaresModelProfilePrompt(constraints?.modelProfiles, previous.modelAlias, (id) => this.models.resolveId(id))
@@ -1105,6 +1154,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profile,
       context,
       this.modelAlias ?? '',
+      undefined,
+      this.currentPersona,
+      this.profileState.roomPrompt,
     );
     this.promptFieldSnapshot = assembled.promptFields;
     this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
@@ -1139,6 +1191,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.frozenPluginSections = undefined;
     this.promptConfigurationSignature = 'invalidated';
     await this.bind({
+      persona: current.personaId,
       profile: current.profileName,
       route: current.routeId,
       model: current.modelAlias,
@@ -1150,6 +1203,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   refreshMemorySnapshot(): Promise<void> {
+    this.syncRestoredPersona();
     this.memorySnapshot.invalidate();
     return this.refreshSystemPrompt();
   }
@@ -1162,6 +1216,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async refreshSystemPromptNow(): Promise<void> {
     try {
+      this.syncRestoredPersona();
       const profile = this.resolveActiveProfile();
       if (profile === undefined) return;
       const context = await this.buildSystemPromptContext(profile);
@@ -1171,6 +1226,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         context,
         this.modelAlias ?? '',
         this.profileState.boundProfile?.promptBase,
+        this.currentPersona,
+        this.profileState.roomPrompt,
       );
       this.promptFieldSnapshot = assembled.promptFields;
       this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
@@ -1401,11 +1458,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     context: SystemPromptContext,
     alias: string,
     savedBase?: import('./boundProfile').BoundPromptBase,
-  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase; readonly promptFields: ResolvedPromptFieldOverrides }> {
+    persona?: PersonaSnapshot,
+    roomPrompt?: string,
+  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase; readonly promptFields: ResolvedPromptFieldOverrides; readonly personaPositionExplicit: boolean; readonly personaBaseHasIdentity: boolean }> {
     const promptVariables = this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
     const promptFields = await this.resolvePromptFieldSnapshot(profile, alias);
     const rendered = profile.renderSystemPrompt({
       ...context,
+      persona: persona === undefined ? '' : PERSONA_PROMPT_MARKER,
       promptVariables,
       promptFields: promptFields.values,
     });
@@ -1430,14 +1490,71 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       : renderPrompt(snippetTemplate, customPromptVariables(promptVariables));
     const external = (profile.executor ?? 'native') !== 'native';
     const body = external
-      ? renderExternalPrompt(profile, { ...context, promptVariables, promptFields: promptFields.values }, promptFields, withModel)
+      ? renderExternalPrompt(
+          profile,
+          { ...context, persona: persona === undefined ? '' : PERSONA_PROMPT_MARKER, promptVariables, promptFields: promptFields.values },
+          promptFields,
+          withModel,
+        )
       : await this.applyCognitionOverlay(withModel, alias);
+    const personaPositionExplicit = body.includes(PERSONA_PROMPT_MARKER);
+    const finalBody = applyPersonaPrompt(
+      body,
+      persona === undefined ? undefined : renderPersonaBlock(persona),
+      roomPrompt,
+    );
     return {
-      text: external ? body : injectDelegationContext(body, snippet),
+      text: external ? finalBody : injectDelegationContext(finalBody, snippet),
       environment: rendered.environment,
       promptBase: { text: rendered.text, environment: rendered.environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex') },
       promptFields,
+      personaPositionExplicit,
+      personaBaseHasIdentity: hasDefaultIdentityParagraph(body),
     };
+  }
+
+  private async loadPersonaSnapshot(id: string | undefined): Promise<PersonaSnapshot | undefined> {
+    if (id === undefined) return this.currentPersona;
+    if (this.personas === undefined) {
+      throw new ProfileError(
+        ProfileErrors.codes.PERSONA_UNKNOWN,
+        `Persona "${id}" is unavailable because the persona store is not configured`,
+        { persona: id },
+      );
+    }
+    const snapshot = await this.personas.get(id);
+    if (snapshot === undefined) {
+      throw new ProfileError(
+        ProfileErrors.codes.PERSONA_UNKNOWN,
+        `Unknown persona: "${id}"`,
+        { persona: id },
+      );
+    }
+    return freezePersonaSnapshot(snapshot);
+  }
+
+  private publishPersonaWarnings(
+    persona: PersonaSnapshot | undefined,
+    assembled: { readonly personaPositionExplicit: boolean; readonly personaBaseHasIdentity: boolean },
+    profileName: string,
+  ): void {
+    if (persona === undefined) return;
+    if (personaExamplesWereTruncated(persona) && !this.emittedPersonaWarnings.has('examples')) {
+      this.emittedPersonaWarnings.add('examples');
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'persona-examples-oversized',
+        message: `Persona "${persona.definition.id}" examples exceed the 1.5k-token budget and were truncated.`,
+      }));
+    }
+    if (!assembled.personaPositionExplicit && !assembled.personaBaseHasIdentity) {
+      const key = `position:${profileName}`;
+      if (this.emittedPersonaWarnings.has(key)) return;
+      this.emittedPersonaWarnings.add(key);
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'persona-position-prepended',
+        message: `Profile "${profileName}" does not declare \${persona}; the persona block was prepended.`,
+      }));
+    }
   }
 
   private async applyCognitionOverlay(base: string, modelAlias: string): Promise<string> {
@@ -1494,6 +1611,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return {
       modelAlias: this.modelAlias,
       modelCapabilities: model?.capabilities ?? UNKNOWN_CAPABILITY,
+      personaId: this.profileState.personaId,
+      personaRevision: this.profileState.personaRevision,
+      persona: this.currentPersona,
+      roomPrompt: this.profileState.roomPrompt,
       profileName: this.profileName,
       profileDefinitionId: this.activeProfileDefinitionId ?? this.profileState.profileDefinitionId,
       routeId: this.routeId,
@@ -1892,6 +2013,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.states.get(profileKey);
   }
 
+  private get currentPersona(): PersonaSnapshot | undefined {
+    return this.personaSnapshot ?? this.profileState.persona;
+  }
+
+  private syncRestoredPersona(): void {
+    const persona = this.profileState.persona ?? this.personaSnapshot;
+    if (persona === undefined) return;
+    this.personaSnapshot = freezePersonaSnapshot(persona);
+    this.memorySnapshot.configurePersona(memoryPersonaContext(this.personaSnapshot));
+  }
+
   private get model(): string {
     const modelAlias = this.modelAlias;
     if (modelAlias === undefined) {
@@ -2183,6 +2315,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async buildSystemPromptContext(
     profile: ResolvedAgentProfile,
     options?: ApplyProfileOptions,
+    personaOverride?: PersonaSnapshot | null,
   ): Promise<SystemPromptContext> {
     const preloadedAgentsMd = await this.workspaceInstructionsSnapshot();
     const fsAvailable = this.runtime.isAvailable(['fs']);
@@ -2212,6 +2345,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const pluginSections = await this.resolvePluginSections();
     const now = this.clock.now();
     const timeZone = this.clock.timeZone();
+    const memory = await this.readMemoryForPersonaOverride(personaOverride);
     return {
       ...base,
       cwd: view.workDir,
@@ -2222,11 +2356,23 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       timeZone,
       skills,
       pluginSections,
-      memory: await this.memorySnapshot.get(),
+      memory,
+      persona: this.currentPersona === undefined ? '' : PERSONA_PROMPT_MARKER,
       skillActive: this.isToolActiveForProfile(profile, 'Skill'),
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
+  }
+
+  private async readMemoryForPersonaOverride(persona: PersonaSnapshot | null | undefined): Promise<string> {
+    if (persona === undefined) return this.memorySnapshot.get();
+    const previous = this.memorySnapshot.getPersona();
+    this.memorySnapshot.configurePersona(memoryPersonaContext(persona));
+    try {
+      return await this.memorySnapshot.get();
+    } finally {
+      this.memorySnapshot.configurePersona(previous);
+    }
   }
 
   private async workspaceInstructionsSnapshot(): Promise<LoadedAgentsMd> {
@@ -2301,6 +2447,27 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.plugins.hasLoadedSnapshot()) this.frozenPluginSections = resolved;
     return resolved;
   }
+}
+
+function freezePersonaSnapshot(snapshot: PersonaSnapshot | undefined): PersonaSnapshot | undefined {
+  if (snapshot === undefined) return undefined;
+  return freezeValue(structuredClone(snapshot));
+}
+
+function freezeValue<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value as Record<string, unknown>)) freezeValue(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function memoryPersonaContext(snapshot: PersonaSnapshot | null | undefined): { readonly id: string; readonly shared: readonly ('global' | 'workspace')[] } | undefined {
+  if (snapshot === null || snapshot === undefined) return undefined;
+  return {
+    id: snapshot.definition.id,
+    shared: snapshot.definition.memory?.shared ?? ['global', 'workspace'],
+  };
 }
 
 function bindingAdvisoriesEqual(

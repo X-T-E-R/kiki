@@ -4,8 +4,15 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 
 import type { ThreadActivityKind, ThreadRef } from './threadCommunication';
 
+export interface ThreadMessageSender {
+  readonly personaId?: string;
+  readonly name?: string;
+  readonly sessionId: string;
+}
+
 export type ThreadMessageProducer =
-  | { readonly kind: 'peer_thread'; readonly source: ThreadRef }
+  | { readonly kind: 'peer_thread'; readonly source: ThreadRef; readonly sender?: ThreadMessageSender; readonly allowWhenDisabled?: boolean }
+  | { readonly kind: 'room'; readonly roomId: string; readonly targeted?: boolean; readonly generation?: number; readonly sender?: ThreadMessageSender }
   | { readonly kind: 'external_client' };
 
 export interface AcceptedThreadMessage {
@@ -100,6 +107,11 @@ export interface IThreadMailboxStore {
     reason: string,
     options?: ThreadMailboxMutationOptions,
   ): Promise<boolean>;
+
+  cancelProducer(
+    producer: Extract<ThreadMessageProducer, { readonly kind: 'room' }>,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<number>;
 
   listPendingTargets(options?: ThreadMailboxMutationOptions): Promise<readonly ThreadRef[]>;
 

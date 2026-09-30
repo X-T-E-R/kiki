@@ -24,6 +24,10 @@ const ExecutorOptionsSchema = z.record(
 );
 
 export interface ProfileModelState {
+  readonly personaId?: string;
+  readonly personaRevision?: string;
+  readonly persona?: import('@kiki/agent-profiles/personaFile').PersonaSnapshot;
+  readonly roomPrompt?: string;
   readonly modelAlias?: string;
   readonly profileName?: string;
   readonly profileDefinitionId?: string;
@@ -60,6 +64,10 @@ export interface ProfileModelState {
 }
 
 const profileBindSchema = z.object({
+  personaId: z.string().optional(),
+  personaRevision: z.string().optional(),
+  persona: z.custom<import('@kiki/agent-profiles/personaFile').PersonaSnapshot>().optional(),
+  roomPrompt: z.string().optional(),
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
   profileDefinitionId: z.string().optional(),
@@ -169,6 +177,10 @@ export const profileKey = defineState(
   }),
 ).replayable({ schema: z.custom<ProfileModelState>() })
   .on(ProfileBind, (s, e) => ({
+    personaId: e.personaId,
+    personaRevision: e.personaRevision,
+    persona: e.persona,
+    roomPrompt: e.roomPrompt,
     modelAlias: e.modelAlias ?? s.modelAlias,
     profileName: e.profileName ?? s.profileName,
     profileDefinitionId: e.profileDefinitionId,

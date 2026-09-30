@@ -394,6 +394,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
           ready: Promise.resolve(),
           onDidChange: Event.None as Event<void>,
           status: async () => [],
+          isCleanActivePath: () => false,
           restoreOriginal: async () => {
             throw new Error('restoreOriginal is not available in this harness');
           },

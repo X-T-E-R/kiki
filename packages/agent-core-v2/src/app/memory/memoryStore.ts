@@ -5,7 +5,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { IMemoryScopes, type MemoryScope } from './memoryScopes';
+import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
 import { redactMemorySecrets } from './memorySafety';
 
 const encoder = new TextEncoder();
@@ -59,6 +59,19 @@ export interface MemoryJournalRecord {
   readonly beforeRevision: string | null;
   readonly afterRevision: string | null;
 }
+export interface MemoryLorebookEntry {
+  readonly name?: string;
+  readonly title?: string;
+  readonly content: string;
+  readonly constant?: boolean;
+}
+export interface MemoryPersonaEntry extends MemoryEntry {
+  readonly scope: MemoryScope;
+}
+export interface MemoryPersonaDeleteResult {
+  readonly namespaceCount: number;
+  readonly entryCount: number;
+}
 export interface IMemoryStore {
   readonly _serviceBrand: undefined;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
@@ -68,8 +81,15 @@ export interface IMemoryStore {
   journal(scope: MemoryScope, id?: string): Promise<readonly MemoryJournalRecord[]>;
   undo(scope: MemoryScope, operationId: string): Promise<MemoryEntry | undefined>;
   search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive?: boolean): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]>;
+  listPersonaEntries(personaId: string): Promise<readonly MemoryPersonaEntry[]>;
+  deletePersonaNamespaces(personaId: string): Promise<MemoryPersonaDeleteResult>;
+  importLorebook(scope: MemoryScope, entries: readonly MemoryLorebookEntry[], source?: Partial<MemorySource>): Promise<readonly { readonly entry: MemoryEntry; readonly operationId: string }[]>;
 }
 export const IMemoryStore = createDecorator<IMemoryStore>('memoryStore');
+
+function assertPersonaId(personaId: string): void {
+  if (!MEMORY_PERSONA_ID_PATTERN.test(personaId)) throw new Error('Invalid persona id');
+}
 
 function revision(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
@@ -147,7 +167,7 @@ export class MemoryStore implements IMemoryStore {
   async list(scope: MemoryScope, includeInactive = false): Promise<readonly MemoryEntry[]> {
     const base = await this.scopes.resolve(scope);
     const entries: MemoryEntry[] = [];
-    for (const folder of ['entries', 'inbox']) {
+    for (const folder of ['entries', 'inbox'] as const) {
       for (const name of (await this.storage.list(`${base}/${folder}`)).slice(0, 1_000)) {
         if (!/^m_[a-zA-Z0-9_]+\.md$/.test(name)) continue;
         if ((await this.storage.size(base, `${folder}/${name}`) ?? 0) > 64 * 1024) continue;
@@ -297,6 +317,80 @@ export class MemoryStore implements IMemoryStore {
     const result = hits.length > 0 ? hits : entries.filter((entry) => entry.title.toLowerCase().includes(normalized))
       .map((entry) => ({ ...entry, score: 1 }));
     return result.toSorted((a, b) => b.score - a.score || b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id)).slice(0, 20);
+  }
+
+  async listPersonaEntries(personaId: string): Promise<readonly MemoryPersonaEntry[]> {
+    assertPersonaId(personaId);
+    const scopes = await this.personaScopes(personaId);
+    const lists = await Promise.all(scopes.map(async (scope) => (await this.list(scope, true)).map((entry) => ({ ...entry, scope }))));
+    return lists.flat().sort((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
+  }
+
+  async deletePersonaNamespaces(personaId: string): Promise<MemoryPersonaDeleteResult> {
+    assertPersonaId(personaId);
+    let namespaceCount = 0;
+    let entryCount = 0;
+    for (const scope of await this.personaScopes(personaId)) {
+      const base = await this.scopes.resolve(scope);
+      const lock = await this.storage.acquireLock(base, 'memory-write', { leaseMs: 30_000 });
+      let changed = false;
+      try {
+        for (const folder of ['entries', 'inbox'] as const) {
+          for (const name of await this.storage.list(`${base}/${folder}`)) {
+            if (!/^m_[a-zA-Z0-9_]+\.md$/.test(name)) continue;
+            await this.storage.delete(base, `${folder}/${name}`);
+            entryCount++;
+            changed = true;
+          }
+        }
+        for (const key of ['MEMORY.md', 'journal.jsonl'] as const) {
+          if (await this.storage.size(base, key) === undefined) continue;
+          await this.storage.delete(base, key);
+          changed = true;
+        }
+      } finally {
+        await lock.release();
+      }
+      if (changed) namespaceCount++;
+    }
+    return { namespaceCount, entryCount };
+  }
+
+  async importLorebook(
+    scope: MemoryScope,
+    entries: readonly MemoryLorebookEntry[],
+    source: Partial<MemorySource> = {},
+  ): Promise<readonly { readonly entry: MemoryEntry; readonly operationId: string }[]> {
+    const imported: { readonly entry: MemoryEntry; readonly operationId: string }[] = [];
+    for (const [index, entry] of entries.entries()) {
+      imported.push(await this.put({
+        action: 'create',
+        scope,
+        type: 'reference',
+        title: (entry.title ?? entry.name ?? `Lorebook entry ${index + 1}`).trim(),
+        body: entry.content,
+        reason: 'Imported from Character Card lorebook',
+        source: { ...source, writer: 'import' },
+        pinned: entry.constant === true,
+      }));
+    }
+    return imported;
+  }
+
+  private async personaScopes(personaId: string): Promise<readonly MemoryScope[]> {
+    const workspaceIds = new Set<string>();
+    if (this.scopes.listWorkspaceIds !== undefined) {
+      for (const workspaceId of await this.scopes.listWorkspaceIds()) {
+        if (MEMORY_WORKSPACE_ID_PATTERN.test(workspaceId)) workspaceIds.add(workspaceId);
+      }
+    }
+    for (const workspaceId of await this.storage.list('memory/workspaces')) {
+      if (MEMORY_WORKSPACE_ID_PATTERN.test(workspaceId)) workspaceIds.add(workspaceId);
+    }
+    return [
+      { kind: 'persona', personaId },
+      ...[...workspaceIds].sort().map((workspaceId) => ({ kind: 'persona_workspace', workspaceId, personaId } as const)),
+    ];
   }
 
   private async commit(base: string, key: string, before: { key: string; text: string } | undefined, after: string | undefined, action: string, id: string, writer: MemoryWriter, operationId: string = randomUUID()): Promise<string> {

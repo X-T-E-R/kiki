@@ -176,9 +176,12 @@ export function compactionUserMessageDisposition(
     case 'peer_thread':
     case 'agent_message':
       return 'keep';
+    case 'room_message':
+      return origin.targeted ? 'keep' : 'drop';
     case 'skill_activation':
     case 'plugin_command':
       return origin.trigger === 'user-slash' ? 'keep' : 'drop';
+    case 'persona_greeting':
     case 'injection':
     case 'shell_command':
     case 'compaction_summary':

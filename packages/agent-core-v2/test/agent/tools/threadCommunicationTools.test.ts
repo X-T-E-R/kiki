@@ -172,7 +172,7 @@ describe('thread communication tools', () => {
   it('binds an enabled main profile to the new session', async () => {
     const { tool, create, lifecycle } = createThreadFixture();
     const result = await executeThreadCreate(tool, { profile: 'main-alt' });
-    const binding = { profile: 'main-alt', model: undefined, thinking: undefined, strictThinking: false };
+    const binding = { profile: 'main-alt', persona: undefined, model: undefined, thinking: undefined, strictThinking: false };
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace', mainAgentBinding: binding,
     });
@@ -183,7 +183,7 @@ describe('thread communication tools', () => {
   it('passes model and explicit effort to the main-agent binding before the first prompt', async () => {
     const { tool, create, lifecycle, prompt } = createThreadFixture();
     await executeThreadCreate(tool, { model_alias: 'configured-alias', effort: 'high', prompt: 'Start' });
-    const binding = { profile: 'agent', model: 'configured-alias', thinking: 'high', strictThinking: true };
+    const binding = { profile: 'agent', persona: undefined, model: 'configured-alias', thinking: 'high', strictThinking: true };
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace', mainAgentBinding: binding,
     });
@@ -196,7 +196,16 @@ describe('thread communication tools', () => {
     await executeThreadCreate(tool, { model_alias: 'configured-alias' });
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace',
-      mainAgentBinding: { profile: 'agent', model: 'configured-alias', thinking: undefined, strictThinking: false },
+      mainAgentBinding: { profile: 'agent', persona: undefined, model: 'configured-alias', thinking: undefined, strictThinking: false },
+    });
+  });
+
+  it('passes persona-only bindings without injecting the default profile', async () => {
+    const { tool, create } = createThreadFixture();
+    await executeThreadCreate(tool, { persona: 'lin-lan' });
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: '/ambient/workspace',
+      mainAgentBinding: { profile: undefined, persona: 'lin-lan', model: undefined, thinking: undefined, strictThinking: false },
     });
   });
 
@@ -353,7 +362,7 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ title: '', cwd: '/example' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ prompt: '', agent_config: {} }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({
-      profile: 'agent', model_alias: 'configured-alias', effort: 'high',
+      profile: 'agent', persona: 'lin-lan', model_alias: 'configured-alias', effort: 'high',
       permission_mode: 'review', plan_mode: true, prompt: 'Start',
     }).success).toBe(true);
     expect(ThreadCreateToolInputSchema.safeParse({ model_alias: '   ' }).success).toBe(false);
@@ -362,7 +371,7 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ plan_mode: 'true' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ swarm_mode: true }).success).toBe(false);
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
-      'title', 'cwd', 'profile', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
+      'title', 'cwd', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
     ]);
     expect(tool.description).toContain('only when the user explicitly asks');
     expect(tool.description).toContain('the new thread is user-owned, does not report its work back');

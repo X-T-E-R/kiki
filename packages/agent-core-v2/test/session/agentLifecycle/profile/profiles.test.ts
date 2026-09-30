@@ -13,6 +13,9 @@ describe('shipped agent profiles', () => {
     expect(agent.tools).toEqual(expect.arrayContaining([
       'ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'TaskWait',
     ]));
+    expect(agent.tools).toContain('SendMessage');
+    expect(isToolActive(agent, 'SendMessage')).toBe(true);
+    expect(isToolActive({ ...agent, disallowedTools: ['SendMessage'] }, 'SendMessage')).toBe(false);
     expect(isToolActive(agent, 'ThreadCreate')).toBe(true);
     expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadCreate')).toBe(false);
     expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadList')).toBe(true);

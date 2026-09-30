@@ -1,4 +1,4 @@
-export type MainModelCandidateSource = 'input' | 'route' | 'profile' | 'default';
+export type MainModelCandidateSource = 'input' | 'persona' | 'route' | 'profile' | 'default';
 
 export interface MainModelCandidate {
   readonly alias: string | undefined;
@@ -7,12 +7,15 @@ export interface MainModelCandidate {
 
 export function resolveMainModelCandidate(input: {
   readonly inputModel?: string;
+  readonly personaModelAlias?: string;
   readonly routeLockedAlias?: string;
   readonly profileModelAlias?: string;
   readonly defaultModel?: string;
 }): MainModelCandidate {
   const inputModel = nonempty(input.inputModel);
   if (inputModel !== undefined) return { alias: inputModel, source: 'input' };
+  const personaModelAlias = nonempty(input.personaModelAlias);
+  if (personaModelAlias !== undefined) return { alias: personaModelAlias, source: 'persona' };
   const routeLockedAlias = nonempty(input.routeLockedAlias);
   if (routeLockedAlias !== undefined) return { alias: routeLockedAlias, source: 'route' };
   const profileModelAlias = nonempty(input.profileModelAlias);
@@ -22,12 +25,14 @@ export function resolveMainModelCandidate(input: {
 
 export function resolveMainThinkingCandidate(input: {
   readonly inputThinking?: string;
+  readonly personaThinking?: string;
   readonly routeLockedThinking?: string;
   readonly modelProfileThinking?: string;
   readonly profileThinking?: string;
 }): string | undefined {
   return (
     nonempty(input.inputThinking) ??
+    nonempty(input.personaThinking) ??
     nonempty(input.routeLockedThinking) ??
     nonempty(input.modelProfileThinking) ??
     nonempty(input.profileThinking)

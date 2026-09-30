@@ -3,6 +3,7 @@ import type {
   SendThreadMessageResult,
   ThreadRef,
 } from './threadCommunication';
+import type { ThreadMessageSender } from './threadMailboxStore';
 
 export const SEND_PEER_THREAD_MESSAGE: unique symbol = Symbol('sendPeerThreadMessage');
 
@@ -11,6 +12,8 @@ export interface SendPeerThreadMessageInput {
   readonly target: ThreadRef;
   readonly content: string;
   readonly idempotencyKey: string;
+  readonly sender?: ThreadMessageSender;
+  readonly allowWhenDisabled?: boolean;
 }
 
 /** `threadCommunication` domain — non-reflective peer-send capability. The symbol-keyed method is

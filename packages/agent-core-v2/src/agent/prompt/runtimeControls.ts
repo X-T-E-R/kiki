@@ -4,12 +4,14 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentPlanService } from '#/features/plan/plan';
 import type { PromptExecutionBinding } from './prompt';
+import { preparePersonaGreetingReply } from './personaGreeting';
 
 export function readPromptRuntimeControlChanges(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined): () => Promise<boolean> {
   if (!hasPromptRuntimeControls(binding) || binding === undefined) return async () => false;
   const plan = binding.planMode === undefined ? undefined : accessor.get(IAgentPlanService);
   const goal = binding.goalObjective === undefined && binding.goalControl === undefined ? undefined : accessor.get(IAgentGoalService);
   return async () => {
+    if (binding.personaGreetingReply === true) return true;
     if (plan !== undefined && ((await plan.status()) !== null) !== binding.planMode) return true;
     if (goal === undefined) return false;
     const current = goal.getGoal().goal;
@@ -24,14 +26,15 @@ export function readPromptRuntimeControlChanges(accessor: ServicesAccessor, bind
 export function hasPromptRuntimeControls(binding: PromptExecutionBinding | undefined): boolean {
   return binding !== undefined && (binding.planMode !== undefined ||
     binding.goalObjective !== undefined || binding.goalFollowUpTiming !== undefined ||
-    binding.goalInitialStatus !== undefined || binding.goalControl !== undefined);
+    binding.goalInitialStatus !== undefined || binding.goalControl !== undefined || binding.personaGreetingReply === true);
 }
 
 export function validatePromptRuntimeControls(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined): void {
   if (!hasPromptRuntimeControls(binding) || binding === undefined) return;
   if (accessor.get(IAgentScopeContext).agentId !== 'main') {
-    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt plan and goal controls are only supported by the main agent');
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt runtime controls are only supported by the main agent');
   }
+  if (binding.personaGreetingReply === true) preparePersonaGreetingReply(accessor);
   if (
     binding.goalObjective === undefined &&
     (binding.goalFollowUpTiming !== undefined || binding.goalInitialStatus !== undefined)
@@ -77,7 +80,9 @@ export function preparePromptRuntimeControls(accessor: ServicesAccessor, binding
   const goal = binding?.goalObjective === undefined && binding?.goalControl === undefined
     ? undefined : accessor.get(IAgentGoalService);
   if (goal !== undefined) assertPromptGoalIdentity(goal, expectedGoalId);
+  const greeting = binding?.personaGreetingReply === true ? preparePersonaGreetingReply(accessor) : undefined;
   return async () => {
+    greeting?.();
     if (plan !== undefined) {
       const active = (await plan.status()) !== null;
       if (active !== binding?.planMode) {

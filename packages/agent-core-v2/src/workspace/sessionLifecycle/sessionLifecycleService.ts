@@ -47,6 +47,8 @@ import {
 } from '#/persistence/interface/storage';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
@@ -323,12 +325,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     try {
       const main =
-        opts.mainAgentBinding === undefined
+        opts.mainAgentBinding === undefined && opts.delivery === undefined
           ? undefined
           : await handle.accessor.get(IAgentLifecycleService).create({
               agentId: MAIN_AGENT_ID,
               binding: opts.mainAgentBinding,
             });
+      if (main !== undefined || opts.delivery !== undefined) {
+        const delivery = handle.accessor.get(ISessionDeliveryService);
+        const profileDelivery = main?.accessor.get(IAgentProfileService).data().persona?.definition.delivery;
+        await delivery.set(opts.delivery ?? profileDelivery ?? delivery.mode());
+      }
       if (this.config.get<boolean>(DEFAULT_PLAN_MODE_SECTION) === true) {
         const planAgent = main ?? (await ensureMainAgent(handle));
         await planAgent.accessor.get(IAgentPlanService).enter();

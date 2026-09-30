@@ -29,6 +29,7 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   MemoryRead: 'memory',
   MemorySearch: 'memory',
   MemoryWrite: 'memory',
+  SendMessage: 'message',
   Read: 'fsRead',
   ReadMediaFile: 'fsRead',
   SelectTools: 'toolSelect',

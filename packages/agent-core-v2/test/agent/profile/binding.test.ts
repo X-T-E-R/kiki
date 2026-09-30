@@ -50,6 +50,7 @@ import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
 
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IPersonaStore } from '#/app/persona/personaStore';
 
 import { deferredAgentIdentityStub } from '../../app/agentIdentity/stubs';
 import {
@@ -822,6 +823,44 @@ describe('AgentProfileService.bind', () => {
     expect(svc.isRunnable()).toBe(true);
     expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
     expect(svc.getSystemPrompt()).toContain('You are Kiki,');
+  });
+
+  it('binds a persona profile and model and replaces the default identity prefix', async () => {
+    const personaProfile = normalizeAgentProfile({
+      name: 'persona-profile',
+      systemPrompt: () => 'You are Kiki, an interactive general AI agent.\n\nProfile capabilities.',
+      tools: [],
+    });
+    const persona = {
+      definition: {
+        id: 'lin-lan',
+        name: '林岚',
+        title: '发布协调',
+        profile: 'persona-profile',
+        modelAlias: MOCK_MODEL,
+        description: '先给结论。',
+      },
+      revision: 'r1',
+    } as const;
+    const personaStore = {
+      _serviceBrand: undefined,
+      onDidChange: Event.None,
+      get: async (id: string) => id === 'lin-lan' ? persona : undefined,
+    } as unknown as IPersonaStore;
+    ctx = createTestAgent(
+      appService(IPersonaStore, personaStore),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(personaProfile)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ persona: 'lin-lan' });
+
+    expect(svc.data()).toMatchObject({ profileName: 'persona-profile', modelAlias: MOCK_MODEL, personaId: 'lin-lan', personaRevision: 'r1' });
+    expect(svc.getSystemPrompt().startsWith('<persona name="林岚" title="发布协调">')).toBe(true);
+    expect(svc.getSystemPrompt()).toContain('你运行在 Kiki 中');
+    expect(svc.getSystemPrompt()).toContain('Profile capabilities.');
+    expect(svc.getSystemPrompt()).not.toContain('You are Kiki');
   });
 
   it('binds the default main-agent profile even when it is hidden from dispatch', async () => {

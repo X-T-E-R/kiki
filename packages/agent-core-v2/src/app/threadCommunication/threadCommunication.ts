@@ -4,6 +4,8 @@ export interface ThreadRef {
   readonly hostId: string;
   readonly workspaceId: string;
   readonly sessionId: string;
+  readonly personaId?: string;
+  readonly name?: string;
 }
 
 export interface ThreadSummary {
@@ -73,6 +75,26 @@ export interface SendThreadMessageResult {
   readonly delivery: 'pending' | 'delivered' | 'undeliverable';
 }
 
+export interface SendRoomMessageInput {
+  readonly target: ThreadRef;
+  readonly roomId: string;
+  readonly content: string;
+  readonly idempotencyKey: string;
+  readonly targeted: boolean;
+  readonly generation?: number;
+}
+
+export interface CancelRoomDeliveriesInput {
+  readonly roomId: string;
+  readonly generation?: number;
+}
+
+export interface WaitRoomDeliveryInput {
+  readonly target: ThreadRef;
+  readonly messageId: string;
+  readonly signal?: AbortSignal;
+}
+
 export type ThreadActivityKind = 'terminal' | 'attention' | 'lifecycle' | 'message_undeliverable';
 
 export interface ThreadActivity {
@@ -119,6 +141,9 @@ export interface IThreadCommunicationService {
   listThreads(input?: ListThreadsInput): Promise<ListThreadsResult>;
   readThread(input: ReadThreadInput): Promise<ReadThreadResult>;
   sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
+  sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult>;
+  cancelRoomDeliveries(input: CancelRoomDeliveriesInput): Promise<void>;
+  waitRoomDelivery(input: WaitRoomDeliveryInput): Promise<void>;
   waitThreads(input: WaitThreadsInput): Promise<WaitThreadsResult>;
   shutdown(): Promise<void>;
 
