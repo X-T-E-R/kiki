@@ -589,13 +589,16 @@ export function defineKlientConformance(
           },
         });
         const entry = added.find((server) => server.name === 'conf-mcp');
-        // Mutable (user-level) entries carry the full config for edit prefill.
         expect(entry).toMatchObject({
           name: 'conf-mcp',
           source: 'global',
           mutable: true,
-          config: { transport: 'stdio', command: 'conf-command', env: { TOKEN: 'secret' } },
         });
+        const redactedConfig = { transport: 'stdio', command: 'conf-command', envKeys: ['TOKEN'] };
+        expect(entry?.config).toEqual(redactedConfig);
+        expect((await mcp.get({ name: 'conf-mcp', cwd })).config).toEqual(redactedConfig);
+        expect((await mcp.list({ cwd })).find((server) => server.name === 'conf-mcp')?.config).toEqual(redactedConfig);
+        expect(JSON.stringify(added)).not.toContain('secret');
 
         await mcp.update({
           cwd,
