@@ -81,6 +81,25 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('lists managed adapter releases without installing and rejects unknown adapter IDs', async () => {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const response = await authedFetch(server, base, '/api/executors/installations');
+    expect(response.status).toBe(200);
+    const listed = await response.json() as Envelope<{
+      items: Array<{ id: string; release: { version: string }; phase: string; active?: unknown }>;
+    }>;
+    expect(listed.code).toBe(0);
+    expect(listed.data.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'claude-acp', release: expect.objectContaining({ version: '0.84.0' }), phase: 'idle' }),
+      expect.objectContaining({ id: 'codex-acp', release: expect.objectContaining({ version: '2.0.0' }), phase: 'idle' }),
+    ]));
+    expect(listed.data.items.every((item) => item.active === undefined)).toBe(true);
+
+    const unknown = await authedFetch(server, base, '/api/executors/constructor/install', { method: 'POST' });
+    expect((await unknown.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+  });
+
   it('lists executor capabilities and round-trips a file profile spawn constraint patch', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     const profilePath = join(home!, 'agents', 'reviewer.md');

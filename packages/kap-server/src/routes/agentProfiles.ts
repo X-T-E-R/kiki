@@ -8,6 +8,8 @@ import {
   IAgentProfileRegistry,
   IAgentExecutorRegistry,
   IAgentExecutorPreflightService,
+  IManagedAdapterService,
+  MANAGED_ADAPTER_RELEASES,
   IBootstrapService,
   EXECUTOR_OVERRIDE_SOURCE_ID,
   executorCapabilities,
@@ -81,6 +83,29 @@ interface AgentProfilesRouteHost {
 }
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
+const managedInstallSchema = z.object({ version: z.string(), integrity: z.string(), source: z.string(), install_id: z.string() });
+const managedStatusSchema = z.object({
+  id: z.string(),
+  release: z.object({ package_name: z.string(), version: z.string(), integrity: z.string(),
+    source: z.string(), entry: z.string() }),
+  active: managedInstallSchema.optional(),
+  previous: managedInstallSchema.optional(),
+  phase: z.enum(['idle', 'downloading', 'verifying', 'installing', 'activating', 'failed']),
+  error: z.string().optional(),
+});
+
+function projectManagedStatus(status: Awaited<ReturnType<IManagedAdapterService['status']>>) {
+  const installation = (value: typeof status.active) => value === undefined ? undefined : {
+    version: value.version, integrity: value.integrity, source: value.source, install_id: value.installId,
+  };
+  return {
+    id: status.id,
+    release: { package_name: status.release.packageName, version: status.release.version,
+      integrity: status.release.integrity, source: status.release.source, entry: status.release.entry },
+    active: installation(status.active), previous: installation(status.previous),
+    phase: status.phase, error: status.error,
+  };
+}
 
 /** Registers the `/agents` routes — named agent-profile catalog and validated write-back. GET merges
  *  logical profiles across workspace registrations, exposes an expanded view, and projects builtin and
@@ -177,6 +202,49 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.post(executorCheckRoute.path, executorCheckRoute.options,
     executorCheckRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const installationsRoute = defineRoute({
+    method: 'GET', path: '/executors/installations',
+    success: { data: z.object({ items: z.array(managedStatusSchema) }) },
+    description: 'List pinned adapter releases, active versions and installation progress', tags: ['agents'],
+  }, async (req, reply) => {
+    const items = await core.accessor.get(IManagedAdapterService).list();
+    reply.send(okEnvelope({ items: items.map(projectManagedStatus) }, req.id));
+  });
+  app.get(installationsRoute.path, installationsRoute.options,
+    installationsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const installRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/install', params: executorParams,
+    success: { data: managedStatusSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Install the checksum-pinned adapter under the Kiki home', tags: ['agents'],
+  }, async (req, reply) => {
+    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
+      return;
+    }
+    const status = await core.accessor.get(IManagedAdapterService).install(req.params.id);
+    reply.send(okEnvelope(projectManagedStatus(status), req.id));
+  });
+  app.post(installRoute.path, installRoute.options,
+    installRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const rollbackRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/rollback', params: executorParams,
+    success: { data: managedStatusSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Atomically activate the previous managed adapter version', tags: ['agents'],
+  }, async (req, reply) => {
+    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
+      return;
+    }
+    const status = await core.accessor.get(IManagedAdapterService).rollback(req.params.id);
+    reply.send(okEnvelope(projectManagedStatus(status), req.id));
+  });
+  app.post(rollbackRoute.path, rollbackRoute.options,
+    rollbackRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const listRoute = defineRoute(
     {
