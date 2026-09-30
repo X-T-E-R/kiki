@@ -779,6 +779,27 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('writes and clears soft recommendations while preserving nested advice on structured edits', async () => {
+    await withFixture(async (fixture) => {
+      const original = '---\nname: lead\ndescription: Lead\nspawn_constraints:\n  preferred_models: [fast]\nsubagents:\n  - name: explore\n    preferred_efforts: [max]\nmodel_profiles:\n  - alias: fast\n    preferred_efforts: [max]\n---\nLead body.';
+      await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', original);
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const result = await stack.writer.update({ name: 'lead', scope: 'user', preferredModels: ['fast'],
+          discouragedModels: ['premium'], preferredEfforts: ['max'], spawnConstraints: { allowedModels: ['fast', 'premium'] },
+          subagents: [{ name: 'explore', thinkingEffort: 'high' }], modelProfiles: [{ alias: 'fast', when: 'Small tasks' }] });
+        expect(result.profile).toMatchObject({ preferredModels: ['fast'], discouragedModels: ['premium'], preferredEfforts: ['max'],
+          spawnConstraints: { allowedModels: ['fast', 'premium'], preferredModels: ['fast'] },
+          subagentLeases: { explore: { preferredEfforts: ['max'] } }, modelProfiles: [{ alias: 'fast', preferredEfforts: ['max'] }] });
+        const cleared = await stack.writer.update({ name: 'lead', scope: 'user', preferredModels: null, discouragedModels: null, preferredEfforts: null });
+        expect(cleared.profile.preferredModels).toBeUndefined();
+        expect(cleared.profile.discouragedModels).toBeUndefined();
+        expect(cleared.profile.preferredEfforts).toBeUndefined();
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', preferredModels: ['fast'], rawText: original })).rejects.toMatchObject({ code: 'validation.failed' });
+      });
+    });
+  });
+
   it('rejects malformed subagent and model-profile updates before writing', async () => {
     await withFixture(async (fixture) => {
       const profilePath = await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', agentMd('lead', 'Lead'));

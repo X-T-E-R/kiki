@@ -29,6 +29,19 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('parses literal hard rules and named soft recommendations in every model scope', () => {
+    const rules = 'allowed_models: [fast, premium]\ndeny_models: [blocked]\nallowed_efforts: []\npreferred_models: [fast]\ndiscouraged_models: [premium]\npreferred_efforts: [max]';
+    const text = `---\nname: helper\ndescription: d\n${rules}\nspawn_constraints:\n${rules.split('\n').map((line) => `  ${line}`).join('\n')}\nsubagents:\n  - name: explore\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\nmodel_profiles:\n  - alias: fast\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\n---\nbody`;
+    const definition = parse(text);
+    for (const scope of [definition, definition.spawnConstraints, definition.subagentLeases?.['explore'], definition.modelProfiles?.[0]]) {
+      expect(scope).toMatchObject({ allowedModels: ['fast', 'premium'], denyModels: ['blocked'], allowedEfforts: [], preferredModels: ['fast'], discouragedModels: ['premium'], preferredEfforts: ['max'] });
+    }
+    expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }))).toMatchObject({ preferredModels: ['fast'], allowedEfforts: [] });
+  });
+
+  it.each(['allowed_models: [fast, "*"]', 'deny_models: ["*"]', 'allowed_efforts: 42', 'preferred_models: [false]', 'preferred_efforts: ["*", max]'])('rejects malformed model policy %s', (rule) => {
+    expect(() => parse(`---\nname: helper\ndescription: d\n${rule}\n---\nbody`)).toThrow();
+  });
   it('keeps context groups opt-in and round-trips each explicit group', () => {
     expect(parse('---\nname: solo\ndescription: d\n---\nbody\n').kikiContext).toBeUndefined();
     for (const group of ['memory', 'board', 'cron', 'threads', 'history', 'hooks']) {

@@ -141,19 +141,13 @@ describe('subagent capability final bindings', () => {
     });
   });
 
-  it('CAP-R1 keeps a normalized default outside the effort allowlist runnable with an advisory', () => {
-    const [conflict] = project(helper({ allowedEfforts: ['high'] }));
-    expect(conflict).toMatchObject({
-      profile: 'helper', defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low',
-      bindingAdvisories: [expect.objectContaining({
-        code: 'effort_not_allowed',
-        effectiveValue: 'low',
-        valueSource: 'model-default',
-      })],
-    });
-    expect(project(helper({ allowedEfforts: ['low'] }))[0]).toMatchObject({
-      defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low',
-    });
+  it('distinguishes a hard effort failure from a runnable soft preference deviation', () => {
+    expect(project(helper({ allowedEfforts: ['high'] }))[0]).toMatchObject({ defaultsAvailable: false,
+      unavailableReasonCode: 'binding_constraints_unsatisfied', unavailableReason: expect.stringContaining('allowed_efforts') });
+    const [conflict] = project(helper({ preferredEfforts: ['high'] }));
+    expect(conflict).toMatchObject({ profile: 'helper', defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low',
+      bindingAdvisories: [expect.objectContaining({ code: 'effort_not_preferred', effectiveValue: 'low', valueSource: 'model-default' })] });
+    expect(project(helper({ allowedEfforts: ['low'] }))[0]).toMatchObject({ defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low' });
   });
 
   it('attributes the selected model default instead of the global thinking effort', () => {
@@ -208,12 +202,13 @@ describe('subagent capability final bindings', () => {
     expect(project(helper({ executor: 'external', modelAlias: 'vendor-short' }))[0]).toMatchObject({
       defaultsAvailable: true, modelAlias: 'vendor/model', thinkingEffort: 'off',
     });
-    const conflict = project(helper({ executor: 'external', modelAlias: 'vendor-short', allowedModels: ['vendor-short'] }))[0];
+    const conflict = project(helper({ executor: 'external', modelAlias: 'vendor-short', preferredModels: ['vendor-short'] }))[0];
+    expect(project(helper({ executor: 'external', modelAlias: 'vendor-short', allowedModels: ['vendor-short'] }))[0]).toMatchObject({ defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied' });
     expect(conflict).toMatchObject({
       defaultsAvailable: true,
       modelAlias: 'vendor/model',
       bindingAdvisories: [expect.objectContaining({
-        code: 'model_not_allowed',
+        code: 'model_not_preferred',
         effectiveValue: 'vendor/model',
         valueSource: 'executor-normalized',
       })],

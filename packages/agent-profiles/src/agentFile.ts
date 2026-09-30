@@ -8,6 +8,7 @@ import { FrontmatterError, parseFrontmatter } from './frontmatter';
 import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
 import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from './subagentLease';
 import { isToolGroupId } from './toolGroups';
+import { MODEL_CONSTRAINT_KEYS, ModelConstraintParseError, parseModelConstraintFields } from './modelConstraintFields';
 
 export class AgentFileParseError extends Error {
   readonly code = 'validation.failed';
@@ -57,6 +58,9 @@ const AGENT_FILE_KEYS = new Set([
   'kiki_context',
   'model_alias',
   'thinking_effort',
+  'preferred_models',
+  'discouraged_models',
+  'preferred_efforts',
   'allowed_models',
   'deny_models',
   'allowed_efforts',
@@ -81,6 +85,15 @@ function parseKikiContext(value: unknown, path: string): AgentFileDefinition['ki
 }
 
 export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDefinition {
+  try {
+    return parseAgentFileTextUnchecked(options);
+  } catch (error) {
+    if (error instanceof ModelConstraintParseError) throw new AgentFileParseError(error.message, error);
+    throw error;
+  }
+}
+
+function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileDefinition {
   let parsed;
   try {
     parsed = parseFrontmatter(options.text);
@@ -229,9 +242,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     parseStringList(frontmatter['allowed_models'], 'allowed_models', options.path),
   );
   const denyModels = openIfEmpty(parseStringList(frontmatter['deny_models'], 'deny_models', options.path));
-  const allowedEfforts = openIfEmpty(
-    parseStringList(frontmatter['allowed_efforts'], 'allowed_efforts', options.path),
-  );
+
   warnIncoherentModelConstraints(
     modelAlias,
     allowedModels,
@@ -322,9 +333,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     kikiContext: parseKikiContext(frontmatter['kiki_context'], options.path),
     modelAlias,
     thinkingEffort,
-    allowedModels,
-    denyModels,
-    allowedEfforts,
+    ...parseModelConstraintFields(frontmatter, options.path),
     modelProfiles,
     serviceTier,
     requestParams,
@@ -342,6 +351,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
 }
 
 const MODEL_PROFILE_ENTRY_KEYS = new Set([
+  ...MODEL_CONSTRAINT_KEYS,
   'alias',
   'when',
   'thinking_effort',
@@ -413,18 +423,13 @@ function parseModelProfiles(
     if (promptMode !== undefined && prompt !== undefined) {
       validateModelProfilePrompt(promptMode, prompt, prefix, filePath);
     }
-    const allowedEfforts = parseStringList(
-      item['allowed_efforts'],
-      `${prefix}.allowed_efforts`,
-      filePath,
-    );
     out.push({
       alias,
       when,
       thinkingEffort,
       promptMode,
       prompt,
-      allowedEfforts,
+      ...parseModelConstraintFields(item, filePath, `${prefix}.`),
       serviceTier: parseServiceTier(item['service_tier'], filePath),
       requestParams: parseRequestParams(item['request_params'], filePath),
       contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
@@ -591,7 +596,7 @@ function warnIncoherentModelConstraints(
   if (modelAlias === undefined) {
     if (hasAllowlist) {
       warn(
-        `Frontmatter field "allowed_models" in ${filePath} is set without "model_alias"; a dispatch that does not name a model fails closed instead of falling back to a default`,
+        `Frontmatter field "allowed_models" in ${filePath} is set without "model_alias"; lists do not select a model. Supply a dispatch pin or explicit [subagent].default_model inside the hard allowlist`,
       );
     }
     return;

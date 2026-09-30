@@ -1,4 +1,5 @@
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
+import { MODEL_CONSTRAINT_KEYS, parseModelConstraintFields } from './modelConstraintFields';
 import type {
   AgentModelProfile,
   AgentModelProfilePromptMode,
@@ -23,6 +24,9 @@ interface SubagentLeaseOverlay {
   readonly whenToUse?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly preferredModels?: readonly string[];
+  readonly discouragedModels?: readonly string[];
+  readonly preferredEfforts?: readonly string[];
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
   readonly allowedEfforts?: readonly string[];
@@ -52,6 +56,9 @@ export function isSourceSubagentLease(lease: SubagentLease): lease is SourceSuba
 }
 
 export interface SpawnConstraints {
+  readonly preferredModels?: readonly string[];
+  readonly discouragedModels?: readonly string[];
+  readonly preferredEfforts?: readonly string[];
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
   readonly allowedEfforts?: readonly string[];
@@ -75,6 +82,9 @@ const LEASE_KEYS = new Set([
   'allowed_models',
   'deny_models',
   'allowed_efforts',
+  'preferred_models',
+  'discouraged_models',
+  'preferred_efforts',
   'tools',
   'disallowedTools',
   'subagents',
@@ -92,16 +102,23 @@ const SPAWN_CONSTRAINT_KEYS = new Set([
   'allowed_models',
   'deny_models',
   'allowed_efforts',
+  'preferred_models',
+  'discouraged_models',
+  'preferred_efforts',
   'disallowed_tools',
 ]);
 
 const MODEL_PROFILE_ENTRY_KEYS = new Set([
+  ...MODEL_CONSTRAINT_KEYS,
   'alias',
   'when',
   'thinking_effort',
   'prompt_mode',
   'prompt',
   'allowed_efforts',
+  'preferred_models',
+  'discouraged_models',
+  'preferred_efforts',
   'service_tier',
   'request_params',
   'context_budget',
@@ -211,32 +228,12 @@ export function parseSpawnConstraints(
       );
     }
   }
-  const allowedModels = normalizeModelAllowlist(
-    parseStringList(value['allowed_models'], 'spawn_constraints.allowed_models', filePath),
-  );
-  const denyModels = openIfEmpty(
-    parseStringList(value['deny_models'], 'spawn_constraints.deny_models', filePath),
-  );
-  const allowedEfforts = openIfEmpty(
-    parseStringList(value['allowed_efforts'], 'spawn_constraints.allowed_efforts', filePath),
-  );
+  const constraints = parseModelConstraintFields(value, filePath, 'spawn_constraints.');
   const disallowedTools = openIfEmpty(
     parseStringList(value['disallowed_tools'], 'spawn_constraints.disallowed_tools', filePath),
   );
-  if (
-    allowedModels === undefined &&
-    denyModels === undefined &&
-    allowedEfforts === undefined &&
-    disallowedTools === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(allowedModels === undefined ? {} : { allowedModels }),
-    ...(denyModels === undefined ? {} : { denyModels }),
-    ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
-    ...(disallowedTools === undefined ? {} : { disallowedTools }),
-  };
+  if (Object.values(constraints).every((entry) => entry === undefined) && disallowedTools === undefined) return undefined;
+  return { ...constraints, disallowedTools };
 }
 
 function parseLeaseMapping(
@@ -294,15 +291,7 @@ function parseLeaseMapping(
     `${prefix}.thinking_effort`,
     filePath,
   );
-  const allowedModels = normalizeModelAllowlist(
-    parseStringList(item['allowed_models'], `${prefix}.allowed_models`, filePath),
-  );
-  const denyModels = openIfEmpty(
-    parseStringList(item['deny_models'], `${prefix}.deny_models`, filePath),
-  );
-  const allowedEfforts = openIfEmpty(
-    parseStringList(item['allowed_efforts'], `${prefix}.allowed_efforts`, filePath),
-  );
+
   const rawSubagentValue = item['subagents'];
   const rawSubagents = parseStringList(rawSubagentValue, `${prefix}.subagents`, filePath);
   if (strictSyntax && Object.hasOwn(item, 'subagents')) {
@@ -326,9 +315,7 @@ function parseLeaseMapping(
     ...(whenToUse === undefined ? {} : { whenToUse }),
     ...(modelAlias === undefined ? {} : { modelAlias }),
     ...(thinkingEffort === undefined ? {} : { thinkingEffort }),
-    ...(allowedModels === undefined ? {} : { allowedModels }),
-    ...(denyModels === undefined ? {} : { denyModels }),
-    ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
+    ...parseModelConstraintFields(item, filePath, `${prefix}.`),
     ...(normalizeTools(parseStringList(item['tools'], `${prefix}.tools`, filePath)) === undefined
       ? {}
       : { tools: normalizeTools(parseStringList(item['tools'], `${prefix}.tools`, filePath)) }),
@@ -470,16 +457,13 @@ function parseModelProfiles(
     if (promptMode !== undefined && prompt !== undefined) {
       validateLeasePrompt(promptMode, prompt, prefix, filePath);
     }
-    const allowedEfforts = openIfEmpty(
-      parseStringList(item['allowed_efforts'], `${prefix}.allowed_efforts`, filePath),
-    );
     out.push({
       alias,
       when,
       thinkingEffort,
       promptMode,
       prompt,
-      allowedEfforts,
+      ...parseModelConstraintFields(item, filePath, `${prefix}.`),
       serviceTier: parseServiceTier(item['service_tier'], `${prefix}.service_tier`, filePath) ?? undefined,
       requestParams: parseRequestParams(item['request_params'], `${prefix}.request_params`, filePath) ?? undefined,
       contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),

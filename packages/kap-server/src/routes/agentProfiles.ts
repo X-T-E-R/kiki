@@ -576,6 +576,9 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           kikiContext: req.body.kiki_context,
           modelAlias: req.body.pinned_model_alias,
           thinkingEffort: req.body.thinking_effort,
+          preferredModels: req.body.preferred_models,
+          discouragedModels: req.body.discouraged_models,
+          preferredEfforts: req.body.preferred_efforts,
           allowedModels: req.body.allowed_models,
           denyModels: req.body.deny_models,
           allowedEfforts: req.body.allowed_efforts,
@@ -591,6 +594,9 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
                 allowedModels: req.body.spawn_constraints.allowed_models,
                 denyModels: req.body.spawn_constraints.deny_models,
                 allowedEfforts: req.body.spawn_constraints.allowed_efforts,
+                preferredModels: req.body.spawn_constraints.preferred_models,
+                discouragedModels: req.body.spawn_constraints.discouraged_models,
+                preferredEfforts: req.body.spawn_constraints.preferred_efforts,
                 disallowedTools: req.body.spawn_constraints.disallowed_tools,
               },
           modelProfiles: req.body.model_profiles?.map((entry) => ({
@@ -824,6 +830,9 @@ function toNamedAgentProfile(
     kiki_context: profile.kikiContext === undefined ? undefined : [...profile.kikiContext],
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
+    preferred_models: profile.preferredModels === undefined ? undefined : [...profile.preferredModels],
+    discouraged_models: profile.discouragedModels === undefined ? undefined : [...profile.discouragedModels],
+    preferred_efforts: profile.preferredEfforts === undefined ? undefined : [...profile.preferredEfforts],
     allowed_models: profile.allowedModels === undefined ? undefined : [...profile.allowedModels],
     deny_models: profile.denyModels === undefined ? undefined : [...profile.denyModels],
     allowed_efforts: profile.allowedEfforts === undefined ? undefined : [...profile.allowedEfforts],
@@ -838,6 +847,9 @@ function toNamedAgentProfile(
     spawn_constraints: profile.spawnConstraints === undefined
       ? undefined
       : {
+          preferred_models: profile.spawnConstraints.preferredModels === undefined ? undefined : [...profile.spawnConstraints.preferredModels],
+          discouraged_models: profile.spawnConstraints.discouragedModels === undefined ? undefined : [...profile.spawnConstraints.discouragedModels],
+          preferred_efforts: profile.spawnConstraints.preferredEfforts === undefined ? undefined : [...profile.spawnConstraints.preferredEfforts],
           allowed_models: profile.spawnConstraints.allowedModels === undefined
             ? undefined
             : [...profile.spawnConstraints.allowedModels],
@@ -947,6 +959,11 @@ function toNamedAgentModelProfile(
     service_tier: modelProfile.serviceTier,
     request_params: modelProfile.requestParams === undefined ? undefined : { ...modelProfile.requestParams },
     thinking_effort: modelProfile.thinkingEffort,
+    allowed_models: modelProfile.allowedModels === undefined ? undefined : [...modelProfile.allowedModels],
+    deny_models: modelProfile.denyModels === undefined ? undefined : [...modelProfile.denyModels],
+    preferred_models: modelProfile.preferredModels === undefined ? undefined : [...modelProfile.preferredModels],
+    discouraged_models: modelProfile.discouragedModels === undefined ? undefined : [...modelProfile.discouragedModels],
+    preferred_efforts: modelProfile.preferredEfforts === undefined ? undefined : [...modelProfile.preferredEfforts],
     allowed_efforts: modelProfile.allowedEfforts === undefined
       ? undefined
       : [...modelProfile.allowedEfforts],
@@ -971,6 +988,9 @@ function toNamedAgentSubagentLease(
     when_to_use: lease.whenToUse,
     model_alias: lease.modelAlias,
     thinking_effort: lease.thinkingEffort,
+    preferred_models: lease.preferredModels === undefined ? undefined : [...lease.preferredModels],
+    discouraged_models: lease.discouragedModels === undefined ? undefined : [...lease.discouragedModels],
+    preferred_efforts: lease.preferredEfforts === undefined ? undefined : [...lease.preferredEfforts],
     allowed_models: lease.allowedModels === undefined ? undefined : [...lease.allowedModels],
     deny_models: lease.denyModels === undefined ? undefined : [...lease.denyModels],
     allowed_efforts: lease.allowedEfforts === undefined ? undefined : [...lease.allowedEfforts],

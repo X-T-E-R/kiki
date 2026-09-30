@@ -1,3 +1,4 @@
+import type { AgentModelConstraints } from '@kiki/agent-profiles/agentProfile';
 import {
   BINDING_ADVISORY_VERSION,
   type BindingAdvisory,
@@ -7,32 +8,30 @@ import {
 
 import type { AgentModelProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { resolveModelProfileEntry } from '#/app/agentProfileCatalog/modelProfileOverlay';
+import { Error2, ErrorCodes } from '#/errors';
 import { normalizeRequestedThinkingEffort } from '#/kosong/model/thinking';
 import type { IModelService } from '#/kosong/model/model';
 
-export interface SubagentRoleModelConstraints {
-  readonly allowedModels?: readonly string[];
-  readonly denyModels?: readonly string[];
-  readonly allowedEfforts?: readonly string[];
+export interface SubagentRoleModelConstraints extends AgentModelConstraints {
   readonly modelProfiles?: readonly AgentModelProfile[];
+  readonly modelConstraintProfiles?: readonly AgentModelProfile[];
   readonly origin?: string;
 }
 
 export function roleConstraintsFromProfile(
-  profile: {
-    readonly allowedModels?: readonly string[];
-    readonly denyModels?: readonly string[];
-    readonly allowedEfforts?: readonly string[];
-    readonly modelProfiles?: readonly AgentModelProfile[];
-  },
+  profile: SubagentRoleModelConstraints,
   origin?: string,
 ): SubagentRoleModelConstraints {
   return {
     allowedModels: profile.allowedModels,
     denyModels: profile.denyModels,
     allowedEfforts: profile.allowedEfforts,
+    preferredModels: profile.preferredModels,
+    discouragedModels: profile.discouragedModels,
+    preferredEfforts: profile.preferredEfforts,
     modelProfiles: profile.modelProfiles,
-    ...(origin === undefined ? {} : { origin }),
+    modelConstraintProfiles: profile.modelConstraintProfiles,
+    origin,
   };
 }
 
@@ -41,11 +40,10 @@ export function resolveRoleThinkingDefault(
   model: string,
   models?: IModelService,
 ): string | undefined {
-  return resolveModelProfileEntry(constraints?.modelProfiles, model, resolveId(models))
-    ?.thinkingEffort;
+  return resolveModelProfileEntry(constraints?.modelProfiles, model, resolveId(models))?.thinkingEffort;
 }
 
-export function roleBindingAdvisories(input: {
+interface BindingConstraintCheck {
   readonly model: string;
   readonly requestedModel?: string;
   readonly thinking?: string;
@@ -57,66 +55,67 @@ export function roleBindingAdvisories(input: {
   readonly thinkingValueSource?: BindingValueSource;
   readonly checkModel?: boolean;
   readonly checkThinking?: boolean;
-}): readonly BindingAdvisory[] {
+}
+
+export function assertRoleBindingConstraints(input: BindingConstraintCheck): void {
+  for (const layer of constraintLayers(input.constraints, input.model, input.models, input.ruleSource)) {
+    const canonical = resolveModelIdentity(input.model, input.models);
+    const reject = (field: string, values: readonly string[], value: string, dimension: BindingAdvisoryDimension) => {
+      const ruleSource = `${layer.source}.${field}`;
+      throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+        `Hard constraint ${ruleSource} rejects ${dimension} "${value}". Select a permitted value or edit the constraint; pins and advisories cannot override it.`,
+        { details: { strength: 'hard', ruleSource, ruleValues: [...values], effectiveValue: value,
+          requestedValue: dimension === 'model' ? input.requestedModel : input.requestedThinking,
+          valueSource: dimension === 'model' ? input.modelValueSource : input.thinkingValueSource ?? input.modelValueSource,
+          dimension, model: canonical } });
+    };
+    if (input.checkModel !== false) {
+      if (canonical.trim() === '' && (layer.constraints.allowedModels !== undefined || (layer.constraints.denyModels?.length ?? 0) > 0)) {
+        reject('model_binding', [...(layer.constraints.allowedModels ?? []), ...(layer.constraints.denyModels ?? [])], 'unbound', 'model');
+      }
+      if (layer.constraints.denyModels !== undefined && identitySet(layer.constraints.denyModels, input.models).has(canonical)) {
+        reject('deny_models', layer.constraints.denyModels, canonical, 'model');
+      }
+      if (layer.constraints.allowedModels !== undefined && !identitySet(layer.constraints.allowedModels, input.models).has(canonical)) {
+        reject('allowed_models', layer.constraints.allowedModels, canonical, 'model');
+      }
+    }
+    if (input.checkThinking !== false && input.thinking !== undefined && layer.constraints.allowedEfforts !== undefined
+      && !effortAllowed(input.thinking, layer.constraints.allowedEfforts)) {
+      reject('allowed_efforts', layer.constraints.allowedEfforts, input.thinking, 'thinking_effort');
+    }
+  }
+}
+
+export function roleBindingAdvisories(input: BindingConstraintCheck): readonly BindingAdvisory[] {
+  assertRoleBindingConstraints(input);
   const constraints = input.constraints;
   if (constraints === undefined) return [];
   const advisories: BindingAdvisory[] = [];
   const canonicalModel = resolveModelIdentity(input.model, input.models);
-  const selection = bindingSelectionDescription(input.modelValueSource);
-  if (input.checkModel !== false) {
-    const denied = constraints.denyModels;
-    if (denied !== undefined && identitySet(denied, input.models).has(canonicalModel)) {
-      advisories.push({
-        version: BINDING_ADVISORY_VERSION,
-        code: 'model_denied',
-        dimension: 'model',
-        ruleSource: `${input.ruleSource}.deny_models`,
-        ruleValues: [...denied],
-        requestedValue: input.requestedModel,
-        effectiveValue: canonicalModel,
-        valueSource: input.modelValueSource,
-        model: canonicalModel,
-        message: `Model "${canonicalModel}" is listed in ${input.ruleSource} deny_models; continuing with the ${selection}.`,
-      });
-    } else if (
-      constraints.allowedModels !== undefined &&
-      !identitySet(constraints.allowedModels, input.models).has(canonicalModel)
-    ) {
-      advisories.push({
-        version: BINDING_ADVISORY_VERSION,
-        code: 'model_not_allowed',
-        dimension: 'model',
-        ruleSource: `${input.ruleSource}.allowed_models`,
-        ruleValues: [...constraints.allowedModels],
-        requestedValue: input.requestedModel,
-        effectiveValue: canonicalModel,
-        valueSource: input.modelValueSource,
-        model: canonicalModel,
-        message: `Model "${canonicalModel}" is not in ${input.ruleSource} allowed_models; continuing with the ${selection}.`,
-      });
+  const layers = [{ constraints, source: input.ruleSource }, ...matchingEntries(constraints.modelProfiles, input.model, input.models)
+    .map((entry) => ({ constraints: entry, source: `${input.ruleSource}.model_profiles:${entry.alias}` }))];
+  for (const layer of layers) {
+    const add = (code: BindingAdvisory['code'], field: string, values: readonly string[], dimension: BindingAdvisoryDimension, value: string) => {
+      const source = dimension === 'model' ? input.modelValueSource : input.thinkingValueSource ?? input.modelValueSource;
+      advisories.push({ version: BINDING_ADVISORY_VERSION, code, dimension,
+        ruleSource: `${layer.source}.${field}`, ruleValues: [...values],
+        requestedValue: dimension === 'model' ? input.requestedModel : input.requestedThinking,
+        effectiveValue: value, valueSource: source, model: canonicalModel,
+        message: `Soft recommendation ${layer.source}.${field} prefers [${values.join(', ')}]; continuing with "${value}" from ${bindingSelectionDescription(source)}.` });
+    };
+    if (input.checkModel !== false) {
+      const discouraged = layer.constraints.discouragedModels;
+      if (discouraged !== undefined && identitySet(discouraged, input.models).has(canonicalModel)) {
+        add('model_discouraged', 'discouraged_models', discouraged, 'model', canonicalModel);
+      } else if (layer.constraints.preferredModels !== undefined && !identitySet(layer.constraints.preferredModels, input.models).has(canonicalModel)) {
+        add('model_not_preferred', 'preferred_models', layer.constraints.preferredModels, 'model', canonicalModel);
+      }
     }
-  }
-  const permittedEfforts = effectiveAllowedEfforts(constraints, input.model, input.models);
-  if (
-    input.checkThinking !== false &&
-    permittedEfforts !== undefined &&
-    input.thinking !== undefined &&
-    input.thinking.trim().length > 0 &&
-    !effortAllowed(input.thinking, permittedEfforts)
-  ) {
-    const source = input.thinkingValueSource ?? input.modelValueSource;
-    advisories.push({
-      version: BINDING_ADVISORY_VERSION,
-      code: 'effort_not_allowed',
-      dimension: 'thinking_effort',
-      ruleSource: `${input.ruleSource}.allowed_efforts`,
-      ruleValues: [...permittedEfforts],
-      requestedValue: input.requestedThinking,
-      effectiveValue: input.thinking,
-      valueSource: source,
-      model: canonicalModel,
-      message: `Thinking effort "${input.thinking}" is not in ${input.ruleSource} allowed_efforts; continuing with the ${bindingSelectionDescription(source)}.`,
-    });
+    if (input.checkThinking !== false && input.thinking !== undefined && layer.constraints.preferredEfforts !== undefined
+      && !effortAllowed(input.thinking, layer.constraints.preferredEfforts)) {
+      add('effort_not_preferred', 'preferred_efforts', layer.constraints.preferredEfforts, 'thinking_effort', input.thinking);
+    }
   }
   return advisories;
 }
@@ -150,65 +149,46 @@ export function pinBindingAdvisory(input: {
   };
 }
 
-export function roleModelRecommended(
-  model: string,
-  constraints: SubagentRoleModelConstraints | undefined,
-  models?: IModelService,
-): boolean {
-  if (constraints === undefined) return true;
-  const canonicalModel = resolveModelIdentity(model, models);
-  if (identitySet(constraints.denyModels, models).has(canonicalModel)) return false;
-  return constraints.allowedModels === undefined || identitySet(constraints.allowedModels, models).has(canonicalModel);
+export function roleModelAllowed(model: string, constraints: SubagentRoleModelConstraints | undefined, models?: IModelService): boolean {
+  const canonical = resolveModelIdentity(model, models);
+  return constraintLayers(constraints, model, models, 'profile').every((layer) =>
+    !identitySet(layer.constraints.denyModels, models).has(canonical)
+    && (layer.constraints.allowedModels === undefined || identitySet(layer.constraints.allowedModels, models).has(canonical)));
 }
 
-export function roleEffortRecommended(
-  model: string,
-  thinking: string | undefined,
-  constraints: SubagentRoleModelConstraints | undefined,
-  models?: IModelService,
-): boolean {
-  if (constraints === undefined || thinking === undefined || thinking.trim().length === 0) return true;
-  const permitted = effectiveAllowedEfforts(constraints, model, models);
-  return permitted === undefined || effortAllowed(thinking, permitted);
+export function roleModelRecommended(model: string, constraints: SubagentRoleModelConstraints | undefined, models?: IModelService): boolean {
+  if (!roleModelAllowed(model, constraints, models)) return false;
+  const canonical = resolveModelIdentity(model, models);
+  return constraints === undefined || (!identitySet(constraints.discouragedModels, models).has(canonical)
+    && (constraints.preferredModels === undefined || identitySet(constraints.preferredModels, models).has(canonical)));
+}
+
+export function roleEffortRecommended(model: string, thinking: string | undefined, constraints: SubagentRoleModelConstraints | undefined, models?: IModelService): boolean {
+  if (thinking === undefined) return true;
+  return constraintLayers(constraints, model, models, 'profile').every((layer) =>
+    (layer.constraints.allowedEfforts === undefined || effortAllowed(thinking, layer.constraints.allowedEfforts)))
+    && (constraints?.preferredEfforts === undefined || effortAllowed(thinking, constraints.preferredEfforts));
+}
+
+function constraintLayers(constraints: SubagentRoleModelConstraints | undefined, model: string, models: IModelService | undefined, source: string) {
+  if (constraints === undefined) return [];
+  return [{ constraints, source }, ...matchingEntries([...(constraints.modelProfiles ?? []), ...(constraints.modelConstraintProfiles ?? [])], model, models)
+    .map((entry) => ({ constraints: entry, source: `${source}.model_profiles:${entry.alias}` }))];
+}
+
+function matchingEntries(entries: readonly AgentModelProfile[] | undefined, model: string, models: IModelService | undefined): readonly AgentModelProfile[] {
+  return (entries ?? []).filter((entry) => resolveModelProfileEntry([entry], model, resolveId(models)) === entry);
 }
 
 function bindingSelectionDescription(source: BindingValueSource): string {
-  switch (source) {
-    case 'dispatch-explicit':
-    case 'runtime-explicit':
-      return 'explicit selection';
-    case 'resume-existing':
-      return 'saved binding';
-    case 'environment-forced':
-      return 'environment-forced value';
-    default:
-      return source.replaceAll('-', ' ');
-  }
-}
-
-function effectiveAllowedEfforts(
-  constraints: SubagentRoleModelConstraints,
-  model: string,
-  models: IModelService | undefined,
-): readonly string[] | undefined {
-  const role = constraints.allowedEfforts;
-  const entry = resolveModelProfileEntry(constraints.modelProfiles, model, resolveId(models));
-  const entryEfforts = nonemptyList(entry?.allowedEfforts);
-  if (role === undefined) return entryEfforts;
-  if (entryEfforts === undefined) return role;
-  if (role.length === 0) return [];
-  const allowed = new Set(entryEfforts.map(effortKey));
-  return role.filter((effort) => allowed.has(effortKey(effort)));
-}
-
-function nonemptyList(values: readonly string[] | undefined): readonly string[] | undefined {
-  if (values === undefined || values.length === 0) return undefined;
-  return values;
+  if (source === 'dispatch-explicit' || source === 'runtime-explicit') return 'explicit selection';
+  if (source === 'resume-existing') return 'saved binding';
+  if (source === 'environment-forced') return 'environment-forced value';
+  return source.replaceAll('-', ' ');
 }
 
 function effortAllowed(thinking: string, permitted: readonly string[]): boolean {
-  const wanted = effortKey(thinking);
-  return permitted.some((effort) => effortKey(effort) === wanted);
+  return permitted.some((effort) => effortKey(effort) === effortKey(thinking));
 }
 
 function effortKey(value: string): string {

@@ -56,6 +56,9 @@ export interface AgentFileDefinition {
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly preferredModels?: readonly string[];
+  readonly discouragedModels?: readonly string[];
+  readonly preferredEfforts?: readonly string[];
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
   readonly allowedEfforts?: readonly string[];

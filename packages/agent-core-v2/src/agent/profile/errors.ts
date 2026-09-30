@@ -4,6 +4,7 @@ export const ProfileErrors = {
   codes: {
     MODEL_NOT_CONFIGURED: 'model.not_configured',
     MODEL_CONFIG_INVALID: 'model.config_invalid',
+    PROFILE_CONSTRAINT_VIOLATION: 'profile.constraint_violation',
     THINKING_ALIAS_CONFLICT: 'profile.thinking_alias_conflict',
     PROFILE_UNKNOWN: 'profile.unknown',
     PERSONA_UNKNOWN: 'persona.unknown',

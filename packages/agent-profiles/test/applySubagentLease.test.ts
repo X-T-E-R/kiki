@@ -32,6 +32,26 @@ function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
 }
 
 describe('applyLease', () => {
+  it('keeps model-profile hard constraints when a lease replaces the default entries', () => {
+    const original = [{ alias: 'fast', allowedEfforts: ['max'], preferredEfforts: ['max'] }];
+    const applied = applyLease(child({ modelProfiles: original }), { name: 'explore', modelProfiles: [{ alias: 'fast', thinkingEffort: 'low' }] });
+    expect(applied.modelProfiles).toEqual([{ alias: 'fast', thinkingEffort: 'low' }]);
+    expect(applied.modelConstraintProfiles).toEqual(original);
+    expect(structuredClone(applied.modelConstraintProfiles)).toEqual(original);
+  });
+
+  it('keeps soft model policy separate from intersected hard policy', () => {
+    const applied = applySpawnPolicy(applyLease(child({ preferredModels: ['grok-4.6'] }), {
+      name: 'explore', allowedModels: ['gpt-5.6-sol'], preferredModels: ['gpt-5.6-sol'],
+    }), { preferredModels: ['grok-4.6'], allowedEfforts: ['high'], preferredEfforts: ['max'] });
+    expect(applied.allowedModels).toEqual(['gpt-5.6-sol']);
+    expect(applied.preferredModels).toEqual([]);
+    expect(applied.allowedEfforts).toEqual(['high']);
+    expect(applied.preferredEfforts).toEqual(['max']);
+    expect(intersectSpawnPolicy({ preferredModels: ['fast'], allowedEfforts: ['high'], discouragedModels: ['premium'] }, {
+      preferredModels: ['other'], allowedEfforts: ['low'], discouragedModels: ['other'],
+    })).toMatchObject({ preferredModels: [], allowedEfforts: [], discouragedModels: ['premium', 'other'] });
+  });
   it('keeps profile effort paired with its default model across leases and routes', () => {
     const base = child({ modelAlias: 'example/first', thinkingEffort: 'medium' });
     const resolveId = (id: string) => id === 'first' ? 'example/first' : id;

@@ -1844,7 +1844,7 @@ export interface AgentStateSnapshot {
     readonly thinkingEffortAdjusted?: boolean;
     readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
       readonly version: 1;
-      readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+      readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
       readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
       readonly ruleSource: string;
       readonly ruleValue?: string;
@@ -1891,6 +1891,9 @@ export interface AgentStateSnapshot {
       readonly whenToUse?: string;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
@@ -1919,6 +1922,11 @@ export interface AgentStateSnapshot {
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
       }[];
     } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
@@ -1927,6 +1935,9 @@ export interface AgentStateSnapshot {
       readonly whenToUse?: string;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
@@ -1955,6 +1966,11 @@ export interface AgentStateSnapshot {
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
       }[];
     }>>;
     readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
@@ -1978,6 +1994,9 @@ export interface AgentStateSnapshot {
       readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
     };
     readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
@@ -1990,6 +2009,9 @@ export interface AgentStateSnapshot {
       readonly whenToUse?: string;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
@@ -2018,6 +2040,11 @@ export interface AgentStateSnapshot {
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
       }[];
     } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
@@ -2026,6 +2053,9 @@ export interface AgentStateSnapshot {
       readonly whenToUse?: string;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
@@ -2054,6 +2084,11 @@ export interface AgentStateSnapshot {
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
       }[];
     };
     readonly boundProfile?: /* BoundProfile — packages/agent-core-v2/src/agent/profile/boundProfile.ts */ Omit</* AgentProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
@@ -2092,6 +2127,29 @@ export interface AgentStateSnapshot {
           }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
         };
       }) => Promise<string>;
+      readonly modelConstraintProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly alias: string;
+        readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
+        readonly when?: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'append' | 'prepend' | 'wrap';
+        readonly prompt?: string;
+        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly files?: readonly string[];
+          readonly fields?: Readonly<Record<string, string>>;
+        };
+        readonly autoCompact?: number;
+        readonly contextBudget?: number;
+        readonly maxCompletionTokens?: number;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
+      }[];
       readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly autoCompact?: number;
@@ -2128,6 +2186,9 @@ export interface AgentStateSnapshot {
           readonly whenToUse?: string;
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
@@ -2156,6 +2217,11 @@ export interface AgentStateSnapshot {
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
           }[];
         } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
           readonly source: string;
@@ -2164,6 +2230,9 @@ export interface AgentStateSnapshot {
           readonly whenToUse?: string;
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
@@ -2192,9 +2261,17 @@ export interface AgentStateSnapshot {
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
           }[];
         }>>;
         readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
@@ -2218,6 +2295,9 @@ export interface AgentStateSnapshot {
         readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly allowedEfforts?: readonly string[];
@@ -2238,6 +2318,11 @@ export interface AgentStateSnapshot {
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
         }[];
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
@@ -2301,6 +2386,9 @@ export interface AgentStateSnapshot {
         readonly whenToUse?: string;
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly allowedEfforts?: readonly string[];
@@ -2329,6 +2417,11 @@ export interface AgentStateSnapshot {
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
         }[];
       } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
         readonly source: string;
@@ -2337,6 +2430,9 @@ export interface AgentStateSnapshot {
         readonly whenToUse?: string;
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly allowedEfforts?: readonly string[];
@@ -2365,9 +2461,17 @@ export interface AgentStateSnapshot {
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly allowedModels?: readonly string[];
+          readonly denyModels?: readonly string[];
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
         }[];
       }>>;
       readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly allowedEfforts?: readonly string[];
@@ -2411,6 +2515,11 @@ export interface AgentStateSnapshot {
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly allowedModels?: readonly string[];
+        readonly denyModels?: readonly string[];
+        readonly preferredModels?: readonly string[];
+        readonly discouragedModels?: readonly string[];
+        readonly preferredEfforts?: readonly string[];
       }[];
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
@@ -2488,6 +2597,9 @@ export interface AgentStateSnapshot {
       readonly autoCompact?: number;
       readonly contextBudget?: number;
       readonly maxCompletionTokens?: number;
+      readonly preferredModels?: readonly string[];
+      readonly discouragedModels?: readonly string[];
+      readonly preferredEfforts?: readonly string[];
     }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
@@ -2525,6 +2637,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2553,6 +2668,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
@@ -2561,6 +2681,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2589,9 +2712,17 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           }>>;
           readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2615,6 +2746,9 @@ export interface AgentStateSnapshot {
           readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
@@ -2635,6 +2769,11 @@ export interface AgentStateSnapshot {
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
@@ -2684,7 +2823,7 @@ export interface AgentStateSnapshot {
           readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
           readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
             readonly version: 1;
-            readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+            readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
             readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
             readonly ruleSource: string;
             readonly ruleValue?: string;
@@ -2737,6 +2876,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2765,6 +2907,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
@@ -2773,6 +2920,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2801,6 +2951,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           }>>;
           readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
@@ -2824,6 +2979,9 @@ export interface AgentStateSnapshot {
             readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
           };
           readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2836,6 +2994,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2864,6 +3025,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
@@ -2872,6 +3038,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2900,6 +3069,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           };
           readonly boundProfile?: /* BoundProfile — recursive (packages/agent-core-v2/src/agent/profile/boundProfile.ts) */ unknown;
@@ -2948,6 +3122,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -2976,6 +3153,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           };
           readonly status: 'ready' | 'unavailable';
@@ -3015,6 +3197,9 @@ export interface AgentStateSnapshot {
               readonly whenToUse?: string;
               readonly modelAlias?: string;
               readonly thinkingEffort?: string;
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly allowedEfforts?: readonly string[];
@@ -3043,6 +3228,11 @@ export interface AgentStateSnapshot {
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
                 readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+                readonly allowedModels?: readonly string[];
+                readonly denyModels?: readonly string[];
+                readonly preferredModels?: readonly string[];
+                readonly discouragedModels?: readonly string[];
+                readonly preferredEfforts?: readonly string[];
               }[];
             } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
               readonly source: string;
@@ -3051,6 +3241,9 @@ export interface AgentStateSnapshot {
               readonly whenToUse?: string;
               readonly modelAlias?: string;
               readonly thinkingEffort?: string;
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly allowedEfforts?: readonly string[];
@@ -3079,9 +3272,17 @@ export interface AgentStateSnapshot {
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
                 readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+                readonly allowedModels?: readonly string[];
+                readonly denyModels?: readonly string[];
+                readonly preferredModels?: readonly string[];
+                readonly discouragedModels?: readonly string[];
+                readonly preferredEfforts?: readonly string[];
               }[];
             }>>;
             readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly allowedEfforts?: readonly string[];
@@ -3105,6 +3306,9 @@ export interface AgentStateSnapshot {
             readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -3125,6 +3329,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
@@ -3183,6 +3392,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -3211,6 +3423,11 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
@@ -3219,6 +3436,9 @@ export interface AgentStateSnapshot {
             readonly whenToUse?: string;
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -3247,9 +3467,17 @@ export interface AgentStateSnapshot {
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly allowedModels?: readonly string[];
+              readonly denyModels?: readonly string[];
+              readonly preferredModels?: readonly string[];
+              readonly discouragedModels?: readonly string[];
+              readonly preferredEfforts?: readonly string[];
             }[];
           }>>;
           readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
@@ -3273,6 +3501,9 @@ export interface AgentStateSnapshot {
           readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
+          readonly preferredModels?: readonly string[];
+          readonly discouragedModels?: readonly string[];
+          readonly preferredEfforts?: readonly string[];
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
@@ -3293,6 +3524,11 @@ export interface AgentStateSnapshot {
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly allowedModels?: readonly string[];
+            readonly denyModels?: readonly string[];
+            readonly preferredModels?: readonly string[];
+            readonly discouragedModels?: readonly string[];
+            readonly preferredEfforts?: readonly string[];
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;

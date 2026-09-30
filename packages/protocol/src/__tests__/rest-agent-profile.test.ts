@@ -19,6 +19,18 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('retains hard constraints and explicit soft recommendations in profile and nested projections', () => {
+    const rules = { allowed_models: ['fast', 'premium'], deny_models: ['blocked'], allowed_efforts: [],
+      preferred_models: ['fast'], discouraged_models: ['premium'], preferred_efforts: ['max'] };
+    const parsed = namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [],
+      ...rules, spawn_constraints: rules, subagents: [{ name: 'explore', ...rules }], model_profiles: [{ alias: 'fast', ...rules }] });
+    expect(parsed).toMatchObject(rules);
+    expect(parsed.spawn_constraints).toEqual(rules);
+    expect(parsed.subagents?.[0]).toMatchObject(rules);
+    expect(parsed.model_profiles?.[0]).toMatchObject(rules);
+    expect(updateNamedAgentProfileRequestSchema.parse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null })).toMatchObject({ preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null });
+    expect(updateNamedAgentProfileRequestSchema.safeParse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], raw_text: 'profile' }).success).toBe(false);
+  });
   it('accepts underscore-separated profile names in create requests and duplicate templates', () => {
     expect(createNamedAgentProfileRequestSchema.parse({
       workspace_id: 'wd_a', name: 'code_reviewer', scope: 'user',

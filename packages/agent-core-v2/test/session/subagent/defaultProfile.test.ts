@@ -106,11 +106,11 @@ describe('dispatch policy defaults', () => {
   const main = { profileName: 'agent', subagents: ['explore'] };
   const child = { profileName: 'worker', subagents: ['explore'] };
 
-  it('uses independent defaults and leaves an undeclared subagent advisory', () => {
+  it('uses independent host defaults even when a subagent declares no role list', () => {
     const config = configWithSubagent();
     expect(withDispatchPolicyDefaults(config, main, 'main').defaultPolicy).toBe('advisory');
     expect(withDispatchPolicyDefaults(config, child, 'sub').defaultPolicy).toBe('strict');
-    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('advisory');
+    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('strict');
     expect(withDispatchPolicyDefaults(config, { profileName: 'worker', subagents: [] }, 'sub').defaultPolicy).toBe('strict');
   });
 

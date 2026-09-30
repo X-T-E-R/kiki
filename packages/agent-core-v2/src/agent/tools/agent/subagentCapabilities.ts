@@ -103,7 +103,7 @@ export function projectSubagentCapabilities(
       dispatchAllowed: decision.allowed,
     };
     try {
-      const bindingCaller = decision.allowed ? input.caller : { ...input.caller, subagentPolicy: 'advisory' as const };
+      const bindingCaller = decision.allowed ? input.caller : { ...input.caller, defaultPolicy: 'advisory' as const, subagentPolicy: 'advisory' as const };
       const target = resolveSubagentTarget(input.catalog, bindingCaller, {
         profileName,
         routeId,
@@ -287,6 +287,10 @@ function capabilityFailure(error: unknown): {
     if (error.code === ErrorCodes.SCOPED_PROFILE_UNAVAILABLE) return {
       reason: 'Scoped profile is unavailable',
       reasonCode: 'scoped_profile_unavailable',
+    };
+    if (error.code === ErrorCodes.PROFILE_CONSTRAINT_VIOLATION) return {
+      reason: error.message,
+      reasonCode: 'binding_constraints_unsatisfied',
     };
     if (error.code === ErrorCodes.CONFIG_INVALID || error.code === ErrorCodes.ROUTE_BINDING_CONFLICT) return {
       reason: 'Default binding does not satisfy model, effort, or executor constraints',

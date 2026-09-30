@@ -644,7 +644,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       source: 'environment-forced' as const,
       requestedValue: thinkingLevel,
     };
-    const bindingAdvisories = this.delegationPosition === 'main' ? [] : this.collectBindingAdvisories({
+    const bindingAdvisories = this.collectBindingAdvisories({
       profile: selection.baseProfile,
       profileName: selection.baseProfile.name,
       route: selection.route,
@@ -827,13 +827,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       source: 'executor-normalized' as const,
       requestedValue: requestedThinking,
     };
-    const bindingAdvisories = alias === undefined ? [] : this.collectBindingAdvisories({
+    const bindingAdvisories = this.collectBindingAdvisories({
       profile: selection.baseProfile,
       profileName: selection.baseProfile.name,
       route: selection.route,
       lease: input.lease,
       spawnPolicy: input.spawnPolicy,
-      model: alias,
+      model: alias ?? '',
       thinking: thinkingLevel,
       modelSelection,
       thinkingSelection,
@@ -1041,6 +1041,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
       const externalAlias = validated.modelAlias!;
       if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, externalAlias);
+      this.assertCurrentBindingConstraints(externalAlias, this.thinkingLevel);
       const changed = this.modelAlias !== externalAlias;
       if (changed) {
         this.update({ modelAlias: externalAlias });
@@ -1057,6 +1058,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       assertSubagentModelNotDenied(this.config, canonicalAlias, this.models);
     }
     const model = this.modelCatalog.get(canonicalAlias);
+    this.assertCurrentBindingConstraints(canonicalAlias, this.resolveConfigPayload({ modelAlias: canonicalAlias }).thinkingEffort ?? this.thinkingLevel);
     const changed = this.modelAlias !== canonicalAlias;
     if (this.profileName === undefined && this.routeId === undefined) {
       await this.bind({
@@ -1109,6 +1111,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), modelAlias ?? '');
       effort = normalizeRequestedThinkingEffort(level) ?? level;
     }
+    this.assertCurrentBindingConstraints(modelAlias ?? '', effort);
     const previousEffort = this.thinkingLevel;
     const requestedEffort = normalizeRequestedThinkingEffort(level) ?? level.trim().toLowerCase();
     this.update({ thinkingLevel: effort, thinkingEffortAdjusted: requestedEffort !== effort });
@@ -1324,9 +1327,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? roleConstraintsFromProfile(input.profile)
         : roleConstraintsFromProfile({
             ...input.profile,
-            modelProfiles: input.lease?.modelProfiles === undefined
-              ? input.profile.modelProfiles
-              : undefined,
+            modelConstraintProfiles: input.lease?.modelProfiles === undefined
+              ? input.profile.modelConstraintProfiles
+              : [...(input.profile.modelConstraintProfiles ?? []), ...(input.profile.modelProfiles ?? [])],
+            modelProfiles: input.lease?.modelProfiles === undefined ? input.profile.modelProfiles : undefined,
           });
       layers.push({
         constraints: profileConstraints,
@@ -1416,6 +1420,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (advisory !== undefined) advisories.push(advisory);
     }
     return [...new Map(advisories.map((advisory) => [bindingAdvisoryKey(advisory), advisory])).values()];
+  }
+
+  private assertCurrentBindingConstraints(model: string, thinking: string): void {
+    const data = this.data();
+    const forced = this.isExternalExecutor ? undefined
+      : this.validatedForcedThinkingEffort(thinking as ThinkingEffort, this.resolveModelForThinking(model), model);
+    this.collectBindingAdvisories({
+      profile: data.boundProfile ?? this.activeProfile,
+      profileName: data.profileName ?? 'saved',
+      profileIncludesOverlays: true,
+      model,
+      thinking: forced ?? thinking,
+      modelSelection: { source: 'runtime-explicit', requestedValue: model },
+      thinkingSelection: { source: forced === undefined ? 'runtime-explicit' : 'environment-forced', requestedValue: thinking },
+      models: this.isExternalExecutor ? undefined : this.models,
+    });
   }
 
   private refreshCurrentBindingAdvisories(

@@ -112,11 +112,10 @@ export function evaluateSubagentDispatchDecision(
       ? { kind: 'all' as const }
       : { kind: 'set' as const, names: configured.subagents }
   );
-  // The profile wins over host defaults. An empty declared set deliberately
-  // admits no targets under strict policy; an undeclared list stays advisory.
-  const policyMode: AgentSubagentPolicy = configured.subagentPolicy
+  const hostStrict = caller.defaultPolicy === 'strict';
+  const policyMode: AgentSubagentPolicy = hostStrict ? 'strict' : configured.subagentPolicy
     ?? caller.defaultPolicy
-    ?? (declaration.kind === 'set' ? 'strict' : 'advisory');
+    ?? 'advisory';
   const recommended = declaration.kind === 'set' && declaration.names.includes(profileName);
   const constrained = declaration.kind === 'set';
   const allowed = policyMode === 'advisory' || !constrained || recommended;
@@ -130,7 +129,7 @@ export function evaluateSubagentDispatchDecision(
   return {
     version: 1,
     policyMode,
-    policySource: configured.subagentPolicy === undefined ? 'default' : 'profile',
+    policySource: hostStrict || configured.subagentPolicy === undefined ? 'default' : 'profile',
     declaration,
     selectionKind: options.selectionKind ?? 'profile',
     selectionOrigin: options.selectionOrigin ?? 'explicit',

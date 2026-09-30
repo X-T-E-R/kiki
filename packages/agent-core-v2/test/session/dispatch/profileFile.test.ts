@@ -53,7 +53,7 @@ describe('profile file runtime isolation', () => {
       const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
       Object.defineProperty(fake, 'fs', { value: {
         realpath: async (path: string) => path,
-        readText: async () => '---\nname: coder\ndescription: File role\nallowed_models: [preferred-model]\ntools: [Read, Write]\nsubagents: [coder, explore]\n---\nFile role',
+        readText: async () => '---\nname: coder\ndescription: File role\npreferred_models: [preferred-model]\ntools: [Read, Write]\nsubagents: [coder, explore]\n---\nFile role',
       } as unknown as IHostFileSystem });
       const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
         thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
@@ -73,8 +73,8 @@ describe('profile file runtime isolation', () => {
       expect(svc.data().subagents).toEqual(['coder', 'explore']);
       expect(svc.data().bindingAdvisories).toEqual([
         expect.objectContaining({
-          code: 'model_not_allowed',
-          ruleSource: 'profile-file:/workspace/role.md.allowed_models',
+          code: 'model_not_preferred',
+          ruleSource: 'profile-file:/workspace/role.md.preferred_models',
           effectiveValue: 'mock-model',
         }),
       ]);

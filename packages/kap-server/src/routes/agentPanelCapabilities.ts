@@ -283,7 +283,7 @@ function panelProfile(
     tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
     disallowed_tools: data.disallowedTools === undefined ? undefined : [...data.disallowedTools],
     disabled_tool_groups: data.disabledToolGroups === undefined ? undefined : [...data.disabledToolGroups],
-    subagent_policy: caller.subagentPolicy ?? caller.defaultPolicy,
+    subagent_policy: caller.defaultPolicy === 'strict' ? 'strict' : caller.subagentPolicy ?? caller.defaultPolicy,
     execution_restriction: data.executionRestriction,
     locked_model: data.lockedModelAlias,
     locked_effort: data.lockedThinkingEffort,
@@ -292,6 +292,9 @@ function panelProfile(
       allowed_models: data.spawnPolicy.allowedModels === undefined ? undefined : [...data.spawnPolicy.allowedModels],
       deny_models: data.spawnPolicy.denyModels === undefined ? undefined : [...data.spawnPolicy.denyModels],
       allowed_efforts: data.spawnPolicy.allowedEfforts === undefined ? undefined : [...data.spawnPolicy.allowedEfforts],
+      preferred_models: data.spawnPolicy.preferredModels === undefined ? undefined : [...data.spawnPolicy.preferredModels],
+      discouraged_models: data.spawnPolicy.discouragedModels === undefined ? undefined : [...data.spawnPolicy.discouragedModels],
+      preferred_efforts: data.spawnPolicy.preferredEfforts === undefined ? undefined : [...data.spawnPolicy.preferredEfforts],
       disallowed_tools: data.spawnPolicy.disallowedTools === undefined ? undefined : [...data.spawnPolicy.disallowedTools],
     },
   };

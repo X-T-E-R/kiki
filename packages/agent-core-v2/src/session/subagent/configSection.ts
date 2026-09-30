@@ -14,6 +14,7 @@ import { collectRemovedKeyDiagnostics } from '#/app/config/deprecations';
 import type { IModelService } from '#/kosong/model/model';
 
 import {
+  assertRoleBindingConstraints,
   resolveRoleThinkingDefault,
   type SubagentRoleModelConstraints,
 } from './modelConstraints';
@@ -74,20 +75,18 @@ export function resolveDispatchCapacityLimits(config: IConfigService): {
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
 
-/** Resolve the caller's policy default without overriding explicit profile policy. */
+/** Resolve the host policy floor independently of the caller's role declaration. */
 export function withDispatchPolicyDefaults<T extends SubagentDispatchCaller>(
   config: IConfigService,
   caller: T,
   position: 'main' | 'sub',
 ): T & { readonly defaultPolicy: 'advisory' | 'strict' } {
   const section = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
-  const declared = caller.subagentDeclaration?.kind === 'set'
-    || (caller.subagentDeclaration === undefined && caller.subagents !== undefined);
   return {
     ...caller,
     defaultPolicy: position === 'main'
       ? section?.mainDispatchPolicy ?? 'advisory'
-      : declared ? section?.subagentDispatchPolicy ?? 'strict' : 'advisory',
+      : section?.subagentDispatchPolicy ?? 'strict',
   };
 }
 
@@ -275,6 +274,10 @@ export function resolveSubagentBinding(
       : undefined) ??
     (selectedModel === INHERIT_MODEL_ALIAS ? normalized(callerBinding?.thinkingEffort) : undefined);
   assertSubagentModelNotDenied(config, model, models);
+  assertRoleBindingConstraints({ model, thinking, constraints: roleConstraints, models,
+    ruleSource: `profile:${target?.profileName ?? 'subagent'}`,
+    requestedModel: toolModel, requestedThinking: requested.thinkingEffort,
+    modelValueSource: toolModel === undefined ? 'profile-default' : 'dispatch-explicit' });
   return recordBindingMetadata({ model, thinking, displayModel: selectedModel }, { source });
 }
 
@@ -291,7 +294,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides must satisfy allowed_models, deny_models, and allowed_efforts in every scope. Deviations from preferred_models, discouraged_models, preferred_efforts, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
   );
   return lines.join('\n');
 }

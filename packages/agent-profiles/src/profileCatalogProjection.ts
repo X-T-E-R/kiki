@@ -13,6 +13,11 @@ export interface DispatchProfileCatalogEntry {
   readonly whenToUse?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly preferredModels?: readonly string[];
+  readonly discouragedModels?: readonly string[];
+  readonly preferredEfforts?: readonly string[];
+  readonly allowedEfforts?: readonly string[];
+  readonly denyModels?: readonly string[];
   readonly allowedModels?: readonly string[];
   readonly alternativeModels: readonly {
     readonly alias: string;
@@ -41,6 +46,11 @@ export function buildProfileCatalogEntries(
     modelAlias: profile.modelAlias,
     thinkingEffort: profile.thinkingEffort,
     allowedModels: profile.allowedModels,
+    denyModels: profile.denyModels,
+    allowedEfforts: profile.allowedEfforts,
+    preferredModels: profile.preferredModels,
+    discouragedModels: profile.discouragedModels,
+    preferredEfforts: profile.preferredEfforts,
     alternativeModels: availableAlternativeModels(profile, isModelAliasAvailable),
     tools: showTools
       ? projectedTools(profile, tools, isToolActive, unavailableTools)
@@ -65,9 +75,12 @@ export function renderProfileCatalogEntries(
       if (entry.thinkingEffort !== undefined) {
         lines.push(`  Thinking effort: ${entry.thinkingEffort}`);
       }
-      if (entry.allowedModels !== undefined && entry.allowedModels.length > 0) {
-        lines.push(`  Allowed models: ${entry.allowedModels.join(', ')}`);
-      }
+      if (entry.allowedModels !== undefined) lines.push(`  Allowed models (hard): ${entry.allowedModels.join(', ') || 'none'}`);
+      if (entry.denyModels !== undefined) lines.push(`  Denied models (hard): ${entry.denyModels.join(', ') || 'none'}`);
+      if (entry.allowedEfforts !== undefined) lines.push(`  Allowed efforts (hard): ${entry.allowedEfforts.join(', ') || 'none'}`);
+      if (entry.preferredModels !== undefined) lines.push(`  Preferred models (soft): ${entry.preferredModels.join(', ') || 'none'}`);
+      if (entry.discouragedModels !== undefined) lines.push(`  Discouraged models (soft): ${entry.discouragedModels.join(', ') || 'none'}`);
+      if (entry.preferredEfforts !== undefined) lines.push(`  Preferred efforts (soft): ${entry.preferredEfforts.join(', ') || 'none'}`);
       if (entry.alternativeModels.length > 0) {
         lines.push(
           `  Alternative models: ${entry.alternativeModels

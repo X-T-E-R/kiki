@@ -36,7 +36,16 @@ export interface AgentModelParameters {
   readonly requestParams?: RequestParams;
 }
 
-export interface AgentModelProfile extends AgentModelParameters {
+export interface AgentModelConstraints {
+  readonly allowedModels?: readonly string[];
+  readonly denyModels?: readonly string[];
+  readonly allowedEfforts?: readonly string[];
+  readonly preferredModels?: readonly string[];
+  readonly discouragedModels?: readonly string[];
+  readonly preferredEfforts?: readonly string[];
+}
+
+export interface AgentModelProfile extends AgentModelParameters, AgentModelConstraints {
   readonly alias: string;
   readonly contextStrategy?: ContextStrategy;
   readonly when?: string;
@@ -89,7 +98,8 @@ export interface SystemPromptRenderResult {
   readonly environment: EnvironmentDisclosureSnapshot;
 }
 
-export interface AgentProfile extends AgentModelParameters {
+export interface AgentProfile extends AgentModelParameters, AgentModelConstraints {
+  readonly modelConstraintProfiles?: readonly AgentModelProfile[];
   readonly contextStrategy?: ContextStrategy;
   readonly fileDefinition?: import('./agentFileTypes').AgentFileDefinition;
   readonly routeDefinition?: AgentProfileRouteDefinition;

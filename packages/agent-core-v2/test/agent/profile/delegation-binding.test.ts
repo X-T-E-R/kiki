@@ -373,10 +373,10 @@ describe('delegation context at bind', () => {
     expect(profile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
   });
 
-  it('binds a sub model outside allowed_models and records an advisory', async () => {
+  it('binds a sub model outside preferred_models and records an advisory', async () => {
     const custom = normalizeAgentProfile({
       name: 'locked-child',
-      allowedModels: ['grok-4.6'],
+      preferredModels: ['grok-4.6'],
       systemPrompt: () => 'LOCKED',
     });
     ctx = createTestAgent(
@@ -390,7 +390,7 @@ describe('delegation context at bind', () => {
       delegationPosition: 'sub',
     })).resolves.toBeUndefined();
     expect(profile.data().bindingAdvisories).toEqual([
-      expect.objectContaining({ code: 'model_not_allowed', effectiveValue: MOCK_MODEL }),
+      expect.objectContaining({ code: 'model_not_preferred', effectiveValue: MOCK_MODEL }),
     ]);
   });
 

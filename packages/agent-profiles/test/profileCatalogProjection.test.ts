@@ -111,7 +111,7 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
         '- implementer: Does the implementation slice When the scope is named',
         '  Model alias: gpt-5.6-sol',
         '  Thinking effort: high',
-        '  Allowed models: fast-model, k3-review',
+        '  Allowed models (hard): fast-model, k3-review',
         '  Alternative models: axon-message/grok-4.6 (thinking_effort=high) — Scope and acceptance checks are already named.; axon-message/deepseek-v4-pro-0813 — Ordinary coding where DeepSeek Pro can finish.',
         '  Tools: not inventoried; availability must be checked in the child runtime',
       ].join('\n'),
@@ -127,10 +127,18 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
     expect(text).not.toContain('Allowed models');
   });
 
-  it('omits the allowed-models line when the allowlist is empty', () => {
+  it('shows an empty hard allowlist as none', () => {
     const text = render(profile({ allowedModels: [] }), []);
+    expect(text).toContain('Allowed models (hard): none');
+  });
 
-    expect(text).not.toContain('Allowed models');
+  it('labels soft recommendations separately from hard admission rules', () => {
+    const text = render(profile({ allowedModels: ['fast-model', 'k3-review'], preferredModels: ['fast-model'], discouragedModels: ['k3-review'], allowedEfforts: ['high', 'max'], preferredEfforts: ['max'] }), []);
+    expect(text).toContain('Allowed models (hard): fast-model, k3-review');
+    expect(text).toContain('Preferred models (soft): fast-model');
+    expect(text).toContain('Discouraged models (soft): k3-review');
+    expect(text).toContain('Allowed efforts (hard): high, max');
+    expect(text).toContain('Preferred efforts (soft): max');
   });
 
   it('can omit tool details when only target availability is being described', () => {

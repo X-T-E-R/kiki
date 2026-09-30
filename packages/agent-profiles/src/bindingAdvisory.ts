@@ -1,6 +1,9 @@
 export const BINDING_ADVISORY_VERSION = 1 as const;
 
 export type BindingAdvisoryCode =
+  | 'model_not_preferred'
+  | 'model_discouraged'
+  | 'effort_not_preferred'
   | 'model_not_allowed'
   | 'model_denied'
   | 'effort_not_allowed'

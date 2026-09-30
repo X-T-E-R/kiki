@@ -78,6 +78,9 @@ const TOP_LEVEL_KEYS = new Set([
   'allowedModels',
   'denyModels',
   'allowedEfforts',
+  'preferredModels',
+  'discouragedModels',
+  'preferredEfforts',
   'subagents',
   'subagentPolicy',
   'spawnConstraints',
@@ -264,6 +267,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.allowedEfforts !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_efforts', request.allowedEfforts);
     }
+    if (request.preferredModels !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'preferred_models', request.preferredModels);
+    if (request.discouragedModels !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'discouraged_models', request.discouragedModels);
+    if (request.preferredEfforts !== undefined) nextProfileText = updateFrontmatterScalar(nextProfileText, 'preferred_efforts', request.preferredEfforts);
     if (request.subagentPolicy !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'subagent_policy', request.subagentPolicy);
     }
@@ -273,6 +279,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
             allowed_models: request.spawnConstraints.allowedModels,
             deny_models: request.spawnConstraints.denyModels,
             allowed_efforts: request.spawnConstraints.allowedEfforts,
+            preferred_models: request.spawnConstraints.preferredModels ?? existingSpawnRecommendation(nextProfileText, 'preferred_models'),
+            discouraged_models: request.spawnConstraints.discouragedModels ?? existingSpawnRecommendation(nextProfileText, 'discouraged_models'),
+            preferred_efforts: request.spawnConstraints.preferredEfforts ?? existingSpawnRecommendation(nextProfileText, 'preferred_efforts'),
             disallowed_tools: request.spawnConstraints.disallowedTools,
           });
     }
@@ -517,6 +526,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateStringList(request.allowedModels, 'allowedModels', issues);
   validateStringList(request.denyModels, 'denyModels', issues);
   validateStringList(request.allowedEfforts, 'allowedEfforts', issues);
+  validateStringList(request.preferredModels, 'preferredModels', issues);
+  validateStringList(request.discouragedModels, 'discouragedModels', issues);
+  validateStringList(request.preferredEfforts, 'preferredEfforts', issues);
   if (request.subagentPolicy !== undefined && request.subagentPolicy !== null
     && request.subagentPolicy !== 'advisory' && request.subagentPolicy !== 'strict') {
     issues.push({ path: 'subagentPolicy', message: 'subagentPolicy must be advisory, strict, or null' });
@@ -526,7 +538,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
       issues.push({ path: 'spawnConstraints', message: 'spawnConstraints must be a mapping or null' });
     } else {
       for (const [key, value] of Object.entries(request.spawnConstraints)) {
-        if (!['allowedModels', 'denyModels', 'allowedEfforts', 'disallowedTools'].includes(key)) {
+        if (!['allowedModels', 'denyModels', 'allowedEfforts', 'preferredModels', 'discouragedModels', 'preferredEfforts', 'disallowedTools'].includes(key)) {
           issues.push({ path: `spawnConstraints.${key}`, message: `unknown spawn constraint "${key}"` });
         } else {
           validateStringList(value, `spawnConstraints.${key}`, issues);
@@ -585,6 +597,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.allowedModels,
     request.denyModels,
     request.allowedEfforts,
+    request.preferredModels,
+    request.discouragedModels,
+    request.preferredEfforts,
     request.subagents,
     request.subagentPolicy,
     request.spawnConstraints,
@@ -684,6 +699,11 @@ function frontmatterField(text: string, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function existingSpawnRecommendation(text: string, key: string): unknown {
+  const value = frontmatterField(text, 'spawn_constraints');
+  return isRecord(value) ? value[key] : undefined;
 }
 
 function withKeyUpdates(

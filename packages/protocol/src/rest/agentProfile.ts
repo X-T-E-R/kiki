@@ -18,7 +18,12 @@ export const namedAgentModelProfileSchema = z.object({
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
   thinking_effort: z.string().optional(),
+  allowed_models: z.array(z.string()).optional(),
+  deny_models: z.array(z.string()).optional(),
   allowed_efforts: z.array(z.string()).optional(),
+  preferred_models: z.array(z.string()).optional(),
+  discouraged_models: z.array(z.string()).optional(),
+  preferred_efforts: z.array(z.string()).optional(),
   prompt_mode: promptModeSchema.optional(),
   prompt: z.string().optional(),
 });
@@ -28,6 +33,9 @@ export const namedAgentSpawnConstraintsSchema = z.object({
   allowed_models: z.array(z.string()).optional(),
   deny_models: z.array(z.string()).optional(),
   allowed_efforts: z.array(z.string()).optional(),
+  preferred_models: z.array(z.string()).optional(),
+  discouraged_models: z.array(z.string()).optional(),
+  preferred_efforts: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
 });
 export type NamedAgentSpawnConstraints = z.infer<typeof namedAgentSpawnConstraintsSchema>;
@@ -58,6 +66,9 @@ export const namedAgentSubagentLeaseSchema = z.object({
   allowed_models: z.array(z.string()).optional(),
   deny_models: z.array(z.string()).optional(),
   allowed_efforts: z.array(z.string()).optional(),
+  preferred_models: z.array(z.string()).optional(),
+  discouraged_models: z.array(z.string()).optional(),
+  preferred_efforts: z.array(z.string()).optional(),
   tools: z.array(z.string()).nullable().optional(),
   disallowed_tools: z.array(z.string()).optional(),
   subagents: z.array(z.string()).nullable().optional(),
@@ -105,10 +116,13 @@ export const namedAgentProfileSchema = z.object({
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).optional(),
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
-  /** Role-level model recommendations (soft; `["*"]` normalizes to absent). */
+  /** Hard role model allowlist (`["*"]` normalizes to absent; `[]` permits none). */
   allowed_models: z.array(z.string()).optional(),
   deny_models: z.array(z.string()).optional(),
   allowed_efforts: z.array(z.string()).optional(),
+  preferred_models: z.array(z.string()).optional(),
+  discouraged_models: z.array(z.string()).optional(),
+  preferred_efforts: z.array(z.string()).optional(),
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
   context_budget: z.number().int().min(1).optional(),
@@ -216,6 +230,9 @@ export const agentCapabilityEffortSourceSchema = z.enum([
 export const agentBindingAdvisorySchema = z.object({
   version: z.literal(1),
   code: z.enum([
+    'model_not_preferred',
+    'model_discouraged',
+    'effort_not_preferred',
     'model_not_allowed',
     'model_denied',
     'effort_not_allowed',
@@ -470,6 +487,9 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   allowed_models: profileStringListSchema,
   deny_models: profileStringListSchema,
   allowed_efforts: profileStringListSchema,
+  preferred_models: profileStringListSchema,
+  discouraged_models: profileStringListSchema,
+  preferred_efforts: profileStringListSchema,
   /**
    * Whole ordered list. A bare name keeps that entry's existing lease mapping
    * untouched; a mapping merges the given keys onto it (`null` deletes a key).
@@ -500,6 +520,9 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.allowed_models !== undefined ||
     value.deny_models !== undefined ||
     value.allowed_efforts !== undefined ||
+    value.preferred_models !== undefined ||
+    value.discouraged_models !== undefined ||
+    value.preferred_efforts !== undefined ||
     value.subagents !== undefined ||
     value.subagent_policy !== undefined ||
     value.spawn_constraints !== undefined ||

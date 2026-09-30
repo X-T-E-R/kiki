@@ -62,12 +62,18 @@ export interface AgentProfileWriteRequest {
   readonly allowedModels?: readonly string[] | null;
   readonly denyModels?: readonly string[] | null;
   readonly allowedEfforts?: readonly string[] | null;
+  readonly preferredModels?: readonly string[] | null;
+  readonly discouragedModels?: readonly string[] | null;
+  readonly preferredEfforts?: readonly string[] | null;
   readonly subagents?: readonly AgentProfileSubagentUpdate[] | null;
   readonly subagentPolicy?: 'advisory' | 'strict' | null;
   readonly spawnConstraints?: {
     readonly allowedModels?: readonly string[];
     readonly denyModels?: readonly string[];
     readonly allowedEfforts?: readonly string[];
+    readonly preferredModels?: readonly string[];
+    readonly discouragedModels?: readonly string[];
+    readonly preferredEfforts?: readonly string[];
     readonly disallowedTools?: readonly string[];
   } | null;
   readonly modelProfiles?: readonly AgentProfileModelProfileUpdate[] | null;

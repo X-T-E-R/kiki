@@ -264,40 +264,37 @@ describe('resolveSubagentDispatch', () => {
     }
   });
 
-  it('defaults an unmarked named subagent with a declared set to strict', () => {
+  it('uses host strict for an unmarked named caller, rather than inferring strength from a list', () => {
     expect(() => resolveSubagentDispatch(catalog, {
-      profileName: 'parent',
-      subagentDeclaration: { kind: 'set', names: ['explore'] },
-      subagents: ['explore'],
+      profileName: 'parent', defaultPolicy: 'strict', subagents: ['explore'],
     }, { profileName: 'writer' })).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
     expect(resolveSubagentDispatch(catalog, {
-      profileName: 'parent', subagents: ['writer'],
-    }, { profileName: 'writer' }).decision).toMatchObject({
-      policyMode: 'strict', policySource: 'default', recommendationStatus: 'preferred', allowed: true,
-    });
-  });
-
-  it('treats an explicitly empty set as a strict deny-all, but keeps an undeclared list advisory', () => {
-    expect(() => resolveSubagentDispatch(
-      catalog, { profileName: 'parent', subagents: [] }, { profileName: 'writer' },
-    )).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
-    expect(resolveSubagentDispatch(
-      catalog, { profileName: 'parent' }, { profileName: 'writer' },
-    ).decision).toMatchObject({
-      policyMode: 'advisory', declaration: { kind: 'all' }, recommendationStatus: 'unconfigured', allowed: true,
-    });
-  });
-
-  it('uses a configured caller default unless the profile explicitly overrides it', () => {
-    const advisory = resolveSubagentDispatch(catalog, {
       profileName: 'parent', defaultPolicy: 'advisory', subagents: ['explore'],
-    }, { profileName: 'writer' }).decision;
-    expect(advisory).toMatchObject({ policyMode: 'advisory', policySource: 'default',
-      recommendationStatus: 'allowed_nonpreferred', advisoryDeviation: true, allowed: true });
-    const explicit = resolveSubagentDispatch(catalog, {
-      profileName: 'parent', defaultPolicy: 'strict', subagentPolicy: 'advisory', subagents: [],
-    }, { profileName: 'writer' }).decision;
-    expect(explicit).toMatchObject({ policyMode: 'advisory', policySource: 'profile', allowed: true });
+    }, { profileName: 'writer' }).decision).toMatchObject({ policyMode: 'advisory', allowed: true, advisoryDeviation: true });
+    expect(resolveSubagentDispatch(catalog, {
+      profileName: 'parent', subagents: ['writer'],
+    }, { profileName: 'writer' }).decision).toMatchObject({ policyMode: 'advisory', recommendationStatus: 'preferred', allowed: true });
+  });
+
+  it('treats an empty list as deny-all under global strict and all under undeclared policy', () => {
+    expect(() => resolveSubagentDispatch(catalog, { profileName: 'parent', defaultPolicy: 'strict', subagents: [] }, { profileName: 'writer' }))
+      .toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
+    expect(resolveSubagentDispatch(catalog, { profileName: 'parent' }, { profileName: 'writer' }).decision)
+      .toMatchObject({ policyMode: 'advisory', declaration: { kind: 'all' }, allowed: true });
+  });
+
+  it('does not let profile advisory lower a host strict floor, including explicit MD selection', () => {
+    for (const selectionKind of ['profile', 'route', 'profile_file'] as const) {
+      expect(() => resolveSubagentDispatch(catalog, {
+        profileName: 'parent', defaultPolicy: 'strict', subagentPolicy: 'advisory', subagents: [],
+      }, { profileName: 'writer', selectionKind })).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
+    }
+    expect(resolveSubagentDispatch(catalog, {
+      profileName: 'parent', defaultPolicy: 'strict', subagentPolicy: 'advisory', subagents: ['writer'],
+    }, { profileName: 'writer' }).decision).toMatchObject({ policyMode: 'strict', policySource: 'default', allowed: true });
+    expect(() => resolveSubagentDispatch(catalog, {
+      profileName: 'parent', defaultPolicy: 'advisory', subagentPolicy: 'strict', subagents: [],
+    }, { profileName: 'writer' })).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
   });
 
   it('blocks named-profile deviations under explicit strict policy', () => {

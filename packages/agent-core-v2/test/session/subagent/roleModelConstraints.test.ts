@@ -195,7 +195,7 @@ describe('explicit caller-model inheritance', () => {
   });
 });
 
-describe('role model constraints are advisory while machine deny stays authoritative', () => {
+describe('literal hard constraints and explicit soft recommendations', () => {
   const evaluate = (
     model: string,
     constraints: SubagentRoleModelConstraints,
@@ -212,33 +212,32 @@ describe('role model constraints are advisory while machine deny stays authorita
     thinkingValueSource: 'dispatch-explicit',
   });
 
-  it('allows a model outside role allowed_models and returns a structured advisory', () => {
-    const constraints: SubagentRoleModelConstraints = { allowedModels: ['fast-model'] };
-    expect(bindSubagent({ modelAlias: 'k3-review' }, constraints)).toMatchObject({ model: 'k3-review' });
-    expect(evaluate('k3-review', constraints)).toEqual([
-      expect.objectContaining({
-        code: 'model_not_allowed',
-        ruleSource: 'profile:reviewer.allowed_models',
-        requestedValue: 'k3-review',
-        effectiveValue: 'provider/k3',
-        valueSource: 'dispatch-explicit',
-      }),
-    ]);
+  it('rejects an explicit model outside allowed_models with a structured hard error', () => {
+    const constraints = { allowedModels: ['fast-model'] };
+    expect(() => bindSubagent({ modelAlias: 'k3-review' }, constraints)).toThrow(/Hard constraint/);
+    expect(() => evaluate('k3-review', constraints)).toThrowError(expect.objectContaining({
+      code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+      details: expect.objectContaining({ strength: 'hard', ruleSource: 'profile:reviewer.allowed_models',
+        ruleValues: ['fast-model'], requestedValue: 'k3-review', effectiveValue: 'provider/k3', valueSource: 'dispatch-explicit' }),
+    }));
   });
 
-  it('allows role deny_models and empty allowed_models with prominent advisories', () => {
-    expect(bindSubagent({ modelAlias: 'heavy-model' }, { denyModels: ['heavy-model'] }))
-      .toMatchObject({ model: 'heavy-model' });
-    expect(evaluate('heavy-model', { denyModels: ['heavy-model'] })[0]).toMatchObject({
-      code: 'model_denied',
-      ruleSource: 'profile:reviewer.deny_models',
-    });
-    expect(bindSubagent({ modelAlias: 'fast-model' }, { allowedModels: [] }))
-      .toMatchObject({ model: 'fast-model' });
-    expect(evaluate('fast-model', { allowedModels: [] })[0]).toMatchObject({
-      code: 'model_not_allowed',
-      ruleValues: [],
-    });
+  it('rejects deny_models and empty allowlists instead of advising', () => {
+    expect(() => bindSubagent({ modelAlias: 'heavy-model' }, { denyModels: ['heavy-model'] })).toThrow(/deny_models/);
+    expect(() => evaluate('fast-model', { allowedModels: [] })).toThrow(/allowed_models/);
+    expect(() => evaluate('fast-model', { allowedEfforts: [] }, 'off')).toThrow(/allowed_efforts/);
+  });
+
+  it('records only explicit soft recommendation deviations', () => {
+    const constraints = { preferredModels: ['fast-model'], preferredEfforts: ['max'] };
+    expect(bindSubagent({ modelAlias: 'k3-review', thinkingEffort: 'high' }, constraints)).toMatchObject({ model: 'k3-review', thinking: 'high' });
+    expect(evaluate('k3-review', constraints, 'high')).toMatchObject([
+      { code: 'model_not_preferred', ruleSource: 'profile:reviewer.preferred_models', effectiveValue: 'provider/k3' },
+      { code: 'effort_not_preferred', ruleSource: 'profile:reviewer.preferred_efforts', effectiveValue: 'high' },
+    ]);
+    expect(evaluate('heavy-model', { discouragedModels: ['heavy-model'] })).toMatchObject([{ code: 'model_discouraged' }]);
+    expect(evaluate('fast-model', { allowedModels: ['fast'], preferredModels: ['fast'] })).toEqual([]);
+    expect(() => evaluate('k3-review', { allowedModels: ['fast'], preferredModels: ['k3-review'] })).toThrow(/allowed_models/);
   });
 
   it('does not let role allowed_models re-permit a machine [subagent].deny_models entry', () => {
@@ -257,21 +256,12 @@ describe('role model constraints are advisory while machine deny stays authorita
   it('matches canonical aliases when evaluating role guidance', () => {
     expect(bindSubagent({ modelAlias: 'provider/fast' }, { allowedModels: ['fast'] }))
       .toMatchObject({ model: 'provider/fast' });
-    expect(evaluate('provider/heavy', { denyModels: ['heavy-model'] })[0]).toMatchObject({
-      code: 'model_denied',
-      effectiveValue: 'provider/heavy',
-    });
+    expect(() => evaluate('provider/heavy', { denyModels: ['heavy-model'] })).toThrow(/deny_models/);
   });
 
-  it('allows a route default outside the base profile guidance and reports it', () => {
+  it('does not let a route pin widen a base allowlist', () => {
     const resolved = resolveAgentProfileRoute(routePin('k3-review'), reviewer());
-    const constraints = {
-      allowedModels: resolved.effectiveProfile.allowedModels,
-      denyModels: resolved.effectiveProfile.denyModels,
-    };
-    expect(bindSubagent(undefined, constraints, { modelAlias: resolved.effectiveProfile.modelAlias }))
-      .toMatchObject({ model: 'k3-review' });
-    expect(evaluate('k3-review', constraints)[0]).toMatchObject({ code: 'model_not_allowed' });
+    expect(() => bindSubagent(undefined, resolved.effectiveProfile, { modelAlias: resolved.effectiveProfile.modelAlias })).toThrow(/allowed_models/);
   });
 
   it('rejects a route sidecar that declares allowed_models as an unknown field', () => {
@@ -294,26 +284,20 @@ describe('role model constraints are advisory while machine deny stays authorita
     ).toThrow(/Unknown frontmatter field "allowed_models"/);
   });
 
-  it('ignores constraint-like fields on the tool request', () => {
-    const constraints = { allowedModels: ['fast-model'] };
-    expect(bindSubagent(
+  it('does not admit constraint-like overrides from a tool request', () => {
+    expect(() => bindSubagent(
       { modelAlias: 'k3-review', allowedModels: ['k3-review'] } as SubagentBindingRequest,
-      constraints,
-    )).toMatchObject({ model: 'k3-review' });
-    expect(evaluate('k3-review', constraints)[0]).toMatchObject({ code: 'model_not_allowed' });
+      { allowedModels: ['fast-model'] },
+    )).toThrow(/allowed_models/);
   });
 
-  it('allows an effort outside the role and model-profile intersection with an advisory', () => {
-    const constraints: SubagentRoleModelConstraints = {
+  it('enforces role and canonical model-profile efforts independently', () => {
+    const constraints = {
       allowedEfforts: ['high', 'max'],
-      modelProfiles: [{ alias: 'fast-model', when: 'when fast', allowedEfforts: ['max'] }],
+      modelProfiles: [{ alias: 'fast-model', allowedEfforts: ['max'] }],
     };
-    expect(bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints))
-      .toMatchObject({ thinking: 'high' });
-    expect(evaluate('fast-model', constraints, 'high')[0]).toMatchObject({
-      code: 'effort_not_allowed',
-      ruleValues: ['max'],
-      effectiveValue: 'high',
-    });
+    expect(() => bindSubagent({ modelAlias: 'fast', thinkingEffort: 'high' }, constraints)).toThrow(/model_profiles:fast-model.allowed_efforts/);
+    expect(evaluate('provider/fast', constraints, 'max')).toEqual([]);
+    expect(() => evaluate('fast', { modelConstraintProfiles: [{ alias: 'fast-model', allowedEfforts: ['max'] }] }, 'high')).toThrow(/allowed_efforts/);
   });
 });

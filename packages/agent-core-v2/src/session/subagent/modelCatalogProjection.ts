@@ -10,8 +10,7 @@ import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 
 import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
-import { roleConstraintsFromProfile, roleModelRecommended } from './modelConstraints';
-import { profileRouteBindingRecommended } from './profileRouteBinding';
+import { roleConstraintsFromProfile, roleModelAllowed } from './modelConstraints';
 
 export function projectSubagentModelCatalog(
   catalog: SubagentDispatchCatalog,
@@ -96,12 +95,8 @@ export function projectSubagentModelCatalog(
       ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ].filter((alias): alias is string => alias !== undefined);
     const constraints = roleConstraintsFromProfile(profile);
-    const routeBinding = route?.lockedModelAlias === INHERIT_MODEL_ALIAS && resolvedAlias !== undefined
-      ? { ...route, lockedModelAlias: resolvedAlias }
-      : route;
     const allowedModels = [...new Set(candidates)].filter((alias) => {
-      if (!profileRouteBindingRecommended(routeBinding, { modelAlias: alias }, resolver)) return false;
-      if (!roleModelRecommended(alias, constraints, native ? models : undefined)) return false;
+      if (!roleModelAllowed(alias, constraints, native ? models : undefined)) return false;
       try {
         assertSubagentModelNotDenied(config, alias, native ? models : undefined);
         return true;

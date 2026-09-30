@@ -90,6 +90,10 @@ export function applyLease(
     allowedModels: intersectAllowlists(profile.allowedModels, lease.allowedModels, resolveId),
     denyModels: unionLists(profile.denyModels, lease.denyModels, resolveId),
     allowedEfforts: intersectAllowlists(profile.allowedEfforts, lease.allowedEfforts),
+    preferredModels: intersectAllowlists(profile.preferredModels, lease.preferredModels, resolveId),
+    discouragedModels: unionLists(profile.discouragedModels, lease.discouragedModels, resolveId),
+    preferredEfforts: intersectAllowlists(profile.preferredEfforts, lease.preferredEfforts),
+    modelConstraintProfiles: [...(profile.modelConstraintProfiles ?? []), ...(lease.modelProfiles === undefined ? [] : profile.modelProfiles ?? [])],
     modelProfiles: lease.modelProfiles ?? profile.modelProfiles,
     serviceTier,
     requestParams,
@@ -109,6 +113,9 @@ export function applySpawnPolicy(
     allowedModels: intersectAllowlists(profile.allowedModels, policy.allowedModels, resolveId),
     denyModels: unionLists(profile.denyModels, policy.denyModels, resolveId),
     allowedEfforts: intersectAllowlists(profile.allowedEfforts, policy.allowedEfforts),
+    preferredModels: intersectAllowlists(profile.preferredModels, policy.preferredModels, resolveId),
+    discouragedModels: unionLists(profile.discouragedModels, policy.discouragedModels, resolveId),
+    preferredEfforts: intersectAllowlists(profile.preferredEfforts, policy.preferredEfforts),
     disallowedTools: unionLists(profile.disallowedTools, policy.disallowedTools),
   });
 }
@@ -123,21 +130,12 @@ export function intersectSpawnPolicy(
   const allowedModels = intersectAllowlists(parent.allowedModels, child.allowedModels, resolveId);
   const denyModels = unionLists(parent.denyModels, child.denyModels, resolveId);
   const allowedEfforts = intersectAllowlists(parent.allowedEfforts, child.allowedEfforts);
+  const preferredModels = intersectAllowlists(parent.preferredModels, child.preferredModels, resolveId);
+  const discouragedModels = unionLists(parent.discouragedModels, child.discouragedModels, resolveId);
+  const preferredEfforts = intersectAllowlists(parent.preferredEfforts, child.preferredEfforts);
   const disallowedTools = unionLists(parent.disallowedTools, child.disallowedTools);
-  if (
-    allowedModels === undefined &&
-    denyModels === undefined &&
-    allowedEfforts === undefined &&
-    disallowedTools === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...(allowedModels === undefined ? {} : { allowedModels }),
-    ...(denyModels === undefined ? {} : { denyModels }),
-    ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
-    ...(disallowedTools === undefined ? {} : { disallowedTools }),
-  };
+  if ([allowedModels, denyModels, allowedEfforts, preferredModels, discouragedModels, preferredEfforts, disallowedTools].every((value) => value === undefined)) return undefined;
+  return { allowedModels, denyModels, allowedEfforts, preferredModels, discouragedModels, preferredEfforts, disallowedTools };
 }
 
 export function isDispatchBlocked(profile: AgentProfile): boolean {

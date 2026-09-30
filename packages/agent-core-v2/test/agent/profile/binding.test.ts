@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { Event } from '#/_base/event';
 import { IMemoryStore } from '#/app/memory/memoryStore';
+import { ErrorCodes } from '#/errors';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
@@ -1288,8 +1289,67 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
   });
 
+  it('enforces external executor hard bindings before switches and resume without starting the executor', async () => {
+    const configured = resumeProfile({ executor: 'grok-acp', modelAlias: 'external-allowed', thinkingEffort: 'low', allowedModels: ['external-allowed'], allowedEfforts: ['low'] });
+    const svc = await bindExternalResumeProfile(configured, externalExecutorRegistry());
+    const before = svc.data();
+    await expect(svc.setModel('external-blocked')).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    expect(() => svc.setEffort('high')).toThrow(/allowed_efforts/);
+    await expect(prepareResumeBinding(svc, { modelAlias: 'external-blocked', allowModelChange: true })).rejects.toThrow(/allowed_models/);
+    expect(svc.data()).toEqual(before);
+    await ctx.expectResumeMatches();
+  });
+
+  it.each(['main', 'sub'] as const)('enforces hard model and effort rules before %s binding or manual mutation', async (delegationPosition) => {
+    const configured = resumeProfile({ allowedModels: [RESUME_OLD_MODEL], allowedEfforts: ['low'], preferredModels: [RESUME_NEW_MODEL] });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const unbound = svc.data();
+    await expect(svc.bind({ profile: configured.name, model: RESUME_NEW_MODEL, delegationPosition }))
+      .rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    expect(svc.data()).toEqual(unbound);
+    await svc.bind({ profile: configured.name, model: RESUME_OLD_MODEL, thinking: 'low', delegationPosition });
+    const before = svc.data();
+    await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    expect(() => svc.setEffort('high')).toThrow(/allowed_efforts/);
+    expect(svc.data()).toEqual(before);
+  });
+
+  it.each(['lease', 'spawnPolicy'] as const)('does not let explicit pins or preferences widen caller %s hard rules', async (scope) => {
+    const configured = resumeProfile();
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const constraint = { name: configured.name, allowedModels: [RESUME_OLD_MODEL], preferredModels: [RESUME_NEW_MODEL] };
+    await expect(svc.bind({ profile: configured.name, model: RESUME_NEW_MODEL, delegationPosition: 'sub', [scope]: constraint }))
+      .rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+  });
+
+  it('keeps replaced model-profile constraints in the bound snapshot and on resume', async () => {
+    const configured = resumeProfile({ modelProfiles: [{ alias: RESUME_OLD_MODEL, allowedEfforts: ['low'] }] });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const lease = { name: configured.name, modelProfiles: [{ alias: RESUME_OLD_MODEL, thinkingEffort: 'high' }] };
+    await expect(svc.bind({ profile: configured.name, lease, delegationPosition: 'sub' })).rejects.toThrow(/allowed_efforts/);
+    await svc.bind({ profile: configured.name, lease: { ...lease, modelProfiles: [{ alias: RESUME_OLD_MODEL, thinkingEffort: 'low' }] }, delegationPosition: 'sub' });
+    expect(svc.data().boundProfile?.modelConstraintProfiles).toEqual(configured.modelProfiles);
+    await expect(prepareResumeBinding(svc, { thinkingEffort: 'high' })).rejects.toThrow(/allowed_efforts/);
+    await ctx.expectResumeMatches();
+  });
+
+  it('rejects forced effort outside a hard allowlist instead of softening the host value', async () => {
+    const configured = resumeProfile({ allowedEfforts: ['low'] });
+    const options = nativeResumeOptions();
+    ctx = createTestAgent({ initialConfig: { ...options.initialConfig, thinking: { effort: 'low', forcedEffort: 'high' } } },
+      hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    await expect(ctx.get(IAgentProfileService).bind({ profile: configured.name, delegationPosition: 'sub' }))
+      .rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, details: { valueSource: 'environment-forced', effectiveValue: 'high' } });
+  });
+
   it('queues structured binding advisories until creation publication and deduplicates them', async () => {
-    const configured = resumeProfile({ allowedModels: [RESUME_OLD_MODEL] });
+    const configured = resumeProfile({ preferredModels: [RESUME_OLD_MODEL] });
     ctx = createTestAgent(
       nativeResumeOptions(),
       hostEnvironmentServices(homeDir, hostPathClass),
@@ -1310,8 +1370,8 @@ describe('AgentProfileService.bind', () => {
     expect(warnings).toEqual([]);
     expect(profile.data().bindingAdvisories).toEqual([
       expect.objectContaining({
-        code: 'model_not_allowed',
-        ruleSource: 'profile:resume-profile.allowed_models',
+        code: 'model_not_preferred',
+        ruleSource: 'profile:resume-profile.preferred_models',
       }),
     ]);
 
@@ -1320,14 +1380,14 @@ describe('AgentProfileService.bind', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({
       code: 'profile-binding-advisory',
-      advisory: expect.objectContaining({ code: 'model_not_allowed' }),
+      advisory: expect.objectContaining({ code: 'model_not_preferred' }),
     });
   });
 
   it('distinguishes a nonrecommended profile default from an explicit dispatch pin', async () => {
     const configured = resumeProfile({
       modelAlias: RESUME_NEW_MODEL,
-      allowedModels: [RESUME_OLD_MODEL],
+      preferredModels: [RESUME_OLD_MODEL],
     });
     ctx = createTestAgent(
       nativeResumeOptions(),
@@ -1339,7 +1399,7 @@ describe('AgentProfileService.bind', () => {
     await profile.bind({ profile: configured.name, delegationPosition: 'sub' });
     expect(profile.data().bindingAdvisories).toEqual([
       expect.objectContaining({
-        code: 'model_not_allowed',
+        code: 'model_not_preferred',
         requestedValue: RESUME_NEW_MODEL,
         effectiveValue: RESUME_NEW_MODEL,
         valueSource: 'profile-default',
@@ -1372,21 +1432,21 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('records a runtime effort outside the role allowlist as advisory', async () => {
-    const profile = await bindNativeResumeProfile(resumeProfile({ allowedEfforts: ['low'] }));
+  it('records a runtime effort outside preferred_efforts as advisory', async () => {
+    const profile = await bindNativeResumeProfile(resumeProfile({ preferredEfforts: ['low'] }));
 
     expect(profile.setEffort('high')).toEqual({ effort: 'high' });
     expect(profile.data()).toMatchObject({
       thinkingLevel: 'high',
       bindingAdvisories: [expect.objectContaining({
-        code: 'effort_not_allowed',
+        code: 'effort_not_preferred',
         valueSource: 'runtime-explicit',
       })],
     });
   });
 
-  it('binds a forced effort outside the target profile allowlist with an advisory', async () => {
-    const configured = resumeProfile({ thinkingEffort: 'low', allowedEfforts: ['low', 'high'] });
+  it('binds a forced effort outside preferred_efforts with an advisory', async () => {
+    const configured = resumeProfile({ thinkingEffort: 'low', preferredEfforts: ['low', 'high'] });
     const options = nativeResumeOptions();
     ctx = createTestAgent(
       {
@@ -1416,7 +1476,7 @@ describe('AgentProfileService.bind', () => {
       thinkingLevel: 'high',
       effectiveThinkingLevel: 'max',
       bindingAdvisories: [expect.objectContaining({
-        code: 'effort_not_allowed',
+        code: 'effort_not_preferred',
         effectiveValue: 'max',
         valueSource: 'environment-forced',
       })],
@@ -2092,86 +2152,41 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().modelAlias).toBe(RESUME_OLD_MODEL);
   });
 
-  it('allows a role allowed_models violation and records the resume advisory', async () => {
-    const svc = await bindNativeResumeProfile(
-      resumeProfile({ allowedModels: [RESUME_OLD_MODEL] }),
-    );
-
-    const apply = await prepareResumeBinding(svc, {
-      modelAlias: RESUME_NEW_MODEL,
-      allowModelChange: true,
+  it.each([
+    { constraints: { allowedModels: [RESUME_OLD_MODEL] }, input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }, field: 'allowed_models' },
+    { constraints: { denyModels: [RESUME_NEW_MODEL] }, input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }, field: 'deny_models' },
+    { constraints: { allowedEfforts: ['low'] }, input: { thinkingEffort: 'high' }, field: 'allowed_efforts' },
+  ])('rejects resume $field violations without modifying the saved binding', async ({ constraints, input, field }) => {
+    const svc = await bindNativeResumeProfile(resumeProfile(constraints));
+    const before = svc.data();
+    await expect(prepareResumeBinding(svc, input)).rejects.toMatchObject({
+      code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+      details: { strength: 'hard', ruleSource: `profile:resume-profile.${field}` },
     });
-    apply();
-    expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_NEW_MODEL,
-      bindingAdvisories: [expect.objectContaining({
-        code: 'model_not_allowed',
-        valueSource: 'dispatch-explicit',
-      })],
-    });
+    expect(svc.data()).toEqual(before);
+    await expect(prepareResumeBinding(svc, {})).resolves.toBeTypeOf('function');
   });
 
-  it('allows a role deny_models violation and records the resume advisory', async () => {
-    const svc = await bindNativeResumeProfile(
-      resumeProfile({ denyModels: [RESUME_NEW_MODEL] }),
-    );
-
-    const apply = await prepareResumeBinding(svc, {
-      modelAlias: RESUME_NEW_MODEL,
-      allowModelChange: true,
-    });
-    apply();
-    expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_NEW_MODEL,
-      bindingAdvisories: [expect.objectContaining({ code: 'model_denied' })],
-    });
+  it.each([
+    { constraints: { allowedModels: [RESUME_OLD_MODEL] }, input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true } },
+    { constraints: { denyModels: [RESUME_NEW_MODEL] }, input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true } },
+    { constraints: { allowedEfforts: ['low'] }, input: { thinkingEffort: 'high' } },
+  ])('rejects caller hard constraints at resume admission', async ({ constraints, input }) => {
+    const svc = await bindNativeResumeProfile(resumeProfile());
+    const before = svc.data();
+    await expect(prepareResumeBinding(svc, { ...input, callerConstraints: [{ constraints, ruleSource: 'caller-lease:reviewer' }] }))
+      .rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, details: { ruleSource: expect.stringContaining('caller-lease:reviewer.') } });
+    expect(svc.data()).toEqual(before);
   });
 
-  it('allows a role allowed_efforts violation and records the resume advisory', async () => {
-    const svc = await bindNativeResumeProfile(
-      resumeProfile({ allowedEfforts: ['low'] }),
-    );
-
-    const apply = await prepareResumeBinding(svc, { thinkingEffort: 'high' });
+  it('continues soft resume deviations and exposes the source-located advisory', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile({ preferredModels: [RESUME_OLD_MODEL], preferredEfforts: ['low'] }));
+    const apply = await prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true, thinkingEffort: 'high' });
     apply();
-    expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_OLD_MODEL,
-      thinkingLevel: 'high',
-      bindingAdvisories: [expect.objectContaining({ code: 'effort_not_allowed' })],
-    });
-  });
-
-  it('allows caller model and effort policy deviations with source-located advisories', async () => {
-    const cases = [
-      {
-        constraints: { allowedModels: [RESUME_OLD_MODEL] },
-        input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
-        code: 'model_not_allowed',
-      },
-      {
-        constraints: { denyModels: [RESUME_NEW_MODEL] },
-        input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
-        code: 'model_denied',
-      },
-      {
-        constraints: { allowedEfforts: ['low'] },
-        input: { thinkingEffort: 'high' },
-        code: 'effort_not_allowed',
-      },
-    ] as const;
-
-    for (const { constraints, input, code } of cases) {
-      const svc = await bindNativeResumeProfile(resumeProfile());
-      const apply = await prepareResumeBinding(svc, {
-        ...input,
-        callerConstraints: [{ constraints, ruleSource: 'caller-lease:reviewer' }],
-      });
-      apply();
-      expect(svc.data().bindingAdvisories).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code, ruleSource: expect.stringContaining('caller-lease:reviewer') }),
-      ]));
-      await ctx.dispose();
-    }
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, thinkingLevel: 'high', bindingAdvisories: expect.arrayContaining([
+      expect.objectContaining({ code: 'model_not_preferred', valueSource: 'dispatch-explicit' }),
+      expect.objectContaining({ code: 'effort_not_preferred' }),
+    ]) });
   });
 
   it('allows route pin deviations on resume and marks the binding detached', async () => {
