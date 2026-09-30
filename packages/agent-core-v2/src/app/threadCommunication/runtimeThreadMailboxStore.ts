@@ -164,10 +164,17 @@ interface PeerIndexMarkerDoc {
   readonly kind: 'peer_index_marker';
   readonly after: string;
   readonly complete: boolean;
+  readonly generation?: string;
+  readonly shard?: number;
+  readonly shardAfter?: string;
+  readonly processedMessages?: number;
+  readonly peerComplete?: boolean;
+  readonly inheritedPeerAfter?: string;
 }
 
 const PEER_INDEX_NAME = 'peer_history_v1';
 const PEER_INDEX_MARKER = `${SYSTEM_PARTITION}/peer-index-v2`;
+const PEER_INDEX_V1_MARKER = `${SYSTEM_PARTITION}/peer-index-v1`;
 
 type StoredDoc =
   | PeerIndexDoc
@@ -315,7 +322,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private initializedPeerReadCallEpoch: number | undefined;
   private initialization: OwnerInitialization | undefined;
   private peerIndexInitialization: OwnerInitialization | undefined;
-  private peerIndexEpoch: number | undefined;
+  private peerCoverage: PeerIndexMarkerDoc | undefined;
+  private peerIndexError: string | undefined;
   private closing = false;
   private closeFlight: Promise<void> | undefined;
 
@@ -336,7 +344,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         const input = payload as ReadMailboxMessagesInput;
         if (input === null || typeof input !== 'object' || typeof input.group !== 'string' ||
             input.group.length === 0 || !Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100 ||
-            (input.before !== undefined && typeof input.before !== 'string')) {
+            (input.before !== undefined && typeof input.before !== 'string') ||
+            (input.peerOnly !== undefined && typeof input.peerOnly !== 'boolean') ||
+            (input.generation !== undefined && typeof input.generation !== 'string')) {
           throw new Error('Invalid mailbox message query.');
         }
         return this.readMessagesOwner(input, ctx);
@@ -404,19 +414,42 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
 
   private async readMessagesOwner(input: ReadMailboxMessagesInput, ctx: RuntimeMethodContext): Promise<MailboxMessagesPage> {
     const db = await this.readyOwner(ctx);
-    await this.readyPeerIndex(db, ctx);
+    this.startPeerRepair(db, ctx);
+    const history = this.historyCoverage(db, input.peerOnly);
+    if (input.generation !== undefined && input.generation !== history.generation) {
+      return { items: [], history, cursorExpired: true };
+    }
     const rows = await db.compoundRange(PEER_INDEX_NAME, input.group, {
       lt: input.before, reverse: true, limit: input.limit + 1,
     });
     const items: MailboxMessageRecord[] = [];
-    for (const row of rows.slice(0, input.limit)) {
+    const pointers = rows.slice(0, input.limit).map((row) => row.value as PeerIndexDoc);
+    const groups = new Map<string, PeerIndexDoc[]>();
+    for (const pointer of pointers) {
+      const group = groups.get(pointer.partition) ?? [];
+      group.push(pointer);
+      groups.set(pointer.partition, group);
+    }
+    const docs = new Map<string, StoredDoc | undefined>();
+    for (const [partition, group] of groups) {
       throwIfAborted(ctx.signal);
-      const pointer = row.value as PeerIndexDoc;
-      const doc = asMessage(await db.partitionGet(pointer.partition, pointer.messageKey));
+      const values = await db.partitionMget(partition, group.map((pointer) => pointer.messageKey));
+      group.forEach((pointer, i) => docs.set(pointer.messageKey, values[i]));
+    }
+    for (const pointer of pointers) {
+      throwIfAborted(ctx.signal);
+      const doc = asMessage(docs.get(pointer.messageKey));
       if (doc === undefined || doc.message.producer.kind === 'external_client') continue;
       items.push({ message: doc.message, delivery: publicDeliveryState(doc.state), reason: doc.reason, reasonCode: doc.reasonCode, order: pointer.peerOrder });
     }
-    return { items, nextBefore: rows.length > input.limit ? rows[input.limit - 1]?.orderValue as string : undefined };
+    throwIfAborted(ctx.signal);
+    this.assertOwnerContext(ctx);
+    const latest = this.historyCoverage(db, input.peerOnly);
+    if (latest.generation !== history.generation && input.generation !== undefined) {
+      return { items: [], history: latest, cursorExpired: true };
+    }
+    return { items, history: latest.generation === history.generation ? latest : history,
+      nextBefore: rows.length > input.limit ? rows[input.limit - 1]?.orderValue as string : undefined };
   }
 
   async acceptMessage(
@@ -700,6 +733,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           }]);
         }
         await this.ensurePeerIndex(openedDb);
+        await this.loadPeerCoverage(openedDb, !existingTopology);
         throwIfAborted(ctx.signal);
         this.assertOwnerContext(ctx);
         this.db = openedDb;
@@ -725,63 +759,127 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     }
   }
 
-  private async readyPeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
-    throwIfAborted(ctx.signal);
-    this.assertOwnerContext(ctx);
-    if (this.peerIndexEpoch === ctx.epoch) return;
-    let flight = this.peerIndexInitialization;
-    if (flight === undefined) {
-      const controller = new AbortController();
-      const signal = combineAbortSignals(this.closeController.signal, controller.signal);
-      const promise = this.preparePeerIndex(db, { ...ctx, signal }).then(() => {
-        throwIfAborted(signal);
-        this.assertOwnerContext(ctx);
-        this.peerIndexEpoch = ctx.epoch;
-      }).finally(() => {
-        if (this.peerIndexInitialization === current) this.peerIndexInitialization = undefined;
-      });
-      const current = { epoch: ctx.epoch, controller, promise };
-      this.peerIndexInitialization = current;
-      flight = current;
-      void promise.catch(() => {});
+  private async loadPeerCoverage(db: ClusterDb<StoredDoc>, fresh: boolean): Promise<void> {
+    const v2 = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_MARKER);
+    const v1 = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_V1_MARKER);
+    const marker = v2?.kind === 'peer_index_marker' ? v2 : undefined;
+    const prior = v1?.kind === 'peer_index_marker' ? v1 : undefined;
+    this.peerIndexError = undefined;
+    this.peerCoverage = {
+      kind: 'peer_index_marker', after: marker?.after ?? 't/',
+      complete: fresh || marker?.complete === true,
+      generation: marker?.complete ? marker.generation ?? 'peer-index-v2-complete' : randomUUID(),
+      shard: marker?.shard ?? 0, shardAfter: marker?.shardAfter,
+      processedMessages: marker?.processedMessages ?? 0,
+      peerComplete: marker?.peerComplete ?? prior?.complete === true,
+      inheritedPeerAfter: marker?.inheritedPeerAfter ?? prior?.after,
+    };
+    if (marker?.complete !== true) {
+      await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER, value: this.peerCoverage }]);
     }
-    await abortable(flight.promise, ctx.signal);
-    throwIfAborted(ctx.signal);
-    this.assertOwnerContext(ctx);
+  }
+
+  private historyCoverage(db: ClusterDb<StoredDoc>, peerOnly = false): NonNullable<MailboxMessagesPage['history']> {
+    const coverage = this.peerCoverage!;
+    const complete = coverage.complete || peerOnly && coverage.peerComplete === true;
+    return {
+      generation: peerOnly && coverage.peerComplete ? 'peer-index-v1-complete' : coverage.generation!,
+      state: complete ? 'complete' : this.peerIndexError === undefined ? 'preparing' : 'error',
+      processedMessages: coverage.processedMessages ?? 0,
+      completedShards: coverage.complete ? db.shardCount : coverage.shard ?? 0,
+      totalShards: db.shardCount,
+      pending: complete ? undefined : coverage.peerComplete ? 'room' : 'all',
+      error: complete ? undefined : this.peerIndexError,
+    };
+  }
+
+  private startPeerRepair(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): void {
+    if (this.peerCoverage?.complete || this.peerIndexInitialization !== undefined || this.peerIndexError !== undefined) return;
+    const controller = new AbortController();
+    const signal = combineAbortSignals(this.closeController.signal, controller.signal);
+    const promise = delay(0).then(() => this.preparePeerIndex(db, { ...ctx, signal })).catch((error: unknown) => {
+      if (!signal.aborted) this.peerIndexError = error instanceof Error ? error.message : String(error);
+    }).finally(() => {
+      if (this.peerIndexInitialization === current) this.peerIndexInitialization = undefined;
+    });
+    const current = { epoch: ctx.epoch, controller, promise };
+    this.peerIndexInitialization = current;
   }
 
   private async preparePeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
-    const stored = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_MARKER);
-    const checkpoint = stored?.kind === 'peer_index_marker' ? stored : undefined;
-    if (checkpoint?.complete === true) return;
-    let after = checkpoint?.after ?? 't/';
-    for (;;) {
+    let checkpoint = this.peerCoverage!;
+    let processedMessages = checkpoint.processedMessages ?? 0;
+    let sinceCheckpoint = 0;
+    let checkpointAt = Date.now();
+    let sliceAt = Date.now();
+    const publish = async (shard: number, shardAfter?: string, complete = false): Promise<void> => {
       throwIfAborted(ctx.signal);
-      const rows = await db.query({ key: { gt: after, lt: 't0' }, limit: 50 });
-      if (rows.length === 0) break;
-      const batches = new Map<string, BatchInputOp<StoredDoc>[]>();
-      for (const row of rows) {
+      this.assertOwnerContext(ctx);
+      checkpoint = { ...checkpoint, shard, shardAfter, processedMessages, complete,
+        generation: complete ? randomUUID() : this.peerCoverage!.generation };
+      await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER, value: checkpoint }]);
+      this.peerCoverage = checkpoint;
+      sinceCheckpoint = 0;
+      checkpointAt = Date.now();
+    };
+    for (let shard = checkpoint.shard ?? 0; shard < db.shardCount; shard++) {
+      let after = shard === checkpoint.shard ? checkpoint.shardAfter ?? checkpoint.after : checkpoint.after;
+      for (;;) {
         throwIfAborted(ctx.signal);
-        const doc = asMessage(row.value);
-        if (doc === undefined) continue;
-        const partition = targetPartition(doc.message.target);
-        const ops = peerIndexOps(partition, doc.message);
-        if (ops.length === 0) continue;
-        const batch = batches.get(partition) ?? [];
-        batch.push(...ops);
-        batches.set(partition, batch);
+        this.assertOwnerContext(ctx);
+        const keys = await db.shardScanKeys(shard, { gt: after, lt: 't0', count: 2048 });
+        if (keys.length === 0) break;
+        const messages = new Map<string, string[]>();
+        for (const key of keys) {
+          if (!/^t\/[^/]+\/message\/\d+$/.test(key)) continue;
+          const partition = key.slice(0, key.indexOf('/message/'));
+          const list = messages.get(partition) ?? [];
+          list.push(key);
+          messages.set(partition, list);
+        }
+        for (const [partition, messageKeys] of messages) {
+          await this.withPartition(partition, ctx, async () => {
+            const ops: BatchInputOp<StoredDoc>[] = [];
+            const values = await db.partitionMget(partition, messageKeys);
+            for (const [i, key] of messageKeys.entries()) {
+              if (Date.now() - sliceAt >= 8) { await delay(0); sliceAt = Date.now(); }
+              throwIfAborted(ctx.signal);
+              this.assertOwnerContext(ctx);
+              const doc = asMessage(values[i]);
+              if (doc === undefined) continue;
+              processedMessages++;
+              sinceCheckpoint++;
+              if (doc.message.producer.kind === 'peer_thread' && (checkpoint.peerComplete ||
+                  checkpoint.inheritedPeerAfter !== undefined && key <= checkpoint.inheritedPeerAfter)) continue;
+              const expectedOps = peerIndexOps(partition, doc.message);
+              const pointers = await db.partitionMget(partition, expectedOps.map((op) => op.key));
+              for (const [j, op] of expectedOps.entries()) {
+                if (op.op !== 'set') continue;
+                const expected = op.value as PeerIndexDoc;
+                const current = pointers[j];
+                if (current?.kind !== 'peer_index' || current.peerGroup !== expected.peerGroup ||
+                    current.peerOrder !== expected.peerOrder || current.partition !== expected.partition ||
+                    current.messageKey !== expected.messageKey) ops.push(op);
+              }
+            }
+            if (ops.length > 0) {
+              throwIfAborted(ctx.signal);
+              this.assertOwnerContext(ctx);
+              await db.partitionBatch(partition, ops);
+              this.peerCoverage = { ...this.peerCoverage!, generation: randomUUID() };
+            }
+          });
+          if (Date.now() - sliceAt >= 8) { await delay(0); sliceAt = Date.now(); }
+        }
+        after = keys.at(-1)!;
+        if (sinceCheckpoint >= 128 || sinceCheckpoint > 0 && Date.now() - checkpointAt >= 250) {
+          await publish(shard, after);
+        }
+        if (Date.now() - sliceAt >= 8) { await delay(0); sliceAt = Date.now(); }
       }
-      for (const [partition, ops] of batches) {
-        throwIfAborted(ctx.signal);
-        await db.partitionBatch(partition, ops);
-      }
-      after = rows.at(-1)!.key;
-      await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER,
-        value: { kind: 'peer_index_marker', after, complete: false } }]);
-      await delay(0);
+      await publish(shard + 1);
     }
-    await db.partitionBatch(SYSTEM_PARTITION, [{ op: 'set', key: PEER_INDEX_MARKER,
-      value: { kind: 'peer_index_marker', after, complete: true } }]);
+    await publish(db.shardCount, undefined, true);
   }
 
   private async hasPersistedTopology(): Promise<boolean> {
@@ -1457,6 +1555,16 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       let nextMessageSeq = Math.max(storedMeta?.nextMessageSeq ?? 1, ...[...usedMessageSeq].map((seq) => seq + 1));
       let nextActivitySeq = Math.max(storedMeta?.nextActivitySeq ?? 1, ...[...usedActivitySeq].map((seq) => seq + 1));
       const ops: BatchInputOp<StoredDoc>[] = [];
+      for (const entry of existingMessages) {
+        for (const op of peerIndexOps(partition, entry.value.message)) {
+          if (op.op !== 'set') continue;
+          const expected = op.value as PeerIndexDoc;
+          const current = await db.partitionGet(partition, op.key);
+          if (current?.kind !== 'peer_index' || current.peerGroup !== expected.peerGroup ||
+              current.peerOrder !== expected.peerOrder || current.partition !== expected.partition ||
+              current.messageKey !== expected.messageKey) ops.push(op);
+        }
+      }
       const migratedMessages = existingMessages.map((entry) => entry.value);
       for (const legacy of legacyDeliveries) {
         if (knownMessageIds.has(legacy.message.messageId)) continue;
@@ -1492,6 +1600,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
             },
           },
         );
+        ops.push(...peerIndexOps(partition, message));
         migratedMessages.push(migrated);
         knownMessageIds.add(message.messageId);
       }
@@ -1589,11 +1698,12 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const initializations = [this.initialization, this.peerIndexInitialization]
       .filter((flight): flight is OwnerInitialization => flight !== undefined && (epoch === undefined || flight.epoch === epoch));
     await Promise.allSettled(initializations.map((flight) => flight.promise));
-    this.peerIndexEpoch = undefined;
     const operations = [...this.ownerOperations]
       .filter(([, operationEpoch]) => epoch === undefined || operationEpoch === epoch)
       .map(([operation]) => operation);
     await Promise.allSettled(operations);
+    this.peerCoverage = undefined;
+    this.peerIndexError = undefined;
     if (epoch === undefined || this.ownerEpoch === epoch) this.ownerEpoch = 0;
     const db = this.db;
     this.db = undefined;

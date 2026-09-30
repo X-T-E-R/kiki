@@ -42,6 +42,17 @@ function fixture(live: boolean, unavailable = false, degradedBuilding = false) {
 }
 
 describe('history archive', () => {
+  it('does not claim complete peer search when history is preparing without a cursor', async () => {
+    const listMessages = vi.fn(async () => ({ items: [], incomplete: 'history_preparing' }));
+    const core = { accessor: { get: () => ({ listMessages }) } } as unknown as Scope;
+    const archive = historyArchiveSeed(() => core, () => ({} as TranscriptService))[0]![1] as {
+      search(input: unknown): Promise<HistorySearchPage>;
+    };
+    const page = await archive.search({ peer: true, workspaceId: 'example-workspace', query: 'needle', pageSize: 5 });
+    expect(page).toMatchObject({ items: [], hasMore: false, incomplete: 'history_preparing',
+      indexState: { state: 'building' }, coverage: { complete: false, gaps: ['history_preparing'] } });
+    expect(listMessages).toHaveBeenCalledOnce();
+  });
   it('recovers the exact user text and tool output from persisted pre-compaction transcript', async () => {
     const { archive, transcript, search } = fixture(true);
     const turn = await archive.readTurn('current', 'main', 4);

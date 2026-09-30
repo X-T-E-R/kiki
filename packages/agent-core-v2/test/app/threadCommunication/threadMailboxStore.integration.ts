@@ -280,6 +280,163 @@ describe('runtime thread mailbox', () => {
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  async function seedHistory(room: boolean) {
+    const item = harness(homeDir);
+    open.push(item);
+    await item.store.acceptMessage(acceptInput('old-peer'));
+    if (room) await item.store.acceptMessage({ producer: { kind: 'room', roomId: 'example-room' },
+      target, content: 'old room', idempotencyKey: 'old-room' });
+    await closeHarness(item, open);
+    const db = await openMailboxDb(homeDir);
+    const partition = mailboxPartition(target);
+    const pointers = (await db.partitionPrefix(partition, `${partition}/peer/`));
+    return { db, partition, pointers };
+  }
+
+  async function finishRepair(item: Harness) {
+    const flight = (item.store as unknown as { peerIndexInitialization?: { promise: Promise<void> } }).peerIndexInitialization;
+    await flight?.promise;
+    return item.store.readMessages({ group: 'all', limit: 100 });
+  }
+
+  it('reuses v2 complete with zero scans and zero pointer writes', async () => {
+    const { db } = await seedHistory(false);
+    await db.partitionBatch('s/thread-mailbox-v3', [{ op: 'set', key: 's/thread-mailbox-v3/peer-index-v2',
+      value: { kind: 'peer_index_marker', complete: true, after: 't0' } }]);
+    await db.close();
+    const originalScan = ClusterDb.prototype.shardScanKeys;
+    const originalBatch = ClusterDb.prototype.partitionBatch;
+    let scans = 0;
+    let pointerWrites = 0;
+    ClusterDb.prototype.shardScanKeys = async function (...args) { scans++; return originalScan.apply(this, args); };
+    ClusterDb.prototype.partitionBatch = async function (...args) {
+      pointerWrites += args[1].filter((op) => op.key.includes('/peer/')).length;
+      return originalBatch.apply(this, args);
+    };
+    try {
+      const item = harness(homeDir); open.push(item);
+      expect(await item.store.readMessages({ group: 'all', limit: 100 })).toMatchObject({
+        items: [{ message: { idempotencyKey: 'old-peer' } }], history: { state: 'complete' } });
+      await finishRepair(item);
+      expect(scans).toBe(0); expect(pointerWrites).toBe(0);
+    } finally { ClusterDb.prototype.shardScanKeys = originalScan; ClusterDb.prototype.partitionBatch = originalBatch; }
+  });
+
+  it.each([false, true])('inherits v1 peer coverage and repairs only room gaps (room=%s)', async (room) => {
+    const { db, partition, pointers } = await seedHistory(room);
+    const system = 's/thread-mailbox-v3';
+    await db.partitionBatch(system, [{ op: 'del', key: `${system}/peer-index-v2` },
+      { op: 'set', key: `${system}/peer-index-v1`, value: { kind: 'peer_index_marker', complete: true, after: 't0' } }]);
+    const roomKey = mailboxMessageKey(partition, 2);
+    const roomPointers = pointers.filter((entry) => entry.value['messageKey'] === roomKey);
+    await db.partitionBatch(partition, roomPointers.map((entry) => ({ op: 'del', key: entry.key })));
+    await db.close();
+    const original = ClusterDb.prototype.partitionBatch;
+    const written: string[] = [];
+    ClusterDb.prototype.partitionBatch = async function (...args) {
+      written.push(...args[1].filter((op) => op.key.includes('/peer/')).map((op) => op.key));
+      return original.apply(this, args);
+    };
+    try {
+      const item = harness(homeDir); open.push(item);
+      const first = await item.store.readMessages({ group: 'all', limit: 100 });
+      expect(first.history).toMatchObject({ state: 'preparing', pending: 'room' });
+      expect(await item.store.readMessages({ group: 'all', limit: 100, peerOnly: true })).toMatchObject({ history: { state: 'complete' } });
+      const completed = await finishRepair(item);
+      expect(completed.history?.state).toBe('complete');
+      expect(completed.items).toHaveLength(room ? 2 : 1);
+      expect(written.toSorted()).toEqual(roomPointers.map((entry) => entry.key).toSorted());
+      expect(completed.history?.generation).not.toBe(first.history?.generation);
+      expect(await item.store.readMessages({ group: 'all', limit: 100, generation: first.history?.generation })).toMatchObject({ cursorExpired: true });
+    } finally { ClusterDb.prototype.partitionBatch = original; }
+  });
+
+  it.each(['none', 'v1-partial', 'v2-partial', 'shard-partial'] as const)('repairs missing/mismatched pointers from %s without decoding receipts', async (mode) => {
+    const { db, partition, pointers } = await seedHistory(true);
+    const system = 's/thread-mailbox-v3';
+    await db.partitionBatch(system, [{ op: 'del', key: `${system}/peer-index-v2` }]);
+    const roomKey = mailboxMessageKey(partition, 2);
+    if (mode !== 'none') await db.partitionBatch(system, [{ op: 'set',
+      key: `${system}/peer-index-${mode === 'v1-partial' ? 'v1' : 'v2'}`,
+      value: { kind: 'peer_index_marker', complete: false, after: mailboxMessageKey(partition, 1),
+        shard: mode === 'shard-partial' ? db.shardOf(partition) : undefined,
+        shardAfter: mode === 'shard-partial' ? mailboxMessageKey(partition, 1) : undefined } }]);
+    const missing = pointers.filter((entry) => entry.value['messageKey'] === roomKey);
+    await db.partitionBatch(partition, missing.map((entry, index) => index === 0
+      ? { op: 'set', key: entry.key, value: { ...entry.value, peerOrder: 'wrong' } }
+      : { op: 'del', key: entry.key }));
+    await db.partitionBatch(partition, Array.from({ length: 10_000 }, (_, i) => ({ op: 'set', key: `${partition}/receipt/${i}`,
+      value: { kind: 'receipt', body: 'not a message' } })));
+    await db.close();
+    const originalGet = ClusterDb.prototype.partitionGet;
+    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalMget = ClusterDb.prototype.partitionMget;
+    let messageReads = 0; let unrelatedReads = 0; let pointerWrites = 0;
+    ClusterDb.prototype.partitionMget = async function (...args) {
+      messageReads += args[1].filter((key) => key.includes('/message/')).length;
+      unrelatedReads += args[1].filter((key) => /\/receipt\/\d+$/.test(key)).length;
+      return originalMget.apply(this, args);
+    };
+    ClusterDb.prototype.partitionGet = async function (...args) {
+      if (args[1].includes('/message/')) messageReads++;
+      if (/\/receipt\/\d+$/.test(args[1])) unrelatedReads++;
+      return originalGet.apply(this, args);
+    };
+    ClusterDb.prototype.partitionBatch = async function (...args) {
+      pointerWrites += args[1].filter((op) => op.key.includes('/peer/')).length;
+      return originalBatch.apply(this, args);
+    };
+    try {
+      const item = harness(homeDir); open.push(item);
+      await item.store.readMessages({ group: 'all', limit: 100 });
+      const concurrent = item.store.acceptMessage(acceptInput('new-peer'));
+      const complete = await finishRepair(item);
+      await concurrent;
+      const final = await item.store.readMessages({ group: 'all', limit: 100 });
+      expect(complete.history?.state).toBe('complete');
+      expect(final.items.map((record) => record.message.idempotencyKey).toSorted()).toEqual(['new-peer', 'old-peer', 'old-room']);
+      expect(unrelatedReads).toBe(0);
+      expect(messageReads).toBeGreaterThanOrEqual(2);
+      expect(messageReads).toBeLessThan(30);
+      expect(pointerWrites).toBe(missing.length + 5);
+    } finally {
+      ClusterDb.prototype.partitionGet = originalGet;
+      ClusterDb.prototype.partitionMget = originalMget;
+      ClusterDb.prototype.partitionBatch = originalBatch;
+    }
+  }, 15_000);
+
+  it.each(['pointer', 'checkpoint'] as const)('keeps incomplete on %s failure and replays repair after reopen', async (failure) => {
+    const { db, partition, pointers } = await seedHistory(false);
+    const system = 's/thread-mailbox-v3';
+    await db.partitionBatch(system, [{ op: 'del', key: `${system}/peer-index-v2` }]);
+    await db.partitionBatch(partition, [{ op: 'del', key: pointers[0]!.key }]);
+    await db.close();
+    const original = ClusterDb.prototype.partitionBatch;
+    let armed = false;
+    ClusterDb.prototype.partitionBatch = async function (...args) {
+      if (armed && args[1].some((op) => failure === 'pointer' ? op.key.includes('/peer/') : op.key.endsWith('/peer-index-v2'))) {
+        throw new Error('example repair failure');
+      }
+      return original.apply(this, args);
+    };
+    const item = harness(homeDir); open.push(item);
+    let generation: string | undefined;
+    try {
+      await item.store.getWorkspaceOverride('example-workspace');
+      armed = true;
+      const first = await item.store.readMessages({ group: 'all', limit: 100 });
+      generation = first.history?.generation;
+      const failed = await finishRepair(item);
+      expect(failed.history).toMatchObject({ state: 'error', error: 'example repair failure' });
+      await closeHarness(item, open);
+    } finally { ClusterDb.prototype.partitionBatch = original; }
+    const reopened = harness(homeDir); open.push(reopened);
+    expect(await reopened.store.readMessages({ group: 'all', limit: 100, generation })).toMatchObject({ cursorExpired: true });
+    const complete = await finishRepair(reopened);
+    expect(complete.history?.state).toBe('complete'); expect(complete.items).toHaveLength(1);
+  });
+
   it('gives the first workspace read a startup budget but keeps warm calls bounded', async () => {
     const item = harness(homeDir);
     open.push(item);
@@ -377,7 +534,8 @@ describe('runtime thread mailbox', () => {
     }
   });
 
-  it('keeps peer-history backfill off workspace reads and reuses it after reader cancellation', async () => {
+  it('serves existing history without waiting for repair and keeps repair alive after caller cancellation', async () => {
+    await (await openMailboxDb(homeDir)).close();
     const item = harness(homeDir);
     open.push(item);
     await item.store.acceptMessage(acceptInput('backfill-message'));
@@ -402,15 +560,16 @@ describe('runtime thread mailbox', () => {
     const cancelled = new Error('reader cancelled');
     try {
       const first = item.store.readMessages({ group: 'all', limit: 100 }, { signal: controller.signal });
-      const failure = expect(first).rejects.toBe(cancelled);
+      await expect(first).resolves.toMatchObject({ items: [{ message: { idempotencyKey: 'backfill-message' } }],
+        history: { state: 'preparing' } });
       await started;
       await expect(item.store.getWorkspaceOverride('example-workspace')).resolves.toBeUndefined();
       controller.abort(cancelled);
-      await failure;
+      await expect(item.store.readMessages({ group: 'all', limit: 100 }, { signal: controller.signal })).rejects.toBe(cancelled);
       expect(initializationSignal?.aborted).toBe(false);
-      const second = item.store.readMessages({ group: 'all', limit: 100 });
+      await expect(item.store.readMessages({ group: 'all', limit: 100 })).resolves.toMatchObject({
+        items: [{ message: { idempotencyKey: 'backfill-message' } }], history: { state: 'preparing' } });
       release();
-      await expect(second).resolves.toMatchObject({ items: [{ message: { idempotencyKey: 'backfill-message' } }] });
       expect(count).toBe(1);
     } finally {
       release();
@@ -419,6 +578,7 @@ describe('runtime thread mailbox', () => {
   });
 
   it('cancels peer-history backfill before releasing a departed owner database', async () => {
+    await (await openMailboxDb(homeDir)).close();
     const item = harness(homeDir);
     open.push(item);
     await item.store.getWorkspaceOverride('example-workspace');
@@ -436,13 +596,13 @@ describe('runtime thread mailbox', () => {
     const controller = new AbortController();
     try {
       const first = item.store.readMessages({ group: 'all', limit: 100 }, { signal: controller.signal });
-      void first.catch(() => {});
+      await expect(first).resolves.toMatchObject({ history: { state: 'preparing' } });
       await started;
       const initialization = internals.peerIndexInitialization;
       await item.runtime.close();
       expect(initialization.controller.signal.aborted).toBe(true);
+      expect(internals.db).toBeDefined();
       controller.abort(new Error('reader cancelled'));
-      await expect(first).rejects.toBeInstanceOf(Error);
       release();
       await item.store.close();
       expect(internals.db).toBeUndefined();
@@ -1058,6 +1218,9 @@ describe('runtime thread mailbox', () => {
     let interrupted = false;
     ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
       const [partition, operations] = args;
+      if (operations.some((operation) => operation.op === 'set' && operation.key.includes('/message/'))) {
+        expect(operations.filter((operation) => operation.key.includes('/peer/'))).toHaveLength(5);
+      }
       if (
         !interrupted &&
         partition === 's/thread-mailbox-v3' &&
@@ -1075,6 +1238,12 @@ describe('runtime thread mailbox', () => {
     await first.store.close();
     await first.runtime.close();
     open.splice(open.indexOf(first), 1);
+    const interruptedDb = await openMailboxDb(homeDir);
+    const partition = mailboxPartition(target);
+    const missing = await interruptedDb.partitionPrefix(partition, `${partition}/peer/`);
+    expect(missing).toHaveLength(5);
+    await interruptedDb.partitionBatch(partition, missing.map((entry) => ({ op: 'del', key: entry.key })));
+    await interruptedDb.close();
 
     const reopened = harness(homeDir);
     open.push(reopened);

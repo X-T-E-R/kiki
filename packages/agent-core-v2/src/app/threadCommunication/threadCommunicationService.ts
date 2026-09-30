@@ -214,12 +214,16 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
     const conditions = JSON.stringify([input.workspaceId ?? null, input.sessionId ?? null, input.peerSessionId ?? null]);
     let before: string | undefined;
+    let generation: string | undefined;
+    let history: ListThreadMessagesResult['history'];
     if (input.cursor !== undefined) {
       try {
         const cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
-        if (cursor['v'] !== 1 || cursor['kind'] !== 'messages' || cursor['conditions'] !== conditions ||
+        if (cursor['v'] !== 2 || cursor['kind'] !== 'messages' || cursor['conditions'] !== conditions ||
+            typeof cursor['generation'] !== 'string' ||
             typeof cursor['before'] !== 'string' || !/^\d{16}\/[^/]+$/.test(cursor['before'])) throw new Error('invalid');
         before = cursor['before'];
+        generation = cursor['generation'];
       } catch { throw cursorError('Communication cursor is invalid or does not match the filters.'); }
     }
     if (input.sessionId !== undefined) {
@@ -246,7 +250,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let bytes = 0;
     let hasMore = false;
     while (items.length < limit && scanned < 500 && bytes < (2 << 20)) {
-      const page = await this.mailbox.readMessages({ group, before, limit: Math.min(20, limit - items.length) });
+      const page = await this.mailbox.readMessages({ group, before, generation, peerOnly: input.peerSessionId !== undefined,
+        limit: Math.min(20, limit - items.length) });
+      if (page.cursorExpired || generation !== undefined && page.history !== undefined && page.history.generation !== generation) {
+        throw cursorError('Communication history coverage changed. Refresh from the first page.');
+      }
+      history = page.history;
+      generation = history?.generation ?? 'unversioned';
       hasMore = page.nextBefore !== undefined;
       scanned += Math.max(1, page.items.length);
       for (const record of page.items) {
@@ -273,13 +283,15 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           delivery: record.delivery, reason: record.reason, reasonDetail: record.reason,
           reasonCode: record.delivery === 'undeliverable' ? record.reasonCode ?? 'delivery_failed' : undefined });
       }
-      if (!hasMore) break;
-      before = page.nextBefore;
+      if (page.nextBefore !== undefined) before = page.nextBefore;
+      if (!hasMore || history !== undefined && history.state !== 'complete') break;
     }
-    const incomplete = hasMore && items.length < limit && (scanned >= 500 || bytes >= (2 << 20)) ? 'scan_budget' as const : undefined;
-    if (incomplete !== undefined) this.log.warn('Communication history scan budget reached', { scanned, bytes });
-    return { items, incomplete, nextCursor: hasMore && before !== undefined ? Buffer.from(JSON.stringify({
-      v: 1, kind: 'messages', conditions, before,
+    const scanBudget = hasMore && items.length < limit && (scanned >= 500 || bytes >= (2 << 20));
+    const incomplete = history !== undefined && history.state !== 'complete' ? 'history_preparing' as const :
+      scanBudget ? 'scan_budget' as const : undefined;
+    if (scanBudget) this.log.warn('Communication history scan budget reached', { scanned, bytes });
+    return { items, incomplete, history, nextCursor: hasMore && before !== undefined ? Buffer.from(JSON.stringify({
+      v: 2, kind: 'messages', conditions, before, generation,
     })).toString('base64url') : undefined };
   }
 

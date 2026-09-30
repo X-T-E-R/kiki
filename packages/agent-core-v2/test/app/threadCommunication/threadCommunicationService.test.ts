@@ -42,6 +42,7 @@ import {
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
+  type ReadMailboxMessagesInput,
   type StoredThreadActivity,
 } from '#/app/threadCommunication/threadMailboxStore';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
@@ -399,7 +400,8 @@ describe('ThreadCommunicationService', () => {
       expect(failed.delivery).toBe('undeliverable');
       await expect(send[SEND_PEER_THREAD_MESSAGE]({ source, target: { ...target, sessionId: 'absent' },
         content: 'not accepted', idempotencyKey: 'absent' })).rejects.toMatchObject({ code: ErrorCodes.THREAD_NOT_FOUND });
-      await expect(service.listMessages({ workspaceId: 'workspace-c' })).resolves.toEqual({ items: [], nextCursor: undefined, incomplete: undefined });
+      await expect(service.listMessages({ workspaceId: 'workspace-c' })).resolves.toMatchObject({ items: [], nextCursor: undefined,
+        incomplete: undefined, history: { state: 'complete' } });
       const all = await service.listMessages({ workspaceId: 'workspace-a' });
       expect(all.items).toHaveLength(3);
       expect(all.items.find((message) => message.messageId === failed.messageId)).toMatchObject({
@@ -557,6 +559,27 @@ describe('ThreadCommunicationService', () => {
     expect(shutdownSettled).toBe(true);
     await expect(service.shutdown()).resolves.toBeUndefined();
     expect(mailboxClose).not.toHaveBeenCalled();
+  });
+
+  it('propagates preparing coverage and invalidates cursors when old history is inserted', async () => {
+    const history = { generation: 'example-generation', state: 'preparing' as const,
+      processedMessages: 3, completedShards: 1, totalShards: 16, pending: 'all' as const };
+    let changed = false;
+    const read = ix.stub(IThreadMailboxStore, 'readMessages', async (input: ReadMailboxMessagesInput) => {
+      if (changed) {
+        expect(input.generation).toBe(history.generation);
+        return { items: [], cursorExpired: true, history: { ...history, generation: 'next-generation', state: 'complete' as const } };
+      }
+      return { items: [], nextBefore: '0000000000000001/example-message', history };
+    });
+    const service = ix.get(IThreadCommunicationService);
+    const first = await service.listMessages();
+    expect(first).toMatchObject({ items: [], incomplete: 'history_preparing', history });
+    expect(read.callCount).toBe(1);
+    expect(JSON.parse(Buffer.from(first.nextCursor!, 'base64url').toString())).toMatchObject({ v: 2, generation: history.generation });
+    changed = true;
+    await expect(service.listMessages({ cursor: first.nextCursor })).rejects.toMatchObject({ code: ErrorCodes.THREAD_CURSOR_INVALID });
+    await service.shutdown();
   });
 
   it('does not initialize the mailbox when thread communication is disabled', async () => {

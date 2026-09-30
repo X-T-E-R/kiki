@@ -143,7 +143,12 @@ export const listThreadMessagesInputSchema = z.object({
 }).strict().refine((input) => input.peerSessionId === undefined || input.sessionId !== undefined);
 export const listThreadMessagesResultSchema = z.object({
   items: z.array(threadCommunicationMessageSchema), nextCursor: z.string().optional(),
-  incomplete: z.literal('scan_budget').optional(),
+  incomplete: z.enum(['scan_budget', 'history_preparing']).optional(),
+  history: z.object({
+    generation: z.string(), state: z.enum(['complete', 'preparing', 'error']),
+    processedMessages: z.number().int().nonnegative(), completedShards: z.number().int().nonnegative(),
+    totalShards: z.number().int().positive(), pending: z.enum(['room', 'all']).optional(), error: z.string().optional(),
+  }).optional(),
 });
 
 export const threadsContract = {

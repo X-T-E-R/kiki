@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
-import type { ThreadActivityKind, ThreadDeliveryReasonCode, ThreadRef } from './threadCommunication';
+import type { ThreadActivityKind, ThreadDeliveryReasonCode, ThreadHistoryCoverage, ThreadRef } from './threadCommunication';
 
 export interface ThreadMessageSender {
   readonly personaId?: string;
@@ -150,6 +150,8 @@ export interface ReadMailboxMessagesInput {
   readonly group: string;
   readonly before?: string;
   readonly limit: number;
+  readonly peerOnly?: boolean;
+  readonly generation?: string;
 }
 
 export interface MailboxMessageRecord {
@@ -163,4 +165,6 @@ export interface MailboxMessageRecord {
 export interface MailboxMessagesPage {
   readonly items: readonly MailboxMessageRecord[];
   readonly nextBefore?: string;
+  readonly history?: ThreadHistoryCoverage;
+  readonly cursorExpired?: boolean;
 }

@@ -418,12 +418,14 @@ async function peerSearch(service: IThreadCommunicationService, input: FallbackI
   let scanned = 0;
   let bytes = 0;
   let more = false;
+  let preparing = false;
   while (items.length < input.pageSize && scanned < 200 && bytes < (2 << 20)) {
     input.signal?.throwIfAborted();
     const page = await service.listMessages({ workspaceId: input.workspaceId, sessionId: input.sessionId, cursor, limit: 1 });
     scanned++;
     cursor = page.nextCursor;
     more = cursor !== undefined;
+    preparing = page.incomplete === 'history_preparing';
     for (const message of page.items) {
       bytes += Buffer.byteLength(message.content);
       if (input.role !== undefined && input.role !== 'user' ||
@@ -438,9 +440,9 @@ async function peerSearch(service: IThreadCommunicationService, input: FallbackI
     }
     if (!more || page.incomplete !== undefined) break;
   }
-  const incomplete = more && items.length < input.pageSize ? 'scan_budget' : undefined;
+  const incomplete = preparing ? 'history_preparing' : more && items.length < input.pageSize ? 'scan_budget' : undefined;
   return { items, hasMore: more, pageToken: cursor, incomplete, source: 'mailbox',
-    indexState: { state: 'ready' }, continuation: more ? 'scan' : undefined,
+    indexState: { state: preparing ? 'building' : 'ready' }, continuation: more ? 'scan' : undefined,
     coverage: { complete: incomplete === undefined, domain: 'full_text',
-      gaps: incomplete === undefined ? [] : ['scan_budget'], scanned: { bytes, records: scanned } } };
+      gaps: incomplete === undefined ? [] : [incomplete], scanned: { bytes, records: scanned } } };
 }

@@ -734,6 +734,14 @@ describe('communication history REST', () => {
     expect(threadCommunicationMessageSchema.parse(facade)).toEqual(facade);
     expect(threadCommunicationMessageSchema.safeParse({ ...facade, reasonCode: 'unregistered_failure' }).success).toBe(false);
   });
+  it('preserves history preparation and coverage generation through the typed endpoint', async () => {
+    const page = { items: [], incomplete: 'history_preparing', history: { generation: 'example-generation', state: 'error',
+      processedMessages: 3, completedShards: 1, totalShards: 16, pending: 'all', error: 'example failure' } };
+    const fetchMock = vi.fn(async () => envelope(page));
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try { expect(await channel.rest.threads.messages({})).toEqual(page); }
+    finally { await channel.close(); }
+  });
   it('preserves workspace, pair and cursor filters on the typed read endpoint', async () => {
     const fetchMock = vi.fn(async (input: string | URL) => {
       const url = new URL(String(input));

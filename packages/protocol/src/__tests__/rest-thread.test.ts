@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   listThreadsQuerySchema,
+  listThreadMessagesResponseSchema,
   sendThreadMessageRequestSchema,
   threadRefSchema,
   waitThreadsRequestSchema,
@@ -10,6 +11,13 @@ import {
 const ref = { host_id: 'host-a', workspace_id: 'workspace-a', session_id: 'session-a' };
 
 describe('peer-thread REST schemas', () => {
+  it('retains history preparation, progress and generation on empty pages', () => {
+    const page = { items: [], incomplete: 'history_preparing', history: {
+      generation: 'example-generation', state: 'preparing', processedMessages: 5, completedShards: 1, totalShards: 16, pending: 'room',
+    } };
+    expect(listThreadMessagesResponseSchema.parse(page)).toEqual(page);
+    expect(listThreadMessagesResponseSchema.safeParse({ ...page, history: { ...page.history, processedMessages: -1 } }).success).toBe(false);
+  });
   it('requires all three host-qualified reference fields', () => {
     expect(threadRefSchema.safeParse(ref).success).toBe(true);
     expect(threadRefSchema.safeParse({ workspace_id: 'w', session_id: 's' }).success).toBe(false);

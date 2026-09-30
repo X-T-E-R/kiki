@@ -203,8 +203,19 @@ export interface ListThreadMessagesInput {
   readonly limit?: number;
 }
 
+export interface ThreadHistoryCoverage {
+  readonly generation: string;
+  readonly state: 'complete' | 'preparing' | 'error';
+  readonly processedMessages: number;
+  readonly completedShards: number;
+  readonly totalShards: number;
+  readonly pending?: 'room' | 'all';
+  readonly error?: string;
+}
+
 export interface ListThreadMessagesResult {
   readonly items: readonly ThreadCommunicationMessage[];
   readonly nextCursor?: string;
-  readonly incomplete?: 'scan_budget';
+  readonly incomplete?: 'scan_budget' | 'history_preparing';
+  readonly history?: ThreadHistoryCoverage;
 }

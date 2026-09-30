@@ -115,7 +115,7 @@ export function registerThreadsRoutes(
         content: message.content, accepted_at: message.acceptedAt, target_seq: message.targetSeq,
         delivery: message.delivery, reason: message.reason,
         reason_code: message.reasonCode, reason_detail: message.reasonDetail,
-      })), next_cursor: page.nextCursor, incomplete: page.incomplete }, req.id));
+      })), next_cursor: page.nextCursor, incomplete: page.incomplete, history: page.history }, req.id));
     } catch (error) { reply.send(mapError(error, req.id)); }
   });
   app.get(messages.path, messages.options, messages.handler as never);
