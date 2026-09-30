@@ -46,6 +46,7 @@ export const CARD_ID_TO_TAB: Record<string, NbSearchTab> = {
   'st-card-search-fetch': 'fetch',
   'st-card-search-providers': 'providers',
   'st-card-search-execution': 'advanced',
+  'st-card-search-index': 'advanced',
   'st-card-search-diagnostics': 'advanced',
   // Experimental rows mount after the page, on the Advanced tab only.
   'st-card-exp-search': 'advanced',
