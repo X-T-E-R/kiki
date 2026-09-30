@@ -110,6 +110,7 @@ describe('daemon command registry', () => {
       'goal',
       'settings',
       'undo',
+      'persona',
     ]) {
       expect(statuses.get(name), name).toBe('supported');
     }

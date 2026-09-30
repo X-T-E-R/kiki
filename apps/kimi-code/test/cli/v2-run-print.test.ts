@@ -109,6 +109,7 @@ function opts(overrides: Record<string, unknown> = {}) {
     skillsDirs: [],
     agent: undefined,
     agentFiles: [],
+    persona: undefined,
     addDirs: [],
     ...overrides,
   } as const;
@@ -560,6 +561,7 @@ describe('runV2Print', () => {
     expect(sessions.create).toHaveBeenCalledWith({
       workDir: process.cwd(),
       additionalDirs: undefined,
+      persona: undefined,
       mainAgentBinding: { profile: 'reviewer', model: undefined },
     });
     const profile = agentServices.get(IAgentProfileService) as { bind: ReturnType<typeof vi.fn> };
@@ -592,10 +594,26 @@ describe('runV2Print', () => {
     expect(sessions.create).toHaveBeenCalledWith({
       workDir: process.cwd(),
       additionalDirs: undefined,
+      persona: undefined,
       mainAgentBinding: { profile: 'file-reviewer', model: undefined },
     });
     const profile = agentServices.get(IAgentProfileService) as { bind: ReturnType<typeof vi.fn> };
     expect(profile.bind).not.toHaveBeenCalled();
+  });
+
+  it('forwards persona binding without applying the default agent profile', async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const { app, agent, appServices } = makeFakeHarness();
+
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+
+    await runV2Print(opts({ persona: 'lin-lan' }) as never, '1.2.3-test', { stdout, stderr });
+
+    const sessions = appServices.get(ISessionManager) as { create: ReturnType<typeof vi.fn> };
+    const request = sessions.create.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(request['mainAgentBinding']).toEqual({ persona: 'lin-lan' });
   });
 
   it('does not materialize a main agent after fresh profile binding fails', async () => {

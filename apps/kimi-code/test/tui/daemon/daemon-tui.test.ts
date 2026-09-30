@@ -106,6 +106,7 @@ function driver(
       listModels: ReturnType<typeof vi.fn>;
       listSessions: ReturnType<typeof vi.fn>;
       createSession: ReturnType<typeof vi.fn>;
+      listPersonas: ReturnType<typeof vi.fn>;
       getGoal: ReturnType<typeof vi.fn>;
       undoSession: ReturnType<typeof vi.fn>;
       listAgentProfiles: ReturnType<typeof vi.fn>;
@@ -219,6 +220,7 @@ function driver(
     global: {
       config: configFacade,
       plugins: pluginsFacade,
+      personas: { list: vi.fn(async () => []) },
       kosong: providerFacade,
       auth: authFacade,
       files: filesFacade,
@@ -227,6 +229,7 @@ function driver(
   };
   internal.client.listSessions = vi.fn(async () => ({ items: [], nextCursor: undefined }));
   internal.client.createSession = vi.fn(async () => ({ id: 'session-created' }));
+  internal.client.listPersonas = vi.fn(async () => []);
   internal.client.getGoal = vi.fn(async () => null);
   internal.client.undoSession = vi.fn();
   internal.client.listModels = vi.fn(async () => ({
@@ -362,6 +365,29 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.setPermission).toHaveBeenNthCalledWith(2, 'session-1', 'auto');
     expect(tui.state.appState.agentProfile).toBe('reviewer');
     expect(tui.state.appState.permissionMode).toBe('auto');
+  });
+
+  it('lists active personas and switches by starting a new session', async () => {
+    const { internal } = driver();
+    internal.client.listPersonas.mockResolvedValue([
+      { id: 'lin-lan', name: 'Lin Lan', title: 'Release', revision: '2', archived: false },
+      { id: 'archived', name: 'Archived', revision: '1', archived: true },
+    ]);
+    const openSession = vi.fn();
+    internal.openSession = openSession;
+
+    await internal.handleSlash('/persona list');
+    expect(internal.showStatus).toHaveBeenCalledWith('lin-lan · Lin Lan · Release');
+
+    await internal.handleSlash('/persona switch lin-lan');
+    expect(internal.client.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ persona: 'lin-lan' }),
+    );
+    expect(openSession).toHaveBeenCalledWith('session-created');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('Started a new session with persona Lin Lan.');
+    await expect(internal.handleSlash('/persona switch archived')).rejects.toThrow(
+      'Persona "archived" was not found.',
+    );
   });
 
   it('applies plan and title session actions through REST', async () => {

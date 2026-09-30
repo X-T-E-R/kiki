@@ -255,12 +255,18 @@ async function resolvePrintSession(
     stderr.write(`No sessions to continue under "${workDir}"; starting a fresh session.\n`);
   }
 
+  const mainAgentBinding = opts.persona === undefined
+    ? { profile: agentProfileName ?? 'agent', model: opts.model, thinking: opts.thinking }
+    : agentProfileName !== undefined || opts.model !== undefined || opts.thinking !== undefined
+      ? { profile: agentProfileName, model: opts.model, thinking: opts.thinking }
+      : undefined;
   const created = await klient.global.sessions.create({
     workDir,
     ephemeral: opts.ephemeral,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     waitForSessionMs,
-    mainAgentBinding: { profile: agentProfileName ?? 'agent', model: opts.model, thinking: opts.thinking },
+    persona: opts.persona,
+    mainAgentBinding,
   });
   const session = klient.session(created.id);
   const agent = session.agent('main');

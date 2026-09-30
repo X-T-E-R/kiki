@@ -1,7 +1,7 @@
 import { Container, Text, type Component, type TUI } from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import type { Block, ToolBlock } from '@kiki/session-core/session/transcript/types';
+import type { Block, MessageBlock, ToolBlock } from '@kiki/session-core/session/transcript/types';
 
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
@@ -97,6 +97,8 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
       return new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
     case 'tool':
       return createToolComponent(block, ui, workDir);
+    case 'message':
+      return new DaemonMessageComponent(block);
     case 'subagent':
       return new Text(formatSubagent(block), 0, 0);
     case 'subagent-event':
@@ -159,6 +161,36 @@ class DaemonAssistantMessageComponent extends Container {
   }
 }
 
+class DaemonMessageComponent extends Container {
+  constructor(block: MessageBlock) {
+    super();
+    this.addChild(new Text(formatMessageBlock(block), 2, 0));
+    for (const attachment of block.attachments) {
+      const label = attachment.title ?? attachment.path;
+      this.addChild(new Text(currentTheme.dim(`[attachment: ${label}]`), 2, 0));
+    }
+  }
+}
+
+function formatMessageBlock(block: MessageBlock): string {
+  const target = block.handoff?.targetName ?? block.to;
+  const targetLabel = target === undefined ? '' : ` → ${target}`;
+  const sender = block.senderName === undefined
+    ? targetLabel === '' ? '' : `${targetLabel}: `
+    : `${block.senderName}${targetLabel}: `;
+  const text = `${sender}${block.text}`;
+  switch (block.status) {
+    case 'sent':
+      return text;
+    case 'sending':
+      return currentTheme.dim(`Sending${targetLabel}: ${block.text}`);
+    case 'failed':
+      return currentTheme.fg('error', `Message not sent (failed)${targetLabel}: ${block.text}`);
+    case 'cancelled':
+      return currentTheme.fg('warning', `Message not sent (cancelled)${targetLabel}: ${block.text}`);
+  }
+}
+
 function addMediaLabels(container: Container, media: readonly MediaRef[] | undefined): void {
   for (const item of media ?? []) {
     const thumbnail = item.kind === 'image' ? imageThumbnail(item) : undefined;
@@ -200,6 +232,7 @@ function requiresReplacement(previous: Block, next: Block): boolean {
     return true;
   }
   return (
+    next.kind === 'message' ||
     next.kind === 'subagent' ||
     next.kind === 'subagent-event' ||
     next.kind === 'approval' ||
@@ -232,6 +265,7 @@ function updateMountedBlock(component: Component, block: Block): void {
       if (result !== undefined) tool.setResult(result);
       return;
     }
+    case 'message':
     case 'user':
     case 'subagent':
     case 'subagent-event':

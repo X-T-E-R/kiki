@@ -21,6 +21,7 @@ import type {
   QuestionDismissResult,
   QuestionResolveRequest,
   QuestionResolveResult,
+  PersonaSummary,
   Session,
   UpdateSessionProfileRequest,
 } from '@kiki/protocol';
@@ -64,6 +65,16 @@ export interface DaemonSessionPage {
   readonly nextCursor: string | undefined;
 }
 
+export type DaemonPersonaSummary = PersonaSummary;
+
+interface PersonaSessionCreateInput {
+  readonly workDir: string;
+  readonly ephemeral?: boolean;
+  readonly additionalDirs?: readonly string[];
+  readonly title?: string;
+  readonly persona?: string;
+}
+
 export class DaemonClient implements SessionTransport {
   readonly klient: Klient;
   readonly sessions = createSessionTransport({ session: (id) => this.klient.session(id) });
@@ -100,13 +111,12 @@ export class DaemonClient implements SessionTransport {
     };
   }
 
-  async createSession(input: {
-    readonly workDir: string;
-    readonly ephemeral?: boolean;
-    readonly additionalDirs?: readonly string[];
-    readonly title?: string;
-  }): Promise<{ readonly id: string }> {
+  async createSession(input: PersonaSessionCreateInput): Promise<{ readonly id: string }> {
     return this.klient.global.sessions.create(input);
+  }
+
+  listPersonas(): Promise<readonly DaemonPersonaSummary[]> {
+    return this.klient.global.personas.list();
   }
 
   endEphemeralSession(sessionId: string): Promise<{ ended: true }> {

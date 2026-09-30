@@ -5,6 +5,7 @@ import { DaemonClient } from '#/tui/daemon/client';
 
 function fakeKlient() {
   const sessions = { list: vi.fn(), create: vi.fn() };
+  const personas = { list: vi.fn() };
   const agent = {
     prompt: vi.fn(),
     setModel: vi.fn(),
@@ -21,11 +22,11 @@ function fakeKlient() {
   const commands = { timing: vi.fn() };
   const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions, commands, agents: vi.fn() }));
   const klient = {
-    global: { sessions, kosong: { listModels: vi.fn() } },
+    global: { sessions, personas, kosong: { listModels: vi.fn() } },
     session,
     close: vi.fn(),
   };
-  return { klient, sessions, agent, interactions, commands };
+  return { klient, sessions, personas, agent, interactions, commands };
 }
 
 function requestUrl(input: string | URL | Request): string {
@@ -53,6 +54,32 @@ describe('DaemonClient', () => {
 
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
+  });
+
+  it('forwards persona binding and lists global persona summaries through klient facades', async () => {
+    const fake = fakeKlient();
+    fake.sessions.create.mockResolvedValue({ id: 'session-persona' });
+    fake.personas.list.mockResolvedValue([
+      { id: 'lin-lan', name: 'Lin Lan', revision: '2', archived: false },
+      { id: 'old', name: 'Old', revision: '1', archived: true },
+    ]);
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      klient: fake.klient as never,
+    });
+
+    await client.createSession({ workDir: 'C:\\repo', persona: 'lin-lan' });
+    await expect(client.listPersonas()).resolves.toEqual([
+      { id: 'lin-lan', name: 'Lin Lan', revision: '2', archived: false },
+      { id: 'old', name: 'Old', revision: '1', archived: true },
+    ]);
+
+    expect(fake.sessions.create).toHaveBeenCalledWith({
+      workDir: 'C:\\repo',
+      persona: 'lin-lan',
+    });
+    expect(fake.personas.list).toHaveBeenCalledOnce();
   });
 
   it('aborts an exact turn through the authenticated session command transport', async () => {

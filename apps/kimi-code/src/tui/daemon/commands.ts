@@ -7,6 +7,7 @@ export type DaemonCommandName =
   | 'sessions'
   | 'new'
   | 'agent'
+  | 'persona'
   | 'model'
   | 'permission'
   | 'yolo'
@@ -91,6 +92,7 @@ const SUPPORTED_COMMANDS = [
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
   command('new', ['clear'], 'Start a fresh session in the current workspace', 'none'),
   command('agent', [], 'Select the agent profile for new sessions', 'optional-one', '[name]'),
+  command('persona', [], 'List personas or start a new session with one', 'optional-rest', '[list|switch <id>]'),
   command('model', [], 'Switch LLM model', 'optional-one', '[model]'),
   command('permission', [], 'Select permission mode', 'permission', '[manual|yolo|auto]'),
   command('yolo', ['yes'], 'Toggle YOLO mode', 'none'),

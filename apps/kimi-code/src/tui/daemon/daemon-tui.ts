@@ -66,7 +66,7 @@ import {
   type DaemonFileAttachment,
   type PreparedDaemonPrompt,
 } from './attachments';
-import { DaemonClient } from './client';
+import { DaemonClient, type DaemonPersonaSummary } from './client';
 import {
   daemonAutocompleteCommands,
   daemonCommandHelp,
@@ -89,6 +89,7 @@ export interface DaemonTUIStartupInput {
     readonly plan: boolean;
     readonly model?: string;
     readonly thinking?: string;
+    readonly persona?: string;
     readonly agentFiles: readonly string[];
     readonly skillsDirs: readonly string[];
   };
@@ -675,11 +676,14 @@ export class DaemonTUI {
     return this.controller!;
   }
 
-  private async createSession(): Promise<void> {
+  private async createSession(
+    persona = this.startupOverridesPending ? this.startup.cliOptions.persona : undefined,
+  ): Promise<void> {
     const session = await this.client.createSession({
       workDir: this.startup.workDir,
       ephemeral: this.startup.cliOptions.ephemeral === true,
       additionalDirs: this.startup.additionalDirs,
+      persona,
     });
     if (this.startup.cliOptions.ephemeral === true) this.temporarySessionIds.add(session.id);
     await this.openSession(session.id);
@@ -1326,6 +1330,9 @@ export class DaemonTUI {
         if (args === '') await this.showAgentPicker();
         else await this.applyAgentProfile(args);
         return;
+      case 'persona':
+        await this.handlePersonaCommand(args);
+        return;
       case 'model':
         if (args === '') await this.showModelPicker();
         else await this.applyModel(args);
@@ -1434,6 +1441,33 @@ export class DaemonTUI {
         this.showStatus(this.state.appState.version);
         return;
     }
+  }
+
+  private async handlePersonaCommand(args: string): Promise<void> {
+    const [action, rest] = splitFirst(args);
+    if (action === '' || action === 'list') {
+      if (rest !== '') throw new Error('Use /persona list or /persona switch <id>.');
+      await this.listPersonas();
+      return;
+    }
+    if (action !== 'switch') {
+      throw new Error('Use /persona list or /persona switch <id>.');
+    }
+    if (rest === '') throw new Error('/persona switch requires a persona id.');
+    if (/\s/u.test(rest)) throw new Error('/persona switch accepts one persona id.');
+    const persona = (await this.client.listPersonas()).find(
+      (item) => item.id === rest && !item.archived,
+    );
+    if (persona === undefined) throw new Error(`Persona "${rest}" was not found.`);
+    await this.createSession(persona.id);
+    this.showStatus(`Started a new session with persona ${persona.name}.`);
+  }
+
+  private async listPersonas(): Promise<void> {
+    const personas = (await this.client.listPersonas()).filter((persona) => !persona.archived);
+    this.showStatus(
+      personas.map(formatPersonaSummary).join('\n') || 'No active personas configured.',
+    );
   }
 
   private async applyModel(model: string): Promise<void> {
@@ -2347,6 +2381,12 @@ function sessionRow(session: SessionSummary): SessionRow {
     updated_at: session.updatedAt,
     metadata: session.custom,
   };
+}
+
+function formatPersonaSummary(persona: DaemonPersonaSummary): string {
+  return [persona.id, persona.name, persona.title, persona.job]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join(' · ');
 }
 
 function splitFirst(value: string): readonly [string, string] {

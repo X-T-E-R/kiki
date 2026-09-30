@@ -119,6 +119,12 @@ export function createProgram(
     )
     .addOption(
       new Option(
+        '--persona <id>',
+        'Persona to bind to a new session. Cannot be combined with --session/--continue.',
+      ),
+    )
+    .addOption(
+      new Option(
         '--add-dir <dir>',
         'Add an additional workspace directory for this session. Can be repeated.',
       )
@@ -179,6 +185,7 @@ export function createProgram(
       skillsDirs: raw['skillsDir'] as string[],
       agent: raw['agent'] as string | undefined,
       agentFiles: raw['agentFile'] as string[],
+      persona: raw['persona'] as string | undefined,
       addDirs: raw['addDir'] as string[],
     };
 

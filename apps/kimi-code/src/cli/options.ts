@@ -58,6 +58,7 @@ export interface CLIOptions {
   skillsDirs: string[];
   agent: string | undefined;
   agentFiles: string[];
+  persona?: string;
   addDirs?: string[];
 }
 
@@ -176,6 +177,9 @@ export function validateOptions(
   if (opts.agent !== undefined && opts.agent.trim().length === 0) {
     throw new OptionConflictError('Agent cannot be empty.');
   }
+  if (opts.persona !== undefined && opts.persona.trim().length === 0) {
+    throw new OptionConflictError('Persona cannot be empty.');
+  }
   if (opts.agentFiles.length > 1) {
     throw new OptionConflictError('--agent-file may only be specified once.');
   }
@@ -191,6 +195,11 @@ export function validateOptions(
   ) {
     throw new OptionConflictError(
       'Cannot combine --agent/--agent-file with --session/--continue: the agent is bound at session creation and the bound agent is restored automatically on resume.',
+    );
+  }
+  if (opts.persona !== undefined && (opts.session !== undefined || opts.continue)) {
+    throw new OptionConflictError(
+      'Cannot combine --persona with --session/--continue: the persona is bound at session creation and cannot be applied to a resumed session.',
     );
   }
   if (promptMode && opts.session === '') {

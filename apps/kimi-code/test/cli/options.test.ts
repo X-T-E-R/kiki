@@ -64,6 +64,7 @@ describe('CLI options parsing', () => {
       expect(opts.skillsDirs).toEqual([]);
       expect(opts.agent).toBeUndefined();
       expect(opts.agentFiles).toEqual([]);
+      expect(opts.persona).toBeUndefined();
       expect(opts.addDirs).toEqual([]);
     });
   });
@@ -620,6 +621,30 @@ describe('CLI options parsing', () => {
     it('accepts --agent in prompt mode', () => {
       const opts = parse(['-p', 'hi', '--agent', 'reviewer']);
       expect(validateOptions(opts, {}).uiMode).toBe('print');
+    });
+  });
+
+  describe('--persona', () => {
+    it('parses a persona id for a new session', () => {
+      expect(parse(['--persona', 'lin-lan']).persona).toBe('lin-lan');
+    });
+
+    it('rejects an empty persona id', () => {
+      const opts = parse(['--persona', '   ']);
+      expect(() => validateOptions(opts)).toThrow(OptionConflictError);
+      expect(() => validateOptions(opts)).toThrow('Persona cannot be empty.');
+    });
+
+    it('rejects applying a persona to a resumed session', () => {
+      const opts = parse(['--persona', 'lin-lan', '--session', 'session-1']);
+      expect(() => validateOptions(opts)).toThrow(
+        'Cannot combine --persona with --session/--continue',
+      );
+    });
+
+    it('allows explicit profile and model overrides with a persona', () => {
+      const opts = parse(['--persona', 'lin-lan', '--agent', 'reviewer', '--model', 'model-a']);
+      expect(validateOptions(opts).uiMode).toBe('shell');
     });
   });
 

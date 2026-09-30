@@ -102,6 +102,59 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('Which option?');
   });
 
+  it('renders message blocks without exposing source tool arguments', () => {
+    const output = render([
+      {
+        kind: 'message',
+        id: 'message-sent',
+        origin: 'send_message',
+        status: 'sent',
+        text: 'Delivered result',
+        attachments: [],
+        deliveredTo: ['user'],
+        handoff: {
+          targetPersonaId: 'review-bot',
+          targetSessionId: 'session-2',
+          targetName: 'Review Bot',
+        },
+      },
+      {
+        kind: 'message',
+        id: 'message-sending',
+        origin: 'send_message',
+        status: 'sending',
+        text: 'Drafting result',
+        attachments: [],
+        deliveredTo: [],
+      },
+      {
+        kind: 'message',
+        id: 'message-failed',
+        origin: 'send_message',
+        status: 'failed',
+        text: 'Failed result',
+        attachments: [],
+        deliveredTo: [],
+        sourceTool: { argsText: '{"text":"INTERNAL_ONLY"}' } as never,
+      },
+      {
+        kind: 'message',
+        id: 'message-cancelled',
+        origin: 'persona_greeting',
+        status: 'cancelled',
+        text: 'Cancelled greeting',
+        attachments: [],
+        deliveredTo: [],
+      },
+    ]);
+
+    expect(output).toContain('→ Review Bot: Delivered result');
+    expect(output).toContain('Sending: Drafting result');
+    expect(output).toContain('Message not sent (failed): Failed result');
+    expect(output).toContain('Message not sent (cancelled): Cancelled greeting');
+    expect(output).not.toContain('INTERNAL_ONLY');
+  });
+
   it('renders structured media on user and assistant blocks', () => {
     const output = render([
       {
