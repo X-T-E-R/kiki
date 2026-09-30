@@ -1,9 +1,10 @@
 /**
- * Shared chrome for the two rail modes: the mode preference and its switch,
- * the agent state mark, and the in-place approve / reject both modes use.
+ * Small shared rail chrome: the overview mode preference and its switch, the
+ * agent state mark, and the in-place approve / reject.
  *
  * The mode is a device preference kept in `kiki.railMode`; with nothing
- * stored the rail opens in the default mode.
+ * stored the overview opens in the standard mode. It changes only the
+ * overview block; every other part of the rail is the same in both modes.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -12,15 +13,9 @@ import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
 import type { FleetState, PendingItem } from './model';
 import { pendingId } from './model';
-import type { RailProps } from './types';
 
 export type RailMode = 'default' | 'cockpit';
 
-/** What each mode receives: the rail's props plus the mode switch. */
-export type ModeProps = RailProps & {
-  readonly mode: RailMode;
-  readonly onChooseMode: (next: RailMode) => void;
-};
 const STORAGE_KEY = 'kiki.railMode';
 const listeners = new Set<() => void>();
 
@@ -52,11 +47,14 @@ export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-
 
 const MODE_LABEL = { default: 'rail.mode.default', cockpit: 'rail.mode.cockpit' } as const;
 
-/** Two-segment switch at the top of the rail. */
-export function ModeSwitch({ mode, onChoose }: { mode: RailMode; onChoose: (next: RailMode) => void }) {
+/**
+ * Two-segment switch in the overview block's own head. `controls` names the
+ * block it changes, so assistive tech reads the scope too.
+ */
+export function ModeSwitch({ mode, onChoose, controls }: { mode: RailMode; onChoose: (next: RailMode) => void; controls?: string }) {
   const { t } = useI18n();
   return (
-    <div role="radiogroup" aria-label={t('rail.mode.aria')} data-rail-mode-switch className="flex shrink-0 items-center rounded-lg bg-ink/[0.05] p-0.5">
+    <div role="radiogroup" aria-label={t('rail.mode.aria')} aria-controls={controls} data-rail-mode-switch className="flex shrink-0 items-center rounded-md bg-ink/[0.05] p-0.5">
       {(['default', 'cockpit'] as const).map((value) => (
         <button
           key={value}
@@ -65,7 +63,7 @@ export function ModeSwitch({ mode, onChoose }: { mode: RailMode; onChoose: (next
           aria-checked={mode === value}
           data-rail-mode={value}
           onClick={() => { onChoose(value); }}
-          className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] ${mode === value ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink'} ${FOCUS_RING}`}
+          className={`h-6 rounded-[5px] px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-8 ${mode === value ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink'} ${FOCUS_RING}`}
         >
           {t(MODE_LABEL[value])}
         </button>

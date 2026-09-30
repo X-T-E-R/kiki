@@ -22,8 +22,8 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
 }));
 
 vi.mock('./AgentPanelContainer', () => ({
-  AgentPanelContainer: ({ part = 'all', agentId }: { part?: string; agentId: string }) =>
-    <div data-panel-props={part} data-panel-agent={agentId} />,
+  AgentPanelContainer: ({ part = 'all', agentId, overviewMode }: { part?: string; agentId: string; overviewMode?: string }) =>
+    <div data-panel-props={part} data-panel-agent={agentId} data-panel-mode={overviewMode} />,
 }));
 
 const forest = buildAgentForest([], [
@@ -47,6 +47,16 @@ const tasks: Task[] = [
   },
 ];
 const mounts: { container: HTMLDivElement; root: Root }[] = [];
+const pendingApproval: ApprovalBlock = {
+  kind: 'approval',
+  id: 'approval-r1',
+  request: {
+    approval_id: 'r1', session_id: 'sess-1', tool_call_id: 'c1', tool_name: 'Bash', action: 'Run: ls', tool_input_display: undefined,
+    created_at: '2026-01-01T00:00:00.000Z', expires_at: '2026-01-02T00:00:00.000Z',
+  },
+  resolution: undefined,
+  originAgentId: 'agent-1',
+};
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 beforeAll(() => {
@@ -131,6 +141,74 @@ function sharedChapters(container: Element) {
       className: section.className,
     }));
 }
+
+describe('RightRail fixed and switchable parts', () => {
+  /** Every rail part outside the overview block, as data hooks, in page order. */
+  function fixedParts(rail: Element) {
+    const hooks = ['data-rail-owner', 'data-rail-profile-head', 'data-inspector-now', 'data-inspector-needs-you', 'data-inspector-agents', 'data-inspector-tail'];
+    return hooks.filter((hook) => {
+      const node = rail.querySelector(`[${hook}]`);
+      return node !== null && node.closest('[data-rail-switchable]') === null;
+    });
+  }
+  async function choose(rail: Element, mode: 'default' | 'cockpit') {
+    await act(async () => { rail.querySelector<HTMLButtonElement>(`[data-rail-mode="${mode}"]`)!.click(); });
+  }
+  afterEach(() => { localStorage.removeItem('kiki.railMode'); });
+
+  it('keeps every fixed part, the agents section included, in both modes', async () => {
+    const rail = await renderRail({ sessionPending: [pendingApproval] });
+    const standard = fixedParts(rail);
+    const standardHtml = [...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML);
+    await choose(rail, 'cockpit');
+    expect(fixedParts(rail)).toEqual(standard);
+    expect(standard).toContain('data-inspector-agents');
+    // Same place, same markup: the agents section does not change with the mode.
+    expect([...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML)).toEqual(standardHtml);
+  });
+
+  it('switches only the overview block, from a switch in that block', async () => {
+    const rail = await renderRail();
+    const switcher = rail.querySelector('[data-rail-mode-switch]')!;
+    expect(switcher.closest('[data-rail-switchable-head]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-pinned] [data-rail-mode-switch]')).toBeNull();
+    const zone = () => rail.querySelector('[data-rail-switchable]')!;
+    const outside = () => [...rail.querySelectorAll('[data-agent-panel-scroll] > .rail-page > *')]
+      .filter((node) => !node.hasAttribute('data-rail-switchable'))
+      .map((node) => node.outerHTML);
+    expect(zone().getAttribute('data-rail-switchable')).toBe('default');
+    expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('default');
+    const before = outside();
+    await choose(rail, 'cockpit');
+    expect(zone().getAttribute('data-rail-switchable')).toBe('cockpit');
+    expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('cockpit');
+    expect(outside()).toEqual(before);
+    expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
+  });
+
+  it('renders the main agent and a subagent with the same rail, each from its own agent', async () => {
+    const main = await renderRail();
+    const child = await renderRail({ subagent: context });
+    const shape = (rail: Element) => ['[data-rail-owner]', '[data-rail-now-block]', '#rail-todos', '[data-rail-switchable]', '[data-inspector-tail]']
+      .map((selector) => rail.querySelectorAll(selector).length);
+    // One component: the page is built from the same blocks.
+    expect(shape(child)).toEqual([1, 1, 1, 1, 1]);
+    expect(shape(main)).toEqual(shape(child));
+    expect(main.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('main');
+    expect(child.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('agent-1');
+    for (const part of ['work', 'overview']) {
+      expect(main.querySelector(`[data-panel-props="${part}"]`)?.getAttribute('data-panel-agent')).toBe('main');
+      expect(child.querySelector(`[data-panel-props="${part}"]`)?.getAttribute('data-panel-agent')).toBe('agent-1');
+    }
+    expect(main.querySelector('[data-rail-profile-head]')?.textContent).toBe('Main');
+    expect(child.querySelector('[data-rail-profile-head]')?.textContent).toBe('Researcher');
+    // Main-only and subagent-only parts follow railVisibility, not a second component.
+    expect(main.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
+    expect(child.querySelector('[data-terminate-all-subagents]')).toBeNull();
+    expect(main.querySelector('[data-rail-locate]')).toBeNull();
+    expect(child.querySelector('[data-rail-locate]')).not.toBeNull();
+  });
+});
 
 describe('RightRail shared chapters', () => {
   it('mounts the agent panel only when its rail slot enters the viewport', async () => {

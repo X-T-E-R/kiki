@@ -1,19 +1,19 @@
 /**
- * The default rail: the inspector in a coordinator's reading order. Top to bottom:
+ * The right rail: one page per agent, the same component for the main agent
+ * and every subagent. Top to bottom:
  *
- *   head       who this page is about, the mode switch, close
- *   等你处理    decision stack (first as a card, the rest one line each)
- *   现在        what the agent is doing, with the todo pointer under it
- *   上下文·费用  context meter, cost, tokens, cache (the resident overview)
- *   智能体      the team roster
- *   待办        the full checklist and notes
- *   profile    folded to one line
- *   动态        activity stream, folded
- *   能力        tools / skills / subagents / extensions, folded
- *   后台任务 · 会话信息
+ *   head       who this page is about, close                      fixed
+ *   现在        profile head, what the agent is doing, its actions  fixed
+ *   待办        checklist, notes, plan                             fixed
+ *   等你处理    decision stack, from any depth                     fixed
+ *   智能体      the team under this agent                          fixed
+ *   后台任务                                                       fixed
+ *   概览        standard figures | cockpit instruments             switches
+ *   能力 · 动态 · 会话信息, folded                                  fixed
  *
- * Every part except the decision stack, the todo pointer, the activity
- * stream and the capability block comes from the shared agent-panel parts.
+ * Only 概览 follows the 标准 / 驾驶舱 preference (`kiki.railMode`), and its
+ * switch sits in that block's own head. What differs between the main
+ * agent's page and a subagent's is decided in one place, `railVisibility`.
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -36,25 +36,27 @@ import {
 import { useI18n } from '../../i18n';
 import { useLayoutPreferences, usePaneResize } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
+import { usageSessionDeepLink } from '../../lib/usageV2';
 import { AgentPanelContainer } from '../AgentPanelContainer';
 import { InspectorComms } from '../comms/InspectorComms';
 import { AgentRoster, RAIL_MARK, RailCrumbs } from '../agent-panel/InspectorAgents';
 import { InspectorNow, NowAction, pendingBlocks } from '../agent-panel/InspectorNow';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
-import { INSPECTOR_LINK, InspectorRow, InspectorSection } from '../agent-panel/InspectorSection';
+import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow, InspectorSection } from '../agent-panel/InspectorSection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
-import type { ModeProps } from './shell';
-import { ModeSwitch } from './shell';
+import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
+import { FOCUS_RING, ModeSwitch, useRailMode } from './shell';
+import type { RailProps } from './types';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
 
 /** Sections sit over hairlines; no cards. */
 const SECTION = 'border-t border-hairline py-4 first:border-t-0 first:pt-3';
-/** The context meter stays neutral until the overview itself calls it near (warn / danger). */
-const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-attention [&_[data-overview-context=danger]_[role=meter]>div]:!bg-attention [&_[data-overview-context]_span.text-danger]:!text-attention [&_[data-overview-context]_span.text-amber-ink]:!text-attention';
+/** The context meter stays neutral until the overview calls it near; near is amber, never the "needs you" accent. */
+const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context=danger]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context]_span.text-danger]:!text-amber-ink';
 /** Cost, tokens and cache as mono figures. */
 const OVERVIEW_FIGURES = '[&_[data-overview-fact]>div:first-child]:font-mono [&_[data-overview-fact]>div:first-child]:text-[17px] [&_[data-overview-fact]>div:first-child]:font-normal [&_[data-overview-fact]>div:first-child]:tracking-tight [&_[data-overview-context]_.text-[13px]]:font-mono';
 /** Waiting agents are already listed in Needs you: their roster rows keep only the trailing state word. */
@@ -295,7 +297,7 @@ function useLazyPanelSlot() {
   return { slotRef, visible, mounted };
 }
 
-export function DefaultRail({
+export function Rail({
   state,
   forest,
   selectedAgentId,
@@ -312,10 +314,10 @@ export function DefaultRail({
   memory,
   onClose,
   className,
-  mode,
-  onChooseMode,
-}: ModeProps) {
+}: RailProps) {
   const { t } = useI18n();
+  const navigate = useNavigate();
+  const [mode, chooseMode] = useRailMode();
   const session = state.session;
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
@@ -324,6 +326,8 @@ export function DefaultRail({
   const peekAgentId = useInspectorPeek();
   const focusedAgentId = selectedAgentId ?? MAIN_AGENT_ID;
   const focusedNode = forest.byId[focusedAgentId];
+  // The routed agent page (no onInspectMain) is already this agent's timeline.
+  const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
   const backgroundTasks = useMemo(
     () => state.tasks.filter((task) => task.kind !== 'subagent' && task.status === 'running'),
     [state.tasks],
@@ -342,35 +346,18 @@ export function DefaultRail({
   // Agents waiting on the user: a pending item's origin, plus the focused
   // subagent when its own count says so. Their rows surface first.
   const waitingAgentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of pending) {
-      if (item.originAgentId !== undefined && item.originAgentId !== MAIN_AGENT_ID) ids.add(item.originAgentId);
-    }
+    const ids = pendingOrigins(pending);
     if (subagent !== undefined && subagent.pendingInteractionCount > 0) ids.add(subagent.agentId);
     return ids;
   }, [pending, subagent]);
-  // Empty sections collapse entirely (header included) in either rail context.
-  // Main lists the whole team; a subagent lists the agents it dispatched.
-  const rosterCount = useMemo(() => {
-    if (focusedAgentId !== MAIN_AGENT_ID) {
-      let count = 0;
-      const stack = [...(forest.byId[focusedAgentId]?.childIds ?? [])];
-      const seen = new Set<string>();
-      while (stack.length > 0) {
-        const id = stack.pop()!;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        count += 1;
-        stack.push(...(forest.byId[id]?.childIds ?? []));
-      }
-      return count;
-    }
-    return Object.keys(forest.byId).filter((id) => id !== MAIN_AGENT_ID).length;
-  }, [forest, focusedAgentId]);
+  // Empty sections collapse entirely (header included) on every page.
+  // Main lists the whole team; a subagent lists the agents under it.
+  const rosterCount = useMemo(() => descendantIds(forest, focusedAgentId).length, [forest, focusedAgentId]);
   const showRoster = rosterCount > 0;
   const showTasks = backgroundTasks.length > 0;
-  const showTerminateAll = onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
-  const busy = subagent !== undefined ? (focusedNode?.busy === true || state.busy) : state.busy;
+  const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
+  const busy = show.isMain ? state.busy : (focusedNode?.busy === true || state.busy);
+  const taskOwner = taskOwnerAgentId ?? show.taskOwner;
   // Turning a tab. Inside the session view the document-level focus tracker
   // pins on click (inspectorFocus.ts); main is also handed back explicitly,
   // and the routed agent page (no onInspectMain) navigates instead.
@@ -507,17 +494,12 @@ export function DefaultRail({
         forest={forest}
         focusedAgentId={focusedAgentId}
         onSelect={selectAgent}
-        close={(
-          <span className="flex shrink-0 items-center gap-1">
-            <ModeSwitch mode={mode} onChoose={onChooseMode} />
-            {onClose === undefined ? null : (
-              <button type="button" onClick={onClose} data-rail-close
-                title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
-                className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
-                <Icon name="close" size={16} />
-              </button>
-            )}
-          </span>
+        close={onClose === undefined ? null : (
+          <button type="button" onClick={onClose} data-rail-close
+            title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
+            className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
+            <Icon name="close" size={16} />
+          </button>
         )}
       />
       <div key={focusedAgentId} data-rail-now-block className="rail-page space-y-3 pt-1">
@@ -538,20 +520,19 @@ export function DefaultRail({
         listPending={sessionPending === undefined}
         onReview={onReviewPending}
         startedAt={runStartedAt}
-        subagent={subagent === undefined || subStatus === undefined ? undefined : {
+        subagent={!show.subagentStory || subagent === undefined || subStatus === undefined ? undefined : {
           status: subStatus,
           brief: subBlock?.description ?? subBlock?.instruction ?? focusedNode?.description,
           result: subBlock?.summary ?? focusedNode?.summary,
           error: subBlock?.error ?? focusedNode?.error,
           pendingCount: subagent.pendingInteractionCount,
         }}
-        actions={subagent === undefined ? undefined : (
+        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn) ? undefined : (
           <div data-subagent-context className="-mt-1 ml-3 flex flex-wrap items-center gap-x-4 gap-y-1">
-            {/* The routed agent page is already this agent's workspace. */}
-            {onInspectMain !== undefined ? (
+            {show.openAgent ? (
               <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { onOpenSubagent(subagent.agentId); }} />
             ) : null}
-            {subagent.onJumpToSpawn !== undefined ? (
+            {show.locateSpawn && subagent.onJumpToSpawn !== undefined ? (
               <NowAction data-rail-locate="" icon="arrowUp" label={t('inspector.locate')} onClick={subagent.onJumpToSpawn} />
             ) : null}
           </div>
@@ -592,7 +573,7 @@ export function DefaultRail({
           count={rosterCount}
           data-inspector-agents=""
           actions={
-            showTerminateAll && subagent === undefined ? (
+            showTerminateAll ? (
               <button
                 type="button"
                 data-terminate-all-subagents
@@ -621,7 +602,7 @@ export function DefaultRail({
           <TasksSection
             tasks={backgroundTasks}
             sessionId={session?.id}
-            ownerAgentId={taskOwnerAgentId}
+            ownerAgentId={taskOwner}
             onCancel={onCancelTask}
             onOpenTask={setDetailTask}
           />
@@ -630,20 +611,56 @@ export function DefaultRail({
         </div>
       ) : null}
 
-      {/* 5 · Context and cost, read when wanted. Mounts once its slot
-          scrolls into view (it starts the capability and compaction-point
-          reads). */}
-      <div ref={panelSlot.slotRef} data-rail-agent-panel-slot className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}>
-        {panelSlot.mounted ? (
-          <AgentPanelContainer key={`overview:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} visible={panelSlot.visible} part="overview" />
-        ) : null}
-      </div>
+      {/* 5 · 概览, the one block that follows the 标准 / 驾驶舱 preference.
+          The switch lives in this block's own head, so it plainly changes
+          only what is under it. The body mounts once the slot scrolls into
+          view (it starts the capability and compaction-point reads). */}
+      <section
+        ref={panelSlot.slotRef}
+        data-rail-agent-panel-slot
+        data-rail-switchable={mode}
+        aria-labelledby="rail-overview-title"
+        className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
+      >
+        <div data-rail-overview-well className="-mx-2 rounded-[10px] bg-ink/[0.025] px-2 pt-1 pb-3 ring-1 ring-hairline/70 ring-inset">
+          <header data-rail-switchable-head className="flex h-9 items-center gap-1.5">
+            <h3 id="rail-overview-title" className={INSPECTOR_HEAD}>{t('inspector.overview')}</h3>
+            <button
+              type="button"
+              data-rail-open-usage
+              onClick={() => { void navigate(usageSessionDeepLink(state.sessionId)); }}
+              title={t('inspector.usage')}
+              aria-label={t('inspector.usage')}
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9 ${FOCUS_RING}`}
+            >
+              <Icon name="arrowUpRight" size={12} />
+            </button>
+            <span className="flex-1" />
+            <ModeSwitch mode={mode} onChoose={chooseMode} controls="rail-overview-body" />
+          </header>
+          <div id="rail-overview-body" data-rail-switchable-body>
+            {panelSlot.mounted ? (
+              <AgentPanelContainer
+                key={`overview:${agentPanelKey}`}
+                state={state}
+                forest={forest}
+                agentId={focusedAgentId}
+                visible={panelSlot.visible}
+                part="overview"
+                overviewMode={mode}
+                waitingIds={waitingAgentIds}
+                onOpenAgent={onOpenSubagent}
+              />
+            ) : null}
+          </div>
+        </div>
+      </section>
 
       {/* 6 · Reference, folded: what it can use, what happened. */}
       <div data-inspector-tail className={`space-y-1 ${SECTION}`}>
         <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
         <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
-        {focusedAgentId === MAIN_AGENT_ID && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
+        {show.comms && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
         {memory !== undefined ? (
           <RailSection title={memory.title} count={memory.count} data-inspector-memory="">
             {memory.content}
@@ -670,7 +687,7 @@ export function DefaultRail({
       {detailTask !== null && session !== undefined ? (
         <TaskDetailModal
           sessionId={session.id}
-          ownerAgentId={taskOwnerAgentId}
+          ownerAgentId={taskOwner}
           task={detailTask}
           onClose={() => { setDetailTask(null); }}
           onCancelTask={onCancelTask}

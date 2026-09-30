@@ -23,6 +23,8 @@ import { useI18n } from '../i18n';
 import { permissionModeDef } from '../lib/permissionModes';
 import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
+import { CockpitOverview } from './rail-variants/CockpitOverview';
+import type { RailMode } from './rail-variants/shell';
 import { agentUsageCacheHitRate } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
@@ -42,6 +44,7 @@ import {
 } from './agent-panel/mapCapabilities';
 
 const noopSubscribe = (): (() => void) => () => {};
+const NO_WAITING: ReadonlySet<string> = new Set();
 
 /**
  * Live view state of the agent this panel belongs to, or `undefined` when no
@@ -102,12 +105,18 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
  */
 export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
 
-export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all' }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', waitingIds, onOpenAgent }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
   visible?: boolean;
   part?: AgentPanelPart;
+  /** The overview part's body: the standard figures or the cockpit instruments. */
+  overviewMode?: RailMode;
+  /** Agents waiting on the user (cockpit lanes set them apart). */
+  waitingIds?: ReadonlySet<string>;
+  /** Cockpit lane rows open that agent. */
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const { klient } = useConnection();
   const { t, tp } = useI18n();
@@ -247,21 +256,36 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     tools: data?.tools,
   });
   if (part === 'overview') {
-    return <div data-agent-panel-container data-agent-panel-part="overview">
-      <InspectorOverview
-        contextUsed={facts.contextUsed}
-        contextLimit={facts.contextLimit}
-        compactPoint={facts.compactPoint}
-        figures={facts.figures}
-        treeFigures={facts.treeFigures}
-        scope={facts.treeFigures === undefined ? 'agent' : scope}
-        onScope={setScope}
-        setupLine={facts.setupLine}
-        startedAt={facts.startedAt}
-        turns={facts.turns}
-        toolCalls={facts.toolCalls}
-        onOpenUsage={identityProps.onOpenUsageDetail}
-      />
+    return <div data-agent-panel-container data-agent-panel-part="overview" data-overview-mode={overviewMode}>
+      {overviewMode === 'cockpit' ? (
+        <CockpitOverview
+          agentId={agentId}
+          forest={forest}
+          blocks={state.blocks}
+          waitingIds={waitingIds ?? NO_WAITING}
+          contextUsed={facts.contextUsed}
+          contextLimit={facts.contextLimit}
+          compactPoint={facts.compactPoint}
+          figures={facts.figures}
+          turns={facts.turns}
+          toolCalls={facts.toolCalls}
+          onOpenAgent={onOpenAgent}
+        />
+      ) : (
+        <InspectorOverview
+          contextUsed={facts.contextUsed}
+          contextLimit={facts.contextLimit}
+          compactPoint={facts.compactPoint}
+          figures={facts.figures}
+          treeFigures={facts.treeFigures}
+          scope={facts.treeFigures === undefined ? 'agent' : scope}
+          onScope={setScope}
+          setupLine={facts.setupLine}
+          startedAt={facts.startedAt}
+          turns={facts.turns}
+          toolCalls={facts.toolCalls}
+        />
+      )}
     </div>;
   }
   if (part === 'profile') {

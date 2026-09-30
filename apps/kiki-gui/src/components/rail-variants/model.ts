@@ -1,23 +1,22 @@
 /**
- * Shared read model for the right rail's two modes.
+ * Read model for the right rail: which parts show for the viewed agent, the
+ * fleet under it, and the small formatting helpers both overview modes use.
  *
- * Every variant sees the same session through this one hook: the agent
- * fleet flattened from the forest, the session-wide pending queue, the main
- * agent's context and compactions, cost, and the user's own prompts. The
- * variants differ only in what they put first and how they draw it.
+ * The rail describes one agent at a time. Every rule that makes the main
+ * agent's page differ from a subagent's lives in `railVisibility`, so the two
+ * never grow separate copies of the same panel.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   MAIN_AGENT_ID,
   type AgentForest,
   type ApprovalBlock,
+  type Block,
   type QuestionBlock,
-  type SessionViewState,
 } from '@kiki/session-core/session';
 
-export type Family = 'opus' | 'sol' | 'luna' | 'ds' | 'other';
 export type FleetState = 'waiting' | 'running' | 'done' | 'failed' | 'stopped';
 export type PendingItem = ApprovalBlock | QuestionBlock;
 
@@ -25,64 +24,63 @@ export interface FleetAgent {
   readonly id: string;
   readonly label: string;
   readonly description: string | undefined;
-  readonly model: string | undefined;
-  readonly family: Family;
   readonly state: FleetState;
-  readonly parentId: string;
+  /** Levels below the viewed agent (its own children are 0). */
   readonly depth: number;
   readonly startedAt: number | undefined;
-  readonly endedAt: number | undefined;
-  readonly summary: string | undefined;
-  readonly error: string | undefined;
-  readonly toolCalls: number;
 }
 
-export interface RailPrompt {
-  readonly id: string;
-  readonly text: string;
-  readonly at: number;
+/**
+ * What the rail shows for the viewed agent. Everything not listed here is
+ * the same on every page.
+ *
+ *   openAgent       "Open agent" under Now: only when the timeline on screen
+ *                   is not already this agent's own page
+ *   locateSpawn     "Locate" under Now: every subagent (main was not spawned)
+ *   subagentStory   Now reads the brief / result / failure of the run
+ *   stopAll         bulk stop of running subagents: the main page only
+ *   comms           thread messages: the main page only (the session's own)
+ *   taskOwner       background tasks cancel through the viewed agent's own
+ *                   task service; main uses the session default
+ */
+export interface RailVisibility {
+  readonly isMain: boolean;
+  readonly openAgent: boolean;
+  readonly locateSpawn: boolean;
+  readonly subagentStory: boolean;
+  readonly stopAll: boolean;
+  readonly comms: boolean;
+  readonly taskOwner: string | undefined;
 }
 
-export interface RailData {
-  readonly now: number;
-  readonly agents: readonly FleetAgent[];
-  readonly byState: Readonly<Record<FleetState, number>>;
-  readonly byFamily: Readonly<Record<Family, number>>;
-  readonly pending: readonly PendingItem[];
-  readonly waitingIds: ReadonlySet<string>;
-  readonly contextTokens: number | undefined;
-  readonly contextLimit: number | undefined;
-  readonly compactions: readonly number[];
-  readonly costUsd: number | undefined;
-  readonly turns: number | undefined;
-  readonly cacheRate: number | undefined;
-  readonly prompts: readonly RailPrompt[];
-  readonly mainBusy: boolean;
-  readonly mainStartedAt: number | undefined;
-  readonly mainSaying: string | undefined;
-  readonly sessionStartedAt: number | undefined;
+export function railVisibility(agentId: string, surfaceAgentId: string): RailVisibility {
+  const isMain = agentId === MAIN_AGENT_ID;
+  return {
+    isMain,
+    openAgent: !isMain && surfaceAgentId !== agentId,
+    locateSpawn: !isMain,
+    subagentStory: !isMain,
+    stopAll: isMain,
+    comms: isMain,
+    taskOwner: isMain ? undefined : agentId,
+  };
 }
 
-export const FAMILIES: readonly Family[] = ['opus', 'sol', 'luna', 'ds', 'other'];
-
-/** Model family from a model id; the fleet is read by family, not by id. */
-export function familyOf(model: string | undefined): Family {
-  const id = (model ?? '').toLowerCase();
-  if (id.includes('opus') || id.includes('claude')) return 'opus';
-  if (id.includes('sol')) return 'sol';
-  if (id.includes('luna')) return 'luna';
-  if (id.includes('deepseek')) return 'ds';
-  return 'other';
+/** Everyone under `rootId` (main: the whole team), depth-first. */
+export function descendantIds(forest: AgentForest, rootId: string): string[] {
+  if (rootId === MAIN_AGENT_ID) return Object.keys(forest.byId).filter((id) => id !== MAIN_AGENT_ID);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const stack = [...(forest.byId[rootId]?.childIds ?? [])].reverse();
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    stack.push(...[...(forest.byId[id]?.childIds ?? [])].reverse());
+  }
+  return out;
 }
-
-/** Family colour as token utilities: fill, text, and a soft wash. */
-export const FAMILY_TONE: Readonly<Record<Family, { fill: string; text: string; soft: string }>> = {
-  opus: { fill: 'bg-section-ink', text: 'text-section-ink', soft: 'bg-section-ink/15' },
-  sol: { fill: 'bg-selected-ink', text: 'text-selected-ink', soft: 'bg-selected-ink/15' },
-  luna: { fill: 'bg-amber-rule', text: 'text-amber-ink', soft: 'bg-amber-rule/20' },
-  ds: { fill: 'bg-ink-faint', text: 'text-ink-soft', soft: 'bg-ink-faint/15' },
-  other: { fill: 'bg-hairline-strong', text: 'text-ink-faint', soft: 'bg-hairline-strong/25' },
-};
 
 function stateOf(status: string, waiting: boolean): FleetState {
   if (waiting || status === 'suspended') return 'waiting';
@@ -104,6 +102,52 @@ const parseTime = (iso: string | undefined): number | undefined => {
   const value = Date.parse(iso);
   return Number.isNaN(value) ? undefined : value;
 };
+
+/** The agents under `rootId` as fleet rows, depth counted from the viewed agent. */
+export function fleetUnder(forest: AgentForest, rootId: string, waitingIds: ReadonlySet<string>): FleetAgent[] {
+  const out: FleetAgent[] = [];
+  const seen = new Set<string>();
+  const visit = (id: string, depth: number) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = forest.byId[id];
+    if (node === undefined) return;
+    out.push({
+      id,
+      label: node.label,
+      description: node.description,
+      state: stateOf(node.status, waitingIds.has(id)),
+      depth,
+      startedAt: parseTime(node.startedAt),
+    });
+    for (const child of node.childIds) visit(child, depth + 1);
+  };
+  const root = forest.byId[rootId];
+  const top = root !== undefined ? root.childIds : rootId === MAIN_AGENT_ID ? forest.roots.map((node) => node.agentId).filter((id) => id !== MAIN_AGENT_ID) : [];
+  for (const id of top) visit(id, 0);
+  return out;
+}
+
+/** Agents a pending request came from (main excluded). */
+export function waitingAgentIds(pending: readonly PendingItem[]): Set<string> {
+  const ids = new Set<string>();
+  for (const item of pending) {
+    if (item.originAgentId !== undefined && item.originAgentId !== MAIN_AGENT_ID) ids.add(item.originAgentId);
+  }
+  return ids;
+}
+
+/** Epoch ms of each context compaction in these blocks. */
+export function compactionTimes(blocks: readonly Block[]): number[] {
+  const out: number[] = [];
+  for (const block of blocks) {
+    if (block.kind === 'notice' && block.i18n?.key.startsWith('transcript.marker.compaction') === true) {
+      const at = parseTime(block.createdAt);
+      if (at !== undefined) out.push(at);
+    }
+  }
+  return out;
+}
 
 /** A clock that advances every `ms` so live bars and ages keep moving. */
 export function useNow(ms = 30_000): number {
@@ -138,90 +182,6 @@ export function decidable(item: PendingItem): item is ApprovalBlock {
   const kind = typeof display === 'object' && display !== null ? display.kind : undefined;
   return kind !== 'plan_enter' && kind !== 'plan_exit' && kind !== 'plan_review' && kind !== 'external_permission';
 }
-export function useRailData(
-  state: SessionViewState,
-  forest: AgentForest,
-  pending: readonly PendingItem[],
-): RailData {
-  const now = useNow();
-  return useMemo(() => {
-    const waitingIds = new Set<string>();
-    for (const item of pending) {
-      if (item.originAgentId !== undefined && item.originAgentId !== MAIN_AGENT_ID) waitingIds.add(item.originAgentId);
-    }
-    const agents: FleetAgent[] = [];
-    const visit = (id: string, depth: number) => {
-      const node = forest.byId[id];
-      if (node === undefined) return;
-      if (id !== MAIN_AGENT_ID) {
-        agents.push({
-          id,
-          label: node.label,
-          description: node.description,
-          model: node.model,
-          family: familyOf(node.model),
-          state: stateOf(node.status, waitingIds.has(id)),
-          parentId: node.parentAgentId ?? MAIN_AGENT_ID,
-          depth,
-          startedAt: parseTime(node.startedAt),
-          endedAt: parseTime(node.endedAt),
-          summary: node.summary,
-          error: node.error,
-          toolCalls: node.toolCallCount,
-        });
-      }
-      for (const child of node.childIds) visit(child, id === MAIN_AGENT_ID ? depth : depth + 1);
-    };
-    const main = forest.byId[MAIN_AGENT_ID];
-    if (main !== undefined) visit(MAIN_AGENT_ID, 0);
-    else for (const root of forest.roots) visit(root.agentId, 0);
-
-    const byState: Record<FleetState, number> = { waiting: 0, running: 0, done: 0, failed: 0, stopped: 0 };
-    const byFamily: Record<Family, number> = { opus: 0, sol: 0, luna: 0, ds: 0, other: 0 };
-    for (const agent of agents) {
-      byState[agent.state] += 1;
-      byFamily[agent.family] += 1;
-    }
-
-    const compactions: number[] = [];
-    const prompts: RailPrompt[] = [];
-    let mainSaying: string | undefined;
-    for (const block of state.blocks) {
-      if (block.kind === 'notice' && block.i18n?.key.startsWith('transcript.marker.compaction') === true) {
-        const at = parseTime(block.createdAt);
-        if (at !== undefined) compactions.push(at);
-      } else if (block.kind === 'user' && block.agentMessage === undefined && block.text.trim() !== '') {
-        const at = parseTime(block.createdAt);
-        if (at !== undefined) prompts.push({ id: block.id, text: block.text.trim(), at });
-      } else if (block.kind === 'assistant' && block.text.trim() !== '') {
-        mainSaying = block.text.trim();
-      }
-    }
-    const usage = state.session?.usage;
-    const cacheRate = usage !== undefined && usage.input_tokens + usage.cache_read_tokens > 0
-      ? usage.cache_read_tokens / (usage.input_tokens + usage.cache_read_tokens)
-      : undefined;
-    return {
-      now,
-      agents,
-      byState,
-      byFamily,
-      pending,
-      waitingIds,
-      contextTokens: state.contextTokens ?? usage?.context_tokens,
-      contextLimit: state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined),
-      compactions,
-      costUsd: usage?.total_cost_usd,
-      turns: usage?.turn_count,
-      cacheRate,
-      prompts,
-      mainBusy: state.busy,
-      mainStartedAt: state.turnStartedAt,
-      mainSaying,
-      sessionStartedAt: parseTime(state.session?.created_at),
-    };
-  }, [state.blocks, state.session, state.contextTokens, state.maxContextTokens, state.busy, state.turnStartedAt, forest, pending, now]);
-}
 
 /** Compact age: 3m, 4h, 2d — the unit a coordinator scans by. */
 export function age(ms: number, locale: 'en' | 'zh'): string {
@@ -231,16 +191,4 @@ export function age(ms: number, locale: 'en' | 'zh'): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return locale === 'zh' ? `${hours} 时` : `${hours}h`;
   return locale === 'zh' ? `${Math.floor(hours / 24)} 天` : `${Math.floor(hours / 24)}d`;
-}
-
-export function money(usd: number | undefined): string | undefined {
-  if (usd === undefined) return undefined;
-  return usd >= 100 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`;
-}
-
-export function tokens(count: number | undefined): string {
-  if (count === undefined) return '—';
-  if (count < 1000) return String(count);
-  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
-  return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 2 : 1)}M`;
 }

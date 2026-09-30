@@ -14,9 +14,7 @@
 import { memo, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
-import { Icon } from '../icons';
 import { useNow } from '../RelativeTime';
-import { INSPECTOR_HEAD } from './InspectorSection';
 
 export interface OverviewFigures {
   readonly costUsd?: number;
@@ -44,7 +42,6 @@ export interface InspectorOverviewProps {
   readonly startedAt?: string;
   readonly turns?: number;
   readonly toolCalls?: number;
-  readonly onOpenUsage?: () => void;
 }
 
 function compactTokens(value: number): string {
@@ -98,7 +95,6 @@ export const InspectorOverview = memo(function InspectorOverview({
   startedAt,
   turns,
   toolCalls,
-  onOpenUsage,
 }: InspectorOverviewProps) {
   const { t, tp } = useI18n();
   const age = useAge(startedAt);
@@ -158,28 +154,13 @@ export const InspectorOverview = memo(function InspectorOverview({
   ].filter((part): part is string => part !== undefined);
   return (
     <section data-inspector-overview className="space-y-3">
-      <div className="flex min-h-7 items-center gap-1.5">
-        <h3 className={INSPECTOR_HEAD}>{t('inspector.overview')}</h3>
-        {onOpenUsage !== undefined ? (
-          <button
-            type="button"
-            onClick={onOpenUsage}
-            title={t('inspector.usage')}
-            aria-label={t('inspector.usage')}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <Icon name="arrowUpRight" size={12} />
-          </button>
-        ) : null}
-        <span className="flex-1" />
-        {treeFigures !== undefined ? (
-          <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="-mr-1.5 flex shrink-0 items-center">
-            {scopeButton('agent', t('inspector.scopeAgent'))}
-            <span aria-hidden className="text-[12px] text-hairline-strong">/</span>
-            {scopeButton('tree', t('inspector.treeTotal'))}
-          </div>
-        ) : null}
-      </div>
+      {treeFigures !== undefined ? (
+        <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="-my-1 -mr-1.5 flex items-center justify-end">
+          {scopeButton('agent', t('inspector.scopeAgent'))}
+          <span aria-hidden className="text-[12px] text-hairline-strong">/</span>
+          {scopeButton('tree', t('inspector.treeTotal'))}
+        </div>
+      ) : null}
 
       {contextUsed !== undefined ? (
         <div data-overview-context={level} className="space-y-1.5">
