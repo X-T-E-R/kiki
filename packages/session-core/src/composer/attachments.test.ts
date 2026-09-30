@@ -137,6 +137,18 @@ describe('buildPromptContent', () => {
     expect(content?.[0]?.type).toBe('image');
   });
 
+  it('resends retained image, video and file parts unchanged through both prompt and skill delivery', () => {
+    const attachments: ComposerAttachment[] = [
+      { kind: 'retained', name: 'image', content: { type: 'image', source: { kind: 'session_media', file_id: 'image-original' } } },
+      { kind: 'retained', name: 'video', content: { type: 'video', source: { kind: 'url', url: 'https://example.com/original.mp4' } } },
+      { kind: 'retained', name: 'file', content: { type: 'file', file_id: 'file-original', name: 'original.pdf', media_type: 'application/pdf', size: 42 } },
+    ];
+    const originals = attachments.map((attachment) => attachment.kind === 'retained' ? attachment.content : undefined);
+    expect(buildPromptContent('retry', attachments)).toEqual([{ type: 'text', text: 'retry' }, ...originals]);
+    expect(buildPromptContent('', attachments)).toEqual(originals);
+    expect(buildSkillActivation('--retry', attachments)).toEqual({ args: '--retry', attachments: originals });
+  });
+
   it('returns null when there is nothing to send', () => {
     expect(buildPromptContent('   ', [])).toBeNull();
   });

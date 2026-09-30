@@ -21,6 +21,7 @@ import {
   resetComposerMemoryForTests,
   resetDraftMemoryForTests,
   resetInputHistoryForTests,
+  restorePromptToDraft,
   subscribeDraftAppends,
   writeComposerState,
   writeDraft,
@@ -299,6 +300,49 @@ describe('persisted /new draft scalars', () => {
       effortFromProfile: undefined,
       prefillSource: undefined,
     });
+  });
+});
+
+describe('restorePromptToDraft', () => {
+  beforeEach(() => {
+    resetDraftMemoryForTests();
+    resetComposerMemoryForTests();
+  });
+
+  it('merges interrupted text and original media with an existing draft without replacing composer controls', () => {
+    writeDraft('s1', 'new follow-up');
+    const previous = emptyState({
+      attachments: [{ kind: 'file', path: 'new.ts', name: 'new.ts', isDir: false }],
+      annotations: addAnnotation([], 'source', 'comment'), permissionMode: 'manual',
+      planMode: true, planGate: 'gated', goalObjective: 'goal', modelOverride: 'fixture/model', effortOverride: 'high',
+    });
+    writeComposerState('s1', previous);
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.com/original.png' } };
+    const file = { type: 'file' as const, file_id: 'original-file', name: 'original.pdf', media_type: 'application/pdf', size: 42 };
+    const listener = vi.fn();
+    const unsubscribe = subscribeDraftAppends(listener);
+    try {
+      restorePromptToDraft('s1', [{ type: 'text', text: 'interrupted' }, image, file]);
+      const restored = [{ kind: 'retained', name: 'image', content: image }, { kind: 'retained', name: 'original.pdf', content: file }];
+      expect(readDraft('s1')).toBe('new follow-up\n\ninterrupted');
+      expect(readComposerState('s1')).toEqual({ ...previous, attachments: [...previous.attachments, ...restored] });
+      expect(listener).toHaveBeenCalledExactlyOnceWith('s1', restored);
+      expect(readDraft('s2')).toBe('');
+      expect(readComposerState('s2')).toEqual({});
+      flushDrafts();
+      expect(localStorage.getItem('kiki.drafts')).not.toContain('original-file');
+      expect(localStorage.getItem('kiki.composerStates')).not.toContain('original-file');
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('restores a media-only interruption without changing an existing text draft', () => {
+    writeDraft('s1', 'new follow-up');
+    const file = { type: 'file' as const, file_id: 'original-file', name: 'original-file', media_type: 'text/plain', size: 1 };
+    restorePromptToDraft('s1', [file]);
+    expect(readDraft('s1')).toBe('new follow-up');
+    expect(readComposerState('s1').attachments).toEqual([{ kind: 'retained', name: 'original-file', content: file }]);
   });
 });
 
