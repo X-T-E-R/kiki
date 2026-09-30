@@ -1,5 +1,6 @@
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
 import type { NamedAgentProfile, UpdateNamedAgentProfileRequest } from '../../../lib/client';
+import type { KikiContextGroup } from '../../harness/kikiContext';
 import { subagentPolicyBody, subagentPolicyChoice, type SubagentPolicyChoice } from '../subagentPolicy';
 import {
   executorPromptBody, executorPromptDraftFrom, executorPromptIncludesValid, type ExecutorPromptDraft,
@@ -56,6 +57,11 @@ export interface ProfileDraft {
   readonly executor: string;
   /** External main only: inject the Kiki MCP bridge so the engine can dispatch Kiki subagents. */
   readonly allowKikiSubagents: boolean;
+  /**
+   * External main only: Kiki groups handed to the engine. `undefined` = the
+   * field is absent (all off by default); `[]` = written as explicitly all off.
+   */
+  readonly kikiContext: readonly KikiContextGroup[] | undefined;
   readonly modelAlias: string;
   readonly effort: string;
   readonly allowedModels: readonly string[];
@@ -123,6 +129,29 @@ function kikiSubagentsEffective(draft: ProfileDraft): boolean {
   return draft.allowKikiSubagents && kikiSubagentsApplicable(draft);
 }
 
+export const KIKI_CONTEXT_ORDER: readonly KikiContextGroup[] = ['memory', 'board', 'cron', 'threads', 'history', 'hooks'];
+
+/** A group list in the editor's fixed order, duplicates dropped; `undefined` stays absent. */
+export function normalizeKikiContext(value: readonly KikiContextGroup[] | undefined): readonly KikiContextGroup[] | undefined {
+  return value === undefined ? undefined : KIKI_CONTEXT_ORDER.filter((group) => value.includes(group));
+}
+
+/**
+ * Flip one group. Turning the last group off returns to the baseline's empty
+ * form, so switching a group on and off again leaves an absent field absent;
+ * a list that had groups goes to an explicit `[]`.
+ */
+export function toggleKikiContext(
+  current: readonly KikiContextGroup[] | undefined,
+  group: KikiContextGroup,
+  on: boolean,
+  baseline: readonly KikiContextGroup[] | undefined,
+): readonly KikiContextGroup[] | undefined {
+  const next = normalizeKikiContext([...(current ?? []).filter((item) => item !== group), ...(on ? [group] : [])])!;
+  if (next.length > 0) return next;
+  return baseline === undefined || baseline.length === 0 ? baseline : [];
+}
+
 export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
   const subagents = profile.subagents;
   return {
@@ -132,6 +161,7 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     main: profile.main,
     executor: isExternalExecutor(profile.executor) ? profile.executor! : '',
     allowKikiSubagents: profile.allow_kiki_subagents === true,
+    kikiContext: normalizeKikiContext(profile.kiki_context),
     modelAlias: profile.pinned_model_alias ?? '',
     effort: profile.thinking_effort ?? '',
     allowedModels: profile.allowed_models ?? [],
@@ -200,6 +230,14 @@ export function patchBody(
   const kikiSubagents = kikiSubagentsEffective(draft);
   if (kikiSubagents !== kikiSubagentsEffective(baseline) || (changed.has('allowKikiSubagents') && kikiSubagents !== (profile.allow_kiki_subagents === true))) {
     body.allow_kiki_subagents = kikiSubagents ? true : null;
+  }
+  // `null` removes the key, `[]` writes an explicit all-off; an untouched list
+  // never rides along. A draft that stops being an external main drops the
+  // key rather than keep groups nothing can use.
+  if (kikiSubagentsApplicable(draft)) {
+    if (changed.has('kikiContext')) body.kiki_context = draft.kikiContext === undefined ? null : [...draft.kikiContext];
+  } else if (kikiSubagentsApplicable(baseline) && profile.kiki_context !== undefined) {
+    body.kiki_context = null;
   }
   if (changed.has('modelAlias')) body.pinned_model_alias = textOrNull(draft.modelAlias);
   if (changed.has('effort')) body.thinking_effort = textOrNull(draft.effort);

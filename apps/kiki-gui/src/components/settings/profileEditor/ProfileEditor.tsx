@@ -19,6 +19,7 @@ import { DiagnosticsList } from './DiagnosticsList';
 import type { ProfileDiagnostic } from './diagnostics';
 import { engineChoices, engineLabel, useExecutorCatalog } from './engines';
 import { ExecutorPromptField } from './ExecutorPromptField';
+import { KikiContextField } from './KikiContextField';
 import type { ExecutorPromptDraft } from './executorPromptDraft';
 import { AliasChips, EffortPicker, Field, ModelPicker, Section } from './fields';
 import { ModelProfilesField } from './ModelProfilesField';
@@ -154,6 +155,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const setSpawn = (patch: Partial<SpawnConstraintsDraft>) => set('spawnConstraints', { ...spawn, ...patch });
   const subagentSummary = draft.subagentsMode === 'unrestricted' ? t('st.profiles.subagentsAny')
     : draft.subagentsMode === 'none' ? t('st.profiles.subagentsNone') : draft.subagents.map((entry) => entry.name).join(', ');
+  const kikiContextOn = [...(draft.allowKikiSubagents ? [t('st.kikiContext.short.subagents')] : []),
+    ...(draft.kikiContext ?? []).map((group) => t(`st.kikiContext.short.${group}` as I18nKey))];
+  const kikiContextSummary = kikiContextOn.length === 0 ? t('st.kikiContext.summaryOff') : kikiContextOn.join(' · ');
   const advancedSet = [draft.serviceTier !== '', draft.autoCompact !== undefined, draft.denyModels.length > 0,
     draft.allowedEfforts.length > 0, draft.subagentPolicy !== 'inherit', profile.routes.length > 0,
     spawnConstraintsSet(draft.spawnConstraints)].filter(Boolean).length;
@@ -217,15 +221,13 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       <Toggle layout="row" label={t('st.profiles.mainToggle')} checked={draft.main} disabled={disabled} onChange={(value) => set('main', value)} />
       <p className="text-[11.5px] leading-snug text-ink-faint">{t(draft.main ? 'st.profiles.mainOnHint' : 'st.profiles.mainOffHint')}</p>
     </div>
-    {kikiSubagentsApplicable(draft) ? <div data-profile-field="allowKikiSubagents" className="space-y-1">
-      <Toggle layout="row" label={t('st.profiles.kikiSubagents')} checked={draft.allowKikiSubagents} disabled={disabled}
-        onChange={(value) => set('allowKikiSubagents', value)} />
-      <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.kikiSubagentsHint', { engine })}</p>
-      {draft.allowKikiSubagents && draft.executor === 'codex-app-server' ? <p data-kiki-subagents-codex className="text-[11.5px] leading-snug text-amber-ink">
-        {t('st.profiles.kikiSubagentsCodex')}
-      </p> : null}
-    </div> : null}
     <div>
+      {kikiSubagentsApplicable(draft) ? <Section title={t('st.kikiContext.title')} dataSection="kiki-context" defaultOpen
+        count={Number(draft.allowKikiSubagents) + (draft.kikiContext?.length ?? 0)}
+        summary={kikiContextSummary}>
+        <KikiContextField draft={draft} baseline={baseline} engine={engine} disabled={disabled}
+          onChange={(next) => setDraft((current) => ({ ...current, ...next }))} />
+      </Section> : null}
       <Section title={t('st.executorPrompt.title')} dataSection="executor-prompt" defaultOpen={external}
         count={executorPromptCount(draft.executorPrompt)}
         summary={external ? t(`st.executorPrompt.delivery.${promptDelivery}`) : undefined}>
