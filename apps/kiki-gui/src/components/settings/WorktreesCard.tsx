@@ -298,7 +298,7 @@ function WorktreeRow({
               data-worktree-session
               onClick={() => { navigate(`/s/${session!.id}`); }}
               aria-label={t('st.worktrees.openSessionAria', { title })}
-              className="min-w-0 max-w-[45%] shrink-[3] truncate rounded-sm text-ink-soft underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+              className="min-w-0 max-w-[45%] shrink-[3] truncate rounded-sm text-ink-soft underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {title}
             </button>

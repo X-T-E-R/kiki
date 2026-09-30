@@ -18,7 +18,7 @@ import { Icon } from './icons';
 const INLINE_SEGMENT_LIMIT = 4;
 
 const SEGMENT =
-  'inline-flex h-8 min-w-0 max-w-48 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+  'inline-flex h-8 min-w-0 max-w-48 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
 const SEGMENT_ON = 'bg-panel font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.12)] ring-1 ring-hairline-strong';
 const SEGMENT_OFF = 'text-ink-soft hover:bg-panel/60 hover:text-ink';
 
@@ -31,7 +31,7 @@ const SEGMENT_OFF = 'text-ink-soft hover:bg-panel/60 hover:text-ink';
 export function segmentClass(active: boolean, size = ''): string {
   const base = size === ''
     ? SEGMENT
-    : 'inline-flex min-w-0 items-center gap-1.5 rounded-[7px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+    : 'inline-flex min-w-0 items-center gap-1.5 rounded-[7px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
   return `${base} ${size} ${active ? SEGMENT_ON : SEGMENT_OFF}`;
 }
 

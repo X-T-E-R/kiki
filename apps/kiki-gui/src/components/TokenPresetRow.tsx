@@ -35,7 +35,7 @@ export function TokenPresetRow({
             aria-pressed={selected}
             disabled={disabled}
             onClick={() => { onPick(value); }}
-            className={`h-7 rounded-md px-2 font-mono text-[12px] tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:text-ink-faint pointer-coarse:h-10 pointer-coarse:px-3 ${
+            className={`h-7 rounded-md px-2 font-mono text-[12px] tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default disabled:text-ink-faint pointer-coarse:h-10 pointer-coarse:px-3 ${
               selected
                 ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                 : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'

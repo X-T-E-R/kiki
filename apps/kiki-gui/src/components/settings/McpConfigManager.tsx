@@ -111,7 +111,7 @@ export interface McpRuntimeView {
 }
 
 /** Row-trailing Edit: quiet at rest so a list of servers is not a column of buttons. */
-const QUIET_EDIT = 'inline-flex min-h-8 items-center rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 pointer-coarse:min-h-11';
+const QUIET_EDIT = 'inline-flex min-h-8 items-center rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11';
 
 function runtimeDotState(status: McpServer['status'] | undefined): 'ok' | 'busy' | 'error' | 'off' {
   return status === 'connected' ? 'ok' : status === 'connecting' ? 'busy' : status === 'error' ? 'error' : 'off';
@@ -547,7 +547,7 @@ export function McpConfigManager({
                   type="button"
                   aria-expanded={open}
                   onClick={() => { setExpanded(open ? null : `${entry.source}:${entry.name}`); }}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
                 >
                   <CapabilityIcon kind="mcp" />
                   <span className="min-w-0 flex-1">

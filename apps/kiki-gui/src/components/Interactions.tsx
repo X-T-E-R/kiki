@@ -584,7 +584,7 @@ function SavedRuleNote({ rule }: { rule: string }) {
       <span aria-hidden className="text-ink-faint">·</span>
       <Link
         to={PERMISSION_RULES_ROUTE}
-        className="rounded-sm text-accent-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+        className="rounded-sm text-accent-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
       >
         {t('ia.alwaysAllow.undoHint')}
       </Link>

@@ -331,7 +331,7 @@ export function PreviewWorkspace({
           title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
           aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
           data-preview-fullscreen-toggle
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
         >
           <Icon name={isFullscreen ? 'collapse' : 'expand'} />
         </button>
@@ -340,7 +340,7 @@ export function PreviewWorkspace({
           onClick={onCollapse}
           title={t('preview.collapse')}
           aria-label={t('preview.collapse')}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
         >
           »
         </button>
@@ -739,7 +739,7 @@ function PreviewPanelTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 ${
+      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 ${
         active
           ? 'border-hairline bg-paper font-medium text-ink'
           : 'border-transparent text-ink-faint hover:text-ink-soft'
@@ -758,7 +758,7 @@ function PreviewPanelTab({
           event.stopPropagation();
           onClose();
         }}
-        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-[13px] leading-none transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-5 ${
+        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-[13px] leading-none transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-5 ${
           active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
         }`}
       >
@@ -1143,7 +1143,7 @@ function ImageTabView({
           onClick={() => { onOpenImage(state.url, name); }}
           title={t('media.viewImage')}
           aria-label={t('media.viewImage')}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           <Icon name="eye" size={14} />
         </button>

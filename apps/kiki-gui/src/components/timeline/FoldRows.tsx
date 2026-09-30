@@ -134,7 +134,7 @@ export function SubagentGroupRow({
   );
 }
 
-const ROW_ACTION = 'inline-flex min-h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:min-h-11';
+const ROW_ACTION = 'inline-flex min-h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11';
 
 /** The receipt a notification carries, without agent-core's envelope lines. */
 export function endingReceipt(ending: SubagentEnding, summary: string | undefined): string {

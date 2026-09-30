@@ -253,7 +253,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
                     )}
                     {!sub && !isMain ? (
                       <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                         onClick={(event) => {
                           setMenu({ space, anchor: event.currentTarget.getBoundingClientRect() });
                         }}>

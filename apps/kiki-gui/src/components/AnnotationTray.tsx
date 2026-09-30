@@ -84,7 +84,7 @@ export function AnnotationTray({
           data-annotation-tray-toggle
           aria-expanded={open}
           onClick={() => { setOpen((value) => !value); }}
-          className="flex min-h-8 w-full items-center gap-1.5 rounded-[12px] px-2.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="flex min-h-8 w-full items-center gap-1.5 rounded-[12px] px-2.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.03] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           <span aria-hidden className="flex shrink-0"><Icon name="edit" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{tp('annotationTray.sentCount', sent.length)}</span>
@@ -114,7 +114,7 @@ export function AnnotationTray({
 }
 
 const ROW_ACTION =
-  'min-h-8 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none';
+  'min-h-8 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
 
 function TrayRow({
   note,
@@ -159,7 +159,7 @@ function TrayRow({
               if (event.key === 'Enter') { event.preventDefault(); commit(); }
               if (event.key === 'Escape') { event.preventDefault(); setDraft(note.comment ?? ''); setEditing(false); }
             }}
-            className="min-h-9 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="min-h-9 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
           />
           <button type="button" data-annotation-tray-save disabled={!canSave} onClick={commit}
             className="min-h-9 rounded-md bg-accent-soft px-2.5 text-[12px] font-semibold text-accent-deep transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40">

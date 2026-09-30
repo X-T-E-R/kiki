@@ -109,7 +109,7 @@ export const TaskCard = memo(function TaskCard({
           onClick(task);
         }
       }}
-      className={`group relative flex min-w-0 cursor-pointer flex-col rounded-[10px] bg-panel px-3.5 pt-3 pb-3 text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.07)] ring-1 ring-hairline transition-[box-shadow,transform,opacity] duration-150 select-none hover:shadow-[0_4px_14px_-6px_rgb(var(--kiki-shadow-ink)/0.22)] hover:ring-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-safe:hover:-translate-y-px ${dragging ? 'opacity-45' : ''} ${pending ? 'cursor-progress opacity-60' : ''}`}
+      className={`group relative flex min-w-0 cursor-pointer flex-col rounded-[10px] bg-panel px-3.5 pt-3 pb-3 text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.07)] ring-1 ring-hairline transition-[box-shadow,transform,opacity] duration-150 select-none hover:shadow-[0_4px_14px_-6px_rgb(var(--kiki-shadow-ink)/0.22)] hover:ring-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink motion-safe:hover:-translate-y-px ${dragging ? 'opacity-45' : ''} ${pending ? 'cursor-progress opacity-60' : ''}`}
     >
       {/* Meta row: priority (quiet unless P0) and last activity. */}
       <div className="flex min-w-0 items-center justify-between gap-2 text-[11.5px] text-ink-faint">

@@ -25,7 +25,7 @@ function oneLine(text: string): string {
 }
 
 const ROW_ACTION =
-  'inline-flex min-h-7 shrink-0 items-center rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:min-h-10';
+  'inline-flex min-h-7 shrink-0 items-center rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-10';
 
 export function ComposerNotes({
   annotations,
@@ -119,7 +119,7 @@ export function ComposerNotes({
           clearTimer();
           setOpen((current) => (current === 'pinned' ? null : 'pinned'));
         }}
-        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-accent-ink transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-9 ${
+        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-accent-ink transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
           open !== null ? 'bg-accent-soft' : 'bg-accent-soft/70 hover:bg-accent-soft'
         }`}
       >
@@ -205,7 +205,7 @@ function NoteRow({
               onEndEdit();
             }
           }}
-          className="min-h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="min-h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
         />
       ) : (
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={note.comment}>{note.comment}</span>

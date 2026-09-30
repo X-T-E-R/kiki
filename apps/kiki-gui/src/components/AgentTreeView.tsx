@@ -134,7 +134,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
               onClick={() => {
                 onOpen(node.agentId);
               }}
-              className={`agent-tree-row flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+              className={`agent-tree-row flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
                 // The rail's own surface is panel, the lightest step, so the
                 // selected sheet stays panel and lifts by its ring + shadow
                 // (paper here would read as a grey fill).

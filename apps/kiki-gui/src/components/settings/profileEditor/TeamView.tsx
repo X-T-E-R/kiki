@@ -109,7 +109,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
         <span className="sr-only">{t('st.profiles.search')}</span>
         <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"><Icon name="search" size={12} /></span>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('st.profiles.search')}
-          className="h-8 w-full rounded-md bg-ink/[0.04] pl-7 pr-2 text-[13px] text-ink outline-none placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-accent/40" />
+          className="h-8 w-full rounded-md bg-ink/[0.04] pl-7 pr-2 text-[13px] text-ink outline-none placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40" />
       </label>
       <div className="ml-auto flex items-center gap-2">
         {toolbar}
@@ -171,7 +171,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
               className={`align-top max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:border-b max-sm:border-hairline max-sm:py-2.5 ${shadowed || profile.disabled ? 'text-ink-faint' : ''}`}>
               <td className="border-b border-hairline py-2.5 pr-3 max-sm:w-full max-sm:border-0 max-sm:p-0">
                 <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name}
-                  className="group -mx-1 flex min-h-9 w-full min-w-0 flex-col items-start rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+                  className="group -mx-1 flex min-h-9 w-full min-w-0 flex-col items-start rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50">
                   <span className="flex w-full min-w-0 items-center gap-1.5">
                     <span className={`min-w-0 truncate font-medium group-hover:underline ${shadowed ? 'line-through decoration-ink-faint/60' : 'text-ink'}`}>{displayName(profile, locale)}</span>
                     {profile.main ? <span className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] text-ink-soft">{t('st.agentManager.main')}</span> : null}

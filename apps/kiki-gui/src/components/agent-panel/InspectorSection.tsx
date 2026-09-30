@@ -61,7 +61,7 @@ export function InspectorSection({
               setOpen(!open);
               onOpenChange?.(!open);
             }}
-            className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+            className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             {label}
             <InspectorChevron open={open} />
@@ -106,4 +106,4 @@ export function InspectorRow({
 
 /** Quiet inline action inside the inspector (no underline, accent on hover). */
 export const INSPECTOR_LINK =
-  'inline-flex h-7 items-center gap-1 rounded-md px-1.5 -mx-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+  'inline-flex h-7 items-center gap-1 rounded-md px-1.5 -mx-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';

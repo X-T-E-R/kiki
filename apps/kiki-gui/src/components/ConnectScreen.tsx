@@ -278,7 +278,7 @@ function BrowserConnectForm({
           type="button"
           onClick={() => { void detect(); }}
           disabled={detecting || connecting}
-          className="w-full rounded-md bg-accent px-3 py-2.5 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none disabled:opacity-60"
+          className="w-full rounded-md bg-accent px-3 py-2.5 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
         >
           {detecting ? t('connect.detecting') : t('connect.detect')}
         </button>
@@ -291,7 +291,7 @@ function BrowserConnectForm({
           aria-expanded={manualOpen}
           aria-controls="connect-manual"
           onClick={() => { setManualOpen((open) => !open); }}
-          className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           <DisclosureChevron open={manualOpen} className="text-current" />
           {t('connect.otherMachine')}
@@ -346,7 +346,7 @@ function BrowserConnectForm({
         <button
           type="submit"
           disabled={connecting}
-          className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-60"
+          className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60"
         >
           {connecting ? t('connect.connecting') : t('connect.connect')}
         </button>

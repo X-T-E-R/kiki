@@ -35,7 +35,7 @@ import { stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
 const PANEL_ROW =
-  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export interface ComposerSsh {
   /** False hides every SSH affordance (flag off, no session, no REST). */
@@ -203,7 +203,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
               title={t('composer.ssh.removeChip', { name: host.name })}
               disabled={pending.has(host.id)}
               onClick={() => void toggle(host, false)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:h-8 pointer-coarse:w-8"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:h-8 pointer-coarse:w-8"
             >
               <Icon name="close" size={12} />
             </button>

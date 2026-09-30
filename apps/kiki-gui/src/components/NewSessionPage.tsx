@@ -85,7 +85,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         aria-label={t('hero.workspaceAria')}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-11"
+        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
       >
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
           <path
@@ -145,14 +145,14 @@ function ProviderSetupCard() {
         <button
           type="button"
           onClick={() => { void navigate('/settings/ai?tab=providers#st-card-auth'); }}
-          className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
         >
           {t('new.setupSignIn')}
         </button>
         <button
           type="button"
           onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-          className="motion-press h-8 rounded-md border border-hairline px-3 text-[13px] text-ink hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="motion-press h-8 rounded-md border border-hairline px-3 text-[13px] text-ink hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           {t('new.setupApiKey')}
         </button>
@@ -412,7 +412,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
                         state.updateDraft(t(starter.draftKey));
                         focusComposer();
                       }}
-                      className="motion-press h-7 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-11"
+                      className="motion-press h-7 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
                     >
                       {starter.named === true
                         ? t('new.starter.explainNamed', { name: workspaceChipLabel(state) ?? '' })

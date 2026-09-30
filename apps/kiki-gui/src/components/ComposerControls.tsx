@@ -39,7 +39,7 @@ import { Icon } from './icons';
  * segment the user has moved off its default lifts to ink (`STATUS_SEGMENT_SET`).
  */
 export const STATUS_SEGMENT_CLASS =
-  'group/segment flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 aria-expanded:bg-ink/[0.04] aria-expanded:text-ink disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-10';
+  'group/segment flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 aria-expanded:bg-ink/[0.04] aria-expanded:text-ink disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-10';
 
 /** Added to a segment whose value differs from the inherited default. */
 export const STATUS_SEGMENT_SET = 'text-ink';
@@ -55,7 +55,7 @@ export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-medium text-ink shadow-[va
 export const POPOVER_LABEL_CLASS = 'px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
 
 const MENU_ROW_CLASS =
-  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export type RunMode = 'normal' | 'plan' | 'goal';
 
@@ -333,7 +333,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
                     value={controls.goalObjective ?? ''}
                     onChange={(event) => { controls.onChangeGoalObjective?.(event.target.value); }}
                     placeholder={t('composer.goalObjectiveNext')}
-                    className="mt-1 w-full rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+                    className="mt-1 w-full rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus-visible:ring-2 focus-visible:ring-selected-ink/40"
                   />
                 </div>
               ) : null}
@@ -632,7 +632,7 @@ export function AddMenu({
         disabled={attachDisabled}
         aria-label={t('composer.attachAria')}
         title={t('composer.attachTitle')}
-        className="flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
+        className="flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
       >
         <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden>
           <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
@@ -646,7 +646,7 @@ export function AddMenu({
 
   const searchField = (placeholder: string) => (
     <div className="px-1 pt-0.5 pb-1">
-      <label className="flex h-8 items-center gap-2 rounded-md bg-ink/[0.04] px-2.5 text-ink-faint focus-within:ring-2 focus-within:ring-accent/40">
+      <label className="flex h-8 items-center gap-2 rounded-md bg-ink/[0.04] px-2.5 text-ink-faint focus-within:ring-2 focus-within:ring-selected-ink/40">
         <Icon name="search" size={14} className="shrink-0" />
         <input
           data-add-search
@@ -835,7 +835,7 @@ export function AddMenu({
         aria-label={t('composer.addMenuAria')}
         title={t('composer.addMenuAria')}
         onClick={() => { if (open) close(); else { drilledRef.current = false; onViewChange('root'); } }}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none aria-expanded:bg-paper aria-expanded:text-ink pointer-coarse:h-10 pointer-coarse:w-10"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none aria-expanded:bg-paper aria-expanded:text-ink pointer-coarse:h-10 pointer-coarse:w-10"
       >
         <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden
           className={`transition-transform duration-150 motion-reduce:transition-none ${open ? 'rotate-45' : ''}`}>
@@ -917,7 +917,7 @@ export function RunModeChip({
         onClick={onOpen}
         aria-label={`${t('composer.runModeHeading')}: ${label}`}
         title={t(RUN_MODES.find((mode) => mode.id === runMode)!.hintKey)}
-        className="flex h-full items-center gap-1.5 rounded-l-md pr-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="flex h-full items-center gap-1.5 rounded-l-md pr-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
       >
         <Icon name={runMode === 'goal' ? 'goal' : 'plan'} size={14} className="text-ink-soft" />
         {/* Narrow composers keep the icon; the name stays in aria-label/title. */}
@@ -928,7 +928,7 @@ export function RunModeChip({
         onClick={onClear}
         aria-label={t('composer.runModeClear')}
         title={t('composer.runModeClear')}
-        className="flex h-full w-6 items-center justify-center rounded-r-md text-ink-faint outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:w-9"
+        className="flex h-full w-6 items-center justify-center rounded-r-md text-ink-faint outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:w-9"
       >
         <Icon name="close" size={12} />
       </button>

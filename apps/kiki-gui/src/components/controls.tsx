@@ -66,10 +66,10 @@ export function Toggle({
   layout?: 'inline' | 'row' | 'bare';
 }) {
   const text = <span className={layout === 'bare' ? 'sr-only' : 'text-[13px] text-ink'}>{label}</span>;
-  // Quiet switch: a tinted track with a solid knob. Only the ON knob carries
-  // the accent, so a column of switches reads as state, not as a row of
-  // orange buttons. The real checkbox sits first so the track can show its
-  // keyboard focus.
+  // Quiet switch: a tinted track with a solid knob. ON is a choice you made,
+  // not something waiting on you, so it takes the ink-blue "selected" role
+  // and a column of switches never reads as a row of alerts. The real
+  // checkbox sits first so the track can show its keyboard focus.
   return (
     <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2.5 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
       {layout === 'row' ? text : null}
@@ -85,13 +85,13 @@ export function Toggle({
         role="switch"
         aria-checked={checked}
         aria-disabled={disabled}
-        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-150 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent ${
-          checked ? 'bg-accent-soft ring-accent/45' : 'bg-hairline ring-hairline-strong'
+        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-150 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-selected-ink ${
+          checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
         }`}
       >
         <span
           className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-150 motion-reduce:transition-none ${
-            checked ? 'translate-x-[16px] bg-accent' : 'translate-x-[3px] bg-ink-faint'
+            checked ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
           }`}
         />
       </span>

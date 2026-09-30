@@ -143,7 +143,7 @@ export function AnnotationPopover({
               save();
             }
           }}
-          className="min-h-10 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/20 sm:min-h-8"
+          className="min-h-10 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-selected-ink/20 sm:min-h-8"
         />
       ) : (
         <p className="text-[11px] text-ink-faint">{t('transcript.annotation.quoteOnly')}</p>

@@ -242,7 +242,7 @@ export function ContextCompactSection({
             aria-expanded={menuOpen}
             disabled={pending}
             onClick={() => { setMenuOpen((value) => !value); }}
-            className={`flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-[12px] tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default pointer-coarse:h-10 ${
+            className={`flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-[12px] tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default pointer-coarse:h-10 ${
               onSession ? 'text-ink' : 'text-ink-soft'
             } ${menuOpen ? 'bg-ink/[0.04] text-ink' : ''}`}
           >
@@ -384,7 +384,7 @@ export function ContextCompactSection({
 }
 
 const SOURCE_MENU_ROW =
-  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:py-2.5';
+  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:py-2.5';
 
 /**
  * "Save as default…" menu behind the source label. Each row names the target

@@ -28,7 +28,7 @@ export const KEEP_SECRET: SecretDraft = { mode: 'keep' };
 const MASK = '••••••••••••••••';
 
 const ICON_BUTTON =
-  'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11';
+  'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11';
 const TEXT_BUTTON = `${SECONDARY_BUTTON} min-h-8 pointer-coarse:min-h-11`;
 
 export interface SecretFieldProps {

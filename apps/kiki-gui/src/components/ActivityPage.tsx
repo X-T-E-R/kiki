@@ -92,7 +92,7 @@ function InboxRow({
         data-activity-item={item.sessionId}
         data-activity-reason={item.reason}
         onClick={() => { onOpen(itemHref(item)); }}
-        className="group flex min-h-11 w-full items-start gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        className="group flex min-h-11 w-full items-start gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
         <ReasonMark item={item} />
         <span className="min-w-0 flex-1">
@@ -217,7 +217,7 @@ export function ActivityPage({ sessions, workspaceOptions, onToggleSidebar }: Ac
                 type="button"
                 data-activity-mark-all-read
                 onClick={markAllRead}
-                className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:py-2.5"
+                className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2.5"
               >
                 {t('activity.markAllRead')}
               </button>

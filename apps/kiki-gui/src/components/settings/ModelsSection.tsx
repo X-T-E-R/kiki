@@ -338,7 +338,7 @@ export function ModelCatalogCard() {
  * per-provider default edited inside each provider.
  */
 const DEFAULT_PICKER =
-  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-ink-faint';
+  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
 
 /**
  * Every "which model does X" choice in one place: new sessions, then the
@@ -1033,7 +1033,7 @@ function ModelRow({
           aria-label={t('st.models.starAria', { model: item.id })}
           title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
           aria-pressed={isDefault}
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default pointer-coarse:h-11 pointer-coarse:w-11 ${
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default pointer-coarse:h-11 pointer-coarse:w-11 ${
             isDefault ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
           }`}
         >
@@ -1045,7 +1045,7 @@ function ModelRow({
           aria-expanded={editorOpen}
           title={t('st.models.editTitle')}
           onClick={toggleEditor}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
         >
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">

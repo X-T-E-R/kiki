@@ -109,7 +109,7 @@ export function PluginDetail({
       <button
         type="button"
         onClick={onBack}
-        className="-ml-1 inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        className="-ml-1 inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         data-plugin-detail-back
       >
         <Icon name="arrowLeft" size={14} />

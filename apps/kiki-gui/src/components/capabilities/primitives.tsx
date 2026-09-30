@@ -94,7 +94,7 @@ export function CapabilityRow({
           type="button"
           onClick={onOpen}
           aria-label={openLabel}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
         >
           {body}
         </button>
@@ -159,7 +159,7 @@ export function IconButton({
       aria-pressed={pressed}
       disabled={disabled}
       onClick={onClick}
-      className="flex h-8 w-8 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11"
+      className="flex h-8 w-8 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11"
     >
       {glyph ?? (icon === undefined ? null : <Icon name={icon} size={16} />)}
     </button>
@@ -168,7 +168,7 @@ export function IconButton({
 
 /** Quiet text button — secondary actions that should not look like buttons at rest. */
 export const QUIET_BUTTON =
-  'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50';
 
 /** The paper-inset segmented control, same geometry as the scope control. */
 export function Segmented<T extends string>({
@@ -201,7 +201,7 @@ export function Segmented<T extends string>({
             aria-selected={active}
             data-segment={option.value}
             onClick={() => { onChange(option.value); }}
-            className={`inline-flex min-h-7 items-center rounded-[7px] px-3 text-[13px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent pointer-coarse:min-h-10 ${
+            className={`inline-flex min-h-7 items-center rounded-[7px] px-3 text-[13px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10 ${
               active
                 ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                 : 'text-ink-soft hover:text-ink'
@@ -276,7 +276,7 @@ export function Disclosure({
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
       >
         <span aria-hidden className={`flex text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>
           <Icon name="chevron" size={12} />

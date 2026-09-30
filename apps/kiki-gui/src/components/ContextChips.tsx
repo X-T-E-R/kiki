@@ -27,7 +27,7 @@ function RemoveButton({ label, onRemove, tone = 'ink' }: { label: string; onRemo
       aria-label={label}
       title={label}
       onClick={onRemove}
-      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
         tone === 'warm'
           ? 'text-accent-ink/60 hover:bg-accent-ink/10 hover:text-accent-ink'
           : 'text-ink-faint hover:bg-ink/[0.07] hover:text-ink'
@@ -73,7 +73,7 @@ export function AnnotationChip({
       data-annotation-chip
       tabIndex={0}
       aria-label={t('composer.annotationChipAria', { quote: oneLine(quote), comment })}
-      className={`group ${TILE} max-w-[24rem] bg-accent-soft/80 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+      className={`group ${TILE} max-w-[24rem] bg-accent-soft/80 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
         onRemove === undefined ? 'pr-2.5' : 'pr-1'
       } pl-2`}
     >
@@ -123,7 +123,7 @@ export function ImageTile({
           title={title}
           aria-label={`${t('media.viewImage')}: ${name}`}
           onClick={onOpen}
-          className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
         >
           {image}
         </button>
@@ -136,7 +136,7 @@ export function ImageTile({
           aria-label={removeLabel}
           title={removeLabel}
           onClick={onRemove}
-          className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-panel text-ink-soft opacity-0 shadow-[var(--kiki-sheet-shadow)] transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within:opacity-100 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none [@media(hover:none)]:opacity-100"
+          className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-panel text-ink-soft opacity-0 shadow-[var(--kiki-sheet-shadow)] transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within:opacity-100 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none [@media(hover:none)]:opacity-100"
         >
           <Icon name="close" size={12} />
         </button>

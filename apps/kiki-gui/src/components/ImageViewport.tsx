@@ -87,7 +87,7 @@ export function useDragPan(enabled: boolean) {
   };
 }
 
-const SEGMENT_CLASS = 'rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+const SEGMENT_CLASS = 'rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 /** Where the zoom toggle should land: this image fraction under this viewport point. */
 interface ZoomAnchor {
@@ -199,7 +199,7 @@ export function ImageViewport({
           switchZoom(zoom === 'fit' ? 'actual' : 'fit', { x: event.clientX, y: event.clientY });
         }}
         {...pan.handlers}
-        className={`relative min-h-0 flex-1 select-none overflow-auto p-3 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+        className={`relative min-h-0 flex-1 select-none overflow-auto p-3 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
           zoom === 'fit' ? 'cursor-zoom-in' : pan.dragging ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >

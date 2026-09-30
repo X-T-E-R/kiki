@@ -20,7 +20,7 @@ import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
-const STRIP_BUTTON = 'inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:h-11';
+const STRIP_BUTTON = 'inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:h-11';
 
 export function EphemeralBar({
   session,

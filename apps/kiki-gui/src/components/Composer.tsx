@@ -1857,7 +1857,7 @@ export function Composer({
             data-needs-you-banner
             onClick={takeOver}
             title={t('composer.needsYou.bannerTitle')}
-            className="anim-enter mx-3 mb-1.5 flex min-h-9 w-[calc(100%-1.5rem)] items-center gap-2 rounded-[12px] bg-attention-soft px-3 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-attention-soft/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:min-h-11"
+            className="anim-enter mx-3 mb-1.5 flex min-h-9 w-[calc(100%-1.5rem)] items-center gap-2 rounded-[12px] bg-attention-soft px-3 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-attention-soft/80 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
           >
             <LifeMark markId="composer-needs-you-bar" life="waiting" tone="bg-attention" />
             <span className="min-w-0 flex-1 truncate font-medium text-attention">{tp('composer.needsYou.banner', needsYouCount)}</span>
@@ -1909,7 +1909,7 @@ export function Composer({
               type="button"
               data-needs-you-back
               onClick={backToInput}
-              className="flex min-h-10 w-full items-center gap-2 rounded-b-[18px] border-t border-hairline px-3.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.025] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:min-h-11"
+              className="flex min-h-10 w-full items-center gap-2 rounded-b-[18px] border-t border-hairline px-3.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.025] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
             >
               <Icon name="edit" size={12} className="shrink-0" />
               {draftHasContent ? (
@@ -1974,7 +1974,7 @@ export function Composer({
                 aria-label={t('composer.goalDisarmAria')}
                 title={t('composer.goalDisarmAria')}
                 onClick={() => { setGoalArmed(false); }}
-                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 <Icon name="close" size={12} />
               </button>
@@ -2406,7 +2406,7 @@ export function Composer({
                 data-send-ready={canSend ? '' : undefined}
                 // Filled accent only once there is something to send; at rest
                 // the button is a quiet ink glyph on paper.
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
                   canSend
                     ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
                     : 'bg-paper text-ink-faint'
@@ -2808,7 +2808,7 @@ function ModelChip({
               type="button"
               data-model-reset
               onClick={() => { void Promise.resolve(onChangeModel(undefined)).catch(() => undefined); }}
-              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
             >
               {t('composer.modelResetDefault')}
             </button>
@@ -2835,7 +2835,7 @@ function ModelChip({
                   data-effort={level}
                   disabled={disabled}
                   onClick={() => { onChangeEffort(level); }}
-                  className={`rounded-[5px] px-2 py-0.5 text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+                  className={`rounded-[5px] px-2 py-0.5 text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
                     level === effort
                       ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                       : 'text-ink-soft hover:text-ink'

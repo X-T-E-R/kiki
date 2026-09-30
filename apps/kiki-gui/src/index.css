@@ -204,7 +204,7 @@ body {
   --focus-ring-width: 3px;
 }
 :focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-selected-ink);
   outline-offset: 2px;
 }
 /* Tailwind's `focus-visible:outline-2` rings (most buttons and fields) set
@@ -477,7 +477,7 @@ body {
 
 .app-sidebar__resizer:hover::after,
 .app-sidebar__resizer[data-dragging='true']::after {
-  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
 }
 
 /* While any pane handle is being dragged: global col-resize cursor and no
@@ -551,7 +551,7 @@ body[data-pane-resizing='true'] {
 
 .app-rail__resizer:hover::after,
 .app-rail__resizer[data-dragging='true']::after {
-  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
 }
 
 /* Scroll chaining containment for the page-level scrollers: when the
@@ -633,7 +633,7 @@ body[data-pane-resizing='true'] {
  *   selected        (aria-current) the selected wash plus a short mark in the
  *                   row's left padding, inset from the corners so the radius
  *                   never cuts it and clear of the status-mark column.
- *   focus-visible   an accent ring (--focus-ring-width) drawn inside the
+ *   focus-visible   an ink-blue ring (--focus-ring-width) drawn inside the
  *                   row, so a scrolling list never crops it.
  * A row that can be selected keeps at least 8px of left padding. Inspector
  * peek (hovering an agent's card or pane) uses the hover wash, without
@@ -670,7 +670,7 @@ body[data-pane-resizing='true'] {
   pointer-events: none;
 }
 .row-interactive:focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-selected-ink);
   outline-offset: calc(-1 * var(--focus-ring-width));
 }
 @media (forced-colors: active) {
@@ -901,7 +901,7 @@ body[data-pane-resizing='true'] {
 
 .preview-workspace__resizer:hover::after,
 .preview-workspace__resizer[data-dragging='true']::after {
-  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
 }
 
 @media (max-width: 1023px) {
@@ -1110,7 +1110,7 @@ body[data-pane-resizing='true'] {
   align-items: center;
 }
 .composer-header-half:focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-accent);
+  outline: var(--focus-ring-width) solid var(--color-selected-ink);
   outline-offset: 1px;
 }
 /* The open sheet: ink text and a soft inner ring on its label. */
@@ -1206,7 +1206,7 @@ body[data-pane-resizing='true'] {
   font-size: 18px;
   line-height: 1;
   transform: translateY(3px);
-  color: var(--color-accent);
+  color: var(--color-ink-faint);
 }
 .context-image {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 9%, transparent);
@@ -1495,8 +1495,8 @@ input[data-add-search]:focus-visible {
   transition: color 150ms ease-out, text-decoration-color 150ms ease-out;
 }
 .kiki-md a:hover {
-  color: var(--color-accent-deep);
-  text-decoration-color: var(--color-accent);
+  color: var(--color-selected-ink);
+  text-decoration-color: var(--color-selected-ink);
 }
 .kiki-md img {
   max-width: 100%;

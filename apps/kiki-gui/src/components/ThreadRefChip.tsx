@@ -70,7 +70,7 @@ export function ThreadRefChip({
           aria-label={t('threadRef.remove', { title: label })}
           title={t('threadRef.remove', { title: label })}
           onClick={onRemove}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           <Icon name="close" size={12} />
         </button>
@@ -89,7 +89,7 @@ export function ThreadRefChip({
         event.preventDefault();
         navigate(threadRefLink(sessionId));
       }}
-      className={`${shape} ${inline ? '' : 'pr-2.5'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none`}
+      className={`${shape} ${inline ? '' : 'pr-2.5'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
     >
       {body}
     </a>

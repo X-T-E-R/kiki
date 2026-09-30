@@ -150,7 +150,7 @@ export function SkillsView({
                   aria-controls={bodyId}
                   data-skills-fold={group.id}
                   onClick={() => { toggleFold(group.id); }}
-                  className="flex min-h-9 w-full items-center gap-2 border-b border-hairline pb-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  className="flex min-h-9 w-full items-center gap-2 border-b border-hairline pb-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
                 >
                   <span aria-hidden className={`flex text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${isOpen ? 'rotate-90' : ''}`}>
                     <Icon name="chevron" size={12} />
@@ -240,7 +240,7 @@ function SkillRow({
           type="button"
           onClick={onOpen}
           aria-label={t('cap.skills.open', { name: skill.name })}
-          className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
         >
           {body}
         </button>
@@ -251,7 +251,7 @@ function SkillRow({
         <button
           type="button"
           aria-label={t('cap.skills.openPlugin', { name: pluginId })}
-          className="shrink-0 rounded px-1.5 text-[11px] text-ink-faint opacity-0 transition hover:bg-ink/[0.05] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent group-hover:opacity-100 pointer-coarse:opacity-100"
+          className="shrink-0 rounded px-1.5 text-[11px] text-ink-faint opacity-0 transition hover:bg-ink/[0.05] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink group-hover:opacity-100 pointer-coarse:opacity-100"
           onClick={() => { onOpenPlugin(pluginId); }}
           data-skill-plugin={pluginId}
         >

@@ -175,7 +175,7 @@ function InstalledRow({
         type="button"
         onClick={onOpen}
         aria-label={t('cap.plugins.openDetail', { name: plugin.displayName })}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
       >
         <span className={plugin.enabled ? '' : 'opacity-60 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
         <span className="min-w-0 flex-1">
@@ -194,7 +194,7 @@ function InstalledRow({
           type="button"
           onClick={() => { onUpdate(update); }}
           data-plugin-update={plugin.id}
-          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-accent min-[480px]:inline-flex"
+          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
           {t('cap.plugins.updateTo', { version: update.version ?? '' })}
         </button>

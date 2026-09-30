@@ -104,7 +104,7 @@ function SemanticJump({ link, onOpenAgent }: { link: SemanticLink; onOpenAgent?:
       title={link.label}
       aria-label={link.label}
       onClick={() => { follow(link); }}
-      className={`${JUMP_SLOT} rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent`}
+      className={`${JUMP_SLOT} rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink`}
     >
       <Icon name="arrowUpRight" size={12} />
     </button>
@@ -186,7 +186,7 @@ export function SemanticBody({
                     data-tool-semantic-link={item.link.kind}
                     title={item.link.label}
                     onClick={() => { follow(item.link!); }}
-                    className="group/item flex min-h-7 w-full items-center gap-3 rounded-md px-2 text-left text-[12px] transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                    className="group/item flex min-h-7 w-full items-center gap-3 rounded-md px-2 text-left text-[12px] transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                   >
                     {body}
                     <Icon name="arrowUpRight" size={12} className="text-ink-faint opacity-0 group-hover/item:opacity-100 group-focus-visible/item:opacity-100" />
@@ -220,7 +220,7 @@ export function SemanticBody({
           data-tool-raw-toggle
           aria-expanded={rawOpen}
           onClick={() => { setRawOpen((value) => !value); }}
-          className="flex min-h-7 items-center gap-1.5 rounded-md px-2 -ml-2 text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          className="flex min-h-7 items-center gap-1.5 rounded-md px-2 -ml-2 text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           <DisclosureChevron open={rawOpen} className="text-ink-faint" />
           {t('tc.sem.raw')}

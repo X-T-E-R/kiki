@@ -165,7 +165,7 @@ export const InspectorNow = memo(function InspectorNow({
                     type="button"
                     data-inspector-review={id}
                     onClick={() => { onReview(item.kind, id); }}
-                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                   >
                     {t('inspector.review')}
                   </button>
@@ -314,7 +314,7 @@ export const InspectorRecent = memo(function InspectorRecent({
                       data-inspector-file={file.path}
                       title={file.path}
                       onClick={() => { onOpenFile(file.path); }}
-                      className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                      className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                     >
                       {body}
                     </button>

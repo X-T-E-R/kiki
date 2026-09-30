@@ -152,7 +152,7 @@ export function TrendChart({
                 aria-label={title}
                 onClick={() => { onSelect(selected ? null : bucket.key); }}
                 title={title}
-                className={`group relative flex h-full min-w-0 max-w-16 flex-1 flex-col justify-end rounded-t-[3px] transition-opacity focus-visible:outline-2 focus-visible:outline-accent ${dimmed ? 'opacity-45 hover:opacity-80' : ''}`}
+                className={`group relative flex h-full min-w-0 max-w-16 flex-1 flex-col justify-end rounded-t-[3px] transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-45 hover:opacity-80' : ''}`}
               >
                 <span aria-hidden className="absolute inset-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.035]" />
                 {total <= 0 ? (

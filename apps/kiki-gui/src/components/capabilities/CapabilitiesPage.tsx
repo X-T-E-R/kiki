@@ -165,7 +165,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
         aria-expanded={addMenu}
         data-capabilities-add
         onClick={() => { setAddMenu((open) => !open); }}
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent pointer-coarse:min-h-11"
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
       >
         {t('cap.page.add')}
         <Icon name="chevron" size={12} className="rotate-90" />
@@ -205,7 +205,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                     aria-current={value === tab ? 'page' : undefined}
                     data-segment={value}
                     onClick={() => { setTab(value); }}
-                    className={`-mb-px shrink-0 border-b-2 pb-2.5 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent pointer-coarse:min-h-11 ${
+                    className={`-mb-px shrink-0 border-b-2 pb-2.5 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       value === tab ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                     }`}
                   >
@@ -292,7 +292,7 @@ function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly o
           role="menuitem"
           data-capabilities-add-item={item.kind}
           onClick={() => { onPick(item.kind); }}
-          className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-accent"
+          className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
           <span className="text-[13px] text-ink">{item.label}</span>
           <span className="text-[12px] leading-4 text-ink-faint">{item.hint}</span>

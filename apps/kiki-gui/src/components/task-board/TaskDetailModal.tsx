@@ -194,7 +194,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
             onClick={close}
             disabled={pending || deleting}
             aria-label={t('taskBoard.detail.close')}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50"
           >
             <CloseGlyph />
           </button>
@@ -408,7 +408,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                               disabled={onOpenSession === undefined}
                               onClick={() => onOpenSession?.(sid, task.workspaceId)}
                               title={t('taskBoard.detail.openSession')}
-                              className="group flex min-h-10 w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-default"
+                              className="group flex min-h-10 w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default"
                             >
                               <SessionGlyph className="h-3.5 w-3.5 text-ink-faint" />
                               <span className={`min-w-0 flex-1 truncate ${label === undefined ? 'font-mono text-[11.5px] text-ink-soft' : ''}`}>{label ?? sid}</span>

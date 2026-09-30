@@ -92,7 +92,7 @@ export function QueueHeaderSummary({
 }
 
 const HEAD_ACTION =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
 
 /** Send-now and edit for the next queued prompt, beside the queue sheet's label. */
 export function QueueHeadActions({
@@ -319,7 +319,7 @@ export function QueueStrip({
             disabled={pending || interactionLocked || isEditing}
             title={t('queue.dragHandleTitle')}
             aria-label={t('queue.dragHandleAria')}
-            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none active:cursor-grabbing"
+            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none active:cursor-grabbing"
           >
             <Icon name="grip" size={12} />
           </button>
@@ -394,7 +394,7 @@ export function QueueStrip({
                   if (timing === (item.appendTiming ?? 'agent_idle')) return;
                   run(item.promptId, (id) => onChangeTiming(id, timing));
                 }}
-                className="h-7 rounded-md border border-transparent bg-transparent px-1 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                className="h-7 rounded-md border border-transparent bg-transparent px-1 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 {QUEUE_TIMINGS.map((timing) => (
                   <option key={timing} value={timing} data-timing={timing}>
@@ -410,7 +410,7 @@ export function QueueStrip({
                 onClick={() => { onEdit(item.promptId); }}
                 title={t('queue.editTitle')}
                 aria-label={t('sv.queueEditAria')}
-                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 {t('sv.queueEdit')}
               </button>
@@ -421,7 +421,7 @@ export function QueueStrip({
               onClick={() => { run(item.promptId, onSendNow); }}
               title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
               aria-label={t('sv.queueSendNow')}
-              className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+              className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
             >
               {t('sv.queueSendNow')}
             </button>
@@ -441,7 +441,7 @@ export function QueueStrip({
               className={`h-7 rounded-md px-2 text-[12px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armed
                   ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
-                  : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-accent/40'
+                  : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-selected-ink/40'
               }`}
             >
               {armed ? t('queue.removeConfirm') : t('sv.queueRemove')}
@@ -470,7 +470,7 @@ export function QueueStrip({
           type="button"
           onClick={onClearAll}
           title={t('sv.queueClearAllTitle')}
-          className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+          className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           {t('sv.queueClearAll')}
         </button>

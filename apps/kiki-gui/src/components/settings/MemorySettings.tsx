@@ -90,7 +90,7 @@ export function MemorySettingsCard() {
           type="button"
           data-memory-settings-link
           onClick={() => { navigate('/memory'); }}
-          className="text-[12px] font-medium text-accent-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+          className="text-[12px] font-medium text-accent-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
           {t('st.memory.open')}
         </button>

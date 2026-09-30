@@ -60,9 +60,9 @@ const LOOK_BACK_PAGES = 5;
 const SERVER_DEBOUNCE_MS = 300;
 
 const BAR_BUTTON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-150 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint pointer-coarse:h-9 pointer-coarse:w-9';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-150 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint pointer-coarse:h-9 pointer-coarse:w-9';
 const NOTE_ACTION =
-  'shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:min-h-9';
+  'shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-9';
 const TOGGLE_ON = 'bg-selected text-selected-ink hover:bg-selected hover:text-selected-ink';
 
 /** Stable identity of a match across re-renders (streaming, paging). */

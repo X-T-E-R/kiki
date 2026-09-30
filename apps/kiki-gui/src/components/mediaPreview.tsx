@@ -360,7 +360,7 @@ export function PreviewToggleButton({ className }: { className?: string }) {
       aria-label={t('preview.toggleAria')}
       aria-expanded={preview.previewPanelOpen}
       data-preview-toggle
-      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-8 ${
+      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
         preview.previewPanelOpen
           ? 'bg-canvas text-ink'
           : 'text-ink-faint hover:bg-canvas hover:text-ink'
@@ -597,7 +597,7 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
         type="button"
         title={name}
         onClick={() => { preview?.openImage(load.url, name); }}
-        className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+        className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.thumbnailUrl ?? load.url} alt={name} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
@@ -730,7 +730,7 @@ function HostMediaThumb({ item, size = 'default' }: { item: MediaRef & { kind: '
       type="button"
       title={name ?? path}
       onClick={() => { preview?.openImage(url, name ?? basenameOf(path)); }}
-      className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+      className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
     >
       <img src={thumbnailUrl ?? url} alt={name ?? basenameOf(path)} className={`${THUMB_SIZE[size].img} object-cover`} />
     </button>
@@ -778,7 +778,7 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
         disabled={status === 'loading'}
         aria-label={label}
         title={label}
-        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <Icon name="file" size={12} />
       </button>
@@ -793,7 +793,7 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
       aria-busy={status === 'loading'}
       aria-label={label}
       title={label}
-      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2.5 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default motion-reduce:transition-none`}
+      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2.5 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default motion-reduce:transition-none`}
     >
       <span className="flex w-full min-w-0 items-center gap-1.5 text-ink-faint">
         <Icon name="file" size={14} />
@@ -944,7 +944,7 @@ export function FilePathLink({ path, className }: { path: string; className?: st
         // Quiet at rest: the link affordance (underline, ink) appears only
         // under the pointer or keyboard focus, so a screen of paths is not a
         // screen of dotted lines.
-        className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${className ?? ''}`}
+        className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${className ?? ''}`}
       >
         {path}
       </span>

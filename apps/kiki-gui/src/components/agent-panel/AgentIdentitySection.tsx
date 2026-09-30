@@ -319,7 +319,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       aria-checked={scope === value}
       data-usage-scope={value}
       onClick={() => { setScope(value); }}
-      className={`h-7 rounded-md px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+      className={`h-7 rounded-md px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         scope === value ? 'text-ink' : 'text-ink-faint hover:text-ink-soft'
       }`}
     >
@@ -393,7 +393,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         aria-controls={bodyId}
         title={t(expanded ? 'inspector.profileCollapse' : 'inspector.profileExpand')}
         onClick={() => { setExpanded((open) => !open); }}
-        className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-2.5 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-2.5 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
         <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-ink">
           <Icon name="agent" size={12} />
@@ -472,7 +472,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
               onClick={onOpenUsageDetail}
               title={t('inspector.usage')}
               aria-label={t('inspector.usage')}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
             >
               <Icon name="arrowUpRight" size={12} />
             </button>

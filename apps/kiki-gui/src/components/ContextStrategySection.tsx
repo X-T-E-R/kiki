@@ -137,7 +137,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
               aria-expanded={menuOpen}
               disabled={pending}
               onClick={() => { setMenuOpen((value) => !value); }}
-              className={`flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-[12px] outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default pointer-coarse:h-10 ${
+              className={`flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-[12px] outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default pointer-coarse:h-10 ${
                 onSession ? 'text-ink' : 'text-ink-soft'
               } ${menuOpen ? 'bg-ink/[0.04] text-ink' : ''}`}
             >
@@ -182,7 +182,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
               tabIndex={checked ? 0 : -1}
               disabled={readOnly || pending}
               onClick={() => { pick(strategy); }}
-              className={`min-h-7 truncate rounded-[7px] px-2 text-[12px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default pointer-coarse:min-h-10 ${
+              className={`min-h-7 truncate rounded-[7px] px-2 text-[12px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default pointer-coarse:min-h-10 ${
                 checked
                   ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-soft enabled:hover:text-ink'
@@ -215,7 +215,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
 }
 
 const MENU_ROW =
-  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:py-2.5';
+  'flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2.5';
 
 /** Same surface and keyboard model as the compaction point's save menu. */
 function StrategySourceMenu({

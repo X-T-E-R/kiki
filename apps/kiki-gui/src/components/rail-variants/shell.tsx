@@ -49,7 +49,7 @@ export function useRailMode(): [RailMode, (next: RailMode) => void, boolean] {
   return [mode, choose, stored === 'default' || stored === 'cockpit'];
 }
 
-export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
+export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink';
 
 const MODE_LABEL: Record<RailMode, string> = { default: '默认', cockpit: '驾驶舱' };
 

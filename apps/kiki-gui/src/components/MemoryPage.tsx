@@ -146,7 +146,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
         {globalEnabled && scope !== undefined && workspaceOverride === false ? (
           <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
         ) : null}
-        <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="ml-auto font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent">
+        <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="ml-auto font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
           {t('st.memory.settingsLink')}
         </button>
       </div>
@@ -507,7 +507,7 @@ function MemoryListRow({
       data-memory-row={entry.id}
       aria-current={active ? 'true' : undefined}
       onClick={onOpen}
-      className={`flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+      className={`flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
         active ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
       }`}
     >

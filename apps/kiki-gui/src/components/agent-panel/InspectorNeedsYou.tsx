@@ -49,7 +49,7 @@ function subject(item: PendingItem, fallback: string): string {
 
 const MAX_SHOWN = 3;
 
-const ACTION = 'h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:opacity-50 pointer-coarse:h-9';
+const ACTION = 'h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-9';
 
 export const InspectorNeedsYou = memo(function InspectorNeedsYou({
   items,
@@ -125,7 +125,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
                       data-needs-you-from={origin}
                       onClick={() => { onInspect(origin); }}
                       title={trail.join(' › ')}
-                      className="-mx-1 block max-w-full truncate rounded px-1 text-left text-[12px] leading-[18px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                      className="-mx-1 block max-w-full truncate rounded px-1 text-left text-[12px] leading-[18px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                     >
                       {t('inspector.needsYouFrom', { path: trail.join(' › ') })}
                     </button>
@@ -179,7 +179,7 @@ export const InspectorNeedsYou = memo(function InspectorNeedsYou({
           type="button"
           data-needs-you-more
           onClick={() => { setShowAll(true); }}
-          className="mt-0.5 mb-0.5 ml-3.5 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          className="mt-0.5 mb-0.5 ml-3.5 inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           {tp('inspector.needsYouMore', hidden)}
         </button>

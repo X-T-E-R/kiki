@@ -189,7 +189,7 @@ export function ActivityRow({
   const bleed = `${nested
     ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]'
     : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
-  const shell = `group/act flex min-h-[26px] min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${ROW_TONE[tone]} ${bleed} pr-2`;
+  const shell = `group/act flex min-h-[26px] min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row title={title} className={`anim-enter ${className}`} {...attrs}>
       <div className="flex items-center gap-1">

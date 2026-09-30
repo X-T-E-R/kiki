@@ -91,7 +91,7 @@ function ancestry(forest: AgentForest, agentId: string): string[] {
   return [MAIN_AGENT_ID, ...chain];
 }
 
-const CRUMB = 'flex h-7 min-w-0 items-center rounded-md px-1.5 -mx-1.5 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+const CRUMB = 'flex h-7 min-w-0 items-center rounded-md px-1.5 -mx-1.5 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 /**
  * Inspector head: the page owner as a breadcrumb (serif for the current
@@ -142,7 +142,7 @@ export const RailCrumbs = memo(function RailCrumbs({
             <span aria-hidden className="shrink-0 text-hairline-strong">/</span>
           </span>
         ))}
-        <h2 aria-current="page" tabIndex={-1} data-rail-owner-heading="" className="min-w-0 truncate rounded outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent font-display text-[15px] font-semibold tracking-tight text-ink" title={label(current)}>
+        <h2 aria-current="page" tabIndex={-1} data-rail-owner-heading="" className="min-w-0 truncate rounded outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink font-display text-[15px] font-semibold tracking-tight text-ink" title={label(current)}>
           <span className="sr-only">{t('inspector.viewing')}: </span>
           {label(current)}
         </h2>
@@ -212,7 +212,7 @@ function RosterSummary({
             data-roster-count={counts[bucket]}
             title={pressed ? t('inspector.filterClear') : undefined}
             onClick={() => { onFilter(pressed ? 'all' : bucket); }}
-            className={`inline-flex h-7 items-center gap-1.5 rounded-full px-2 text-[12px] whitespace-nowrap tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9 ${
+            className={`inline-flex h-7 items-center gap-1.5 rounded-full px-2 text-[12px] whitespace-nowrap tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 ${
               pressed
                 ? 'bg-ink text-panel'
                 : bucket === 'waiting'
@@ -296,7 +296,7 @@ const RosterAgent = memo(function RosterAgent({
           aria-expanded={row.expanded}
           aria-label={t(row.expanded ? 'inspector.collapseAgent' : 'inspector.expandAgent', { name: node.label })}
           onClick={() => { onToggle(node.agentId); }}
-          className="mt-1 flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9"
+          className="mt-1 flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9"
         >
           <DisclosureChevron open={row.expanded} />
         </button>
@@ -466,7 +466,7 @@ export const AgentRoster = memo(function AgentRoster({
             onChange={(event) => { setQuery(event.target.value); }}
             onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
             placeholder={t('inspector.searchAgents')}
-            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-accent"
+            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
           />
         </label>
       ) : null}

@@ -298,7 +298,7 @@ export function ContextStepper({
               aria-pressed={selected}
               data-context-unit-choice={candidate.id}
               onClick={() => { setUnit(candidate.id); }}
-              className={`h-6 min-w-7 rounded-[5px] px-1.5 font-mono text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:h-9 ${
+              className={`h-6 min-w-7 rounded-[5px] px-1.5 font-mono text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
                 selected ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
               }`}
             >
@@ -484,7 +484,7 @@ export function AdvancedDisclosure({
         aria-expanded={open}
         aria-controls={`advanced-${id}`}
         onClick={() => { setOpen((value) => !value); }}
-        className="-ml-1 flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="-ml-1 flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40"
       >
         <DisclosureChevron open={open} className="text-ink-soft" />
         <span className="text-[12px] font-medium text-ink-soft">{t('st.advanced.disclosure')}</span>
@@ -1356,7 +1356,7 @@ export function ProviderEditor({
       data-connection-health={health}
       className="group/provider border-b border-hairline last:border-b-0 [&[open]]:bg-paper"
     >
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name={kind === 'account' ? 'agent' : kind === 'local' ? 'system' : 'web'} size={14} />
         </span>

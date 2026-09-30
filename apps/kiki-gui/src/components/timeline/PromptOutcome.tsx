@@ -20,7 +20,7 @@ import { useI18n } from '../../i18n';
 import { DisclosureChevron } from '../icons';
 import { RelativeTime } from '../RelativeTime';
 
-const LINK = 'min-h-6 rounded-sm px-1 font-medium text-ink-soft underline-offset-2 transition-colors duration-150 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:no-underline disabled:opacity-60';
+const LINK = 'min-h-6 rounded-sm px-1 font-medium text-ink-soft underline-offset-2 transition-colors duration-150 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:no-underline disabled:opacity-60';
 
 function outcomeLabelKey(outcome: PromptOutcome) {
   if (outcome.status === 'aborted') return 'transcript.promptOutcome.aborted' as const;
@@ -134,7 +134,7 @@ export function EarlierPromptOutcomesRow({ block }: { block: NoticeBlock }) {
           aria-expanded={open}
           aria-controls={listId}
           onClick={() => { setOpen((value) => !value); }}
-          className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-sm px-1 text-[12px] text-ink-faint transition-colors duration-150 hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
+          className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-sm px-1 text-[12px] text-ink-faint transition-colors duration-150 hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
           {label}
           <DisclosureChevron open={open} />

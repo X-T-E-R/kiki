@@ -373,7 +373,7 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
         type="button"
         aria-expanded={expanded}
         onClick={() => { setExpanded((value) => !value); }}
-        className="flex min-h-8 w-full items-center justify-between gap-2 rounded-md text-left text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        className="flex min-h-8 w-full items-center justify-between gap-2 rounded-md text-left text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <svg aria-hidden viewBox="0 0 16 16" className={`h-3 w-3 shrink-0 text-ink-faint transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="m6 4 4 4-4 4" /></svg>

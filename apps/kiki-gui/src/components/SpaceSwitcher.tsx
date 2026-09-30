@@ -102,7 +102,7 @@ export function SpaceSwitcher() {
       <button ref={triggerRef} type="button" data-space-switcher={currentSpaceId()} aria-haspopup="menu" aria-expanded={open}
         aria-label={`kiki · ${currentName} · ${title}`} title={title}
         onClick={() => { setOpen((value) => !value); }}
-        className="group -ml-2 flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+        className="group -ml-2 flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
         <span aria-hidden className="shrink-0"><Wordmark /></span>
         {shownName !== null ? (
           <>

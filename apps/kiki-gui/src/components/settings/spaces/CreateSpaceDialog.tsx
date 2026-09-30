@@ -133,7 +133,7 @@ export function CreateSpaceDialog({ mainPath, canOpen, onClose, onCreated }: {
                 <button key={value} type="button" role="radio" aria-checked={color === value} data-space-color={value}
                   aria-label={t('st.spaces.colorOption', { n: index + 1 })}
                   onClick={() => { setColor(value); }}
-                  className={`flex h-7 w-7 items-center justify-center rounded-full outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-accent/60 ${color === value ? 'ring-2 ring-ink/70 ring-offset-2 ring-offset-panel' : ''}`}>
+                  className={`flex h-7 w-7 items-center justify-center rounded-full outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-selected-ink/60 ${color === value ? 'ring-2 ring-ink/70 ring-offset-2 ring-offset-panel' : ''}`}>
                   <span aria-hidden className="h-4 w-4 rounded-full" style={{ backgroundColor: value }} />
                 </button>
               ))}

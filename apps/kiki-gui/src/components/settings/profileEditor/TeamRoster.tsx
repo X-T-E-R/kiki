@@ -53,7 +53,7 @@ export function TeamRoster({ rows, onOpen, displayName }: {
   const leads = rows.filter((row) => row.profile.main && row.diagnostics.every((item) => item.kind !== 'shadowedBy'));
   const nameButton = (row: TeamRow, label: string, className: string) => <button type="button" onClick={() => onOpen(row)}
     data-roster-open={row.profile.name}
-    className={`min-w-0 truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent/50 ${className}`}>{label}</button>;
+    className={`min-w-0 truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-selected-ink/50 ${className}`}>{label}</button>;
   const modelCell = (model: string | undefined, external: boolean, engine: string | undefined): ReactNode =>
     <span className="flex min-w-0 items-center gap-1.5 text-[12px]" data-roster-model>
       {external && engine !== undefined ? <span className={ENGINE_BADGE}>{engine}</span> : null}

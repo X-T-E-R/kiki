@@ -219,7 +219,7 @@ export function ContextMeter({
         aria-controls={detailsId}
         // Quiet at rest: a bare ring inside the composer card; the percent
         // label and a tint only appear once the window deserves attention.
-        className={`flex h-7 items-center gap-1 rounded-md px-1 transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:h-10 ${
+        className={`flex h-7 items-center gap-1 rounded-md px-1 transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-10 ${
           level === 'danger'
             ? 'text-danger hover:bg-danger/10'
             : warn
@@ -495,7 +495,7 @@ function CompactActions({
               role="menuitem"
               data-context-compact-option={option}
               onClick={() => { setMenuOpen(false); onCompactWith(option); }}
-              className="flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:py-2.5"
+              className="flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2.5"
             >
               <span>{t(STRATEGY_LABEL_KEY[option])}</span>
               <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>

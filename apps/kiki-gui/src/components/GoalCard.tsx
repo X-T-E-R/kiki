@@ -231,7 +231,7 @@ export function GoalCard({
     goal.followUpTiming !== undefined ? t(GOAL_TIMING_LABEL_KEY[goal.followUpTiming]) : undefined;
 
   const actionClass =
-    'h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none';
+    'h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
   const statusTone =
     goal.status === 'active' ? 'text-ink-faint' : goal.status === 'paused' ? 'text-amber-ink' : 'text-accent-ink';
   const followUp = timingLabel !== undefined ? t('goal.followUp', { timing: timingLabel }) : undefined;
@@ -320,7 +320,7 @@ export function GoalCard({
               className={`h-6 rounded-md px-1.5 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armedCancel
                   ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
-                  : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-accent/50'
+                  : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-selected-ink/50'
               }`}
             >
               {armedCancel ? t('goal.cancelConfirm') : t('goal.cancel')}
@@ -370,7 +370,7 @@ export function GoalCard({
                     aria-checked={timing === followUpTiming}
                     data-goal-timing={timing}
                     onClick={() => { setFollowUpTiming(timing); }}
-                    className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
+                    className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none ${
                       timing === followUpTiming ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                     }`}
                   >
@@ -387,7 +387,7 @@ export function GoalCard({
                     setActionError(null);
                   }}
                   disabled={pending === 'save'}
-                  className="h-7 rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                  className="h-7 rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
                 >
                   {t('common.cancel')}
                 </button>
@@ -396,7 +396,7 @@ export function GoalCard({
                   onClick={save}
                   disabled={pending !== null || objective.trim() === ''}
                   data-goal-save
-                  className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                  className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
                 >
                   {t('common.save')}
                 </button>
@@ -442,7 +442,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -468,7 +468,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -476,7 +476,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={() => setCompact(true)}
-            className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.dismiss')}
           </button>

@@ -52,7 +52,7 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
         <span data-turn-degraded data-loss-codes={execution.losses.join(' ')} tabIndex={0}
           title={lossLines.length === 0 ? undefined : lossLines.map((line) => `· ${line}`).join('\n')}
           aria-label={[t('transcript.exec.degradedNote'), ...lossLines].join('. ')}
-          className="inline-flex cursor-help items-center gap-1 rounded-[4px] underline decoration-dotted decoration-ink-faint/60 underline-offset-2 outline-none focus-visible:outline-2 focus-visible:outline-accent">
+          className="inline-flex cursor-help items-center gap-1 rounded-[4px] underline decoration-dotted decoration-ink-faint/60 underline-offset-2 outline-none focus-visible:outline-2 focus-visible:outline-selected-ink">
           · {t('transcript.exec.degradedNote')}
         </span>
       ) : null}

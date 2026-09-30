@@ -63,7 +63,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
   return (
     <section data-agent-capabilities className="min-w-0 text-left text-[12px]">
       <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); }}
-        className="flex min-h-7 items-center gap-1.5 rounded-md px-1 py-1 text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none">
+        className="flex min-h-7 items-center gap-1.5 rounded-md px-1 py-1 text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none">
         <DisclosureChevron open={open} className="text-current" />{t('diagnostics.title')}
       </button>
       {open ? <div className="mt-1 max-h-60 space-y-2 overflow-y-auto rounded-lg border border-hairline bg-paper p-2.5 sm:max-h-80" data-capability-context={live ? 'live' : 'draft'}>

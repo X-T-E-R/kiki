@@ -75,7 +75,7 @@ export function OnboardingAppearanceStep() {
                   aria-checked={selected}
                   data-onboarding-palette={option.id}
                   onClick={() => { writeSkinPrefs({ selection: { source: 'builtin', id: option.id ?? 'paper' } }); }}
-                  className={`flex w-full flex-col gap-1.5 rounded-[10px] p-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+                  className={`flex w-full flex-col gap-1.5 rounded-[10px] p-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${
                     selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
                   }`}
                 >

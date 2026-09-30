@@ -108,7 +108,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
       <div className="flex min-h-12 items-center gap-3 px-3 py-2">
         <button type="button" aria-expanded={open} aria-controls={bodyId} aria-label={t('st.notify.expandAria', { name })}
           onClick={() => { setOpen((value) => !value); }}
-          className="-my-1 -ml-1 flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+          className="-my-1 -ml-1 flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
           <DisclosureChevron open={open} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 truncate text-[13px] font-medium text-ink">{name}</span>
           {name !== typeName ? <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{typeName}</span> : null}

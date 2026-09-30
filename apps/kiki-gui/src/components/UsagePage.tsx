@@ -554,7 +554,7 @@ function SessionsTab({
                   type="button"
                   data-usage-session={item.id}
                   onClick={() => void navigate(`/s/${item.id}`)}
-                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-accent`}
+                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-selected-ink`}
                 >
                   <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-accent' : 'text-ink-faint'}`}>
                     {rank}

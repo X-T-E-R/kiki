@@ -75,7 +75,7 @@ export function capabilityCounts(
   };
 }
 
-const ROW = 'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-ink/[0.045] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:min-h-10';
+const ROW = 'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-ink/[0.045] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-10';
 
 function SourceChip({ label }: { label: SourceLabel | undefined }) {
   if (label === undefined) return null;
@@ -207,7 +207,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               tabIndex={selected ? 0 : -1}
               data-capability-tab-button={entry.id}
               onClick={() => { setTab(entry.id); }}
-              className={`flex h-7 flex-auto items-center justify-center gap-1 rounded-md px-1.5 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9 ${
+              className={`flex h-7 flex-auto items-center justify-center gap-1 rounded-md px-1.5 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 ${
                 selected ? 'bg-panel font-medium text-ink shadow-[0_1px_2px_rgb(0_0_0/0.08)]' : 'text-ink-soft hover:text-ink'
               }`}
             >

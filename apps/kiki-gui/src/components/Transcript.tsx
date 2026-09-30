@@ -796,7 +796,7 @@ function ShellOutputDetail({ block }: { block: ShellBlock }) {
         onClick={detail.request}
         disabled={status === 'loading'}
         aria-busy={status === 'loading'}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-shell-hairline px-2 font-medium text-shell-ink-strong transition-colors hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-shell-hairline px-2 font-medium text-shell-ink-strong transition-colors hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
       >
         {status === 'loading' ? (
           <>
@@ -1340,7 +1340,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
             data-notice-reasons-toggle
             aria-expanded={open}
             onClick={() => { setOpen((value) => !value); }}
-            className="inline-flex min-h-6 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
+            className="inline-flex min-h-6 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink"
           >
             {label}
             <DisclosureChevron open={open} />
@@ -1830,7 +1830,7 @@ function AnnotationNotes({ annotations, align }: { annotations: readonly Timelin
             data-annotation-ref={annotation.id}
             data-annotation-note
             aria-label={t('transcript.annotation.openAria', { quote: annotation.quote.replace(/\s+/g, ' ').trim() })}
-            className="flex min-h-8 max-w-full flex-col gap-0.5 rounded-md sm:flex-row sm:items-baseline sm:gap-2 border-l-2 border-accent/60 bg-accent-soft/40 py-1 pr-2 pl-2 text-left text-[12px] leading-snug transition-colors hover:bg-accent-soft/80 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+            className="flex min-h-8 max-w-full flex-col gap-0.5 rounded-md sm:flex-row sm:items-baseline sm:gap-2 border-l-2 border-accent/60 bg-accent-soft/40 py-1 pr-2 pl-2 text-left text-[12px] leading-snug transition-colors hover:bg-accent-soft/80 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
           >
             <span className="max-w-full truncate text-ink-faint sm:max-w-[16rem]">“{annotation.quote.replace(/\s+/g, ' ').trim()}”</span>
             <span className="min-w-0 text-ink-soft [overflow-wrap:anywhere]">{annotation.comment}</span>
@@ -2398,7 +2398,7 @@ const CANCELLATION_LABEL_KEY = {
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
-const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-60';
+const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60';
 
 export const TurnTailLine = memo(function TurnTailLine({
   tail,

@@ -126,7 +126,7 @@ export const CHILD_CHIP_LIMIT = 12;
 const MAX_LINES = 2;
 
 const CHIP =
-  'inline-flex h-6 min-w-0 max-w-[16rem] shrink items-center gap-1.5 rounded-full border border-hairline px-2 text-[12px] leading-none text-ink-soft transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent pointer-coarse:h-8';
+  'inline-flex h-6 min-w-0 max-w-[16rem] shrink items-center gap-1.5 rounded-full border border-hairline px-2 text-[12px] leading-none text-ink-soft transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-8';
 
 /** Status dot: running in the live colour, waiting in the accent, the rest quiet. */
 function chipDot(status: string): string {
@@ -384,7 +384,7 @@ function AgentListChip({
               onChange={(event) => { setQuery(event.target.value); }}
               aria-label={t('inspector.searchAgentsAria')}
               placeholder={t('inspector.searchAgents')}
-              className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-accent"
+              className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
             />
           ) : null}
           <div role="list" className="min-h-0 overflow-y-auto">
@@ -395,7 +395,7 @@ function AgentListChip({
                   data-agent-id={node.agentId}
                   title={titleOf(node)}
                   onClick={() => { closeRef.current(false); onOpen(node.agentId); }}
-                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:py-2.5"
+                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2.5"
                 >
                   <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
                   <span className="min-w-0 flex-1 truncate">{node.label}</span>

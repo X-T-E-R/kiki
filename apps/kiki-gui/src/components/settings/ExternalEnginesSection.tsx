@@ -105,7 +105,7 @@ function CopyCommand({ command, wrap = false }: { command: string; wrap?: boolea
       <code className={`min-w-0 font-mono text-[11.5px] text-ink ${wrap ? 'break-all py-1 leading-4' : 'truncate'}`} title={command}>{command}</code>
       <button type="button" data-engine-copy aria-label={t('st.engines.copyCommand', { command })}
         onClick={() => { void copyTextToClipboard(command).then(() => { setCopied(true); setTimeout(() => { setCopied(false); }, 1500); }); }}
-        className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-r-md px-1.5 text-[11.5px] text-ink-faint hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent">
+        className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-r-md px-1.5 text-[11.5px] text-ink-faint hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
         {copied ? t('st.engines.copied') : <Icon name="notes" size={12} />}
       </button>
     </span>
@@ -486,7 +486,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   return (
     <details data-engine-row={item.id} data-engine-health={health}
       className="group/engine border-b border-hairline last:border-b-0 [&[open]]:bg-paper">
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name="terminal" size={14} />
         </span>

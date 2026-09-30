@@ -194,7 +194,7 @@ const TasksSection = memo(function TasksSection({
               data-task-open={task.id}
               title={task.command ?? t('rail.viewDetails')}
               onClick={() => { onOpenTask(task); }}
-              className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="flex min-w-0 flex-1 cursor-pointer items-start rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
             >
               <span className={RAIL_MARK}>
                 <LifeMark markId={`task:${task.id}`} life={task.status === 'running' ? 'working' : task.status === 'failed' ? 'failed' : 'idle'} tone={task.status === 'running' ? 'bg-success' : task.status === 'failed' ? 'bg-ink-faint' : undefined} still />
@@ -222,7 +222,7 @@ const TasksSection = memo(function TasksSection({
                 }}
                 title={t('rail.stopTitle')}
                 aria-label={`${t('rail.stop')} · ${task.description}`}
-                className="rail-task-stop flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-soft transition-[color,background-color,opacity] hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                className="rail-task-stop flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-soft transition-[color,background-color,opacity] hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
               >
                 <Icon name="stop" size={12} />
                 {t('rail.stop')}
@@ -513,7 +513,7 @@ export function DefaultRail({
             {onClose === undefined ? null : (
               <button type="button" onClick={onClose} data-rail-close
                 title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
-                className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7">
+                className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
                 <Icon name="close" size={16} />
               </button>
             )}
@@ -595,7 +595,7 @@ export function DefaultRail({
                 type="button"
                 data-terminate-all-subagents
                 onClick={() => { setTerminateSnapshot(runningSubagentTasks); }}
-                className="-mr-2 h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-faint transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                className="-mr-2 h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-faint transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
               >
                 {t('rail.terminateAll')}
               </button>

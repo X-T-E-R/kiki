@@ -101,7 +101,7 @@ export const WORKSPACE_GROUP_PREVIEW = 8;
 const ICON = 'h-4 w-4 shrink-0';
 /** Quiet square control for the wordmark row (search, activity). */
 const HEADER_ICON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 const BoardIcon = () => <Icon name="board" size={16} />;
 const ClockIcon = () => <Icon name="clock" size={16} />;
@@ -864,7 +864,7 @@ export function Sidebar({
             aria-label={tp('sidebar.runningCount', counts.running)}
             title={tp('sidebar.runningCount', counts.running)}
             onClick={() => { toggleStatus('running'); }}
-            className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+            className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             {/* The one breathing mark in the list: rows stay still. */}
             <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
@@ -878,7 +878,7 @@ export function Sidebar({
             aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
             title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
             onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
           </button>
@@ -1642,7 +1642,7 @@ function WorkspaceGroupHeader({
           aria-label={pinned ? t('sidebar.unpinWorkspaceFor', { name: label }) : t('sidebar.pinWorkspaceFor', { name: label })}
           title={pinned ? t('sidebar.unpinWorkspace') : t('sidebar.pinWorkspace')}
           onClick={onTogglePin}
-          className={`absolute top-1/2 right-1 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md transition-[opacity,background-color,color] duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+          className={`absolute top-1/2 right-1 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md transition-[opacity,background-color,color] duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
             pinned ? 'text-ink-soft' : 'text-ink-faint'
           } opacity-0 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 [@media(hover:none)]:opacity-100`}
         >
