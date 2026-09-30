@@ -116,6 +116,10 @@ const sessionIdParamSchema = z.object({
   session_id: z.string().min(1),
 });
 
+const promptActionQuerySchema = z.object({
+  agent_id: z.string().min(1).optional(),
+});
+
 const validationDetailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 const authProviderDetailsSchema = z.object({ provider_id: z.string() });
 const authModelDetailsSchema = z.object({ model_id: z.string(), provider_id: z.string() }).partial();
@@ -636,6 +640,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/sessions/{session_id}/prompts/{tail}',
+      // `agent_id` addresses a child agent's own queue (steer / abort); the
+      // other actions stay main-only.
+      querystring: promptActionQuerySchema,
       body: z.union([
         z.undefined(),
         z.object({}).strict(),
@@ -721,7 +728,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           return;
         }
         lease = await acquireSessionOperation(core, session_id, 'operation');
-        const resolved = await resolvePromptFromSession(core, requireSession(lease.handle, session_id));
+        const agentId = (req as { query?: { agent_id?: string } }).query?.agent_id;
+        if (agentId !== undefined && agentId !== MAIN_AGENT_ID && parsed.action !== 'steer' && parsed.action !== 'abort') {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, `prompt ${parsed.action} is main-agent only`);
+        }
+        const resolved = await resolvePromptFromSession(core, requireSession(lease.handle, session_id), agentId);
         if (parsed.action === 'move') {
           const move = promptMoveRequestSchema.safeParse(req.body);
           if (!move.success) {

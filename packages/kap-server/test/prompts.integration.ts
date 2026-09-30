@@ -952,6 +952,31 @@ describe('server-v2 /api prompts', () => {
     prompt.abort(payload.prompt_id);
   });
 
+  it('sends a queued native child prompt now through the agent-scoped steer route', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const prompt = child.accessor.get(IAgentPromptService);
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: child.id, content: [{ type: 'text', text: 'child is working' }],
+    });
+    expect(active.body.code, active.body.msg).toBe(0);
+    const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: child.id, prompt_id: 'child-send-now', content: [{ type: 'text', text: 'steer the child' }],
+    });
+    expect(queued.body.data.status).toBe('queued');
+    // Only steer and abort accept a child target; queue reordering stays main-only.
+    const moved = await call('POST', `/api/sessions/${id}/prompts/child-send-now:move?agent_id=${child.id}`, { to: 0 });
+    expect(moved.body.code).toBe(40001);
+    // Without the agent id the route resolves the main agent, which does not own it.
+    const unscoped = await call('POST', `/api/sessions/${id}/prompts/child-send-now:steer`);
+    expect(unscoped.body.code).not.toBe(0);
+    expect(prompt.list().pending).toHaveLength(1);
+    const steered = await call('POST', `/api/sessions/${id}/prompts/child-send-now:steer?agent_id=${child.id}`);
+    expect(steered.body.code, steered.body.msg).toBe(0);
+    expect(prompt.list().pending).toHaveLength(0);
+    prompt.abort(active.body.data.prompt_id);
+  });
+
   it('scopes native child prompt retry keys to their target within a session', async () => {
     const id = await createSession(home as string);
     const firstChild = await createHeldChild(id);

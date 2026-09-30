@@ -15,17 +15,22 @@ export interface SessionCommandsFacade {
   edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   fork(body?: ForkSessionRequest): Promise<Session>;
-  abort(promptId: string): Promise<PromptAbortResponse>;
+  abort(promptId: string, agentId?: string): Promise<PromptAbortResponse>;
   abortTurn(turnId: number): Promise<TurnAbortResponse>;
   move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replace(promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   timing(promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;
   hold(promptId: string, body: PromptHoldRequest): Promise<PromptHoldResult>;
-  steer(promptId: string): Promise<PromptSteerResult>;
+  steer(promptId: string, agentId?: string): Promise<PromptSteerResult>;
   approve(approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult>;
   answer(questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult>;
   dismiss(questionId: string): Promise<QuestionDismissResult>;
   cancelTask(taskId: string, query?: CancelTaskQuery): Promise<{ cancelled: boolean }>;
+}
+
+/** Main keeps the bare target; a child agent rides the `agent_id` query. */
+function agentScoped(target: string, agentId: string | undefined): { target: string; query?: { agent_id: string } } {
+  return agentId === undefined || agentId === 'main' ? { target } : { target, query: { agent_id: agentId } };
 }
 
 export function createSessionCommandsFacade(channel: SessionCommandChannel | undefined, sessionId: string, validate: boolean): SessionCommandsFacade {
@@ -48,13 +53,13 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     edit: (target, body) => invoke('edit', { target, body }),
     regenerate: (target, body) => invoke('regenerate', { target, body }),
     fork: (body = {}) => invoke('fork', { body }),
-    abort: (target) => invoke('abort', { target }),
+    abort: (target, agentId) => invoke('abort', agentScoped(target, agentId)),
     abortTurn: (turnId) => invoke('abortTurn', { target: String(turnId) }),
     move: (target, body) => invoke('move', { target, body }),
     replace: (target, body) => invoke('replace', { target, body }),
     timing: (target, body) => invoke('timing', { target, body }),
     hold: (target, body) => invoke('hold', { target, body }),
-    steer: (target) => invoke('steer', { target }),
+    steer: (target, agentId) => invoke('steer', agentScoped(target, agentId)),
     approve: (target, body) => invoke('approve', { target, body }),
     answer: (target, body) => invoke('answer', { target, body }),
     dismiss: (target) => invoke('dismiss', { target }),
