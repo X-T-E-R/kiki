@@ -154,8 +154,10 @@ describe('AgentExecutorRegistryService', () => {
     registry.recordNegotiated('test', '1.0', { models: ['one'], resume: true });
     expect(registry.negotiated('test', '1.0')).toEqual({ models: ['one'], resume: true });
     expect(registry.negotiated('test', '2.0')).toBeUndefined();
+    expect(registry.lastNegotiated('test')).toEqual({ models: ['one'], resume: true });
     command = 'replacement-acp';
     expect(registry.negotiated('test', '1.0')).toBeUndefined();
+    expect(registry.lastNegotiated('test')).toBeUndefined();
   });
 
   it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {

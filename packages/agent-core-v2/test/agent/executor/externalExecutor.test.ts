@@ -1,3 +1,4 @@
+import { AcpClientError } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -1170,6 +1171,40 @@ describe('ACP external executor', () => {
     expect(harness.opens[0]?.systemPromptOverride).toBe('Changed profile');
     expect(harness.starts[0]?.prompt).toContain('work');
     expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+  });
+
+  it('records unsupported continuation negotiation for the local catalog without starting a turn', async () => {
+    const harness = createHarness();
+    vi.spyOn(harness.client, 'openSession').mockRejectedValue(new AcpClientError('executor.session_open_failed', 'Cannot resume', {
+      details: { resumeSupported: false, loadSupported: false },
+    }));
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal })).rejects.toThrow('Cannot resume');
+      expect(harness.executorContext.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated)
+        .toHaveBeenCalledWith('example-acp', undefined, { resume: false, load: false });
+      expect(harness.starts).toHaveLength(0);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it.each([false, true])('requires real continuation for imported ACP sources (fingerprint mismatch: %s)', async (mismatch) => {
+    const localSource = { executorId: 'example-acp', engine: 'claude', externalId: 'remote-2', home: '/vendor', localId: 'external:claude:source' };
+    const harness = createHarness({ mode: 'resume', priorBindingFingerprint: mismatch ? '0'.repeat(64) : undefined,
+      prior: { executorId: 'example-acp', descriptorRevision: 'r1', sessionEpoch: 1,
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2', localSource } } } });
+    try {
+      const run = harness.session.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal });
+      if (mismatch) {
+        await expect(run).rejects.toThrow(/fingerprint/);
+        expect(harness.opens).toHaveLength(0);
+        expect(harness.starts).toHaveLength(0);
+      } else {
+        await (await run).completion;
+        expect(harness.opens[0]).toMatchObject({ requireResume: true, sessionRef: { ref: { sessionId: 'remote-2' } } });
+        const updated = harness.events.filter((event) => event instanceof ExecutorSessionUpdated);
+        expect(updated.length).toBeGreaterThan(0);
+        expect(updated.every((event) => event.sessionRef.ref['localSource'] === localSource)).toBe(true);
+      }
+    } finally { await harness.session.shutdown(); }
   });
 
   it('opens a new ACP session when the persisted binding fingerprint differs', async () => {

@@ -93,6 +93,8 @@ export interface AcpOpenSessionOptions {
   readonly additionalDirectories?: readonly string[];
   readonly mcpServers?: readonly McpServer[];
   readonly sessionRef?: ExecutorSessionRefEnvelope;
+  /** Fail instead of creating a new session if the supplied reference cannot be resumed or loaded. */
+  readonly requireResume?: boolean;
   readonly configOptions?: readonly AcpSessionConfigSelection[];
   readonly modeId?: string;
   /**

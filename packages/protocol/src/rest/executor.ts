@@ -113,3 +113,39 @@ export const executorPromptPreviewResponseSchema = z.object({
   text: z.string(),
 });
 export type ExecutorPromptPreviewResponse = z.infer<typeof executorPromptPreviewResponseSchema>;
+
+export const localSessionSummarySchema = z.object({
+  id: z.string(), engine: z.enum(['claude', 'codex']), external_id: z.string(), source_path: z.string(),
+  source_home: z.string(), resume: z.object({ supported: z.boolean(), reason: z.string().optional() }),
+  cwd: z.string().optional(), title: z.string().optional(), created_at: z.string().optional(),
+  updated_at: z.string(), last_prompt: z.string().optional(), parent_id: z.string().optional(), partial: z.boolean(),
+});
+export type LocalSessionSummary = z.infer<typeof localSessionSummarySchema>;
+
+export const localSessionMessageSchema = z.object({
+  id: z.string(), role: z.enum(['user', 'assistant', 'system']), timestamp: z.string().optional(),
+  blocks: z.array(z.object({ kind: z.enum(['text', 'thought', 'tool_call', 'tool_result', 'image']),
+    text: z.string().optional(), name: z.string().optional() })),
+});
+export const localSessionDirectorySchema = z.object({
+  root: z.string(), exists: z.boolean(), items: z.array(localSessionSummarySchema),
+  truncated: z.boolean(), unreadable_files: z.number().int().nonnegative(),
+  resume_enabled: z.boolean(),
+});
+export type LocalSessionDirectory = z.infer<typeof localSessionDirectorySchema>;
+export const localSessionDetailSchema = z.object({
+  summary: localSessionSummarySchema, messages: z.array(localSessionMessageSchema), warnings: z.array(z.string()),
+});
+export type LocalSessionDetail = z.infer<typeof localSessionDetailSchema>;
+
+export const resumeLocalSessionRequestSchema = z.object({
+  source_home: z.string().min(1),
+  profile: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  thinking: z.string().min(1).optional(),
+}).strict();
+export type ResumeLocalSessionRequest = z.infer<typeof resumeLocalSessionRequestSchema>;
+export const resumeLocalSessionResponseSchema = z.object({
+  session_id: z.string(), executor_id: z.string(), created: z.boolean(),
+});
+export type ResumeLocalSessionResponse = z.infer<typeof resumeLocalSessionResponseSchema>;

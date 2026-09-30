@@ -126,6 +126,20 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/catalog/providers` | 浏览 models.dev 目录（服务端代理） |
 | `GET /api/catalog/providers/{catalog_id}` | 读取目录中单个条目 |
 
+### 本机执行器会话
+
+Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。来源 ID 不是 Kiki 会话 ID；GET 接口不会将它们导入 Kiki 会话索引。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/executors/{id}/local-sessions?limit=100` | 有界目录；limit 为 1–200，包含 `resume_enabled` 与条目的 `resume.supported` / `resume.reason` |
+| `GET /api/executors/{id}/local-sessions/{local_session_id}` | 有界历史预览，包含 `partial` 与 `warnings` |
+| `POST /api/executors/{id}/local-sessions/{local_session_id}/resume` | 为来源建立 Kiki 会话绑定，或返回已有绑定 |
+
+续接默认开启；在服务端设置 `KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME=false` 可关闭新绑定。POST 必须包含从选中条目复制的 `{ "source_home": "…" }`；可选的 `profile`、`model` 与 `thinking` 用于选择初始绑定。显式指定的档案必须使用选中的执行器。响应为 `{ session_id, executor_id, created }`；打开 `session_id`，再发送普通提示词以续跑外部会话。重复请求（包括服务端重启后）返回 `created: false`，不更改已有绑定。若 Codex 来源已经由另一执行器绑定，`executor_id` 表示已有执行器。
+
+绑定不会复制外部历史，也不会发送提示词。首条提示词通过 ACP resume/load 或 Codex `thread/resume` 续跑；引擎不支持、引用不可用、绑定指纹变化或来源 home 变化时会报错，不会悄悄新建外部会话。`resume.supported` 反映已知适配器能力与最近一次运行时观测，不等于连接或认证检查。SDK 方法与错误码详见 [klient 契约](https://github.com/X-T-E-R/kiki/blob/kiki/packages/klient/README.md#local-executor-sessions-http)。
+
 ### 会话
 
 | 方法与路径 | 说明 |

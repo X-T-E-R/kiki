@@ -27,6 +27,7 @@ export interface IAgentExecutionService {
   trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
   /** Reports cancelling once all tracked runs receive cancellation, until they settle; a stop request alone does not release capacity. */
   status(): AgentExecutionStatus;
+  attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
   steer?(message: ContextMessage): Promise<boolean>;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;

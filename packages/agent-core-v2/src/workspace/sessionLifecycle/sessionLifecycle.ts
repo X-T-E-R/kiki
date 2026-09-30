@@ -16,6 +16,7 @@ export interface CreateSessionOptions {
   readonly ephemeral?: boolean;
   readonly additionalDirs?: readonly string[];
   readonly mainAgentBinding?: BindAgentInput;
+  readonly localSession?: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource;
   readonly waitForSessionMs?: number;
   /**
    * Ephemeral per-session MCP servers: connected only for this session,

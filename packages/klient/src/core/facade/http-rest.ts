@@ -402,6 +402,10 @@ export interface HttpRestFacade {
 
   readonly executors: {
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+    listLocalSessions(executorId: string, query?: { readonly limit?: number }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDirectory>;
+    getLocalSession(executorId: string, localSessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDetail>;
+    /** Attaches without sending a prompt; duplicate calls return the existing Kiki session. */
+    resumeLocalSession(executorId: string, localSessionId: string, body: import('@kiki/protocol').ResumeLocalSessionRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ResumeLocalSessionResponse>;
   };
 
   readonly agents: {

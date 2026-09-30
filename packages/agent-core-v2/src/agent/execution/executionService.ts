@@ -36,7 +36,11 @@ import type {
 } from '#/session/subagent/subagent';
 
 import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
-import { ExecutorHintDelivery, externalExecutorKey } from './externalExecutorOps';
+import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey } from './externalExecutorOps';
+import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
+import { localSourceFromRef, type LocalExecutorSessionSource } from '#/app/agentExecutor/localSessionRef';
+import { IFlagService } from '#/app/flag/flag';
+import { LOCAL_SESSION_RESUME_FLAG } from '#/app/agentExecutor/flag';
 import { externalPromptHints, externalStateHints, type ExternalPromptHint } from './externalPromptHints';
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
 
@@ -260,10 +264,48 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     this.sessionBindingKey = undefined;
   }
 
+  async attachLocalSession(source: LocalExecutorSessionSource): Promise<void> {
+    if (!this.agent.accessor.get(IFlagService).enabled(LOCAL_SESSION_RESUME_FLAG)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session continuation is disabled');
+    }
+    if (this.session !== undefined || this.runs.size > 0 || this.shuttingDown) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session attachment requires a new idle agent');
+    }
+    await this.profile.preparePromptConfiguration();
+    const binding = this.profile.data();
+    const state = this.agent.accessor.get(IAgentStateService).get(externalExecutorKey);
+    if (state.sessionRef !== undefined || binding.executorId !== source.executorId) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session does not match the bound executor');
+    }
+    const catalog = this.agent.accessor.get(ILocalSessionCatalog);
+    const detail = await catalog.get(source.executorId, source.localId);
+    if (detail === undefined || !detail.summary.resume.supported || detail.summary.externalId !== source.externalId ||
+        detail.summary.engine !== source.engine || detail.summary.sourceHome !== source.home) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session source is unavailable or cannot be resumed');
+    }
+    await this.agent.accessor.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+      executorId: source.executorId,
+      descriptorRevision: binding.executorDescriptorRevision!,
+      bindingFingerprint: agentExecutorBindingFingerprint(binding),
+      sessionEpoch: 1,
+      sessionRef: { executorId: source.executorId, version: 1, ref: {
+        [binding.executorProtocol === 'codex-app-server' ? 'threadId' : 'sessionId']: source.externalId,
+        localSource: source,
+      } },
+    }));
+  }
+
   private async resolveSession(): Promise<AgentExecutorSession> {
     await this.profile.preparePromptConfiguration();
     const data = this.profile.data();
     const executorId = data.executorId ?? 'native';
+    const prior = this.agent.accessor.get(IAgentStateService).get(externalExecutorKey);
+    const source = localSourceFromRef(prior.sessionRef?.ref);
+    if (source !== undefined && (source.executorId !== executorId ||
+        prior.bindingFingerprint !== agentExecutorBindingFingerprint(data) ||
+        source.home !== await this.agent.accessor.get(ILocalSessionCatalog).sourceHome(executorId))) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session executor binding fingerprint or source home changed');
+    }
     const binding = { ...data, systemPrompt: executorId === 'native'
       ? this.profile.getSystemPrompt() : data.systemPrompt };
     assertResearchExecutor(binding.executionRestriction, executorId);

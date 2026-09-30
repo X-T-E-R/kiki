@@ -15,6 +15,7 @@ import { ILogService } from '#/_base/log/log';
 import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
@@ -302,6 +303,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
     const sessionId = opts.sessionId ?? createSessionId();
+    if (opts.localSession !== undefined && (sessionId.startsWith('external:') || sessionId === opts.localSession.externalId)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'External source IDs cannot be used as Kiki session IDs');
+    }
     if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
     await this.workspaceSkillCatalog
       .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
@@ -328,6 +332,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (this.config.get<boolean>(DEFAULT_PLAN_MODE_SECTION) === true) {
         const planAgent = main ?? (await ensureMainAgent(handle));
         await planAgent.accessor.get(IAgentPlanService).enter();
+      }
+      if (opts.localSession !== undefined) {
+        const agent = main ?? await ensureMainAgent(handle);
+        await agent.accessor.get(IAgentExecutionService).attachLocalSession(opts.localSession);
+        const metadata = handle.accessor.get(ISessionMetadata);
+        const meta = await metadata.read();
+        await metadata.update({ custom: { ...meta.custom, local_session: opts.localSession } }, { touchUpdatedAt: false });
       }
       if (opts.worktree !== undefined) {
         await handle.accessor.get(ISessionMetadata).update({ worktree: opts.worktree }, { touchUpdatedAt: false });

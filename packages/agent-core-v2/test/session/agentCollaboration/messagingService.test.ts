@@ -1802,6 +1802,7 @@ function agentHandle(
   };
   const execution = {
     _serviceBrand: undefined,
+    attachLocalSession: async () => { throw new Error('unexpected local attachment'); },
     trackPromptRun: (_completion: Promise<unknown>, signal: AbortSignal) => signal,
     run: async (request: AgentRunRequest, runOptions: RunAgentOptions) => {
       if (options.executorId === undefined) throw new Error('unexpected run');

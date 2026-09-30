@@ -59,6 +59,7 @@ interface HarnessOptions {
   readonly unpinModel?: boolean;
   readonly thinkingEffort?: string;
   readonly priorThreadId?: string;
+  readonly localSource?: boolean;
   readonly priorBindingFingerprint?: string;
   readonly resumeError?: unknown;
   readonly approvalOptionId?: string;
@@ -97,7 +98,10 @@ function createHarness(options: HarnessOptions = {}) {
       sessionRef: {
         executorId: 'codex-app-server',
         version: 1,
-        ref: { threadId: options.priorThreadId },
+        ref: { threadId: options.priorThreadId, localSource: options.localSource === true ? {
+          localId: 'external:codex:source', executorId: 'codex-app-server', externalId: options.priorThreadId,
+          home: '/vendor', engine: 'codex',
+        } : undefined },
       },
       sessionEpoch: 1,
       profileDeliveredSessionId: options.priorThreadId,
@@ -855,6 +859,32 @@ describe('Codex app-server external executor', () => {
       modelAlias: undefined, executorId: 'codex-app-server',
     });
     await harness.session.shutdown();
+  });
+
+  it('resumes imported Codex threads and preserves source provenance on later turns', async () => {
+    const harness = createHarness({ priorThreadId: 'foreign-thread', localSource: true });
+    try {
+      for (const prompt of ['Continue', 'Continue again']) {
+        await (await harness.session.run({ kind: 'prompt', prompt }, { signal: new AbortController().signal })).completion;
+        await harness.session.settled();
+      }
+      expect(harness.resumes[0]).toMatchObject({ threadId: 'foreign-thread' });
+      expect(harness.starts).toHaveLength(0);
+      const updates = harness.events.filter((event) => event instanceof ExecutorSessionUpdated);
+      expect(updates).toHaveLength(2);
+      expect(updates.every((event) => event.sessionRef.ref['localSource'] !== undefined)).toBe(true);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it.each(['fingerprint', 'missing_thread'] as const)('rejects imported Codex %s failures without a fresh thread or a prompt', async (failure) => {
+    const harness = createHarness({ priorThreadId: 'foreign-thread', localSource: true,
+      priorBindingFingerprint: failure === 'fingerprint' ? '0'.repeat(64) : undefined,
+      resumeError: failure === 'missing_thread' ? new CodexRemoteError('1', -32602, 'unknown thread') : undefined });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal })).rejects.toThrow();
+      expect(harness.starts).toHaveLength(0);
+      expect(harness.prompts).toHaveLength(0);
+    } finally { await harness.session.shutdown(); }
   });
 
   it('falls back to a fresh thread only for protocol resume failures', async () => {

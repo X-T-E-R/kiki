@@ -1,6 +1,7 @@
 import { createControlledPromise } from '@antfu/utils';
 import {
   AcpProcessClient,
+  AcpClientError,
   type AcpOpenSessionOptions,
   type AcpOpenSessionResult,
   type AcpPermissionOption,
@@ -191,7 +192,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
       : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
     const sessionOptions = await this.#sessionOptions(options.signal);
-    const opened = await this.#client.openSession(sessionOptions);
+    const opened = await this.#client.openSession(sessionOptions).catch((error: unknown) => {
+      if (error instanceof AcpClientError && typeof error.details?.['resumeSupported'] === 'boolean' &&
+          typeof error.details['loadSupported'] === 'boolean') {
+        this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
+          this.context.descriptor.id, this.context.descriptor.version, {
+            resume: error.details['resumeSupported'], load: error.details['loadSupported'],
+          },
+        );
+      }
+      throw error;
+    });
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
     if (
       (sessionOptions.additionalDirectories?.length ?? 0) > 0 &&
@@ -305,7 +316,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           executorId: this.context.descriptor.id,
           descriptorRevision: this.context.descriptor.revision,
           bindingFingerprint,
-          sessionRef: configured.sessionRef,
+          sessionRef: { ...configured.sessionRef, ref: { ...configured.sessionRef.ref, localSource: prior.sessionRef?.ref['localSource'] } },
           sessionEpoch,
           profileDeliveredSessionId: deliverProfile
             ? configured.sessionId
@@ -334,7 +345,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       () => options.signal.removeEventListener('abort', relayAbort),
       {
         bindingFingerprint,
-        sessionRef: configured.sessionRef,
+        sessionRef: { ...configured.sessionRef, ref: { ...configured.sessionRef.ref, localSource: prior.sessionRef?.ref['localSource'] } },
         sessionEpoch,
         profileDeliveredSessionId: deliverProfile
           ? configured.sessionId
@@ -516,6 +527,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         `Executor session state does not match descriptor "${this.context.descriptor.id}"`,
       );
     }
+    if (state.sessionRef?.ref['localSource'] !== undefined &&
+        state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
+    }
     const systemPrompt = this.context.binding.systemPrompt;
     return {
       cwd: roots.workDir,
@@ -527,6 +542,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
           : undefined,
+      requireResume: state.sessionRef?.ref['localSource'] !== undefined,
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0

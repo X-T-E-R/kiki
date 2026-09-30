@@ -92,6 +92,29 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('browses and attaches local sessions using encoded source IDs and typed REST requests', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET',
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      return envelope(url.pathname.endsWith('/resume') ? { session_id: 'session-kiki', executor_id: 'claude-acp', created: true }
+        : url.search ? { root: '/vendor/projects', exists: true, items: [], truncated: false, unreadable_files: 0, resume_enabled: true }
+          : { summary: { id: 'external:claude:source' }, messages: [], warnings: ['transcript_sampled'] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.executors.listLocalSessions('claude-acp', { limit: 10 })).resolves.toMatchObject({ items: [] });
+      await expect(channel.rest.executors.getLocalSession('claude-acp', 'external:claude:source')).resolves.toMatchObject({ warnings: ['transcript_sampled'] });
+      await expect(channel.rest.executors.resumeLocalSession('claude-acp', 'external:claude:source', { source_home: '/vendor' })).resolves.toMatchObject({ session_id: 'session-kiki', created: true });
+      expect(calls).toEqual([
+        { path: '/api/executors/claude-acp/local-sessions?limit=10', method: 'GET', body: undefined },
+        { path: '/api/executors/claude-acp/local-sessions/external%3Aclaude%3Asource', method: 'GET', body: undefined },
+        { path: '/api/executors/claude-acp/local-sessions/external%3Aclaude%3Asource/resume', method: 'POST', body: { source_home: '/vendor' } },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('posts typed rendered-prompt previews to an encoded agent profile path', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/agents/reviewer%2Fcodex/executor-prompt:preview');

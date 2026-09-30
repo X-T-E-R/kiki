@@ -276,7 +276,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         sessionRef: {
           executorId: this.context.descriptor.id,
           version: 1,
-          ref: { threadId: opened.threadId },
+          ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'] },
         },
         sessionEpoch,
         profileDeliveredSessionId: opened.threadId,
@@ -481,8 +481,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] },
     signal: AbortSignal,
   ): Promise<OpenedThread> {
-    if (this.#threadId !== undefined) return { threadId: this.#threadId, mode: 'live' };
     const state = this.#states.get(externalExecutorKey);
+    if (state.sessionRef?.ref['localSource'] !== undefined &&
+        state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
+    }
+    if (this.#threadId !== undefined) return { threadId: this.#threadId, mode: 'live' };
     if (
       state.executorId !== undefined &&
       (state.executorId !== this.context.descriptor.id ||
@@ -496,6 +500,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const reusable =
       state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding);
     const priorThreadId = reusable ? threadIdFromState(state.sessionRef) : undefined;
+    if (state.sessionRef?.ref['localSource'] !== undefined && priorThreadId === undefined) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint or thread reference changed');
+    }
     if (priorThreadId !== undefined) {
       try {
         const resumed = await this.#client.resumeThread({
@@ -509,7 +516,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         this.#threadId = resumed.thread.id;
         return { threadId: resumed.thread.id, mode: 'resume' };
       } catch (error) {
-        if (!isResumeProtocolFailure(error)) throw error;
+        if (state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
         const handoff = buildHandoff(this.#memory.get());
         const fresh = await this.#startFreshThread(roots, signal);
         return { threadId: fresh.thread.id, mode: 'handoff', handoff };

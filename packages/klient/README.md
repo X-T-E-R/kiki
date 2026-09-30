@@ -132,6 +132,61 @@ and IPC reject these HTTP-only commands rather than silently emulating them.
 Inputs and outputs reuse the protocol schemas. Submission waits without the
 generic HTTP deadline; other commands use the normal request deadline.
 
+## Local executor sessions (HTTP)
+
+`klient.rest.executors` browses local Claude/Codex history and attaches a selected
+vendor session to a Kiki session. These are authenticated HTTP-only methods;
+local source IDs (`external:claude:…` / `external:codex:…`) are never Kiki session IDs.
+Wire schemas and types live in `@kiki/protocol` (`LocalSessionDirectory`,
+`LocalSessionDetail`, `ResumeLocalSessionRequest`, `ResumeLocalSessionResponse`).
+
+| Method | REST route |
+|---|---|
+| `listLocalSessions(executorId, { limit? }, options?)` | `GET /api/executors/{id}/local-sessions` |
+| `getLocalSession(executorId, localSessionId, options?)` | `GET /api/executors/{id}/local-sessions/{local_session_id}` |
+| `resumeLocalSession(executorId, localSessionId, body, options?)` | `POST /api/executors/{id}/local-sessions/{local_session_id}/resume` |
+
+Listing accepts `limit` 1–200 (default 100). GETs remain read-only and bounded:
+`partial`, `warnings`, `truncated`, and `unreadable_files` are not completeness
+claims. A summary includes `source_home` and `resume: { supported, reason? }`;
+`resume_enabled` on the directory reflects the experimental gate. Reasons include
+`working_directory_missing`, `source_identity_mismatch`, `protocol_unsupported`,
+and `engine_resume_unsupported` (an ACP engine negotiated neither resume nor load).
+
+Continuation is enabled by default. Set `KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME=false`
+or `[experimental] local_session_resume = false` on the server to disable new attachments. POST requires
+`{ source_home }` copied from the selected summary, with optional `profile`,
+`model`, and `thinking`. An explicit profile must already use the selected
+executor. Without a profile, Kiki adapts the workspace's default profile to that
+executor, leaving model and thinking selection to the harness unless requested.
+The original transcript working directory is used; no foreign transcript is
+copied into Kiki's conversation history.
+
+POST returns `{ session_id, executor_id, created }`. It persists a new Kiki main
+agent's external reference and the existing executor binding fingerprint, but
+sends no prompt and does not yet establish vendor authentication or negotiate
+an engine connection. The first ordinary prompt performs ACP `session/resume`
+(or `session/load`) for Claude ACP / Codex ACP, or Codex app-server `thread/resume`.
+Engine rejection or lack of runtime resume capability fails closed: imported
+sessions never silently turn into fresh sessions or transcript handoffs. Changing
+the fingerprint (profile instructions, model, thinking, descriptor, etc.) or
+source home also refuses continuation; use a separate ordinary Kiki session for
+a different binding.
+
+Repeated or concurrent attachment returns `created: false` and the same Kiki
+ID, including after server restart and across Codex ACP/app-server selection.
+`executor_id` then names the executor already attached, not necessarily the one
+requested. New body choices do not rebind the existing session. Open the returned
+Kiki session; deleting it permits a later attachment to create it again.
+The vendor transcript remains vendor-owned and may be updated by the engine
+when a prompt actually runs.
+
+Errors use the usual envelope: `40925` for disabled/unsupported continuation,
+`40401` for a missing local session, `40001` for invalid input, stale source home,
+or incompatible binding, and the existing executor/workspace-not-found codes.
+Another process holding the deterministic Kiki session lock reports `40933`.
+Normal REST cancellation and deadlines apply via `options`.
+
 ## Agent panel and task board
 
 `global.agentPanel.read(query, options?)` reads the whitelisted draft or live

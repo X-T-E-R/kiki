@@ -118,6 +118,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       ? cached.capabilities : undefined;
   }
 
+  lastNegotiated(id: string): NegotiatedExecutorCapabilities | undefined {
+    const cached = this.negotiatedById.get(id);
+    return cached?.revision === this.get(id)?.revision ? cached?.capabilities : undefined;
+  }
+
   resolve(id = 'native', options: unknown = {}): ResolvedAgentExecutor {
     const descriptor = this.get(id);
     if (descriptor === undefined) {

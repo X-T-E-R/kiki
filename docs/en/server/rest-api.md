@@ -126,6 +126,20 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 | `GET /api/catalog/providers` | Browse the models.dev directory (server-proxied) |
 | `GET /api/catalog/providers/{catalog_id}` | Read one directory entry |
 
+### Local executor sessions
+
+Claude ACP, Codex ACP, and Codex app-server expose a separate local-history catalog. Source IDs are not Kiki session IDs; the GET routes never import them into the Kiki session index.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/executors/{id}/local-sessions?limit=100` | Bounded directory; limit 1–200, with `resume_enabled` and per-item `resume.supported` / `resume.reason` |
+| `GET /api/executors/{id}/local-sessions/{local_session_id}` | Bounded transcript preview with `partial` and `warnings` |
+| `POST /api/executors/{id}/local-sessions/{local_session_id}/resume` | Attach the source to a Kiki session, or return its existing attachment |
+
+Continuation is enabled by default; set `KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME=false` on the server to disable new attachments. POST requires `{ "source_home": "…" }` copied from the selected summary; optional `profile`, `model`, and `thinking` choose the initial binding. An explicit profile must use the selected executor. The response is `{ session_id, executor_id, created }`; open `session_id`, and submit an ordinary prompt to resume the vendor session. Duplicate requests, including after a server restart, return `created: false` without changing the existing binding. For a Codex source already attached through another executor, `executor_id` identifies that existing executor.
+
+Attachment does not copy the vendor transcript or send a prompt. The first prompt performs ACP resume/load or Codex `thread/resume`; unsupported engines, unavailable references, changed binding fingerprints, and changed source homes fail instead of silently creating a fresh vendor conversation. `resume.supported` reflects the known adapter capability and the latest runtime observation, not an authenticated connection check. See the [klient contract](https://github.com/X-T-E-R/kiki/blob/kiki/packages/klient/README.md#local-executor-sessions-http) for SDK methods and errors.
+
 ### Sessions
 
 | Method and path | Description |

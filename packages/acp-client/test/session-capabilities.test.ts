@@ -50,6 +50,7 @@ async function openWithScriptedAgent(
     additionalDirectories?: readonly string[];
     sessionRef?: unknown;
     systemPromptOverride?: string;
+    requireResume?: boolean;
   },
 ) {
   const { child, toAgent, fromAgent } = scriptedChild();
@@ -66,6 +67,7 @@ async function openWithScriptedAgent(
       additionalDirectories: options.additionalDirectories,
       sessionRef: options.sessionRef as never,
       systemPromptOverride: options.systemPromptOverride,
+      requireResume: options.requireResume,
     });
     return { client, history, opened };
   } catch (error) {
@@ -132,6 +134,40 @@ describe('AcpProcessClient session capability negotiation', () => {
     } finally {
       await client.shutdown();
     }
+  });
+
+  it.each(['resume', 'load'] as const)('strict continuation uses %s with the external ID rather than creating a new session', async (mode) => {
+    const { client, history, opened } = await openWithScriptedAgent(
+      { capabilities: { loadSession: true, sessionCapabilities: mode === 'resume' ? { resume: {} } : {} } },
+      { requireResume: true, sessionRef: { executorId: 'fixture', version: 1, ref: { sessionId: 'foreign-thread' } } },
+    );
+    try {
+      expect(opened.mode).toBe(mode);
+      expect(opened.sessionId).toBe('foreign-thread');
+      expect(mode === 'resume' ? history.sessionResumeParams : history.sessionLoadParams).toEqual([
+        expect.objectContaining({ sessionId: 'foreign-thread', cwd: 'C:/workspace' }),
+      ]);
+      expect(history.sessionNewParams).toHaveLength(0);
+    } finally { await client.shutdown(); }
+  });
+
+  it.each(['unsupported', 'unknown_session'] as const)('strict continuation rejects %s instead of silently falling back to session/new', async (failure) => {
+    const histories: Array<ReturnType<typeof createInProcessScriptedAgent>['history']> = [];
+    const client = new AcpProcessClient({ spawn: async () => {
+      const { child, toAgent, fromAgent } = scriptedChild();
+      const fixture = createInProcessScriptedAgent(failure === 'unsupported' ? { capabilities: {} }
+        : { resume: 'unknown_session', load: 'unknown_session' });
+      histories.push(fixture.history);
+      fixture.app.connect(ndJsonStream(Writable.toWeb(fromAgent), Readable.toWeb(toAgent)));
+      return child;
+    } }, { id: 'fixture', command: 'fixture', startupTimeoutMs: 5_000 }, { platform: 'linux' });
+    try {
+      await expect(client.openSession({ cwd: 'C:/workspace', requireResume: true,
+        sessionRef: { executorId: 'fixture', version: 1, ref: { sessionId: 'foreign-thread' } } }))
+        .rejects.toMatchObject({ code: 'executor.session_open_failed' });
+      expect(histories.length).toBeGreaterThan(0);
+      expect(histories.every((history) => history.sessionNewParams.length === 0)).toBe(true);
+    } finally { await client.shutdown(); }
   });
 
   it('attempts session/resume when the agent declares resume support', async () => {

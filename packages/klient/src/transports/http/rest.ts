@@ -357,6 +357,16 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     executors: {
       list: () => transport.json('/executors'),
+      listLocalSessions: (executorId, query, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/local-sessions`, { ...options, query },
+      ),
+      getLocalSession: (executorId, localSessionId, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/local-sessions/${encodeURIComponent(localSessionId)}`, options,
+      ),
+      resumeLocalSession: (executorId, localSessionId, body, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/local-sessions/${encodeURIComponent(localSessionId)}/resume`,
+        { ...options, method: 'POST', body },
+      ),
     },
 
     agents: {

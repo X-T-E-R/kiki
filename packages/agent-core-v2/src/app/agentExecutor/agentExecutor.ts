@@ -262,6 +262,8 @@ export interface IAgentExecutorRegistry {
   discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
   recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void;
   negotiated?(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined;
+  /** Last observation for the current descriptor, without launching the executor or verifying its installed version. */
+  lastNegotiated?(id: string): NegotiatedExecutorCapabilities | undefined;
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined;
 }
 

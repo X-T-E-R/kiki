@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ErrorCode } from '@kiki/protocol';
+import { ISessionIndex, ISessionManager } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { startServer, type RunningServer } from '../src/start';
@@ -31,8 +32,8 @@ describe('read-only local executor sessions', () => {
       homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
   }
-  async function request<T>(path: string): Promise<Envelope<T>> {
-    const response = await authedFetch(server!, base, path);
+  async function request<T>(path: string, init?: Parameters<typeof authedFetch>[3]): Promise<Envelope<T>> {
+    const response = await authedFetch(server!, base, path, init);
     expect(response.status).toBe(200);
     return response.json() as Promise<Envelope<T>>;
   }
@@ -72,6 +73,80 @@ describe('read-only local executor sessions', () => {
     expect(detail.data.messages[1]?.blocks[0]?.text).toBe('Local response');
     expect(await sessionBuckets()).toEqual(before);
     expect(await readFile(sourcePath, 'utf8')).toBe(source);
+  });
+
+  it.each(['claude-acp', 'codex-app-server'] as const)('attaches %s once across concurrent calls and restarts without importing vendor IDs into the Kiki index', async (executorId) => {
+    vi.stubEnv(executorId === 'claude-acp' ? 'CLAUDE_AGENT_ACP_PATH' : 'CODEX_PATH', process.execPath);
+    const project = executorId === 'claude-acp' ? join(home, 'vendor-claude', 'projects', 'project')
+      : join(home, 'vendor-codex', 'sessions', '2026', '09', '29');
+    const cwd = join(home, 'workspace');
+    await mkdir(project, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    const content = JSON.stringify(executorId === 'claude-acp'
+      ? { type: 'user', sessionId: 'foreign-thread', cwd, message: { content: 'Existing conversation' } }
+      : { type: 'session_meta', payload: { id: 'foreign-thread', cwd } }) + '\n';
+    const sourcePath = join(project, executorId === 'claude-acp' ? 'foreign-thread.jsonl'
+      : 'rollout-2026-09-29T12-00-00-foreign-thread.jsonl');
+    await writeFile(sourcePath, content);
+    await boot();
+    const listed = await request<{ resume_enabled: boolean; items: Array<LocalSummary & { engine: 'claude' | 'codex'; source_home: string; resume: { supported: boolean } }> }>(`/api/executors/${executorId}/local-sessions`);
+    const summary = listed.data.items[0]!;
+    expect(listed.data.resume_enabled).toBe(true);
+    expect(summary.resume.supported).toBe(true);
+    for (const foreignId of [summary.id, summary.external_id]) {
+      await expect(server!.core.accessor.get(ISessionManager).create({ sessionId: foreignId, workDir: cwd,
+        localSession: { localId: summary.id, executorId, engine: summary.engine, externalId: summary.external_id, home: summary.source_home } }))
+        .rejects.toThrow(/External source IDs/);
+      expect(await server!.core.accessor.get(ISessionIndex).get(foreignId)).toBeUndefined();
+    }
+    const path = `/api/executors/${executorId}/local-sessions/${encodeURIComponent(summary.id)}/resume`;
+    const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source_home: summary.source_home }) };
+    type Receipt = { session_id: string; executor_id: string; created: boolean };
+    const receipts = await Promise.all([request<Receipt>(path, init), request<Receipt>(path, init)]);
+    expect(receipts.map((item) => item.code), JSON.stringify(receipts)).toEqual([0, 0]);
+    expect(receipts.map((item) => item.data.created).sort()).toEqual([false, true]);
+    const id = receipts[0]!.data.session_id;
+    expect(receipts[1]!.data.session_id).toBe(id);
+    expect(id).toMatch(/^session_[a-f0-9-]{36}$/);
+    expect(id).not.toContain('foreign-thread');
+    const bucket = (await sessionBuckets())[0]!;
+    const sessionDir = join(home, 'sessions', bucket, id);
+    const meta = JSON.parse(await readFile(join(sessionDir, 'state.json'), 'utf8'));
+    expect(meta.custom.local_session).toMatchObject({ executorId, externalId: 'foreign-thread', home: summary.source_home });
+    if (executorId === 'codex-app-server') {
+      const acpPath = `/api/executors/codex-acp/local-sessions/${encodeURIComponent(summary.id)}/resume`;
+      expect(await request<Receipt>(acpPath, init)).toMatchObject({ code: 0, data: { session_id: id, executor_id: executorId, created: false } });
+    }
+    const wire = await readFile(join(sessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8');
+    expect(wire).toContain('executor.session.updated');
+    expect(wire).toMatch(/bindingFingerprint/);
+    expect(await readFile(sourcePath, 'utf8')).toBe(content);
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect(await request<Receipt>(path, init)).toMatchObject({ code: 0, data: { session_id: id, created: false } });
+    expect((await request(path, { ...init, body: JSON.stringify({ source_home: '/different-home' }) })).code).toBe(ErrorCode.VALIDATION_FAILED);
+  }, 60_000);
+
+  it('rejects disabled continuation and sources without a working directory without creating Kiki sessions', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME', 'false');
+    const project = join(home, 'vendor-claude', 'projects', 'project');
+    await mkdir(project, { recursive: true });
+    await writeFile(join(project, 'incomplete.jsonl'), JSON.stringify({ type: 'user', sessionId: 'incomplete', message: { content: 'No cwd' } }) + '\n');
+    await writeFile(join(project, 'resumable.jsonl'), JSON.stringify({ type: 'user', sessionId: 'resumable', cwd: home, message: { content: 'Has cwd' } }) + '\n');
+    await boot();
+    const list = await request<{ resume_enabled: boolean; items: Array<LocalSummary & { source_home: string; resume: { supported: boolean; reason?: string } }> }>('/api/executors/claude-acp/local-sessions');
+    const source = list.data.items.find((item) => item.external_id === 'incomplete')!;
+    const resumable = list.data.items.find((item) => item.external_id === 'resumable')!;
+    expect(list.data.resume_enabled).toBe(false);
+    expect(source.resume).toEqual({ supported: false, reason: 'working_directory_missing' });
+    expect(resumable.resume.supported).toBe(true);
+    const path = `/api/executors/claude-acp/local-sessions/${encodeURIComponent(source.id)}/resume`;
+    const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source_home: source.source_home }) };
+    expect((await request(`/api/executors/claude-acp/local-sessions/${encodeURIComponent(resumable.id)}/resume`, init)).code).toBe(ErrorCode.CAPABILITY_UNSUPPORTED);
+    vi.stubEnv('KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME', 'true');
+    expect((await request(path, init)).code).toBe(ErrorCode.CAPABILITY_UNSUPPORTED);
+    expect(await sessionBuckets()).toEqual([]);
   });
 
   it('returns missing/unsupported catalogs and validates the scan limit', async () => {

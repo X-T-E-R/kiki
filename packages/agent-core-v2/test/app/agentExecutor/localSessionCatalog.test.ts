@@ -19,10 +19,11 @@ const claudeRecord = (id: string, content: unknown = 'hello', extra: Record<stri
 const codexHeader = (id: string, extra: Record<string, unknown> = {}) => ({
   type: 'session_meta', timestamp: time, payload: { id, cwd: '/work', ...extra },
 });
-function catalog(home: string, fs: IHostFileSystem = new HostFileSystem(), override?: Partial<AgentExecutorDescriptor>) {
+function catalog(home: string, fs: IHostFileSystem = new HostFileSystem(), override?: Partial<AgentExecutorDescriptor>, negotiated?: { resume: boolean; load: boolean }) {
   const bootstrap = { osHomeDir: home, getEnv: () => undefined } as unknown as IBootstrapService;
   const registry = { get: (id: string) => ({ id, revision: '1', protocol: 'acp-v1', args: [],
-    homeEnv: id === 'claude-acp' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME', ...override }) } as unknown as IAgentExecutorRegistry;
+    homeEnv: id === 'claude-acp' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME', ...override }),
+    lastNegotiated: () => negotiated } as unknown as IAgentExecutorRegistry;
   return new LocalSessionCatalog(bootstrap, fs, registry);
 }
 async function fixture(run: (home: string) => Promise<void>) {
@@ -104,6 +105,34 @@ describe('local vendor transcript parsing', () => {
 });
 
 describe('read-only local vendor catalog', () => {
+  it('keeps the scanned source home paired with its source ID if executor configuration changes while reading', async () => {
+    await fixture(async (home) => {
+      await transcript(home, 'first/projects/project/thread.jsonl', jsonl(claudeRecord('thread')));
+      await mkdir(join(home, 'second'));
+      const fs = new HostFileSystem();
+      const override = { homeDir: join(home, 'first') };
+      const readBytes = fs.readBytes.bind(fs);
+      vi.spyOn(fs, 'readBytes').mockImplementation(async (...args) => {
+        override.homeDir = join(home, 'second');
+        return readBytes(...args);
+      });
+      const service = catalog(home, fs, override);
+      const summary = (await service.list('claude-acp')).items[0]!;
+      expect(summary.sourceHome).toBe(await fs.realpath(join(home, 'first')));
+      expect(await service.sourceHome('claude-acp')).toBe(await fs.realpath(join(home, 'second')));
+    });
+  });
+  it('marks engines that negotiated neither resume nor load as browse-only', async () => {
+    await fixture(async (home) => {
+      await transcript(home, '.claude/projects/project/thread.jsonl', jsonl(claudeRecord('thread')));
+      const unsupported = catalog(home, new HostFileSystem(), undefined, { resume: false, load: false });
+      const source = (await unsupported.list('claude-acp')).items[0]!;
+      expect(source.resume).toEqual({ supported: false, reason: 'engine_resume_unsupported' });
+      expect((await unsupported.get('claude-acp', source.id))?.messages).toHaveLength(1);
+      const supported = catalog(home, new HostFileSystem(), undefined, { resume: false, load: true });
+      expect((await supported.list('claude-acp')).items[0]?.resume.supported).toBe(true);
+    });
+  });
   it('lists and reads Claude transcripts with disjoint source identities and no writes', async () => {
     await fixture(async (home) => {
       const content = jsonl(claudeRecord('shared-id'), { type: 'custom-title', customTitle: 'Named session' });

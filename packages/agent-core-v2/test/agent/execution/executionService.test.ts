@@ -19,6 +19,8 @@ import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentExecutionService } from '#/agent/execution/executionService';
+import { agentExecutorBindingFingerprint } from '#/app/agentExecutor/agentExecutor';
+import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { NativeAgentExecutorSession } from '#/agent/execution/nativeAgentExecutorSession';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -63,6 +65,7 @@ function states(): IAgentStateService {
   return {
     _serviceBrand: undefined,
     contributeState: () => ({ dispose: () => {} }),
+    get: () => ({}),
   } as unknown as IAgentStateService;
 }
 
@@ -91,6 +94,24 @@ function executionService(
 }
 
 describe('AgentExecutionService', () => {
+  it.each(['fingerprint', 'source_home', 'executor'] as const)('rejects imported local session %s drift before launching an executor', async (drift) => {
+    const ix = new TestInstantiationService();
+    const bound = profile({ executorId: 'claude-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' });
+    const prior = { bindingFingerprint: drift === 'fingerprint' ? '0'.repeat(64) : agentExecutorBindingFingerprint(bound.data()),
+      sessionRef: { executorId: 'claude-acp', version: 1, ref: { sessionId: 'foreign-thread', localSource: {
+        executorId: drift === 'executor' ? 'codex-acp' : 'claude-acp', engine: 'claude', externalId: 'foreign-thread',
+        home: '/vendor', localId: 'external:claude:source',
+      } } } };
+    const stored = states();
+    stored.get = () => prior as never;
+    const resolveExecutable = vi.fn(async () => { throw new Error('unexpected executor launch'); });
+    const service = executionService(ix, scope(), bound, { resolveExecutable } as unknown as IAgentExecutorRegistry, stored);
+    ix.stub(ILocalSessionCatalog, { sourceHome: async () => drift === 'source_home' ? '/changed' : '/vendor' });
+    try {
+      await expect(service.run({ kind: 'prompt', prompt: 'Continue' }, { signal: new AbortController().signal })).rejects.toThrow(/fingerprint or source home changed/);
+      expect(resolveExecutable).not.toHaveBeenCalled();
+    } finally { await service.dispose(); ix.dispose(); }
+  });
   it.each(['child', 'main'] as const)('starts and completes an external %s agent with only main goal state', async (agentId) => {
     const ix = new TestInstantiationService();
     const run = vi.fn<AgentExecutorSession['run']>(async (request) => ({

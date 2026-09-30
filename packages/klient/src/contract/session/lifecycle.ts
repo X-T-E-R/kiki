@@ -13,6 +13,8 @@ import type { ServiceContract } from '../types.js';
 
 export const createSessionOptionsSchema = z.object({
   sessionId: z.string().optional(),
+  localSession: z.object({ localId: z.string(), executorId: z.string(), engine: z.enum(['claude', 'codex']),
+    externalId: z.string(), home: z.string() }).optional(),
   workDir: z.string(),
   ephemeral: z.boolean().optional(),
   additionalDirs: z.array(z.string()).optional(),

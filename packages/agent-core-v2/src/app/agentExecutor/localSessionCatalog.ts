@@ -23,6 +23,8 @@ export interface LocalSessionSummary {
   readonly engine: LocalSessionEngine;
   readonly externalId: string;
   readonly sourcePath: string;
+  readonly sourceHome: string;
+  readonly resume: { readonly supported: boolean; readonly reason?: string };
   readonly cwd?: string;
   readonly title?: string;
   readonly createdAt?: string;
@@ -47,6 +49,7 @@ export interface ILocalSessionCatalog {
   readonly _serviceBrand: undefined;
   list(executorId: string, limit?: number): Promise<LocalSessionDirectory>;
   get(executorId: string, id: string): Promise<LocalSessionDetail | undefined>;
+  sourceHome(executorId: string): Promise<string>;
 }
 export const ILocalSessionCatalog: ServiceIdentifier<ILocalSessionCatalog> =
   createDecorator<ILocalSessionCatalog>('localSessionCatalog');
@@ -78,13 +81,13 @@ export class LocalSessionCatalog implements ILocalSessionCatalog {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session limit must be an integer between 1 and 200');
     }
-    const { engine, root, exists, candidates, truncated } = await this.scan(executorId);
+    const { engine, root, home, exists, candidates, truncated } = await this.scan(executorId);
     const items: LocalSessionSummary[] = [];
     let unreadableFiles = 0;
     for (const candidate of candidates) {
       if (items.length >= limit) break;
       try {
-        const detail = await this.read(engine, root, candidate, PREVIEW_BYTES);
+        const detail = await this.read(executorId, engine, root, home, candidate, PREVIEW_BYTES);
         if (detail !== undefined) items.push(detail.summary);
       } catch (error) {
         if (isFileReadError(error)) unreadableFiles += 1;
@@ -99,23 +102,31 @@ export class LocalSessionCatalog implements ILocalSessionCatalog {
     const engine = localSessionEngine(executorId);
     if (engine === undefined) throw unsupportedExecutor(executorId);
     if (!new RegExp(`^external:${engine}:[a-f0-9]{64}$`).test(id)) return undefined;
-    const { root, candidates } = await this.scan(executorId);
+    const { root, home, candidates } = await this.scan(executorId);
     const candidate = candidates.find((item) => sourceId(engine, root, item.identity) === id);
-    return candidate === undefined ? undefined : this.read(engine, root, candidate, DETAIL_BYTES);
+    return candidate === undefined ? undefined : this.read(executorId, engine, root, home, candidate, DETAIL_BYTES);
   }
 
-  private async scan(executorId: string) {
+  async sourceHome(executorId: string): Promise<string> {
     const engine = localSessionEngine(executorId);
     const descriptor = this.registry.get(executorId);
     if (engine === undefined || descriptor === undefined) throw unsupportedExecutor(executorId);
     const homeVar = engine === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME';
-    const home = executorProcessEnv(descriptor)?.[homeVar]?.trim() || this.bootstrap.getEnv(homeVar)?.trim()
-      || join(this.bootstrap.osHomeDir, engine === 'claude' ? '.claude' : '.codex');
-    const configuredRoot = join(resolve(home), engine === 'claude' ? 'projects' : 'sessions');
+    const home = resolve(executorProcessEnv(descriptor)?.[homeVar]?.trim() || this.bootstrap.getEnv(homeVar)?.trim()
+      || join(this.bootstrap.osHomeDir, engine === 'claude' ? '.claude' : '.codex'));
+    try { return await this.fs.realpath(home); }
+    catch (error) { if (isNotFound(error)) return home; throw error; }
+  }
+
+  private async scan(executorId: string) {
+    const engine = localSessionEngine(executorId);
+    if (engine === undefined) throw unsupportedExecutor(executorId);
+    const home = await this.sourceHome(executorId);
+    const configuredRoot = join(home, engine === 'claude' ? 'projects' : 'sessions');
     let root: string;
     try { root = await this.fs.realpath(configuredRoot); }
     catch (error) {
-      if (isNotFound(error)) return { engine, root: configuredRoot, exists: false,
+      if (isNotFound(error)) return { engine, home, root: configuredRoot, exists: false,
         candidates: [] as Candidate[], truncated: false };
       throw error;
     }
@@ -132,8 +143,6 @@ export class LocalSessionCatalog implements ILocalSessionCatalog {
         const path = join(directory, entry.name);
         const rel = relative(root, path);
         if (isAbsolute(rel) || rel === '..' || rel.startsWith('../')) continue;
-        // A directory can be replaced with a junction during a scan. Canonicalize
-        // before reading and require it to remain inside this transcript root.
         let canonical: string;
         try { canonical = await this.fs.realpath(path); }
         catch (error) { if (isNotFound(error)) continue; throw error; }
@@ -157,18 +166,27 @@ export class LocalSessionCatalog implements ILocalSessionCatalog {
       }
     };
     await visit(root, 0);
-    // A Codex revert leaves immutable old rollouts on disk. Select the newest
-    // filename timestamp/rollout id per thread, matching Codeg's parser.
     const current = new Map<string, Candidate>();
     for (const candidate of candidates) {
       const old = current.get(candidate.identity);
       if (old === undefined || old.recency < candidate.recency) current.set(candidate.identity, candidate);
     }
-    return { engine, root, exists: true, truncated,
+    return { engine, root, home, exists: true, truncated,
       candidates: [...current.values()].toSorted((a, b) => b.mtimeMs - a.mtimeMs || b.recency.localeCompare(a.recency)) };
   }
 
-  private async read(engine: LocalSessionEngine, root: string, candidate: Candidate, budget: number): Promise<LocalSessionDetail | undefined> {
+  private resumeSupport(executorId: string, cwd: string | undefined, warnings: readonly string[]): LocalSessionSummary['resume'] {
+    const descriptor = this.registry.get(executorId)!;
+    const negotiated = this.registry.lastNegotiated?.(executorId);
+    const reason = cwd === undefined || !isAbsolute(cwd) ? 'working_directory_missing'
+      : warnings.includes('source_identity_mismatch') ? 'source_identity_mismatch'
+      : descriptor.protocol !== 'acp-v1' && descriptor.protocol !== 'codex-app-server' ? 'protocol_unsupported'
+      : descriptor.protocol === 'acp-v1' && negotiated?.resume === false && negotiated.load === false
+        ? 'engine_resume_unsupported' : undefined;
+    return { supported: reason === undefined, reason };
+  }
+
+  private async read(executorId: string, engine: LocalSessionEngine, root: string, home: string, candidate: Candidate, budget: number): Promise<LocalSessionDetail | undefined> {
     const head = await this.fs.readBytes(candidate.path, Math.min(candidate.size, budget));
     let input = Buffer.from(head).toString('utf8');
     const warnings: string[] = [];
@@ -188,6 +206,8 @@ export class LocalSessionCatalog implements ILocalSessionCatalog {
     const summary: LocalSessionSummary = {
       id: sourceId(engine, root, candidate.identity), engine,
       externalId: parsed.externalId ?? candidate.externalId, sourcePath: candidate.path,
+      sourceHome: home,
+      resume: this.resumeSupport(executorId, parsed.cwd, warnings),
       cwd: parsed.cwd, title: parsed.title, createdAt: parsed.createdAt,
       updatedAt: parsed.updatedAt ?? new Date(candidate.mtimeMs).toISOString(),
       lastPrompt: parsed.lastPrompt, parentId: parsed.parentId,
