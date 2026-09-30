@@ -58,64 +58,19 @@ const TIMING_HINT_KEY = {
 } as const;
 
 /**
- * The queue sheet's label behind the composer card: "下一条 <first prompt>"
- * on the left, "N 条待发送" on the right, and "已暂停" in place of the
- * preview while an edit holds the queue.
+ * The queue sheet's label behind the composer card: "N 条待发送" on the left,
+ * the disclosure chevron on the right. The first prompt's preview and quick
+ * actions live in the detail, not on the strip.
  */
-export function QueueHeaderSummary({
-  count,
-  preview,
-  editing = false,
-}: {
-  readonly count: number;
-  readonly preview?: string;
-  /** A queued prompt is parked in the composer: the queue waits on the user. */
-  readonly editing?: boolean;
-}) {
-  const { t, tp } = useI18n();
+export function QueueHeaderSummary({ count }: { readonly count: number }) {
+  const { tp } = useI18n();
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <span className="shrink-0 font-medium text-section-ink">
-        {editing ? t('composer.queueStack.editing') : t('composer.queueStack.next')}
-      </span>
-      {editing ? (
-        <span data-queue-paused className="min-w-0 flex-1 truncate">{t('queue.headerPaused')}</span>
-      ) : (
-        <span data-queue-row-preview className="min-w-0 flex-1 truncate text-ink-soft">{preview ?? ''}</span>
-      )}
-      <span data-queue-count className="flex shrink-0 items-center gap-1 text-[12px] text-ink-faint tabular-nums">
+      <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
         {tp('composer.queueStack.count', count)}
-        <Icon name="chevron" size={12} className="-rotate-90" />
       </span>
+      <Icon name="chevron" size={12} className="ml-auto -rotate-90 text-ink-faint" />
     </span>
-  );
-}
-
-const HEAD_ACTION =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10';
-
-/** Send-now and edit for the next queued prompt, beside the queue sheet's label. */
-export function QueueHeadActions({
-  onSendNow,
-  onEdit,
-  sendNowDisabled = false,
-}: {
-  readonly onSendNow: () => void;
-  readonly onEdit: () => void;
-  readonly sendNowDisabled?: boolean;
-}) {
-  const { t } = useI18n();
-  return (
-    <>
-      <button type="button" data-queue-head-send-now disabled={sendNowDisabled} onClick={onSendNow}
-        aria-label={t('sv.queueSendNow')} title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')} className={HEAD_ACTION}>
-        <Icon name="arrowUpRight" size={12} />
-      </button>
-      <button type="button" data-queue-head-edit onClick={onEdit}
-        aria-label={t('sv.queueEditAria')} title={t('queue.editTitle')} className={HEAD_ACTION}>
-        <Icon name="edit" size={12} />
-      </button>
-    </>
   );
 }
 

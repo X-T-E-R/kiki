@@ -269,7 +269,7 @@ describe('QueueStrip drawer body', () => {
     expect(onClearAll).toHaveBeenCalledOnce();
   });
 
-  it('summarises the queue for the composer row: count, first preview, or paused while editing', async () => {
+  it('summarises the queue for the composer row: just the count and the chevron', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     containers.push(container);
@@ -277,14 +277,11 @@ describe('QueueStrip drawer body', () => {
     await act(async () => {
       root.render(
         <I18nProvider>
-          <span data-idle><QueueHeaderSummary count={1} preview="Once the tests settle" /></span>
-          <span data-held><QueueHeaderSummary count={2} preview="ignored while held" editing /></span>
+          <QueueHeaderSummary count={2} />
         </I18nProvider>,
       );
     });
-    expect(container.querySelector('[data-idle]')?.textContent).toBe('NextOnce the tests settle1 queued');
-    expect(container.querySelector('[data-held]')?.textContent).toBe('Editingpaused2 queued');
-    expect(container.querySelector('[data-held] [data-queue-row-preview]')).toBeNull();
+    expect(container.querySelector('[data-queue-count]')?.textContent).toBe('2 queued');
   });
 });
 

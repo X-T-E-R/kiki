@@ -27,7 +27,7 @@ import {
 import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
 import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
-import { QueueHeadActions, QueueHeaderSummary, QueueStrip } from './QueueStrip';
+import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
@@ -3049,25 +3049,12 @@ export function SessionView({
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
     if (queuedItems.length === 0) return undefined;
-    const first = queuedItems[0]!;
     return {
       summary: (
-        <QueueHeaderSummary
-          count={queuedItems.length}
-          preview={first.text === '' ? t('sv.queueNoText') : first.text}
-          editing={queueEdit !== null}
-        />
+        <QueueHeaderSummary count={queuedItems.length} />
       ),
       ariaLabel: t('composer.queueStack.openAria'),
       count: queuedItems.length,
-      // The next prompt's own quick actions; the full set is in the detail.
-      actions: queueEdit !== null ? undefined : (
-        <QueueHeadActions
-          onSendNow={() => { void handleSendNowQueued(first.promptId); }}
-          onEdit={() => { handleStartQueueEdit(first.promptId); }}
-          sendNowDisabled={state.resyncing || state.resyncFailed}
-        />
-      ),
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
       panel: (

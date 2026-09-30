@@ -5,9 +5,8 @@
  *
  *   - the goal sheet sits on top (LifeMark, title truncated to one line,
  *     status word); the queue sheet in front of it, nearest the card, reads
- *     "下一条 <first prompt> · N 条待发送", with the first prompt's own actions
- *     (`actions`) beside it. Without a goal, extra queued prompts show as
- *     slivers behind the queue sheet;
+ *     "N 条待发送" with the disclosure chevron. Without a goal, extra queued
+ *     prompts show as slivers behind the queue sheet;
  *   - each sheet's label is a disclosure button: its detail opens as a panel
  *     above the stack (grid-rows height + a short rise) while the sheets and
  *     the input stay put. One detail at a time; Esc, clicking the label again,
