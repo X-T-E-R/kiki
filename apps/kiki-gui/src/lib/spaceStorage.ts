@@ -168,6 +168,10 @@ export const GLOBAL_STORAGE_KEYS = [
   // Device-level rail mode (standard / cockpit); not in §6.4 because it selects UI, not
   // a space's data. Classified here so the scan stays exhaustive.
   'kiki.railMode',
+  // Device-level settings-list layout (sort / density / folded groups). It
+  // selects UI over generic buckets, never a space's own ids, so it stays
+  // shared across spaces (`components/settings/list/listState.ts`).
+  'kiki.settingsLists',
 ] as const;
 
 /** `kiki.*` names that are deliberately neither of the above. */

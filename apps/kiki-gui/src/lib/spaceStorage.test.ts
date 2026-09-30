@@ -191,6 +191,9 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   'apps/kiki-gui/src/components/mediaPreview.tsx',
   // Global: `kiki.railMode`.
   'apps/kiki-gui/src/components/rail-variants/shell.tsx',
+  // Global: `kiki.settingsLists` (sort / density / folded groups of the
+  // settings lists; generic buckets, no space-scoped ids).
+  'apps/kiki-gui/src/components/settings/list/listState.ts',
   // Excluded: `kiki.connection` (desktop connections never persist).
   'apps/kiki-gui/src/state/connectionConfig.ts',
 ]);
