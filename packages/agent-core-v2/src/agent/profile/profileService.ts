@@ -465,22 +465,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             baseProfile: input.resolvedProfile,
             route: input.resolvedRoute,
           }
-        : input.route === undefined
+        : input.route === undefined && input.profile === DEFAULT_AGENT_PROFILE_NAME
           ? (() => {
-              const base =
-                input.profile === DEFAULT_AGENT_PROFILE_NAME
-                  ? this.catalog.getDefault()
-                  : input.profile === undefined
-                    ? undefined
-                    : this.catalog.get(input.profile);
-              if (base === undefined) {
-                const available = this.catalog.list().map((item) => item.name).join(', ');
-                throw new ProfileError(
-                  ProfileErrors.codes.PROFILE_UNKNOWN,
-                  `Unknown agent profile: "${input.profile ?? ''}". Available profiles: ${available}`,
-                  { profile: input.profile, available },
-                );
-              }
+              const base = this.catalog.getDefault();
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });

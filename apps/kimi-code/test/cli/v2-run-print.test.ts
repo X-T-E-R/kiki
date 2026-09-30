@@ -234,6 +234,31 @@ describe('runV2Print', () => {
     vi.unstubAllEnvs();
   });
 
+  it('explains the skipped discovered profile when the CLI selects it for the main agent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-print-profile-'));
+    const homeDir = join(root, 'home');
+    const workDir = join(root, 'work');
+    await mkdir(join(homeDir, 'agents'), { recursive: true });
+    await mkdir(workDir);
+    const profilePath = join(homeDir, 'agents', 'broken.md');
+    await writeFile(profilePath, '---\nname: broken\n---\nInvalid profile');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workDir);
+    try {
+      const actual = await vi.importActual<typeof import('@kiki/agent-core-v2')>('@kiki/agent-core-v2');
+      const main = await vi.importActual<typeof import('@kiki/agent-core-v2/session/agentLifecycle/mainAgent')>('@kiki/agent-core-v2/session/agentLifecycle/mainAgent');
+      mocks.bootstrap.mockImplementation(actual.bootstrap);
+      mocks.ensureMainAgent.mockImplementation(main.ensureMainAgent);
+      mocks.resolveKikiHome.mockReturnValue(homeDir);
+      await expect(runV2Print(opts({ agent: 'broken' }) as never, 'test', { stdout: writer(), stderr: writer() })).rejects.toThrow(
+        /broken\.md was skipped: Missing required frontmatter field "description"/,
+      );
+    } finally {
+      cwd.mockRestore();
+      mocks.resolveKikiHome.mockImplementation((home?: string) => home ?? '/tmp/kimi-code-test-home');
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 60_000);
+
   it.each([
     { label: 'profile pin beats global default', defaultModel: 'fallback', profileModel: 'example', explicitModel: undefined, expectedModel: 'gpt-4o-mini' },
     { label: 'profile pin works without global default', defaultModel: undefined, profileModel: 'example', explicitModel: undefined, expectedModel: 'gpt-4o-mini' },
