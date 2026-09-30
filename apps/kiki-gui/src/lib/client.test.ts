@@ -326,12 +326,14 @@ describe('KikiClient transport error mapping', () => {
 
   it('does not reinterpret a server INTERNAL_ERROR 50001 as a timeout', async () => {
     const data = { request: 'server-error', retryable: false };
+    const details = { conflicts: [{ platform: 'windows', actions: ['switcher', 'find'], kind: 'duplicate', key: 'f' }] };
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       code: 50001,
       msg: 'server.internal_error',
       data,
       request_id: 'req-server-50001',
       reason: 'server.internal_error',
+      details,
     }), { status: 200, headers: { 'content-type': 'application/json' } })));
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
 
@@ -341,6 +343,9 @@ describe('KikiClient transport error mapping', () => {
     expect((failure as ApiError).code).toBe(50001);
     expect((failure as ApiError).message).toContain('server.internal_error');
     expect((failure as ApiError).data).toEqual(data);
+    // Structured error context is the only machine-readable part of a
+    // failure; it has to survive the RPCError -> ApiError hop.
+    expect((failure as ApiError).details).toEqual(details);
     expect((failure as ApiError).requestId).toBe('req-server-50001');
   });
 

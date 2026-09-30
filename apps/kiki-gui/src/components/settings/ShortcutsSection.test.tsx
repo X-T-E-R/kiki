@@ -13,6 +13,7 @@ import {
   type ShortcutPlatform,
   type ShortcutPreferences,
 } from '@kiki/session-core/settings/shortcuts';
+import { ApiError } from '@kiki/session-core/transport';
 import { I18nProvider } from '../../i18n';
 import { matchesShortcutAction, resetShortcutRuntime } from '../../lib/shortcuts';
 import { ShortcutsSection } from './ShortcutsSection';
@@ -126,5 +127,26 @@ describe('ShortcutsSection', () => {
     await recordOn(container, 'find', { key: 'Escape' });
     expect(container.querySelector('[data-shortcut-recording]')).toBeNull();
     expect(client.writeShortcuts).not.toHaveBeenCalled();
+  });
+
+  it('names the row the server rejected, including a clash on another platform', async () => {
+    const container = await render();
+    // The local check only knows this platform; the server validates every
+    // platform, so its rejection carries the clash the user cannot see here.
+    client.writeShortcuts.mockRejectedValueOnce(new ApiError({
+      code: 40001,
+      msg: 'Shortcut bindings conflict',
+      data: null,
+      details: { conflicts: [{ platform: 'macos', actions: ['switcher', 'find'], kind: 'duplicate', key: 'f' }] },
+    }));
+    await recordOn(container, 'switcher', { key: 'J', ctrlKey: true, shiftKey: true });
+
+    const issue = container.querySelector('[data-shortcut-row="switcher"] [data-shortcut-issue]');
+    expect(issue?.textContent).toMatch(/Find/);
+    expect(issue?.textContent).toContain('f');
+    // The raw envelope message never reaches the user, and nothing was applied.
+    expect(container.textContent).not.toContain('Shortcut bindings conflict');
+    expect(container.querySelector('[data-shortcut-row="switcher"]')?.getAttribute('data-shortcut-overridden')).toBe('false');
+    expect(matchesShortcutAction({ key: 'J', ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, 'switcher')).toBe(false);
   });
 });

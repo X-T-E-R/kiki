@@ -34,12 +34,15 @@ export class ApiError extends Error {
   readonly code: number;
   readonly requestId: string | undefined;
   readonly data: unknown;
+  /** Structured error context from the envelope (e.g. shortcut conflicts). */
+  readonly details: unknown;
 
-  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string }) {
+  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string; details?: unknown }) {
     super(`${envelope.msg} (code ${envelope.code})`);
     this.name = 'ApiError';
     this.code = envelope.code;
     this.data = envelope.data;
+    this.details = envelope.details;
     this.requestId = envelope.request_id;
   }
 }

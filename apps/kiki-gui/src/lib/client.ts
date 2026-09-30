@@ -1059,6 +1059,7 @@ export class KikiClient {
           code: timedOut ? API_CODES.TIMEOUT : error.code,
           msg: timedOut ? error.message.replace('call timed out', translate('en', 'common.requestTimedOut')) : error.message,
           data: error.data ?? null,
+          details: error.details,
           request_id: error.requestId,
         });
       }
@@ -2157,6 +2158,7 @@ export class KikiClient {
     }
     if (envelope.code !== 0) {
       throw new ApiError({ code: envelope.code, msg: envelope.msg, data: 'data' in envelope ? envelope.data ?? null : null,
+        details: 'details' in envelope ? envelope.details : undefined,
         request_id: 'request_id' in envelope && typeof envelope.request_id === 'string' ? envelope.request_id : undefined });
     }
     return ('data' in envelope ? envelope.data : null) as T;

@@ -5,15 +5,17 @@
  * to the connected server's `gui.toml` (`shortcuts.v1`) and land in the
  * runtime store at once, so the keys work before the page is left.
  *
- * Conflicts are checked here first with the same rules the server applies,
- * so a clash is named before anything is sent; the server remains the
- * authority and its rejection is shown as-is.
+ * Conflicts are checked here first with the same rules the server applies, so a
+ * clash is named before anything is sent. The server remains the authority: it
+ * validates every platform, so its `details.conflicts` rejection is mapped back
+ * onto the offending row instead of showing the raw envelope message.
  */
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { ApiError } from '@kiki/session-core/transport';
 import {
   SHORTCUT_CATALOG,
   SHORTCUT_DEFINITIONS,
@@ -26,7 +28,7 @@ import {
   type ShortcutPlatform,
   type ShortcutPreferences,
 } from '@kiki/session-core/settings/shortcuts';
-import type { ShortcutResponse } from '@kiki/protocol';
+import { shortcutConflictSchema, type ShortcutResponse } from '@kiki/protocol';
 import { settingsServerSnapshot, settingsSnapshot, subscribeSettings } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -111,6 +113,45 @@ export function conflictText(
   return null;
 }
 
+/**
+ * The conflicts a rejected write or reset carries in `details.conflicts`
+ * (kap-server answers `VALIDATION_FAILED` with them). A response without them —
+ * an older server, a different failure — yields an empty list, and the caller
+ * falls back to the envelope message.
+ */
+export function rejectedConflicts(error: unknown): readonly ShortcutConflict[] {
+  if (!(error instanceof ApiError)) return [];
+  const details = error.details;
+  if (details === null || typeof details !== 'object' || !('conflicts' in details)) return [];
+  const parsed = shortcutConflictSchema.array().safeParse(details.conflicts);
+  return parsed.success ? parsed.data : [];
+}
+
+/**
+ * Server-side text for the clash that involves `action`. The server checks
+ * every platform, so its conflicts can name a platform other than the one on
+ * screen; those are reported after the edited platform's own. The chord comes
+ * back as a bare key, which is all the rejection carries.
+ */
+export function serverConflictText(
+  conflicts: readonly ShortcutConflict[],
+  action: ShortcutAction,
+  platform: ShortcutPlatform,
+  t: (key: I18nKey, params?: Record<string, string | number>) => string,
+): string | null {
+  const mine = conflicts.filter((conflict) => conflict.actions.includes(action));
+  const conflict = mine.find((candidate) => candidate.platform === platform) ?? mine[0];
+  if (conflict === undefined) return null;
+  if (conflict.kind === 'reserved') return t('st.shortcuts.conflictReserved', { keys: conflict.key });
+  const otherId = conflict.actions.find((candidate) => candidate !== action);
+  if (otherId === undefined) return t('st.shortcuts.conflictSelf', { keys: conflict.key });
+  const labelKey = SHORTCUT_DEFINITIONS.find((definition) => definition.id === otherId)?.labelKey;
+  return t('st.shortcuts.conflictUsed', {
+    keys: conflict.key,
+    action: labelKey === undefined ? otherId : t(labelKey as I18nKey),
+  });
+}
+
 export function ShortcutsSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -125,6 +166,9 @@ export function ShortcutsSection() {
   const [saved, ping] = useSavedTick();
   const [error, setError] = useState<Feedback>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  // Clashes the server reported on the last rejected write, so the rows they
+  // name stay marked until the next accepted write.
+  const [rejected, setRejected] = useState<readonly ShortcutConflict[]>([]);
 
   const query = useQuery({
     queryKey: [...SHORTCUTS_QUERY_KEY, platform],
@@ -141,14 +185,26 @@ export function ShortcutsSection() {
     applyShortcutPreferences(response.preferences);
   };
 
-  const commit = async (write: () => Promise<ShortcutResponse>): Promise<boolean> => {
+  const commit = async (
+    write: () => Promise<ShortcutResponse>,
+    target?: { readonly action: ShortcutAction },
+  ): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
       accept(await write());
+      setRejected([]);
       ping();
       return true;
     } catch (cause) {
+      const conflicts = rejectedConflicts(cause);
+      setRejected(conflicts);
+      const text = target === undefined ? null : serverConflictText(conflicts, target.action, platform, t);
+      if (target !== undefined && text !== null) {
+        setIssue({ action: target.action, text });
+        return false;
+      }
+      setIssue(null);
       setError({ tone: 'error', text: errorText(locale, cause) });
       return false;
     } finally {
@@ -170,7 +226,7 @@ export function ShortcutsSection() {
       return;
     }
     setIssue(null);
-    await commit(() => client.writeShortcuts(platform, next));
+    await commit(() => client.writeShortcuts(platform, next), { action });
   };
 
   const record = (target: Recording, chord: ShortcutChord) => {
@@ -192,7 +248,7 @@ export function ShortcutsSection() {
 
   const resetAction = (action: ShortcutAction) => {
     setIssue(null);
-    void commit(() => client.resetShortcuts(platform, { platform, action }));
+    void commit(() => client.resetShortcuts(platform, { platform, action }), { action });
   };
 
   const resetPlatform = () => {
@@ -203,7 +259,7 @@ export function ShortcutsSection() {
 
   const overridden = (action: ShortcutAction) => preferences?.overrides[platform]?.[action] !== undefined;
   const anyOverride = Object.keys(preferences?.overrides[platform] ?? {}).length > 0;
-  const serverConflicts = data?.conflicts ?? [];
+  const serverConflicts = [...(data?.conflicts ?? []), ...rejected];
 
   const grouped = CONTEXT_ORDER.map((context) => ({
     context,
