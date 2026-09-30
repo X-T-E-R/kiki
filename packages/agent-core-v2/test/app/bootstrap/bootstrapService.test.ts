@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { join } from 'pathe';
 
 import { beforeEach, describe, expect, it } from 'vitest';
+import { spaceRecordSchema } from '@kiki/protocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, _clearScopedRegistryForTests, registerScopedService } from '#/_base/di/scope';
 import { createScopedTestHost } from '#/_base/di/test';
@@ -255,6 +256,34 @@ describe('space home bootstrap', () => {
       const invalid = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
       expect(invalid.spaceId).toBeUndefined();
       expect(invalid.homeDiagnostic).toContain('schema = 1');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('validates space identity with the same schemas the REST record uses', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-space-identity-'));
+    const home = join(root, 'space');
+    await mkdir(home);
+    const cases = [
+      { id: 'h-abc-1', name: 'Demo', color: '#C2410C', accepted: true },
+      { id: 'h-ABC1', name: 'Demo', accepted: false },
+      { id: 'space-1', name: 'Demo', accepted: false },
+      { id: 'h-abc1', name: '   ', accepted: false },
+      { id: 'h-abc1', name: 'Demo', color: 'C2410C', accepted: false },
+    ] as const;
+    try {
+      for (const entry of cases) {
+        const color = 'color' in entry ? `color = "${entry.color}"\n` : '';
+        const name = JSON.stringify(entry.name);
+        await writeFile(join(home, 'home.toml'), `schema = 1\nid = "${entry.id}"\nname = ${name}\n${color}`);
+        const options = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
+        expect(options.spaceId).toBe(entry.accepted ? entry.id : undefined);
+        expect(spaceRecordSchema.safeParse({
+          id: entry.id,
+          name: entry.name,
+          color: 'color' in entry ? entry.color : undefined,
+          path: home,
+        }).success).toBe(entry.accepted);
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

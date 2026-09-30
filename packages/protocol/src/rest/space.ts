@@ -6,10 +6,21 @@ export const removeSpaceConfigOverrideRequestSchema = z.object({
 }).strict();
 export type RemoveSpaceConfigOverrideRequest = z.infer<typeof removeSpaceConfigOverrideRequestSchema>;
 
+/**
+ * Space identity, the one definition both sides validate against: the REST
+ * record below and `home.toml` (`agent-core-v2/app/bootstrap/spaceHome`), which
+ * reads the same fields off the file a space home is configured by.
+ */
+export const SPACE_ID_PATTERN = /^h-[a-z0-9-]+$/;
+export const SPACE_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+export const spaceIdSchema = z.string().regex(SPACE_ID_PATTERN);
+export const spaceNameSchema = z.string().trim().min(1);
+export const spaceColorSchema = z.string().regex(SPACE_COLOR_PATTERN);
+
 export const spaceRecordSchema = z.object({
-  id: z.string().regex(/^h-[a-z0-9-]+$/),
-  name: z.string().trim().min(1),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  id: spaceIdSchema,
+  name: spaceNameSchema,
+  color: spaceColorSchema.optional(),
   path: z.string().min(1),
   lastOpenedAt: z.string().optional(),
 });

@@ -6,6 +6,8 @@ import { userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'pathe';
 
+import { SPACE_ID_PATTERN } from '@kiki/protocol';
+
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { TomlAtomicDocumentStore } from './atomicDocumentStore';
@@ -45,7 +47,7 @@ export class SshCredentialStore {
     private readonly accountPrefix?: string,
   ) {
     if (accountPrefix !== undefined) {
-      if (!/^h-[a-z0-9-]+$/.test(accountPrefix)) throw new Error('Invalid SSH credential account prefix');
+      if (!SPACE_ID_PATTERN.test(accountPrefix)) throw new Error('Invalid SSH credential account prefix');
       this.accounts = new TomlAtomicDocumentStore(new FileStorageService(homeDir, 0o700, 0o600));
     }
   }

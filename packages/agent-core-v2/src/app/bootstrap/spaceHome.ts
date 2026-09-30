@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join, normalize } from 'pathe';
 import { parse } from 'smol-toml';
 
+import { spaceColorSchema, spaceIdSchema, spaceNameSchema } from '@kiki/protocol';
+
 import { isPlainObject } from '#/app/config/configPure';
 
 export interface SpaceHome {
@@ -32,10 +34,14 @@ export function readSpaceHome(homeDir: string): { readonly space?: SpaceHome; re
   }
   try {
     const raw: unknown = parse(text);
-    if (!isPlainObject(raw) || raw['schema'] !== 1 || typeof raw['id'] !== 'string' || !/^h-[a-z0-9-]+$/.test(raw['id']) || typeof raw['name'] !== 'string' || raw['name'].trim().length === 0) {
+    if (
+      !isPlainObject(raw) || raw['schema'] !== 1 ||
+      typeof raw['id'] !== 'string' || !spaceIdSchema.safeParse(raw['id']).success ||
+      typeof raw['name'] !== 'string' || !spaceNameSchema.safeParse(raw['name']).success
+    ) {
       throw new Error('schema = 1, a stable h- id, and a non-empty name are required');
     }
-    if (raw['color'] !== undefined && (typeof raw['color'] !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(raw['color']))) throw new Error('color must be #RRGGBB');
+    if (raw['color'] !== undefined && !spaceColorSchema.safeParse(raw['color']).success) throw new Error('color must be #RRGGBB');
     const inherit = raw['inherit'] ?? {};
     if (!isPlainObject(inherit)) throw new Error('inherit must be a table');
     const flag = (key: string, fallback: boolean): boolean => {
