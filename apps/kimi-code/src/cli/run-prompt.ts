@@ -8,7 +8,7 @@ export async function waitForPrintOperation<T>(operation: Promise<T>, signal: Ab
   }
   let onAbort!: () => void;
   const interrupted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason);
+    onAbort = () => { reject(signal.reason); };
     signal.addEventListener('abort', onAbort, { once: true });
   });
   try {
