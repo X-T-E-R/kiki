@@ -228,7 +228,7 @@ it('persona REST supports action suffixes and character-card import/export', asy
     const room = await rooms.create({ name: 'REST room', workspace: process.cwd(), members: [{ personaId: created.definition.id }, { personaId: imported.snapshot.definition.id }] });
     expect((await rooms.list()).some((item) => item.id === room.id)).toBe(true);
     expect((await rooms.get(room.id))?.name).toBe('REST room');
-    const patched = await rooms.update(room.id, { budget: { botMessagesPerUserMessage: 4 }, members: room.members.map((member) => ({ personaId: member.personaId, muted: true })) });
+    const patched = await rooms.update(room.id, { budget: { botMessagesPerUserMessage: 4 }, members: room.members.map((member) => member.kind === 'persona' ? { kind: 'persona', personaId: member.personaId, muted: true } : { kind: 'thread', sessionId: member.sessionId, muted: true }) });
     expect(patched.budget.botMessagesPerUserMessage).toBe(4);
     expect(patched.members.every((member) => member.muted)).toBe(true);
     await rooms.pause(room.id);

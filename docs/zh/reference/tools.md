@@ -190,6 +190,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 - `ThreadList` 按更新时间从新到旧列出已启用且未归档的会话，也可以用 `workspace_id` 筛选。`limit` 默认为 50，取值为 1–100；还有下一页时会返回不透明 cursor。
 - `ThreadRead` 读取已完成的主 Agent turn，不会恢复冷会话。参数包括 thread 引用与可选 cursor；`limit` 默认为 20，取值为 1–100。
 - `ThreadSend` 持久接收发往另一条 thread 的消息，并从当前主 Agent 会话记录 peer 来源。传入目标 thread、非空且最多 100,000 字符的 `content`，以及非空且最多 256 字符的 `idempotency_key`；它没有来源参数，同一个 key 只能用于同一条消息。
+- `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。只有显式房间发送才进入日志，普通 Assistant 文本不会入群。房间发送的 `delivered` 表示已记入日志，不表示所有成员已经回复；线程成员默认忙时排队。
 - `ThreadWait` 等待 terminal、attention、lifecycle 或消息无法投递活动。单次可等待 1–8 条互不重复的 thread；`timeout_ms` 默认为 30,000，取值为 0–60,000。
 
 `ThreadCreate` 默认启用，设置页的「自动化 → 工具策略」可单独关闭，不影响另外 4 个线程工具。Peer thread 通信只能在同一台主机内进行，可以跨工作区，并受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 全局控制。持久化的单工作区覆盖值也可以关闭该工作区的 peer 通信，但不会阻止 `ThreadCreate` 创建会话。

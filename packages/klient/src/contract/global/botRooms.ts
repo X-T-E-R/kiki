@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { botSummarySchema, botStateSchema, botUpdateInputSchema, roomIdSchema, personaIdSchema, roomDocumentSchema, createRoomInputSchema, updateRoomInputSchema, postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema, roomUsageSchema } from '@kiki/protocol';
+import { botSummarySchema, botStateSchema, botUpdateInputSchema, roomIdSchema, personaIdSchema, roomDocumentSchema, createRoomInputSchema, updateRoomInputSchema, postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema, roomUsageSchema, roomMemberIdSchema, roomMemberInputSchema, createThreadRoomInputSchema, searchRoomThreadsInputSchema, searchRoomThreadsResultSchema } from '@kiki/protocol';
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
@@ -13,6 +13,10 @@ export const roomContract = {
   list: { input: z.tuple([]), output: z.array(roomDocumentSchema) },
   get: { input: z.tuple([roomIdSchema]), output: maybe(roomDocumentSchema) },
   create: { input: z.tuple([createRoomInputSchema]), output: roomDocumentSchema },
+  createFromThreads: { input: z.tuple([createThreadRoomInputSchema]), output: roomDocumentSchema },
+  searchThreads: { input: z.tuple([searchRoomThreadsInputSchema.optional()]), output: searchRoomThreadsResultSchema },
+  addMember: { input: z.tuple([roomIdSchema, roomMemberInputSchema]), output: roomDocumentSchema },
+  removeMember: { input: z.tuple([roomIdSchema, roomMemberIdSchema]), output: roomDocumentSchema },
   update: { input: z.tuple([roomIdSchema, updateRoomInputSchema]), output: roomDocumentSchema },
   delete: { input: z.tuple([roomIdSchema]), output: noResult },
   postUserMessage: { input: z.tuple([roomIdSchema, postRoomMessageInputSchema]), output: roomMessageSchema },

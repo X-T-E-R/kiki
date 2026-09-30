@@ -6,7 +6,8 @@ import {
   botIdParamsSchema, botSummarySchema, botStateSchema, botUpdateInputSchema,
   roomIdParamsSchema, roomDocumentSchema, createRoomInputSchema, updateRoomInputSchema,
   postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema,
-  roomUsageSchema, deleteRoomResponseSchema,
+  roomUsageSchema, deleteRoomResponseSchema, createThreadRoomInputSchema, roomMemberInputSchema,
+  roomMemberParamsSchema, searchRoomThreadsInputSchema, searchRoomThreadsResultSchema,
 } from '@kiki/protocol';
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
@@ -40,6 +41,14 @@ export function registerBotRoomRoutes(app: BotRoomRouteHost, core: Scope): void 
     (req, reply) => handle(req.id, reply, () => rooms().list())));
   add('post', defineRoute({ method: 'POST', path: '/rooms', body: createRoomInputSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
     (req, reply) => handle(req.id, reply, () => rooms().create(req.body))));
+  add('post', defineRoute({ method: 'POST', path: '/rooms/from-threads', body: createThreadRoomInputSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
+    (req, reply) => handle(req.id, reply, () => rooms().createFromThreads(req.body))));
+  add('get', defineRoute({ method: 'GET', path: '/rooms/threads', querystring: searchRoomThreadsInputSchema, success: { data: searchRoomThreadsResultSchema }, tags: ['rooms'] },
+    (req, reply) => handle(req.id, reply, () => rooms().searchThreads(req.query))));
+  add('post', defineRoute({ method: 'POST', path: '/rooms/{id}/members', params: roomIdParamsSchema, body: roomMemberInputSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
+    (req, reply) => handle(req.id, reply, () => rooms().addMember(req.params.id, req.body))));
+  add('delete', defineRoute({ method: 'DELETE', path: '/rooms/{id}/members/{memberId}', params: roomMemberParamsSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
+    (req, reply) => handle(req.id, reply, () => rooms().removeMember(req.params.id, req.params.memberId))));
   add('get', defineRoute({ method: 'GET', path: '/rooms/{id}', params: roomIdParamsSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
     (req, reply) => handle(req.id, reply, async () => {
       const room = await rooms().get(req.params.id);

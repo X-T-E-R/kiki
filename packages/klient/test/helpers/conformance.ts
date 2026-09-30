@@ -22,6 +22,11 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
+import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
+import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
+import { ISendMessageToThreadTool } from '@kiki/agent-core-v2/agent/tools/thread-communication/threadCommunicationTools';
 
 import type { Klient } from '../../src/index.js';
 import type { TestEngine } from './engine.js';
@@ -85,6 +90,75 @@ export function defineKlientConformance(
       await personas.delete(copied.definition.id);
       await personas.delete(definition.id, { expectedRevision: created.revision });
       expect(await personas.get(definition.id)).toBeUndefined();
+    });
+
+    it('thread rooms preserve existing sessions, permissions and logs across join/leave and reject disabled or child members', async () => {
+      const { sessions, rooms } = target.klient.global;
+      const rootA = await mkdtemp(join(tmpdir(), 'klient-conf-room-a-'));
+      const rootB = await mkdtemp(join(tmpdir(), 'klient-conf-room-b-'));
+      const a = await sessions.create({ workDir: rootA, title: 'Room search example alpha' });
+      const b = await sessions.create({ workDir: rootB, title: 'Room search example beta' });
+      const child = await target.klient.session(a.id).createChild({});
+      const config = target.app.accessor.get(IConfigService);
+      let roomId: string | undefined;
+      try {
+        await config.replace('bot', { enabled: false }, ConfigTarget.Memory);
+        const liveA = getLiveSessionById(target.app.accessor, a.id)!;
+        expect(child.custom).toMatchObject({ parent_session_id: a.id, child_session_kind: 'child' });
+        const main = await ensureMainAgent(liveA);
+        main.accessor.get(IAgentPermissionModeService).setMode('manual');
+        const beforeA = await sessions.get(a.id);
+        const beforeB = await sessions.get(b.id);
+        const room = await rooms.createFromThreads({ name: 'Thread-only room', workspace: rootA, sessionIds: [a.id, b.id] });
+        roomId = room.id;
+        expect(room.members.map((member) => member.sessionId)).toEqual([a.id, b.id]);
+        expect(room.members.every((member) => member.kind === 'thread' && member.queueWhenBusy)).toBe(true);
+        const firstPage = await rooms.searchThreads({ query: 'Room search example', limit: 1 });
+        expect(firstPage.threads).toHaveLength(1);
+        expect(firstPage.nextCursor).toBeDefined();
+        const secondPage = await rooms.searchThreads({ query: 'Room search example', limit: 1, cursor: firstPage.nextCursor });
+        expect([firstPage.threads[0]!.ref.sessionId, secondPage.threads[0]!.ref.sessionId].toSorted()).toEqual([a.id, b.id].toSorted());
+        await expect(rooms.searchThreads({ query: 'different', cursor: firstPage.nextCursor })).rejects.toMatchObject({ code: 40001 });
+        await expect(rooms.addMember(room.id, { kind: 'thread', sessionId: child.id })).rejects.toMatchObject({ code: 40001 });
+        await rooms.pause(room.id);
+        const tool = main.accessor.get(ISendMessageToThreadTool);
+        const execution = tool.resolveExecution({ room: room.id, content: 'Visible room speech', mentions: [b.id] });
+        if (!('execute' in execution)) throw new Error('Expected executable ThreadSend');
+        const sent = await execution.execute({ toolCallId: 'room-visible-speech', turnId: 1, signal: new AbortController().signal });
+        expect(JSON.parse(sent.output as string).roomId).toBe(room.id);
+        expect((await rooms.log(room.id)).entries.some((entry) => entry.kind === 'message' && entry.from === a.id && entry.text === 'Visible room speech')).toBe(true);
+        await rooms.update(room.id, { workspace: rootB });
+        expect((await sessions.get(a.id))?.workspaceId).toBe(beforeA?.workspaceId);
+        expect((await sessions.get(b.id))?.workspaceId).toBe(beforeB?.workspaceId);
+        expect(main.accessor.get(IAgentPermissionModeService).mode).toBe('manual');
+        await rooms.removeMember(room.id, a.id);
+        expect((await sessions.get(a.id))?.archived).toBe(false);
+        expect(main.accessor.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'injection' && message.origin.variant === 'room_left')).toBe(true);
+        const left = tool.resolveExecution({ room: room.id, content: 'Cannot send after leaving' });
+        if (!('execute' in left)) throw new Error('Expected executable ThreadSend');
+        await expect(left.execute({ toolCallId: 'room-after-leaving', turnId: 1, signal: new AbortController().signal })).rejects.toThrow('not a member');
+        expect((await rooms.log(room.id)).entries.some((entry) => entry.kind === 'message' && entry.text === 'Visible room speech')).toBe(true);
+        await config.replace('threadCommunication', { enabled: false }, ConfigTarget.Memory);
+        await expect(rooms.addMember(room.id, { kind: 'thread', sessionId: a.id })).rejects.toMatchObject({ code: 40928 });
+        await expect(rooms.createFromThreads({ name: 'Disabled room', workspace: rootA, sessionIds: [a.id, b.id] })).rejects.toMatchObject({ code: 40928 });
+        expect((await rooms.searchThreads({ query: 'Room search example' })).threads).toEqual([]);
+        await config.replace('threadCommunication', { enabled: true }, ConfigTarget.Memory);
+        expect((await rooms.addMember(room.id, { kind: 'thread', sessionId: a.id, queueWhenBusy: false })).members).toContainEqual({ kind: 'thread', sessionId: a.id, muted: false, queueWhenBusy: false, joinedAt: expect.any(String) });
+        const edge = transport === 'http' ? target.klient.rest!.rooms : rooms;
+        const edgeRoom = await edge.createFromThreads({ name: 'Edge thread room', workspace: rootA, sessionIds: [a.id, b.id] });
+        try {
+          expect((await edge.searchThreads({ query: 'Room search example', workspaceId: beforeB!.workspaceId })).threads.map((thread) => thread.ref.sessionId)).toEqual([b.id]);
+          expect((await edge.removeMember(edgeRoom.id, a.id)).members).toHaveLength(1);
+          expect((await edge.addMember(edgeRoom.id, { kind: 'thread', sessionId: a.id })).members).toHaveLength(2);
+        } finally { await edge.delete(edgeRoom.id); }
+      } finally {
+        if (roomId !== undefined) await rooms.delete(roomId);
+        await config.replace('bot', null, ConfigTarget.Memory);
+        await config.replace('threadCommunication', null, ConfigTarget.Memory);
+        for (const id of [a.id, b.id, child.id]) await target.klient.session(id).delete();
+        await rm(rootA, { recursive: true, force: true });
+        await rm(rootB, { recursive: true, force: true });
+      }
     });
 
     it('Bot and room management round-trip through every registered transport', async () => {
