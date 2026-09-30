@@ -1,8 +1,9 @@
 /**
  * Visual-proof walker for an external harness as the main profile (fixture
  * `external-main`): the Claude Code session (tool cards, Kiki dispatch, plan
- * as Todo, usage, a failed turn), the Grok plan review, the Codex YOLO
- * session, the profile editor's Kiki-subagents switch, and the Antigravity
+ * as Todo, usage, a failed turn, Kiki hook injections), the Grok plan review,
+ * the Codex YOLO session, the profile editor's "Connect Kiki" section
+ * (Claude, Codex with an explicit `[]`, Antigravity hooks untested), and the Antigravity
  * binary + sign-in flow in Settings › Connections. 1440 wide, both themes.
  */
 
@@ -38,6 +39,17 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await shot(name('claude-menu'));
     await page.keyboard.press('Escape');
 
+    // Kiki hook injections: who / when / what; PreCompact reads as prepared, not delivered.
+    await page.locator('[data-history-fold] button, [data-history-fold][role="button"]').first().click().catch(() => undefined);
+    await page.locator('[data-kiki-hook="claude:SessionStart"]').first().waitFor({ timeout: 5000 });
+    const prepared = await page.locator('[data-kiki-hook="claude:PreCompact"]').first().getAttribute('data-hook-outcome');
+    if (prepared !== 'prepared') throw new Error(`PreCompact hook row reads ${prepared}`);
+    await page.locator('[data-kiki-hook="claude:SessionStart"] button').first().click();
+    await page.locator('[data-kiki-hook="claude:PreCompact"] button').first().click();
+    await page.locator('[data-kiki-hook="claude:UserPromptSubmit"]').first().evaluate((element) => element.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(300);
+    await shot(name('claude-hooks'));
+
     await openSession('session_fixture_external_grok');
     await shot(name('grok-plan'));
 
@@ -67,17 +79,34 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.locator('[data-team-open="lead-claude"]').first().click();
     await page.waitForSelector('[data-profile-editor]', { timeout: 5000 });
     await page.waitForTimeout(300);
-    const field = (await optional('[data-profile-field="allowKikiSubagents"]')) ? '[data-profile-field="allowKikiSubagents"]' : '[data-profile-field="main"]';
-    await page.locator(`[role="dialog"] ${field}`).first().evaluate((element) => element.scrollIntoView({ block: 'center' }));
-    await page.waitForTimeout(250);
+    const section = '[data-profile-section="kiki-context"]';
+    const showSection = async () => {
+      await page.locator(`[role="dialog"] ${section}`).first().evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      await page.waitForTimeout(250);
+    };
+    const reopen = async (profileName) => {
+      await page.locator('[role="dialog"] [data-agent-back]').first().click();
+      await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 });
+      await page.locator(`[data-team-open="${profileName}"]`).first().click();
+      await page.waitForSelector('[data-profile-editor]', { timeout: 5000 });
+    };
+    await showSection();
+    const onGroups = await page.locator(`${section} [data-kiki-capability][data-on="true"]`).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-kiki-capability')));
+    if (onGroups.join(',') !== 'subagents,memory,history,hooks') throw new Error(`lead-claude Kiki groups read ${onGroups.join(',')}`);
     await shot(name('profile-claude'));
-    await page.locator('[role="dialog"] [data-agent-back]').first().click();
-    await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 });
-    await page.locator('[data-team-open="lead-codex"]').first().click();
-    await page.waitForSelector('[data-profile-editor]', { timeout: 5000 });
-    await page.locator(`[role="dialog"] ${field}`).first().evaluate((element) => element.scrollIntoView({ block: 'center' }));
-    await page.waitForTimeout(250);
+    // A draft change: turn the board on, then read the dirty footer.
+    await page.locator(`${section} [data-kiki-capability="board"] label`).first().click();
+    await page.waitForTimeout(200);
+    await shot(name('profile-claude-dirty'));
+    await page.locator('[role="dialog"] [data-settings-discard]').first().click();
+    await reopen('lead-codex');
+    await showSection();
+    if (await page.locator(`${section} [data-kiki-context-field="empty"]`).count() !== 1) throw new Error('lead-codex kiki_context: [] does not read as explicit all-off');
     await shot(name('profile-codex'));
+    await reopen('lead-antigravity');
+    await showSection();
+    if (await page.locator(`${section} [data-hook-support="untested"]`).count() !== 1) throw new Error('Antigravity hooks are not marked untested');
+    await shot(name('profile-antigravity'));
   }
 
   async function antigravity() {

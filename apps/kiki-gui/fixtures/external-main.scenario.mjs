@@ -2,8 +2,11 @@
  * external-main — an external harness bound as the MAIN profile, next to the
  * native surfaces it should read like:
  *
- * - `lead-claude` (Claude Code main, `allow_kiki_subagents: true`),
- *   `lead-codex` (Codex main, flag off), `lead-grok` (Grok Build main).
+ * - `lead-claude` (Claude Code main, `allow_kiki_subagents: true`,
+ *   `kiki_context: [memory, history, hooks]`), `lead-codex` (Codex main,
+ *   `kiki_context: []`), `lead-antigravity` (hooks untested), `lead-grok`.
+ * - Kiki hook injections (`hook_result`, `kiki:claude:*`) in the Claude
+ *   session: SessionStart, UserPromptSubmit and a prepare-only PreCompact.
  * - Session "Claude main": a finished turn with native-shaped tool cards, a
  *   Kiki dispatch through the injected MCP bridge, the engine's plan as the
  *   Todo list, usage, then a failed turn (sign-in lapsed) to recover from.
@@ -55,12 +58,16 @@ const agentProfiles = [
   ...base.agentProfiles,
   profile('lead-claude', {
     description: 'Workspace lead on Claude Code.', executor: 'claude-acp', executor_protocol: 'acp-v1',
-    pinned_model_alias: 'claude-sonnet-4.5', allow_kiki_subagents: true,
+    pinned_model_alias: 'claude-sonnet-4.5', allow_kiki_subagents: true, kiki_context: ['memory', 'history', 'hooks'],
     subagents: ['explore', 'implementer', 'reviewer'], executor_fields: MAIN_FIELDS('Claude Code'),
   }),
   profile('lead-codex', {
     description: 'Workspace lead on Codex.', executor: 'codex-app-server', executor_protocol: 'codex-app-server',
-    pinned_model_alias: 'gpt-5.5-codex', thinking_effort: 'high', allow_kiki_subagents: true, subagents: ['explore'], executor_fields: MAIN_FIELDS('Codex'),
+    pinned_model_alias: 'gpt-5.5-codex', thinking_effort: 'high', allow_kiki_subagents: true, kiki_context: [], subagents: ['explore'], executor_fields: MAIN_FIELDS('Codex'),
+  }),
+  profile('lead-antigravity', {
+    description: 'Workspace lead on Antigravity.', executor: 'antigravity-acp', executor_protocol: 'acp-v1',
+    subagents: [], executor_fields: MAIN_FIELDS('Antigravity'),
   }),
   profile('lead-grok', {
     description: 'Workspace lead on Grok Build.', executor: 'grok-acp', executor_protocol: 'acp-v1',
@@ -137,8 +144,19 @@ const PLAN = [
   { title: 'Dispatch a Kiki reviewer on the fix', status: 'in_progress' },
   { title: 'Summarize the change for the user', status: 'pending' },
 ];
+const hookFrame = (frameId, event, text) => ({
+  kind: 'text', frameId, role: 'user', text, origin: { kind: 'hook_result', event, blocked: false },
+});
+const HOOK_START = [
+  '[Kiki memory]', '- Prefers pnpm over npm in this repo.', '- API errors use RFC 9457 problem details.',
+  '', '[Kiki goal_state]', 'Goal (active): limit=0 answers 400 on /api/items',
+].join('\n');
+const HOOK_PROMPT = ['[Kiki todo_state]', 'Working notes:', 'next: cover negative values', '', '- [x] Fix parseLimit', '- [ ] Add tests for -1 and abc'].join('\n');
+const HOOK_COMPACT = ['[Handoff prepared; not injected by this hook]', '[Kiki handoff]',
+  'Preserve the current goal, working notes, constraints, decisions, and next action in the compaction handoff.'].join('\n');
 const claudeItems = [
   turn(1, 'Fix /api/items?limit=0 and get an independent review.', [
+    hookFrame('cl-t1-hook-start', 'kiki:claude:SessionStart', HOOK_START),
     { kind: 'thinking', frameId: 'cl-t1-think', text: 'The limit parser treats 0 as falsy. I will read it, fix it, then ask a Kiki reviewer for a second read.' },
     { kind: 'tool', frameId: 'cl-t1-read', toolCallId: 'external:claude:read', name: 'Read src/limits.ts', state: 'done',
       input: { path: 'src/limits.ts' }, display: { kind: 'file_io', operation: 'read', path: 'src/limits.ts' },
@@ -152,6 +170,8 @@ const claudeItems = [
     { kind: 'text', frameId: 'cl-t1-a', role: 'assistant', text: '`parseLimit` now rejects anything below 1 and the route answers 400. I dispatched a Kiki reviewer; its report comes back to this session when it finishes.' },
   ], { startAt: 0, endAt: 74, exec: CLAUDE_EXEC, stepUsage: usage(18_400, 2_300, 41_000) }),
   turn(2, 'Also cover negative values.', [
+    hookFrame('cl-t2-hook-prompt', 'kiki:claude:UserPromptSubmit', HOOK_PROMPT),
+    hookFrame('cl-t2-hook-compact', 'kiki:claude:PreCompact', HOOK_COMPACT),
     { kind: 'notice', frameId: 'cl-t2-err', level: 'error', source: 'executor', message: 'Claude Code: Authentication required. Sign in with `claude auth login`, then send again.' },
   ], { state: 'failed', startAt: 90, endAt: 92, exec: CLAUDE_EXEC, error: 'Authentication required' }),
 ];
