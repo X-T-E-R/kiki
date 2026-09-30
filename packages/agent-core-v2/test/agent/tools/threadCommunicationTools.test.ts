@@ -21,11 +21,13 @@ import {
   ReadThreadToolInputSchema,
   SendMessageToThreadToolInputSchema,
   SendMessageToThreadTool,
+  ISendMessageToThreadTool,
   WaitThreadsToolInputSchema,
 } from '#/agent/tools/thread-communication/threadCommunicationTools';
 import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import type { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
+import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
+import { IRoomService } from '#/app/room/room';
 import {
   SEND_PEER_THREAD_MESSAGE,
   type IThreadPeerSendCapability,
@@ -101,7 +103,14 @@ describe('thread communication tools', () => {
       sessionId: 'ambient-a',
       workspaceId: 'workspace-a',
     } as ISessionContext;
-    const tool = new SendMessageToThreadTool(service, session);
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, service);
+      ix.set(ISessionContext, session);
+      ix.stub(IRoomService, {});
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const tool = ix.get(ISendMessageToThreadTool);
     const execution = tool.resolveExecution({
       thread: {
         host_id: 'local-host',
@@ -129,6 +138,26 @@ describe('thread communication tools', () => {
       content: 'from ambient',
       idempotencyKey: 'ambient-key',
     }]);
+    } finally { ix.dispose(); }
+  });
+
+  it.each([
+    { agentId: 'child-1', enabled: true, error: 'Subagents cannot speak in rooms' },
+    { agentId: 'main', enabled: false, error: 'disabled' },
+  ])('rejects room sends from $agentId when communication enabled=$enabled', async ({ agentId, enabled, error }) => {
+    const posted: unknown[] = [];
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, { _serviceBrand: undefined, hostId: 'local-host', isWorkspaceEnabled: async () => enabled } as unknown as IThreadCommunicationService);
+      ix.set(ISessionContext, { _serviceBrand: undefined, sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, { postBotMessage: async (...args: unknown[]) => { posted.push(args); return undefined; } });
+      ix.stub(IAgentScopeContext, { agentId });
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const execution = ix.get(ISendMessageToThreadTool).resolveExecution({ room: 'room-a', content: 'hello room' });
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      await expect(execution.execute({ toolCallId: 'call-1' } as never)).rejects.toThrow(error);
+      expect(posted).toEqual([]);
+    } finally { ix.dispose(); }
   });
 
   it('creates a top-level session in an existing directory outside the current workspace', async () => {

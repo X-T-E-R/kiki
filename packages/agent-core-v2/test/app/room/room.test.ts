@@ -14,7 +14,8 @@ import type { ISessionMetadata, SessionMeta, SessionMetadataChangedEvent } from 
 import { Event } from '#/_base/event';
 
 import { renderRoomPrompt, RoomService } from '#/app/room/roomService';
-import type { RoomDocument, RoomLogEntry, RoomMessage } from '#/app/room/room';
+import { IRoomService, type RoomDocument, type RoomLogEntry, type RoomMessage } from '#/app/room/room';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ISessionMetadata as SessionMetadataId } from '#/session/sessionMetadata/sessionMetadata';
 
 class MemoryDocuments implements IAtomicDocumentStore {
@@ -102,7 +103,7 @@ function fakeMeta(id: string): ISessionMetadata {
 }
 
 function setup(enabled = true): {
-  service: RoomService;
+  service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
   closeMember(sessionId: string): void;
@@ -166,6 +167,7 @@ function setup(enabled = true): {
   const thread = {
     _serviceBrand: undefined,
     hostId: 'test-host',
+    isWorkspaceEnabled: async () => true,
     sendRoomMessage: async (input: { target: ThreadRef; content: string }) => {
       const id = `delivery-${++sequence}`;
       calls.push({ target: input.target, content: input.content, id });
@@ -198,8 +200,9 @@ function setup(enabled = true): {
     },
   });
   ix.set(IThreadCommunicationService, thread);
-  const service = ix.createInstance(RoomService);
-  onTestFinished(() => { service.dispose(); ix.dispose(); });
+  ix.set(IRoomService, new SyncDescriptor(RoomService));
+  const service = ix.get(IRoomService);
+  onTestFinished(() => ix.dispose());
   const room = service.create({
     id: 'release-room',
     name: 'Release',
@@ -230,6 +233,56 @@ async function eventually(predicate: () => boolean): Promise<void> {
 }
 
 describe('RoomService', () => {
+  it('keeps unmentioned thread messages for the next wake and advances since without echoing its own speech', async () => {
+    const { service, calls, release, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'thread-room', name: 'Thread room', workspace: '/classification', sessionIds: ['thread-a', 'thread-b'] });
+    expect(room.members).toEqual(['thread-a', 'thread-b'].map((sessionId) => ({ kind: 'thread', sessionId, muted: false, joinedAt: expect.any(String), queueWhenBusy: true })));
+    await service.postUserMessage(room.id, { text: 'Not mentioned yet' });
+    await service.postBotMessage(room.id, { sessionId: 'thread-a', toolCallId: 'untargeted', text: 'Member broadcast' });
+    await service.drain(room.id);
+    expect(calls).toHaveLength(0);
+    await service.postUserMessage(room.id, { text: '@thread-b Please review' });
+    await eventually(() => calls.length === 1);
+    expect(calls[0]!.target).toMatchObject({ sessionId: 'thread-b', workspaceId: 'workspace' });
+    expect(calls[0]!.content).toContain('Not mentioned yet');
+    expect(calls[0]!.content).toContain('Member broadcast');
+    expect(calls[0]!.content).toContain('Ordinary assistant text is NOT posted');
+    expect(calls[0]!.content).toContain('ThreadSend({room: "thread-room"');
+    release(calls[0]!.id);
+    await service.drain(room.id);
+    const cursor = (await service.get(room.id))!.cursors['thread-b'];
+    await service.postBotMessage(room.id, { sessionId: 'thread-b', toolCallId: 'own', text: 'My own speech' });
+    await service.postBotMessage(room.id, { sessionId: 'thread-a', toolCallId: 'targeted', text: 'Next item', mentions: ['thread-b'] });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.content).toContain(`since="${cursor}"`);
+    expect(calls[1]!.content).toContain('Next item');
+    expect(calls[1]!.content).not.toContain('Not mentioned yet');
+    expect(calls[1]!.content).not.toContain('My own speech');
+    release(calls[1]!.id);
+    await service.drain(room.id);
+  });
+  it('delivers to each thread member on its own lane and records joins and leaves', async () => {
+    const { service, calls, release, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'lane-room', name: 'Lanes', workspace: '/classification', sessionIds: ['thread-a', 'thread-b'] });
+    await service.postUserMessage(room.id, { text: '@thread-a first' });
+    await eventually(() => calls.length === 1);
+    await service.postUserMessage(room.id, { text: '@thread-b second' });
+    await eventually(() => calls.length === 2);
+    expect(calls.map((call) => call.target.sessionId)).toEqual(['thread-a', 'thread-b']);
+    expect(calls[1]!.content).toContain('mentions use member ids: thread-a');
+    await service.addMember(room.id, { kind: 'thread', sessionId: 'thread-c' });
+    await service.removeMember(room.id, 'thread-a');
+    const events = (await service.log(room.id)).entries.flatMap((entry) => entry.kind === 'system' ? [[entry.event, entry.data?.['memberId']]] : []);
+    expect(events).toEqual([
+      ['member_joined', 'thread-a'], ['member_joined', 'thread-b'], ['member_joined', 'thread-c'], ['member_left', 'thread-a'], ['host_changed', undefined],
+    ]);
+    expect((await service.get(room.id))!.host).toBe('thread-b');
+    for (const call of calls) release(call.id);
+    await service.drain(room.id);
+  });
+
   it('keeps persisted usage visible when member sessions are cold', async () => {
     const { service, closeMember, room: roomPromise } = setup();
     const room = await roomPromise;
@@ -291,20 +344,18 @@ describe('RoomService', () => {
     expect(drained).toBe(true);
   });
 
-  it('rebuilds workspace sessions only while idle and invalidates old wakes', async () => {
+  it('changes workspace classification without rebuilding even active member sessions', async () => {
     const { service, calls, release, room: roomPromise } = setup();
     const room = await roomPromise;
     await service.postUserMessage(room.id, { text: '@Alpha please review' });
     await eventually(() => calls.length === 1);
-    await expect(service.update(room.id, { workspace: '/another-workspace' })).rejects.toThrow('Stop the active room turn');
-    await expect(service.update(room.id, { members: [{ personaId: 'alpha' }, { personaId: 'bravo' }] })).rejects.toThrow('Stop the active room turn');
+    const classified = await service.update(room.id, { workspace: '/another-workspace' });
+    expect(classified.members).toEqual(room.members);
+    expect(classified.generation).toBe((await service.get(room.id))?.generation);
+    expect(classified.workspace).toBe('/another-workspace');
     expect((await service.update(room.id, { name: 'Renamed' })).members).toEqual(room.members);
     release(calls[0]!.id);
     await service.drain(room.id);
-    const rebuilt = await service.update(room.id, { workspace: '/another-workspace' });
-    expect(rebuilt.members.every((member) => !room.members.some((old) => old.sessionId === member.sessionId))).toBe(true);
-    expect(rebuilt.pendingWakes).toEqual([]);
-    expect(rebuilt.workspace).toBe('/another-workspace');
     expect((await service.log(room.id)).entries.some((entry) => entry.kind === 'system' && entry.event === 'workspace_changed')).toBe(true);
   });
 

@@ -8,10 +8,12 @@ export interface RoomBudget {
   readonly botMessagesPerUserMessage: number;
 }
 
-export interface RoomMember {
-  readonly personaId: string;
-  readonly sessionId: string;
-  readonly muted: boolean;
+export type RoomMember =
+  | { readonly kind: 'persona'; readonly personaId: string; readonly sessionId: string; readonly muted: boolean }
+  | { readonly kind: 'thread'; readonly sessionId: string; readonly muted: boolean; readonly joinedAt: string; readonly queueWhenBusy: boolean };
+
+export function roomMemberId(member: RoomMember | RoomMemberInput): string {
+  return member.kind === 'thread' ? member.sessionId : member.personaId;
 }
 
 export interface RoomQuestionRecord {
@@ -45,9 +47,25 @@ export interface RoomDocument {
   readonly questionQueue?: readonly RoomQuestionRecord[];
 }
 
-export interface RoomMemberInput {
-  readonly personaId: string;
-  readonly muted?: boolean;
+export type RoomMemberInput =
+  | { readonly kind?: 'persona'; readonly personaId: string; readonly muted?: boolean }
+  | { readonly kind: 'thread'; readonly sessionId: string; readonly muted?: boolean; readonly queueWhenBusy?: boolean };
+
+export interface CreateThreadRoomInput extends Omit<CreateRoomInput, 'members'> {
+  readonly sessionIds: readonly string[];
+}
+
+export interface SearchRoomThreadsInput {
+  readonly query?: string;
+  readonly workspaceId?: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export interface SearchRoomThreadsResult {
+  readonly threads: readonly import('#/app/threadCommunication/threadCommunication').ThreadSummary[];
+  readonly nextCursor?: string;
+  readonly incomplete?: 'scan_budget';
 }
 
 export interface CreateRoomInput {
@@ -115,6 +133,7 @@ export interface PostBotMessageInput {
   readonly toolCallId: string;
   readonly text: string;
   readonly to?: string;
+  readonly mentions?: readonly string[];
   readonly replyTo?: string;
   readonly attachments?: readonly RoomAttachment[];
 }
@@ -131,7 +150,7 @@ export interface RoomLogResult {
 
 export interface RoomMemberUsage {
   readonly sessionId: string;
-  readonly personaId: string;
+  readonly personaId?: string;
   readonly usage?: unknown;
 }
 
@@ -157,6 +176,10 @@ export interface IRoomService {
   list(): Promise<readonly RoomDocument[]>;
   get(roomId: string): Promise<RoomDocument | undefined>;
   create(input: CreateRoomInput): Promise<RoomDocument>;
+  createFromThreads(input: CreateThreadRoomInput): Promise<RoomDocument>;
+  searchThreads(input?: SearchRoomThreadsInput): Promise<SearchRoomThreadsResult>;
+  addMember(roomId: string, member: RoomMemberInput): Promise<RoomDocument>;
+  removeMember(roomId: string, memberId: string): Promise<RoomDocument>;
   update(roomId: string, input: UpdateRoomInput): Promise<RoomDocument>;
   delete(roomId: string): Promise<void>;
   postUserMessage(roomId: string, input: PostUserMessageInput): Promise<RoomMessage>;

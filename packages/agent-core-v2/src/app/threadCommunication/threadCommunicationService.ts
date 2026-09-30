@@ -252,7 +252,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         bytes += Buffer.byteLength(record.message.content);
         before = record.order;
         const message = record.message;
-        if (message.producer.kind !== 'peer_thread' || message.target.hostId !== this.hostId) continue;
+        if (message.target.hostId !== this.hostId || message.producer.kind === 'external_client') continue;
+        if (message.producer.kind === 'room') {
+          if (input.peerSessionId !== undefined) continue;
+          const target = await endpoint(message.target);
+          if (target.deleted || input.workspaceId !== undefined && target.ref.workspaceId !== input.workspaceId) continue;
+          items.push({ messageId: message.messageId, source: { kind: 'room', roomId: message.producer.roomId }, target,
+            content: message.content, acceptedAt: message.acceptedAt, targetSeq: message.targetSeq, delivery: record.delivery,
+            reason: record.reason, reasonDetail: record.reason,
+            reasonCode: record.delivery === 'undeliverable' ? record.reasonCode ?? 'delivery_failed' : undefined });
+          continue;
+        }
         const [source, target] = await Promise.all([endpoint(message.producer.source), endpoint(message.target)]);
         if (source.deleted && target.deleted) continue;
         if (input.workspaceId !== undefined && ![source, target].some((side) => !side.deleted && side.ref.workspaceId === input.workspaceId)) continue;
@@ -355,13 +365,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    await this.requireThread(input.target, undefined, false);
     return this.sendProducedMessage({
-      producer: { kind: 'room', roomId: input.roomId, targeted: input.targeted, generation: input.generation },
+      producer: { kind: 'room', roomId: input.roomId, targeted: input.targeted, generation: input.generation, queueWhenBusy: input.queueWhenBusy, requireCommunication: input.requireCommunication },
+      caller: input.requireCommunication === true ? input.target : undefined,
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
-    }, false);
+    }, input.requireCommunication === true);
   }
 
   async cancelRoomDeliveries(input: CancelRoomDeliveriesInput): Promise<void> {
@@ -782,7 +792,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let handle: PromptHandle;
     try {
       const allowWhenDisabled = message.producer.kind === 'peer_thread' && message.producer.allowWhenDisabled === true;
-      const requireCommunication = message.producer.kind !== 'room' && !allowWhenDisabled;
+      const requireCommunication = message.producer.kind === 'room' ? message.producer.requireCommunication === true : !allowWhenDisabled;
       if (requireCommunication && !(await this.globalEnabled(message.target))) return 'pending';
       await this.requireThread(message.target, message.target, requireCommunication);
       const session = await this.sessionManager.resume(message.target.sessionId);
@@ -837,6 +847,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
     if (handle.state === 'running' || handle.state === 'steered' || isTerminalPromptState(handle.state)) {
       return this.acknowledgeClaim(claim);
+    }
+    if (handle.state === 'pending' && message.producer.kind === 'room' && message.producer.queueWhenBusy === true) {
+      this.detach(this.observePromptOutcome(claim, handle));
+      return 'pending';
     }
     if (handle.state === 'pending') {
       try {

@@ -82,6 +82,8 @@ export interface SendRoomMessageInput {
   readonly idempotencyKey: string;
   readonly targeted: boolean;
   readonly generation?: number;
+  readonly queueWhenBusy?: boolean;
+  readonly requireCommunication?: boolean;
 }
 
 export interface CancelRoomDeliveriesInput {

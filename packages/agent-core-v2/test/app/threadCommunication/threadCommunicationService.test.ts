@@ -61,6 +61,9 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
+import { createTestAgent } from '../../harness';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 
 const summaries: Record<string, SessionSummary> = {
   source: {
@@ -308,6 +311,66 @@ describe('ThreadCommunicationService', () => {
     disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
+
+  it.each([true, false])('delivers durable room input through a real prompt loop with queueWhenBusy=%s', async (queueWhenBusy) => {
+    const ctx = createTestAgent();
+    const prompts = ctx.get(IAgentPromptService);
+    const loop = ctx.get(IAgentLoopService);
+    const steer = vi.spyOn(prompts, 'steer');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hook = loop.hooks.onWillBeginStep.register('hold-room-test-turn', async (_event, next) => {
+      hook.dispose();
+      await held;
+      await next();
+    }, { before: 'context-injector' });
+    const agent: IAgentScopeHandle = { id: 'main', kind: LifecycleScope.Agent, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
+    const session: ISessionScopeHandle = { id: 'target', kind: LifecycleScope.Session,
+      accessor: accessor([[IAgentLifecycleService, { create: async () => agent, get: () => agent }]]), dispose: () => {} };
+    resume.mockResolvedValue(session);
+    ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform, getEnv: () => undefined, scope: (name: string) => name });
+    ix.set(IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService));
+    ix.set(IHostFileSystem, new HostFileSystem());
+    ix.set(IThreadMailboxStore, new SyncDescriptor(RuntimeThreadMailboxStore));
+    const runtime = ix.get(IHomeRuntimeService);
+    const mailbox = ix.get(IThreadMailboxStore);
+    const service = ix.get(IThreadCommunicationService);
+    const target: ThreadRef = { hostId: service.hostId, workspaceId: 'workspace-b', sessionId: 'target' };
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'Original work finished' });
+      ctx.mockNextResponse({ type: 'text', text: 'Private room response' });
+      const active = await prompts.enqueue({ id: 'original-task', message: { role: 'user', content: [{ type: 'text', text: 'Original work' }], toolCalls: [], origin: { kind: 'user' } } });
+      await active.launched;
+      const receipt = await service.sendRoomMessage({ target, roomId: 'room-example', content: 'Review the room contract', idempotencyKey: 'room-test', targeted: true, queueWhenBusy, requireCommunication: true });
+      expect(resume).toHaveBeenCalledWith('target');
+      if (queueWhenBusy) {
+        expect(receipt.delivery).toBe('pending');
+        expect(prompts.list().active?.id).toBe('original-task');
+        expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
+        expect(steer).not.toHaveBeenCalled();
+        expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'room_message')).toBe(false);
+      } else {
+        expect(receipt.delivery).toBe('delivered');
+        expect(steer).toHaveBeenCalledWith([receipt.messageId]);
+      }
+      release();
+      expect((await active.completion).state).toBe('completed');
+      await service.waitRoomDelivery({ target, messageId: receipt.messageId });
+      await loop.settled();
+      const history = ctx.get(IAgentContextMemoryService).get();
+      expect(history.filter((message) => message.origin?.kind === 'room_message')).toHaveLength(1);
+      const projected = await service.listMessages({ sessionId: 'target' });
+      expect(projected.items).toMatchObject([{ messageId: receipt.messageId, source: { kind: 'room', roomId: 'room-example' }, delivery: 'delivered' }]);
+      if (queueWhenBusy) expect(ctx.llmCalls).toHaveLength(2);
+      await ctx.expectResumeMatches();
+    } finally {
+      release();
+      await service.shutdown();
+      await mailbox.close();
+      await runtime.close();
+      await ctx.dispose();
+    }
+  }, 60_000);
 
   it('projects real durable peer sends, failures, pair pages, archive and deletion without cross-workspace leakage', async () => {
     ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,

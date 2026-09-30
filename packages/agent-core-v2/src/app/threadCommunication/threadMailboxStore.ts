@@ -12,7 +12,7 @@ export interface ThreadMessageSender {
 
 export type ThreadMessageProducer =
   | { readonly kind: 'peer_thread'; readonly source: ThreadRef; readonly sender?: ThreadMessageSender; readonly allowWhenDisabled?: boolean }
-  | { readonly kind: 'room'; readonly roomId: string; readonly targeted?: boolean; readonly generation?: number; readonly sender?: ThreadMessageSender }
+  | { readonly kind: 'room'; readonly roomId: string; readonly targeted?: boolean; readonly generation?: number; readonly sender?: ThreadMessageSender; readonly queueWhenBusy?: boolean; readonly requireCommunication?: boolean }
   | { readonly kind: 'external_client' };
 
 export interface AcceptedThreadMessage {

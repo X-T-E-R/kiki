@@ -15,6 +15,7 @@ import {
   peerSendCapability,
 } from '#/app/threadCommunication/peerThreadCapability';
 import { Error2, ErrorCodes } from '#/errors';
+import { IRoomService } from '#/app/room/room';
 
 const ThreadRefSchema = z
   .object({
@@ -40,13 +41,10 @@ export const ReadThreadToolInputSchema = z
   })
   .strict();
 
-export const SendMessageToThreadToolInputSchema = z
-  .object({
-    thread: ThreadRefSchema,
-    content: z.string().min(1).max(100_000),
-    idempotency_key: z.string().min(1).max(256),
-  })
-  .strict();
+export const SendMessageToThreadToolInputSchema = z.union([
+  z.object({ thread: ThreadRefSchema, content: z.string().min(1).max(100_000), idempotency_key: z.string().min(1).max(256) }).strict(),
+  z.object({ room: z.string().min(1).max(128), content: z.string().min(1).max(20_000), mentions: z.array(z.string().min(1).max(256)).max(6).optional(), idempotency_key: z.string().min(1).max(256).optional() }).strict(),
+]);
 
 export const WaitThreadsToolInputSchema = z
   .object({
@@ -186,12 +184,14 @@ export class SendMessageToThreadTool
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadSend';
   readonly description =
-    'Send a message to another local thread; it arrives there as a user message attributed to this thread. The message is stored durably, then delivered right away when possible: it starts a turn or joins the running one (`delivery: delivered`), otherwise waits in that thread\'s queue (`pending`); `undeliverable` means it was rejected. Sending can resume a cold thread and use model quota. You cannot send to your own thread. Reuse an `idempotency_key` only to retry the same content; a different message with a used key fails. Use ThreadWait to watch for the reply.';
+    'Send a message to another local thread; it arrives there as a user message attributed to this thread. The message is stored durably, then delivered right away when possible: it starts a turn or joins the running one (`delivery: delivered`), otherwise waits in that thread\'s queue (`pending`); `undeliverable` means it was rejected. Sending can resume a cold thread and use model quota. You cannot send to your own thread. Reuse an `idempotency_key` only to retry the same content; a different message with a used key fails. Use ThreadWait to watch for the reply. Alternatively pass room instead of thread to post to a room you belong to: {room, content, mentions?}; mentions are member ids (thread sessionId or personaId). Only explicit room sends appear in the room, never ordinary assistant text. Room sends use the tool call id for retries when idempotency_key is omitted; room delivery means logged, not that every member has replied. Only mentioned members are woken; thread members queue while busy by default.';
   readonly parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IRoomService private readonly rooms: IRoomService,
+    @IAgentScopeContext private readonly agent: IAgentScopeContext,
   ) {
     super(threads, session);
   }
@@ -199,9 +199,17 @@ export class SendMessageToThreadTool
   resolveExecution(input: SendMessageToThreadToolInput): ToolExecution {
     return {
       approvalRule: this.name,
-      description: 'Sending a peer-thread message',
-      execute: async () => {
+      description: 'room' in input ? 'Posting a room message' : 'Sending a peer-thread message',
+      execute: async (ctx) => {
         await this.requireCallerEnabled();
+        if ('room' in input) {
+          if (this.agent.agentId !== 'main') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Subagents cannot speak in rooms.');
+          const message = await this.rooms.postBotMessage(input.room, {
+            sessionId: this.session.sessionId, toolCallId: input.idempotency_key ?? ctx.toolCallId,
+            text: input.content, mentions: input.mentions,
+          });
+          return { output: JSON.stringify({ roomId: input.room, messageId: message?.id, delivery: message === undefined ? 'undeliverable' : 'delivered' }) };
+        }
         const result = await peerSendCapability(this.threads)[SEND_PEER_THREAD_MESSAGE]({
           source: this.callerRef(),
           target: fromToolRef(input.thread),

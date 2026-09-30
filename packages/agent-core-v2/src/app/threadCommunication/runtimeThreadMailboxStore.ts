@@ -167,7 +167,7 @@ interface PeerIndexMarkerDoc {
 }
 
 const PEER_INDEX_NAME = 'peer_history_v1';
-const PEER_INDEX_MARKER = `${SYSTEM_PARTITION}/peer-index-v1`;
+const PEER_INDEX_MARKER = `${SYSTEM_PARTITION}/peer-index-v2`;
 
 type StoredDoc =
   | PeerIndexDoc
@@ -402,7 +402,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       throwIfAborted(ctx.signal);
       const pointer = row.value as PeerIndexDoc;
       const doc = asMessage(await db.partitionGet(pointer.partition, pointer.messageKey));
-      if (doc === undefined || doc.message.producer.kind !== 'peer_thread') continue;
+      if (doc === undefined || doc.message.producer.kind === 'external_client') continue;
       items.push({ message: doc.message, delivery: publicDeliveryState(doc.state), reason: doc.reason, reasonCode: doc.reasonCode, order: pointer.peerOrder });
     }
     return { items, nextBefore: rows.length > input.limit ? rows[input.limit - 1]?.orderValue as string : undefined };
@@ -1352,7 +1352,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     ];
     const pruneKey = targetMessageKey(partition, message.targetSeq - MESSAGE_RETAINED_LIMIT);
     const prune = asMessage(await read(pruneKey));
-    if (prune !== undefined && prune.message.producer.kind !== 'peer_thread' && isTerminalState(prune.state)) {
+    if (prune !== undefined && prune.message.producer.kind === 'external_client' && isTerminalState(prune.state)) {
       ops.push({ op: 'del', key: pruneKey }, { op: 'del', key: prune.idempotencyStorageKey });
     }
     return { result, ops };
@@ -1972,6 +1972,8 @@ function asProducer(value: unknown): ThreadMessageProducer | undefined {
         kind: 'room',
         roomId: producer['roomId'],
         targeted: producer['targeted'] as boolean | undefined,
+        queueWhenBusy: typeof producer['queueWhenBusy'] === 'boolean' ? producer['queueWhenBusy'] : undefined,
+        requireCommunication: typeof producer['requireCommunication'] === 'boolean' ? producer['requireCommunication'] : undefined,
         generation: generation as number | undefined,
         sender: asSender(producer['sender']),
       };
@@ -2064,10 +2066,12 @@ registerScopedService(
 );
 
 function peerIndexOps(partition: string, message: AcceptedThreadMessage): BatchInputOp<StoredDoc>[] {
-  if (message.producer.kind !== 'peer_thread') return [];
-  const source = message.producer.source;
-  const groups = new Set(['all', `session:${source.sessionId}`, `session:${message.target.sessionId}`,
-    `workspace:${source.workspaceId}`, `workspace:${message.target.workspaceId}`]);
+  if (message.producer.kind === 'external_client') return [];
+  const groups = new Set(['all', `session:${message.target.sessionId}`, `workspace:${message.target.workspaceId}`]);
+  if (message.producer.kind === 'peer_thread') {
+    groups.add(`session:${message.producer.source.sessionId}`);
+    groups.add(`workspace:${message.producer.source.workspaceId}`);
+  }
   const order = `${message.acceptedAt.toString().padStart(16, '0')}/${message.messageId}`;
   return [...groups].map((group) => ({
     op: 'set',
