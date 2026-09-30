@@ -24,6 +24,7 @@ import {
   PromptRetryCommitted,
   IWireService,
   IFileService,
+  IModelCatalogMutationService,
   ISessionContext,
   ISessionMetadata,
   ISessionDispatchService,
@@ -1449,25 +1450,12 @@ describe('server-v2 /api prompts', () => {
     const address = provider.address();
     if (address === null || typeof address === 'string') throw new Error('provider did not bind');
 
-    await server!.close();
-    server = undefined;
-    await writeConfigToml(
-      home as string,
-      PROMPT_TOML
-        .replace('http://127.0.0.1:9999', `http://127.0.0.1:${String(address.port)}/v1`)
-        .replaceAll('max_context_size = 1000', 'max_context_size = 100000')
-        .replaceAll('capabilities = ["thinking"]', 'capabilities = ["thinking", "image_in"]'),
-    );
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir: home as string,
-      logLevel: 'silent',
-    });
-    base = `http://127.0.0.1:${server.port}`;
-
     try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${String(address.port)}/v1` });
+      for (const model of ['stub', 'stub-alt']) {
+        await mutations.updateModel(model, { max_context_size: 100000, capabilities: ['thinking', 'image_in'] });
+      }
       const id = await createSession(home as string);
       const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'text', text: 'active turn' }],
@@ -1482,7 +1470,7 @@ describe('server-v2 /api prompts', () => {
         content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
       });
       expect(queued.body.data.status).toBe('queued');
-      await expect(server.core.accessor.get(IFileService).get(uploaded.id)).resolves.toBeDefined();
+      await expect(server!.core.accessor.get(IFileService).get(uploaded.id)).resolves.toBeDefined();
 
       releaseFirst();
       await vi.waitFor(() => expect(requests).toHaveLength(2), { timeout: 5_000 });
@@ -2393,17 +2381,13 @@ describe('server-v2 /api prompts', () => {
     const address = provider.address();
     if (address === null || typeof address === 'string') throw new Error('provider did not bind');
     try {
-      await server!.close();
-      server = undefined;
-      await writeConfigToml(home as string, PROMPT_TOML
-        .replace('http://127.0.0.1:9999', `http://127.0.0.1:${String(address.port)}/v1`)
-        .replaceAll('max_context_size = 1000', 'max_context_size = 100000'));
-      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home as string, logLevel: 'silent' });
-      base = `http://127.0.0.1:${server.port}`;
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${String(address.port)}/v1` });
+      await mutations.updateModel('stub', { max_context_size: 100000 });
       const id = await createSession(home as string);
       await createMainAgent(id);
 
-      const session = getLiveSessionById(server.core.accessor, id);
+      const session = getLiveSessionById(server!.core.accessor, id);
       if (session === undefined) throw new Error(`session ${id} not found`);
       const lifecycle = session.accessor.get(IAgentLifecycleService);
       const child = await lifecycle.fork('main');
