@@ -31,6 +31,8 @@ import {
   installPromptTerminationCleanup,
   raceWithTimeout,
   requireConfiguredModel,
+  waitForPrintOperation,
+  withPrintTimeout,
 } from '../run-prompt';
 import { createKimiCodeHostIdentity } from '../version';
 
@@ -69,7 +71,10 @@ export async function runV2Print(
   opts: CLIOptions,
   version: string,
   io: PromptRunIO = {},
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal === undefined) return withPrintTimeout(opts, (deadlineSignal) => runV2Print(opts, version, io, deadlineSignal));
+  signal.throwIfAborted();
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
   const promptProcess = io.process ?? process;
@@ -80,7 +85,7 @@ export async function runV2Print(
 
   const homeDir = resolveKikiHome();
   const identity = createKimiCodeHostIdentity(version, { homeDir });
-  const host = await createPrintClient({
+  const host = await waitForPrintOperation(createPrintClient({
     homeDir,
     interactive: false,
     clientIdentity: identity,
@@ -89,7 +94,13 @@ export async function runV2Print(
       skillDirs: opts.skillsDirs,
       agentFiles: opts.agentFiles,
     },
-  });
+  }).then(async (created) => {
+    if (signal.aborted) {
+      await created.dispose();
+      signal.throwIfAborted();
+    }
+    return created;
+  }), signal);
   const klient = host.klient;
   let restorePermission = async (): Promise<void> => {};
   let activeAgent: AgentHandle | undefined;
@@ -124,19 +135,30 @@ export async function runV2Print(
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    for (const diagnostic of await klient.global.config.diagnostics()) {
+    for (const diagnostic of await waitForPrintOperation(klient.global.config.diagnostics(), signal)) {
       if (diagnostic.severity === 'warning') stderr.write(`Warning: ${diagnostic.message}\n`);
     }
-    const resolved = await resolvePrintSession(klient, host.osHomeDir, opts, workDir, stderr);
+    const resolved = await waitForPrintOperation(resolvePrintSession(klient, host.osHomeDir, opts, workDir, stderr).then(async (value) => {
+      if (signal.aborted) {
+        try {
+          await value.restorePermission();
+        } finally {
+          if (opts.ephemeral === true) await value.session.delete();
+          else await value.session.close();
+        }
+        signal.throwIfAborted();
+      }
+      return value;
+    }), signal);
     restorePermission = resolved.restorePermission;
     activeAgent = resolved.agent;
     activeSession = resolved.session;
 
     const goalCreate = parseHeadlessGoalCreate(opts.prompt!);
     if (goalCreate !== undefined) {
-      await runPrintGoal(klient, resolved.session, resolved.agent, goalCreate, resolved.goalModel, outputFormat, opts.includeThinking === true, stdout, stderr);
+      await runPrintGoal(klient, resolved.session, resolved.agent, goalCreate, resolved.goalModel, outputFormat, opts.includeThinking === true, stdout, stderr, signal);
     } else {
-      await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, opts.includeThinking === true, stdout, stderr);
+      await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, opts.includeThinking === true, stdout, stderr, signal);
     }
     if (opts.ephemeral !== true) writeResumeHint(resolved.sessionId, outputFormat, stdout, stderr);
   } finally {
@@ -261,10 +283,11 @@ async function runPrintTurn(
   includeThinking: boolean,
   stdout: PromptOutput,
   stderr: PromptOutput,
+  signal: AbortSignal,
 ): Promise<void> {
   const writer: PromptTurnWriter = outputFormat === 'stream-json'
     ? new PromptJsonWriter(stdout, includeThinking) : new PromptTranscriptWriter(stdout, stderr);
-  await klient.global.auth.ensureReady(await agent.getModel());
+  await waitForPrintOperation(klient.global.auth.ensureReady(await waitForPrintOperation(agent.getModel(), signal)), signal);
   const turnEndings = createPrintTurnEndings();
   const subscriptions: EventSubscription[] = [];
   const eventNames = [
@@ -280,18 +303,18 @@ async function runPrintTurn(
         if (event.type === 'turn.ended') turnEndings.push(event);
       }));
     }
-    await Promise.all(subscriptions.map((subscription) => subscription.ready));
-    const receipt = await agent.prompt({ input: [{ type: 'text', text: prompt }] }, { waitFor: 'terminal' });
+    await waitForPrintOperation(Promise.all(subscriptions.map((subscription) => subscription.ready)), signal);
+    const receipt = await waitForPrintOperation(agent.prompt({ input: [{ type: 'text', text: prompt }] }, { waitFor: 'terminal' }), signal);
     if (receipt.turnId === undefined || receipt.result === undefined) {
       throw new Error(receipt.state === 'blocked' ? 'Prompt hook blocked the request.' : 'Prompt turn could not be started');
     }
     writer.flushAssistant();
     if (receipt.result.type !== 'completed') throw new Error(formatPrintTurnFailure(receipt.result));
 
-    const [legacy, current] = await Promise.all([
+    const [legacy, current] = await waitForPrintOperation(Promise.all([
       klient.global.config.get<AgentTaskConfig | undefined>('background'),
       klient.global.config.get<AgentTaskConfig | undefined>('task'),
-    ]);
+    ]), signal);
     const taskConfig = { ...legacy, ...current };
     const ceilingS = taskConfig.printWaitCeilingS ?? PRINT_WAIT_CEILING_S_DEFAULT;
     try {
@@ -299,20 +322,22 @@ async function runPrintTurn(
         mode: taskConfig.printBackgroundMode ?? (taskConfig.keepAliveOnExit === true ? 'drain' : 'steer'),
         ceilingS,
         maxTurns: taskConfig.printMaxTurns ?? PRINT_MAX_TURNS_DEFAULT,
-        countPending: () => session.countPendingBackgroundTasks(),
-        drain: () => session.drainBackgroundTasks(ceilingS * 1000),
-        turnEndings,
+        countPending: () => waitForPrintOperation(session.countPendingBackgroundTasks(), signal),
+        drain: () => waitForPrintOperation(session.drainBackgroundTasks(ceilingS * 1000), signal),
+        turnEndings: { next: (ms, id) => waitForPrintOperation(turnEndings.next(ms, id), signal) },
         skipTurnId: receipt.turnId,
         warn: (message) => stderr.write(`Warning: ${message}\n`),
         now: () => Date.now(),
-        goalActive: async () => (await agent.getGoal()).goal?.status === 'active',
-        cronNextFireAt: () => session.nextCronFireAt(),
+        goalActive: async () => (await waitForPrintOperation(agent.getGoal(), signal)).goal?.status === 'active',
+        cronNextFireAt: () => waitForPrintOperation(session.nextCronFireAt(), signal),
       });
     } catch (error) {
+      signal.throwIfAborted();
       if (error instanceof PrintSteeredTurnFailedError) throw error;
       stderr.write(`Warning: print background policy failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   } finally {
+    turnEndings.dispose();
     writer.finish();
     for (const subscription of subscriptions) subscription.dispose();
     errors.dispose();
@@ -329,6 +354,7 @@ async function runPrintGoal(
   includeThinking: boolean,
   stdout: PromptOutput,
   stderr: PromptOutput,
+  signal: AbortSignal,
 ): Promise<void> {
   requireConfiguredModel(model);
   let completedSnapshot: { readonly status: string } | null = null;
@@ -337,14 +363,14 @@ async function runPrintGoal(
   });
   let created = false;
   try {
-    await subscription.ready;
-    await agent.createGoal({ objective: goal.objective, replace: goal.replace });
+    await waitForPrintOperation(subscription.ready, signal);
+    await waitForPrintOperation(agent.createGoal({ objective: goal.objective, replace: goal.replace }), signal);
     created = true;
-    await runPrintTurn(klient, session, agent, goal.objective, outputFormat, includeThinking, stdout, stderr);
+    await runPrintTurn(klient, session, agent, goal.objective, outputFormat, includeThinking, stdout, stderr, signal);
   } finally {
     subscription.dispose();
-    if (created) {
-      const snapshot = completedSnapshot ?? (await agent.getGoal()).goal;
+    if (created && !signal.aborted) {
+      const snapshot = completedSnapshot ?? (await waitForPrintOperation(agent.getGoal(), signal)).goal;
       if (outputFormat === 'stream-json') stdout.write(`${JSON.stringify(goalSummaryJson(snapshot))}\n`);
       else stderr.write(`${formatGoalSummaryText(snapshot)}\n`);
       if (snapshot !== null && snapshot.status !== 'complete') process.exitCode = goalExitCode(snapshot.status);
@@ -418,11 +444,19 @@ export interface PrintTurnEndings {
  */
 export function createPrintTurnEndings(): PrintTurnEndings & {
   push: (event: PrintTurnEnding) => void;
+  dispose: () => void;
 } {
   const buffer: PrintTurnEnding[] = [];
   let waiter: ((ending: PrintTurnEnding | null) => void) | undefined;
+  let disposed = false;
   return {
+    dispose: () => {
+      disposed = true;
+      buffer.length = 0;
+      waiter?.(null);
+    },
     push: (event) => {
+      if (disposed) return;
       const resolve = waiter;
       if (resolve !== undefined) {
         waiter = undefined;
@@ -457,6 +491,7 @@ export function createPrintTurnEndings(): PrintTurnEndings & {
           waiter = settle;
         });
       for (;;) {
+        if (disposed) return null;
         while (buffer.length > 0) {
           const ending = buffer.shift()!;
           if (ending.turnId !== skipTurnId) return ending;

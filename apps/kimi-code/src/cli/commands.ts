@@ -68,6 +68,7 @@ export function createProgram(
       ),
     )
     .addOption(new Option('--prompt-file <path>', 'Read the non-interactive prompt from a UTF-8 file.'))
+    .addOption(new Option('--timeout <seconds>', 'Limit the entire prompt run, including startup and goal/background waits. No limit by default; cleanup has a separate bounded grace period.'))
     .addOption(
       new Option(
         '--wait-for-session <seconds>',
@@ -174,6 +175,7 @@ export function createProgram(
       prompt: raw['prompt'] as string | undefined,
       promptFile: raw['promptFile'] as string | undefined,
       waitForSession: raw['waitForSession'] as string | undefined,
+      timeout: raw['timeout'] as string | undefined,
       skillsDirs: raw['skillsDir'] as string[],
       agent: raw['agent'] as string | undefined,
       agentFiles: raw['agentFile'] as string[],

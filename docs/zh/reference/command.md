@@ -24,6 +24,7 @@ kiki <subcommand> [options]
 | `--prompt-file <path>` | | 从 UTF-8 文件读取并执行一次 prompt，不能与 `--prompt` 同时使用 |
 | `--output-format <format>` | | 设置非交互输出格式，支持 `text` 与 `stream-json`。仅在提供 prompt 时可用，默认 `text` |
 | `--wait-for-session <seconds>` | | 在非交互模式中等待会话锁释放，超时后再失败 |
+| `--timeout <seconds>` | | 限制整次非交互运行，包括提示词输入、启动、会话锁、模型调用及 goal/后台等待。接受正数秒（至少 `0.001`），默认不设整次期限；超时会取消活动 Agent 并使运行失败，有界清理可能额外耗时 |
 | `--include-thinking` | | 在 `stream-json` 输出中包含 thinking 增量事件，默认关闭 |
 | `--yolo` | `-y` | 自动批准普通工具调用，跳过审批请求 |
 | `--auto` | | 以 Auto 权限模式启动；普通工具调用自动放行，受保护的操作和 Agent 提问仍可能询问你 |

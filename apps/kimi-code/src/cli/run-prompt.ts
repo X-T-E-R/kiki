@@ -1,4 +1,45 @@
-import type { CLIOptions } from './options';
+import { setClampedTimeout } from '@kiki/node-sdk';
+import { resolvePrintTimeoutMs, resolvePromptInput, type CLIOptions } from './options';
+
+export async function waitForPrintOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void operation.catch(() => {});
+    signal.throwIfAborted();
+  }
+  let onAbort!: () => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, interrupted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function withPrintTimeout<T>(opts: CLIOptions, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const timeoutMs = resolvePrintTimeoutMs(opts.timeout);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined) {
+    const deadline = Date.now() + timeoutMs;
+    const arm = (): void => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        controller.abort(new Error(`Print run timed out after ${opts.timeout}s (--timeout).`));
+      } else {
+        timer = setClampedTimeout(arm, remaining);
+      }
+    };
+    arm();
+  }
+  try {
+    return await run(controller.signal);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /**
  * Await `promise`, but stop waiting after `timeoutMs`.
@@ -67,8 +108,11 @@ export async function runPrompt(
   version: string,
   io: PromptRunIO = {},
 ): Promise<void> {
-  const { runV2Print } = await import('./v2/run-v2-print');
-  await runV2Print(opts, version, io);
+  await withPrintTimeout(opts, async (signal) => {
+    const resolved = await waitForPrintOperation(resolvePromptInput(opts), signal);
+    const { runV2Print } = await waitForPrintOperation(import('./v2/run-v2-print'), signal);
+    await runV2Print(resolved, version, io, signal);
+  });
 }
 
 export function requireConfiguredModel(...models: readonly (string | undefined)[]): string {

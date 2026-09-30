@@ -54,6 +54,7 @@ export interface CLIOptions {
   prompt: string | undefined;
   promptFile?: string;
   waitForSession?: string;
+  timeout?: string;
   skillsDirs: string[];
   agent: string | undefined;
   agentFiles: string[];
@@ -97,6 +98,16 @@ export function resolveWaitForSessionMs(value: string | undefined): number | und
   return milliseconds;
 }
 
+export function resolvePrintTimeoutMs(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  const milliseconds = seconds * 1_000;
+  if (value.trim() === '' || !Number.isFinite(seconds) || seconds <= 0 || !Number.isSafeInteger(Math.round(milliseconds)) || milliseconds < 1) {
+    throw new OptionConflictError('--timeout must be a positive number of seconds (at least 0.001).');
+  }
+  return milliseconds;
+}
+
 export async function resolvePromptInput(
   opts: CLIOptions,
   stdin: Readable = process.stdin,
@@ -125,6 +136,10 @@ export function validateOptions(
     throw new OptionConflictError('Cannot combine --prompt with --prompt-file.');
   }
   if (opts.waitForSession !== undefined) resolveWaitForSessionMs(opts.waitForSession);
+  if (opts.timeout !== undefined) {
+    resolvePrintTimeoutMs(opts.timeout);
+    if (!promptMode) throw new OptionConflictError('--timeout is only supported in prompt mode.');
+  }
   if (prompt !== undefined && prompt.trim().length === 0) {
     throw new OptionConflictError('Prompt cannot be empty.');
   }

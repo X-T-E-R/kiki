@@ -24,7 +24,7 @@ import { createProgram } from './cli/commands';
 import { drainStdio, finalizeHeadlessRun } from './cli/headless-exit';
 import { startupTrace } from './utils/startup-trace';
 import type { CLIOptions } from './cli/options';
-import { OptionConflictError, PromptInputError, resolvePromptInput, validateOptions } from './cli/options';
+import { OptionConflictError, PromptInputError, validateOptions } from './cli/options';
 import { runPrompt } from './cli/run-prompt';
 import { runShell } from './cli/run-shell';
 import { formatStartupError } from './cli/startup-error';
@@ -60,7 +60,8 @@ export async function handleMainCommand(
   try {
     validated = validateOptions(opts);
     if (validated.uiMode === 'print') {
-      validated = { ...validated, options: await resolvePromptInput(validated.options) };
+      await runPrompt(validated.options, version);
+      return { headlessCompleted: true };
     }
   } catch (error) {
     if (error instanceof OptionConflictError || error instanceof PromptInputError) {
@@ -68,11 +69,6 @@ export async function handleMainCommand(
       process.exit(error instanceof PromptInputError ? error.exitCode : 1);
     }
     throw error;
-  }
-
-  if (validated.uiMode === 'print') {
-    await runPrompt(validated.options, version);
-    return { headlessCompleted: true };
   }
 
   startupTrace('runShell:begin');

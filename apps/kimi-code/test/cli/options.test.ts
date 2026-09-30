@@ -41,6 +41,14 @@ function parse(argv: string[]): CLIOptions {
 }
 
 describe('CLI options parsing', () => {
+  it('accepts an opt-in full print deadline without limiting runs by default', () => {
+    expect(parse(['-p', 'hello']).timeout).toBeUndefined();
+    expect(validateOptions(parse(['-p', 'hello', '--timeout', '0.5'])).options.timeout).toBe('0.5');
+    expect(() => validateOptions(parse(['--timeout', '10']))).toThrow('only supported in prompt mode');
+    for (const value of ['0', '-1', 'NaN', 'Infinity', '', '0.0001', '9007199254740991']) {
+      expect(() => validateOptions(parse(['-p', 'hello', '--timeout', value]))).toThrow('--timeout');
+    }
+  });
   describe('defaults', () => {
     it('returns defaults when no arguments are given', () => {
       const opts = parse([]);

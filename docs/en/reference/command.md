@@ -24,6 +24,7 @@ All flags are optional — run `kiki` directly to enter an interactive session:
 | `--prompt-file <path>` | | Run one prompt read from a UTF-8 file; cannot be combined with `--prompt` |
 | `--output-format <format>` | | Set the non-interactive output format; supports `text` and `stream-json`. Can only be used with a prompt; defaults to `text` |
 | `--wait-for-session <seconds>` | | Wait for a session lock in non-interactive mode before failing |
+| `--timeout <seconds>` | | Limit the entire non-interactive run, including prompt input, startup, session locks, model calls and goal/background waits. Accepts positive seconds (at least `0.001`); no deadline by default. Expiry cancels the active agent and fails the run; bounded cleanup may take additional time |
 | `--include-thinking` | | Include thinking deltas in `stream-json` output; off by default |
 | `--yolo` | `-y` | Auto-approve regular tool calls, skipping approval requests |
 | `--auto` | | Start in Auto permission mode; routine tool calls proceed automatically, while protected calls and agent questions may still prompt you |

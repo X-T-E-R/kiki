@@ -1,3 +1,6 @@
+import { Readable } from 'node:stream';
+import { resolvePromptInput } from '#/cli/options';
+import { waitForPrintOperation, withPrintTimeout } from '#/cli/run-prompt';
 import { PRINT_WAIT_CEILING_S_DEFAULT } from '@kiki/agent-core-v2';
 import { sameWorkDir } from '@kiki/node-sdk';
 import { describe, expect, it, vi } from 'vitest';
@@ -42,6 +45,40 @@ function scriptedTurnEndings(entries: ScriptedEntry[]): PrintTurnEndings {
     },
   };
 }
+
+describe('print deadline', () => {
+  it('bounds prompt input before host startup', async () => {
+    vi.useFakeTimers();
+    const stdin = new Readable({ read() {} });
+    try {
+      const options = { prompt: '-', timeout: '0.1' } as never;
+      const run = withPrintTimeout(options, (signal) => waitForPrintOperation(resolvePromptInput(options, stdin), signal));
+      const rejection = expect(run).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stdin.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses one deadline across successive phases', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = withPrintTimeout({ timeout: '0.1' } as never, async (signal) => {
+        await waitForPrintOperation(new Promise((resolve) => setTimeout(resolve, 75)), signal);
+        await waitForPrintOperation(new Promise(() => {}), signal);
+      });
+      const rejection = expect(run).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('print session continuation identity', () => {
   it('matches Windows cwd spelling variants and selects the most recently updated session', () => {

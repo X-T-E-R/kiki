@@ -172,6 +172,58 @@ function makeFakeHarness() {
 }
 
 describe('runV2Print', () => {
+  it.each(['auth', 'prompt', 'goal', 'cron', 'drain'] as const)('times out a stalled %s and cancels, flushes and closes the host', async (stage) => {
+    vi.useFakeTimers();
+    const { app, agent, session, agentServices, appServices } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+    const stalled = () => new Promise<never>(() => {});
+    if (stage === 'auth') (appServices.get(IAuthSummaryService) as { ensureReady: Mock }).ensureReady.mockImplementation(stalled);
+    if (stage === 'prompt') (agentServices.get(IAgentPromptService) as { submitAndWait: Mock }).submitAndWait.mockImplementation(stalled);
+    if (stage === 'goal') (agentServices.get(IAgentGoalService) as { getGoal: Mock }).getGoal.mockReturnValue({ goal: {
+      goalId: 'example-goal', objective: 'continue', status: 'active', turnsUsed: 1, tokensUsed: 1, wallClockMs: 0,
+      budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null, remainingTokens: null, remainingTurns: null,
+        remainingWallClockMs: null, tokenBudgetReached: false, turnBudgetReached: false, wallClockBudgetReached: false, overBudget: false },
+    } });
+    if (stage === 'cron') (session.accessor.get(ISessionCronService) as { getNextFireTime: Mock }).getNextFireTime.mockReturnValue(Date.now() + 86_400_000);
+    if (stage === 'drain') {
+      (appServices.get(IConfigService) as { get: Mock }).get.mockImplementation((section: string) => section === 'task' ? { printBackgroundMode: 'drain' } : undefined);
+      (session.accessor.get(IAgentLifecycleService) as { drainBackgroundTasks: Mock }).drainBackgroundTasks.mockImplementation(stalled);
+    }
+    try {
+      const run = runV2Print(opts({ timeout: '0.1' }) as never, 'test', { stdout: writer(), stderr: writer() });
+      const rejection = expect(run).rejects.toThrow('Print run timed out after 0.1s');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+      expect((agentServices.get(IAgentLoopService) as { cancelFromUser: Mock }).cancelFromUser).toHaveBeenCalledOnce();
+      expect((agentServices.get(IEventDispatcher) as { flush: Mock }).flush).toHaveBeenCalledOnce();
+      expect(app.dispose).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds startup and disposes a host that becomes ready after the deadline without running a prompt', async () => {
+    vi.useFakeTimers();
+    const { app, agent, appServices, agentServices } = makeFakeHarness();
+    let ready!: () => void;
+    (appServices.get(IConfigService) as { ready: Promise<void> }).ready = new Promise((resolve) => { ready = resolve; });
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+    try {
+      const run = runV2Print(opts({ timeout: '0.1' }) as never, 'test', { stdout: writer(), stderr: writer() });
+      const rejection = expect(run).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+      ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(app.dispose).toHaveBeenCalledOnce();
+      expect((agentServices.get(IAgentPromptService) as { submitAndWait: Mock }).submitAndWait).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   beforeEach(() => {
     vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '1');
     vi.stubEnv('KIKI_MODEL_OUTPUT_FORMAT', '');

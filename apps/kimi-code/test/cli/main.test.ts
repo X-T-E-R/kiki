@@ -210,10 +210,14 @@ describe('main entry command handling', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const opts: CLIOptions = { ...defaultOpts(), promptFile: join(dir, 'missing.txt') };
     mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'print' });
+    mocks.runPrompt.mockImplementationOnce(async (input: CLIOptions) => {
+      const actual = await vi.importActual<typeof OptionsModule>('../../src/cli/options.js');
+      await actual.resolvePromptInput(input);
+    });
     try {
       expect(await runHandleMainCommand(opts)).toBe(2);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('[ENOENT]'));
-      expect(mocks.runPrompt).not.toHaveBeenCalled();
+      expect(mocks.runPrompt).toHaveBeenCalledExactlyOnceWith(opts, '0.0.1-alpha.2');
     } finally {
       stderr.mockRestore();
       await rm(dir, { recursive: true, force: true });
