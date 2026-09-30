@@ -256,12 +256,13 @@ describe('server-v2 /api provider write endpoints', () => {
       type: 'openai',
       base_url: 'https://api.openai.example/v1',
       default_model: 'my-openai/gpt-4.1',
-      api_key: 'sk-test-openai',
       has_api_key: true,
       status: 'connected',
       models: ['my-openai/gpt-4.1', 'my-openai/gpt-4o-mini'],
     });
     expect((body.data as Record<string, unknown>)['revision']).toEqual(expect.any(String));
+    expect(body.data).not.toHaveProperty('api_key');
+    expect(JSON.stringify(body.data)).not.toContain(CREATE_BODY.api_key);
 
     const onDisk = await readConfigToml();
     expect(onDisk['providers']).toEqual({
@@ -297,7 +298,6 @@ describe('server-v2 /api provider write endpoints', () => {
         type: 'openai',
         base_url: 'https://api.openai.example/v1',
         default_model: 'my-openai/gpt-4.1',
-        api_key: 'sk-test-openai',
         has_api_key: true,
         status: 'connected',
         models: ['my-openai/gpt-4.1', 'my-openai/gpt-4o-mini'],
@@ -313,6 +313,7 @@ describe('server-v2 /api provider write endpoints', () => {
         display_name: 'GPT-4.1',
         max_context_size: 1047576,
         capabilities: ['vision'],
+        effective_capabilities: ['image_in', 'tool_use'],
       },
       {
         id: 'my-openai/gpt-4o-mini',
@@ -320,6 +321,7 @@ describe('server-v2 /api provider write endpoints', () => {
         remote_id: 'gpt-4o-mini',
         display_name: 'gpt-4o-mini',
         max_context_size: 128000,
+        effective_capabilities: ['image_in', 'tool_use'],
       },
     ]);
   });
@@ -345,6 +347,7 @@ describe('server-v2 /api provider write endpoints', () => {
           display_name: 'GPT-4.1',
           max_context_size: 1047576,
           capabilities: ['vision'],
+          effective_capabilities: ['image_in', 'tool_use'],
           request_identity: firstIdentity,
         },
         {
@@ -353,6 +356,7 @@ describe('server-v2 /api provider write endpoints', () => {
           remote_id: 'gpt-4o-mini',
           display_name: 'gpt-4o-mini',
           max_context_size: 128000,
+          effective_capabilities: ['image_in', 'tool_use'],
         },
       ]);
 
@@ -813,7 +817,6 @@ describe('server-v2 /api provider write endpoints', () => {
       type: 'openai',
       base_url: 'https://api.openai.example/v2',
       default_model: 'gpt4o',
-      api_key: 'sk-openai',
       has_api_key: true,
       status: 'connected',
       models: ['gpt4o'],
@@ -1163,20 +1166,32 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(single.body.data).not.toHaveProperty('default_model');
   });
 
-  it('returns stored inline keys for editing and stops returning a cleared key', async () => {
+  it('redacts stored keys from bulk reads and reveals them only on explicit request', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const withKey = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(withKey.body.code).toBe(0);
-    expect(withKey.body.data?.['api_key']).toBe('sk-openai');
+    expect(withKey.body.data).not.toHaveProperty('api_key');
     expect(withKey.body.data?.['has_api_key']).toBe(true);
+    const revealed = await postJson('/api/secrets:reveal', {
+      ref: { kind: 'provider_api_key', provider_id: 'openai' },
+    });
+    expect(revealed.body.code).toBe(0);
+    expect(revealed.body.data).toEqual({ source: 'kiki', value: 'sk-openai' });
 
     await patchJson<unknown>('/api/providers/openai', { api_key: '' });
     const cleared = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(cleared.body.data).not.toHaveProperty('api_key');
+    expect(cleared.body.data?.['has_api_key']).toBe(false);
 
     const list = await getJson<{ items: Array<Record<string, unknown>> }>('/api/providers');
-    expect(list.body.data.items.find((item) => item['id'] === 'kimi')?.['api_key']).toBe('sk-test');
-    expect(list.body.data.items.find((item) => item['id'] === 'openai')).not.toHaveProperty('api_key');
+    const kimi = list.body.data.items.find((item) => item['id'] === 'kimi');
+    const openai = list.body.data.items.find((item) => item['id'] === 'openai');
+    expect(kimi).toMatchObject({ has_api_key: true });
+    expect(kimi).not.toHaveProperty('api_key');
+    expect(openai).toMatchObject({ has_api_key: false });
+    expect(openai).not.toHaveProperty('api_key');
+    expect(JSON.stringify(list.body.data)).not.toContain('sk-test');
+    expect(JSON.stringify(list.body.data)).not.toContain('sk-openai');
   });
 
   it('rejects a base_url containing an env placeholder with 40001', async () => {
