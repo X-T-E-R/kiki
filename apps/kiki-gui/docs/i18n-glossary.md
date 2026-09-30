@@ -7,8 +7,10 @@ before writing new copy or translating a batch; read
 copy rules.
 
 Counts in the notes are the number of dictionary keys whose value contains the
-term on `kiki` @ `27682d04de` (5372 keys per locale). When two translations
-compete the majority form wins unless a note says otherwise.
+term, measured on `kiki` @ `27682d04de` (5372 keys per locale; the trunk commits
+that landed while this document was written did not touch the dictionaries).
+When two translations compete the majority form wins unless a note says
+otherwise.
 
 ## Terms
 
@@ -31,7 +33,7 @@ compete the majority form wins unless a note says otherwise.
 | 任务看板 | task board | `taskBoard.*`（zh 41 / en 12）。zh 统一「任务看板」，`taskBoard.title` 的「需求与任务看板」要归一；en 现有 'Task Board' 是遗留 Title Case，新文案写 'Task board'。卡片 card（22）、需求 requirement（9，`taskBoard.newTask` = "New Requirement" / 新建需求）。 |
 | 定时任务 | scheduled task(s) | `cron.panel.*`（zh 19 / en 13）。「计划任务」不用（0）；`cron` 只作为 key 前缀和内部标识，不出现在面向用户的文案里。 |
 | 记忆 | memory | 跨会话记住的偏好与事实（zh 48 / en 56），一条叫 entry / 条目（24）。不要用「内存」。 |
-| 审批 / 批准 | approval / approve | 功能与动作用「审批」（29）：Approve for me = 替我审批，Reviewer = 审查者；状态与结果用「批准」（45）：Awaiting approval = 待批准，Approval required = 需人工审批。不要写「确认授权」（`agentPanel.approvalNotice` 1 处），也不要把「授权」当 approval 用（7 处另有含义：OAuth、通知授权）；「放行」只属于 Full access 这一模式名（`composer.perm.yolo`）。 |
+| 审批 / 批准 | approval / approve | 功能与动作用「审批」（29）：Approve for me = 替我审批，Reviewer = 审查者；状态与结果用「批准」（45）：Awaiting approval = 待批准，Approval required = 需人工审批。不要写「确认授权」（`agentPanel.approvalNotice` 1 处）；「授权」（7 处）是 authorization 的用词（工作区已授权、OAuth、通知端点授权、插件声明不授权），不要拿来译 approval；「放行」只属于 Full access 这一模式名（`composer.perm.yolo`）。 |
 | 压缩 | compaction | 上下文压缩（zh 59 / en compaction 25）。不要用「精简」「汇总」（0）。陷阱：`st.skin.densityCompact` 的 'Compact' 是界面密度，与压缩无关。 |
 | 外部引擎 | external engine | Kiki 驱动的第三方编码智能体，复用其本机登录或 API key（`st.engines.*`，zh 8 / en 8）。不要用 backend、adapter；「模型引擎」指 Kiki 自己的 model engine，是另一件事。 |
 | 提示词 | prompt | 你写或发送的文本：初始提示词 initial prompt、执行提示词 execution prompt、提示词字段 Prompt fields（zh 27 / en 73）。不要用「指令」或「说明」译 prompt。 |
