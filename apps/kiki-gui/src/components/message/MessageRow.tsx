@@ -63,7 +63,7 @@ export function SpeakerHead({
   return (
     <div className="mb-1 flex min-w-0 items-center gap-2">
       <span className={MESSAGE_FACE}>
-        <PersonaAvatar persona={persona} size={24} decorative className="max-sm:!h-5 max-sm:!w-5 !rounded-[6px]" />
+        <PersonaAvatar persona={persona} size={24} decorative className={`max-sm:!h-5 max-sm:!w-5 ${persona.avatarShape === 'circle' ? '' : '!rounded-[6px]'}`} />
       </span>
       <span data-message-sender className="min-w-0 truncate text-[13px] leading-5 font-medium text-ink">{persona.name}</span>
       {children}

@@ -99,6 +99,8 @@ import type {
   UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
   Workspace,
+  PersonaAvatarDeleteResponse,
+  PersonaAvatarShape,
   PersonaAvatarUploadResponse,
   PersonaCardFormat,
   PersonaDeleteResponse,
@@ -2318,9 +2320,14 @@ export class KikiClient {
     }
   }
 
-  async putPersonaAvatar(id: string, file: File): Promise<PersonaAvatarUploadResponse> {
+  async putPersonaAvatar(id: string, file: File, shape?: PersonaAvatarShape): Promise<PersonaAvatarUploadResponse> {
     const data = new Uint8Array(await file.arrayBuffer());
-    return this.run(() => this.rest.personas.putAvatar(id, data, file.type));
+    return this.run(() => this.rest.personas.putAvatar(id, data, file.type, shape));
+  }
+
+  /** Back to the initial / profile face. */
+  deletePersonaAvatar(id: string): Promise<PersonaAvatarDeleteResponse> {
+    return this.run(() => this.rest.personas.deleteAvatar(id));
   }
 }
 

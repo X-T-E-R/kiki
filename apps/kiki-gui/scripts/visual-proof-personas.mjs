@@ -1,10 +1,10 @@
 /**
  * Visual proof for the persona GUI (fixture `personas`): the /personas roster
- * and editor, the CCv3 import preview, the /new composer persona pick, a
+ * and editor, the avatar crop dialog, the CCv3 import preview, the /new composer persona pick, a
  * persona-bound session header, and the memory page's persona group — at 1440
  * and 390, light and dark.
  *
- *   node scripts/visual-proof-personas.mjs [--only=page,import,new,header,memory]
+ *   node scripts/visual-proof-personas.mjs [--only=page,avatar,import,new,header,memory]
  *
  * Screenshots land in .tmp/persona-proof/<stamp>/ as `<surface>-<theme>-<width>.png`.
  * Mock-only: the fixture server stands in for kap-server.
@@ -22,7 +22,7 @@ import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, '.tmp', 'persona-proof', String(Date.now()));
 await mkdir(output, { recursive: true });
-const only = new Set((process.argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length) ?? 'page,import,new,header,memory').split(','));
+const only = new Set((process.argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length) ?? 'page,avatar,import,new,header,memory').split(','));
 
 const fixture = await startFixtureServer({ port: 0, scenario: 'personas' });
 const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
@@ -100,6 +100,30 @@ const walkers = {
     await page.waitForSelector('[data-persona-editor="new"]');
     await page.locator('[data-persona-field="name"]').fill('Orin Hale');
     await shot(page, `personas-new-${tag}`);
+  },
+  async avatar(page, tag) {
+    // Crop dialog: open a landscape picture, frame it square, then circle
+    // zoomed in; save; the editor wears it round; remove goes back to the initial.
+    await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-persona-row="a-che"]', { timeout: 30_000 });
+    await page.locator('[data-persona-row="a-che"]').click();
+    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-upload]');
+    await page.locator('[data-persona-editor="a-che"] input[type="file"][accept*="image/png"]').setInputFiles(join(root, 'fixtures', 'persona-media', 'landscape.jpg'));
+    await page.waitForSelector('[data-persona-avatar-crop="ready"]');
+    await shot(page, `avatar-crop-square-${tag}`);
+    await page.locator('[data-persona-avatar-shape="circle"]').click();
+    await page.locator('[data-persona-avatar-zoom]').fill('1.8');
+    await page.locator('[data-persona-avatar-frame]').focus();
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowUp');
+    await shot(page, `avatar-crop-circle-${tag}`);
+    await page.locator('[data-persona-avatar-save]').click();
+    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-shape="circle"][data-persona-avatar-kind="image"]', { timeout: 10_000 });
+    await shot(page, `avatar-saved-${tag}`);
+    await page.locator('[data-persona-avatar-remove]').click();
+    await shot(page, `avatar-remove-confirm-${tag}`);
+    await page.locator('[role="alertdialog"] button:has-text("移除头像"), [role="dialog"] button:has-text("移除头像")').last().click();
+    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-kind="initial"]', { timeout: 10_000 });
   },
   async import(page, tag) {
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });

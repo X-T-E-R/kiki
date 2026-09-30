@@ -43,6 +43,20 @@ describe('PersonaAvatar', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
   });
 
+  it('frames a circle picture round, and keeps the rounded card for an initial', () => {
+    const round = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'a-che', name: 'A Che', avatarUrl: 'data:image/png;base64,AAAA', avatarShape: 'circle' }} />);
+    const image = round.querySelector<HTMLElement>('[data-persona-avatar="a-che"]')!;
+    expect(image.dataset['personaAvatarShape']).toBe('circle');
+    expect(image.style.borderRadius).toBe('20px');
+    // A circle chosen for a picture no longer applies once the picture is gone.
+    const initial = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'a-che', name: 'A Che', avatarShape: 'circle' }} />);
+    const fallback = initial.querySelector<HTMLElement>('[data-persona-avatar="a-che"]')!;
+    expect(fallback.dataset['personaAvatarKind']).toBe('initial');
+    expect(fallback.dataset['personaAvatarShape']).toBe('square');
+    expect(fallback.style.borderRadius).toBe('11px');
+    expect(personaAvatarOf({ id: 'a-che', name: 'A Che', avatarShape: 'circle' }).avatarShape).toBeUndefined();
+  });
+
   it('keeps initials, tints and avatar URLs stable', () => {
     expect(personaInitial('  archivist')).toBe('A');
     expect(personaInitial('')).toBe('?');

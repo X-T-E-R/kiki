@@ -32,7 +32,8 @@ import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter } from
 import { useSavedTick } from '../settings/useSavedTick';
 import { INPUT } from '../ui';
 import { segmentClass } from '../WorkspaceScopeControl';
-import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
+import { personaAvatarOf } from './PersonaAvatar';
+import { PersonaAvatarControl } from './PersonaAvatarControl';
 import {
   definitionFromDraft,
   draftFromDefinition,
@@ -44,8 +45,6 @@ import {
 } from './personaDraft';
 import { downloadBlob, invalidatePersonas, personaQueryKey } from './usePersonas';
 
-const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 const TEXTAREA = `${INPUT} resize-y leading-relaxed`;
 
 export function PersonaEditor({
@@ -196,6 +195,7 @@ function PersonaForm({
     id: snapshot?.definition.id ?? (draft.id === '' ? 'new' : draft.id),
     name: draft.name.trim() === '' ? (snapshot?.definition.name ?? '?') : draft.name,
     avatarMime: summary?.avatarMime,
+    avatarShape: summary?.avatarShape,
   });
 
   const fieldId = (key: string) => `${formId}-${key}`;
@@ -214,7 +214,7 @@ function PersonaForm({
     >
       {/* Masthead: the face and the name, set large — this is the card. */}
       <div className="flex min-w-0 items-start gap-4">
-        <AvatarControl persona={identity} personaId={snapshot?.definition.id} />
+        <PersonaAvatarControl persona={identity} personaId={snapshot?.definition.id} />
         <div className="min-w-0 flex-1 pt-1">
           <h2 className="truncate font-display text-[22px] leading-7 font-semibold tracking-tight text-ink">
             {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
@@ -333,53 +333,6 @@ function Field({ id, label, hint, issue = null, wide = false, children }: {
       {children}
       {hint !== undefined ? <p id={`${id}-hint`} className="text-[12px] leading-relaxed text-ink-faint">{hint}</p> : null}
       <FieldIssue id={`${id}-issue`} text={issue} />
-    </div>
-  );
-}
-
-/**
- * The face, and the one way to change it. A new persona has no directory yet,
- * so the upload waits for the first save (the button says so by not being
- * there).
- */
-function AvatarControl({ persona, personaId }: { readonly persona: ReturnType<typeof personaAvatarOf>; readonly personaId: string | undefined }) {
-  const { t, locale } = useI18n();
-  const { client } = useConnection();
-  const queryClient = useQueryClient();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const upload = useMutation({
-    mutationFn: (file: File) => client.putPersonaAvatar(personaId!, file),
-    onSuccess: () => {
-      pushToast({ tone: 'success', text: t('persona.avatarUploaded') });
-      void invalidatePersonas(queryClient, personaId, { avatar: true });
-    },
-    onError: (error: unknown) => { pushToast({ tone: 'error', text: t('persona.actionFailed', { detail: errorText(locale, error) }) }); },
-  });
-  const pick = (file: File | undefined) => {
-    if (file === undefined) return;
-    if (!AVATAR_TYPES.includes(file.type)) { pushToast({ tone: 'error', text: t('persona.avatarType') }); return; }
-    if (file.size > AVATAR_MAX_BYTES) { pushToast({ tone: 'error', text: t('persona.avatarTooLarge') }); return; }
-    upload.mutate(file);
-  };
-  const hasImage = persona.avatarUrl !== undefined;
-  return (
-    <div className="flex shrink-0 flex-col items-center gap-1.5">
-      <PersonaAvatar persona={persona} size={64} decorative />
-      {personaId !== undefined ? (
-        <>
-          <input ref={inputRef} type="file" accept={AVATAR_TYPES.join(',')} className="sr-only" tabIndex={-1} aria-hidden onChange={(event) => { pick(event.target.files?.[0]); event.target.value = ''; }} />
-          <button
-            type="button"
-            data-persona-avatar-upload
-            disabled={upload.isPending}
-            title={t('persona.avatarHint')}
-            onClick={() => { inputRef.current?.click(); }}
-            className="min-h-6 rounded px-1 text-[11.5px] text-ink-soft underline-offset-2 hover:text-ink hover:underline disabled:opacity-60 pointer-coarse:min-h-11"
-          >
-            {upload.isPending ? t('common.saving') : t(hasImage ? 'persona.avatarChange' : 'persona.avatarUpload')}
-          </button>
-        </>
-      ) : null}
     </div>
   );
 }

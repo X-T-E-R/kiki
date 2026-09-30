@@ -1,11 +1,11 @@
 /**
  * Fixture stand-in for the persona routes (kap-server routes/personas.ts):
  * list / get / put / duplicate / archive / delete, CCv3 import preview and
- * confirm, export, and the avatar. Writes mutate scenario state so the page's
- * save, conflict (40946), duplicate, archive and delete paths are exercisable.
+ * confirm, export, and the avatar (GET, PUT with an optional `shape` field,
+ * DELETE). Writes mutate scenario state so the page's save, conflict (40946), duplicate, archive and delete paths are exercisable.
  *
  * Scenario seed (optional):
- *   personas: [{ definition, examples?, archived?, avatar?: { file, mimeType } }]
+ *   personas: [{ definition, examples?, archived?, avatar?: { file, mimeType, shape? } }]
  *   personaImport: { preview }   // what /import/preview returns for any card
  *
  * Card parsing is NOT simulated: any uploaded file previews as the seeded
@@ -27,7 +27,7 @@ export function resetPersonas(server, data) {
     definition: structuredClone(seed.definition),
     examples: seed.examples,
     archived: seed.archived === true,
-    avatar: seed.avatar === undefined ? undefined : { bytes: readFileSync(seed.avatar.file), mimeType: seed.avatar.mimeType },
+    avatar: seed.avatar === undefined ? undefined : { bytes: readFileSync(seed.avatar.file), mimeType: seed.avatar.mimeType, shape: seed.avatar.shape },
   }]));
   server.personaImport = data.personaImport;
 }
@@ -41,6 +41,7 @@ function summaryOf(record) {
     revision: revisionOf(record),
     archived: record.archived,
     ...(record.avatar !== undefined ? { avatarMime: record.avatar.mimeType } : {}),
+    ...(record.avatar?.shape !== undefined ? { avatarShape: record.avatar.shape } : {}),
   };
 }
 
@@ -141,10 +142,16 @@ export async function handlePersonas(server, req, res, path, query) {
     return true;
   }
   if (sub === 'avatar' && method === 'PUT') {
-    const { file } = parseMultipart(await readRaw(req), req.headers['content-type']);
+    const { fields, file } = parseMultipart(await readRaw(req), req.headers['content-type']);
     if (file === undefined || !['image/png', 'image/jpeg', 'image/webp'].includes(file.mimeType)) return fail(40001, 'avatar must be PNG, JPEG, or WebP');
-    record.avatar = { bytes: file.bytes, mimeType: file.mimeType };
-    return ok({ id, mimeType: file.mimeType, size: file.bytes.byteLength });
+    const shape = fields.shape === 'circle' || fields.shape === 'square' ? fields.shape : undefined;
+    record.avatar = { bytes: file.bytes, mimeType: file.mimeType, shape };
+    return ok({ id, mimeType: file.mimeType, size: file.bytes.byteLength, ...(shape !== undefined ? { shape } : {}) });
+  }
+  if (sub === 'avatar' && method === 'DELETE') {
+    const deleted = record.avatar !== undefined;
+    record.avatar = undefined;
+    return ok({ id, deleted });
   }
   if (sub === 'export' && method === 'GET') {
     const format = query.get('format') ?? 'json';

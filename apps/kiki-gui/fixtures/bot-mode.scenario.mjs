@@ -29,7 +29,7 @@ const personas = [
     modelAlias: 'fixture/kiki-pro', thinkingEffort: 'high', delivery: 'message',
     description: '你是林岚，负责 Kiki 的发布协调。说话简短，先给结论；发布动作一律先给清单等确认。',
   }, avatar: { file: join(MEDIA, 'lin-lan.png'), mimeType: 'image/png' } },
-  { definition: { id: 'a-che', name: '阿澈', title: '写作', job: '起草 changelog 和发布公告。', description: '你是阿澈，负责写作。一次只改一处，并说明为什么。' } },
+  { definition: { id: 'a-che', name: '阿澈', title: '写作', job: '起草 changelog 和发布公告。', description: '你是阿澈，负责写作。一次只改一处，并说明为什么。' }, avatar: { file: join(MEDIA, 'a-che.png'), mimeType: 'image/png', shape: 'circle' } },
   { definition: { id: 'xiao-lan', name: '小蓝', title: '调研', job: '查资料、核对事实。', description: '你是小蓝，负责调研。给出处，不猜。' } },
   { definition: { id: 'lao-zhou', name: '老周', title: '审校', job: '最后一道校对。', description: '你是老周，负责审校。' } },
 ];

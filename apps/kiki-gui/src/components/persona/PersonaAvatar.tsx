@@ -50,12 +50,28 @@ export function personaInitial(name: string): string {
 }
 
 /** Avatar data for a list summary; mirrors klient's `personas.avatar()` helper. */
-export function personaAvatarOf(persona: { readonly id: string; readonly name: string; readonly avatarMime?: string }): PersonaAvatarData {
+export function personaAvatarOf(persona: {
+  readonly id: string;
+  readonly name: string;
+  readonly avatarMime?: string;
+  readonly avatarShape?: PersonaAvatarData['avatarShape'];
+}): PersonaAvatarData {
+  const hasImage = persona.avatarMime !== undefined;
   return {
     id: persona.id,
     name: persona.name,
-    avatarUrl: persona.avatarMime === undefined ? undefined : `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+    avatarUrl: hasImage ? `/api/personas/${encodeURIComponent(persona.id)}/avatar` : undefined,
+    avatarShape: hasImage ? persona.avatarShape : undefined,
   };
+}
+
+/**
+ * Corner radius of the square face at `size` px. Rounded square rather than
+ * a circle by default: a persona is a card you keep, and the square leaves
+ * room for the initial at small sizes.
+ */
+export function avatarRadius(size: number): number {
+  return Math.max(4, Math.round(size * 0.28));
 }
 
 export const personaAvatarQueryKey = (id: string) => ['persona-avatar', id] as const;
@@ -100,9 +116,9 @@ export function PersonaAvatar({
   }, [blob]);
   const src = objectUrl ?? (url !== undefined && !needsFetch(url) ? url : null);
 
-  // Rounded square rather than a circle: a persona is a card you keep, and
-  // the square leaves room for the initial at small sizes.
-  const radius = Math.max(4, Math.round(size * 0.28));
+  // A chosen circle applies to the picture only; the initial keeps the card.
+  const round = src !== null && persona.avatarShape === 'circle';
+  const radius = round ? size / 2 : avatarRadius(size);
   const style = { width: size, height: size, borderRadius: radius, fontSize: Math.max(9, Math.round(size * 0.46)) };
   const a11y = decorative ? { 'aria-hidden': true as const } : { role: 'img' as const, 'aria-label': persona.name };
 
@@ -110,6 +126,7 @@ export function PersonaAvatar({
     <span
       data-persona-avatar={persona.id}
       data-persona-avatar-kind={src === null ? 'initial' : 'image'}
+      data-persona-avatar-shape={round ? 'circle' : 'square'}
       title={decorative ? undefined : persona.name}
       style={style}
       {...a11y}
