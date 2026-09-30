@@ -10,9 +10,10 @@
  *
  * Ordering: agents that need the user, then running; ended agents fold into
  * one "N finished" group at the end once there are more than three of them.
- * A parent sorts by the
- * most urgent agent in its subtree, so a finished lead with a waiting worker
- * stays at the top. Below the first level every branch starts folded.
+ * A parent sorts by the most urgent agent in its subtree, so a finished lead
+ * with a waiting worker stays at the top; within the same urgency the most
+ * recently updated subtree (latest start or end) comes first. Below the
+ * first level every branch starts folded.
  *
  * Filtering (a status or a search) switches to a flat list: each match keeps
  * the names of the agents between the root and itself, so its place in the
@@ -99,6 +100,12 @@ function matches(node: AgentTreeNode, needle: string): boolean {
     .some((value) => value !== undefined && value.toLowerCase().includes(needle));
 }
 
+/** Epoch ms of an ISO time; unknown sorts oldest. */
+function timeOf(iso: string | undefined): number {
+  const value = iso === undefined ? Number.NaN : Date.parse(iso);
+  return Number.isFinite(value) ? value : 0;
+}
+
 export function buildRoster(input: RosterInput): RosterModel {
   const { forest, rootId, waiting, expanded, filter, doneOpen } = input;
   const needle = input.query.trim().toLowerCase();
@@ -139,11 +146,21 @@ export function buildRoster(input: RosterInput): RosterModel {
   for (const node of top) visit(node);
   const total = counts.waiting + counts.running + counts.ended;
 
-  // Stable within a rank: the forest already orders siblings by recency.
+  // Within a rank, the most recently updated first: a node's update time is
+  // the latest start or end anywhere in its subtree.
+  const updatedAt = new Map<string, number>();
+  const stamp = (node: AgentTreeNode): number => {
+    const known = updatedAt.get(node.agentId);
+    if (known !== undefined) return known;
+    const own = Math.max(timeOf(node.endedAt), timeOf(node.startedAt));
+    const value = Math.max(own, ...(kids.get(node.agentId) ?? []).map(stamp));
+    updatedAt.set(node.agentId, value);
+    return value;
+  };
   const byUrgency = (list: readonly AgentTreeNode[]) =>
     list
       .map((node, index) => ({ node, index }))
-      .sort((a, b) => subtreeRank.get(a.node.agentId)! - subtreeRank.get(b.node.agentId)! || a.index - b.index)
+      .sort((a, b) => subtreeRank.get(a.node.agentId)! - subtreeRank.get(b.node.agentId)! || stamp(b.node) - stamp(a.node) || a.index - b.index)
       .map((entry) => entry.node);
 
   const rowFor = (node: AgentTreeNode, depth: number, path: readonly string[]): RosterAgentRow => ({
@@ -169,7 +186,7 @@ export function buildRoster(input: RosterInput): RosterModel {
       for (const child of kids.get(node.agentId) ?? []) walk(child, [...path, node.label]);
     };
     for (const node of top) walk(node, []);
-    flat.sort((a, b) => a.rank - b.rank || a.order - b.order);
+    flat.sort((a, b) => a.rank - b.rank || stamp(b.row.node) - stamp(a.row.node) || a.order - b.order);
     return { counts, total, rows: flat.map((entry) => entry.row) };
   }
 
