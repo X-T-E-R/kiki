@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
+import { IAgentProfileAnnouncementsService } from '#/agent/tools/agent/agentProfileAnnouncementsService';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ExecutableTool, ToolExecution } from '#/tool/toolContract';
@@ -390,7 +393,7 @@ describe('progressive tool disclosure end-to-end', () => {
     } finally { plugin.dispose(); }
   });
 
-  it.each(PREFIX_PROTOCOL_CASES)('coalesces effective profile skill changes on $name, ignoring unchanged content', async ({ provider }) => {
+  it.each(PREFIX_PROTOCOL_CASES)('coalesces effective skill revisions on the next $name sampling boundary', async ({ provider }) => {
     ctx.get(IAgentProfileCapabilityChangesService);
     ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
     ctx.mockNextResponse({ type: 'text', text: 'first' });
@@ -401,27 +404,19 @@ describe('progressive tool disclosure end-to-end', () => {
       dir: '/tmp/hot-update', content: 'Updated skill body', source: 'project' as const, metadata: {} };
     catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
     catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
-    await vi.waitFor(() => {
-      expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-        message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
-    }, { timeout: 2_500 });
+    const notices = () => ctx.get(IAgentContextMemoryService).get().filter((message) => capabilitySourceMessage(message, 'profile_capabilities_changed') !== undefined);
+    expect(notices()).toHaveLength(0);
     ctx.mockNextResponse({ type: 'text', text: 'second' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
     await ctx.untilTurnEnd();
-    const history = ctx.get(IAgentContextMemoryService).get();
-    const notice = history.findIndex((message) => message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed');
-    const user = history.findIndex((message) => message.origin?.kind === 'user' && historyText([message]).includes('second'));
-    expect(notice).toBeGreaterThan(-1);
-    expect(notice).toBeLessThan(user);
-    expect(historyText(ctx.llmCalls[1]!.history)).toContain('Available profile capabilities changed');
+    expect(notices()).toHaveLength(1);
+    expect(historyText(ctx.llmCalls[1]!.history)).toContain('hot-update');
     expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
     const requests = wireEvents(ctx, 'llm.request');
-    expect((requests[1]!.args as { systemPromptHash?: string }).systemPromptHash)
-      .toBe((requests[0]!.args as { systemPromptHash?: string }).systemPromptHash);
+    expect((requests[1]!.args as { systemPromptHash?: string }).systemPromptHash).toBe((requests[0]!.args as { systemPromptHash?: string }).systemPromptHash);
     catalog.set('profile-watch', { skills: [skill] }, { priority: 50 });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+    await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+    expect(notices()).toHaveLength(1);
   });
 
   it('coalesces repeated skill edits into one notice until the next user turn', async () => {
@@ -435,19 +430,19 @@ describe('progressive tool disclosure end-to-end', () => {
       dir: '/tmp/rapid', content: 'one', source: 'project' as const, metadata: {} };
     catalog.set('rapid', { skills: [skill] }, { priority: 50 });
     catalog.set('rapid', { skills: [{ ...skill, content: 'two' }] }, { priority: 50 });
-    await new Promise((resolve) => setTimeout(resolve, 1_150));
-    const notices = () => ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed');
-    expect(notices()).toHaveLength(1);
+    const notices = () => ctx.get(IAgentContextMemoryService).get().filter((message) => capabilitySourceMessage(message, 'profile_capabilities_changed') !== undefined);
+    expect(notices()).toHaveLength(0);
     ctx.mockNextResponse({ type: 'text', text: 'second' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
     await ctx.untilTurnEnd();
+    expect(notices()).toHaveLength(1);
     catalog.set('rapid', { skills: [{ ...skill, content: 'three' }] }, { priority: 50 });
+    await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
     expect(notices()).toHaveLength(2);
   });
 
-  it.each(PREFIX_PROTOCOL_CASES)('announces only usable subagent profile changes on $name', async ({ provider }) => {
-    ctx.get(IAgentProfileCapabilityChangesService);
+  it.each(PREFIX_PROTOCOL_CASES)('announces only usable subagent profile revisions on $name', async ({ provider }) => {
+    ctx.get(IAgentProfileAnnouncementsService);
     ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
     ctx.mockNextResponse({ type: 'text', text: 'first' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first' }] });
@@ -455,22 +450,21 @@ describe('progressive tool disclosure end-to-end', () => {
     const catalog = ctx.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
     const worker = normalizeAgentProfile({ name: 'hot-worker', systemPrompt: () => 'Work on this task.' });
     catalog.setContribution('hot-profile', { profiles: [worker] }, 50);
-    await vi.waitFor(() => {
-      expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-        message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
-    }, { timeout: 2_500 });
-    const hidden = normalizeAgentProfile({ name: 'hidden-worker', private: true, systemPrompt: () => 'Internal.' });
-    catalog.setContribution('hot-profile', { profiles: [worker, hidden] }, 50);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'profile_capabilities_changed')).toHaveLength(1);
+    const notices = () => ctx.get(IAgentContextMemoryService).get().filter((message) => capabilitySourceMessage(message, 'agent_profile_changes') !== undefined);
+    expect(notices()).toHaveLength(0);
     ctx.mockNextResponse({ type: 'text', text: 'second' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second' }] });
     await ctx.untilTurnEnd();
+    expect(notices()).toHaveLength(1);
+    expect(historyText(notices())).toContain('hot-worker');
+    const hidden = normalizeAgentProfile({ name: 'hidden-worker', private: true, systemPrompt: () => 'Internal.' });
+    catalog.setContribution('hot-profile', { profiles: [worker, hidden] }, 50);
+    await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+    expect(notices()).toHaveLength(1);
     expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
   });
 
-  it.each(PREFIX_PROTOCOL_CASES)('rebuilds memory and Thread once on the next $name user turn, not mid-turn', async ({ provider }) => {
+  it.each(PREFIX_PROTOCOL_CASES)('announces memory and Thread changes at the next $name sampling while bound tool schemas remain frozen', async ({ provider }) => {
     ctx.get(IAgentCapabilityRebuildService);
     ctx.configure({ provider, modelCapabilities: DISCLOSURE_CAPABILITIES });
     let start!: () => void;
@@ -498,7 +492,7 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
     expect(toolNames(ctx.llmCalls[1]!.tools)).not.toContain('ThreadList');
     expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(0);
+      capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined)).toHaveLength(1);
     ctx.mockNextResponse({ type: 'text', text: 'next done' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next' }] });
     await ctx.untilTurnEnd();
@@ -506,7 +500,7 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
     const notices = ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt');
+      capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined);
     expect(notices).toHaveLength(1);
     expect(historyText(notices)).toContain('memory, thread communication');
     const requests = wireEvents(ctx, 'llm.request').map((event) => event.args as { toolsHash?: string });
@@ -563,7 +557,7 @@ describe('progressive tool disclosure end-to-end', () => {
       expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
       expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
       expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-        message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(1);
+        capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined)).toHaveLength(1);
     } finally {
       release();
       registration.dispose();
@@ -590,7 +584,7 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(requests[1]!.systemPromptHash).toBe(requests[0]!.systemPromptHash);
     expect(requests[1]!.toolsHash).toBe(requests[0]!.toolsHash);
     expect(ctx.get(IAgentContextMemoryService).get().filter((message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'capabilities_rebuilt')).toHaveLength(0);
+      capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined)).toHaveLength(0);
   });
 
   it('re-injects a selected schema after undo slices the tail of the loaded exchange', async () => {

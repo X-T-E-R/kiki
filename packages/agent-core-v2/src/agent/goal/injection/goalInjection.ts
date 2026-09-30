@@ -22,7 +22,15 @@ export class GoalInjection extends Service {
   ) {
     super();
     this._register(
-      injector.register('goal', ({ isNewTurn }) => (isNewTurn ? this.reminder() : undefined)),
+      injector.register('goal', ({ lastDisclosure }) => {
+        const goal = this.options.getGoal();
+        if (goal === null) return undefined;
+        const signature = JSON.stringify([goal.goalId, goal.objective, goal.completionCriterion, goal.status, goal.terminalReason,
+          goal.budget.turnBudget, goal.budget.tokenBudget, goal.budget.wallClockBudgetMs, isNearingBudget(goal)]);
+        if ((lastDisclosure as { signature?: string } | undefined)?.signature === signature) return undefined;
+        const content = this.reminder();
+        return content === undefined ? undefined : { content, disclosure: { signature } };
+      }),
     );
   }
 

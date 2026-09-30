@@ -16,9 +16,7 @@ export class AgentToolSelectAnnouncementsService extends Service implements IAge
   ) {
     super();
     this._register(
-      injector.register(LOADABLE_TOOLS_VARIANT, ({ isNewTurn }) =>
-        isNewTurn ? toolSelect.loadableToolsAnnouncement() : undefined,
-      ),
+      injector.register(LOADABLE_TOOLS_VARIANT, () => toolSelect.loadableToolsAnnouncement()),
     );
   }
 }

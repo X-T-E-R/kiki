@@ -48,8 +48,7 @@ describe('AgentRun profile change reminders', () => {
     change.fire('temporary');
     profiles = visible(['general', '- general: General work.', 'v1'], ['new', '- new: New work.', 'v1']);
     change.fire('new');
-    expect(await provider?.(context(false))).toBeUndefined();
-    expect(await provider?.(context(true))).toBe('<agent_profiles_added>\n- new: New work.\n</agent_profiles_added>');
+    expect(await provider?.(context(false))).toBe('<agent_profiles_added>\n- new: New work.\n</agent_profiles_added>');
     expect(await provider?.(context(true))).toBeUndefined();
     change.fire('hidden');
     expect(await provider?.(context(true))).toBeUndefined();

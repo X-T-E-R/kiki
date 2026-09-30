@@ -11,9 +11,7 @@ import {
   type TestAgentContext,
 } from '../../../harness';
 
-type InjectableDynamicInjector = {
-  inject(boundary: undefined, isNewTurn: boolean): Promise<void>;
-};
+type InjectableDynamicInjector = IAgentContextInjectorService;
 
 async function enterPlan(
   plan: IAgentPlanService,
@@ -28,7 +26,7 @@ async function enterPlan(
 }
 
 async function injectDynamic(injector: InjectableDynamicInjector): Promise<void> {
-  await injector.inject(undefined, false);
+  await injector.reconcileAllAtSafeBoundary();
 }
 
 function appendAssistantTurn(
@@ -175,7 +173,7 @@ describe('PlanModeService dynamic injection cadence', () => {
     expect(planReminderMessages(context)).toHaveLength(1);
   });
 
-  it('injects the sparse reminder after the short assistant-turn threshold', async () => {
+  it('does not inject a sparse heartbeat after two assistant steps', async () => {
     const planFilePath = await enterPlan(plan);
 
     await injectDynamic(injector);
@@ -184,34 +182,29 @@ describe('PlanModeService dynamic injection cadence', () => {
     await injectDynamic(injector);
 
     const text = lastPlanReminder(context);
-    expect(text).toContain('Plan mode still active');
-    expect(text).toContain('see full instructions earlier');
+    expect(planReminderMessages(context)).toHaveLength(1);
+    expect(text).not.toContain('Plan mode still active');
     expect(text).toContain(`Plan file: ${planFilePath}`);
   });
 
-  it('refreshes the full reminder after the long assistant-turn threshold', async () => {
+  it('does not refresh the full reminder after five assistant steps', async () => {
     await enterPlan(plan);
-
     await injectDynamic(injector);
-    for (let i = 0; i < 5; i += 1) {
-      appendAssistantTurn(ctx, context, `assistant ${String(i)}`);
-    }
+    for (let i = 0; i < 5; i += 1) appendAssistantTurn(ctx, context, `assistant ${String(i)}`);
     await injectDynamic(injector);
-
-    const text = lastPlanReminder(context);
-    expect(text).toContain('Plan mode is active');
-    expect(text).not.toContain('Plan mode still active');
+    expect(planReminderMessages(context)).toHaveLength(1);
   });
 
-  it('refreshes the full reminder if a user message appears after the last injection', async () => {
+  it('does not refresh unchanged plan constraints for a new user input', async () => {
     await enterPlan(plan);
-
     await injectDynamic(injector);
     ctx.appendUserMessage([{ type: 'text', text: 'next task' }]);
     await injectDynamic(injector);
-
-    const text = lastPlanReminder(context);
-    expect(text).toContain('Plan mode is active');
-    expect(text).not.toContain('Plan mode still active');
+    expect(planReminderMessages(context)).toHaveLength(1);
+    plan.exit();
+    await injectDynamic(injector);
+    await enterPlan(plan);
+    await injectDynamic(injector);
+    expect(planReminderMessages(context)).toHaveLength(3);
   });
 });

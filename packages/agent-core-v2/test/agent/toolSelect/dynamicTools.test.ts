@@ -152,3 +152,17 @@ describe('predicates and ledger scan', () => {
     expect([...collectLoadedDynamicToolNames(history)].toSorted()).toEqual(['a', 'b', 'c']);
   });
 });
+
+
+it('preserves other capability sources when stripping a loadable-tools delta', () => {
+  const parts = [{ variant: 'loadable-tools', content: renderLoadableToolsAnnouncement(['new-tool'], []) },
+    { variant: 'agent_profile_changes', content: 'profile removed' }];
+  const delta: ContextMessage = { role: 'user', toolCalls: [], content: [{ type: 'text', text: parts.map((part) => part.content).join('\n') }],
+    origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } } };
+  expect([...foldAnnouncedToolNames([delta])]).toEqual(['new-tool']);
+  const stripped = stripDynamicToolContext([delta]);
+  expect(stripped).toHaveLength(1);
+  expect(stripped[0]?.content).toEqual([{ type: 'text', text: '<system-reminder>\nprofile removed\n</system-reminder>' }]);
+  expect(isLoadableToolsAnnouncement(stripped[0]!)).toBe(false);
+  expect(delta.content[0]).toMatchObject({ text: expect.stringContaining('new-tool') });
+});

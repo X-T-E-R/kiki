@@ -58,8 +58,8 @@ export class AgentProfileAnnouncementsService extends Service implements IAgentP
       .catch((error: unknown) => {
         this.log.warn('failed to baseline the visible agent profiles for change announcements', { error });
       });
-    this._register(injector.register('agent_profile_changes', async ({ isNewTurn }) => {
-      if (!isNewTurn || !this.dirty) return undefined;
+    this._register(injector.register('agent_profile_changes', async () => {
+      if (!this.dirty || !policy.isToolActive('AgentRun')) return undefined;
       await catalog.ready;
       const current = agentRun.visibleProfileDescriptions();
       const delta = this.previous === undefined ? undefined : describeProfileDelta(this.previous, current);

@@ -1,4 +1,5 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { capabilityDeltaParts, capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 
 import { SELECT_TOOLS_TOOL_NAME } from './toolSelect';
 
@@ -17,7 +18,7 @@ export function isDynamicToolSchemaMessage(message: ContextMessage): boolean {
 
 export function isLoadableToolsAnnouncement(message: ContextMessage): boolean {
   const origin = message.origin;
-  if (origin?.kind === 'injection') return origin.variant === LOADABLE_TOOLS_VARIANT;
+  if (origin?.kind === 'injection') return capabilitySourceMessage(message, LOADABLE_TOOLS_VARIANT) !== undefined;
   return origin?.kind === 'system_trigger' && origin.name === LOADABLE_TOOLS_VARIANT;
 }
 
@@ -29,7 +30,12 @@ export function stripDynamicToolContext(
   }
   const out: ContextMessage[] = [];
   for (const message of history) {
-    if (isLoadableToolsAnnouncement(message)) continue;
+    if (isLoadableToolsAnnouncement(message)) {
+      const parts = capabilityDeltaParts(message).filter((part) => part.variant !== LOADABLE_TOOLS_VARIANT);
+      if (parts.length) out.push({ ...message, content: [{ type: 'text', text: `<system-reminder>\n${parts.map((part) => part.content).join('\n\n')}\n</system-reminder>` }],
+        origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } } });
+      continue;
+    }
     if (isDynamicToolSchemaMessage(message)) {
       const { tools: _tools, ...rest } = message;
       void _tools;

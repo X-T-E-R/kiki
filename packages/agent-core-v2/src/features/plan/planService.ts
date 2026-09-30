@@ -104,7 +104,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       }),
     );
 
-    this._register(new PlanModeInjection(injector, this, this.context, agentState));
+    this._register(new PlanModeInjection(injector, this, agentState));
     this._register(this.registerPlanGuard(toolExecutor));
   }
 

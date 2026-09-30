@@ -12,6 +12,7 @@ import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IEventBus } from '#/app/event/eventBus';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { CAPABILITY_PROVIDERS, capabilitySourceMessage, type CapabilityDeltaPart } from './capabilityDelta';
 import {
   IAgentContextInjectorService,
   type ContextInjectionContent,
@@ -76,16 +77,16 @@ export class AgentContextInjectorService extends Service implements IAgentContex
   }
 
   async reconcileAtSafeBoundary(name: string): Promise<void> {
+    const parts: CapabilityDeltaPart[] = [];
     for (const entry of this.entries) {
-      if (entry.name !== name) continue;
-      await this.injectEntry(entry, false);
+      if (entry.name !== name && !(CAPABILITY_PROVIDERS.has(name) && CAPABILITY_PROVIDERS.has(entry.name))) continue;
+      await this.injectEntry(entry, false, parts);
     }
+    this.appendCapabilities(parts);
   }
 
   async reconcileAllAtSafeBoundary(): Promise<void> {
-    for (const entry of this.entries) {
-      await this.injectEntry(entry, false);
-    }
+    await this.inject(false);
   }
 
   private async reconcileAroundStep(
@@ -108,12 +109,20 @@ export class AgentContextInjectorService extends Service implements IAgentContex
   }
 
   private async inject(isNewTurn: boolean): Promise<void> {
+    const parts: CapabilityDeltaPart[] = [];
     for (const entry of this.entries) {
-      await this.injectEntry(entry, isNewTurn);
+      await this.injectEntry(entry, isNewTurn, parts);
     }
+    this.appendCapabilities(parts);
   }
 
-  private async injectEntry(entry: ContextInjectionEntry, isNewTurn: boolean): Promise<void> {
+  private appendCapabilities(parts: readonly CapabilityDeltaPart[]): void {
+    if (!parts.length) return;
+    this.reminders.appendSystemReminder(parts.map((part) => part.content).join('\n\n'),
+      { kind: 'injection', variant: 'capability_delta', disclosure: { parts } });
+  }
+
+  private async injectEntry(entry: ContextInjectionEntry, isNewTurn: boolean, parts: CapabilityDeltaPart[]): Promise<void> {
     let content: Awaited<ReturnType<ContextInjectionProvider>>;
     try {
       content = await entry.provider(this.providerContext(entry, isNewTurn));
@@ -122,6 +131,11 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       return;
     }
     if (!this.entries.has(entry)) return;
+    const result = content !== undefined && isInjectionResult(content) ? content : { content, disclosure: undefined };
+    if (CAPABILITY_PROVIDERS.has(entry.name) && typeof result.content === 'string' && result.content.trim()) {
+      parts.push({ variant: entry.name, content: result.content, disclosure: result.disclosure });
+      return;
+    }
     this.appendResult(entry, content);
   }
 
@@ -132,7 +146,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     const history = this.context.get();
     const injectedPositions = findInjections(history, entry.name);
     const lastInjectedAt = injectedPositions.at(-1) ?? null;
-    const lastInjection = lastInjectedAt === null ? undefined : history[lastInjectedAt];
+    const lastInjection = lastInjectedAt === null ? undefined : capabilitySourceMessage(history[lastInjectedAt]!, entry.name);
     return {
       injectedPositions,
       lastInjectedAt,
@@ -229,7 +243,7 @@ function findInjections(
 ): number[] {
   const positions: number[] = [];
   history.forEach((message, index) => {
-    if (message.origin?.kind === 'injection' && message.origin.variant === variant) {
+    if (capabilitySourceMessage(message, variant) !== undefined) {
       positions.push(index);
     }
   });

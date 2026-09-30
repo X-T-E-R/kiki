@@ -283,7 +283,7 @@ describe('GoalInjection integration', () => {
       await expect(flushedGoalReminderRecords(ctx, persistence)).resolves.toHaveLength(1);
     });
 
-    it('injects one goal reminder per turn boundary, not per step', async () => {
+    it('does not repeat an unchanged goal on continuation turns or steps', async () => {
       await registerLookupTool(ctx, profile);
       profile.update({ activeToolNames: ['Lookup', 'UpdateGoal'] });
       await goals.createGoal({ objective: 'Ship feature X' });
@@ -309,11 +309,7 @@ describe('GoalInjection integration', () => {
       await toolCallEvents;
       await ctx.untilTurnEnd();
 
-      await vi.waitFor(async () => {
-        expect(await flushedGoalReminderRecords(ctx, persistence)).toHaveLength(2);
-      });
-
-      expect(await flushedGoalReminderRecords(ctx, persistence)).toHaveLength(2);
+      expect(await flushedGoalReminderRecords(ctx, persistence)).toHaveLength(1);
     });
 
     it('requests a final model response when a continuation completes the goal', async () => {

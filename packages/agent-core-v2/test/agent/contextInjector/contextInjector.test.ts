@@ -105,6 +105,24 @@ describe('AgentContextInjectorService', () => {
     );
   }
 
+  it('coalesces pending capability candidates without changing old history or tool-schema roles', async () => {
+    const entries = ['loadable-tools', 'agent_profile_changes', 'profile_capabilities_changed'];
+    for (const name of entries) injector(ix).register(name, ({ lastDisclosure }) =>
+      lastDisclosure === 'rev1' ? undefined : { content: `delta ${name}`, disclosure: 'rev1' });
+    injector(ix).register('dynamic_tool_schema', ({ lastInjectedAt }) => lastInjectedAt === null
+      ? { message: { role: 'system', content: [{ type: 'text', text: 'schema' }], tools: [{ name: 'example', description: 'example', parameters: {} }] } } : undefined);
+    context.append(userMessage('original input'));
+    const original = context.get()[0];
+    await runInjectionStep();
+    const deltas = context.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'capability_delta');
+    expect(deltas).toHaveLength(1);
+    expect((deltas[0]?.origin as { disclosure: { parts: unknown[] } }).disclosure.parts).toHaveLength(3);
+    expect(context.get().find((message) => message.tools?.length)?.role).toBe('system');
+    await runInjectionStep();
+    expect(context.get()).toHaveLength(3);
+    expect(context.get()[0]).toBe(original);
+  });
+
   it('registers providers and appends injection messages with the provider variant', async () => {
     const seen: Array<number | null> = [];
 
