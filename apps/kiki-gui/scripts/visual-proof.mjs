@@ -38,6 +38,8 @@ import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
 import { createSteerWalker } from './visual-proof-steer.mjs';
+import { en as EN_DICTIONARY } from '../../../packages/session-core/src/i18n/en.ts';
+import { zh as ZH_DICTIONARY } from '../../../packages/session-core/src/i18n/zh.ts';
 
 /**
  * Scenarios whose walk exercises the transcript list (streaming, folding,
@@ -74,401 +76,318 @@ const MATRIX = {
 };
 
 /**
- * UI-chrome strings the walkers key on, per locale. Values must match
- * src/i18n/en.ts / zh.ts exactly — the proof fails loudly when they drift.
- * (Fixture content — session titles, streamed answers, question options —
- * comes from the server and stays English in both runs.)
+ * UI-chrome strings the walkers key on, taken from the app's own dictionaries
+ * instead of copied by hand. `SOURCES` maps a proof key to the i18n key the UI
+ * renders, so a rewritten key or a changed translation flows straight through
+ * instead of leaving the proof asserting copy no screen shows. Count-sensitive
+ * copy names its `.one`/`.other` side (`count`), and `pattern` turns the
+ * template into a RegExp matcher. `LITERALS` holds the few values that are not
+ * a whole dictionary string — short probes matched with `hasText`/`includes`,
+ * regex matchers, invariant word lists and typed input — and any probe or
+ * matcher that names an `anchor` is re-checked against the dictionaries below.
+ *
+ * Fixture content — session titles, streamed answers, question options — comes
+ * from the server and stays English in both runs.
  */
-const STRINGS = {
-  en: {
-    newSession: 'New session',
-    autoWorkspace: 'Automatically create a workspace',
-    sendAria: 'Send message',
-    working: 'working',
-    approvalNeeded: 'Approval needed',
-    approve: 'Approve',
-    approved: 'Approved',
-    externalChanges: 'granted change',
-    kikiAsks: 'kiki asks',
-    submit: 'Submit',
-    settings: 'Settings',
-    tabProviders: 'Connections',
-    capabilities: 'Capabilities',
-    tools: 'Tools',
-    skills: 'Skills',
-    mcp: 'MCP',
-    automation: 'Tools & automations',
-    shimCapabilities: 'The capabilities panel was split into dedicated settings pages',
-    shimPlugins: 'Plugins',
-    composerCardTitle: 'Composer & session',
-    appearanceTitle: 'Appearance',
-    searchQuery: 'theme',
-    themeDark: 'Dark',
-    themeLight: 'Light',
-    switcherSettingsGroup: 'Settings',
-    savedTick: 'Saved',
-    planModeToggle: 'Default to entering plan mode',
-    permissionModeAuto: 'Auto',
-    onboardingTitle: 'Welcome to Kiki',
-    onboardingNext: 'Next',
-    onboardingBack: 'Back',
-    onboardingSaveNext: 'Save & continue',
-    onboardingFinish: 'Start',
-    onboardingSkipForNow: 'Skip for now',
-    onboardingSkip: 'Set up later',
-    onboardingReady: 'A model provider is connected',
-    onboardingRecommended: 'Recommended',
-    onboardingReenter: 'Replay setup wizard',
-    onboardingTest: 'Test connection',
-    onboardingTestedOk: 'Connection works',
-    fetchModelsButton: 'Test connection & pull models',
-    requestIdentityLabel: 'Request identity',
-    saveProvider: 'Save provider',
-    oauthCancel: 'Cancel sign-in',
-    disabledMainHint: 'Still available for main sessions',
-    technicalDetails: 'Technical details',
-    overriddenNote: 'Built-in agent overridden by',
-    overridesBuiltinNote: 'overrides the built-in agent',
-    shadowedNote: 'Not in effect',
-    dirtyDiscard: 'Discard and leave',
-    modelProfileLabel: 'model profile',
-    promptModeLabel: 'prompt mode',
-    delegationNoticeLabel: 'delegation notice',
-    scopedBadgeLabel: 'Scoped',
-    shippedBadgeModified: 'Built-in · modified',
-    shippedBadgeRemoved: 'Built-in · removed',
-    shippedRestore: 'Restore original',
-    shippedRestoreTitle: 'Restore the original of built-in agent',
-    shippedRestored: 'Original restored and agents reloaded.',
-    subagentDefaultLabel: 'Default agent for AgentRun',
-    subagentDefaultStrict: 'Require an explicit agent',
-    subagentDefaultStrictHint: 'fail with an error instead of falling back',
-    planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
-    nbSearchSave: 'Save search & retrieval',
-    nbSearchSaved: 'Search & retrieval saved',
-    nbSearchRunCheck: 'Run readiness check',
-    nbSearchCheckFailed: 'Readiness check failed',
-    nbSearchFailClosed: 'refuses to run',
-    nbSearchRevision: 'Config revision',
-    nbSearchReady: 'Ready',
-    nbSearchDegraded: 'Degraded',
-    nbSearchUnconfigured: 'Not configured',
-    nbSearchManagedStored: 'Saved on this server',
-    nbSearchManagedEmpty: 'No Kiki-managed value saved',
-    nbSearchManagedReveal: 'Reveal saved value',
-    nbSearchManagedHide: 'Hide',
-    nbSearchManagedSave: 'Save / overwrite',
-    nbSearchManagedClear: 'Clear saved value',
-    loadMore: 'Load more sessions',
-    searchLoadMore: 'Load more results',
-    workspaceFilterAll: 'All workspaces',
-    groupPinned: 'Pinned',
-    groupByTime: 'By time',
-    groupByWorkspace: 'By workspace',
-    groupUngrouped: 'Ungrouped',
-    sortUpdatedDesc: 'Recently updated',
-    sortUpdatedAsc: 'Least recently updated',
-    sortTitle: 'By name',
-    menuPin: 'Pin to top',
-    menuUnpin: 'Unpin',
-    renameButton: 'Rename',
-    workspaceRenameTitle: 'Rename workspace',
-    removeButton: 'Unregister',
-    save: 'Save',
-    onePromptQueued: '1 queued',
-    queueBarPattern: /\d+ queued/,
-    // A user stop renders as ONE tail line ("Stopped by you · Resume").
-    promptAborted: 'Stopped by you',
-    archiveDownloaded: 'Session archive downloaded.',
-    undoTitle: 'Undo the last turn?',
-    undoTurn: 'Undo turn',
-    lastTurnRemoved: 'Last turn removed.',
-    memorySaved: 'Saved.',
-    memoryDelete: 'Delete',
-    // A memory delete is undoable; the confirmation may never imply otherwise.
-    memoryBannedInDelete: ['permanent', 'cannot be undone', 'forever'],
-    compactionRequested: 'Compaction requested',
-    forkSession: 'Fork session',
-    exportArchive: 'Export archive',
-    undoLastTurn: 'Undo last turn',
-    compactContext: 'Compact context',
-    compactOlderContext: 'Compact older context',
-    contextDetails: 'Context details',
-    sessionUsage: 'Session cumulative',
-    usageAllHistory: 'All history · no time filter applied',
-    usageEstimatedCost: 'Estimated cost',
-    usagePartial: 'partially unknown',
-    usageReliability: 'Data reliability',
-    usageDeletedExcluded: 'Deleted sessions are not included',
-    usageFiveHourRhythm: '5h rhythm',
-    usageDrilldown: 'Sessions in this bucket',
-    usageSubagentPattern: /subagent/,
-    contextMenuCut: 'Cut',
-    contextMenuCopy: 'Copy',
-    pasteAsPlainText: 'Paste as plain text',
-    contextMenuSelectAll: 'Select all',
-    bannerPattern: /Connection lost|Disconnected from the server/,
-    resyncing: 'Resyncing…',
-    noSessions: 'No sessions yet',
-    subagentTranscript: 'Subagent transcript',
-    blankPage: 'A blank page',
-    steps3: 'Steps · 3',
-    filesHeader: 'Files — mentioned as @path',
-    notActivatable: 'not activatable',
-    shortcuts: 'Actions',
-    sendAnyway: 'Send anyway',
-    swarmTitlePrefix: 'Swarm mode',
-    goalActive: 'goal · active',
-    goalFollowUpSubagents: 'follow-up · Subagents done',
-    queueRecoveredDismiss: 'Later',
-    objectivePlaceholder: 'Objective (optional)',
-    noMatches: 'No matches',
-    systemReminder: 'System reminder',
-    fromSubagentApprover: 'from subagent Approver',
-    queuePromptAria: 'Queue prompt',
-    sendNow: 'Send now',
-    removeQueued: 'Remove',
-    clearQueue: 'Clear all',
-    queueClearTitle: 'Clear 1 queued prompts?',
-    twoPromptsQueued: '2 queued',
-    togglePanelAria: 'Toggle panel',
-    openMenuAria: 'Open session menu',
-    sessionActionsAria: 'Session actions',
-    terminalEmpty: 'No terminals yet',
-    terminalKillConfirm: 'sure?',
-    terminalExited: 'Process exited (code 0)',
-    pluginsAdd: 'Add a plugin',
-    pluginsMarketplaceTab: 'Marketplace',
-    pluginsUninstall: 'Uninstall',
-    pluginsManifest: 'Manifest',
-    pluginsMcpOn: 'On',
-    pluginsInstall: 'Install',
-    cancel: 'Cancel',
-    capBuiltin: 'Built-in skills',
-    capFilterAria: 'Filter capabilities',
-    capEmptyFilter: 'No capabilities match',
-    capNoWorkspace: 'No workspace is registered',
-    capRestartRequested: 'Restart requested.',
-    turnWorking: 'Working',
-    stopped: 'Stopped',
-    ranForPattern: /Ran for/,
-    ttftPattern: /TTFT/,
-    queueExpandAria: 'Show or hide the queued prompts',
-    queueEditRowAria: 'Edit queued prompt',
-    queueEditingBadge: 'Editing in the composer',
-    queueEditConfirmAria: 'Confirm edit',
-    queueEditBanner: 'Editing a queued message',
-    queueRemoveConfirm: 'Remove?',
-    queueDragHandleAria: 'Reorder this queued prompt',
-    previewSource: 'Source',
-    previewCollapse: 'Collapse preview panel',
-    previewReadonlyPattern: /Read-only here/,
-    editAction: 'edit',
-    regenerateAction: 'regenerate',
-    forkAction: 'fork',
-    resendEdit: 'Resend',
-    showMore: 'Show more',
-    showLess: 'Show less',
-    editNote: 'Full replacement',
-    forkedDone: 'Forked — opened the copy.',
-    quoteAction: 'Quote',
-    annotateAction: 'Annotate',
-    removeAnnotation: 'Remove annotation',
-  },
-  zh: {
-    newSession: '新会话',
-    autoWorkspace: '自动创建工作区',
-    sendAria: '发送消息',
-    working: '工作中',
-    approvalNeeded: '需要批准',
-    approve: '批准',
-    approved: '已批准',
-    externalChanges: '授予',
-    kikiAsks: 'kiki 提问',
-    submit: '提交',
-    settings: '设置',
-    tabProviders: '连接服务',
-    capabilities: '能力',
-    tools: '工具',
-    skills: '技能',
-    mcp: 'MCP',
-    automation: '工具与自动操作',
-    shimCapabilities: '能力面板已拆分为独立的设置页面',
-    shimPlugins: '插件',
-    composerCardTitle: '输入与会话',
-    appearanceTitle: '外观',
-    searchQuery: '主题',
-    themeDark: '暗色',
-    themeLight: '亮色',
-    switcherSettingsGroup: '设置',
-    savedTick: '已保存',
-    planModeToggle: '默认进入计划模式',
-    permissionModeAuto: '自动',
-    onboardingTitle: '欢迎使用 Kiki',
-    onboardingNext: '下一步',
-    onboardingBack: '上一步',
-    onboardingSaveNext: '保存并继续',
-    onboardingFinish: '开始',
-    onboardingSkipForNow: '暂时跳过',
-    onboardingSkip: '稍后配置',
-    onboardingReady: '已连接模型供应商',
-    onboardingRecommended: '推荐',
-    onboardingReenter: '重新进入引导',
-    onboardingTest: '测试连接',
-    onboardingTestedOk: '连接成功',
-    fetchModelsButton: '测试连接并拉取模型',
-    requestIdentityLabel: '请求身份',
-    saveProvider: '保存提供商',
-    oauthCancel: '取消登录',
-    disabledMainHint: '仍可用于主会话',
-    technicalDetails: '技术细节',
-    overriddenNote: '内置智能体已被',
-    overridesBuiltinNote: '已覆盖同名的内置智能体',
-    shadowedNote: '未生效',
-    dirtyDiscard: '丢弃并离开',
-    modelProfileLabel: '模型设置',
-    promptModeLabel: '提示词模式',
-    delegationNoticeLabel: '委派通知',
-    scopedBadgeLabel: '专用',
-    shippedBadgeModified: '内置 · 已修改',
-    shippedBadgeRemoved: '内置 · 已移除',
-    shippedRestore: '恢复原版',
-    shippedRestoreTitle: '恢复内置智能体',
-    shippedRestored: '已恢复原版并重新加载智能体。',
-    subagentDefaultLabel: 'AgentRun 的默认子智能体',
-    subagentDefaultStrict: '要求显式指定',
-    subagentDefaultStrictHint: '未指定子智能体的派发将报错',
-    planGateTimeoutInvalid: '超时时间最短为 5 秒。',
-    nbSearchSave: '保存搜索与抓取',
-    nbSearchSaved: '搜索与抓取配置已保存',
-    nbSearchRunCheck: '运行就绪检查',
-    nbSearchCheckFailed: '就绪检查失败',
-    nbSearchFailClosed: '不会执行',
-    nbSearchRevision: '配置修订',
-    nbSearchReady: '就绪',
-    nbSearchDegraded: '部分可用',
-    nbSearchUnconfigured: '未配置',
-    nbSearchManagedStored: '已保存在此服务器',
-    nbSearchManagedEmpty: '尚无 Kiki 管理的凭据',
-    nbSearchManagedReveal: '查看已存值',
-    nbSearchManagedHide: '隐藏',
-    nbSearchManagedSave: '保存／覆写',
-    nbSearchManagedClear: '清除已存值',
-    loadMore: '加载更多会话',
-    searchLoadMore: '加载更多结果',
-    workspaceFilterAll: '全部工作区',
-    groupPinned: '已置顶',
-    groupByTime: '按时间',
-    groupByWorkspace: '按工作区',
-    groupUngrouped: '未分组',
-    sortUpdatedDesc: '最近更新',
-    sortUpdatedAsc: '最早更新',
-    sortTitle: '按名称',
-    menuPin: '置顶',
-    menuUnpin: '取消置顶',
-    renameButton: '重命名',
-    workspaceRenameTitle: '重命名工作区',
-    removeButton: '注销',
-    save: '保存',
-    onePromptQueued: '1 条排队',
-    queueBarPattern: /\d+ 条排队/,
-    promptAborted: '已由你停止',
-    archiveDownloaded: '会话归档已下载。',
-    undoTitle: '撤销最后一轮？',
-    undoTurn: '撤销本轮',
-    lastTurnRemoved: '已移除最后一轮。',
-    memorySaved: '已保存。',
-    memoryDelete: '删除',
-    memoryBannedInDelete: ['永久', '不可恢复', '无法撤销'],
-    compactionRequested: '已请求压缩',
-    forkSession: '复刻会话',
-    exportArchive: '导出归档',
-    undoLastTurn: '撤销最后一轮',
-    compactContext: '压缩上下文',
-    compactOlderContext: '压缩较早上下文',
-    contextDetails: '上下文详情',
-    sessionUsage: '本会话累计',
-    usageAllHistory: '全部历史 · 未套用时间过滤',
-    usageEstimatedCost: '估算成本',
-    usagePartial: '部分未知',
-    usageReliability: '数据可信度',
-    usageDeletedExcluded: '不含已删除会话',
-    usageFiveHourRhythm: '5h 节奏',
-    usageDrilldown: '该时间桶内的会话',
-    usageSubagentPattern: /子智能体/,
-    contextMenuCut: '剪切',
-    contextMenuCopy: '复制',
-    pasteAsPlainText: '粘贴为纯文本',
-    contextMenuSelectAll: '全选',
-    bannerPattern: /正在重连|已与服务器断开连接/,
-    resyncing: '正在重新同步…',
-    noSessions: '还没有会话',
-    subagentTranscript: '子代理会话记录',
-    blankPage: '白纸一张',
-    steps3: '步骤 · 3',
-    filesHeader: '文件 — 在消息中以 @路径 引用',
-    notActivatable: '不可激活',
-    shortcuts: '操作',
-    sendAnyway: '仍要发送',
-    swarmTitlePrefix: '集群模式',
-    goalActive: '目标 · 进行中',
-    goalFollowUpSubagents: '追加时机 · 子代理完成时',
-    queueRecoveredDismiss: '稍后',
-    objectivePlaceholder: '目标（可选）',
-    noMatches: '没有匹配',
-    systemReminder: '系统提醒',
-    fromSubagentApprover: '来自子代理 Approver',
-    queuePromptAria: '加入队列',
-    sendNow: '立即追加',
-    removeQueued: '移除',
-    clearQueue: '全部清除',
-    queueClearTitle: '清除 1 条排队消息？',
-    twoPromptsQueued: '2 条排队',
-    togglePanelAria: '切换面板',
-    openMenuAria: '打开会话菜单',
-    sessionActionsAria: '会话操作',
-    terminalEmpty: '还没有终端',
-    terminalKillConfirm: '确认？',
-    terminalExited: '进程已退出（代码 0）',
-    pluginsAdd: '添加插件',
-    pluginsMarketplaceTab: '市场',
-    pluginsUninstall: '卸载',
-    pluginsManifest: '清单',
-    pluginsMcpOn: '开',
-    pluginsInstall: '安装',
-    cancel: '取消',
-    capBuiltin: '内置技能',
-    capFilterAria: '过滤能力',
-    capEmptyFilter: '没有匹配',
-    capNoWorkspace: '没有已注册的工作区',
-    capRestartRequested: '已请求重启。',
-    turnWorking: '正在工作',
-    stopped: '已停止',
-    ranForPattern: /用时/,
-    ttftPattern: /首 token/,
-    queueExpandAria: '展开或收起排队消息',
-    queueEditRowAria: '编辑排队的消息',
-    queueEditingBadge: '正在输入框中编辑',
-    queueEditConfirmAria: '确认编辑',
-    queueEditBanner: '正在编辑排队消息',
-    queueRemoveConfirm: '确认移除？',
-    queueDragHandleAria: '调整这条排队消息的顺序',
-    previewSource: '源码',
-    previewCollapse: '收起预览面板',
-    previewReadonlyPattern: /此处为只读/,
-    editAction: '编辑',
-    regenerateAction: '重新生成',
-    forkAction: '分叉',
-    resendEdit: '重发',
-    showMore: '展开全部',
-    showLess: '收起',
-    editNote: '完整替换语义',
-    forkedDone: '已分叉 — 正在打开副本。',
-    quoteAction: '引用',
-    annotateAction: '标注',
-    removeAnnotation: '移除标注',
-  },
+const DICTIONARIES = { en: EN_DICTIONARY, zh: ZH_DICTIONARY };
+const LOCALES = ['en', 'zh'];
+
+/** Mirrors session-core `translate()`: locale → English → Chinese → raw key. */
+function dictionaryText(locale, key, params) {
+  const template = DICTIONARIES[locale][key] ?? EN_DICTIONARY[key] ?? ZH_DICTIONARY[key];
+  if (template === undefined) throw new Error(`visual-proof references unknown i18n key "${key}"`);
+  if (params === undefined) return template;
+  return template.replaceAll(/\{(\w+)\}/g, (raw, name) =>
+    (params[name] === undefined ? raw : String(params[name])));
+}
+
+/** `params` entries may themselves be dictionary lookups. */
+function resolvedParams(locale, params) {
+  if (params === undefined) return undefined;
+  const resolved = {};
+  for (const [name, value] of Object.entries(params)) {
+    resolved[name] = value !== null && typeof value === 'object'
+      ? dictionaryText(locale, value.key, resolvedParams(locale, value.params))
+      : value;
+  }
+  return resolved;
+}
+
+/** A dictionary template with every `{placeholder}` widened into a matcher. */
+function placeholderPattern(template) {
+  return new RegExp(template
+    .split(/(\{\w+\})/)
+    .map((part) => {
+      if (/^\{\w+\}$/.test(part)) return part === '{count}' ? '\\d+' : '.+';
+      return part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join(''));
+}
+
+function resolveSource(locale, source) {
+  const fill = (template) => template.replaceAll(/\{(\w+)\}/g, (raw, name) => {
+    const value = source.params?.[name];
+    return value === undefined ? raw : dictionaryText(locale, value.key, resolvedParams(locale, value.params));
+  });
+  if (source.template !== undefined) return fill(source.template);
+  const key = source.count === undefined
+    ? source.key
+    : `${source.key}.${source.count === 1 ? 'one' : 'other'}`;
+  const params = resolvedParams(locale, source.params);
+  // A matcher keeps `{count}` raw so it widens into `\d+` instead of a number.
+  const filled = source.count === undefined || source.pattern === true
+    ? params
+    : { ...params, count: source.count };
+  const text = dictionaryText(locale, key, filled);
+  return source.pattern === true ? placeholderPattern(text) : text;
+}
+
+/** Proof key → the i18n key (plus placeholders) the UI renders for it. */
+const SOURCES = {
+  newSession: { key: 'sidebar.newSession' },
+  autoWorkspace: { key: 'new.autoWorkspace' },
+  sendAria: { key: 'composer.sendAria' },
+  working: { key: 'sv.working' },
+  approvalNeeded: { key: 'ia.approvalNeeded' },
+  approve: { key: 'ia.approve' },
+  approved: { key: 'ia.resolution.approved' },
+  kikiAsks: { key: 'ia.kikiAsks' },
+  submit: { key: 'ia.submit' },
+  settings: { key: 'sidebar.settings' },
+  tabProviders: { key: 'st.ai.tab.providers' },
+  capabilities: { key: 'rail.capabilities.title' },
+  tools: { key: 'st.tools.title' },
+  skills: { key: 'st.section.skills' },
+  mcp: { key: 'st.section.mcp' },
+  automation: { key: 'st.section.automation' },
+  shimPlugins: { key: 'st.section.plugins' },
+  composerCardTitle: { key: 'st.composer.title' },
+  appearanceTitle: { key: 'st.appearance.title' },
+  themeDark: { key: 'st.appearance.theme.dark' },
+  themeLight: { key: 'st.appearance.theme.light' },
+  switcherSettingsGroup: { key: 'switcher.settings' },
+  savedTick: { key: 'st.savedTick' },
+  planModeToggle: { key: 'st.defaults.planMode' },
+  permissionModeAuto: { key: 'st.defaults.permission.auto' },
+  onboardingTitle: { key: 'onboarding.title' },
+  onboardingNext: { key: 'onboarding.next' },
+  onboardingBack: { key: 'onboarding.back' },
+  onboardingSaveNext: { key: 'onboarding.saveNext' },
+  onboardingFinish: { key: 'onboarding.finish' },
+  onboardingSkipForNow: { key: 'onboarding.skipForNow' },
+  onboardingSkip: { key: 'onboarding.skip' },
+  onboardingRecommended: { key: 'onboarding.permissions.recommended' },
+  onboardingReenter: { key: 'onboarding.reenter' },
+  onboardingTest: { key: 'onboarding.model.test' },
+  fetchModelsButton: { key: 'st.fetchModels.button' },
+  requestIdentityLabel: { key: 'st.section.identity' },
+  saveProvider: { key: 'st.providers.save' },
+  oauthCancel: { key: 'st.oauth.cancel' },
+  technicalDetails: { key: 'st.namedAgents.technicalDetails' },
+  dirtyDiscard: { key: 'st.dirty.leaveConfirm' },
+  promptModeLabel: { key: 'st.namedAgents.promptMode' },
+  delegationNoticeLabel: { key: 'st.namedAgents.delegationNotice' },
+  scopedBadgeLabel: { key: 'st.namedAgents.scopedBadge' },
+  shippedRestore: { key: 'st.shipped.restore' },
+  shippedRestored: { key: 'st.shipped.restored' },
+  // The badge is two keys joined by the row: "Built-in · modified".
+  shippedBadgeModified: { template: '{badge} · {status}', params: { badge: { key: 'st.shipped.badge' }, status: { key: 'st.shipped.custom' } } },
+  shippedBadgeRemoved: { template: '{badge} · {status}', params: { badge: { key: 'st.shipped.badge' }, status: { key: 'st.shipped.removed' } } },
+  subagentDefaultLabel: { key: 'st.subagentDefault.label' },
+  subagentDefaultStrict: { key: 'st.subagentDefault.strict' },
+  planGateTimeoutInvalid: { key: 'st.defaults.planGateTimeoutInvalid' },
+  nbSearchSave: { key: 'st.nbSearch.save' },
+  nbSearchRunCheck: { key: 'st.nbSearch.runCheck' },
+  nbSearchCheckFailed: { key: 'st.nbSearch.checkFailed' },
+  nbSearchReady: { key: 'st.nbSearch.stateReady' },
+  nbSearchDegraded: { key: 'st.nbSearch.stateDegraded' },
+  nbSearchUnconfigured: { key: 'st.nbSearch.stateUnconfigured' },
+  nbSearchManagedHide: { key: 'st.providers.hideKey' },
+  loadMore: { key: 'sidebar.loadMore' },
+  searchLoadMore: { key: 'sidebar.searchLoadMore' },
+  workspaceFilterAll: { key: 'sidebar.workspaceAll' },
+  groupPinned: { key: 'sidebar.groupPinned' },
+  groupByTime: { key: 'sidebar.groupByTime' },
+  groupByWorkspace: { key: 'sidebar.groupByWorkspace' },
+  groupUngrouped: { key: 'sidebar.groupUngrouped' },
+  sortUpdatedDesc: { key: 'sidebar.sortUpdatedDesc' },
+  sortUpdatedAsc: { key: 'sidebar.sortUpdatedAsc' },
+  sortTitle: { key: 'sidebar.sortTitle' },
+  menuPin: { key: 'menu.pin' },
+  menuUnpin: { key: 'menu.unpin' },
+  renameButton: { key: 'st.workspaces.rename' },
+  workspaceRenameTitle: { key: 'st.workspaces.renameTitle' },
+  removeButton: { key: 'st.workspaces.remove' },
+  save: { key: 'common.save' },
+  // The queue row's resting count comes from the composer's queue stack.
+  onePromptQueued: { key: 'composer.queueStack.count', count: 1 },
+  twoPromptsQueued: { key: 'composer.queueStack.count', count: 2 },
+  queueBarPattern: { key: 'composer.queueStack.count', count: 2, pattern: true },
+  queueClearTitle: { key: 'sv.queueClearTitle', params: { count: 1 } },
+  promptAborted: { key: 'transcript.stoppedByYou' },
+  archiveDownloaded: { key: 'action.exportDoneSession' },
+  undoTitle: { key: 'undo.title' },
+  undoTurn: { key: 'undo.confirm' },
+  lastTurnRemoved: { key: 'action.undoDoneSession' },
+  memorySaved: { key: 'memory.saved' },
+  memoryDelete: { key: 'memory.delete' },
+  forkSession: { key: 'menu.fork' },
+  compactContext: { key: 'menu.compact' },
+  compactOlderContext: { key: 'context.compactAction' },
+  contextDetails: { key: 'context.detailsTitle' },
+  sessionUsage: { key: 'context.sessionUsage' },
+  usageAllHistory: { key: 'usage.allHistoryChip' },
+  usageEstimatedCost: { key: 'usage.kpi.estimatedCost' },
+  usagePartial: { key: 'usage.kpi.partialUnknown' },
+  usageReliability: { key: 'usage.reliability.title' },
+  usageDeletedExcluded: { key: 'usage.reliability.deleted.excluded' },
+  usageFiveHourRhythm: { key: 'usage.tab.fiveHour' },
+  usageDrilldown: { key: 'usage.drilldown.title' },
+  contextMenuCut: { key: 'contextMenu.cut' },
+  contextMenuCopy: { key: 'contextMenu.copy' },
+  pasteAsPlainText: { key: 'contextMenu.paste' },
+  contextMenuSelectAll: { key: 'contextMenu.selectAll' },
+  resyncing: { key: 'sv.resyncing' },
+  notActivatable: { key: 'composer.slash.notActivatable' },
+  shortcuts: { key: 'composer.slash.shortcuts' },
+  sendAnyway: { key: 'composer.slash.sendAnyway' },
+  queueRecoveredDismiss: { key: 'sv.queueRecovered.dismiss' },
+  objectivePlaceholder: { key: 'composer.goalObjectivePlaceholder' },
+  systemReminder: { key: 'transcript.systemReminder' },
+  fromSubagentApprover: { key: 'ia.fromSubagent', params: { name: 'Approver' } },
+  goalFollowUpSubagents: { key: 'goal.followUp', params: { timing: { key: 'timing.subagentsDone' } } },
+  queuePromptAria: { key: 'composer.queueAria' },
+  sendNow: { key: 'sv.queueSendNow' },
+  removeQueued: { key: 'sv.queueRemove' },
+  clearQueue: { key: 'sv.queueClearAll' },
+  queueRemoveConfirm: { key: 'queue.removeConfirm' },
+  togglePanelAria: { key: 'sv.togglePanelAria' },
+  openMenuAria: { key: 'sv.openMenuAria' },
+  sessionActionsAria: { key: 'sv.actionsAria' },
+  terminalKillConfirm: { key: 'term.killConfirm' },
+  pluginsAdd: { key: 'st.plugins.addTitle' },
+  pluginsMarketplaceTab: { key: 'st.plugins.tab.marketplace' },
+  pluginsUninstall: { key: 'st.plugins.uninstall' },
+  pluginsManifest: { key: 'st.plugins.details' },
+  pluginsMcpOn: { key: 'st.plugins.mcpOn' },
+  pluginsInstall: { key: 'st.plugins.install' },
+  cancel: { key: 'common.cancel' },
+  capBuiltin: { key: 'cap.group.builtin' },
+  capFilterAria: { key: 'cap.filterAria' },
+  capRestartRequested: { key: 'st.mcp.restartRequested' },
+  turnWorking: { key: 'composer.working' },
+  stopped: { key: 'transcript.stopped' },
+  queueExpandAria: { key: 'sv.queueExpandAria' },
+  queueEditRowAria: { key: 'sv.queueEditAria' },
+  queueEditingBadge: { key: 'queue.editingBadge' },
+  queueEditConfirmAria: { key: 'composer.queueEditConfirm' },
+  queueDragHandleAria: { key: 'queue.dragHandleAria' },
+  previewSource: { key: 'preview.source' },
+  previewCollapse: { key: 'preview.collapse' },
+  editAction: { key: 'transcript.edit' },
+  regenerateAction: { key: 'transcript.regenerate' },
+  forkAction: { key: 'transcript.fork' },
+  resendEdit: { key: 'transcript.editSubmit' },
+  showMore: { key: 'transcript.showMore' },
+  showLess: { key: 'transcript.showLess' },
+  forkedDone: { key: 'action.forkDoneSession' },
+  quoteAction: { key: 'composer.quoteSelection' },
+  annotateAction: { key: 'composer.annotateSelection' },
+  removeAnnotation: { key: 'composer.removeAnnotation' },
+  // Composed chrome the walkers match as one string.
+  steps3: { key: 'transcript.steps', params: { count: 3 } },
+  terminalExited: { key: 'term.exited', params: { code: 0 } },
+  subagentTranscript: { key: 'sv.subagentNote' },
 };
+
+/**
+ * Values that are not a whole dictionary string. `anchor` (a key, or several)
+ * names the dictionary copy the value must stay a part of; `anchorless`
+ * entries are matchers and input with nothing in the dictionaries to gate on.
+ */
+const LITERALS = {
+  // Short probes: the walk matches a fragment inside a longer rendered row.
+  externalChanges: { en: 'granted change', zh: '授予', anchor: 'ia.external.changes.one' },
+  onboardingReady: { en: 'A model provider is connected', zh: '已连接模型供应商', anchor: 'onboarding.model.ready' },
+  onboardingTestedOk: { en: 'Connection works', zh: '连接成功', anchor: 'onboarding.model.testedOk' },
+  disabledMainHint: { en: 'Still available for main sessions', zh: '仍可用于主会话', anchor: 'st.namedAgents.disabledMainHint' },
+  overriddenNote: { en: 'Built-in agent overridden by', zh: '内置智能体已被', anchor: 'st.namedAgents.overriddenByFile' },
+  overridesBuiltinNote: { en: 'overrides the built-in agent', zh: '已覆盖同名的内置智能体', anchor: 'st.namedAgents.overridesBuiltin' },
+  shadowedNote: { en: 'Not in effect', zh: '未生效', anchor: 'st.namedAgents.shadowedByBuiltin' },
+  shippedRestoreTitle: { en: 'Restore the original of built-in agent', zh: '恢复内置智能体', anchor: 'st.shipped.restoreTitle' },
+  subagentDefaultStrictHint: { en: 'fail with an error instead of falling back', zh: '未指定子智能体的派发将报错', anchor: 'st.subagentDefault.strictHint' },
+  nbSearchSaved: { en: 'Search & retrieval saved', zh: '搜索与抓取配置已保存', anchor: 'st.nbSearch.saved' },
+  nbSearchFailClosed: { en: 'refuses to run', zh: '不会执行', anchor: 'st.nbSearch.failClosedNote' },
+  nbSearchRevision: { en: 'Config revision', zh: '配置修订', anchor: 'st.nbSearch.lastChecked' },
+  noSessions: { en: 'No sessions yet', zh: '还没有会话', anchor: 'sidebar.noSessions' },
+  blankPage: { en: 'A blank page', zh: '白纸一张', anchor: 'transcript.blank' },
+  filesHeader: { en: 'Files — mentioned as @path', zh: '文件 — 在消息中以 @路径 引用', anchor: 'composer.filesHeader' },
+  noMatches: { en: 'No matches', zh: '没有匹配', anchor: 'select.noMatches' },
+  terminalEmpty: { en: 'No terminals yet', zh: '还没有终端', anchor: 'term.empty' },
+  capEmptyFilter: { en: 'No capabilities match', zh: '没有匹配', anchor: 'cap.emptyFilter' },
+  capNoWorkspace: { en: 'No workspace is registered', zh: '没有已注册的工作区', anchor: 'cap.noWorkspace' },
+  queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
+  editNote: { en: 'Full replacement', zh: '完整替换语义', anchor: 'transcript.editAttachmentsNote' },
+  compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
+  exportArchive: { en: 'Export archive', zh: '导出归档', anchor: 'menu.export' },
+  undoLastTurn: { en: 'Undo last turn', zh: '撤销最后一轮', anchor: 'menu.undo' },
+  // Regex matchers, each anchored to the copy it must keep matching.
+  bannerPattern: { en: /Connection lost|Disconnected from the server/, zh: /正在重连|已与服务器断开连接/, anchor: ['app.reconnecting', 'app.disconnected'] },
+  ranForPattern: { en: /Ran for/, zh: /用时/, anchor: 'transcript.ranFor' },
+  ttftPattern: { en: /TTFT/, zh: /首 token/, anchor: 'transcript.ttft' },
+  previewReadonlyPattern: { en: /Read-only here/, zh: /此处为只读/, anchor: 'preview.editUnsupported' },
+  // Word list the delete confirmation must never use, and a fragment of the
+  // fixture server's own agent name — neither is dictionary copy.
+  memoryBannedInDelete: { en: ['permanent', 'cannot be undone', 'forever'], zh: ['永久', '不可恢复', '无法撤销'] },
+  usageSubagentPattern: { en: /subagent/, zh: /子智能体/ },
+  // Typed into the settings search box; the same word in both runs.
+  searchQuery: { en: 'theme', zh: '主题' },
+  // Kept for walkers not yet written; these screens were retired.
+  shimCapabilities: { en: 'The capabilities panel was split into dedicated settings pages', zh: '能力面板已拆分为独立的设置页面' },
+  modelProfileLabel: { en: 'model profile', zh: '模型设置' },
+  swarmTitlePrefix: { en: 'Swarm mode', zh: '集群模式' },
+  goalActive: { en: 'goal · active', zh: '目标 · 进行中' },
+  // The nb-search credential card these name no longer exists; see the
+  // settings-nbsearch walk, which needs its own rewrite.
+  nbSearchManagedStored: { en: 'Saved on this server', zh: '已保存在此服务器' },
+  nbSearchManagedEmpty: { en: 'No Kiki-managed value saved', zh: '尚无 Kiki 管理的凭据' },
+  nbSearchManagedReveal: { en: 'Reveal saved value', zh: '查看已存值' },
+  nbSearchManagedSave: { en: 'Save / overwrite', zh: '保存／覆写' },
+  nbSearchManagedClear: { en: 'Clear saved value', zh: '清除已存值' },
+};
+
+function buildStrings(locale) {
+  const strings = {};
+  for (const [key, spec] of Object.entries(LITERALS)) strings[key] = spec[locale];
+  for (const [key, source] of Object.entries(SOURCES)) strings[key] = resolveSource(locale, source);
+  return strings;
+}
+
+/**
+ * A probe or matcher is only as good as the copy it points at: a dictionary
+ * rewrite would leave it matching nothing (or something else) instead of
+ * failing. Re-check every anchored entry against today's dictionaries so the
+ * drift surfaces here, with the offending key, rather than mid-walk.
+ */
+function assertStringsMatchDictionary() {
+  const problems = [];
+  for (const [key, spec] of Object.entries(LITERALS)) {
+    if (spec.anchor === undefined) continue;
+    for (const locale of LOCALES) {
+      for (const anchor of [spec.anchor].flat()) {
+        const template = dictionaryText(locale, anchor);
+        const ok = spec[locale] instanceof RegExp ? spec[locale].test(template) : template.includes(spec[locale]);
+        if (!ok) problems.push(`${key}[${locale}] ${String(spec[locale])} no longer agrees with ${anchor} ${JSON.stringify(template)}`);
+      }
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(`visual-proof copy drifted from the session-core dictionaries:\n  ${problems.join('\n  ')}`);
+  }
+}
+assertStringsMatchDictionary();
+
+export const STRINGS = { en: buildStrings('en'), zh: buildStrings('zh') };
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
