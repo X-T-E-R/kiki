@@ -328,6 +328,10 @@ advertise_as_kimi_code = false
 # context_strategy: "summarize" | "auto" | "fresh"
 # subagent_context_strategy: "summarize" | "auto" | "fresh"
 # relay_shadow: boolean
+
+# [loop_control.directive_cues]
+  # instructions: string[]
+  # history: string[]
 # auto_compact: string
 # compaction_trigger_ratio: number
 # compaction_max_attempts: integer
