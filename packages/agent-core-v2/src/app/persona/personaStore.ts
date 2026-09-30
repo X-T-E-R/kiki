@@ -17,6 +17,7 @@ export type {
 
 export type PersonaCardFormat = 'png' | 'json' | 'charx';
 export type PersonaAvatarMime = 'image/png' | 'image/jpeg' | 'image/webp';
+export type PersonaAvatarShape = 'circle' | 'square';
 export type PersonaMemoryIntegrationStatus = 'committed' | 'pending' | 'failed';
 
 export interface PersonaSummary {
@@ -27,6 +28,7 @@ export interface PersonaSummary {
   readonly revision: string;
   readonly archived: boolean;
   readonly avatarMime?: PersonaAvatarMime;
+  readonly avatarShape?: PersonaAvatarShape;
 }
 
 export interface PersonaState {
@@ -77,6 +79,7 @@ export interface PersonaListOptions {
 export interface PersonaAvatarInput {
   readonly data: Uint8Array;
   readonly mimeType?: string;
+  readonly shape?: PersonaAvatarShape;
 }
 
 export interface PersonaAvatar {
@@ -85,6 +88,7 @@ export interface PersonaAvatar {
   readonly extension: 'png' | 'jpg' | 'webp';
   readonly width: number;
   readonly height: number;
+  readonly shape?: PersonaAvatarShape;
 }
 
 export interface PersonaImportInput {
@@ -165,6 +169,7 @@ export interface IPersonaStore {
   exportCard(id: string, format: PersonaCardFormat, options?: PersonaExportOptions): Promise<PersonaExport>;
   getAvatar(id: string): Promise<PersonaAvatar | undefined>;
   putAvatar(id: string, input: PersonaAvatarInput | Uint8Array): Promise<PersonaAvatar>;
+  deleteAvatar(id: string): Promise<boolean>;
   setMemoryHooks(hooks: PersonaMemoryHooks | undefined): void;
 }
 

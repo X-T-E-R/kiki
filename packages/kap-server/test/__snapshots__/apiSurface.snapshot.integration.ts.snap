@@ -70,6 +70,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/personas/{id}/avatar",
+    ],
+    [
+      "DELETE",
       "/api/providers/{provider_id}",
     ],
     [
@@ -79,6 +83,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/rooms/{id}",
+    ],
+    [
+      "DELETE",
+      "/api/rooms/{id}/members/{memberId}",
     ],
     [
       "DELETE",
@@ -451,6 +459,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/rooms/{id}/usage",
+    ],
+    [
+      "GET",
+      "/api/rooms/threads",
     ],
     [
       "GET",
@@ -1034,6 +1046,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/rooms/{id}/members",
+    ],
+    [
+      "POST",
       "/api/rooms/{id}/messages",
     ],
     [
@@ -1043,6 +1059,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/rooms/{id}/stop",
+    ],
+    [
+      "POST",
+      "/api/rooms/from-threads",
     ],
     [
       "POST",

@@ -17,6 +17,7 @@ import {
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ErrorCode } from '@kiki/protocol';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -578,5 +579,93 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
 
     expect(res.statusCode).toBe(404);
     expect((res.json() as Envelope).code).toBe(40401);
+  });
+});
+
+describe('persona avatar HTTP lifecycle', () => {
+  const avatar = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+  const definition = { id: 'avatar-bot', name: 'Avatar Bot', description: 'A test persona' };
+
+  async function request(r: RunningServer, path: string, init: RequestInit = {}): Promise<Response> {
+    return fetch(`http://127.0.0.1:${r.port}/api${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${r.authTokenService.getToken()}` },
+    });
+  }
+
+  async function createPersona(r: RunningServer): Promise<unknown> {
+    const response = await request(r, '/personas/avatar-bot', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ definition, examples: 'A preserved example' }),
+    });
+    const envelope = await response.json() as Envelope;
+    expect(envelope.code).toBe(0);
+    return envelope.data;
+  }
+
+  async function upload(r: RunningServer, data: Uint8Array = avatar, shape?: string, mimeType = 'image/png', id = 'avatar-bot'): Promise<Response> {
+    const body = new FormData();
+    if (shape !== undefined) body.append('shape', shape);
+    body.append('file', new Blob([Uint8Array.from(data).buffer], { type: mimeType }), 'avatar.png');
+    return request(r, `/personas/${id}/avatar`, { method: 'PUT', body });
+  }
+
+  it('retains the circle after a server restart and removes the avatar without deleting the persona', async () => {
+    let r = await boot();
+    const snapshot = await createPersona(r);
+    const uploaded = await upload(r, avatar, 'circle');
+    expect(uploaded.status).toBe(200);
+    expect(await uploaded.json()).toMatchObject({ code: 0, data: { id: 'avatar-bot', mimeType: 'image/png', shape: 'circle' } });
+    await r.close();
+    server = undefined;
+    r = await boot();
+    const list = await request(r, '/personas');
+    expect(await list.json()).toMatchObject({ code: 0, data: [{ id: 'avatar-bot', avatarShape: 'circle', avatarMime: 'image/png' }] });
+    const image = await request(r, '/personas/avatar-bot/avatar');
+    expect(image.status).toBe(200);
+    expect(image.headers.get('content-type')).toBe('image/png');
+    expect((await image.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    const deleted = await request(r, '/personas/avatar-bot/avatar', { method: 'DELETE' });
+    expect(await deleted.json()).toMatchObject({ code: 0, data: { id: 'avatar-bot', deleted: true } });
+    const repeated = await request(r, '/personas/avatar-bot/avatar', { method: 'DELETE' });
+    expect(await repeated.json()).toMatchObject({ code: 0, data: { deleted: false } });
+    const missing = await request(r, '/personas/avatar-bot/avatar');
+    expect(missing.status).toBe(404);
+    await missing.arrayBuffer();
+    const remaining = await request(r, '/personas/avatar-bot');
+    expect((await remaining.json() as Envelope).data).toEqual(snapshot);
+    const withoutAvatar = await request(r, '/personas');
+    const summaries = (await withoutAvatar.json() as Envelope<Array<Record<string, unknown>>>).data;
+    expect(summaries?.[0]?.['avatarShape']).toBeUndefined();
+    expect(summaries?.[0]?.['avatarMime']).toBeUndefined();
+  });
+
+  it('rejects oversized, invalid and missing-persona uploads without changing the saved shape', async () => {
+    const r = await boot();
+    await createPersona(r);
+    expect((await (await upload(r, avatar, 'square')).json() as Envelope).code).toBe(0);
+    const tooLarge = await upload(r, new Uint8Array(2 * 1024 * 1024 + 1), 'circle');
+    expect(tooLarge.status).toBe(413);
+    expect((await tooLarge.json() as Envelope).code).toBe(41301);
+    for (const response of [
+      await upload(r, avatar, 'triangle'),
+      await upload(r, Uint8Array.of(1, 2, 3), 'circle'),
+      await upload(r, avatar, 'circle', 'image/jpeg'),
+      await upload(r, avatar, 'circle', 'image/gif'),
+    ]) {
+      expect((await response.json() as Envelope).code).toBe(40001);
+    }
+    const list = await request(r, '/personas');
+    expect(await list.json()).toMatchObject({ code: 0, data: [{ avatarShape: 'square' }] });
+    for (const response of [
+      await upload(r, avatar, 'circle', 'image/png', 'missing'),
+      await request(r, '/personas/missing/avatar', { method: 'DELETE' }),
+    ]) {
+      expect((await response.json() as Envelope).code).toBe(ErrorCode.PERSONA_NOT_FOUND);
+    }
+    expect((await (await upload(r)).json() as Envelope).code).toBe(0);
+    const legacy = await request(r, '/personas');
+    expect(((await legacy.json() as Envelope<Array<Record<string, unknown>>>).data)?.[0]?.['avatarShape']).toBeUndefined();
   });
 });

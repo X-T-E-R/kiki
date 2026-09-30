@@ -5,6 +5,8 @@ import {
   PERSONA_AVATAR_MAX_BYTES,
   personaArchiveInputSchema,
   personaAvatarUploadResponseSchema,
+  personaAvatarDeleteResponseSchema,
+  personaAvatarShapeSchema,
   personaCardFormatSchema,
   personaDeleteResponseSchema,
   personaDeleteQuerySchema,
@@ -335,16 +337,41 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope): voi
         (reply as unknown as PersonaReply).code(400).send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'avatar must be PNG, JPEG, or WebP', req.id));
         return;
       }
+      const shape = personaAvatarShapeSchema.optional().safeParse(readMultipartField(file.fields['shape']));
+      if (!shape.success) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'avatar shape must be circle or square', req.id));
+        return;
+      }
       const avatar = await core.accessor.get(IPersonaStore).putAvatar(req.params.id, {
         data: file.data,
         mimeType,
+        shape: shape.data,
       });
-      reply.send(okEnvelope({ id: req.params.id, mimeType: avatar.mimeType, size: avatar.data.byteLength }, req.id));
+      reply.send(okEnvelope({ id: req.params.id, mimeType: avatar.mimeType, size: avatar.data.byteLength, shape: avatar.shape }, req.id));
     } catch (error) {
       sendPersonaError(reply as unknown as PersonaReply, req.id, error);
     }
   });
   app.put(avatarUploadRoute.path, avatarUploadRoute.options, avatarUploadRoute.handler as unknown as Parameters<PersonasRouteHost['put']>[2]);
+
+  const avatarDeleteRoute = defineRoute({
+    method: 'DELETE',
+    path: '/personas/{id}/avatar',
+    params: personaIdParamsSchema,
+    success: { data: personaAvatarDeleteResponseSchema },
+    errors: { [ErrorCode.PERSONA_NOT_FOUND]: {} },
+    description: 'Remove a persona avatar',
+    tags: ['personas'],
+    operationId: 'deletePersonaAvatar',
+  }, async (req, reply) => {
+    try {
+      const deleted = await core.accessor.get(IPersonaStore).deleteAvatar(req.params.id);
+      reply.send(okEnvelope({ id: req.params.id, deleted }, req.id));
+    } catch (error) {
+      sendPersonaError(reply as unknown as PersonaReply, req.id, error);
+    }
+  });
+  app.delete(avatarDeleteRoute.path, avatarDeleteRoute.options, avatarDeleteRoute.handler as unknown as Parameters<PersonasRouteHost['delete']>[2]);
 }
 
 const PERSONA_CARD_MAX_BYTES = 16 * 1024 * 1024;
@@ -441,6 +468,7 @@ function personaErrorCode(error: unknown): number | undefined {
   if (message.includes('persona not found')) return ErrorCode.PERSONA_NOT_FOUND;
   if (message.includes('revision conflict')) return ErrorCode.PERSONA_REVISION_CONFLICT;
   if (message.includes('avatar exceeds') || message.includes('uploaded file is too large')) return ErrorCode.FILE_TOO_LARGE;
+  if (message.startsWith('avatar is not') || message.startsWith('avatar mime type') || message === 'missing `file` field') return ErrorCode.VALIDATION_FAILED;
   switch (value?.code) {
     case 'persona.not_found':
     case ProtocolErrorCode.PERSONA_NOT_FOUND:

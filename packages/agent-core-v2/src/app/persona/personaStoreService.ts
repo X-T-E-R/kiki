@@ -27,6 +27,7 @@ import {
   type PersonaAvatar,
   type PersonaAvatarInput,
   type PersonaAvatarMime,
+  type PersonaAvatarShape,
   type PersonaCardFormat,
   type PersonaDeleteResult,
   type PersonaDuplicateOptions,
@@ -52,6 +53,8 @@ const PERSONA_ROOT = 'personas';
 const PERSONA_FILE = 'persona.md';
 const EXAMPLES_FILE = 'examples.md';
 const EXTENSIONS_FILE = 'extensions.json';
+const AVATAR_META_FILE = 'avatar.json';
+const AVATAR_KEYS: ReadonlySet<string> = new Set(['avatar.png', 'avatar.jpg', 'avatar.webp', AVATAR_META_FILE]);
 const STATE_FILE = 'state.json';
 const CATALOG_FILE = 'catalog.json';
 const textEncoder = new TextEncoder();
@@ -118,6 +121,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
           revision: snapshot.revision,
           archived: state.archived,
           avatarMime: avatar?.mimeType,
+          avatarShape: avatar === undefined ? undefined : await this.readAvatarShape(name),
         });
       } catch {
         continue;
@@ -317,27 +321,27 @@ export class PersonaStore extends Disposable implements IPersonaStore {
       extension: found.extension,
       width: dimensions.width,
       height: dimensions.height,
+      shape: await this.readAvatarShape(id),
     };
   }
 
   async putAvatar(id: string, input: PersonaAvatarInput | Uint8Array): Promise<PersonaAvatar> {
     assertPersonaId(id);
     if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
-    const raw = input instanceof Uint8Array ? { data: input } : input;
+    const raw: PersonaAvatarInput = input instanceof Uint8Array ? { data: input } : input;
     if (raw.data.byteLength > MAX_AVATAR_BYTES) throw new Error('Avatar exceeds the 2 MiB size limit');
+    if (raw.shape !== undefined && !isAvatarShape(raw.shape)) throw new Error('Avatar shape must be circle or square');
     const mimeType = detectAvatarMime(raw.data, raw.mimeType);
-    const normalized = await normalizeAvatar(raw.data, mimeType);
+    const normalized: PersonaAvatar = { ...await normalizeAvatar(raw.data, mimeType), shape: raw.shape };
     if (normalized.data.byteLength > MAX_AVATAR_BYTES) throw new Error('Scaled avatar exceeds the 2 MiB size limit');
     let before: ReadonlyMap<string, Uint8Array> | undefined;
     let mutated = false;
     try {
       await this.withLock(id, async () => {
+        if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
         before = await this.snapshotFiles(id);
         mutated = true;
-        for (const key of await this.storage.list(this.scope(id))) {
-          if (key === 'avatar.png' || key === 'avatar.jpg' || key === 'avatar.webp') await this.storage.delete(this.scope(id), key);
-        }
-        await this.storage.write(this.scope(id), `avatar.${normalized.extension}`, normalized.data, { atomic: true });
+        await this.writeAvatarDataUnlocked(id, normalized);
       });
     } catch (error) {
       if (mutated && before !== undefined) await this.restoreOrThrow(id, before, error);
@@ -345,6 +349,24 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     }
     this.changeEmitter.fire();
     return normalized;
+  }
+
+  async deleteAvatar(id: string): Promise<boolean> {
+    assertPersonaId(id);
+    const removed = await this.withLock(id, async () => {
+      if (await this.get(id) === undefined) throw new Error(`Persona not found: ${id}`);
+      const before = await this.snapshotFiles(id);
+      const keys = [...before.keys()].filter((key) => AVATAR_KEYS.has(key));
+      try {
+        for (const key of keys) await this.storage.delete(this.scope(id), key);
+      } catch (error) {
+        await this.restoreOrThrow(id, before, error);
+        throw error;
+      }
+      return keys.some((key) => key !== AVATAR_META_FILE);
+    });
+    if (removed) this.changeEmitter.fire();
+    return removed;
   }
 
   setMemoryHooks(hooks: PersonaMemoryHooks | undefined): void {
@@ -451,9 +473,19 @@ export class PersonaStore extends Disposable implements IPersonaStore {
 
   private async writeAvatarDataUnlocked(id: string, normalized: PersonaAvatar): Promise<void> {
     for (const key of await this.storage.list(this.scope(id))) {
-      if (key === 'avatar.png' || key === 'avatar.jpg' || key === 'avatar.webp') await this.storage.delete(this.scope(id), key);
+      if (AVATAR_KEYS.has(key)) await this.storage.delete(this.scope(id), key);
     }
     await this.storage.write(this.scope(id), `avatar.${normalized.extension}`, normalized.data, { atomic: true });
+    if (normalized.shape !== undefined) await this.writeJson(id, AVATAR_META_FILE, { version: 1, shape: normalized.shape }, 1024);
+  }
+
+  private async readAvatarShape(id: string): Promise<PersonaAvatarShape | undefined> {
+    try {
+      const value = await this.readJson(id, AVATAR_META_FILE, 1024);
+      return isRecord(value) && value['version'] === 1 && isAvatarShape(value['shape']) ? value['shape'] : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async writeAssetsUnlocked(id: string, assets: readonly PersonaCardAsset[]): Promise<void> {
@@ -710,6 +742,10 @@ async function decodeAvatar(data: Uint8Array, mimeType: PersonaAvatarMime): Prom
 async function avatarDimensions(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<{ readonly width: number; readonly height: number }> {
   const result = await decodeAvatar(data, mimeType);
   return { width: result.width, height: result.height };
+}
+
+function isAvatarShape(value: unknown): value is PersonaAvatarShape {
+  return value === 'circle' || value === 'square';
 }
 
 function ascii(data: Uint8Array, offset: number, text: string): boolean {

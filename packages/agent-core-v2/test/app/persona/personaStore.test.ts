@@ -53,6 +53,15 @@ class FaultyPersonaStorage extends InMemoryStorageService {
   failNextPersonaWrite = false;
   failRollbackOnPrimary = false;
   failRollback = false;
+  failNextAvatarMetadataDelete = false;
+
+  override async delete(scope: string, key: string) {
+    if (scope === 'personas/lin-lan' && key === 'avatar.json' && this.failNextAvatarMetadataDelete) {
+      this.failNextAvatarMetadataDelete = false;
+      throw new Error('avatar metadata delete failed');
+    }
+    return super.delete(scope, key);
+  }
 
   override async acquireLock(scope: string, key: string, options = {}) {
     const lock = await super.acquireLock(scope, key, options);
@@ -272,15 +281,58 @@ describe('PersonaStore', () => {
     expect(await store.get('lin-lan')).toBeUndefined();
   });
 
+  it('stores avatar shape separately and removes only avatar files idempotently', async () => {
+    const snapshot = await store.put({ ...definition, examples: 'example' });
+    const state = await store.updateState('lin-lan', { pinned: true });
+    let changes = 0;
+    disposables.add(store.onDidChange(() => { changes++; }));
+    const avatar = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
+    expect(avatar).toMatchObject({ width: 1, height: 1, shape: 'circle' });
+    expect(await store.getAvatar('lin-lan')).toEqual(avatar);
+    expect((await store.list())[0]?.avatarShape).toBe('circle');
+    expect(await store.deleteAvatar('lin-lan')).toBe(true);
+    expect(await store.deleteAvatar('lin-lan')).toBe(false);
+    expect(await store.getAvatar('lin-lan')).toBeUndefined();
+    expect((await store.list())[0]?.avatarShape).toBeUndefined();
+    expect(await storage.read('personas/lin-lan', 'avatar.json')).toBeUndefined();
+    expect(await store.get('lin-lan')).toEqual(snapshot);
+    expect(await store.getState('lin-lan')).toEqual(state);
+    expect(deletedPersonas).toEqual([]);
+    expect(changes).toBe(2);
+  });
+
+  it('rejects oversized and invalid avatars without replacing the saved image or shape', async () => {
+    await store.put(definition);
+    const original = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
+    await expect(store.putAvatar('lin-lan', new Uint8Array(2 * 1024 * 1024 + 1))).rejects.toThrow('2 MiB');
+    await expect(store.putAvatar('lin-lan', Uint8Array.of(1, 2, 3))).rejects.toThrow('not a PNG');
+    await expect(store.putAvatar('lin-lan', { data: AVATAR, mimeType: 'image/jpeg' })).rejects.toThrow('MIME type');
+    expect(await store.getAvatar('lin-lan')).toEqual(original);
+    await store.putAvatar('lin-lan', AVATAR);
+    expect((await store.getAvatar('lin-lan'))?.shape).toBeUndefined();
+    expect(await storage.read('personas/lin-lan', 'avatar.json')).toBeUndefined();
+    await expect(store.putAvatar('missing', AVATAR)).rejects.toThrow('Persona not found');
+    await expect(store.deleteAvatar('missing')).rejects.toThrow('Persona not found');
+  });
+
+  it('restores the avatar and shape when deletion partially fails', async () => {
+    await store.put(definition);
+    const original = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
+    (storage as FaultyPersonaStorage).failNextAvatarMetadataDelete = true;
+    await expect(store.deleteAvatar('lin-lan')).rejects.toThrow('avatar metadata delete failed');
+    expect(await store.getAvatar('lin-lan')).toEqual(original);
+    expect(await store.deleteAvatar('lin-lan')).toBe(true);
+  });
+
   it('duplicates assets without copying state or memory', async () => {
     await store.put({ ...definition, examples: 'example' });
     await store.updateState('lin-lan', { homeSessionId: 'session-1', pinned: true });
-    await store.putAvatar('lin-lan', AVATAR);
+    await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
     const duplicate = await store.duplicate('lin-lan', { id: 'lin-lan-copy' });
     expect(duplicate.definition.id).toBe('lin-lan-copy');
     expect(duplicate.definition.name).toBe('林岚 副本');
     expect(duplicate.examples).toBe('example');
-    expect((await store.getAvatar('lin-lan-copy'))?.mimeType).toBe('image/png');
+    expect(await store.getAvatar('lin-lan-copy')).toMatchObject({ mimeType: 'image/png', shape: 'circle' });
     expect(await store.getState('lin-lan-copy')).toEqual({ version: 1, archived: false });
     expect(await store.list({ includeArchived: true })).toHaveLength(2);
     expect(importedLorebook).toEqual([]);
