@@ -7,6 +7,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IAgentExecutorRegistry,
   registerAgentExecutorProvider,
@@ -73,6 +74,8 @@ describe('AgentExecutorRegistryService', () => {
     services.set(IHostProcessService, processService);
     services.set(IHostFileSystem, fs);
     services.set(IBootstrapService, bootstrap);
+    services.set(IAtomicTomlDocumentStore, { _serviceBrand: undefined,
+      get: async () => undefined } as unknown as IAtomicTomlDocumentStore);
   });
 
   afterEach(() => {

@@ -11,6 +11,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   registerScopedService,
   ScopeActivation,
@@ -45,6 +46,7 @@ import {
   type AgentExecutorConfig,
   type AgentExecutorsConfig,
 } from './configSection';
+import { MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, type ManagedAdapterState } from './managedAdapterRegistry';
 import { wrapWindowsNodeShims } from './windowsNodeShim';
 
 const NATIVE_DESCRIPTOR: AgentExecutorDescriptor = {
@@ -77,6 +79,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     @IHostProcessService private readonly processService: IHostProcessService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IAtomicTomlDocumentStore private readonly documents?: IAtomicTomlDocumentStore,
   ) {}
 
   get(id: string): AgentExecutorDescriptor | undefined {
@@ -219,8 +222,9 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   ): Promise<ResolvedAgentExecutor> {
     const resolved = this.resolve(id, options);
     if (resolved.descriptor.id === 'native') return resolved;
+    const descriptor = await this.#withManagedSource(resolved.descriptor);
     const probes = await resolveExecutorSource(
-      resolved.descriptor,
+      descriptor,
       this.#probeProcessService(),
       this.fs,
       this.bootstrap,
@@ -239,7 +243,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     return {
       ...resolved,
       descriptor: {
-        ...resolved.descriptor,
+        ...descriptor,
         command: selected.command,
         launchArgs: selected.launchArgs,
         selectedSource: selected.id,
@@ -262,7 +266,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
     }
     return discoverExecutorSources(
-      descriptor,
+      await this.#withManagedSource(descriptor),
       this.#probeProcessService(),
       this.fs,
       this.bootstrap,
@@ -272,6 +276,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   #probeProcessService(): IHostProcessService {
     if (this.bootstrap.platform !== 'win32') return this.processService;
     return wrapWindowsNodeShims(this.processService, this.fs, () => this.bootstrap);
+  }
+
+  async #withManagedSource(descriptor: AgentExecutorDescriptor): Promise<AgentExecutorDescriptor> {
+    const state = await this.documents?.get<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, descriptor.id);
+    return withManagedAdapterSource(descriptor, this.bootstrap.homeDir, state);
   }
 
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined {

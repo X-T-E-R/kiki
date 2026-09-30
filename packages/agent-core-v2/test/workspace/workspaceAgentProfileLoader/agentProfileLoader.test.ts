@@ -40,6 +40,7 @@ import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService'
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IHostFsWatchService,
   type HostFsChange,
@@ -307,6 +308,38 @@ function failingReaddirFs(
   return failing;
 }
 
+function inMemoryDocuments(): IAtomicTomlDocumentStore {
+  const values = new Map<string, unknown>();
+  const address = (scope: string, key: string): string => `${scope}/${key}`;
+  return {
+    _serviceBrand: undefined,
+    getText: async (scope, key) => values.get(address(scope, key)) as string | undefined,
+    setText: async (scope, key, text) => { values.set(address(scope, key), text); },
+    compareAndSetText: async (scope, key, expected, next) => {
+      const path = address(scope, key);
+      if (values.get(path) !== expected) return false;
+      if (next === undefined) values.delete(path);
+      else values.set(path, next);
+      return true;
+    },
+    get: async <T>(scope: string, key: string) => values.get(address(scope, key)) as T | undefined,
+    set: async (scope, key, value) => { values.set(address(scope, key), value); },
+    update: async <T>(scope: string, key: string, updater: (current: T | undefined) => T | undefined) => {
+      const path = address(scope, key);
+      const next = updater(values.get(path) as T | undefined);
+      if (next === undefined) values.delete(path);
+      else values.set(path, next);
+      return next;
+    },
+    delete: async (scope, key) => { values.delete(address(scope, key)); },
+    list: async (scope, prefix = '') => [...values.keys()]
+      .filter((path) => path.startsWith(`${scope}/${prefix}`))
+      .map((path) => path.slice(scope.length + 1)),
+    watch: () => Event.None as Event<void>,
+    acquire: () => ({ dispose: () => {} }),
+  };
+}
+
 interface StackOptions {
   readonly extraAgentDirs?: readonly string[];
   readonly explicitFiles?: readonly string[];
@@ -345,6 +378,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IBootstrapService, bootstrap],
       [IHostFileSystem, hostFs],
       [IHostProcessService, { _serviceBrand: undefined }],
+      [IAtomicTomlDocumentStore, inMemoryDocuments()],
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
       [IWorkspaceTrust, workspaceTrustStub(opts?.workspaceTrusted ?? true)],

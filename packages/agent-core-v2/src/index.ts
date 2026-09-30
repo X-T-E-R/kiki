@@ -236,6 +236,8 @@ export * from '#/app/agentExecutor/builtinDescriptors';
 export * from '#/app/agentExecutor/configSection';
 export * from '#/app/agentExecutor/executorOverrides';
 export * from '#/app/agentExecutor/agentExecutorRegistryService';
+export * from '#/app/agentExecutor/managedAdapterRegistry';
+export * from '#/app/agentExecutor/managedAdapterService';
 export * from '#/app/agentExecutor/preflight';
 export { expandExecutorText } from '#/app/agentExecutor/binaryDiscovery';
 export * from '#/app/agentProfileCatalog/agentProfileCatalog';
