@@ -55,7 +55,7 @@ function ActionButton({
       aria-label={title}
       disabled={gated}
       onClick={onClick}
-      className="rounded px-1 py-px text-[10.5px] font-medium text-ink-faint transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded px-1 py-px text-[10.5px] font-medium text-ink-faint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
     >
       {label}
     </button>
@@ -104,7 +104,7 @@ export function MessageRowActions({
               .catch(() => undefined);
           }}
           className={`rounded px-1 py-px font-mono text-[10px] transition-colors ${
-            copied ? 'text-success' : 'text-ink-faint hover:text-accent'
+            copied ? 'text-success' : 'text-ink-faint hover:text-ink'
           }`}
         >
           {copied ? <Icon name="check" size={12} /> : t('transcript.copy')}

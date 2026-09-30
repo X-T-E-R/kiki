@@ -88,7 +88,7 @@ export const ToolChipList = memo(function ToolChipList({
                 <button
                   type="button"
                   onClick={item.onOpen}
-                  className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
+                  className="font-mono text-[11.5px] font-medium text-ink hover:text-ink truncate text-left cursor-pointer flex-1 min-w-0"
                   title={t('agentPanel.viewDetails')}
                 >
                   {item.icon ? <span className="mr-1">{item.icon}</span> : null}
@@ -140,7 +140,7 @@ export const ToolChipList = memo(function ToolChipList({
             type="button"
             onClick={item.onOpen}
             title={reason ?? t('agentPanel.viewDetails')}
-            className={`${baseClass} hover:border-hairline-strong hover:text-accent cursor-pointer transition-colors`}
+            className={`${baseClass} hover:border-hairline-strong hover:text-ink cursor-pointer transition-colors`}
           >
             {content}
           </button>

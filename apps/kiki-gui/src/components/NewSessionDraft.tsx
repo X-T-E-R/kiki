@@ -643,7 +643,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
 
   return (
     <div className="flex flex-col gap-2.5">
-      <p className="text-[11px] font-medium text-accent">
+      <p className="text-[12px] font-medium text-ink-soft">
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>
       {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
@@ -659,7 +659,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
           onChange={(nextId) => { state.selectWorkspace(nextId); }}
           disabled={state.workspacesLoading}
           ariaLabel={t('new.workspace')}
-          buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+          buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
         />
         <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
         {state.canBrowseForWorkspace ? (
@@ -667,7 +667,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
             type="button"
             data-new-browse
             onClick={() => { void state.browseForWorkspace(); }}
-            className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink transition-colors hover:border-hairline-strong hover:text-accent focus-visible:border-accent"
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
           >
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
               <path
@@ -689,7 +689,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
             aria-label={t('new.cwdAria')}
             aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
             placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
-            className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
+            className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink ${
               cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
             }`}
           />

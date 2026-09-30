@@ -412,7 +412,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                             >
                               <SessionGlyph className="h-3.5 w-3.5 text-ink-faint" />
                               <span className={`min-w-0 flex-1 truncate ${label === undefined ? 'font-mono text-[11.5px] text-ink-soft' : ''}`}>{label ?? sid}</span>
-                              {onOpenSession ? <span className="text-ink-faint transition-colors group-hover:text-accent"><ArrowGlyph /></span> : null}
+                              {onOpenSession ? <span className="text-ink-faint transition-colors group-hover:text-ink"><ArrowGlyph /></span> : null}
                             </button>
                           </li>
                         );
@@ -439,7 +439,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                                 {t(RESULT_LABEL_KEYS[exec.result ?? 'running'])}
                               </span>
                               {exec.sessionId && onOpenSession ? (
-                                <button type="button" onClick={() => onOpenSession(exec.sessionId!, task.workspaceId)} className="min-w-0 truncate text-ink-soft underline-offset-2 hover:text-accent hover:underline">
+                                <button type="button" onClick={() => onOpenSession(exec.sessionId!, task.workspaceId)} className="min-w-0 truncate text-ink-soft underline-offset-2 hover:text-ink hover:underline">
                                   {sessionLabels[exec.sessionId] ?? exec.sessionId}
                                 </button>
                               ) : null}

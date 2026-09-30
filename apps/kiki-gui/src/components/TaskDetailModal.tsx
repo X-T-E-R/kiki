@@ -29,7 +29,7 @@ const FOLLOW_SLOP_PX = 24;
 function detailStatusTone(status: Task['status']): string {
   switch (status) {
     case 'running':
-      return 'bg-accent-soft text-accent';
+      return 'bg-ink/[0.05] text-ink-soft';
     case 'completed':
       return 'bg-success/10 text-success';
     case 'failed':
@@ -182,7 +182,7 @@ export function TaskDetailModal({
             aria-pressed={!follow}
             data-task-detail-follow={follow ? 'on' : 'off'}
             onClick={() => { setFollow((value) => !value); }}
-            className="ml-auto rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+            className="ml-auto rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
           >
             {follow ? t('tasks.detail.pauseScroll') : t('tasks.detail.resumeScroll')}
           </button>

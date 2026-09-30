@@ -2528,7 +2528,7 @@ function SlashMenuBody({
           item.disabled === true ? 'opacity-50' : ''
         } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
       >
-        <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-accent' : 'text-ink'}`}>
+        <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
           /{item.name}
         </span>
         {item.skill?.argument_hint !== undefined ? (
@@ -2677,7 +2677,7 @@ function MentionMenuBody({
             }`}
           >
             <FileGlyph dir={isDir} />
-            <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-accent' : 'text-ink'}`}>
+            <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
               {item.name}
               {isDir ? '/' : ''}
             </span>

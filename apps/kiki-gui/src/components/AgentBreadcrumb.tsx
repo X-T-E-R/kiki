@@ -83,7 +83,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
           <button
             type="button"
             onClick={onOpenSession}
-            className="rounded px-0.5 text-ink-soft transition-colors hover:text-accent"
+            className="rounded px-0.5 text-ink-soft transition-colors hover:text-ink"
           >
             {t('sv.sessionCrumb')}
           </button>
@@ -103,7 +103,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
                 <button
                   type="button"
                   onClick={() => { onOpenAgent(crumb.agentId); }}
-                  className="truncate rounded px-0.5 text-ink-soft transition-colors hover:text-accent"
+                  className="truncate rounded px-0.5 text-ink-soft transition-colors hover:text-ink"
                 >
                   {crumb.label}
                 </button>

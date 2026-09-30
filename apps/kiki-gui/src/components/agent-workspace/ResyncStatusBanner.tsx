@@ -29,7 +29,7 @@ export function ResyncStatusBanner({
           <span>{resyncing ? t('sv.resyncing') : t('sv.resyncFailed')} · {t('sv.sendPaused')}</span>
           {!resyncing && onRetry !== undefined ? (
             <button type="button" onClick={onRetry}
-              className="rounded-full border border-hairline px-2 py-0.5 font-medium transition-colors hover:border-accent hover:text-accent">
+              className="rounded-full border border-hairline px-2 py-0.5 font-medium transition-colors hover:border-accent hover:text-ink">
               {t('sv.resyncRetryNow')}
             </button>
           ) : null}

@@ -240,7 +240,7 @@ export function DrilldownSessionList({
                 data-usage-drilldown-session={session.session_id}
                 onClick={() => void navigate(`/s/${session.session_id}`)}
                 title={session.session_id}
-                className="min-w-0 flex-1 truncate text-left text-[13px] text-ink underline-offset-2 transition-colors hover:text-accent hover:underline"
+                className="min-w-0 flex-1 truncate text-left text-[13px] text-ink underline-offset-2 transition-colors hover:text-ink hover:underline"
               >
                 {title ?? <span className="font-mono text-[12px]">{session.session_id}</span>}
                 {title !== undefined ? (
@@ -266,7 +266,7 @@ export function DrilldownSessionList({
                     data-usage-turn={turnId}
                     onClick={() => void navigate(`/s/${session.session_id}?turn=${turnId}`)}
                     title={t('usage.drilldown.turnHint')}
-                    className="min-h-6 rounded-md border border-hairline bg-paper px-1.5 font-mono text-[11px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-accent"
+                    className="min-h-6 rounded-md border border-hairline bg-paper px-1.5 font-mono text-[11px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-ink"
                   >
                     {t('usage.drilldown.turnId', { id: turnId })}
                   </button>

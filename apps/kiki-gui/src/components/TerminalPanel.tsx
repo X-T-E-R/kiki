@@ -364,7 +364,7 @@ export function TerminalPanel({
           title={t('term.new')}
           aria-label={t('term.new')}
           data-terminal-new
-          className="shrink-0 rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+          className="shrink-0 rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
         >
           +
         </button>
@@ -406,7 +406,7 @@ export function TerminalPanel({
               onClick={() =>
                 void (state.errorKey === 'term.loadFailed' ? manager.open() : manager.create())
               }
-              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
             >
               {t('common.retry')}
             </button>
@@ -478,7 +478,7 @@ export function TerminalPanel({
               type="button"
               onClick={() => { manager.retryAttach(activeTab.id); }}
               data-terminal-retry
-              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-ink"
             >
               {t('common.retry')}
             </button>

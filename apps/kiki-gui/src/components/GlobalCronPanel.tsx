@@ -194,7 +194,7 @@ function CronTaskRow({
                 type="button"
                 data-cron-session={sessionId}
                 onClick={() => { onOpenSession(sessionId); }}
-                className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-accent hover:underline"
+                className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
                 title={sessionTitle}
               >
                 {sessionTitle}

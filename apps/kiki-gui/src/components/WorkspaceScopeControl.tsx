@@ -37,7 +37,7 @@ export function segmentClass(active: boolean, size = ''): string {
 
 function FolderGlyph({ active }: { readonly active: boolean }) {
   return (
-    <svg aria-hidden viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ink-faint'}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+    <svg aria-hidden viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-selected-ink' : 'text-ink-faint'}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
       <path d="M2.2 4.4c0-.6.5-1.1 1.1-1.1h3l1.3 1.5h5.1c.6 0 1.1.5 1.1 1.1v6.3c0 .6-.5 1.1-1.1 1.1H3.3c-.6 0-1.1-.5-1.1-1.1z" />
     </svg>
   );
@@ -45,7 +45,7 @@ function FolderGlyph({ active }: { readonly active: boolean }) {
 
 function StackGlyph({ active }: { readonly active: boolean }) {
   return (
-    <svg aria-hidden viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ink-faint'}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+    <svg aria-hidden viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-selected-ink' : 'text-ink-faint'}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
       <path d="M8 2.5 13.5 5 8 7.5 2.5 5z" />
       <path d="m2.5 8 5.5 2.5L13.5 8M2.5 11l5.5 2.5 5.5-2.5" />
     </svg>

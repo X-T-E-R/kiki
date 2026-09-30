@@ -589,7 +589,7 @@ function PreviewFileTab({
             event.stopPropagation();
             onMention();
           }}
-          className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-accent ${
+          className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-ink ${
             active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
           }`}
         >

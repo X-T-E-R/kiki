@@ -522,7 +522,7 @@ function AttachmentPreviewDialog({
         <button
           type="button"
           onClick={() => { downloadUrl(load.url, name); }}
-          className="rounded-lg border border-hairline px-3 py-1.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          className="rounded-lg border border-hairline px-3 py-1.5 text-ink-soft transition-colors hover:border-accent hover:text-ink"
         >
           {t('media.download')}
         </button>
@@ -549,7 +549,7 @@ function AttachmentPreviewDialog({
           <button
             type="button"
             onClick={() => { downloadUrl(load.url, name); }}
-            className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
           >
             {t('media.download')}
           </button>

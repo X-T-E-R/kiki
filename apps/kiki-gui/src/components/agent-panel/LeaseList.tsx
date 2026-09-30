@@ -52,7 +52,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
                 key={item}
                 type="button"
                 onClick={() => onOpen(item)}
-                className={`${chipClass} hover:border-hairline-strong hover:text-accent cursor-pointer transition-colors`}
+                className={`${chipClass} hover:border-hairline-strong hover:text-ink cursor-pointer transition-colors`}
                 title={t('agentPanel.viewDetails')}
               >
                 {item}

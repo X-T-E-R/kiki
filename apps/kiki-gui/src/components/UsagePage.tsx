@@ -266,7 +266,7 @@ function FilterBar({
   // locally with an inline error instead of being sent (the server answers
   // 40001 and the page would degrade to a load failure).
   const [rangeInvalid, setRangeInvalid] = useState(false);
-  const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-accent aria-[invalid=true]:border-danger';
+  const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger';
   return (
     <div data-usage-filters className="space-y-3 rounded-xl border border-hairline bg-panel/70 p-3 sm:p-4">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
@@ -556,7 +556,7 @@ function SessionsTab({
                   onClick={() => void navigate(`/s/${item.id}`)}
                   className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-selected-ink`}
                 >
-                  <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-accent' : 'text-ink-faint'}`}>
+                  <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
                     {rank}
                   </span>
                   <span className="min-w-0">
@@ -635,7 +635,7 @@ function FiveHourTab({
         <button
           type="button"
           onClick={onSwitchGranularity}
-          className="h-8 rounded-md border border-hairline bg-paper px-3 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+          className="h-8 rounded-md border border-hairline bg-paper px-3 text-[13px] font-medium text-ink transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('usage.fiveHour.switch')}
         </button>
@@ -984,7 +984,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         data-usage-tab={id}
                         onClick={() => { selectTab(id); }}
                         className={`-mb-px min-h-10 border-b-2 px-2.5 text-[13.5px] transition-colors ${
-                          tab === id ? 'border-accent font-semibold text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                          tab === id ? 'border-selected-ink font-semibold text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                         }`}
                       >
                         {label}

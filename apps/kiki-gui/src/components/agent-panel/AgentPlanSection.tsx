@@ -48,7 +48,7 @@ export const AgentPlanSection = memo(function AgentPlanSection({
       <div data-agent-plan-error role="alert" className="flex min-h-8 flex-wrap items-center gap-x-1.5 text-[12px] text-ink-soft">
         <span>{t('agentPanel.planLoadFailed')}</span>
         <span className="text-ink-faint">· {errorToText(query.error, t('common.unknownError'))}</span>
-        <button type="button" onClick={() => { void query.refetch(); }} className="font-medium text-ink transition-colors hover:text-accent">
+        <button type="button" onClick={() => { void query.refetch(); }} className="font-medium text-ink transition-colors hover:text-ink">
           {t('common.retry')}
         </button>
       </div>

@@ -117,7 +117,7 @@ function SshCheckingCard({ onSwitchLocal }: { onSwitchLocal: () => void }) {
       <Wordmark size="lg" />
       <p className="mt-2 text-[13px] text-ink-soft">{t('connect.sshChecking')}</p>
       <button type="button" onClick={onSwitchLocal}
-        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent">
+        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink">
         {t('connect.switchLocal')}
       </button>
     </div>
@@ -141,7 +141,7 @@ function DesktopBootCard({ boot, onCancel }: { boot: DesktopBootStatus; onCancel
       <button
         type="button"
         onClick={onCancel}
-        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink"
       >
         {t('connect.desktopCancel')}
       </button>
@@ -202,7 +202,7 @@ function DesktopFailureCard({
         <button
           type="button"
           onClick={() => { void copyDiagnostics(); }}
-          className="flex-1 rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+          className="flex-1 rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink"
         >
           {copied ? t('connect.desktopCopied') : t('connect.desktopCopyDiagnostics')}
         </button>
@@ -328,7 +328,7 @@ function BrowserConnectForm({
           />
           <button
             type="button"
-            className="rounded-lg border border-hairline px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            className="rounded-lg border border-hairline px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
             aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
             onClick={() => { setShowToken((value) => !value); }}
           >

@@ -70,7 +70,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
           <button
             type="button"
             onClick={onOpenUsageDetail}
-            className="text-[10px] text-ink-faint hover:text-accent transition-colors"
+            className="text-[10px] text-ink-faint hover:text-ink transition-colors"
           >
             {t('agentPanel.usageDetails')}
           </button>

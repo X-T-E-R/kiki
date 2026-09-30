@@ -298,7 +298,7 @@ export function SelectionQuoteButton({
     >
       <button
         type="button"
-        className="flex items-center gap-1 px-3 py-1 transition-colors hover:text-accent"
+        className="flex items-center gap-1 px-3 py-1 transition-colors hover:text-ink"
         onClick={() => {
           onQuote(target.text);
           window.getSelection()?.removeAllRanges();

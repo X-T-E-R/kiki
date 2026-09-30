@@ -255,7 +255,7 @@ function uniqueSessionIds(sessionIds: readonly string[]): readonly string[] {
 // the board uses orange for work that is moving.
 function todoTone(status: string): { readonly icon: IconName | null; readonly className: string } {
   if (status === 'done') return { icon: 'check', className: 'border-transparent bg-ink/[0.08] text-ink-soft' };
-  if (status === 'in_progress') return { icon: 'dot', className: 'border-accent/60 bg-transparent text-accent' };
+  if (status === 'in_progress') return { icon: 'dot', className: 'border-ink-soft/60 bg-transparent text-ink-soft' };
   return { icon: null, className: 'border-hairline-strong bg-panel text-transparent' };
 }
 

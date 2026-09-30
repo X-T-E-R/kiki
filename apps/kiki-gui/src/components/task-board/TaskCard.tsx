@@ -57,7 +57,7 @@ function executionChip(result: TaskExecution['result']): {
   if (result === 'failed') {
     return { symbol: 'cross', labelKey: 'taskBoard.result.failed', className: 'text-danger' };
   }
-  return { symbol: 'dot', labelKey: 'taskBoard.result.running', className: 'text-accent' };
+  return { symbol: 'dot', labelKey: 'taskBoard.result.running', className: 'text-ink-soft' };
 }
 
 /** Millisecond timestamps become ISO for the shared relative-time formatter; an
