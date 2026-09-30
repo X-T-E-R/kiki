@@ -55,12 +55,15 @@ describe('persistent permission rule editor', () => {
   it('validates the shared pattern schema before writing and preserves other permission fields', async () => {
     await render();
     await click('Add rule');
+    expect(document.body.querySelector('#permission-rule-pattern-error')?.textContent ?? '').not.toContain('ToolName(argument-pattern)');
     await typePattern('Bash(unclosed');
     expect(document.body.textContent).toContain('ToolName(argument-pattern)');
     expect(document.body.querySelector<HTMLButtonElement>('[data-settings-draft="permission-rule"] button')?.disabled).toBe(true);
     expect(client.patchConfig).not.toHaveBeenCalled();
     await typePattern('Bash(rm -rf*)');
-    await click('Save');
+    // A new rule's commit button says what it does.
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-settings-draft="permission-rule"] button')!.click(); });
+    await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ permission: { rules: [
       { decision: 'ask', pattern: 'Bash(rm -rf*)', scope: 'user', reason: undefined },
     ] } });

@@ -7,10 +7,11 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { FieldIssue, FORM_LABEL, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 type PermissionRule = NonNullable<NonNullable<KikiConfigResponse['permission']>['rules']>[number];
@@ -34,6 +35,9 @@ export function PermissionRulesSettings() {
   const original = editing?.index === null ? NEW_RULE : rules[editing?.index ?? -1];
   const dirty = editing !== null && JSON.stringify(editing.draft) !== JSON.stringify(original && toDraft(original));
   const patternValid = editing === null || permissionRuleConfigSchema.shape.pattern.safeParse(editing.draft.pattern).success;
+  // A fresh, empty rule is not wrong yet; say so once something is typed.
+  const patternIssue = !patternValid && editing !== null && editing.draft.pattern !== '';
+  useDirtyReporter('permission-rule', dirty);
 
   const saveRules = async (next: PermissionRule[]): Promise<boolean> => {
     setSaving(true);
@@ -126,13 +130,13 @@ export function PermissionRulesSettings() {
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
               <input data-autofocus className={INPUT} value={editing.draft.pattern} onChange={(event) => update({ pattern: event.target.value })}
-                aria-invalid={!patternValid} aria-describedby={!patternValid ? 'permission-rule-pattern-error' : undefined}
+                aria-invalid={patternIssue} aria-describedby={patternIssue ? 'permission-rule-pattern-error' : undefined}
                 placeholder="Bash(rm -rf*)" /></label>
             <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.decision')}</span>
               <SettingsSelect variant="form" ariaLabel={t('st.perm.decision')} value={editing.draft.decision}
                 onChange={(decision) => update({ decision })} choices={(['allow', 'deny', 'ask'] as const).map((value) => ({ value, label: t(`st.perm.decision.${value}`) }))} /></div>
           </div>
-          <FieldIssue id="permission-rule-pattern-error" text={!patternValid ? t('st.perm.invalidPattern') : null} />
+          <FieldIssue id="permission-rule-pattern-error" text={patternIssue ? t('st.perm.invalidPattern') : null} />
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.scope')}</span>
               <SettingsSelect variant="form" ariaLabel={t('st.perm.scope')} value={editing.draft.scope}
@@ -141,9 +145,14 @@ export function PermissionRulesSettings() {
               <input className={INPUT} value={editing.draft.reason} onChange={(event) => update({ reason: event.target.value })} /></label>
           </div>
           {editing.draft.scope === 'session-runtime' ? <Hint>{t('st.perm.sessionScopeHint')}</Hint> : null}
-          <SettingsDraftFooter id="permission-rule" dirty={dirty} saving={saving} saveDisabled={!patternValid}
-            onSave={() => void saveDraft()} onDiscard={() => { setEditing(null); setFeedback(null); }} />
-          {!dirty ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setEditing(null)}>{t('common.cancel')}</button> : null}
+          {/* A dialog keeps its commit button in view; leaving is Cancel. */}
+          <div className="flex flex-wrap items-center gap-2 pt-3" data-settings-draft="permission-rule" data-dirty={dirty ? 'true' : undefined}>
+            <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || !patternValid} onClick={() => void saveDraft()}>
+              {saving ? t('common.saving') : editing.index === null ? t('st.perm.add') : t('common.save')}
+            </button>
+            <button type="button" data-settings-discard="permission-rule" className={SECONDARY_BUTTON} disabled={saving}
+              onClick={() => { setEditing(null); setFeedback(null); }}>{t('common.cancel')}</button>
+          </div>
           <FeedbackLine feedback={feedback} />
         </div>
       </Dialog> : null}

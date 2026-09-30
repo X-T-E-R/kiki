@@ -241,7 +241,7 @@ function PricingRow({ item, open, configured, onToggle, onSaved }: {
         <span role="cell" className="min-w-0">
           <span className="block truncate font-mono text-[12.5px] text-ink" title={item.model}>{item.model}</span>
           <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4">
-            <span data-pricing-source={item.source} className={item.source === 'unknown' ? 'text-amber-ink' : item.source === 'override' ? 'text-selected-ink' : 'text-ink-faint'}>
+            <span data-pricing-source={item.source} className={`shrink-0 whitespace-nowrap ${item.source === 'unknown' ? 'text-amber-ink' : item.source === 'override' ? 'text-selected-ink' : 'text-ink-faint'}`}>
               {t(SOURCE_KEY[item.source])}
             </span>
             {item.matched_key !== null && item.matched_key !== item.model ? (

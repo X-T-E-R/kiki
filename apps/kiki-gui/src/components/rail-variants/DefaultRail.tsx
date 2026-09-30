@@ -563,7 +563,9 @@ export function DefaultRail({
       {/* One page per agent: switching agents raises the new page into place. */}
       <div key={focusedAgentId} className="rail-page">
       {/* 2 · The agent's own checklist (finished items folded), then its notes and plan. */}
-      <div id="rail-todos" className={`space-y-3 empty:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden`}>
+      {/* Either child may render nothing (no todos, an empty work part);
+          the section and its rule go with them. */}
+      <div id="rail-todos" className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden`}>
         <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} />
         <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
       </div>
