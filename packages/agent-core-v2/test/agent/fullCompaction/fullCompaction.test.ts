@@ -1666,7 +1666,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: expect.stringMatching(/^The conversation so far has been compacted[^]*Compacted prefix\.\n\n## Standing directives\n[^]*## User input since notes\n/) },
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nTreat Standing directives and User input since notes as in force unless the user later revoked them; check them before choosing models, profiles, or irreversible actions.` },
       { role: 'user', text: 'new user while compacting' },
     ]);
     await ctx.expectResumeMatches();
