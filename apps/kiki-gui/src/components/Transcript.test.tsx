@@ -4391,3 +4391,66 @@ describe('semantic tool cards', () => {
     }
   });
 });
+
+describe('Kiki hook injections', () => {
+  const hookText = '[Kiki memory]\nPrefers pnpm over npm.\n\n[Kiki goal_state]\nGoal (active): ship the limit fix';
+
+  function hookBlocks(event: string, text: string): Block[] {
+    return agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [{
+        kind: 'turn', turnId: 't-hook', ordinal: 1, state: 'completed',
+        origin: { kind: 'user', payload: { promptId: 'p-hook' } }, prompt: 'Fix the limit parser.',
+        startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:00:05.000Z',
+        steps: [{
+          kind: 'step', stepId: 't-hook.1', turnId: 't-hook', ordinal: 1, state: 'completed',
+          frames: [{
+            kind: 'text', frameId: 'f-hook', role: 'user', text,
+            origin: { kind: 'hook_result', event, blocked: false },
+          }],
+        }],
+      }],
+      has_more: false,
+    });
+  }
+
+  it('projects the hook event onto the system block', () => {
+    const hook = hookBlocks('kiki:claude:SessionStart', hookText).find((block) => block.kind === 'system');
+    expect(hook).toMatchObject({ kind: 'system', variant: 'hook_result', hookEvent: 'kiki:claude:SessionStart' });
+  });
+
+  it('says who and when on the row, and reveals the labelled parts on expand', async () => {
+    const container = await renderTranscript(hookBlocks('kiki:claude:SessionStart', hookText));
+    const row = container.querySelector('[data-kiki-hook="claude:SessionStart"]')!;
+    expect(row.getAttribute('data-hook-outcome')).toBe('injected');
+    expect(row.textContent).toContain('Kiki added context for Claude Code');
+    expect(row.textContent).toContain('Session start');
+    expect(row.textContent).toContain('Memory, Goal');
+    expect(row.textContent).not.toContain('Prefers pnpm');
+    expect(row.querySelector('[data-hook-prepared]')).toBeNull();
+    await act(async () => { click(row.querySelector('button')!); });
+    const parts = [...row.querySelectorAll('[data-kiki-hook-part]')].map((part) => part.getAttribute('data-kiki-hook-part'));
+    expect(parts).toEqual(['memory', 'goal_state']);
+    expect(row.textContent).toContain('Prefers pnpm over npm.');
+    expect(row.textContent).not.toContain('[Kiki memory]');
+  });
+
+  it('shows PreCompact as prepared, never as delivered', async () => {
+    const container = await renderTranscript(hookBlocks('kiki:codex:PreCompact',
+      `[Handoff prepared; not injected by this hook]\n[Kiki handoff]\nPreserve the current goal.`));
+    const row = container.querySelector('[data-kiki-hook="codex:PreCompact"]')!;
+    expect(row.getAttribute('data-hook-outcome')).toBe('prepared');
+    expect(row.querySelector('[data-hook-prepared]')?.textContent).toBe('Prepared, not injected');
+    expect(row.textContent).toContain('Kiki prepared a handoff for Codex');
+    expect(row.textContent).not.toContain('added context');
+    await act(async () => { click(row.querySelector('button')!); });
+    expect(row.textContent).toContain('this hook sent nothing');
+    expect(row.textContent).not.toContain('Handoff prepared; not injected by this hook');
+  });
+
+  it('leaves a non-Kiki hook result on the generic row', async () => {
+    const container = await renderTranscript(hookBlocks('UserPromptSubmit', 'lint passed'));
+    expect(container.querySelector('[data-kiki-hook]')).toBeNull();
+    expect(container.querySelector('[data-system="hook_result"]')?.textContent).toContain('Hook result');
+  });
+});

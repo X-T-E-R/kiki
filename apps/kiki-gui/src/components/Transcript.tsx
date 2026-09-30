@@ -132,6 +132,8 @@ import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/Fold
 import { FindBar } from './timeline/FindBar';
 import { buildFindItems } from './timeline/findItems';
 import { createFindRevealStore, FindRevealContext, useFindReveal } from './timeline/findReveal';
+import { KikiHookRow } from './timeline/KikiHookRow';
+import { parseKikiHookEvent } from './harness/kikiHook';
 import {
   attrSelector,
   findRanges,
@@ -712,6 +714,12 @@ function systemHeadline(text: string): string | undefined {
 }
 
 const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBlock }) {
+  const hook = block.variant === 'hook_result' ? parseKikiHookEvent(block.hookEvent) : undefined;
+  if (hook !== undefined) return <KikiHookRow block={block} hook={hook} />;
+  return <PlainSystemMessage block={block} />;
+});
+
+function PlainSystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
@@ -734,7 +742,7 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
       ) : undefined}
     </ActivityRow>
   );
-});
+}
 
 const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }) {
   const { t, time } = useI18n();

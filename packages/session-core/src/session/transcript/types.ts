@@ -121,6 +121,8 @@ export interface SystemBlock {
   readonly source?: string;
   /** Task notifications: the background task the note is about. */
   readonly taskId?: string;
+  /** Hook results: the event that produced it (`kiki:<harness>:<event>` for Kiki's own hooks). */
+  readonly hookEvent?: string;
 }
 
 export interface SkillBlock {

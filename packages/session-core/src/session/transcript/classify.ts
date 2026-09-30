@@ -36,6 +36,8 @@ export interface PromptOriginLike {
   readonly isError?: boolean;
   readonly payload?: unknown;
   readonly taskId?: string;
+  /** hook_result: the hook event, e.g. `kiki:claude:SessionStart`. */
+  readonly event?: string;
   readonly senderAgentId?: string;
   readonly senderTaskName?: string;
   readonly messageId?: string;
