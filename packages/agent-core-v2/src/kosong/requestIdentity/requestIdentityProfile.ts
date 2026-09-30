@@ -27,7 +27,8 @@ export const REQUEST_IDENTITY_TEMPLATE_VARIABLES = [
 
 export type RequestIdentityTemplateVariable = (typeof REQUEST_IDENTITY_TEMPLATE_VARIABLES)[number];
 
-const FORBIDDEN_TEMPLATE_HEADERS = new Set([
+/** Credential and transport headers: never templated, and never shown in an observation. */
+export const REQUEST_IDENTITY_CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
   'authorization',
   'proxy-authorization',
   'x-api-key',
@@ -192,7 +193,7 @@ export function validateRequestIdentityProfileDraft(draft: RequestIdentityProfil
   const seen = new Set<string>();
   for (const header of draft.headers) {
     const name = header.name.toLowerCase();
-    if (FORBIDDEN_TEMPLATE_HEADERS.has(name) || name.startsWith('x-kiki-')) {
+    if (REQUEST_IDENTITY_CREDENTIAL_HEADERS.has(name) || name.startsWith('x-kiki-')) {
       throw invalid(`header ${header.name} is managed by the provider connection`);
     }
     if (name === 'user-agent') throw invalid('set User-Agent in the User-Agent field');

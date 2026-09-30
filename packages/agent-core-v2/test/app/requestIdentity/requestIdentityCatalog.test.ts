@@ -146,6 +146,31 @@ describe('RequestIdentityCatalog preview', () => {
     expect(preview.params['client_metadata']).toContain('installation_id');
   });
 
+  it('keeps identity values verbatim in an observation but never the credentials beside them', () => {
+    const { catalog } = createCatalog();
+    catalog.recordObservation({
+      providerId: 'openai',
+      model: 'gpt-example',
+      protocol: 'openai_responses',
+      policy: resolveRequestIdentityLayers({ profile: 'codex' }),
+      sessionId: 's',
+      agentId: 'main',
+      headers: {
+        'User-Agent': 'codex_cli_rs/0.159.2 (Linux 6.1; x86_64)',
+        Authorization: 'Bearer sk-live',
+        'x-api-key': 'sk-live',
+        Cookie: 'session=1',
+        'x-kiki-internal-suppress-user-agent': '1',
+      },
+      params: { service_tier: 'priority' },
+      suppressedUserAgent: false,
+    });
+    const [observation] = catalog.observations();
+    expect(observation?.headers).toEqual([{ name: 'User-Agent', value: 'codex_cli_rs/0.159.2 (Linux 6.1; x86_64)' }]);
+    expect(observation?.params).toEqual({ service_tier: 'priority' });
+    expect(observation?.profile).toBe('codex');
+  });
+
   it('reports a protocol mismatch instead of inventing values', async () => {
     const { catalog } = createCatalog();
     const preview = await catalog.preview({ profile: 'claude_code', protocol: 'openai_responses', model: 'm' });

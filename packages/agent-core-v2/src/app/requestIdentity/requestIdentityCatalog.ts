@@ -44,6 +44,7 @@ import {
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import {
   BUILTIN_REQUEST_IDENTITY_PROFILES,
+  REQUEST_IDENTITY_CREDENTIAL_HEADERS,
   REQUEST_IDENTITY_TRACK_SEEDS,
   renderRequestIdentityProfile,
   requestIdentityProfileAxes,
@@ -175,7 +176,7 @@ export class RequestIdentityCatalog extends Disposable implements IRequestIdenti
       session_id: input.sessionId,
       agent_id: input.agentId,
       headers: Object.entries(input.headers ?? {})
-        .filter(([name]) => !name.toLowerCase().startsWith('x-kiki-'))
+        .filter(([name]) => isObservableHeader(name))
         .map(([name, value]) => ({ name, value })),
       params: { ...input.params },
       cache_key: input.cacheKey,
@@ -616,6 +617,12 @@ export class RequestIdentityCatalog extends Disposable implements IRequestIdenti
       clearTimeout(timer);
     }
   }
+}
+
+/** Identity values only: Kiki-internal markers and credentials stay out of the catalog. */
+function isObservableHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return !lower.startsWith('x-kiki-') && !REQUEST_IDENTITY_CREDENTIAL_HEADERS.has(lower);
 }
 
 const PER_REQUEST_HEADERS = new Set([
