@@ -1,20 +1,21 @@
 /**
- * The sidebar's Bots and Rooms groups. Bots sit above the session list, one
- * row per persona with a home session; rooms follow. The sessions behind
- * them (a Bot's home, a room member's own session) stay out of the plain
- * session list: each already has one address here.
+ * The sidebar's Bots group above the session list: one row per persona with
+ * a home session. The sessions behind them (a Bot's home, a room member's own
+ * session) stay out of the plain session list: each already has one address
+ * here. Rooms list as conversation rows of their own (kind 'room'); only the
+ * create-room entry remains here, in the Bots header, because a room's members
+ * are Bots/personas and rooms need Bot mode.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
 
-import type { BotSummary, PersonaSummary, RoomDocument, Session } from '@kiki/protocol';
+import type { BotSummary, PersonaSummary, Session } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
-import { BOTS_QUERY_KEY, ROOMS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
+import { BOTS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
 import { registerOverlay } from '../../lib/uiBusy';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -65,17 +66,14 @@ export function SidebarBotRoomGroups({
   const { t } = useI18n();
   const api = useBotRoomApi();
   const navigate = useGuardedNavigate();
-  const location = useLocation();
   const queryClient = useQueryClient();
   const avatars = useAvatarLookup();
   const botsQuery = useQuery({ queryKey: BOTS_QUERY_KEY, queryFn: () => api.listBots(), staleTime: 15_000, retry: false });
-  const roomsQuery = useQuery({ queryKey: ROOMS_QUERY_KEY, queryFn: () => api.listRooms(), staleTime: 15_000, retry: false });
   const [enableOpen, setEnableOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const enableButton = useRef<HTMLButtonElement>(null);
 
   const bots = visibleBots(botsQuery.data ?? []);
-  const rooms = roomsQuery.data ?? [];
   const sessionById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
   const candidates = [...avatars.values()].filter((persona) =>
     !persona.archived && (botsQuery.data ?? []).every((bot) => bot.personaId !== persona.id));
@@ -101,85 +99,69 @@ export function SidebarBotRoomGroups({
   });
 
   const showBots = botsQuery.isSuccess && (bots.length > 0 || candidates.length > 0);
-  // Rooms need Bot mode, which enabling any Bot turns on; without one the
-  // group would only offer a create that the server refuses.
-  const showRooms = roomsQuery.isSuccess && (rooms.length > 0 || (botsQuery.data ?? []).length > 0);
-  if (!showBots && !showRooms) return null;
+  // Creating a (persona) room needs Bot mode, which enabling any Bot turns
+  // on; without one the create would only fail at the server.
+  const canCreateRoom = (botsQuery.data ?? []).length > 0;
+  if (!showBots) return null;
   return (
     <div data-sidebar-bot-rooms className="max-h-[38vh] shrink-0 overflow-y-auto px-2 pb-1">
-      {showBots ? (
-        <div role="group" aria-label={t('bot.group')} data-sidebar-bots className="mb-2">
-          <div className={GROUP_HEAD}>
-            <h2 className={GROUP_LABEL}>{t('bot.group')}</h2>
-            {candidates.length > 0 ? (
-              <button type="button" ref={enableButton} data-bot-enable-toggle
-                aria-haspopup="menu" aria-expanded={enableOpen}
-                aria-label={t('bot.enable')} title={t('bot.enable')}
-                onClick={() => { setEnableOpen((open) => !open); }}
-                className={HEAD_BUTTON}>
-                <Icon name="plus" size={14} />
-              </button>
-            ) : null}
-          </div>
-          {enableOpen ? (
-            <EnableBotMenu anchor={enableButton.current} personas={candidates}
-              busyId={enable.isPending ? enable.variables?.id : undefined}
-              onPick={(persona) => { enable.mutate(persona); }}
-              onClose={() => { setEnableOpen(false); }} />
-          ) : null}
-          <ul className="flex flex-col gap-px">
-            {bots.map((bot) => {
-              const home = bot.homeSessionId === undefined ? undefined : sessionById.get(bot.homeSessionId);
-              const life = botLife(home, seen);
-              const summary = avatars.get(bot.personaId);
-              const face = summary === undefined ? { id: bot.personaId, name: bot.name } : personaAvatarOf(summary);
-              const active = bot.homeSessionId !== undefined && bot.homeSessionId === activeSessionId;
-              return (
-                <li key={bot.personaId}>
-                  <button type="button" data-sidebar-bot={bot.personaId}
-                    aria-current={active ? 'page' : undefined}
-                    aria-label={t('bot.open', { name: bot.name })}
-                    onClick={() => { openBot.mutate(bot); }}
-                    className="row-interactive flex h-8 w-full items-center gap-2 pr-2 pl-2 text-left">
-                    <span className="flex w-[7px] shrink-0 items-center">
-                      <LifeMark markId={`bot:${bot.personaId}`} life={life} still
-                        tone={life === 'waiting' ? 'bg-attention' : undefined} />
-                    </span>
-                    <PersonaAvatar persona={face} size={20} decorative />
-                    <span className={`min-w-0 shrink truncate text-[13px] ${active || life === 'waiting' || life === 'done' ? 'font-medium text-ink' : 'text-ink-soft'}`}>
-                      {bot.name}
-                    </span>
-                    {bot.title !== undefined ? (
-                      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{bot.title}</span>
-                    ) : <span className="flex-1" />}
-                    {bot.pinned ? <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span> : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ) : null}
-      {showRooms ? (
-      <div role="group" aria-label={t('room.group')} data-sidebar-rooms>
+      <div role="group" aria-label={t('bot.group')} data-sidebar-bots className="mb-2">
         <div className={GROUP_HEAD}>
-          <h2 className={GROUP_LABEL}>{t('room.group')}</h2>
-          <button type="button" data-room-create aria-label={t('room.new')} title={t('room.new')}
-            onClick={() => { setCreating(true); }} className={HEAD_BUTTON}>
-            <Icon name="plus" size={14} />
-          </button>
+          <h2 className={GROUP_LABEL}>{t('bot.group')}</h2>
+          {canCreateRoom ? (
+            <button type="button" data-room-create aria-label={t('room.new')} title={t('room.new')}
+              onClick={() => { setCreating(true); }} className={HEAD_BUTTON}>
+              <span aria-hidden className="font-mono text-[13px] leading-none">#</span>
+            </button>
+          ) : null}
+          {candidates.length > 0 ? (
+            <button type="button" ref={enableButton} data-bot-enable-toggle
+              aria-haspopup="menu" aria-expanded={enableOpen}
+              aria-label={t('bot.enable')} title={t('bot.enable')}
+              onClick={() => { setEnableOpen((open) => !open); }}
+              className={HEAD_BUTTON}>
+              <Icon name="plus" size={14} />
+            </button>
+          ) : null}
         </div>
+        {enableOpen ? (
+          <EnableBotMenu anchor={enableButton.current} personas={candidates}
+            busyId={enable.isPending ? enable.variables?.id : undefined}
+            onPick={(persona) => { enable.mutate(persona); }}
+            onClose={() => { setEnableOpen(false); }} />
+        ) : null}
         <ul className="flex flex-col gap-px">
-          {rooms.map((room) => (
-            <li key={room.id}>
-              <RoomRow room={room} avatars={avatars} sessionById={sessionById}
-                active={location.pathname === `/rooms/${room.id}`}
-                onOpen={() => { navigate(`/rooms/${encodeURIComponent(room.id)}`); }} />
-            </li>
-          ))}
+          {bots.map((bot) => {
+            const home = bot.homeSessionId === undefined ? undefined : sessionById.get(bot.homeSessionId);
+            const life = botLife(home, seen);
+            const summary = avatars.get(bot.personaId);
+            const face = summary === undefined ? { id: bot.personaId, name: bot.name } : personaAvatarOf(summary);
+            const active = bot.homeSessionId !== undefined && bot.homeSessionId === activeSessionId;
+            return (
+              <li key={bot.personaId}>
+                <button type="button" data-sidebar-bot={bot.personaId}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={t('bot.open', { name: bot.name })}
+                  onClick={() => { openBot.mutate(bot); }}
+                  className="row-interactive flex h-8 w-full items-center gap-2 pr-2 pl-2 text-left">
+                  <span className="flex w-[7px] shrink-0 items-center">
+                    <LifeMark markId={`bot:${bot.personaId}`} life={life} still
+                      tone={life === 'waiting' ? 'bg-attention' : undefined} />
+                  </span>
+                  <PersonaAvatar persona={face} size={20} decorative />
+                  <span className={`min-w-0 shrink truncate text-[13px] ${active || life === 'waiting' || life === 'done' ? 'font-medium text-ink' : 'text-ink-soft'}`}>
+                    {bot.name}
+                  </span>
+                  {bot.title !== undefined ? (
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{bot.title}</span>
+                  ) : <span className="flex-1" />}
+                  {bot.pinned ? <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span> : null}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </div>
-      ) : null}
       {creating ? <CreateRoomDialog onClose={() => { setCreating(false); }} /> : null}
     </div>
   );
@@ -218,40 +200,6 @@ export function AvatarStack({
       })}
       {members.length > max ? <span className="ml-1 text-[11px] text-ink-faint tabular-nums">+{members.length - max}</span> : null}
     </span>
-  );
-}
-
-function RoomRow({
-  room,
-  avatars,
-  sessionById,
-  active,
-  onOpen,
-}: {
-  readonly room: RoomDocument;
-  readonly avatars: ReadonlyMap<string, PersonaSummary>;
-  readonly sessionById: ReadonlyMap<string, Session>;
-  readonly active: boolean;
-  readonly onOpen: () => void;
-}) {
-  const { t } = useI18n();
-  const working = room.members.some((member) => sessionById.get(member.sessionId)?.busy === true);
-  const waiting = room.members.some((member) => { const pending = sessionById.get(member.sessionId)?.pending_interaction; return pending !== undefined && pending !== 'none'; });
-  const life = waiting ? 'waiting' as const : working ? 'working' as const : 'idle' as const;
-  return (
-    <button type="button" data-sidebar-room={room.id}
-      aria-current={active ? 'page' : undefined}
-      aria-label={t('room.open', { name: room.name })}
-      onClick={onOpen}
-      className="row-interactive flex h-8 w-full items-center gap-2 pr-2 pl-2 text-left">
-      <span className="flex w-[7px] shrink-0 items-center">
-        <LifeMark markId={`room:${room.id}`} life={life} still tone={life === 'waiting' ? 'bg-attention' : undefined} />
-      </span>
-      <span aria-hidden className="w-5 shrink-0 text-center font-mono text-[13px] text-ink-faint">#</span>
-      <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? 'font-medium text-ink' : 'text-ink-soft'}`}>{room.name}</span>
-      {room.paused ? <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="hold" size={12} /></span> : null}
-      <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{t('room.memberCountShort', { count: room.members.length })}</span>
-    </button>
   );
 }
 

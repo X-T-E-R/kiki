@@ -19,7 +19,7 @@
 
 import type { Session } from '@kiki/protocol';
 
-import { isPinnedSession, type SessionGroup } from '@kiki/session-core/sessions';
+import { isPinnedSession, type ConversationListItem, type SessionGroup } from '@kiki/session-core/sessions';
 
 export type SessionRelationKind = 'thread' | 'branch';
 
@@ -62,16 +62,37 @@ export interface SessionTreeGroup {
   readonly total: number;
 }
 
-export function nestSessionThreads(
-  groups: readonly SessionGroup[],
+interface TreeNode<T> {
+  readonly item: T;
+  readonly relation?: SessionRelation;
+  readonly children: readonly TreeNode<T>[];
+}
+
+interface TreeGroup<T> {
+  readonly key: string;
+  readonly label: string;
+  readonly nodes: readonly TreeNode<T>[];
+  readonly total: number;
+}
+
+/**
+ * The nesting walk over a generic row item. `sessionOf` returns the session
+ * an item nests by, or undefined for rows that can never nest or host (a
+ * room: it has no creator metadata and no session ever names it as parent).
+ */
+function nestItems<T>(
+  groups: readonly SessionGroup<T>[],
+  sessionOf: (item: T) => Session | undefined,
   options: { readonly crossGroups: boolean },
-): SessionTreeGroup[] {
+): TreeGroup<T>[] {
   const groupOf = new Map<string, string>();
-  const byId = new Map<string, Session>();
+  const byId = new Map<string, { item: T; session: Session }>();
   for (const group of groups) {
-    for (const session of group.items) {
+    for (const item of group.items) {
+      const session = sessionOf(item);
+      if (session === undefined) continue;
       groupOf.set(session.id, group.key);
-      byId.set(session.id, session);
+      byId.set(session.id, { item, session });
     }
   }
 
@@ -83,14 +104,14 @@ export function nestSessionThreads(
     for (;;) {
       const relation = sessionRelationOf(current);
       const parent = relation === undefined ? undefined : byId.get(relation.parentId);
-      if (parent === undefined || seen.has(parent.id)) return current.id;
-      seen.add(parent.id);
-      current = parent;
+      if (parent === undefined || seen.has(parent.session.id)) return current.id;
+      seen.add(parent.session.id);
+      current = parent.session;
     }
   };
   // '' marks a top-level row; otherwise the id of the row it nests under.
   const hostOf = new Map<string, string>();
-  for (const session of byId.values()) {
+  for (const { session } of byId.values()) {
     const root = rootOf(session);
     const sameGroup = groupOf.get(root) === groupOf.get(session.id);
     const allowed = sameGroup || (options.crossGroups && !isPinnedSession(session));
@@ -102,29 +123,89 @@ export function nestSessionThreads(
     if (host !== '' && hostOf.get(host) !== '') hostOf.set(id, '');
   }
 
-  const childrenOf = new Map<string, SessionTreeNode[]>();
-  for (const group of groups) {
-    for (const session of group.items) {
-      const host = hostOf.get(session.id);
-      if (host === undefined || host === '') continue;
-      const list = childrenOf.get(host) ?? [];
-      list.push({ session, relation: sessionRelationOf(session), children: [] });
-      childrenOf.set(host, list);
-    }
+  const childrenOf = new Map<string, TreeNode<T>[]>();
+  for (const { item, session } of byId.values()) {
+    const host = hostOf.get(session.id);
+    if (host === undefined || host === '') continue;
+    const list = childrenOf.get(host) ?? [];
+    list.push({ item, relation: sessionRelationOf(session), children: [] });
+    childrenOf.set(host, list);
   }
 
-  const result: SessionTreeGroup[] = [];
+  const result: TreeGroup<T>[] = [];
   for (const group of groups) {
-    const nodes: SessionTreeNode[] = [];
+    const nodes: TreeNode<T>[] = [];
     let total = 0;
-    for (const session of group.items) {
-      const host = hostOf.get(session.id);
+    for (const item of group.items) {
+      const session = sessionOf(item);
+      const host = session === undefined ? '' : hostOf.get(session.id);
       if (host !== undefined && host !== '') continue;
-      const children = childrenOf.get(session.id) ?? [];
+      const children = session === undefined ? [] : childrenOf.get(session.id) ?? [];
       total += 1 + children.length;
-      nodes.push({ session, relation: sessionRelationOf(session), children });
+      nodes.push({ item, relation: session === undefined ? undefined : sessionRelationOf(session), children });
     }
     if (nodes.length > 0) result.push({ key: group.key, label: group.label, nodes, total });
   }
   return result;
+}
+
+function toSessionNode(node: TreeNode<Session>): SessionTreeNode {
+  return {
+    session: node.item,
+    ...(node.relation !== undefined ? { relation: node.relation } : {}),
+    children: node.children.map(toSessionNode),
+  };
+}
+
+export function nestSessionThreads(
+  groups: readonly SessionGroup[],
+  options: { readonly crossGroups: boolean },
+): SessionTreeGroup[] {
+  return nestItems<Session>(groups, (session) => session, options).map((group) => ({
+    key: group.key,
+    label: group.label,
+    nodes: group.nodes.map(toSessionNode),
+    total: group.total,
+  }));
+}
+
+export interface ConversationTreeNode {
+  readonly item: ConversationListItem;
+  /** Present when the row came from another session (nested or not). */
+  readonly relation?: SessionRelation;
+  /** Nested children, in the view's sort order. Empty for leaves and rooms. */
+  readonly children: readonly ConversationTreeNode[];
+}
+
+export interface ConversationTreeGroup {
+  readonly key: string;
+  readonly label: string;
+  /** Top-level rows; the row count the "Show N more" preview limit counts. */
+  readonly nodes: readonly ConversationTreeNode[];
+  /** Every conversation in the group, nested children included. */
+  readonly total: number;
+}
+
+function toConversationNode(node: TreeNode<ConversationListItem>): ConversationTreeNode {
+  return {
+    item: node.item,
+    ...(node.relation !== undefined ? { relation: node.relation } : {}),
+    children: node.children.map(toConversationNode),
+  };
+}
+
+/**
+ * Rooms ride along as always-top-level rows; only thread items nest. A room
+ * can never be a parent: no session's metadata names a room as its creator.
+ */
+export function nestConversationItems(
+  groups: readonly SessionGroup<ConversationListItem>[],
+  options: { readonly crossGroups: boolean },
+): ConversationTreeGroup[] {
+  return nestItems<ConversationListItem>(groups, (item) => item.kind === 'session' ? item.session : undefined, options).map((group) => ({
+    key: group.key,
+    label: group.label,
+    nodes: group.nodes.map(toConversationNode),
+    total: group.total,
+  }));
 }

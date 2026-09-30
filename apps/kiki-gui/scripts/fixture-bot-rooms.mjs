@@ -55,6 +55,36 @@ function threadMember(sessionId, input = {}) {
   return { kind: 'thread', sessionId, muted: input.muted === true, joinedAt: new Date().toISOString(), queueWhenBusy: input.queueWhenBusy !== false };
 }
 
+/**
+ * The sidebar list's room summary (kap `GET /rooms/items`). Derived honestly
+ * from the seeded room: the log length stands in for lastSeq, member session
+ * flags for busy/attention, a budget pause for the budget needs-you.
+ */
+function roomListItem(server, record) {
+  const { room, log } = record;
+  const memberSessions = room.members
+    .map((member) => server.sessions?.get?.(member.sessionId)?.record)
+    .filter((entry) => entry !== undefined);
+  const pending = memberSessions.map((entry) => entry.pending_interaction).find((value) => value === 'approval' || value === 'question') ?? 'none';
+  const budgetPaused = room.paused === true && room.pauseReason === 'budget';
+  return {
+    kind: 'room',
+    id: room.id,
+    title: room.name,
+    workspace: room.workspace,
+    createdAt: room.createdAt,
+    updatedAt: log.at(-1)?.at ?? room.createdAt,
+    lastSeq: log.length,
+    memberCount: room.members.length,
+    busy: server.roomRunning?.[room.id] === true || memberSessions.some((entry) => entry.busy === true),
+    needsYou: pending !== 'none' || budgetPaused,
+    pendingInteraction: pending,
+    failed: memberSessions.some((entry) => entry.last_turn_reason === 'failed'),
+    pinned: room.pinned === true,
+    archived: room.archived === true,
+  };
+}
+
 function botSummary(server, bot) {
   const definition = server.personas?.get(bot.personaId)?.definition;
   return {
@@ -121,6 +151,8 @@ export async function handleBotRooms(server, req, res, path, query) {
   }
 
   if (path === '/rooms' && method === 'GET') return ok([...server.rooms.values()].map((record) => record.room));
+  // The sidebar's merged conversation list reads these summaries.
+  if (path === '/rooms/items' && method === 'GET') return ok([...server.rooms.values()].map((record) => roomListItem(server, record)));
   if (path === '/rooms/threads' && method === 'GET') {
     if (threadCommsOff(server)) return ok({ threads: [] });
     const needle = (query.get('query') ?? '').toLocaleLowerCase();
@@ -207,6 +239,8 @@ export async function handleBotRooms(server, req, res, path, query) {
       return fail('Stop the active room turn before changing its members or workspace.');
     }
     if (typeof body.name === 'string' && body.name !== room.name) { room.name = body.name; record.log.push(system('room_renamed', `Room renamed to ${room.name}.`, { name: room.name })); }
+    if (typeof body.pinned === 'boolean') room.pinned = body.pinned;
+    if (typeof body.archived === 'boolean') room.archived = body.archived;
     if (typeof body.host === 'string' && body.host !== room.host) { room.host = body.host; record.log.push(system('host_changed', `Room host changed to ${room.host}.`, { host: room.host })); }
     if (body.budget?.botMessagesPerUserMessage !== undefined) room.budget = { botMessagesPerUserMessage: body.budget.botMessagesPerUserMessage };
     if (body.members !== undefined) {

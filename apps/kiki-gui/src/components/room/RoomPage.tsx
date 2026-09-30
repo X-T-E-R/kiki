@@ -16,7 +16,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 
 import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
 import { formatTokens } from '@kiki/session-core/util';
@@ -148,6 +148,21 @@ function RoomView({
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [stopFirst, setStopFirst] = useState(false);
+
+  // The sidebar's room menu deep-links the members rail (and the budget field
+  // in it): /rooms/<id>?panel=members[&focus=budget].
+  const [searchParams] = useSearchParams();
+  const panelParam = searchParams.get('panel');
+  const focusParam = searchParams.get('focus');
+  useEffect(() => {
+    if (panelParam !== 'members') return;
+    setMembersOpen(true);
+    if (focusParam !== 'budget') return;
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>('[data-room-budget-input]')?.focus();
+    });
+    return () => { window.cancelAnimationFrame(frame); };
+  }, [panelParam, focusParam]);
 
   const untitled = t('comms.untitled');
   // Thread members are keyed by session id; a thread that left keeps its

@@ -58,6 +58,7 @@ import { RoomPage } from './components/room/RoomPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
+import { isBotOrRoomSession } from './components/bot/SidebarBotRoomGroups';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
@@ -65,12 +66,10 @@ import { useHost, type DesktopUpdate } from './host';
 import {
   arrangePinnedFirst,
   dedupeSessions,
-  filterSessions,
-  groupSessionsByTime,
-  groupSessionsByWorkspace,
+  groupConversationItems,
   mergeSessionFirstPage,
-  sortSessionItems,
   sortWorkspacesByPinnedThenRecency,
+  type ConversationListItem,
   type SessionGroup,
   type SessionListData,
 } from '@kiki/session-core/sessions';
@@ -351,27 +350,18 @@ export function App() {
     [sessionsQuery.data],
   );
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
-  const sessionGroups = useMemo<readonly SessionGroup[]>(() => {
-    const sorted = sortSessionItems(filterSessions(sessions, listFilters), layoutPrefs.sortBy);
-    const nowMs = Date.now();
-    if (layoutPrefs.groupBy === 'none') {
-      return sorted.length === 0 ? [] : [{ key: 'all', label: t('sidebar.groupByNone'), items: sorted }];
-    }
-    if (layoutPrefs.groupBy === 'workspace') {
-      // Pinned rows keep a global leading bucket here too: a per-workspace
-      // bucket would bury the sessions the user asked to keep on top.
-      return groupSessionsByWorkspace(
-        sorted,
-        workspaceOptions,
-        (workspace) => workspace.name,
-        t('sidebar.groupUngrouped'),
-        t('sidebar.groupPinned'),
-      );
-    }
-    return groupSessionsByTime(
-      sorted,
-      nowMs,
-      {
+  const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
+    // A Bot's home and a room member's own session keep their single address
+    // (the Bot rows above, the room's row); everything else lists here.
+    const items = conversations.items.filter((item) =>
+      item.kind === 'room' || item.session.archived === true || !isBotOrRoomSession(item.session));
+    return groupConversationItems(items, {
+      groupBy: layoutPrefs.groupBy,
+      workspaces: workspaceOptions,
+      filters: listFilters,
+      nowMs: Date.now(),
+      order: layoutPrefs.sortBy,
+      labels: {
         pinned: t('sidebar.groupPinned'),
         today: t('sidebar.groupToday'),
         yesterday: t('sidebar.groupYesterday'),
@@ -379,8 +369,9 @@ export function App() {
         month: t('sidebar.groupMonth'),
         older: t('sidebar.groupOlder'),
       },
-    );
-  }, [sessions, listFilters, workspaceOptions, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
+      ungroupedLabel: t('sidebar.groupUngrouped'),
+    });
+  }, [conversations.items, workspaceOptions, listFilters, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
 
   // System notifications while the window is in the background, the taskbar
   // badge, and notification clicks back to their session.
@@ -559,6 +550,7 @@ export function App() {
         rooms={conversations.rooms}
         sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}
+        roomsQuery={conversations.roomsQuery}
         workspaceOptions={workspaceOptions}
         filters={listFilters}
         onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}

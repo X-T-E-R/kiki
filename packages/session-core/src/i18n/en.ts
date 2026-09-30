@@ -6580,4 +6580,6 @@ export const en = {
   'st.models.searchWide': 'Search name, id, connection or capability…',
   'st.models.detailTitle': 'Edit model',
   'st.models.openDetail': 'Edit {model}',
+  'sidebar.roomsLoadFailed': 'Could not load rooms',
+  'room.renameTitle': 'Rename room',
 } as const;

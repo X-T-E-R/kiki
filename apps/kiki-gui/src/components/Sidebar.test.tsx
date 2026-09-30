@@ -6,11 +6,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { RoomDocument, RoomListItem, Session, Workspace } from '@kiki/protocol';
 
 import {
   CONTENT_SEARCH_DEBOUNCE_MS,
+  isPinnedSession,
+  mergeConversationItems,
   SESSION_PIN_META_KEY,
+  type ConversationListItem,
   type SessionGroup,
 } from '@kiki/session-core/sessions';
 import { subscribeComposerInserts } from '@kiki/session-core/composer';
@@ -39,12 +42,28 @@ const listEphemeralSessions = vi.fn(async (): Promise<{ items: Session[] }> => (
 const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
 const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
+// The room rows' lifecycle calls; wired into the mocked client's klient.rest.
+const roomRest = vi.hoisted(() => ({
+  get: vi.fn(),
+  update: vi.fn(),
+  pause: vi.fn(),
+  continue: vi.fn(),
+  delete: vi.fn(),
+}));
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useOptionalConnection: () => undefined,
   useConnection: () => ({
-    client: { searchMessages, retrySearchIndexer, setWorkspacePinned, listEphemeralSessions, listTasks, listPrompts },
+    client: {
+      searchMessages,
+      retrySearchIndexer,
+      setWorkspacePinned,
+      listEphemeralSessions,
+      listTasks,
+      listPrompts,
+      klient: { rest: { rooms: roomRest } },
+    },
     scopeId: connectionScope.id,
     meta: {
       server_version: '1.0.0',
@@ -131,6 +150,23 @@ const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
 
+/** Wrap a plain session the way useConversationList would; the sidebar only
+ * reads the thread fields off `session`, so the conversation fields just
+ * mirror it. */
+function threadItem(session: Session): ConversationListItem {
+  return {
+    ...session,
+    kind: 'session',
+    session,
+    key: `session:${session.id}`,
+    href: `/s/${session.id}`,
+    unread_count: session.last_seq,
+    needs_you: session.pending_interaction === 'approval' || session.pending_interaction === 'question',
+    failed: session.last_turn_reason === 'failed',
+    pinned: isPinnedSession(session),
+  };
+}
+
 beforeAll(() => {
   localStorage.setItem('kiki.locale', 'en');
   vi.stubGlobal('navigator', { language: 'en-US' });
@@ -143,6 +179,7 @@ beforeEach(() => {
   setWorkspacePinned.mockClear();
   listEphemeralSessions.mockReset();
   listEphemeralSessions.mockResolvedValue({ items: [] });
+  for (const fn of Object.values(roomRest)) fn.mockReset();
   connectionScope.id = 'local';
   // Workspace folds and the list scroll persist across mounts.
   localStorage.removeItem('kiki.sidebar.workspaceGroups');
@@ -167,8 +204,14 @@ async function settle(): Promise<void> {
 
 type SidebarProps = ComponentProps<typeof Sidebar>;
 
+/** Tests still hand the mount plain session groups; the wrap into
+ * conversation items happens here so every body keeps its old shape. */
+type SidebarOverrides = Omit<Partial<SidebarProps>, 'sessionGroups'> & {
+  sessionGroups?: readonly SessionGroup<Session | ConversationListItem>[];
+};
+
 async function mount(
-  overrides: Partial<SidebarProps> = {},
+  overrides: SidebarOverrides = {},
   host: HostAdapter = browserHost,
 ): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
@@ -176,6 +219,11 @@ async function mount(
   containers.push(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { sessionGroups: rawGroups, ...rest } = overrides;
+  const sessionGroups = (rawGroups ?? []).map((group) => ({
+    ...group,
+    items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
+  }));
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
@@ -185,7 +233,7 @@ async function mount(
               <Sidebar
                 activeSessionId={undefined}
                 sessions={[]}
-                sessionGroups={[]}
+                sessionGroups={sessionGroups}
                 sessionsQuery={{
                   isLoading: false,
                   isError: false,
@@ -202,7 +250,7 @@ async function mount(
                 onGroupBy={() => {}}
                 sortBy="updated-desc"
                 onSortBy={() => {}}
-                {...overrides}
+                {...rest}
               />
             </MemoryRouter>
           </HostProvider>
@@ -1279,7 +1327,7 @@ describe('Sidebar workspace groups', () => {
   const wsB = workspace('ws_b', 'beta');
   const inA = { ...session('a1'), workspace_id: 'ws_a' };
   const inB = { ...session('b1'), workspace_id: 'ws_b' };
-  const grouped = (): Partial<SidebarProps> => ({
+  const grouped = (): SidebarOverrides => ({
     sessions: [inA, inB],
     groupBy: 'workspace',
     workspaceOptions: [wsA, wsB],
@@ -1367,7 +1415,7 @@ describe('Sidebar workspace groups', () => {
 
   it('gives Pinned the same header: chevron, count, neutral ink, remembered fold, no pin action', async () => {
     const pinned = { ...session('p1'), workspace_id: 'ws_b', metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } as Session['metadata'] };
-    const props = (): Partial<SidebarProps> => ({
+    const props = (): SidebarOverrides => ({
       ...grouped(),
       sessions: [pinned, inA, inB],
       sessionGroups: [
@@ -1416,5 +1464,219 @@ describe('Sidebar workspace groups', () => {
     expect(container.querySelector('[data-session-group-more="pinned"]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-groups-fold-all]')!.click(); });
     expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
+  });
+});
+
+describe('Sidebar room rows', () => {
+  function roomSummary(overrides: Partial<RoomListItem> & { id: string }): RoomListItem {
+    return {
+      kind: 'room',
+      title: overrides.id,
+      workspace: 'ws_test',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      lastSeq: 0,
+      memberCount: 2,
+      busy: false,
+      needsYou: false,
+      pendingInteraction: 'none',
+      failed: false,
+      pinned: false,
+      archived: false,
+      ...overrides,
+    };
+  }
+
+  function roomDocument(room: RoomListItem, paused = false): RoomDocument {
+    return {
+      version: 1,
+      id: room.id,
+      name: room.title,
+      members: [],
+      host: 'lin-lan',
+      mode: 'mention',
+      budget: { botMessagesPerUserMessage: 4 },
+      workspace: room.workspace,
+      createdAt: room.createdAt,
+      pinned: room.pinned,
+      archived: room.archived,
+      generation: 0,
+      paused,
+      budgetUsed: 0,
+      userMessageCount: 0,
+      cursors: {},
+    };
+  }
+
+  /** The real projection: the row reads the merged conversation item. */
+  function roomItem(room: RoomListItem): ConversationListItem {
+    const item = mergeConversationItems([], [room], {})[0];
+    if (item === undefined) throw new Error('room item not built');
+    return item;
+  }
+
+  function listedRoom(room: RoomListItem): SidebarOverrides {
+    return {
+      rooms: [room],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [roomItem(room)] }],
+    };
+  }
+
+  const writeText = vi.fn(async () => {});
+  beforeEach(() => {
+    writeText.mockClear();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+
+  async function openRoomMenu(container: HTMLDivElement): Promise<HTMLElement> {
+    const row = container.querySelector('[data-room-title]');
+    if (row === null) throw new Error('room row not rendered');
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const menu = container.querySelector<HTMLElement>('[data-room-menu]');
+    if (menu === null) throw new Error('room menu did not open');
+    return menu;
+  }
+
+  it('renders a room as a thread-style row with the # mark, and opens it', async () => {
+    const room = roomSummary({ id: 'room_1', title: '0.31 发布' });
+    const { container } = await mount(listedRoom(room));
+    const row = container.querySelector('[data-room-row="room_1"]');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('[data-room-kind]')?.textContent).toBe('#');
+    expect(row?.textContent).toContain('0.31 发布');
+    expect(row?.getAttribute('data-room-row-state')).toBe('read');
+    await act(async () => { row!.querySelector('button')!.click(); });
+    expect(row?.querySelector('button')?.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('carries the thread row states: unread, needs you (approval and budget)', async () => {
+    const unread = roomSummary({ id: 'room_unread', lastSeq: 3 });
+    const approval = roomSummary({ id: 'room_approval', needsYou: true, pendingInteraction: 'approval' });
+    const budget = roomSummary({ id: 'room_budget', needsYou: true, pendingInteraction: 'none' });
+    const { container } = await mount({
+      rooms: [unread, approval, budget],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [roomItem(unread), roomItem(approval), roomItem(budget)] }],
+    });
+    expect(container.querySelector('[data-room-row="room_unread"]')?.getAttribute('data-room-row-state')).toBe('unread');
+    const approvalRow = container.querySelector('[data-room-row="room_approval"]');
+    expect(approvalRow?.getAttribute('data-room-row-state')).toBe('needs-me');
+    expect(approvalRow?.querySelector('[data-room-needs-you]')?.textContent).toBe('Awaiting approval');
+    const budgetRow = container.querySelector('[data-room-row="room_budget"]');
+    expect(budgetRow?.getAttribute('data-room-row-state')).toBe('needs-me');
+    expect(budgetRow?.querySelector('[data-room-needs-you]')?.textContent).toBe('Room budget exhausted');
+  });
+
+  it('pins from the hover affordance through the room API', async () => {
+    roomRest.update.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' }), false));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1' })));
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-pin-toggle]')!.click(); });
+    expect(roomRest.update).toHaveBeenCalledWith('room_1', { pinned: true });
+  });
+
+  it('copies the deep link from the menu', async () => {
+    roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1' })));
+    const menu = await openRoomMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-link"]')!.click(); });
+    expect(writeText).toHaveBeenCalledWith('/rooms/room_1');
+    expect(container.querySelector('[data-room-menu]')).toBeNull();
+  });
+
+  it('lists members / budget / pause ahead of the shared lifecycle entries', async () => {
+    const room = roomSummary({ id: 'room_1' });
+    // Hold the room document back so the pause entry shows its waiting state.
+    let resolveRoom!: (value: unknown) => void;
+    roomRest.get.mockReturnValue(new Promise((resolve) => { resolveRoom = resolve; }));
+    roomRest.pause.mockResolvedValue(roomDocument(room, true));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1' })));
+    const menu = await openRoomMenu(container);
+    const order = [...menu.querySelectorAll('[data-menu-item]')].map((node) => node.getAttribute('data-menu-item'));
+    expect(order).toEqual(['members', 'budget', 'pause', 'copy-link', 'pin', 'rename', 'archive', 'delete']);
+    // The pause label waits for the full room document, then offers Pause.
+    const pause = menu.querySelector<HTMLButtonElement>('[data-menu-item="pause"]')!;
+    expect(pause.disabled).toBe(true);
+    await act(async () => { resolveRoom(roomDocument(room, false)); });
+    await settle();
+    expect(pause.disabled).toBe(false);
+    expect(pause.textContent).toBe('Pause');
+    await act(async () => { pause.click(); });
+    expect(roomRest.pause).toHaveBeenCalledWith('room_1');
+  });
+
+  it('resumes a paused room from the same entry', async () => {
+    const room = roomSummary({ id: 'room_1' });
+    roomRest.get.mockResolvedValue(roomDocument(room, true));
+    roomRest.continue.mockResolvedValue(roomDocument(room, false));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1' })));
+    const menu = await openRoomMenu(container);
+    await settle();
+    const pause = container.querySelector<HTMLButtonElement>('[data-room-menu] [data-menu-item="pause"]')!;
+    expect(pause.textContent).toBe('Resume discussion');
+    await act(async () => { pause.click(); });
+    expect(roomRest.continue).toHaveBeenCalledWith('room_1');
+  });
+
+  it('renames through the shared dialog with the room heading', async () => {
+    roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    roomRest.update.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1', title: '0.31 发布' })));
+    const menu = await openRoomMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="rename"]')!.click(); });
+    // The dialog renders through a body portal.
+    const dialog = document.body.querySelector('[aria-label="Rename room"]');
+    expect(dialog).not.toBeNull();
+    const input = dialog!.querySelector('input')!;
+    expect(input.value).toBe('0.31 发布');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, '0.32 发布');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const save = [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await act(async () => { save.click(); });
+    expect(roomRest.update).toHaveBeenCalledWith('room_1', { name: '0.32 发布' });
+  });
+
+  it('deletes through the confirmation dialog', async () => {
+    roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    roomRest.delete.mockResolvedValue(undefined);
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1', title: '0.31 发布' })));
+    const menu = await openRoomMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="delete"]')!.click(); });
+    const dialog = container.querySelector('[aria-label="Delete “0.31 发布”?"]');
+    expect(dialog).not.toBeNull();
+    await act(async () => { dialog!.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle();
+    expect(roomRest.delete).toHaveBeenCalledWith('room_1');
+    expect(container.querySelector('[data-confirm-action="confirm"]')).toBeNull();
+  });
+
+  it('restores or deletes an archived room, with no pin affordance', async () => {
+    roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' }), false));
+    const room = roomSummary({ id: 'room_1', archived: true });
+    const { container } = await mount(listedRoom(room));
+    expect(container.querySelector('[data-room-pin-toggle]')).toBeNull();
+    const menu = await openRoomMenu(container);
+    const order = [...menu.querySelectorAll('[data-menu-item]')].map((node) => node.getAttribute('data-menu-item'));
+    expect(order).toEqual(['copy-link', 'delete']);
+    expect(menu.textContent).toContain('Restore');
+    roomRest.update.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    await act(async () => {
+      [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((node) => node.textContent === 'Restore')!.click();
+    });
+    expect(roomRest.update).toHaveBeenCalledWith('room_1', { archived: false });
+  });
+
+  it('shows the rooms fetch failure instead of an empty list', async () => {
+    const { container } = await mount({
+      roomsQuery: { isError: true },
+      sessionGroups: [{ key: 'today', label: 'Today', items: [session('one')] }],
+    });
+    expect(container.querySelector('[data-rooms-error]')?.textContent).toContain('Could not load rooms');
   });
 });

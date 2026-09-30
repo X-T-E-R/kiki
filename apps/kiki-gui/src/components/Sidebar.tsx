@@ -44,7 +44,9 @@ import {
   isSearchable,
   pinMetadataPatch,
   buildConversationInbox,
+  roomRefLink,
   sessionRowState,
+  type ConversationListItem,
   type SessionRowState,
   SESSION_SORT_ORDERS,
   sessionStatusOf,
@@ -69,13 +71,14 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
-import { nestSessionThreads, type SessionRelation, type SessionTreeNode } from '../lib/sessionThreads';
+import { nestConversationItems, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
 import { runToastAction } from '../lib/toasts';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import { registerOverlay } from '../lib/uiBusy';
@@ -83,12 +86,13 @@ import { useConnection } from '../state/connection';
 import { RelativeTime } from './RelativeTime';
 import { useSessionSeen } from './ActivityPage';
 import { useSessionActivity } from './ActivityPanel';
+import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
-import { isBotOrRoomSession, SidebarBotRoomGroups } from './bot/SidebarBotRoomGroups';
+import { SidebarBotRoomGroups } from './bot/SidebarBotRoomGroups';
 import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
 import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './room/threadRooms';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
@@ -167,15 +171,36 @@ function rowLife(session: Session, state: SessionRowState): LifeState {
   return life === 'failed' ? 'failed' : 'done';
 }
 
+/** A room's row state, from the summary's own flags (its seen mark rides the
+ * precomputed `unread_count`, keyed `room:<id>` rather than the bare id). */
+function roomRowState(item: Extract<ConversationListItem, { kind: 'room' }>): SessionRowState {
+  if (item.needs_you || item.pending_interaction === 'approval' || item.pending_interaction === 'question') return 'needs-me';
+  if (item.busy) return 'running';
+  return item.unread_count > 0 ? 'unread' : 'read';
+}
+
+/** One state per row, thread or room. */
+function conversationRowState(item: ConversationListItem, seen: SessionSeenMap): SessionRowState {
+  return item.kind === 'room' ? roomRowState(item) : sessionRowState(item.session, seen);
+}
+
+/** A room's mark tone follows the run's outcome, like a thread row's. */
+function roomRowLife(item: Extract<ConversationListItem, { kind: 'room' }>, state: SessionRowState): LifeState {
+  if (state === 'needs-me') return 'waiting';
+  if (state === 'running') return 'working';
+  if (state === 'read') return 'idle';
+  return item.failed ? 'failed' : 'done';
+}
+
 /**
  * What a folded group is hiding that you would want to know: a session that
  * needs you, else one still running. Finished and failed rows stay behind the
  * fold (the bell counts them).
  */
-function foldedGroupLife(nodes: readonly SessionTreeNode[], seen: SessionSeenMap): LifeState {
+function foldedGroupLife(nodes: readonly ConversationTreeNode[], seen: SessionSeenMap): LifeState {
   const states: SessionRowState[] = [];
-  const visit = (node: SessionTreeNode) => {
-    states.push(sessionRowState(node.session, seen));
+  const visit = (node: ConversationTreeNode) => {
+    states.push(conversationRowState(node.item, seen));
     node.children.forEach(visit);
   };
   nodes.forEach(visit);
@@ -294,8 +319,9 @@ export function Sidebar({
   activeSessionId,
   sessions,
   rooms = [],
-  sessionGroups: allSessionGroups,
+  sessionGroups,
   sessionsQuery,
+  roomsQuery,
   workspaceOptions,
   filters,
   onFiltersChange,
@@ -311,8 +337,8 @@ export function Sidebar({
   /** Every loaded session (unfiltered); the pending badge and search read it. */
   sessions: readonly Session[];
   rooms?: readonly RoomListItem[];
-  /** Filtered, sorted, grouped rows for the list. */
-  sessionGroups: readonly SessionGroup[];
+  /** Filtered, sorted, grouped conversations (threads and rooms interleaved). */
+  sessionGroups: readonly SessionGroup<ConversationListItem>[];
   sessionsQuery: {
     isLoading: boolean;
     isError: boolean;
@@ -321,6 +347,8 @@ export function Sidebar({
     isFetchingNextPage?: boolean;
     fetchNextPage?: () => Promise<unknown>;
   };
+  /** The room summaries fetch; a failure is shown, never read as "no rooms". */
+  roomsQuery?: { readonly isError: boolean };
   workspaceOptions: readonly Workspace[];
   filters: SessionListFilters;
   onFiltersChange: (filters: SessionListFilters) => void;
@@ -340,7 +368,11 @@ export function Sidebar({
   const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
-  const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
+  const roomApi = useBotRoomApi();
+  // Router location (not the window global): the room row's active mark and
+  // the room menu need the live path.
+  const location = useLocation();
+  const [menu, setMenu] = useState<{ item: ConversationListItem; x: number; y: number } | null>(null);
   // Ctrl/⌘-click multi-select, for pulling several threads into one room.
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [roomDraft, setRoomDraft] = useState<readonly Session[] | null>(null);
@@ -360,9 +392,11 @@ export function Sidebar({
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [selected.size]);
-  const [renaming, setRenaming] = useState<Session | null>(null);
+  const [renaming, setRenaming] = useState<ConversationListItem | null>(null);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [confirmArchiveWorktree, setConfirmArchiveWorktree] = useState<Session | null>(null);
+  const [deletingRoom, setDeletingRoom] = useState<Extract<ConversationListItem, { kind: 'room' }> | null>(null);
+  const [roomActionBusy, setRoomActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [workspacePinBusy, setWorkspacePinBusy] = useState(false);
@@ -389,14 +423,9 @@ export function Sidebar({
     setExpandedGroups(new Set(memory.expanded));
   }, [scopeId]);
 
-  // A live Bot home or room-member session is reached from its Bot / room
-  // row above; archived ones (a deleted room's members) stay findable here.
-  const sessionGroups = useMemo(
-    () => allSessionGroups
-      .map((group) => ({ ...group, items: group.items.filter((session) => session.archived === true || !isBotOrRoomSession(session)) }))
-      .filter((group) => group.items.length > 0),
-    [allSessionGroups],
-  );
+  // Bot homes and room member sessions never arrive here: the caller filters
+  // them out (they keep their own addresses — a Bot row, the room's row),
+  // except archived ones from a deleted room, which stay findable.
   const activity = useSessionActivity(sessions);
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
@@ -443,7 +472,11 @@ export function Sidebar({
 
   // Search scopes to the active filters: the workspace chips narrow both
   // layers; status/archived narrow content hits to the visible sessions.
-  const visibleSessions = useMemo(() => sessionGroups.flatMap((group) => group.items), [sessionGroups]);
+  // Rooms are not searchable content; only their thread rows take part.
+  const visibleSessions = useMemo(
+    () => sessionGroups.flatMap((group) => group.items).flatMap((item) => (item.kind === 'session' ? [item.session] : [])),
+    [sessionGroups],
+  );
   const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide';
   const allowedSessionIds = useMemo(
     () => (narrowsBeyondWorkspace ? new Set(visibleSessions.map((session) => session.id)) : undefined),
@@ -527,6 +560,56 @@ export function Sidebar({
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
+  };
+
+  // Room lifecycle rides the room API; ['rooms'] invalidation covers both the
+  // summaries ('rooms','items') and a cached room document ('rooms',id).
+  const refreshRooms = useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY }),
+    [queryClient],
+  );
+  const patchRoom = (roomId: string, patch: { name?: string; pinned?: boolean; archived?: boolean }) => {
+    setMenu(null);
+    setActionError(null);
+    void roomApi
+      .updateRoom(roomId, patch)
+      .then(() => { refreshRooms(); })
+      .catch((error: unknown) => {
+        setActionError(error instanceof Error ? error.message : String(error));
+      });
+  };
+  const toggleRoomPin = (item: Extract<ConversationListItem, { kind: 'room' }>) => {
+    patchRoom(item.id, { pinned: !item.pinned });
+  };
+  const toggleRoomPause = (item: Extract<ConversationListItem, { kind: 'room' }>, paused: boolean) => {
+    setMenu(null);
+    setActionError(null);
+    const request = paused ? roomApi.continueRoom(item.id) : roomApi.pauseRoom(item.id);
+    void request
+      .then((room) => {
+        queryClient.setQueryData(roomQueryKey(item.id), room);
+        refreshRooms();
+      })
+      .catch((error: unknown) => {
+        setActionError(error instanceof Error ? error.message : String(error));
+      });
+  };
+  const deleteRoom = (item: Extract<ConversationListItem, { kind: 'room' }>) => {
+    setRoomActionBusy(true);
+    setActionError(null);
+    void roomApi
+      .deleteRoom(item.id)
+      .then(() => {
+        setDeletingRoom(null);
+        queryClient.removeQueries({ queryKey: roomQueryKey(item.id) });
+        refreshRooms();
+        refreshSessions();
+        if (location.pathname === item.href) void navigate('/');
+      })
+      .catch((error: unknown) => {
+        setActionError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => { setRoomActionBusy(false); });
   };
 
   useEffect(() => {
@@ -723,8 +806,9 @@ export function Sidebar({
   // under it. Time buckets are not meaningful for a thread — it belongs with
   // its creator — so there a child follows its parent across buckets; the
   // workspace and pinned buckets are meaningful, so nesting stays inside one.
+  // Rooms never nest: a room has no creator session, and none names it parent.
   const sessionTree = useMemo(
-    () => nestSessionThreads(sessionGroups, { crossGroups: groupBy !== 'workspace' }),
+    () => nestConversationItems(sessionGroups, { crossGroups: groupBy !== 'workspace' }),
     [sessionGroups, groupBy],
   );
   // Temporary conversations stay out of the paged list (and its search and
@@ -760,6 +844,9 @@ export function Sidebar({
     () => new Map(sessions.map((session) => [session.id, sessionLabel(session, untitled)])),
     [sessions, untitled],
   );
+  // Bound once per render so the kind narrowing survives into the menu's
+  // callbacks (property-access narrowing does not reach into closures).
+  const menuItem = menu?.item ?? null;
 
   return (
     <aside
@@ -1009,6 +1096,18 @@ export function Sidebar({
             </button>
           </div>
         ) : null}
+        {roomsQuery?.isError === true ? (
+          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3" data-rooms-error>
+            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.roomsLoadFailed')}</p>
+            <button
+              type="button"
+              onClick={() => void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY })}
+              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : null}
         {sessionGroups.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <div className="px-2 pt-4" data-sidebar-empty>
             <p className="text-[12.5px] leading-relaxed text-ink-soft">
@@ -1101,15 +1200,40 @@ export function Sidebar({
           const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
           const shown = collapsed ? [] : group.nodes.slice(0, limit);
           const hidden = collapsed ? 0 : group.nodes.length - shown.length;
-          const renderRow = (node: SessionTreeNode, nested: boolean) => {
-            const session = node.session;
+          const renderRow = (node: ConversationTreeNode, nested: boolean) => {
+            const item = node.item;
+            if (item.kind === 'room') {
+              // Location line, like a thread row's cwd: the resolved workspace
+              // name when registered, else the room's own root path shortened.
+              const roomLocation = workspaceOptions.find((entry) => entry.id === item.workspace_id)?.name
+                ?? (item.room.workspace === '' ? undefined : shortCwd(item.room.workspace));
+              return (
+                <div key={item.key} data-session-node="root">
+                  <RoomConversationRow
+                    item={item}
+                    active={location.pathname === item.href}
+                    menuOpen={menu?.item.key === item.key}
+                    showLocation={groupBy !== 'workspace'}
+                    showPin={groupBy === 'none'}
+                    location={roomLocation}
+                    onOpen={() => { void navigate(item.href); }}
+                    onMenu={(x, y, toggle) => {
+                      setMenu((current) =>
+                        toggle && current?.item.key === item.key ? null : { item, x, y });
+                    }}
+                    onTogglePin={() => { toggleRoomPin(item); }}
+                  />
+                </div>
+              );
+            }
+            const session = item.session;
             const threads = node.children;
             return (
-              <div key={session.id} data-session-node={nested ? 'thread' : 'root'}>
+              <div key={item.key} data-session-node={nested ? 'thread' : 'root'}>
                 <SessionRow
                   session={session}
                   active={session.id === activeSessionId}
-                  menuOpen={menu?.session.id === session.id}
+                  menuOpen={menu?.item.key === item.key}
                   untitled={untitled}
                   activity={activity.byId.get(session.id)}
                   elapsedFor={activity.elapsedFor}
@@ -1125,7 +1249,7 @@ export function Sidebar({
                   onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                   onMenu={(x, y, toggle) => {
                     setMenu((current) =>
-                      toggle && current?.session.id === session.id ? null : { session, x, y });
+                      toggle && current?.item.key === item.key ? null : { item, x, y });
                   }}
                   onTogglePin={() => { togglePin(session); }}
                   seen={seen}
@@ -1290,30 +1414,50 @@ export function Sidebar({
           }}
         />
       ) : null}
-      {menu !== null ? (
+      {menuItem !== null && menuItem.kind === 'session' ? (
         <SessionMenu
-          session={menu.session}
+          session={menuItem.session}
           scopeId={scopeId}
           activeSessionId={activeSessionId}
-          x={menu.x}
-          y={menu.y}
+          x={menu!.x}
+          y={menu!.y}
           onClose={() => { setMenu(null); }}
           onRename={() => {
-            setRenaming(menu.session);
+            setRenaming(menuItem);
             setMenu(null);
           }}
-          onTogglePin={() => { togglePin(menu.session); }}
-          onAction={(action) => { runAction(menu.session, action); }}
-          onArchive={() => { archive(menu.session); }}
-          onRestore={() => { restore(menu.session); }}
-          roomSelection={selected.has(menu.session.id) ? selected.size : 0}
+          onTogglePin={() => { togglePin(menuItem.session); }}
+          onAction={(action) => { runAction(menuItem.session, action); }}
+          onArchive={() => { archive(menuItem.session); }}
+          onRestore={() => { restore(menuItem.session); }}
+          roomSelection={selected.has(menuItem.id) ? selected.size : 0}
           threadCommsEnabled={threadCommsEnabled}
           onNewRoom={() => {
-            const ids = selected.has(menu.session.id) && selected.size >= 2 ? selected : new Set([menu.session.id]);
+            const ids = selected.has(menuItem.id) && selected.size >= 2 ? selected : new Set([menuItem.id]);
             setRoomDraft(sessions.filter((item) => ids.has(item.id)));
             setMenu(null);
           }}
-          onJoinRoom={() => { setJoiningRoom(menu.session); setMenu(null); }}
+          onJoinRoom={() => { setJoiningRoom(menuItem.session); setMenu(null); }}
+        />
+      ) : null}
+      {menuItem !== null && menuItem.kind === 'room' ? (
+        <RoomListMenu
+          item={menuItem}
+          x={menu!.x}
+          y={menu!.y}
+          onClose={() => { setMenu(null); }}
+          onTogglePin={(room) => { toggleRoomPin(room); }}
+          onTogglePause={(room, paused) => { toggleRoomPause(room, paused); }}
+          onRename={() => {
+            setRenaming(menuItem);
+            setMenu(null);
+          }}
+          onArchive={(room) => { patchRoom(room.id, { archived: true }); }}
+          onRestore={(room) => { patchRoom(room.id, { archived: false }); }}
+          onDelete={(room) => {
+            setDeletingRoom(room);
+            setMenu(null);
+          }}
         />
       ) : null}
       {roomDraft !== null ? (
@@ -1322,12 +1466,32 @@ export function Sidebar({
       {joiningRoom !== null ? <JoinRoomDialog session={joiningRoom} onClose={() => { setJoiningRoom(null); }} /> : null}
       {renaming !== null ? (
         <RenameDialog
-          session={renaming}
+          currentTitle={renaming.kind === 'room' ? renaming.title : renaming.session.title}
+          heading={renaming.kind === 'room' ? t('room.renameTitle') : t('rename.title')}
+          onSubmit={async (title) => {
+            if (renaming.kind === 'room') await roomApi.updateRoom(renaming.id, { name: title });
+            // A bare title patch omits `metadata`, so the server leaves the
+            // stored custom document (and with it any client-local pin) untouched.
+            else await client.updateSessionProfile(renaming.id, { title });
+          }}
           onClose={() => { setRenaming(null); }}
           onRenamed={() => {
             setRenaming(null);
             refreshSessions();
+            refreshRooms();
           }}
+        />
+      ) : null}
+      {deletingRoom !== null ? (
+        <ConfirmDialog
+          open
+          title={t('room.deleteTitle', { name: deletingRoom.title })}
+          body={t('room.deleteBody')}
+          confirmLabel={t('room.deleteRoom')}
+          busy={roomActionBusy}
+          overlayId="sidebar-room-delete-confirm"
+          onConfirm={() => { deleteRoom(deletingRoom); }}
+          onCancel={() => { setDeletingRoom(null); }}
         />
       ) : null}
       {confirmUndo !== null ? (
@@ -1624,6 +1788,358 @@ function SessionRow({
           <Icon name="more" size={14} />
         </button>
       </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A room row is a thread row with one kind glyph: the `#` the room page's
+ * header also uses. Same status slot, same weight rules (active / needs you /
+ * unread carry the emphasis), same trailing time that yields to the hover
+ * actions, same one-fact second line. A room never nests and never hosts.
+ */
+function RoomConversationRow({
+  item,
+  active,
+  menuOpen,
+  showLocation = true,
+  showPin = false,
+  location,
+  onOpen,
+  onMenu,
+  onTogglePin,
+}: {
+  item: Extract<ConversationListItem, { kind: 'room' }>;
+  active: boolean;
+  menuOpen: boolean;
+  /** False when the grouping already says where the room lives. */
+  showLocation?: boolean;
+  /** True only when no Pinned group exists to say it. */
+  showPin?: boolean;
+  /** Resolved workspace name or shortened root; omitted when unknown. */
+  location?: string | undefined;
+  onOpen: () => void;
+  onMenu: (x: number, y: number, toggle: boolean) => void;
+  onTogglePin: () => void;
+}) {
+  const { t } = useI18n();
+  const archived = item.archived === true;
+  const state = roomRowState(item);
+  const life = roomRowLife(item, state);
+  const needsYouText = item.pending_interaction === 'approval'
+    ? t('sidebar.statusTag.approval')
+    : item.pending_interaction === 'question'
+      ? t('sidebar.statusTag.question')
+      // needs_you without a pending interaction is the budget pause.
+      : t('activity.reason.budget');
+  const failedUnseen = state === 'unread' && item.failed;
+  const fact: { kind: 'needs-you' | 'failed' | 'location'; text: string } | undefined =
+    state === 'needs-me'
+      ? { kind: 'needs-you', text: needsYouText }
+      : failedUnseen
+        ? { kind: 'failed', text: t('sidebar.rowState.failed') }
+        : showLocation && location !== undefined
+          ? { kind: 'location', text: location }
+          : undefined;
+  const markTitle =
+    state === 'needs-me'
+      ? needsYouText
+      : state === 'running'
+        ? t('sidebar.status.working')
+        : state === 'unread'
+          ? (item.failed ? t('sidebar.rowState.failed') : t('sidebar.rowState.unread'))
+          : undefined;
+  const emphasis = active || state === 'needs-me' || state === 'unread';
+  return (
+    <div
+      className="group relative"
+      data-room-row={item.id}
+      data-room-row-state={state}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onMenu(event.clientX, event.clientY, false);
+      }}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-current={active ? 'page' : undefined}
+        className="row-interactive flex w-full items-start gap-2 py-1.5 pr-2 pl-2 text-left"
+      >
+        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
+          <span data-room-status={state === 'read' ? 'idle' : state} className="flex h-[7px] w-[7px]">
+            <LifeMark
+              markId={`row:${item.key}`}
+              life={life}
+              still
+              title={markTitle}
+              tone={life === 'failed' ? 'bg-ink-faint' : life === 'waiting' ? 'bg-attention' : undefined}
+            />
+          </span>
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            data-room-title
+            className={`flex items-center gap-1 text-[13px] leading-[19px] ${
+              emphasis
+                ? 'font-medium text-ink'
+                : archived
+                  ? 'text-ink-faint'
+                  : state === 'running'
+                    ? 'text-ink'
+                    : 'text-ink-soft'
+            }`}
+          >
+            {/* Pinned is said by the Pinned group; only a list with no groups
+              * needs the glyph. */}
+            {item.pinned && showPin ? <PinIcon className="text-ink-faint" /> : null}
+            {/* The one kind glyph: a room is a channel, so the channel mark. */}
+            <span data-room-kind aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
+            <span className="min-w-0 flex-1 truncate">{item.title}</span>
+            <span
+              data-room-time
+              className={`min-w-13 shrink-0 text-right text-[12px] leading-4 font-normal text-ink-faint tabular-nums ${
+                menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
+              }`}
+            >
+              <RelativeTime at={item.updated_at} />
+            </span>
+          </span>
+          {fact !== undefined || archived ? (
+            <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+              {fact === undefined ? null : fact.kind === 'needs-you' ? (
+                <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
+              ) : fact.kind === 'failed' ? (
+                <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
+              ) : (
+                <span data-room-location className="min-w-0 truncate" title={location}>{fact.text}</span>
+              )}
+              {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+            </span>
+          ) : null}
+        </span>
+      </button>
+
+      {/* Hover/focus affordances, same contract as the thread row: quick pin
+        * toggle, then the full action menu, over the trailing time slot. */}
+      <div
+        className={`absolute top-0.5 right-1 flex items-center transition-opacity duration-[var(--kiki-motion-quick)] ${
+          menuOpen ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
+        }`}
+      >
+        {archived ? null : (
+          <button
+            type="button"
+            data-room-pin-toggle
+            aria-label={item.pinned ? t('sidebar.unpinSessionFor', { title: item.title }) : t('sidebar.pinSessionFor', { title: item.title })}
+            title={item.pinned ? t('menu.unpin') : t('menu.pin')}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin();
+            }}
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] ${
+              item.pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
+            }`}
+          >
+            <Icon name="pin" size={14} />
+          </button>
+        )}
+        <button
+          type="button"
+          data-room-menu-toggle
+          aria-label={t('sidebar.sessionActionsFor', { title: item.title })}
+          onClick={(event) => {
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onMenu(rect.right + 4, rect.top, true);
+          }}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+        >
+          <Icon name="more" size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The room row's menu: the thread menu's shared spine (link, pin, rename,
+ * archive) plus the room's own entries (members, budget, pause). Delete is a
+ * room-only destructive action and asks through ConfirmDialog upstream. The
+ * summary row carries no pause flag, so the full room document (cached by an
+ * open room page) answers the pause/continue label.
+ */
+function RoomListMenu({
+  item,
+  x,
+  y,
+  onClose,
+  onTogglePin,
+  onTogglePause,
+  onRename,
+  onArchive,
+  onRestore,
+  onDelete,
+}: {
+  item: Extract<ConversationListItem, { kind: 'room' }>;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onTogglePin: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
+  /** `paused` is the current state; the action flips it. */
+  onTogglePause: (room: Extract<ConversationListItem, { kind: 'room' }>, paused: boolean) => void;
+  onRename: () => void;
+  onArchive: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
+  onRestore: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
+  onDelete: (room: Extract<ConversationListItem, { kind: 'room' }>) => void;
+}) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const roomApi = useBotRoomApi();
+  const archived = item.archived === true;
+  const roomQuery = useQuery({
+    queryKey: roomQueryKey(item.id),
+    queryFn: () => roomApi.getRoom(item.id),
+    staleTime: 15_000,
+    retry: false,
+  });
+  const paused = roomQuery.data?.paused;
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
+  useLayoutEffect(() => {
+    const node = menuRef.current;
+    if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+  }, []);
+  const position = clampOverlayPosition(
+    x,
+    y,
+    size ?? { width: 176, height: 0 },
+    { width: window.innerWidth, height: window.innerHeight },
+  );
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const unregister = registerOverlay('room-list-menu');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeRef.current();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof HTMLElement) || event.target.closest('[data-room-menu]') === null) {
+        closeRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, []);
+
+  const openPanel = (focus: 'members' | 'budget') => {
+    onClose();
+    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
+  };
+
+  const itemClass =
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+  return (
+    <div
+      ref={menuRef}
+      data-room-menu
+      role="menu"
+      aria-label={t('room.menu')}
+      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
+      style={{ left: position.left, top: position.top }}
+    >
+      {archived ? (
+        <>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onRestore(item); }}>
+            {t('menu.restore')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy-link"
+            className={itemClass}
+            onClick={() => {
+              onClose();
+              runToastAction(t('menu.copyLink'), () => copyTextToClipboard(roomRefLink(item.id)));
+            }}
+          >
+            {t('menu.copyLink')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="delete"
+            className={`${itemClass} hover:text-danger`}
+            onClick={() => { onDelete(item); }}
+          >
+            {t('room.deleteRoom')}
+          </button>
+        </>
+      ) : (
+        <>
+          <button type="button" role="menuitem" data-menu-item="members" className={itemClass} onClick={() => { openPanel('members'); }}>
+            {t('room.members')}
+          </button>
+          <button type="button" role="menuitem" data-menu-item="budget" className={itemClass} onClick={() => { openPanel('budget'); }}>
+            {t('room.adjustBudget')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="pause"
+            disabled={paused === undefined}
+            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+            onClick={() => { onTogglePause(item, paused === true); }}
+          >
+            {paused === true ? t('room.resume') : t('room.pause')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy-link"
+            className={itemClass}
+            onClick={() => {
+              onClose();
+              runToastAction(t('menu.copyLink'), () => copyTextToClipboard(roomRefLink(item.id)));
+            }}
+          >
+            {t('menu.copyLink')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button type="button" role="menuitem" data-menu-item="pin" className={itemClass} onClick={() => { onTogglePin(item); }}>
+            {item.pinned ? t('menu.unpin') : t('menu.pin')}
+          </button>
+          <button type="button" role="menuitem" data-menu-item="rename" className={itemClass} onClick={onRename}>
+            {t('menu.rename')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="archive"
+            className={`${itemClass} hover:text-danger`}
+            onClick={() => { onArchive(item); }}
+          >
+            {t('menu.archive')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="delete"
+            className={`${itemClass} hover:text-danger`}
+            onClick={() => { onDelete(item); }}
+          >
+            {t('room.deleteRoom')}
+          </button>
+        </>
       )}
     </div>
   );
@@ -2484,19 +3000,23 @@ function SessionMenu({
   );
 }
 
-/** Rename dialog seeded with the current title; POSTs the profile update. */
+/** Rename dialog seeded with the current title; the caller owns the write
+ * (a thread's profile patch, a room's name patch). */
 function RenameDialog({
-  session,
+  currentTitle,
+  heading,
+  onSubmit,
   onClose,
   onRenamed,
 }: {
-  session: Session;
+  currentTitle: string;
+  heading: string;
+  onSubmit: (title: string) => Promise<unknown>;
   onClose: () => void;
   onRenamed: () => void;
 }) {
-  const { client } = useConnection();
   const { t } = useI18n();
-  const [title, setTitle] = useState(session.title);
+  const [title, setTitle] = useState(currentTitle);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2505,10 +3025,7 @@ function RenameDialog({
     if (trimmed === '' || busy) return;
     setBusy(true);
     setError(null);
-    // A bare title patch omits `metadata`, so the server leaves the
-    // stored custom document (and with it any client-local pin) untouched.
-    void client
-      .updateSessionProfile(session.id, { title: trimmed })
+    void Promise.resolve(onSubmit(trimmed))
       .then(onRenamed)
       .catch((error: unknown) => {
         setBusy(false);
@@ -2517,8 +3034,8 @@ function RenameDialog({
   };
 
   return (
-    <Dialog onClose={onClose} ariaLabel={t('rename.title')} overlayId="rename-dialog">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{t('rename.title')}</h2>
+    <Dialog onClose={onClose} ariaLabel={heading} overlayId="rename-dialog">
+      <h2 className="font-display text-[18px] font-semibold text-ink">{heading}</h2>
       <input
         data-autofocus
         className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * Sidebar Bots / Rooms groups: hidden Bots stay off, pinned lead, a Bot's
- * home session state shows on its row, a persona becomes a Bot from the
- * group's + menu, and rooms list with their member faces.
+ * Sidebar Bots group: hidden Bots stay off, pinned lead, a Bot's home session
+ * state shows on its row, a persona becomes a Bot from the group's + menu,
+ * and the room create entry lives in the same header while Bot mode is on.
+ * Rooms themselves list as conversation rows in the main session list.
  */
 
 import { act } from 'react';
@@ -58,10 +59,6 @@ beforeAll(() => {
 beforeEach(() => {
   for (const fn of [...Object.values(bots), rooms.list, navigate]) fn.mockReset();
   bots.list.mockResolvedValue(BOTS);
-  rooms.list.mockResolvedValue([{
-    id: 'release-031', name: '0.31 发布', host: 'lin-lan', paused: true,
-    members: [{ personaId: 'lin-lan', sessionId: 'r1', muted: false }, { personaId: 'a-che', sessionId: 'r2', muted: false }],
-  }]);
   client.listPersonas.mockResolvedValue(PERSONAS);
 });
 
@@ -105,18 +102,34 @@ describe('sidebar Bot helpers', () => {
 });
 
 describe('SidebarBotRoomGroups', () => {
-  it('lists visible Bots with their home state, and rooms with a member count', async () => {
+  it('lists visible Bots with their home state', async () => {
     const container = await mount([session('home_che', { busy: true }), session('home_lin', { pending_interaction: 'question' })]);
     const rows = [...container.querySelectorAll('[data-sidebar-bot]')];
     expect(rows.map((row) => row.getAttribute('data-sidebar-bot'))).toEqual(['lin-lan', 'a-che']);
     expect(rows[0]?.getAttribute('aria-current')).toBe('page');
     expect(rows[0]?.textContent).toContain('发布协调');
-    const room = container.querySelector('[data-sidebar-room="release-031"]');
-    expect(room?.textContent).toContain('0.31 发布');
-    expect(room?.textContent).toContain('2 人');
     await act(async () => { (rows[1] as HTMLButtonElement).click(); });
     await flush();
     expect(navigate).toHaveBeenCalledWith('/s/home_che');
+  });
+
+  it('keeps the room create entry in the Bot header while bots exist', async () => {
+    const container = await mount();
+    const create = container.querySelector<HTMLButtonElement>('[data-room-create]');
+    expect(create).not.toBeNull();
+    // Rooms list as conversation rows now, not as a group here.
+    expect(container.querySelector('[data-sidebar-rooms]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-room]')).toBeNull();
+    await act(async () => { create!.click(); });
+    await flush();
+    expect(document.querySelector('[data-create-room-submit]')).not.toBeNull();
+  });
+
+  it('hides the room create entry when no Bot exists (Bot mode off)', async () => {
+    bots.list.mockResolvedValue([]);
+    client.listPersonas.mockResolvedValue([]);
+    const container = await mount();
+    expect(container.querySelector('[data-room-create]')).toBeNull();
   });
 
   it('turns a persona into a Bot from the + menu and opens its home', async () => {
@@ -133,7 +146,6 @@ describe('SidebarBotRoomGroups', () => {
 
   it('renders nothing when the Bot API is unavailable', async () => {
     bots.list.mockRejectedValue(new Error('Bot mode is disabled'));
-    rooms.list.mockRejectedValue(new Error('Bot mode is disabled'));
     const container = await mount();
     expect(container.querySelector('[data-sidebar-bot-rooms]')).toBeNull();
   });

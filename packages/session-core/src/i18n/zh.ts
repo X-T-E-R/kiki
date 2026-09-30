@@ -6517,4 +6517,6 @@ export const zh = {
   'st.models.searchWide': '搜索名称、ID、连接或能力…',
   'st.models.detailTitle': '编辑模型',
   'st.models.openDetail': '编辑 {model}',
+  'sidebar.roomsLoadFailed': '房间列表加载失败',
+  'room.renameTitle': '重命名房间',
 };
