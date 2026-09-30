@@ -17,62 +17,62 @@
    * sits on) < paper (the raised conversation sheet) < panel (inspector,
    * preview and floating cards). Panes are told apart by this ladder and the
    * gaps between sheets, not by rules. */
-  /* Parchment: a toasted canvas under a near-white warm sheet, so the page
-   * you read is the brightest thing on screen and the chrome around it sits
-   * back. (Before 9.23 canvas and paper were one color; 9.28 made both a
-   * uniform tan — this keeps the 9.23 sheet and the 9.28 ground.) */
-  --color-canvas: #ede5d6;
-  --color-paper: #f8f4ec;
-  --color-panel: #fffdf8;
-  --color-hairline: #e5dccb;
-  --color-hairline-strong: #d3c5ac;
-  --color-ink: #1c1917;
-  --color-ink-soft: #544a3f;
+  /* Paper and ink-blue: a near-white warm sheet on a canvas only half a step
+   * darker, so the page you read is the brightest thing on screen and the
+   * frame stays paper rather than tan. Color is spent on two roles only
+   * (see the focal roles below); everything else is ink on paper. */
+  --color-canvas: #f2efe8;
+  --color-paper: #fbfaf6;
+  --color-panel: #fffdfa;
+  --color-hairline: #e4ddd0;
+  --color-hairline-strong: #cdc3b1;
+  --color-ink: #1b1a17;
+  --color-ink-soft: #4b453e;
   /* Faint text holds AA (≥4.5:1) on every step of the ladder, canvas included,
    * and under the neutral hover wash (ink/0.04) and the selected wash. */
-  --color-ink-faint: #665a4c;
-  --color-accent: #c2410c;
-  --color-accent-deep: #9a3412;
-  /* The accent when it is the text itself (a "needs you" word, a link): the
-   * brand accent is for dots, rings and filled buttons and sits at 4.3:1 on
-   * canvas, so words take this deeper step (≥6:1 on every surface). */
-  --color-accent-ink: #9a3412;
-  --color-accent-soft: #f7e4d3;
-  --color-amber-ink: #92400e;
+  --color-ink-faint: #665e54;
+  --color-accent: #c8401a;
+  --color-accent-deep: #9c3012;
+  /* The accent when it is the text itself (a "needs you" word): the brand
+   * accent is for dots and the one filled primary button and sits near 4.5:1
+   * on canvas, so words take this deeper step (≥6:1 on every surface). */
+  --color-accent-ink: #9c3012;
+  --color-accent-soft: #f8e3d8;
+  --color-amber-ink: #87480b;
   --color-amber-card: #f8eedd;
   --color-amber-rule: #d9a441;
-  --color-success: #37703f;
-  --color-danger: #b42318;
+  --color-success: #2f6b45;
+  --color-danger: #b0261e;
 
-  /* Focal roles. The ladder alone reads as one flat beige; these give the eye
-   * three fixed places to land, each with one job:
-   *   section-ink   group and section headings (sidebar groups, settings
-   *                 nav groups, card titles): a warm brown one step off ink,
-   *                 so structure is readable without weight or size.
-   *   selected      where you are: the current session / nav / settings row.
-   *                 A cool sage wash with a teal mark, the one cool hue on a
-   *                 warm page, so "here" never competes with "needs you".
-   *   attention     what needs you: approvals, questions. The rust accent,
-   *                 saturated, on its own soft wash.
+  /* Focal roles. Two hues, one job each, so a glance says where you are and
+   * what is waiting for you:
+   *   selected      ink-blue, "you are here": the current session / nav /
+   *                 settings row (wash + mark), keyboard focus, a switch or
+   *                 option that is on. The one cool hue on a warm page.
+   *   attention /   vermilion, "needs you": approvals, questions, waiting
+   *   accent        marks, and the one primary button per screen. Never for
+   *                 "running", "done", links or decoration.
+   *   section-ink   group and section headings: neutral, one step off ink.
+   *                 Structure reads from size and spacing, not a third hue.
    * All text roles hold ≥4.5:1 on canvas, paper, panel and their own wash. */
-  --color-section-ink: #6e4424;
-  --color-selected: #dde9e4;
-  --color-selected-ink: #0f5a52;
-  --color-attention: #b5360a;
-  --color-attention-soft: #fbe6d6;
+  --color-section-ink: #4b453e;
+  --color-selected: #dfe8f0;
+  --color-selected-ink: #1d4d6d;
+  --color-attention: #b33a12;
+  --color-attention-soft: #fae3d7;
 
   /* Non-utility surfaces that used to be literal hex: the user bubble, the
    * scrollbar thumbs, and the shadow/scrim ink. Tokenized so the dark dual
    * below can move them with everything else. */
-  --color-bubble-user: #efe6d5;
-  --color-scrollbar: #dcd1bd;
-  --color-scrollbar-hover: #c8baa1;
+  --color-bubble-user: #eee8dc;
+  --color-scrollbar: #d8d0c1;
+  --color-scrollbar-hover: #c4baa8;
   --color-term-scrollbar: #4a4238;
-  --kiki-shadow-ink: 28 25 23;
+  --kiki-shadow-ink: 27 26 23;
   /* Raised sheets: a hairline ring plus a low, wide shadow — lift without a
    * visible box. Dark swaps the shadow for a faint light ring (below). */
-  --kiki-sheet-shadow: 0 0 0 1px rgb(28 25 23 / 0.055), 0 1px 2px rgb(28 25 23 / 0.04),
-    0 6px 20px -12px rgb(28 25 23 / 0.12);
+  --kiki-sheet-shadow: 0 0 0 1px rgb(27 26 23 / 0.06), 0 1px 2px rgb(27 26 23 / 0.04),
+    0 8px 24px -14px rgb(27 26 23 / 0.14);
   --kiki-sheet-radius: 12px;
   --kiki-stage-gap: 8px;
 
@@ -88,15 +88,15 @@
 
   /* Streamdown's components are built on shadcn custom properties; map them
    * onto the kiki palette so its internals (code blocks, tables) stay warm. */
-  --color-background: #fffdf8;
-  --color-foreground: #1c1917;
-  --color-muted: #f8f4ec;
-  --color-muted-foreground: #544a3f;
-  --color-border: #e5dccb;
-  --color-input: #e5dccb;
-  --color-primary: #c2410c;
-  --color-primary-foreground: #fffdf8;
-  --color-sidebar: #f8f4ec;
+  --color-background: #fffdfa;
+  --color-foreground: #1b1a17;
+  --color-muted: #fbfaf6;
+  --color-muted-foreground: #4b453e;
+  --color-border: #e4ddd0;
+  --color-input: #e4ddd0;
+  --color-primary: #c8401a;
+  --color-primary-foreground: #fffdfa;
+  --color-sidebar: #fbfaf6;
 
   /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
    * stacks keep the Latin identity and land Chinese on deliberate Song-style
@@ -129,31 +129,35 @@
   color-scheme: dark;
 
   /* Canvas sinks below the paper so the sheet still reads as raised. */
-  --color-canvas: #110e0a;
-  --color-paper: #17140f;
-  --color-panel: #1d1914;
-  --color-hairline: #2c261e;
-  --color-hairline-strong: #40382c;
-  --color-ink: #efe8dc;
-  --color-ink-soft: #b8ac99;
-  --color-ink-faint: #958978;
-  --color-accent: #f08a4b;
-  --color-accent-deep: #f6a574;
-  --color-accent-ink: #f08a4b;
-  --color-accent-soft: #33231a;
-  --color-amber-ink: #e0a63c;
+  --color-canvas: #13120f;
+  --color-paper: #1a1915;
+  --color-panel: #211f1b;
+  --color-hairline: #2e2b25;
+  --color-hairline-strong: #433f36;
+  --color-ink: #ece8e0;
+  --color-ink-soft: #bab3a7;
+  /* Faint text is the most-used label role, so it is sized for the tinted
+   * grounds it lands on, not just the ladder: ≥4.9:1 on the selected and
+   * accent-soft washes and the hover wash, and a clear step below ink-soft
+   * (6.0 vs 8.8:1 on paper) so the hierarchy survives. */
+  --color-ink-faint: #9d968a;
+  --color-accent: #f07a4c;
+  --color-accent-deep: #f59a74;
+  --color-accent-ink: #f5946b;
+  --color-accent-soft: #3a2218;
+  --color-amber-ink: #e3a64a;
   --color-amber-card: #2c2114;
   --color-amber-rule: #7a5a20;
-  --color-success: #7fb88a;
-  --color-danger: #f2877c;
+  --color-success: #86c79a;
+  --color-danger: #f08a80;
 
-  --color-section-ink: #d9ab83;
-  --color-selected: #132623;
-  --color-selected-ink: #7fd3c4;
-  --color-attention: #ff9a5c;
-  --color-attention-soft: #3a2415;
+  --color-section-ink: #bab3a7;
+  --color-selected: #1c2b36;
+  --color-selected-ink: #8fc6ea;
+  --color-attention: #ff8f5e;
+  --color-attention-soft: #3b2216;
 
-  --color-bubble-user: #241f18;
+  --color-bubble-user: #25231e;
   --color-scrollbar: #453d31;
   --color-scrollbar-hover: #5a5142;
   --color-term-scrollbar: #5a5142;
@@ -162,17 +166,17 @@
   /* Shadows on a dark ground read as depth only when they are darker than the
    * surface, so the scrim ink goes to near-black rather than following ink. */
   --kiki-shadow-ink: 0 0 0;
-  --kiki-sheet-shadow: 0 0 0 1px rgb(239 232 220 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+  --kiki-sheet-shadow: 0 0 0 1px rgb(236 232 224 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
 
-  --color-background: #1d1914;
-  --color-foreground: #efe8dc;
-  --color-muted: #17140f;
-  --color-muted-foreground: #b8ac99;
-  --color-border: #2c261e;
-  --color-input: #2c261e;
-  --color-primary: #f08a4b;
-  --color-primary-foreground: #17140f;
-  --color-sidebar: #17140f;
+  --color-background: #211f1b;
+  --color-foreground: #ece8e0;
+  --color-muted: #1a1915;
+  --color-muted-foreground: #bab3a7;
+  --color-border: #2e2b25;
+  --color-input: #2e2b25;
+  --color-primary: #f07a4c;
+  --color-primary-foreground: #1a1915;
+  --color-sidebar: #1a1915;
 }
 
 html,

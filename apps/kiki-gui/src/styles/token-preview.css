@@ -74,7 +74,7 @@
  * you" (waiting marks, approval words, the one primary button). Section
  * heads stay neutral. */
 :root[data-kiki-tokens='a'] {
-  --color-canvas: #f3f0e9;
+  --color-canvas: #f2efe8;
   --color-paper: #fbfaf6;
   --color-panel: #fffdfa;
   --color-hairline: #e4ddd0;

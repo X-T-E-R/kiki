@@ -62,9 +62,9 @@ function densityOf(spacing: number | undefined): 'compact' | 'default' | 'roomy'
 
 /** The accent currently on screen, so the color input opens on the real value. */
 function readAccent(): string {
-  if (typeof document === 'undefined') return '#c2410c';
+  if (typeof document === 'undefined') return '#c8401a';
   const value = getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim();
-  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#c2410c';
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#c8401a';
 }
 
 /**

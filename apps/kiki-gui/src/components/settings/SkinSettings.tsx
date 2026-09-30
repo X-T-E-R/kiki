@@ -41,8 +41,8 @@ export function useSkinPrefs() {
  * whichever skin is selected and would make Paper's swatch mirror that one.
  */
 export const PAPER_SWATCH: Record<ResolvedTheme, { canvas: string; paper: string; panel: string; ink: string; accent: string }> = {
-  light: { canvas: '#ede5d6', paper: '#f8f4ec', panel: '#fffdf8', ink: '#1c1917', accent: '#c2410c' },
-  dark: { canvas: '#110e0a', paper: '#17140f', panel: '#1d1914', ink: '#efe8dc', accent: '#f08a4b' },
+  light: { canvas: '#f2efe8', paper: '#fbfaf6', panel: '#fffdfa', ink: '#1b1a17', accent: '#c8401a' },
+  dark: { canvas: '#13120f', paper: '#1a1915', panel: '#211f1b', ink: '#ece8e0', accent: '#f07a4c' },
 };
 
 /** A swatch row rendered from the skin's own tokens, so it cannot lie. */
