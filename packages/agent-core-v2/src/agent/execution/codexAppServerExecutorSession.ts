@@ -14,7 +14,7 @@ import {
 
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
-import { acquireHarnessMcp } from './harnessMcpLease';
+import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
 import { codexAttachments, externalAttachments } from './externalAttachments';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -52,6 +52,8 @@ import type {
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
+import { acpFormFields, acpFormResponse } from './acpElicitation';
+import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
   externalExecutorKey,
@@ -161,8 +163,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     this.#client = clientFactory(
-      wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
-        () => context.agent.accessor.get(IBootstrapService)),
+      codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
+        () => context.agent.accessor.get(IBootstrapService)), () => this.#harnessMcp),
       (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
     );
   }
@@ -195,6 +197,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (options.signal.aborted) relayAbort();
 
     const roots = this.#roots();
+    this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     await this.#client.connect(controller.signal);
     await this.#validateModel(controller.signal);
     const opened = await this.#openThread(roots, controller.signal);
@@ -495,7 +498,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     if (this.#threadId !== undefined) return { threadId: this.#threadId, mode: 'live' };
-    this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     if (
       state.executorId !== undefined &&
       (state.executorId !== this.context.descriptor.id ||
@@ -520,7 +522,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           cwd: roots.workDir,
           approvalPolicy: this.#approvalPolicy(),
           sandbox: 'workspace-write',
-          config: this.#mcpConfig(),
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
@@ -550,21 +551,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       approvalPolicy: this.#approvalPolicy(),
       sandbox: 'workspace-write',
-      config: this.#mcpConfig(),
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
     return started;
-  }
-
-  #mcpConfig(): Readonly<Record<string, unknown>> | undefined {
-    const server = this.#harnessMcp?.server;
-    if (server === undefined || 'type' in server) return undefined;
-    return { mcp_servers: { [server.name]: {
-      command: server.command,
-      args: server.args,
-      env: Object.fromEntries(server.env.map(({ name, value }) => [name, value])),
-    } } };
   }
 
   #instructions(): Readonly<Record<string, string>> {
@@ -624,7 +614,52 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       await this.#userInput(request, responder, active);
       return;
     }
+    if (request.method === 'mcpServer/elicitation/request') {
+      await this.#mcpElicitation(request, responder, active, signal);
+      return;
+    }
     await responder.respondError(-32601, `Unsupported server request: ${request.method}`);
+  }
+
+  async #mcpElicitation(request: CodexServerRequest, responder: CodexServerRequestResponder, active: PermissionContext, requestSignal: AbortSignal): Promise<void> {
+    const params = request.params;
+    if (params['threadId'] !== this.#threadId || params['mode'] !== 'form' || typeof params['message'] !== 'string') {
+      await responder.respond({ action: 'decline', content: null });
+      return;
+    }
+    const form = { ...params, mode: 'form' } as unknown as AcpElicitationRequest;
+    const fields = acpFormFields(form);
+    if (fields === undefined) { await responder.respond({ action: 'decline', content: null }); return; }
+    const signal = AbortSignal.any([active.signal, requestSignal]);
+    const meta = isObject(params['_meta']) ? params['_meta'] : undefined;
+    if (meta?.['codex_approval_kind'] === 'mcp_tool_call' || fields.length === 0) {
+      const scopes = fields.length === 0 ? [] : fields.length === 1 && fields[0]?.key === 'persist'
+        ? fields[0].choices.filter((choice) => ['once', 'session', 'always'].includes(choice.value)) : undefined;
+      if (scopes === undefined || (fields.length > 0 && scopes.length === 0)) { await responder.respond({ action: 'decline', content: null }); return; }
+      const choices = scopes.length === 0 ? [{ value: 'once', label: 'Allow once' }] : scopes;
+      const response = await raceInteraction(this.context.agent.accessor.get(ISessionApprovalService).request({
+        id: `codex:${String(request.id)}`, agentId: this.context.agent.id, turnId: active.turn.id,
+        toolName: typeof params['serverName'] === 'string' ? params['serverName'] : 'MCP tool', action: params['message'],
+        display: { kind: 'external_permission', summary: params['message'], detail: params,
+          options: [...choices.map((choice) => ({ id: choice.value, label: choice.label, kind: choice.value === 'once' ? 'allow_once' : 'allow_always' })),
+            { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
+      }), signal);
+      if (response === undefined || response.decision === 'cancelled') {
+        this.#interaction.cancelPendingForTurn(active.turn.id);
+        await responder.respond({ action: 'cancel', content: null });
+      } else if (response.decision === 'approved') {
+        const selected = response.selectedOptionId ?? 'once';
+        await responder.respond(choices.some((choice) => choice.value === selected)
+          ? { action: 'accept', content: scopes.length === 0 ? null : { persist: selected } }
+          : { action: 'decline', content: null });
+      } else await responder.respond({ action: 'decline', content: null });
+      return;
+    }
+    const result = await this.context.agent.accessor.get(ISessionQuestionService).request({
+      id: `codex:${String(request.id)}`, turnId: active.turn.id, questions: fields.map((field) => field.question),
+    }, { signal, agentId: this.context.agent.id });
+    const response = signal.aborted ? { action: 'cancel' as const } : acpFormResponse(form, fields, result);
+    await responder.respond({ ...response, content: 'content' in response ? response.content : null });
   }
 
   async #commandApproval(

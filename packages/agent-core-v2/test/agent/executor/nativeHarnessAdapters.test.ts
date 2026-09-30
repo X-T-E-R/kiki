@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 
 import type { AcpElicitationRequest } from '@kiki/acp-client';
-import { describe, expect, it } from 'vitest';
+import type { HostProcessServiceLike } from '@kiki/codex-client';
+import { describe, expect, it, vi } from 'vitest';
 
 import { acpFormFields, acpFormResponse } from '#/agent/execution/acpElicitation';
-import { acquireHarnessMcp } from '#/agent/execution/harnessMcpLease';
+import { acquireHarnessMcp, codexHarnessMcpProcess } from '#/agent/execution/harnessMcpLease';
+import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { externalAcpForkRecords } from '#/workspace/sessionLifecycle/internal/externalFork';
 import { antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
 import { agentExecutorBindingFingerprint, type AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
@@ -22,6 +24,23 @@ const form: AcpElicitationRequest = {
 };
 
 describe('external native harness adapters', () => {
+  it('injects Codex MCP at process startup and keeps delegation credentials out of argv', async () => {
+    let lease: HarnessMcpLease | undefined;
+    const spawn = vi.fn(async (..._args: Parameters<HostProcessServiceLike['spawn']>) => { throw new Error('fixture-child'); });
+    const wrapped = codexHarnessMcpProcess({ spawn }, () => lease);
+    await expect(wrapped.spawn('codex', ['app-server'], { env: { BASE: 'keep' }, shell: false })).rejects.toThrow('fixture-child');
+    expect(spawn.mock.calls[0]).toEqual(['codex', ['app-server'], { env: { BASE: 'keep' }, shell: false }]);
+    lease = { server: { name: 'kiki-harness', command: 'kiki', args: ['mcp', '--workspace', '/workspace', '--attached'],
+      env: [{ name: 'KIKI_DELEGATION_TOKEN', value: 'fixture-token' }, { name: 'KIKI_SESSION_ID', value: 'original' }] }, dispose: () => {} };
+    await expect(wrapped.spawn('codex', ['app-server'], { env: { BASE: 'keep' }, shell: false })).rejects.toThrow('fixture-child');
+    expect(spawn.mock.calls[1]).toEqual(['codex', ['app-server',
+      '-c', 'mcp_servers.kiki-harness.command="kiki"',
+      '-c', 'mcp_servers.kiki-harness.args=["mcp","--workspace","/workspace","--attached"]',
+      '-c', 'mcp_servers.kiki-harness.env_vars=["KIKI_DELEGATION_TOKEN","KIKI_SESSION_ID"]',
+      '-c', 'mcp_servers.kiki-harness.enabled=true', '-c', 'mcp_servers.kiki-harness.required=true',
+    ], { env: { BASE: 'keep', KIKI_DELEGATION_TOKEN: 'fixture-token', KIKI_SESSION_ID: 'original' }, shell: false }]);
+    expect(spawn.mock.calls[1]?.[1]?.join(' ')).not.toContain('fixture-token');
+  });
   it('preserves legacy local-resume fingerprints when delegation is omitted or explicitly disabled', () => {
     const binding: ProfileBindingSnapshot = { thinkingLevel: 'off', systemPrompt: 'Frozen profile' };
     const legacy = createHash('sha256').update(JSON.stringify({ thinkingLevel: 'off', systemPrompt: 'Frozen profile' })).digest('hex');
@@ -47,6 +66,14 @@ describe('external native harness adapters', () => {
     expect(acpFormFields({ ...form, requestedSchema: { type: 'object', properties: {
       first: { type: 'string', title: 'Same' }, second: { type: 'string', title: 'Same' },
     } } })).toBeUndefined();
+  });
+
+  it('does not expose secret or synthetic other-answer fields as unmasked ordinary questions', () => {
+    for (const meta of [{ isSecret: true }, { isOtherAnswer: true }]) {
+      expect(acpFormFields({ ...form, requestedSchema: { type: 'object', properties: {
+        private: { type: 'string', _meta: { codex: meta } },
+      } } } as AcpElicitationRequest)).toBeUndefined();
+    }
   });
 
   it('marks copied ACP references for an exact AIR fork and counts repeated assistant text only', () => {

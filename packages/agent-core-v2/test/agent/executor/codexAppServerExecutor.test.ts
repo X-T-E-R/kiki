@@ -995,3 +995,43 @@ describe('Codex app-server external executor', () => {
     },
   );
 });
+
+describe('Codex native MCP elicitation', () => {
+  it('maps a real empty-schema MCP approval and does not require an absent itemId', async () => {
+    const harness = createHarness({ serverRequest: { method: 'mcpServer/elicitation/request', params: {
+      threadId: 'thread-new', turnId: 'turn-1', serverName: 'kiki-harness', mode: 'form',
+      _meta: { codex_approval_kind: 'mcp_tool_call', persist: ['session', 'always'] },
+      message: 'Allow kiki_list?', requestedSchema: { type: 'object', properties: {} },
+    } } });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'List' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.serverResults).toEqual([{ action: 'accept', content: null }]);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('declines a form for another thread and unsupported URL elicitation', async () => {
+    for (const params of [{ threadId: 'other', mode: 'form' }, { threadId: 'thread-new', mode: 'url' }]) {
+      const harness = createHarness({ serverRequest: { method: 'mcpServer/elicitation/request', params: { ...params,
+        message: 'Allow?', requestedSchema: { type: 'object', properties: {} } } } });
+      try {
+        const run = await harness.session.run({ kind: 'prompt', prompt: 'List' }, { signal: new AbortController().signal });
+        await run.completion;
+        expect(harness.serverResults).toEqual([{ action: 'decline', content: null }]);
+      } finally { await harness.session.shutdown(); }
+    }
+  });
+
+  it('returns typed content for a native MCP form using the same durable question mapping', async () => {
+    const harness = createHarness({ questionAnswers: { Choice: 'Safe' }, serverRequest: { method: 'mcpServer/elicitation/request', params: {
+      threadId: 'thread-new', mode: 'form', message: 'Choose', requestedSchema: { type: 'object', properties: {
+        choice: { type: 'string', title: 'Choice', oneOf: [{ const: 'safe', title: 'Safe' }] },
+      }, required: ['choice'] },
+    } } });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'Choose' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.serverResults).toEqual([{ action: 'accept', content: { choice: 'safe' } }]);
+    } finally { await harness.session.shutdown(); }
+  });
+});

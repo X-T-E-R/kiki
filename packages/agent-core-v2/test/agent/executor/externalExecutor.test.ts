@@ -2117,3 +2117,18 @@ describe('ACP product interaction mapping', () => {
     } finally { await harness.session.shutdown(); }
   });
 });
+
+describe('ACP MCP approval scope', () => {
+  it('preserves donor once/session/always scope values rather than coercing them to a boolean', async () => {
+    const harness = createHarness({ executorId: 'codex-acp', approval: async () => ({ decision: 'approved', selectedOptionId: 'session' }),
+      elicitation: { mode: 'form', sessionId: 'remote-2', message: 'Allow tool?', _meta: { codex_approval_kind: 'mcp_tool_call' },
+        requestedSchema: { type: 'object', required: ['persist'], properties: { persist: { type: 'string', oneOf: [
+          { const: 'once', title: 'Allow once' }, { const: 'session', title: 'Allow for this session' }, { const: 'always', title: 'Allow always' },
+        ] } } } } });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'List' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.elicitationDecisions).toEqual([{ action: 'accept', content: { persist: 'session' } }]);
+    } finally { await harness.session.shutdown(); }
+  });
+});

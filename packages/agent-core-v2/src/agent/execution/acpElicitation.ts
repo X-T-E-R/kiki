@@ -18,6 +18,8 @@ export function acpFormFields(request: AcpElicitationRequest): readonly Field[] 
   for (const [key, raw] of Object.entries(properties)) {
     const property = object(raw);
     if (property === undefined) return undefined;
+    const codex = object(object(property['_meta'])?.['codex']);
+    if (codex?.['isSecret'] === true || codex?.['isOtherAnswer'] === true) return undefined;
     const type = property['type'];
     const choiceSchema = type === 'array' ? object(property['items']) : property;
     const choices = enumChoices(choiceSchema);

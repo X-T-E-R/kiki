@@ -735,21 +735,26 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (fields === undefined) return { action: 'decline' };
     const toolCallId = 'toolCallId' in request && typeof request.toolCallId === 'string' ? active.recorder.toolCallId(request.toolCallId) : undefined;
     if (fields.length === 0 || request._meta?.['codex_approval_kind'] === 'mcp_tool_call') {
-      if (fields.some((field) => field.key !== 'persist' || field.schema['type'] !== 'boolean')) return { action: 'decline' };
-      const persist = fields.some((field) => field.key === 'persist');
+      const scopes = fields.length === 0 ? [] : fields.length === 1 && fields[0]?.key === 'persist'
+        ? fields[0].choices.filter((choice) => ['once', 'session', 'always'].includes(choice.value)) : undefined;
+      if (scopes === undefined || (fields.length > 0 && scopes.length === 0)) return { action: 'decline' };
+      const choices = scopes.length === 0 ? [{ value: 'once', label: 'Allow once' }] : scopes;
       const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
         agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
         toolName: 'External approval', action: request.message,
         display: { kind: 'external_permission', summary: request.message, detail: request,
-          options: [{ id: 'accept', label: 'Accept', kind: 'allow_once' },
-            ...persist ? [{ id: 'accept_always', label: 'Accept for this session', kind: 'allow_always' }] : [],
+          options: [...choices.map((choice) => ({ id: choice.value, label: choice.label, kind: choice.value === 'once' ? 'allow_once' : 'allow_always' })),
             { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
       }), signal);
       if (response === undefined || response.decision === 'cancelled') {
         this.#interaction.cancelPendingForTurn(active.turn.id);
         return { action: 'cancel' };
       }
-      return response.decision === 'approved' ? { action: 'accept', content: persist ? { persist: response.selectedOptionId === 'accept_always' } : {} } : { action: 'decline' };
+      if (response.decision !== 'approved') return { action: 'decline' };
+      const selected = response.selectedOptionId ?? 'once';
+      return choices.some((choice) => choice.value === selected)
+        ? scopes.length === 0 ? { action: 'accept' } : { action: 'accept', content: { persist: selected } }
+        : { action: 'decline' };
     }
     const result = await this.context.agent.accessor.get(ISessionQuestionService).request({
       turnId: active.turn.id, toolCallId, questions: fields.map((field) => field.question),

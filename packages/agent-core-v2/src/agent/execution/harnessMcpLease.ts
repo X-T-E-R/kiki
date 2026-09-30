@@ -19,3 +19,20 @@ export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: stri
     workspacePath: cwd,
   });
 }
+
+export function codexHarnessMcpProcess(
+  processes: import('@kiki/codex-client').HostProcessServiceLike,
+  currentLease: () => HarnessMcpLease | undefined,
+): import('@kiki/codex-client').HostProcessServiceLike {
+  return {
+    spawn: async (command, args, options) => {
+      const server = currentLease()?.server;
+      if (server === undefined) return processes.spawn(command, args, options);
+      if (!('command' in server)) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Codex requires the Kiki stdio MCP bridge');
+      const env = Object.fromEntries(server.env.map(({ name, value }) => [name, value]));
+      const overrides = { command: server.command, args: server.args, env_vars: Object.keys(env), enabled: true, required: true };
+      const flags = Object.entries(overrides).flatMap(([key, value]) => ['-c', `mcp_servers.${server.name}.${key}=${JSON.stringify(value)}`]);
+      return processes.spawn(command, [...args ?? [], ...flags], { ...options, env: { ...options?.env, ...env } });
+    },
+  };
+}
