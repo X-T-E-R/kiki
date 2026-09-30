@@ -634,9 +634,7 @@ body[data-pane-resizing='true'] {
  * and none of them moves or covers the row's content:
  *   hover / peek    a light ink wash, nothing else.
  *   selected        (aria-current) a paper sheet lifted off its ground (paper
- *                   + sheet shadow, no colour block) plus a short mark in the
- *                   row's left padding, inset from the corners so the radius
- *                   never cuts it and clear of the status-mark column.
+ *                   + sheet shadow, no colour block, no side mark).
  *   focus-visible   an ink-blue ring (--focus-ring-width) drawn inside the
  *                   row, so a scrolling list never crops it.
  * A row that can be selected keeps at least 8px of left padding. Inspector
@@ -660,32 +658,22 @@ body[data-pane-resizing='true'] {
   background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
 /* Selected is a sheet of paper lifted off the ground it sits on — the same
- * vocabulary as every raised pane — never a colour block. The ink-blue mark
- * is the one "you are here" hue, kept short and thin so it reads as a tab
- * stop, not a stripe. */
+ * vocabulary as every raised pane — never a colour block and never a stripe.
+ * The lift alone says "you are here"; a heavier title weight on the row
+ * carries it for anyone who cannot see the shadow. Forced-colors mode, where
+ * shadows vanish, gets a system-colour edge instead. */
 .row-interactive[aria-current] {
   background-color: var(--color-paper);
   box-shadow: var(--kiki-sheet-shadow);
-}
-.row-interactive[aria-current]::before {
-  content: '';
-  position: absolute;
-  top: 9px;
-  bottom: 9px;
-  left: 3px;
-  width: 2px;
-  border-radius: 999px;
-  background-color: var(--color-selected-ink);
-  pointer-events: none;
 }
 .row-interactive:focus-visible {
   outline: var(--focus-ring-width) solid var(--color-selected-ink);
   outline-offset: calc(-1 * var(--focus-ring-width));
 }
 @media (forced-colors: active) {
-  .row-interactive[aria-current]::before {
-    forced-color-adjust: none;
-    background-color: Highlight;
+  .row-interactive[aria-current] {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
   }
 }
 

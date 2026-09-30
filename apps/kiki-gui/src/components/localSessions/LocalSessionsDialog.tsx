@@ -105,9 +105,8 @@ function SessionRow({
         className={`relative flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
           selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'}`}
       >
-        {selected ? <span aria-hidden className="absolute top-2 bottom-2 left-0 w-[2px] rounded-full bg-selected-ink" /> : null}
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className={`min-w-0 flex-1 truncate text-[13px] ${selected ? 'font-medium text-selected-ink' : 'text-ink'}`}>
+          <span className={`min-w-0 flex-1 truncate text-[13px] ${selected ? 'font-medium text-ink' : 'text-ink'}`}>
             {localSessionName(summary)}
           </span>
           <RelativeTime at={summary.updated_at} className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" />

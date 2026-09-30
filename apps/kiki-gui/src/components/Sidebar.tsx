@@ -269,7 +269,7 @@ function PrimaryNav({
                   current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
                 }`}
               >
-                <span className={current ? 'text-selected-ink' : 'text-ink-faint'}><Icon /></span>
+                <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
                 <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`)}</span>
                 {badge !== undefined && badge.count > 0 ? (
                   <span
@@ -1045,18 +1045,18 @@ export function Sidebar({
         ) : null}
         {selected.size > 0 ? (
           <div data-session-selection role="status"
-            className="sticky top-0 z-[2] mb-1 flex min-h-9 items-center gap-1.5 rounded-lg bg-selected px-2 text-[12.5px] text-selected-ink">
+            className="sticky top-0 z-[2] mb-1 flex min-h-9 items-center gap-1.5 rounded-lg bg-panel px-2 text-[12.5px] text-ink shadow-[var(--kiki-sheet-shadow)]">
             <span className="min-w-0 flex-1 truncate font-medium tabular-nums">{t('room.selectionCount', { count: selected.size })}</span>
             <button type="button" data-session-selection-room
               disabled={threadCommsEnabled === false || selected.size < 2}
               title={threadCommsEnabled === false ? t('room.commsOff') : selected.size < 2 ? t('room.threadsNeeded') : undefined}
               onClick={() => { setRoomDraft(sessions.filter((item) => selected.has(item.id))); }}
-              className="h-7 shrink-0 rounded-md px-2 font-medium transition-colors hover:bg-paper/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-55">
+              className="h-7 shrink-0 rounded-md px-2 font-medium transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-55">
               {t('room.fromThreads')}
             </button>
             <button type="button" data-session-selection-clear aria-label={t('room.clearSelection')} title={t('room.clearSelection')}
               onClick={() => { setSelected(new Set()); }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-paper/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
               <Icon name="close" size={12} />
             </button>
           </div>
@@ -1235,7 +1235,7 @@ export function Sidebar({
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
-          <span className={location.pathname.startsWith('/settings') ? 'text-selected-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
+          <span className={location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.settings')}</span>
         </button>
         {/* "Waiting on you" lives in the header's activity entry now; a second
@@ -1516,7 +1516,7 @@ function SessionRow({
         aria-pressed={onToggleSelect !== undefined && selected ? true : undefined}
         aria-label={nestedName}
         title={nestedName}
-        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${selected ? 'shadow-[inset_0_0_0_1px_var(--color-selected-ink)]' : ''} ${
+        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${selected ? 'bg-ink/[0.05] shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]' : ''} ${
           nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
         }`}
       >
