@@ -193,6 +193,18 @@ export function buildAgentProfileOptions(
   return pickable.map((item) => toOption(item, t('composer.profileGroupMain')));
 }
 
+/** What the composer needs to know about an external engine driving main. */
+export interface ComposerEngine {
+  readonly label: string;
+  readonly fork: boolean;
+  readonly images: boolean;
+}
+
+/** `/fork` leaves the slash menu when the engine's handshake refused forking. */
+function withoutRefusedActions<T extends { readonly kind: string; readonly action?: string }>(items: T[], engine: ComposerEngine | undefined): T[] {
+  return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || item.action !== 'fork') : items;
+}
+
 const PERSONA_OPTION_PREFIX = 'persona:';
 
 /** The agent picker's last row on /new: where personas are made. */
@@ -294,6 +306,7 @@ export function Composer({
   onLocateAnnotation,
   needsYou,
   statusNotice,
+  engine,
 }: {
   busy: boolean;
   /**
@@ -498,6 +511,13 @@ export function Composer({
    * disconnected). The line keeps the working state beside it.
    */
   statusNotice?: ReactNode;
+  /**
+   * The external engine the main agent runs on. Its model ids are the
+   * engine's own, not Kiki catalog entries, so they are shown as set and never
+   * flagged unavailable; entries the handshake refused (fork, images) leave
+   * the composer.
+   */
+  engine?: ComposerEngine;
 }) {
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
@@ -729,8 +749,8 @@ export function Composer({
     .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
-  const invalidModel = modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
-  const invalidEffort = modelsQuery.isSuccess && selectedModel !== undefined
+  const invalidModel = engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !selectedModel.support_efforts?.includes(effort);
   const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort;
 
@@ -780,8 +800,8 @@ export function Composer({
   }, [slashMenuOpen, skillCatalogReady, skillsQuery.isStale, skillsQuery.isFetching, skillsQuery.refetch]);
 
   const slashItems = useMemo(
-    () => buildSlashItems(skills, { hasSession: sessionId !== undefined }),
-    [skills, sessionId],
+    () => withoutRefusedActions(buildSlashItems(skills, { hasSession: sessionId !== undefined }), engine),
+    [skills, sessionId, engine],
   );
   const skillMenuItems = useMemo(() => slashItems.filter((item) => item.kind === 'skill'), [slashItems]);
   const filteredSlashItems = useMemo(() => {
@@ -1290,6 +1310,12 @@ export function Composer({
       if (ACCEPTED_IMAGE_MIMES.includes(file.type)) images.push(file);
       else uploads.push(file);
     }
+    // The engine said at handshake it takes no images; say so instead of
+    // letting the send fail after the upload.
+    if (images.length > 0 && engine?.images === false) {
+      setAttachmentError(t('composer.engineNoImages', { engine: engine.label }));
+      images.length = 0;
+    }
     if (images.length > 0) addImageFiles(images);
     if (uploads.length > 0) addUploadFiles(uploads);
   };
@@ -1472,7 +1498,7 @@ export function Composer({
           return;
         }
         setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);
-        submitWithSlashItems(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), true);
+        submitWithSlashItems(withoutRefusedActions(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), engine), true);
       });
       return;
     }
@@ -1891,7 +1917,10 @@ export function Composer({
     node: (
       <ModelChip
         modelOptions={modelOptions}
-        hasCatalog={models.length > 0}
+        // An external engine's model is its own id, set on the profile: shown
+        // read-only here, with the engine named in the tooltip.
+        hasCatalog={engine === undefined && models.length > 0}
+        engineLabel={engine?.label}
         model={model}
         resolvedModelKey={resolvedModelKey}
         effectiveModel={effectiveModel}
@@ -2831,8 +2860,11 @@ function ModelChip({
   efforts,
   effort,
   onChangeEffort,
+  engineLabel,
 }: {
   readonly modelOptions: readonly SearchableSelectOption[];
+  /** Set when an external engine serves the model: the label is read-only. */
+  readonly engineLabel?: string;
   /** False when `GET /models` returned nothing — no model is pickable. */
   readonly hasCatalog: boolean;
   readonly model: string | undefined;
@@ -2853,15 +2885,18 @@ function ModelChip({
   const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
-  const title = effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
+  const title = engineLabel !== undefined
+    ? t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: engineLabel })
+    : effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
 
-  if (!hasCatalog && !showEffort) {
+  if (engineLabel !== undefined || (!hasCatalog && !showEffort)) {
     return (
       <span
+        data-composer-engine-model={engineLabel}
         className="flex h-7 max-w-56 min-w-0 items-center truncate px-1.5 text-[13px] text-ink-soft"
         title={title}
       >
-        {shortLabel ?? effectiveModel ?? t('composer.inheritDefault')}
+        {shortLabel ?? effectiveModel ?? (engineLabel !== undefined ? t('composer.engineModelDefault') : t('composer.inheritDefault'))}
       </span>
     );
   }

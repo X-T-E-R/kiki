@@ -14,7 +14,7 @@ import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGa
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
+import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useLastResponseAt } from './composerWorking';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
@@ -115,7 +115,9 @@ import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInpu
 import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
 import { AnnotationTray } from './AnnotationTray';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
-import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
+import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
+import { CodexApprovalNote, HarnessMark } from './harness/HarnessMark';
+import { codexRefusesKikiTools, harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
@@ -222,7 +224,10 @@ function Header({
   deliveryPending,
   botPersonaId,
   onOpenBotSettings,
+  harness,
 }: {
+  /** External engine behind main: its mark beside the title, and no fork when it refused one. */
+  harness?: SessionHarness;
   botPersonaId?: string;
   onOpenBotSettings: () => void;
   controller: SessionController | null;
@@ -291,6 +296,7 @@ function Header({
             onOpenRail={onToggleRail}
           />
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
+          {harness !== undefined ? <HarnessMark harness={harness} /> : null}
           {/* What is waiting on you — the count and the batch decisions —
               lives in the tray above the composer, which lists the items
               themselves. The header keeps one quiet state word and ONE
@@ -309,6 +315,7 @@ function Header({
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
             onAction={onSessionAction}
+            canFork={!harnessDenies(harness, 'fork')}
             leading={(close) => (
               <>
                 {botPersonaId !== undefined ? (
@@ -518,7 +525,10 @@ export function SessionActionsMenu({
   onBeginRename,
   onAction,
   leading,
+  canFork = true,
 }: {
+  /** False when the session's engine cannot fork; the row leaves the menu. */
+  canFork?: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
   onToggleTerminal: () => void;
@@ -609,9 +619,11 @@ export function SessionActionsMenu({
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
-          <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('fork'); }}>
-            {t('menu.fork')}
-          </button>
+          {canFork ? (
+            <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('fork'); }}>
+              {t('menu.fork')}
+            </button>
+          ) : null}
           <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('export'); }}>
             {t('menu.export')}
           </button>
@@ -1726,6 +1738,12 @@ export function SessionView({
 
   // The live main-agent binding, from the snapshot's agent_config echo.
   const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
+  // An external engine bound as main: what its handshake agreed to gates the
+  // entries it cannot serve and feeds the quiet engine line in the header.
+  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? []);
+  const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
+    label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
+  }, [harness]);
   const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
 
   // A model/effort pick made while a profile switch is pending is explicit:
@@ -2063,7 +2081,8 @@ export function SessionView({
         decision: 'approved' | 'rejected' | 'cancelled',
         scope?: 'session',
         selectedOptionId?: string,
-      ) => controller.resolveApproval(approvalId, decision, scope, selectedOptionId),
+        review?: PlanReviewResponse,
+      ) => controller.resolveApproval(approvalId, decision, scope, selectedOptionId, review),
       answerQuestion: (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
         controller.answerQuestion(questionId, answers),
       dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
@@ -2354,10 +2373,11 @@ export function SessionView({
       onEditMessage: handleEditMessage,
       onRegenerate: handleRegenerate,
       onFork: handleForkMessage,
+      canFork: composerEngine?.fork !== false,
       // Resume after a user stop re-runs the stopped reply (same path as regenerate).
       onResumeStopped: handleRegenerate,
     }),
-    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage],
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage, composerEngine?.fork],
   );
 
   const forestRaw = useMemo(
@@ -2533,8 +2553,9 @@ export function SessionView({
       decision: 'approved' | 'rejected' | 'cancelled',
       scope?: 'session',
       selectedOptionId?: string,
+      review?: PlanReviewResponse,
     ) =>
-      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId) ??
+      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId, review) ??
       Promise.resolve(),
     [controller],
   );
@@ -3093,6 +3114,7 @@ export function SessionView({
             onLocateAnnotation={handleLocateAnnotation}
             needsYou={composerNeedsYou}
             statusNotice={composerStatusNotice}
+            engine={composerEngine}
           />
         </ContextBreakdownProvider>
       ),
@@ -3153,6 +3175,7 @@ export function SessionView({
     handleEffortChange,
     handleAgentProfileChange,
     handleContextRebuild,
+    composerEngine,
     t,
   ]);
   useRegisterSeat(seat);
@@ -3269,6 +3292,7 @@ export function SessionView({
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
             botPersonaId={botPersonaId}
             onOpenBotSettings={openBotSettings}
+            harness={harness}
           />,
           timeline: {
             view: timelineView,
@@ -3305,6 +3329,7 @@ export function SessionView({
                 onSaved={() => { void controller?.refreshSession(); }}
               />
             ) : null}
+            {codexRefusesKikiTools(harness, permissionMode) ? <CodexApprovalNote /> : null}
             <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
           </>,
           rail: botSettingsOpen && botPersonaId !== undefined ? (

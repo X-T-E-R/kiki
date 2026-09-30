@@ -280,6 +280,8 @@ export interface TranscriptRowActions {
   onEditMessage: (block: UserBlock, text: string) => void;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
+  /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
+  canFork?: boolean;
   /** Re-run the stopped turn (regenerate its assistant reply). */
   onResumeStopped?: (block: AssistantBlock) => void;
 }
@@ -352,7 +354,7 @@ const UserMessage = memo(function UserMessage({
             copyText={typedText}
             linkHref={messageLink?.(block.id)}
             canEdit={canMutate}
-            canFork={canMutate}
+            canFork={canMutate && rowActions?.canFork !== false}
             disabled={rowActions?.disabled}
             onEdit={() => { setEditing(true); }}
             onFork={() => { rowActions?.onFork(block); }}
@@ -532,7 +534,7 @@ const AssistantMessage = memo(function AssistantMessage({
           copyText={block.text}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
-          canFork={rowActions !== undefined && isLatestFinal}
+          canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}
           disabled={rowActions?.disabled ?? false}
           onRegenerate={() => { rowActions?.onRegenerate(block); }}
           onFork={() => { rowActions?.onFork(block); }}
