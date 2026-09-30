@@ -96,6 +96,7 @@ interface FakeHarnessOptions {
   readonly thoughtConfigId?: string;
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
+  readonly executorVersion?: string;
   readonly agentId?: string;
   readonly providerName?: string;
   readonly modelAlias?: string;
@@ -422,6 +423,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
           },
       profileDelivery: options.profileDelivery,
       supportsMcp: options.supportsMcp,
+      version: options.executorVersion,
       revision: 'r1',
     },
     binding: {
@@ -580,6 +582,18 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
+    const harness = createHarness({
+      executorId: 'kimi-acp', executorVersion,
+      supportsMcp: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.supportsMcp,
+      mcpServers: { relay: { transport: 'stdio', command: 'node', args: ['relay.js'] } },
+      thinkingEffort: 'off', unpinModel: true,
+    });
+    await harness.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
+    expect(harness.opens[0]?.mcpServers).toEqual([{ name: 'relay', command: 'node', args: ['relay.js'], env: [] }]);
+    await harness.session.shutdown();
+  });
+
   it('passes session MCP servers to the engine and honors the descriptor opt-out', async () => {
     const config = { relay: { transport: 'stdio' as const, command: 'node', args: ['relay.js'] } };
     const forwarded = createHarness({ mcpServers: config, thinkingEffort: 'off', unpinModel: true });

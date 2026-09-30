@@ -113,7 +113,7 @@ export type AgentExecutorDiagnosticRule =
   | { readonly kind: 'flag'; readonly args: readonly string[]; readonly stable: string;
       readonly fallback: string; readonly stableMessage: string; readonly fallbackMessage: string;
       readonly missingMessage: string }
-  | { readonly kind: 'version'; readonly min: string; readonly warning: string; readonly normal: string };
+  | { readonly kind: 'version'; readonly min: string; readonly maxExclusive?: string; readonly warning: string; readonly normal: string };
 
 export interface AgentExecutorDescriptor {
   readonly id: string;

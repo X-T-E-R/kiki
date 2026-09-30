@@ -1,5 +1,5 @@
 import { join } from 'pathe';
-import { coerce, gte } from 'semver';
+import { coerce, gte, lt } from 'semver';
 import { CodexAppServerClient } from '@kiki/codex-client';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -206,7 +206,9 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       }
       if (rule.kind === 'version') {
         const parsed = version === undefined ? null : coerce(version);
-        diagnostics.push(parsed !== null && gte(parsed, rule.min) ? warning(rule.warning) : info(rule.normal));
+        const affected = parsed !== null && gte(parsed, rule.min) &&
+          (rule.maxExclusive === undefined || lt(parsed, rule.maxExclusive));
+        diagnostics.push(affected ? warning(rule.warning) : info(rule.normal));
       }
     }
     return { diagnostics, resolvedArgs: executorLaunchArgs(descriptor, resolvedArgs), requirements };

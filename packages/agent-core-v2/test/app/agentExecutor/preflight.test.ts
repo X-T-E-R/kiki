@@ -198,7 +198,7 @@ describe('AgentExecutorPreflightService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           severity: 'warning',
-          message: 'Kimi Code 0.37–0.38 rejects ACP stdio MCP servers. MCP forwarding is off until a working version is verified.',
+          message: 'This version of Kimi CLI does not accept ACP stdio MCP servers; MCP tools will fail. Upgrade to 0.39.0 or newer.',
         }),
       ]),
     );
@@ -213,6 +213,27 @@ describe('AgentExecutorPreflightService', () => {
       'deepseek-acp --version',
       'qodercli --version',
     ]));
+  });
+
+  it.each([
+    { version: '0.36.1', affected: false },
+    { version: '0.37.0', affected: true },
+    { version: '0.37.2', affected: true },
+    { version: '0.38.0', affected: true },
+    { version: '0.38.9', affected: true },
+    { version: '0.39.0', affected: false },
+    { version: '0.39.1', affected: false },
+    { version: '2.1.1', affected: false },
+    { version: '', affected: false },
+    { version: 'unknown', affected: false },
+  ])('limits the Kimi MCP regression warning for $version to the affected interval', async ({ version, affected }) => {
+    processService.outputs.set('kimi --version', { output: version });
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['kimi-acp']);
+    expect(result?.diagnostics.some((diagnostic) => diagnostic.severity === 'warning' &&
+      diagnostic.message.includes('does not accept ACP stdio MCP servers'))).toBe(affected);
+    if (!affected) expect(result?.diagnostics).toContainEqual({
+      severity: 'info', message: 'Kimi reuses the existing Kimi Code login and configuration.',
+    });
   });
 
   it('reports a confirmed login only from the declared command probe and caches its check', async () => {

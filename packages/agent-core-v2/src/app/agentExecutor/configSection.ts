@@ -88,7 +88,7 @@ export const AgentExecutorConfigSchema = z
         installHint: z.string().optional() }).strict(),
       z.object({ kind: z.literal('flag'), args: z.array(z.string()), stable: sourceId,
         fallback: sourceId, stableMessage: z.string(), fallbackMessage: z.string(), missingMessage: z.string() }).strict(),
-      z.object({ kind: z.literal('version'), min: sourceId, warning: z.string(), normal: z.string() }).strict(),
+      z.object({ kind: z.literal('version'), min: sourceId, maxExclusive: sourceId.optional(), warning: z.string(), normal: z.string() }).strict(),
     ])).optional(),
     auth: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('command-json'), command: sourceId,

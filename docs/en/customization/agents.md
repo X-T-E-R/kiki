@@ -86,6 +86,8 @@ For an outbound ACP (Agent Client Protocol) executor, Kiki sends the frozen prof
 
 The override applies when a **new remote session** is created, not on `session/resume` or `session/load`. An existing remote session keeps its original profile delivery mode, including when you change this executor setting. A new dispatch with a changed frozen profile starts a new remote session; if reconnecting fails and Kiki creates a new session instead, it sends the override again along with a bounded conversation handoff. Kiki does not send `_meta.rules` or `_meta.agentProfile` as part of this setting. Since a system-prompt override can replace a harness's default system prompt, only opt in when that replacement is appropriate for your harness.
 
+The built-in `kimi-acp` executor forwards configured MCP servers to Kimi Code. Kimi CLI versions from `0.37.0` up to, but not including, `0.39.0` reject ACP stdio MCP servers; preflight warns that MCP tools will fail and recommends upgrading to `0.39.0` or newer. The warning does not block forwarding. If the version cannot be detected, Kiki forwards the servers without this version warning.
+
 ### Rebuilding a session context
 
 After editing prompt sources, open the profile selector in the session composer and choose **Rebuild context**. After confirmation, Kiki reloads the current profile, prompt-field overrides, Agent Skills, `AGENTS.md` instructions, and plugin prompt/session-start injections from disk, reconciles other runtime context injections, then uses the rebuilt snapshot for later requests. Conversation messages are preserved. The action is unavailable while a turn is running; wait for the session to become idle and try again.
