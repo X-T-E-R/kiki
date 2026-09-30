@@ -16,6 +16,7 @@ import { useConnection } from '../../state/connection';
 import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { HostSkillInstallCard } from './HostSkillInstallCard';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
@@ -165,6 +166,7 @@ export function SkillsSection() {
         <CapabilityLink kind="skills" workspaceId={workspace?.id} />
       </SectionCard>
       <SkillsDefaultsCard />
+      <HostSkillInstallCard />
     </div>
   );
 }

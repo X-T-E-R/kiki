@@ -2164,6 +2164,23 @@ class FixtureServer {
       if (server === undefined) return this.envelope(res, null, 40408, `MCP server "${serverId}" was not found`);
       return this.envelope(res, { restarting: true });
     }
+    // External-host skill install: `claude` already has a copy (overwrite),
+    // the others are new. The fixture never writes anything.
+    const hostSkillMatch = /^\/skills\/kiki-as-subagent:(preview-install|install)$/.exec(path);
+    if (hostSkillMatch !== null && method === 'POST') {
+      const host = String(body?.host ?? '');
+      const dirs = { claude: '.claude', codex: '.codex', grok: '.grok', agents: '.agents' };
+      if (!(host in dirs)) return this.envelope(res, null, 40001, 'Unknown host');
+      const directory = `C:\\Users\\fixture\\${dirs[host]}\\skills`;
+      const preview = { host, directory, path: `${directory}\\kiki-as-subagent\\SKILL.md`, overwrites: host === 'claude', revision: `rev-${host}` };
+      // `grok` loses the race once: its first install finds the target changed.
+      this.hostSkillStaleOnce ??= new Set(['grok']);
+      const staleOnce = hostSkillMatch[1] === 'install' && this.hostSkillStaleOnce.delete(host);
+      if (hostSkillMatch[1] === 'install' && (staleOnce || body?.confirmed !== true || body?.revision !== preview.revision)) {
+        return this.envelope(res, null, 40001, 'Skill target changed; preview again before installing.');
+      }
+      return this.envelope(res, preview);
+    }
     const workspaceSkillsMatch = /^\/workspaces\/([^/]+)\/skills$/.exec(path);
     if (workspaceSkillsMatch !== null) {
       return this.envelope(res, {

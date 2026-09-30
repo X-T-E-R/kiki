@@ -597,6 +597,18 @@ export interface CapabilityStatus {
   };
 }
 
+/** Agent hosts that can load the `kiki-as-subagent` skill from their user skills folder. */
+export type HostSkillTarget = 'claude' | 'codex' | 'grok' | 'agents';
+
+/** Preview/result of installing the external-host skill (`revision` pins the previewed target). */
+export interface HostSkillInstallPreview {
+  readonly host: string;
+  readonly directory: string;
+  readonly path: string;
+  readonly overwrites: boolean;
+  readonly revision: string;
+}
+
 /** Installed plugin summary from GET /api/plugins. */
 export interface PluginSummary {
   readonly id: string;
@@ -1413,6 +1425,16 @@ export class KikiClient {
   async readBuiltinSkill(name: string): Promise<string> {
     const result = await this.run(this.rest.skills.readBuiltinContent(name));
     return result.content;
+  }
+
+  /** Where the external-host skill would land for `host` and whether it replaces a file; writes nothing. */
+  previewHostSkillInstall(host: HostSkillTarget): Promise<HostSkillInstallPreview> {
+    return this.run(this.rest.skills.previewHostInstall(host));
+  }
+
+  /** Writes the external-host skill; the server rejects (40001) when the target changed since `revision`. */
+  installHostSkill(host: HostSkillTarget, revision: string): Promise<HostSkillInstallPreview> {
+    return this.run(this.rest.skills.installHost(host, revision));
   }
 
   async previewHostFile(path: string, maxBytes = 512_001): Promise<{ text: string; truncated: boolean }> {
