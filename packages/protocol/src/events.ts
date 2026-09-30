@@ -24,6 +24,7 @@ import {
   type ProviderRefreshFailure,
 } from './modelCatalog';
 import { workspaceSchema, type Workspace } from './workspace';
+import { roomDocumentSchema, roomLogEntrySchema } from './rest/room';
 
 export interface TokenUsage {
   readonly inputOther: number;
@@ -2285,6 +2286,14 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptAbortedEventSchema,
   promptSteeredEventSchema,
 ]) satisfies z.ZodType<AgentEvent>;
+
+export const roomChangedEventSchema = z.object({
+  type: z.literal('event.room.changed'),
+  room_id: z.string().min(1),
+  room: roomDocumentSchema,
+  entry: roomLogEntrySchema.optional(),
+});
+export type RoomChangedEvent = z.infer<typeof roomChangedEventSchema>;
 
 export const eventSchema = agentEventSchema.and(
   z.object({

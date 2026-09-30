@@ -1,4 +1,5 @@
 export * from './agentFile';
+export * from './personaFile';
 export * from './agentFileDiscovery';
 export * from './agentFileTypes';
 export * from './agentProfile';

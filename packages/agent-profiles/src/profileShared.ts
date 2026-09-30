@@ -58,6 +58,7 @@ export function systemPromptVars(
     cwd_listing: context.cwdListing ?? '',
     agents_md: context.agentsMd ?? '',
     memory: context.memory ?? '',
+    persona: context.persona ?? '',
     additional_dirs_info: additionalDirsInfo,
     additional_dirs_section:
       additionalDirsInfo.length > 0

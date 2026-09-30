@@ -182,6 +182,7 @@ describe('agent_config read and write shapes', () => {
     expect(Object.keys(sessionAgentConfigSchema.shape).sort()).toEqual([
       'model',
       'permission_mode',
+      'persona',
       'plan_mode',
       'profile',
       'swarm_mode',

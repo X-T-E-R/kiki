@@ -4,6 +4,7 @@ import {
   promptPermissionModeSchema,
   promptThinkingSchema,
 } from './rest/prompt';
+import { personaAvatarDataSchema } from './rest/persona';
 import { isoDateTimeSchema } from './time';
 import { workspaceIdSchema } from './workspace';
 
@@ -63,6 +64,7 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
   profile: z.string().min(1).optional(),
+  persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
   /** @deprecated Read-only compatibility with older servers; no longer projected. */
@@ -125,7 +127,11 @@ export const worktreeIsolationSchema = z.object({
   base: z.union([z.enum(['head', 'fresh']), z.object({ ref: z.string().min(1) })]).optional(),
 });
 
+export const sessionDeliverySchema = z.enum(['reply', 'message']);
+export type SessionDelivery = z.infer<typeof sessionDeliverySchema>;
+
 export const sessionSchema = z.object({
+  delivery: sessionDeliverySchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
   title: z.string(),
@@ -169,6 +175,8 @@ export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
+  delivery: sessionDeliverySchema.optional(),
+  persona: z.string().min(1).optional(),
   metadata: sessionMetadataSchema.optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
@@ -180,6 +188,7 @@ export type SessionCreate = z.infer<typeof sessionCreateSchema>;
 
 export const sessionUpdateSchema = z.object({
   title: z.string().min(1).optional(),
+  delivery: sessionDeliverySchema.optional(),
   metadata: sessionMetadataSchema.partial().optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
   permission_rules: z.array(permissionRuleSchema).optional(),

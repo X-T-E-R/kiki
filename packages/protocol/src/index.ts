@@ -26,6 +26,8 @@ export * from './file';
 export * from './modelCatalog';
 export * from './thread';
 
+export * from './rest/bot';
+export * from './rest/room';
 export * from './rest/meta';
 export * from './rest/auth';
 export * from './rest/oauth';
@@ -62,3 +64,4 @@ export * from './contextStrategy';
 export * from './rest/skin';
 export * from './rest/appearance';
 export * from './rest/plugin';
+export * from './rest/persona';

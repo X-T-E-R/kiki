@@ -9,6 +9,7 @@ export const TOOL_GROUP_IDS = [
   'goal',
   'history',
   'memory',
+  'message',
   'plan',
   'question',
   'shell',

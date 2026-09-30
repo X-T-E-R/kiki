@@ -4,7 +4,7 @@ import { PromptOverridesSchema } from './promptOverrides';
 
 export const RESERVED_PROMPT_VARIABLES = new Set([
   'role_additional', 'product_name', 'reply_style_guide', 'os', 'windows_notes',
-  'shell', 'now', 'cwd', 'cwd_listing', 'agents_md', 'additional_dirs_info',
+  'shell', 'now', 'cwd', 'cwd_listing', 'agents_md', 'memory', 'persona', 'additional_dirs_info',
   'additional_dirs_section', 'skills', 'skills_section', 'plugin_sections',
   'base_prompt', 'parent_prompt', 'builtin_prompt', '__proto__', 'constructor', 'prototype',
 ]);
