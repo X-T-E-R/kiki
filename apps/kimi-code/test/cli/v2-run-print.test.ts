@@ -296,7 +296,7 @@ describe('runV2Print', () => {
         '[task]', 'print_background_mode = "exit"',
       ].join('\n'));
       await writeFile(join(homeDir, 'SYSTEM.md'), profileModel === undefined
-        ? 'You are a test agent.'
+        ? '---\nname: agent\n---\nYou are a test agent.'
         : `---\nmodel_alias: ${profileModel}\n---\nYou are a test agent.`);
       const actual = await vi.importActual<typeof import('@kiki/agent-core-v2')>('@kiki/agent-core-v2');
       const main = await vi.importActual<typeof import('@kiki/agent-core-v2/session/agentLifecycle/mainAgent')>('@kiki/agent-core-v2/session/agentLifecycle/mainAgent');
@@ -318,6 +318,69 @@ describe('runV2Print', () => {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 60_000);
+
+  it('runs HistoryList through the real print host for current turns, agents and another persisted session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-print-history-'));
+    const homeDir = join(root, 'home');
+    const workDir = join(root, 'work');
+    await mkdir(homeDir); await mkdir(workDir);
+    const requests: { messages: { role: string; content: string; tool_call_id?: string }[]; tools?: { function: { name: string } }[] }[] = [];
+    let priorSessionId: string | undefined;
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += String(chunk); });
+      req.on('end', () => {
+        requests.push(JSON.parse(body));
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const base = { id: 'history-local', object: 'chat.completion.chunk', created: 1, model: 'gpt-4o-mini' };
+        const calls = requests.length === 2 ? [
+          { index: 0, id: 'current-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'turns' }) } },
+          { index: 1, id: 'current-agents', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'agents' }) } },
+          { index: 2, id: 'prior-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'turns', session_id: priorSessionId }) } },
+        ] : undefined;
+        const delta = calls === undefined ? { role: 'assistant', content: requests.length === 1 ? 'PRIOR_REPLY' : 'HISTORY_OK' } : { role: 'assistant', tool_calls: calls };
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+        res.end(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: calls === undefined ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('local provider did not bind');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workDir);
+    try {
+      await writeFile(join(homeDir, 'config.toml'), [
+        'default_model = "example"', '[providers.example]', 'type = "openai"', `base_url = "http://127.0.0.1:${address.port}/v1"`, 'api_key = "test-only"',
+        '[models.example]', 'provider = "example"', 'model = "gpt-4o-mini"', 'protocol = "openai"',
+        'max_context_size = 32000', 'max_output_size = 1024', 'capabilities = ["tool_use"]', '[task]', 'print_background_mode = "exit"',
+      ].join('\n'));
+      await writeFile(join(homeDir, 'SYSTEM.md'), '---\nname: agent\ntools: [HistoryList]\n---\nYou are a test agent.');
+      const actual = await vi.importActual<typeof import('@kiki/agent-core-v2')>('@kiki/agent-core-v2');
+      const main = await vi.importActual<typeof import('@kiki/agent-core-v2/session/agentLifecycle/mainAgent')>('@kiki/agent-core-v2/session/agentLifecycle/mainAgent');
+      mocks.bootstrap.mockImplementation(actual.bootstrap);
+      mocks.ensureMainAgent.mockImplementation(main.ensureMainAgent);
+      mocks.resolveKikiHome.mockReturnValue(homeDir);
+      const priorErr = writer();
+      await runV2Print(opts({ prompt: 'prior prompt', timeout: '30' }) as never, 'test', { stdout: writer(), stderr: priorErr });
+      priorSessionId = /kimi -r (\S+)/.exec(priorErr.text())?.[1];
+      expect(priorSessionId).toBeDefined();
+      const stdout = writer();
+      await runV2Print(opts({ prompt: 'browse current history', timeout: '30' }) as never, 'test', { stdout, stderr: writer() });
+      expect(stdout.text()).toContain('HISTORY_OK');
+      expect(requests).toHaveLength(3);
+      expect(requests[1]?.tools?.some((tool) => tool.function.name === 'HistoryList')).toBe(true);
+      const replies = new Map(requests[2]!.messages.filter((message) => message.role === 'tool').map((message) => [message.tool_call_id, JSON.parse(message.content)]));
+      expect(replies.get('current-turns')).toMatchObject({ status: 'partial', kind: 'turns', coverage: { complete: false }, turns: expect.arrayContaining([expect.objectContaining({ prompt_excerpt: 'browse current history' })]) });
+      expect(replies.get('current-agents')).toMatchObject({ status: 'partial', kind: 'agents', agents: [{ agent_id: 'main', indexed: false }] });
+      expect(replies.get('prior-turns')).toMatchObject({ status: 'partial', target: { session_id: priorSessionId }, turns: [{ turn: 0, prompt_excerpt: 'prior prompt', answer_excerpt: 'PRIOR_REPLY', step_count: expect.any(Number), tool_count: 0 }] });
+      expect(replies.get('prior-turns').turns[0].ref).toBeUndefined();
+    } finally {
+      cwd.mockRestore();
+      mocks.resolveKikiHome.mockImplementation((home?: string) => home ?? '/tmp/kimi-code-test-home');
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 90_000);
 
   it.each((['SIGINT', 'SIGTERM', 'SIGHUP'] as const).flatMap((signal) => [
     { signal, permissionMode: undefined },

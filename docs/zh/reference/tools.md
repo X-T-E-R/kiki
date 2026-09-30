@@ -68,6 +68,8 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 只检索跨线程消息时，使用 `HistorySearch({"query":"交接","scope":"peer"})`。它搜索当前工作区内的双向往来，也可指定经批准访问的 `workspace_id`；可选 `session_id` 限定一个会话。Peer 检索复用既有词法匹配模式，但始终按最新时间优先排列：省略 `sort` 或使用 `"newest"`。它排除子 Agent 和普通用户输入，不接受 `source: "transcript"`；指定 Agent 时只接受 `agent_id: "main"`。结果来源为 `source: "mailbox"`，命中带有 `communication` 元数据，包含消息身份、两端和投递状态，不会编造会话轮次号或 HistoryRead ref。完整正文和导航身份见[沟通记录 REST 读取](../server/rest-api.md#沟通记录)。部分页或空页应使用 `next_cursor` 继续读取；此视图覆盖邮箱仍保留的记录，不包含旧版本已淘汰的更早消息。
 
+在非交互提示词运行（`kiki -p`）中，`HistoryList` 读取持久化对话记录的有界前缀，不启动服务器或搜索 worker：最多 2 MiB、10,000 条记录，每条记录最多 256 KiB；Agent 目录最多检查 256 个目录项。结果会明确报告 `partial` 覆盖，且不包含导航 `ref`。可以列当前会话，也可以显式指定另一个持久化会话的 `session_id`。这个 print host 中的 `HistorySearch` 和 `HistoryRead` 仍不可用；索引检索与完整历史读取请使用交互式会话或服务器。
+
 ## 网络类
 
 两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。

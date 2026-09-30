@@ -694,6 +694,12 @@ importers:
       '@kiki/agent-core-v2':
         specifier: workspace:^
         version: link:../agent-core-v2
+      '@kiki/transcript':
+        specifier: workspace:^
+        version: link:../transcript
+      '@kiki/transcript-live':
+        specifier: workspace:^
+        version: link:../transcript-live
       '@nb-corp/nb-search':
         specifier: file:../../vendor/nb-search-0.4.0-4218580a.tgz
         version: file:vendor/nb-search-0.4.0-4218580a.tgz(playwright@1.60.0)

@@ -18,6 +18,8 @@ import { createKlient } from '@kiki/klient/memory';
 import type { Klient } from '@kiki/klient';
 
 import { createPrintTaskBoardService } from './print-task-board';
+import { IHistoryDirectory } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
+import { createPrintHistoryDirectory } from './print-history-directory';
 
 export { PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '@kiki/agent-core-v2';
 export type { AgentTaskConfig, PrintBackgroundMode } from '@kiki/agent-core-v2';
@@ -68,6 +70,7 @@ export async function createPrintClient(
   const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),
     [ITaskBoardService, createPrintTaskBoardService(() => app!)],
+    [IHistoryDirectory, createPrintHistoryDirectory(() => app!)],
     [IHistoryArchive, {
       _serviceBrand: undefined,
       search: async () => ({
