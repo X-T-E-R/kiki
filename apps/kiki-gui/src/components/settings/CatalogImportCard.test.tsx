@@ -25,6 +25,7 @@ const entry = (id: string, overrides: Record<string, unknown> = {}) => ({
 const CATALOG = [
   entry('groq'),
   entry('bedrock', { wire_type: null, rejected: true, reject_reason: 'Needs AWS signing.' }),
+  entry('fireworks', { wire_type: null, rejected: true, reject_code: 'proprietary-sdk', reject_reason: 'proprietary-sdk' }),
   entry('azure', { needs_base_url: true, guessed: true }),
 ];
 
@@ -76,10 +77,21 @@ describe('CatalogImportCard', () => {
   it('lists rejected entries last, greyed with the reason and no import button', async () => {
     const container = await render(<CatalogImportCard configuredIds={new Set()} onImported={vi.fn()} />);
     const rows = [...container.querySelectorAll('[data-catalog-row]')].map((row) => row.getAttribute('data-catalog-row'));
-    expect(rows).toEqual(['azure', 'groq', 'bedrock']);
+    expect(rows).toEqual(['azure', 'groq', 'bedrock', 'fireworks']);
     const rejected = container.querySelector('[data-catalog-row="bedrock"]')!;
     expect(rejected.textContent).toContain('Needs AWS signing.');
     expect(rejected.querySelector('button')).toBeNull();
+  });
+
+  it('says why an entry is rejected in the reader’s language, keeping the raw reason as the tooltip', async () => {
+    const container = await render(<CatalogImportCard configuredIds={new Set()} onImported={vi.fn()} />);
+    const coded = container.querySelector('[data-catalog-row="fireworks"] [data-catalog-reject-reason]')!;
+    expect(coded.textContent).toBe('This provider only offers its own SDK, which Kiki cannot use.');
+    expect(coded.getAttribute('title')).toBe('proprietary-sdk');
+    // A server that only explains the entry in its own words still shows them.
+    const prose = container.querySelector('[data-catalog-row="bedrock"] [data-catalog-reject-reason]')!;
+    expect(prose.textContent).toBe('Needs AWS signing.');
+    expect(prose.getAttribute('title')).toBe('Needs AWS signing.');
   });
 
   it('filters by name or id and says when nothing matches', async () => {

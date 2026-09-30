@@ -1,3 +1,5 @@
+import type { ModelsDevRejectCode } from '@kiki/protocol';
+
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ProviderCatalogItem } from '#/kosong/model/catalog';
 
@@ -17,6 +19,8 @@ export interface ModelsDevProviderItem {
   readonly guessed: boolean;
   readonly needs_base_url: boolean;
   readonly rejected: boolean;
+  /** Machine-readable reason for `rejected`; the wire code clients localize. */
+  readonly reject_code: ModelsDevRejectCode | null;
   readonly reject_reason: string | null;
   readonly env_key: string | null;
   readonly models: readonly ModelsDevModelItem[];

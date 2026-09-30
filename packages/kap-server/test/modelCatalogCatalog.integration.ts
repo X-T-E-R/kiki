@@ -211,6 +211,7 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
     expect(openai['wire_type']).toBe('openai');
     expect(openai['needs_base_url']).toBe(false);
     expect(openai['rejected']).toBe(false);
+    expect(openai['reject_code']).toBeNull();
     expect(openai['reject_reason']).toBeNull();
     expect(openai['env_key']).toBe('OPENAI_API_KEY');
     const models = openai['models'] as Array<Record<string, unknown>>;
@@ -225,6 +226,7 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
 
     const bedrock = byId.get('bedrock') as Record<string, unknown>;
     expect(bedrock['rejected']).toBe(true);
+    expect(bedrock['reject_code']).toBe('proprietary-sdk');
     expect(bedrock['reject_reason']).toBe('proprietary-sdk');
     expect(bedrock['wire_type']).toBeNull();
 

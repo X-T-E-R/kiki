@@ -154,6 +154,7 @@ export function toModelsDevProviderItem(
         guessed: resolution.guessed,
         needs_base_url: false,
         rejected: false,
+        reject_code: null,
         reject_reason: null,
       };
     case 'needs-base-url':
@@ -163,6 +164,7 @@ export function toModelsDevProviderItem(
         guessed: resolution.guessed,
         needs_base_url: true,
         rejected: false,
+        reject_code: null,
         reject_reason: null,
       };
     case 'invalid':
@@ -172,6 +174,7 @@ export function toModelsDevProviderItem(
         guessed: false,
         needs_base_url: false,
         rejected: true,
+        reject_code: resolution.reason,
         reject_reason: resolution.reason,
       };
   }

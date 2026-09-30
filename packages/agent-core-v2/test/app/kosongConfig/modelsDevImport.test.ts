@@ -179,6 +179,7 @@ describe('IModelsDevImportService', () => {
       guessed: false,
       needs_base_url: false,
       rejected: false,
+      reject_code: null,
       env_key: 'OPENAI_API_KEY',
     });
     expect(openai?.models).toEqual([
@@ -192,6 +193,7 @@ describe('IModelsDevImportService', () => {
     expect(byId.get('bedrock')).toMatchObject({
       rejected: true,
       wire_type: null,
+      reject_code: 'proprietary-sdk',
       reject_reason: 'proprietary-sdk',
     });
   });

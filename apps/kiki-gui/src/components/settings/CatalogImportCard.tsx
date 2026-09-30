@@ -10,8 +10,8 @@
 import { useId, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { providerIdSchema, type CatalogProviderItem } from '@kiki/protocol';
-import { errorText } from '@kiki/session-core/i18n';
+import { providerIdSchema, type CatalogProviderItem, type ModelsDevRejectCode } from '@kiki/protocol';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -24,6 +24,32 @@ import { SectionCard } from './SectionCard';
 import { FORM_LABEL } from './SettingsPrimitives';
 
 export const CATALOG_PROVIDERS_QUERY_KEY = ['catalog-providers'] as const;
+
+/**
+ * Wording for each rejection code kiki knows. Keyed by the wire code, so a new
+ * code fails typecheck here instead of showing an untranslated string.
+ */
+const REJECT_TEXT_KEY: Record<ModelsDevRejectCode, I18nKey> = {
+  'unknown-explicit-type': 'st.catalog.reject.unknownExplicitType',
+  'proprietary-sdk': 'st.catalog.reject.proprietarySdk',
+  'empty-base-url': 'st.catalog.reject.emptyBaseUrl',
+  'placeholder-base-url': 'st.catalog.reject.placeholderBaseUrl',
+};
+
+/**
+ * Why a rejected entry is unavailable, in the reader's language. Servers that
+ * send no code (or an entry without one) keep their own wording, which is also
+ * what the tooltip shows.
+ */
+export function rejectReasonText(
+  item: CatalogProviderItem,
+  t: (key: I18nKey) => string,
+): string {
+  const code = item.reject_code;
+  return code === undefined || code === null
+    ? item.reject_reason ?? t('st.catalog.rejectedFallback')
+    : t(REJECT_TEXT_KEY[code]);
+}
 
 function matches(item: CatalogProviderItem, query: string): boolean {
   const needle = query.trim().toLowerCase();
@@ -130,7 +156,11 @@ function CatalogRow({
           </p>
           <p className="mt-0.5 truncate text-[12px] text-ink-soft">
             {item.rejected
-              ? item.reject_reason ?? t('st.catalog.rejectedFallback')
+              ? (
+                <span data-catalog-reject-reason title={item.reject_reason ?? undefined}>
+                  {rejectReasonText(item, t)}
+                </span>
+              )
               : [
                   item.wire_type === null ? null : protocolLabel(item.wire_type),
                   tp('st.catalog.models', item.models.length),

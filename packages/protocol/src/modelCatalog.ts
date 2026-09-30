@@ -538,8 +538,22 @@ export const providerWireTypeSchema = z.enum([
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
 /**
+ * Why this client version cannot import a models.dev entry. Codes are stable;
+ * clients render their own wording from them.
+ */
+export const modelsDevRejectCodeSchema = z.enum([
+  'unknown-explicit-type',
+  'proprietary-sdk',
+  'empty-base-url',
+  'placeholder-base-url',
+]);
+export type ModelsDevRejectCode = z.infer<typeof modelsDevRejectCodeSchema>;
+
+/**
  * One browsable models.dev entry. `rejected: true` means this client version
- * cannot import it at all (greyed out, `reject_reason` explains);
+ * cannot import it at all (greyed out): `reject_code` names the reason for
+ * clients that render their own wording, and `reject_reason` keeps the
+ * upstream wording for tooltips and clients that only read text.
  * `needs_base_url: true` means the import form must collect a base URL.
  */
 export const catalogProviderItemSchema = z.object({
@@ -549,6 +563,8 @@ export const catalogProviderItemSchema = z.object({
   guessed: z.boolean(),
   needs_base_url: z.boolean(),
   rejected: z.boolean(),
+  /** Absent from older servers and from entries that were not rejected. */
+  reject_code: modelsDevRejectCodeSchema.nullable().optional(),
   reject_reason: z.string().nullable(),
   env_key: z.string().nullable(),
   models: z.array(catalogModelItemSchema),
