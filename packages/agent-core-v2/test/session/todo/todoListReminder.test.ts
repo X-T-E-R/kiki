@@ -173,6 +173,15 @@ describe('continuity cadence', () => {
     expect(result?.content).toContain('approval policy');
     expect(new TodoListReminderTracker().evaluate({ ...base, humanAuthorized: false, history })).toBeUndefined();
   });
+  it('retrieves named earlier artifacts without treating unrelated notes as coverage', () => {
+    const text = '之前需要我拍板的example-space-design，考虑一下和工作区如何结合';
+    expect(historyReferenceTopic(text)).toBe('artifact:example-space-design');
+    const input = { ...base, todos: [], history: [user(text)], notes: { decided: '并发最多五个' } };
+    expect(new TodoListReminderTracker().evaluate(input)?.disclosure.triggers).toEqual(['E2']);
+    expect(new TodoListReminderTracker().evaluate({ ...input, notes: { decided: 'example-space-design: scoped decision is recorded' } })).toBeUndefined();
+    const state = clock({ latestInput: { id: 'artifact-2', text }, historyReferences: [{ topic: 'artifact:other-plan', humanTurnOrdinal: 8, stateRevision: 0 }] });
+    expect(new TodoListReminderTracker().evaluate({ ...input, clock: state })?.disclosure.triggers).toEqual(['E2']);
+  });
   it('persists a three-human-turn E2 topic cooldown and bypasses it for revisions', () => {
     const text = '上次我定的并发规则，六个符合吗';
     const state = clock({ humanTurnOrdinal: 1, latestInput: { id: 'p1', text } });

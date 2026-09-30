@@ -84,7 +84,8 @@ export class TodoListReminderTracker {
     const topic = human && !alreadyDelivered ? historyReferenceTopic(text, input.cues) : undefined;
     const recentReference = (clock.historyReferences ?? []).find((item) => item.topic === topic && item.stateRevision === clock.stateRevision);
     const historyCooldown = directives.length === 0 && recentReference !== undefined && clock.humanTurnOrdinal - recentReference.humanTurnOrdinal < 3;
-    const relevant = (value: string) => topic !== 'delegation.concurrency' || /并发|concurren|最多|上限|\bcap\b/i.test(value);
+    const relevant = (value: string) => topic?.startsWith('artifact:') === true ? value.toLowerCase().includes(topic.slice('artifact:'.length))
+      : topic !== 'delegation.concurrency' || /并发|concurren|最多|上限|\bcap\b/i.test(value);
     const visibleReference = topic !== undefined && ([input.notes?.directives, input.notes?.decided].some((value) => value?.trim() && relevant(value)) ||
       input.history.some((message) => {
         const original = originalHumanText(message);

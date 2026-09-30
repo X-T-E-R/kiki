@@ -70,6 +70,9 @@ export function classifyDirectives(text: string, cues: DirectiveCues = {}): read
 export function historyReferenceTopic(text: string, cues: DirectiveCues = {}): string | undefined {
   const operative = operativeText(text);
   if (!matchesDirectiveCue(operative, cues.history ?? DEFAULT_DIRECTIVE_CUES.history)) return undefined;
+  const artifact = /\b[a-z0-9][a-z0-9._-]*(?:design|proposal|report|plan)(?:\.md)?\b|\b[a-z0-9][a-z0-9._-]*\.md\b/i.exec(operative)?.[0];
+  if (artifact !== undefined && /之前|早先|上次|前面|earlier|previous|last time/i.test(operative) &&
+    /考虑|结合|参照|查|找|核对|review|combine|refer|check|find/i.test(operative)) return `artifact:${artifact.toLowerCase()}`;
   if (!/我(?:说|定)|你(?:说|答|记)|规矩|规则|限制|并发|决定|证据|对话|as I said|already told|(?:earlier|previous|last time).*(?:rule|decision|evidence|conversation|cap|limit)/i.test(operative)) return undefined;
   if (!/符合|还记得|查|找|核对|说过|我定|纠正|放开|撤销|取消|what|check|recall|remember|said|told|lift|revoke/i.test(operative)) return undefined;
   return /并发|concurren|\bcap\b|sol|opus/i.test(operative) ? 'delegation.concurrency' : 'earlier.rule-or-evidence';
