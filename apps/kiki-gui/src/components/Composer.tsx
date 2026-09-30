@@ -97,8 +97,7 @@ import { ThreadRefChip } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
-import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from './persona/PersonaAvatar';
-import { usePersonaList } from './persona/usePersonas';
+import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
 import {
   AddMenu,
   type AddMenuView,
@@ -1822,33 +1821,14 @@ export function Composer({
       ? t('composer.agentPendingSuffix', { name: agentDisplayName(agentProfile) })
       : agentDisplayName(agentProfile);
 
-  // /new: personas ride the same chip as profiles. Their option values carry
-  // a prefix so one select can hold both kinds without a name collision.
-  const personasQuery = usePersonaList({ enabled: personaPick !== undefined });
-  const personaItems = personaPick === undefined ? [] : (personasQuery.data ?? []).filter((item) => !item.archived);
-  const agentOptions: readonly SearchableSelectOption[] = useMemo(() => {
-    if (personaPick === undefined) return agentProfileOptions;
-    const personaRows: SearchableSelectOption[] = personaItems.map((item) => ({
-      value: `${PERSONA_OPTION_PREFIX}${item.id}`,
-      label: item.title === undefined ? item.name : `${item.name} · ${item.title}`,
-      description: item.job,
-      title: item.name,
-      keywords: item.id,
-      group: t('persona.pickerGroup'),
-    }));
-    return [
-      ...personaRows,
-      ...agentProfileOptions.map((option) => ({ ...option, group: personaRows.length > 0 ? t('persona.pickerProfiles') : option.group })),
-    ];
-  }, [agentProfileOptions, personaItems, personaPick, t]);
+  // /new: the profile list stays profiles-only — a bot persona is not an
+  // agent profile. A picked persona still rides the chip (personaPick.value)
+  // and PersonaPickerFooter reaches the persona manager from the panel.
+  const agentOptions: readonly SearchableSelectOption[] = agentProfileOptions;
   const agentSelectValue = personaPick?.value !== undefined
     ? `${PERSONA_OPTION_PREFIX}${personaPick.value.id}`
     : agentProfile ?? DEFAULT_AGENT_PROFILE;
   const changeAgent = (value: string) => {
-    if (value.startsWith(PERSONA_OPTION_PREFIX)) {
-      personaPick?.onChange(value.slice(PERSONA_OPTION_PREFIX.length));
-      return;
-    }
     personaPick?.onChange(undefined);
     onChangeAgentProfile?.(value);
   };
@@ -1892,7 +1872,7 @@ export function Composer({
               // The name is who answers: it truncates on a narrow toolbar but
               // never collapses to a bare face.
               triggerLabel={pickedPersona.name}
-              panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+              panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
               panelFooter={<PersonaPickerFooter />}
               buttonClassName="flex h-6 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 text-[13px] font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-9"
             />
@@ -1936,7 +1916,7 @@ export function Composer({
             )
           }
           triggerIcon={<Icon name="agent" size={14} className={STATUS_SEGMENT_ICON_CLASS} />}
-          panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+          panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
           buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-52 ${
             agentProfilePending
               ? 'font-medium text-accent-ink hover:text-accent-ink'

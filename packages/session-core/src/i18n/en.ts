@@ -6150,8 +6150,6 @@ export const en = {
   'agentPanel.notes.directives': 'User instructions',
   'bot.group': 'Bots',
   'persona.chipAria': 'Choose an agent or persona',
-  'persona.pickerGroup': 'Personas',
-  'persona.pickerProfiles': 'Agents',
   'persona.pickerManage': 'Manage personas',
   'persona.chipRemove': 'Remove persona {name}',
   'persona.greetingFrom': 'Opening line from {name}',

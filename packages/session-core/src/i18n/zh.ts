@@ -6214,8 +6214,6 @@ export const zh = {
   'persona.importMemoryPending': '已导入「{name}」，记忆还在写入',
   'persona.importChooseOther': '换一张',
   'persona.chipAria': '选择智能体或角色',
-  'persona.pickerGroup': '角色',
-  'persona.pickerProfiles': '智能体',
   'persona.pickerManage': '管理角色',
   'persona.chipRemove': '移除角色 {name}',
   'persona.greetingFrom': '{name} 的开场白',
