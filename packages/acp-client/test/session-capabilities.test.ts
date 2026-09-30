@@ -50,17 +50,19 @@ async function openWithScriptedAgent(
     additionalDirectories?: readonly string[];
     sessionRef?: unknown;
     systemPromptOverride?: string;
+    sessionMeta?: Record<string, unknown>;
+    contextHookHandler?: import('../src/types').AcpContextHookHandler;
     requireResume?: boolean;
     onFork?: import('../src/types').AcpOpenSessionOptions['onFork'];
   },
 ) {
   const { child, toAgent, fromAgent } = scriptedChild();
   const { app, history } = createInProcessScriptedAgent(script);
-  app.connect(ndJsonStream(Writable.toWeb(fromAgent), Readable.toWeb(toAgent)));
+  const connection = app.connect(ndJsonStream(Writable.toWeb(fromAgent), Readable.toWeb(toAgent)));
   const client = new AcpProcessClient(
     { spawn: async () => child },
     { id: 'fixture', command: 'fixture', startupTimeoutMs: 5_000 },
-    { platform: 'linux' },
+    { platform: 'linux', contextHookHandler: options.contextHookHandler },
   );
   try {
     const opened = await client.openSession({
@@ -68,10 +70,11 @@ async function openWithScriptedAgent(
       additionalDirectories: options.additionalDirectories,
       sessionRef: options.sessionRef as never,
       systemPromptOverride: options.systemPromptOverride,
+      sessionMeta: options.sessionMeta,
       requireResume: options.requireResume,
       onFork: options.onFork,
     });
-    return { client, history, opened };
+    return { client, history, opened, connection };
   } catch (error) {
     await client.shutdown().catch(() => undefined);
     throw error;
@@ -191,6 +194,21 @@ describe('AcpProcessClient session capability negotiation', () => {
     }
   });
 
+  it('admits only the known context callback for the opened remote session', async () => {
+    const events: string[] = [];
+    const { client, opened, connection } = await openWithScriptedAgent({}, {
+      contextHookHandler: async (event) => { events.push(event); return { additionalContext: 'Fixture working notes' }; },
+    });
+    const input = { sessionId: opened.sessionId, hookCallbackId: 'kiki-context', hookEventName: 'stop' };
+    try {
+      expect(await connection.client.request('_x.ai/hooks/run', input)).toEqual({ additionalContext: 'Fixture working notes' });
+      expect(await connection.client.request('_x.ai/hooks/run', { ...input, sessionId: 'another-session' })).toEqual({});
+      await expect(connection.client.request('_x.ai/hooks/run', { ...input, hookCallbackId: 'unknown-hook' })).rejects.toThrow();
+      await expect(connection.client.request('_x.ai/hooks/run', { ...input, hookEventName: 'pre_tool_use' })).rejects.toThrow();
+      expect(events).toEqual(['Stop']);
+    } finally { await client.shutdown(); }
+  });
+
   it('attaches a system prompt override to session/new through _meta', async () => {
     const { client, history, opened } = await openWithScriptedAgent(
       {},
@@ -204,6 +222,22 @@ describe('AcpProcessClient session capability negotiation', () => {
     } finally {
       await client.shutdown();
     }
+  });
+
+  it.each(['new', 'resume', 'load'] as const)('passes process-local harness metadata through session/%s', async (mode) => {
+    const sessionMeta = { pluginDirs: ['/tmp/context-plugin'], claudeCode: { options: { settings: '/tmp/context-settings.json' } } };
+    const { client, history, opened } = await openWithScriptedAgent(
+      { capabilities: { loadSession: true, sessionCapabilities: mode === 'resume' ? { resume: {} } : {} } },
+      { sessionMeta, ...(mode === 'new' ? { systemPromptOverride: 'Frozen profile text' } : {
+        sessionRef: { executorId: 'fixture', version: 1, ref: { sessionId: 'session-in-process' } },
+      }) },
+    );
+    try {
+      expect(opened.mode).toBe(mode);
+      const params = mode === 'new' ? history.sessionNewParams : mode === 'resume' ? history.sessionResumeParams : history.sessionLoadParams;
+      expect(params[0]).toMatchObject({ _meta: { ...sessionMeta, ...(mode === 'new' ? { systemPromptOverride: 'Frozen profile text' } : {}) } });
+      expect(sessionMeta).not.toHaveProperty('systemPromptOverride');
+    } finally { await client.shutdown(); }
   });
 
   it('omits _meta from session/new when no override is requested', async () => {

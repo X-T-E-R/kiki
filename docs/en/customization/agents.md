@@ -96,9 +96,43 @@ Kiki attaches its MCP tools (the bridge through which a harness calls Kiki) to t
 
 Child completion is queued back to the same main agent without blocking the child. If the main agent is busy, delivery waits until its turn settles; if it is idle, the queued receipt wakes it. Parent notifications use the same conversation and remain subject to `allow_parent_notify` and the configured notification policy.
 
-Codex app-server MCP tool calls can require a separate vendor approval, mapped to Kiki's persistent approval interaction. Use manual or auto mode (`on-request`) to answer it. YOLO mode uses `never` but retains the workspace-write sandbox; Codex can reject MCP calls that require approval in that combination. Kiki does not silently widen the sandbox or bypass vendor approval.
+Codex app-server MCP tool calls can require a separate vendor approval, mapped to Kiki's persistent approval interaction. Manual or auto mode (`on-request`) lets you answer it. In Full access (YOLO), Kiki pre-approves only its attached `kiki-harness` MCP server at the Codex layer; Kiki's own capability and execution policies still govern those calls. Other MCP servers keep their approval policy, and the workspace-write sandbox is not widened.
 
 External interaction support depends on the harness's negotiated capabilities. ACP historical forks use `session/fork` when available; exact assistant-message positions additionally require the AIR fork-point extension supported by the Claude, Codex, or DeepSeek adapters. Unsupported positions use a new remote session with a bounded conversation handoff, never continue the source remote session. Codex and DeepSeek ACP form questions use Kiki's persistent question interaction; unsupported complex forms and URL-mode requests are declined. Grok's plan approval uses the persistent plan-review interaction. These mappings do not turn a harness's unsupported feature into a native one.
+
+### Kiki context in external main agents
+
+Enable Kiki's native context tools independently of delegation with `kiki_context` in the external main profile:
+
+```yaml
+executor: claude-acp
+allow_kiki_subagents: true
+kiki_context: [memory, board, cron, threads, history, hooks]
+```
+
+The list defaults to absent (all context groups off); `[]` explicitly disables every group. Rebind the main profile after editing it. Tools are registered once when the bridge starts, so enabling a group does not rewrite a running harness's tool list. The bound profile's native tool policy and feature settings still apply; a disabled native tool is not exposed. Only external main agents can acquire this bridge.
+
+| Group | MCP tools |
+| --- | --- |
+| `memory` | `kiki_memory_read`, `kiki_memory_search`, `kiki_memory_write` |
+| `board` | `kiki_board_read`, `kiki_board_write` |
+| `cron` | `kiki_cron` (`action: create`, `list`, or `delete`) |
+| `threads` | `kiki_thread_list`, `kiki_thread_read`, `kiki_thread_send` |
+| `history` | `kiki_history_search`, `kiki_history_read` |
+| `hooks` | Message-context injection; no extra model-callable tool |
+
+The tools use native Kiki parameters and execution policies, including approval, persona visibility, workspace access, memory review, and Plan mode restrictions. Calls are attributed to the existing main agent, not to a user write or a new seat session. The bridge token cannot access ordinary REST endpoints or select a different caller session. Native read tools advertise MCP read-only annotations. Vendor approval remains a separate layer from Kiki approval, except for the Codex Full access pre-approval described above.
+
+`hooks` sends memory summaries and undelivered reminders/working notes through messages, not through a changing system prompt or tool schema. Identical content is deduplicated for the bridge's lifetime. Hook content is recorded with a `hook_result` origin in the Kiki transcript. Kiki creates only temporary process/session configuration; it does not edit the harness's global hook settings.
+
+| Harness | Injection |
+| --- | --- |
+| Claude ACP | Temporary command-hook settings through `session/new` metadata; `SessionStart` and `UserPromptSubmit` use `additionalContext`. |
+| Codex app-server / ACP | Temporary `hooks.json` definitions become per-process/session configuration with trust pinned only to those commands; `SessionStart` and `UserPromptSubmit` use `additionalContext`. |
+| Antigravity | Isolated `GEMINI_HOME` with `PreInvocation.injectSteps`; ACP hook loading and preservation of login through the isolated home are not yet verified against a runnable ACP server. |
+| Grok ACP | Native session-local ACP `Stop` callbacks inject `additionalContext`, without relying on plugin hook activation. Session-start and prompt-submit hooks cannot inject context, so Kiki retains its existing message preamble before tools. |
+
+Claude and Codex `PreCompact` hooks prepare an auditable handoff snapshot but do not accept `additionalContext`; Kiki does not label that snapshot as injected. Claude's compact `SessionStart`, or Codex's next `UserPromptSubmit` after the preparation event, restores the state summaries. Antigravity and Grok do not provide a verified pre-compaction injection event. These hooks do not add idle wakeup support to a harness.
 
 ### Rebuilding a session context
 
@@ -175,6 +209,7 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. With `model_alias: inherit`, an explicit effort pin takes priority over the caller's effective effort |
 | `executor` | no | Executor id from `agent-executors.toml`; omit it to use the native engine. Named-child dispatch uses this binding from both in-process and external delegation surfaces. For an external delegation, harness approval requests are exposed through that root's `interactions` / `respond` operations and scoped to its own children. Example profiles live in the repository under `docs/examples/agent-profiles/external-harnesses/` |
 | `allow_kiki_subagents` | no | Default `false`. Attach Kiki's same-session delegation tools when this profile is bound to an external main agent; requires local stdio MCP. See [External main-agent delegation](#external-main-agent-delegation) |
+| `kiki_context` | no | Opt-in list of `memory`, `board`, `cron`, `threads`, `history`, and `hooks`; absent or `[]` disables all groups. See [Kiki context in external main agents](#kiki-context-in-external-main-agents) |
 | `allowed_models` | no | Recommended model aliases for this role, as a YAML list or comma-separated string. Comparisons use canonical model identity, so a bare alias matches a provider-qualified name. Values outside the list remain executable when the model exists and the executor supports it; the child records a structured advisory instead of rejecting the dispatch. A single-item list is a strong recommendation, not a permission boundary. Omit the field or use `"*"` for no recommendation; `[]` means there are no recommended models but does not block an explicit executable binding. Caller leases and `spawn_constraints` use the same advisory semantics. Machine `[subagent].deny_models` remains authoritative |
 | `deny_models` | no | Models this role recommends avoiding, with the same syntax as `allowed_models`. Selecting one continues with a prominent structured advisory. Use machine `[subagent].deny_models` when a model must be rejected on every path |
 | `allowed_efforts` | no | Recommended thinking efforts for this role. Role-level values intersect with a matching `model_profiles` entry for recommendation and diagnostics. An executable effort outside the intersection continues with a structured advisory; an effort the provider or executor cannot perform remains a hard error |

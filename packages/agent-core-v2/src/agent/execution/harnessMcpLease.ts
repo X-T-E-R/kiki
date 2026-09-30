@@ -5,7 +5,7 @@ import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: string): Promise<HarnessMcpLease | undefined> {
-  if (context.binding.allowKikiSubagents !== true) return undefined;
+  if (context.binding.allowKikiSubagents !== true && !context.binding.kikiContext?.length) return undefined;
   if (context.agent.id !== MAIN_AGENT_ID) throw new Error2(ErrorCodes.CONFIG_INVALID,
     'Kiki harness delegation is available only to a main profile');
   if (context.descriptor.supportsMcp === false ||
@@ -17,6 +17,8 @@ export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: stri
     sessionId: session.sessionId,
     agentId: context.agent.id,
     workspacePath: cwd,
+    executorId: context.descriptor.id,
+    hooks: context.binding.kikiContext?.includes('hooks'),
   });
 }
 
@@ -42,7 +44,10 @@ export function codexHarnessMcpProcess(
         default_tools_approval_mode: approveKikiTools() ? 'approve' : undefined };
       const flags = Object.entries(overrides).flatMap(([key, value]) => value === undefined ? []
         : ['-c', `mcp_servers.${server.name}.${key}=${JSON.stringify(value)}`]);
-      return processes.spawn(command, [...args ?? [], ...flags], { ...options, env: { ...options?.env, ...env } });
+      const lease = currentLease()!;
+      return processes.spawn(command, [...args ?? [], ...flags, ...lease.processArgs ?? []], {
+        ...options, env: { ...options?.env, ...env, ...lease.processEnv },
+      });
     },
   };
 }

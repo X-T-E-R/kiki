@@ -106,6 +106,7 @@ export interface AcpOpenSessionOptions {
    * was not freshly created.
    */
   readonly systemPromptOverride?: string;
+  readonly sessionMeta?: Record<string, unknown>;
   readonly signal?: AbortSignal;
 }
 
@@ -161,7 +162,13 @@ export type AcpPlanApprovalHandler = (
   context: { readonly signal: AbortSignal },
 ) => Promise<{ readonly outcome: 'approved' | 'abandoned' | 'keep_planning'; readonly feedback: string }>;
 
+export type AcpContextHookHandler = (
+  event: 'Stop',
+  context: { readonly signal: AbortSignal },
+) => Promise<{ readonly additionalContext: string }>;
+
 export interface AcpClientOptions {
+  readonly contextHookHandler?: AcpContextHookHandler;
   readonly planApprovalHandler?: AcpPlanApprovalHandler;
   readonly permissionHandler?: AcpPermissionHandler;
   readonly elicitationHandler?: AcpElicitationHandler;

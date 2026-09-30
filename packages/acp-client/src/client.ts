@@ -757,6 +757,19 @@ export class AcpProcessClient {
       return handler(context.params, { signal });
     });
 
+    app.onRequest('_x.ai/hooks/run', (input: unknown) => {
+      const value = objectValue(input);
+      if (value?.['hookCallbackId'] !== 'kiki-context' || value['hookEventName'] !== 'stop' || typeof value['sessionId'] !== 'string') {
+        throw new AcpProtocolError('Invalid Kiki context hook callback');
+      }
+      return { sessionId: value['sessionId'] };
+    }, async (context) => {
+      const handler = this.#options.contextHookHandler;
+      const signal = this.#activeTurn === undefined ? context.signal : AbortSignal.any([context.signal, this.#activeTurn.signal]);
+      if (handler === undefined || signal.aborted || context.params.sessionId !== this.#openResult?.sessionId) return {};
+      return handler('Stop', { signal });
+    });
+
     app.onRequest('_x.ai/exit_plan_mode', (input: unknown) => {
       const value = objectValue(input);
       if (value === undefined || typeof value['sessionId'] !== 'string') throw new AcpProtocolError('Invalid Grok plan approval request');
@@ -873,6 +886,7 @@ export class AcpProcessClient {
         options.additionalDirectories,
       ),
       mcpServers: options.mcpServers === undefined ? [] : [...options.mcpServers],
+      _meta: options.sessionMeta,
     };
     let priorSessionId =
       options.sessionRef === undefined
@@ -964,13 +978,10 @@ export class AcpProcessClient {
       });
     }
     this.#setOpeningMode('new');
-    const newSessionRequest: NewSessionRequest =
-      options.systemPromptOverride === undefined
-        ? common
-        : {
-            ...common,
-            _meta: { systemPromptOverride: options.systemPromptOverride },
-          };
+    const newSessionRequest: NewSessionRequest = options.systemPromptOverride === undefined ? common : {
+      ...common,
+      _meta: { ...options.sessionMeta, systemPromptOverride: options.systemPromptOverride },
+    };
     const response = await this.#requestDuringStartup(
       connection.agent.request(methods.agent.session.new, newSessionRequest),
       deadline,

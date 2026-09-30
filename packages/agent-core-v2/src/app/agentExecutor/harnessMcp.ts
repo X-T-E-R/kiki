@@ -9,6 +9,10 @@ export type HarnessMcpServer = NonNullable<AcpOpenSessionOptions['mcpServers']>[
 
 export interface HarnessMcpLease {
   readonly server: HarnessMcpServer;
+  readonly processEnv?: Readonly<Record<string, string>>;
+  readonly processArgs?: readonly string[];
+  readonly sessionMeta?: Record<string, unknown>;
+  readonly contextHook?: (event: 'Stop') => Promise<string>;
   dispose(): void;
 }
 
@@ -16,6 +20,8 @@ export interface HarnessMcpRequest {
   readonly sessionId: string;
   readonly agentId: string;
   readonly workspacePath: string;
+  readonly executorId?: string;
+  readonly hooks?: boolean;
 }
 
 export type HarnessMcpProvider = (request: HarnessMcpRequest) => Promise<HarnessMcpLease>;

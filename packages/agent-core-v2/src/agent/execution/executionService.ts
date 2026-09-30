@@ -132,7 +132,9 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       const session = await this.resolveSession();
       controller.signal.throwIfAborted();
       let outbound = runContext.request ?? request;
-      if ((this.profile.data().executorId ?? 'native') !== 'native' && outbound.kind !== 'retry') {
+      const binding = this.profile.data();
+      const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
+      if ((binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [

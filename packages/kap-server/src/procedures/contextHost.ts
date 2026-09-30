@@ -45,7 +45,7 @@ export class ContextProcedureHost {
       let delivered = this.delivered.get(seat);
       if (delivered === undefined) this.delivered.set(seat, delivered = new Set());
       const preparing = input.event === 'PreCompact';
-      const recovering = input.compact || (input.harness === 'codex' && input.event === 'UserPromptSubmit');
+      const recovering = input.compact === true || (input.harness === 'codex' && input.event === 'UserPromptSubmit');
       if (recovering && delivered.delete('compaction_pending')) {
         for (const id of delivered) if (/^(memory|goal_state|todo_state):/.test(id)) delivered.delete(id);
       }

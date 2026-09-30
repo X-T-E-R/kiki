@@ -7,6 +7,7 @@ import {
   type AcpOpenSessionOptions,
   type AcpOpenSessionResult,
   type AcpPlanApprovalHandler,
+  type AcpContextHookHandler,
   type AcpElicitationHandler,
   type AcpElicitationRequest,
   type AcpElicitationResponse,
@@ -26,6 +27,7 @@ import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
 import { antigravityProcessService } from '#/app/agentExecutor/antigravityProcess';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp } from './harnessMcpLease';
+import { harnessContextProcess } from './harnessContextProcess';
 import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
@@ -148,7 +150,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       ) => Promise<{ readonly outcome: 'selected' | 'cancelled'; readonly optionId?: string }>,
       elicitationHandler: AcpElicitationHandler,
       planApprovalHandler: AcpPlanApprovalHandler,
-    ) => AcpClientLike = (processService, permissionHandler, elicitationHandler, planApprovalHandler) =>
+      contextHookHandler: AcpContextHookHandler,
+    ) => AcpClientLike = (processService, permissionHandler, elicitationHandler, planApprovalHandler, contextHookHandler) =>
       new AcpProcessClient(
         processService,
         {
@@ -162,7 +165,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         },
         { permissionHandler,
           elicitationHandler: ['codex-acp', 'deepseek-acp'].includes(context.descriptor.id) ? elicitationHandler : undefined,
-          planApprovalHandler: context.descriptor.id === 'grok-acp' ? planApprovalHandler : undefined },
+          planApprovalHandler: context.descriptor.id === 'grok-acp' ? planApprovalHandler : undefined,
+          contextHookHandler: context.descriptor.id === 'grok-acp' ? contextHookHandler : undefined },
       ),
   ) {
     const runtime = context.agent.accessor.get(IAgentRuntimeService);
@@ -185,11 +189,15 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
     this.#client = clientFactory(
-      context.descriptor.id === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
-        context.agent.accessor.get(IBootstrapService)) : processes,
+      harnessContextProcess(context.descriptor.id === 'antigravity-acp' ? antigravityProcessService(processes, context.descriptor,
+        context.agent.accessor.get(IBootstrapService)) : processes, () => this.#harnessMcp),
       (request, options) => this.#requestPermission(request, options),
       (request, options) => this.#requestElicitation(request, options.signal),
       (request, options) => this.#requestPlanApproval(request, options.signal),
+      async (event, options) => {
+        options.signal.throwIfAborted();
+        return { additionalContext: await this.#harnessMcp?.contextHook?.(event) ?? '' };
+      },
     );
   }
 
@@ -593,7 +601,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const servers = this.context.descriptor.supportsMcp === false
       ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
         (name) => process.env[name], this.context.descriptor.mcpTransports);
-    if (this.context.binding.allowKikiSubagents === true) {
+    if (this.context.binding.allowKikiSubagents === true || this.context.binding.kikiContext?.length) {
       this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
       if (this.#harnessMcp !== undefined) {
         if (servers.some((server) => server.name === this.#harnessMcp!.server.name)) {
@@ -606,6 +614,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
+      sessionMeta: this.#harnessMcp?.sessionMeta,
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined

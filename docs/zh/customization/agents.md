@@ -96,9 +96,43 @@ Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，�
 
 子 Agent 完成后，回执会非阻塞地排入同一 main agent 的收件队列。main agent 忙碌时，等待当前轮次结束再投递；空闲时，队列回执会唤醒它。父级通知也使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
 
-Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 会将其映射为持久化审批交互。请使用 manual 或 auto 模式（`on-request`）回答。YOLO 模式使用 `never`，但仍保留 workspace-write 沙箱；在这种组合下，Codex 可能拒绝需要审批的 MCP 调用。Kiki 不会静默扩大沙箱权限或绕过厂商审批。
+Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 会将其映射为持久化审批交互。manual 或 auto 模式（`on-request`）允许你回答。Full access（YOLO）仅在 Codex 层预批准附加的 `kiki-harness` MCP server，其调用仍受 Kiki 自身的能力和执行策略约束。其他 MCP server 保留原审批策略，workspace-write 沙箱不会被扩大。
 
 外部交互取决于 harness 握手声明的能力。ACP 历史 fork 在支持时使用 `session/fork`；精确定位到 Assistant 消息还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展。不支持的位置会新建远端会话并附上有长度限制的对话交接，绝不会继续源远端会话。Codex 与 DeepSeek 的 ACP 表单问题映射到 Kiki 持久化问题交互；不支持的复杂表单和 URL 模式请求会被拒绝。Grok 的计划审批映射到持久化计划审阅交互。这些映射不会把 harness 本身不支持的功能变成原生能力。
+
+### 外部 main agent 的 Kiki 上下文
+
+在外部 main profile 中配置 `kiki_context`，即可独立于委派开关开启 Kiki 原生上下文工具：
+
+```yaml
+executor: claude-acp
+allow_kiki_subagents: true
+kiki_context: [memory, board, cron, threads, history, hooks]
+```
+
+列表默认不设置（所有上下文组关闭），`[]` 表示显式全部关闭。修改后需要重新绑定 main profile。桥启动时一次性注册工具；开启工具组不会改写正在运行的 harness 工具列表。profile 的原生工具策略与功能设置仍然生效，被禁用的原生工具不会暴露。只有外部 main agent 可以取得这个桥。
+
+| 工具组 | MCP 工具 |
+| --- | --- |
+| `memory` | `kiki_memory_read`、`kiki_memory_search`、`kiki_memory_write` |
+| `board` | `kiki_board_read`、`kiki_board_write` |
+| `cron` | `kiki_cron`（`action: create`、`list` 或 `delete`） |
+| `threads` | `kiki_thread_list`、`kiki_thread_read`、`kiki_thread_send` |
+| `history` | `kiki_history_search`、`kiki_history_read` |
+| `hooks` | 消息上下文注入，不增加模型可调用的工具 |
+
+这些工具沿用 Kiki 原生参数和执行策略，包括审批、persona 可见性、工作区访问、记忆候选审核和 Plan 模式限制。调用归属到已有 main agent，不会变成用户写入，也不会新建 seat 会话。桥的 token 不能访问普通 REST 端点或选择另一调用方会话。原生读取工具声明 MCP 只读标记。厂商审批与 Kiki 审批是独立层；上述 Codex Full access 的预批准例外仍适用。
+
+`hooks` 通过消息发送记忆摘要和尚未送达的提醒、工作笔记，不改写系统提示词或工具 schema。在桥的生命周期内，相同内容不会重复注入。Kiki 时间线使用 `hook_result` 来源记录 hook 内容。Kiki 只创建临时进程或会话配置，不编辑 harness 自己的全局 hook 设置。
+
+| Harness | 注入方式 |
+| --- | --- |
+| Claude ACP | 通过 `session/new` 元数据传入临时命令 hook settings；`SessionStart` 与 `UserPromptSubmit` 使用 `additionalContext`。 |
+| Codex app-server / ACP | 临时 `hooks.json` 定义转为进程或会话配置，仅固定信任这些命令；`SessionStart` 与 `UserPromptSubmit` 使用 `additionalContext`。 |
+| Antigravity | 隔离的 `GEMINI_HOME` 中配置 `PreInvocation.injectSteps`；ACP 是否读取 hook、隔离目录能否保留登录，尚未通过可运行的 ACP server 验证。 |
+| Grok ACP | 原生会话级 ACP `Stop` 回调注入 `additionalContext`，不依赖 plugin hook 的激活。session-start 和 prompt-submit hook 不能注入上下文，因此 Kiki 保留工具执行前已有的消息前缀。 |
+
+Claude 和 Codex 的 `PreCompact` hook 会准备可追踪的交接快照，但不接受 `additionalContext`，Kiki 不会把快照标记为已注入。Claude 压缩后的 `SessionStart`，或 Codex 准备事件之后的下一次 `UserPromptSubmit`，会恢复状态摘要。Antigravity 和 Grok 没有已验证的压缩前注入事件。这些 hook 不会补出 harness 的空闲唤醒能力。
 
 ### 重建会话上下文
 
@@ -175,6 +209,7 @@ disallowedTools:
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
 | `allow_kiki_subagents` | 否 | 默认 `false`。该 profile 绑定到外部 main agent 时附加 Kiki 的同会话委派工具；需要本机 stdio MCP。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
+| `kiki_context` | 否 | 按需开启 `memory`、`board`、`cron`、`threads`、`history`、`hooks` 的列表；不设置或 `[]` 表示全部关闭。见 [外部 main agent 的 Kiki 上下文](#外部-main-agent-的-kiki-上下文) |
 | `allowed_models` | 否 | 该 role 推荐使用的模型 alias，支持 YAML 列表或逗号分隔字符串。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。只要模型存在且 executor 支持，列表外的模型仍可执行；子 Agent 会记录结构化 advisory，而不是拒绝派发。只写一项表示强推荐，不是权限边界。省略字段或写 `"*"` 表示不提供推荐；`[]` 表示没有推荐模型，但不会阻止显式、可执行的绑定。Caller lease 与 `spawn_constraints` 采用同样的软建议语义。机器级 `[subagent].deny_models` 仍然具有最终否决权 |
 | `deny_models` | 否 | 该 role 建议避免的模型 alias 名单，写法与 `allowed_models` 相同。选中其中模型时会继续执行并产生醒目的结构化 advisory。需要在所有路径硬拒绝某个模型时，应使用机器级 `[subagent].deny_models` |
 | `allowed_efforts` | 否 | 该 role 推荐的 thinking effort 列表。角色级与命中的 `model_profiles` 条目求交，用于推荐和诊断。只要实际档位可执行，交集外的 effort 会继续运行并产生结构化 advisory；provider 或 executor 无法执行的档位仍是硬错误 |

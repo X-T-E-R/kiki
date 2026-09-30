@@ -154,6 +154,12 @@ describe('harness context authority', () => {
       expect(await context.hook({ harness: 'codex', event: 'PreCompact' })).toEqual({ content: '' });
       expect((await context.hook({ harness: 'codex', event: 'UserPromptSubmit' }) as { content: string }).content).toContain('Keep the context contract stable');
       expect(await context.hook({ harness: 'codex', event: 'UserPromptSubmit' })).toEqual({ content: '' });
+      const grokLease = await server.core.accessor.get(IHarnessMcpService).acquire({ sessionId, agentId: main.id, workspacePath: home, executorId: 'grok-acp', hooks: true });
+      try {
+        expect(await grokLease.contextHook!('Stop')).toContain('Keep the context contract stable');
+        expect(await grokLease.contextHook!('Stop')).toBe('');
+      } finally { grokLease.dispose(); }
+      await expect(grokLease.contextHook!('Stop')).rejects.toThrow('closed');
       const { TRANSCRIPT_COVERAGE_VERSION } = await import('@kiki/transcript');
       const projected = await fetch(`${endpoint}/api/sessions/${sessionId}/transcript?agent_id=main&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`, { headers: authHeaders(server) });
       const projectedBody = await projected.json();
