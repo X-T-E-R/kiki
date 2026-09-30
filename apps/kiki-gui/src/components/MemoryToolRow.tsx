@@ -224,7 +224,7 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
         ) : null}
       </div>
       {expanded ? (
-        <div className="space-y-1 pt-0.5 pb-1.5 pl-[26px] text-[12px] leading-relaxed">
+        <div className="space-y-1 pt-0.5 pb-1.5 pl-6 text-[12px] leading-relaxed">
           {reason !== undefined ? (
             <p className="text-ink-soft">
               <span className="text-ink-faint">{t('memory.tool.reason')}: </span>

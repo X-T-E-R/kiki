@@ -137,19 +137,19 @@ export const TaskCard = memo(function TaskCard({
       </div>
 
       {task.description ? (
-        <p className="mt-1 line-clamp-2 pl-[22px] text-[12.5px] leading-relaxed break-words text-ink-soft">
+        <p className="mt-1 line-clamp-2 pl-6 text-[12.5px] leading-relaxed break-words text-ink-soft">
           {task.description}
         </p>
       ) : null}
 
       {task.freezeGoal ? (
-        <p className="mt-2 ml-[22px] truncate rounded-md bg-amber-card px-2 py-1 text-[11.5px] text-amber-ink">
+        <p className="mt-2 ml-6 truncate rounded-md bg-amber-card px-2 py-1 text-[11.5px] text-amber-ink">
           {task.freezeGoal}
         </p>
       ) : null}
 
       {hasFooter ? (
-        <div className="mt-2 flex min-w-0 items-center gap-3 pl-[22px] text-[11.5px] text-ink-faint">
+        <div className="mt-2 flex min-w-0 items-center gap-3 pl-6 text-[11.5px] text-ink-faint">
           {sessionIds.length > 0 ? (
             <span
               data-board-card-sessions={sessionIds.length}

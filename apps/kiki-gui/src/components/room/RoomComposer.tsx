@@ -98,7 +98,7 @@ export function RoomComposer({
                   data-room-mention={option.key}
                   onPointerDown={(event) => { event.preventDefault(); insert(option); }}
                   onPointerEnter={() => { setActive(index); }}
-                  className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-3 ${index === activeIndex ? 'bg-selected' : ''}`}>
+                  className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-3 ${index === activeIndex ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : ''}`}>
                   {face !== undefined ? <PersonaAvatar persona={face} size={22} decorative /> : (
                     <span aria-hidden className="flex h-[22px] w-[22px] items-center justify-center rounded-[6px] bg-ink/[0.06] text-[12px] font-medium text-ink-soft">@</span>
                   )}

@@ -185,7 +185,7 @@ function PersonasEmpty({ onCreate, onImport }: { readonly onCreate: () => void; 
       {/* Three blank faces, one lit: what the roster will look like. */}
       <div aria-hidden className="flex items-center gap-2">
         {['a', 'b', 'c'].map((key, index) => (
-          <span key={key} className={`h-9 w-9 rounded-[10px] ring-1 ring-inset ring-hairline-strong ${index === 1 ? 'bg-accent-soft' : 'bg-panel'}`} />
+          <span key={key} className={`h-9 w-9 rounded-[10px] ring-1 ring-inset ring-hairline-strong ${index === 1 ? 'bg-ink/[0.06]' : 'bg-panel'}`} />
         ))}
       </div>
       <p className="mt-4 font-display text-[18px] text-ink">{t('persona.empty')}</p>

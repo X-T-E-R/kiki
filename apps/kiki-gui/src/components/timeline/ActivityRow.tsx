@@ -25,7 +25,7 @@ import type { ReactNode } from 'react';
 import { DisclosureChevron } from '../icons';
 
 /** Glyph column + gap: the one measurement every activity row shares. */
-export const ACTIVITY_GUTTER = 'pl-[26px]';
+export const ACTIVITY_GUTTER = 'pl-6';
 
 export type ActivityTone = 'plain' | 'danger' | 'warn' | 'accent';
 

@@ -91,9 +91,9 @@ export function OnboardingAppearanceStep() {
                   aria-checked={selected}
                   data-onboarding-palette={option.id}
                   onClick={() => { writeSkinPrefs({ selection: { source: 'builtin', id: option.id ?? 'paper' } }); }}
-                  // The chosen palette is "where you are": the ink-blue ring, not the accent.
+                  // The chosen palette is "where you are": a raised paper sheet, not the accent.
                   className={`flex w-full flex-col gap-1.5 rounded-[9px] p-1.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${
-                    selected ? 'bg-selected ring-1 ring-selected-ink/60' : 'hover:bg-ink/[0.04]'
+                    selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
                   }`}
                 >
                   <Swatch skin={option} theme={theme} />

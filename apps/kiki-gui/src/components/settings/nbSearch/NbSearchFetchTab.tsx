@@ -29,7 +29,7 @@ function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavaila
 
 function StepNumber({ n }: { n: number }) {
   return (
-    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-bold text-ink">
+    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-semibold text-ink">
       {n}
     </div>
   );

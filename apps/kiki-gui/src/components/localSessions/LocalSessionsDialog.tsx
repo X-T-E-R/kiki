@@ -103,7 +103,7 @@ function SessionRow({
         aria-current={selected ? 'true' : undefined}
         onClick={onSelect}
         className={`relative flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-          selected ? 'bg-selected' : 'hover:bg-ink/[0.04]'}`}
+          selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'}`}
       >
         {selected ? <span aria-hidden className="absolute top-2 bottom-2 left-0 w-[2px] rounded-full bg-selected-ink" /> : null}
         <span className="flex min-w-0 items-baseline gap-2">

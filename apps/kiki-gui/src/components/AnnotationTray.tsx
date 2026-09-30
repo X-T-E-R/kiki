@@ -162,7 +162,7 @@ function TrayRow({
             className="min-h-9 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
           />
           <button type="button" data-annotation-tray-save disabled={!canSave} onClick={commit}
-            className="min-h-9 rounded-md bg-accent-soft px-3 text-[12px] font-semibold text-accent-deep transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40">
+            className="min-h-9 rounded-md bg-ink/[0.06] px-3 text-[12px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40">
             {t('annotationTray.save')}
           </button>
           <button type="button" onClick={() => { setDraft(note.comment ?? ''); setEditing(false); }} className={ROW_ACTION}>

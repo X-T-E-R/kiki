@@ -174,7 +174,7 @@ export function ProfileDetailSections({
         </summary>
         <div className="mt-2 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[14px] font-bold text-ink">{profileName}</span>
+            <span className="font-mono text-[14px] font-semibold text-ink">{profileName}</span>
             <SourceBadge source={source} variant="accent" />
           </div>
           <dl className="grid grid-cols-1 gap-1.5 font-mono text-[10.5px] rounded bg-paper/60 p-2 border border-hairline">
@@ -251,7 +251,7 @@ export function ProfileDetailSections({
             <p className="italic text-ink-faint">{t('agentPanel.unrestricted')}</p>
           ) : null}
           {whenToUse ? (
-            <div className="rounded border-l-2 border-accent bg-accent/5 p-2 text-[11px] leading-snug text-ink-soft">
+            <div className="rounded bg-ink/[0.04] p-2 text-[11px] leading-snug text-ink-soft">
               <div className="mb-0.5 text-[10px] font-medium uppercase text-accent">
                 {t('st.namedAgents.whenToUse')}
               </div>

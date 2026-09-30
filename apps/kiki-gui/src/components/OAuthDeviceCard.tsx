@@ -92,7 +92,7 @@ export function OAuthDeviceCard({
   }
 
   return (
-    <div className="anim-enter rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
+    <div className="anim-enter rounded-xl border border-hairline bg-panel p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[12px] font-semibold text-ink">{t('st.oauth.title', { provider: label ?? snapshot.provider })}</p>
         <p className="font-mono text-[11px] text-ink-faint">{time.timeUntil(snapshot.expires_at)}</p>

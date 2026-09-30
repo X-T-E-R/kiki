@@ -6,8 +6,8 @@
  *
  *   - QuoteChip       a quotation mark + the quoted text on one line;
  *   - AnnotationChip  the annotated passage (faint, short) + the comment, on the
- *                     same warm wash the transcript uses for annotation marks;
- *                     hover/focus reveals both in full;
+ *                     same neutral wash the transcript uses for annotation
+ *                     marks; hover/focus reveals both in full;
  *   - ImageTile       a rounded thumbnail; clicking opens the lightbox.
  *
  * Remove buttons are optional: the composer passes them, the bubble does not.
@@ -20,18 +20,14 @@ import { Icon } from './icons';
 
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
 
-function RemoveButton({ label, onRemove, tone = 'ink' }: { label: string; onRemove: () => void; tone?: 'ink' | 'warm' }) {
+function RemoveButton({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
       onClick={onRemove}
-      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
-        tone === 'warm'
-          ? 'text-accent-ink/60 hover:bg-accent-ink/10 hover:text-accent-ink'
-          : 'text-ink-faint hover:bg-ink/[0.07] hover:text-ink'
-      }`}
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
     >
       <Icon name="close" size={12} />
     </button>
@@ -83,7 +79,7 @@ export function AnnotationChip({
       <span className="max-w-[8rem] min-w-0 shrink-[2] truncate text-ink-faint">“{oneLine(quote)}”</span>
       <span className="min-w-0 truncate text-ink">{comment}</span>
       {onRemove !== undefined ? (
-        <RemoveButton label={t('composer.removeAnnotation')} onRemove={onRemove} tone="warm" />
+        <RemoveButton label={t('composer.removeAnnotation')} onRemove={onRemove} />
       ) : null}
       {/* Hover/focus reveal: the full passage and the full comment. */}
       <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1.5 hidden w-72 max-w-[calc(100vw-48px)] rounded-[12px] bg-panel p-2 text-left shadow-[var(--kiki-sheet-shadow)] group-hover:block group-focus-within:block">
@@ -164,7 +160,7 @@ export function SkillChip({ name, description, onRemove }: { name: string; descr
       <span className="text-ink-faint">{t('composer.skillChip')}</span>
       <span className="min-w-0 truncate font-medium text-ink">{name}</span>
       {onRemove !== undefined ? (
-        <RemoveButton label={t('composer.removeSkill', { name })} onRemove={onRemove} tone="warm" />
+        <RemoveButton label={t('composer.removeSkill', { name })} onRemove={onRemove} />
       ) : null}
     </div>
   );

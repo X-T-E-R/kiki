@@ -163,7 +163,7 @@ export function AnnotationPopover({
             type="button"
             data-annotation-panel-save
             disabled={!dirty || trimmed === ''}
-            className="min-h-10 rounded-md bg-accent-soft px-3 text-[11px] font-semibold text-accent-deep transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
+            className="min-h-10 rounded-md bg-ink/[0.06] px-3 text-[11px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
             onClick={save}
           >
             {t('transcript.annotation.save')}

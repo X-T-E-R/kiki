@@ -424,7 +424,7 @@ function ContributionList({
             {group.title}
           </p>
           {group.rows.length > 0 ? (
-            <ul className="mt-1 space-y-0.5 pl-[22px]">
+            <ul className="mt-1 space-y-0.5 pl-6">
               {group.rows.map((row) => (
                 <li key={row.key} className="flex min-h-8 items-center gap-3">
                   <span className="min-w-0 flex-1">

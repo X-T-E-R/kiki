@@ -162,7 +162,7 @@ function ChoiceMark({ selected }: { readonly selected: boolean }) {
 
 const CHOICE_CARD =
   'flex w-full items-start gap-2 rounded-[10px] px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
-const CHOICE_CARD_SELECTED = 'bg-selected';
+const CHOICE_CARD_SELECTED = 'bg-paper shadow-[var(--kiki-sheet-shadow)]';
 const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
 
 /** One permission-mode radio row: the mode label plus its one-line meaning. */

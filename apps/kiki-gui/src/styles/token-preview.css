@@ -125,19 +125,23 @@
   --kiki-sheet-shadow: 0 0 0 1px rgb(236 232 224 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
 }
 
-/* A's two role moves that are not a token value: keyboard focus and a switch
- * that is on are "where you are / what you chose", so they take ink-blue;
- * vermilion stays for "needs you" and the one primary button. The spec asks
- * the implementer to make these changes in the components themselves. */
+/* A's role move that is not a token value: "where you are" is a sheet of paper
+ * lifted off its ground, never a colour block — the same treatment index.css
+ * draws for `.row-interactive[aria-current]`, so the preview and the shipped
+ * app agree. A switch that is on keeps its ink-blue mark, because that mark is
+ * what says "you chose this"; vermilion stays for "needs you" and the one
+ * primary button. Keyboard focus needs no override here: every focus ring
+ * already draws in `--color-selected-ink`, which each palette redefines. */
 :root[data-kiki-tokens='a'] :focus-visible {
   outline-color: var(--color-selected-ink);
 }
-:root[data-kiki-tokens='a'] .row-interactive:focus-visible {
-  outline-color: var(--color-selected-ink);
+:root[data-kiki-tokens='a'] .row-interactive[aria-current] {
+  background-color: var(--color-paper);
+  box-shadow: var(--kiki-sheet-shadow);
 }
 :root[data-kiki-tokens='a'] [role='switch'][aria-checked='true'] {
-  background-color: var(--color-selected);
-  --tw-ring-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
+  background-color: var(--color-paper);
+  box-shadow: var(--kiki-sheet-shadow);
 }
 :root[data-kiki-tokens='a'] [role='switch'][aria-checked='true'] > span {
   background-color: var(--color-selected-ink);

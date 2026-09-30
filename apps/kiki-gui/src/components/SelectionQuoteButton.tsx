@@ -305,7 +305,7 @@ export function SelectionQuoteButton({
           close(draftRef.current === null);
         }}
       >
-        <Icon name="quote" className="text-accent" />
+        <Icon name="quote" />
         {t('composer.quoteSelection')}
       </button>
       <span aria-hidden className="h-4 w-px bg-hairline" />

@@ -64,7 +64,7 @@ export const MediaRunRow = memo(function MediaRunRow({ run, agentId }: { run: Me
       />
       <ul
         aria-label={t('transcript.media.aria', { names })}
-        className={`flex items-center overflow-x-auto pb-1 pl-[26px] [scrollbar-width:thin] ${latest ? 'gap-2 pt-1' : 'gap-1.5'}`}
+        className={`flex items-center overflow-x-auto pb-1 pl-6 [scrollbar-width:thin] ${latest ? 'gap-2 pt-1' : 'gap-1.5'}`}
       >
         {shown.map((entry) => (
           <li key={entry.key} data-media-thumb className="shrink-0" title={entry.name}>

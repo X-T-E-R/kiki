@@ -9,9 +9,9 @@ import { Fragment, type ReactNode } from 'react';
 
 import { findQuoteRange, type TimelineAnnotation } from '@kiki/session-core/composer';
 
-/** Shared mark styling: a quiet accent wash plus a restrained underline. */
+/** Shared mark styling: a quiet neutral wash plus a restrained underline. */
 export const ANNOTATION_MARK_CLASS =
-  'box-decoration-clone cursor-pointer rounded-[2px] bg-accent-soft/80 px-px [color:inherit] underline decoration-accent/45 decoration-1 underline-offset-[3px] outline-none transition-colors hover:bg-accent-soft hover:decoration-accent/75 focus-visible:bg-accent-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:ring-offset-1';
+  'box-decoration-clone cursor-pointer rounded-[2px] bg-ink/[0.06] px-px [color:inherit] underline decoration-accent/45 decoration-1 underline-offset-[3px] outline-none transition-colors hover:bg-ink/[0.1] hover:decoration-accent/75 focus-visible:bg-ink/[0.1] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:ring-offset-1';
 
 /**
  * Speech-bubble glyph shown right after an annotated passage. Purely visual
