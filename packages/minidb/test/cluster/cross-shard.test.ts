@@ -292,6 +292,10 @@ test('shardScanKeys is bounded, key-only and resumes partition-affinity keys', a
   try {
     await mini.set('é', { body: 'value' });
     const store = mini['store'];
+    store.set('a', Buffer.from('{}'), Date.now() - 1);
+    store.set('b', Buffer.from('{}'), Date.now() - 1);
+    assert.deepEqual(mini.scanKeys({ count: 1 }), ['é']);
+    assert.deepEqual(mini.scanKeys({ count: 0 }), []);
     store.materialize = () => { throw new Error('scanKeys must not materialize values'); };
     assert.deepEqual(mini.scanKeys({ gte: 'é', count: 1 }), ['é']);
   } finally {

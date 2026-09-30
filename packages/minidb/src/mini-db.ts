@@ -1200,7 +1200,8 @@ export class MiniDb<V = unknown> {
 
   // ---- key-ordered scans --------------------------------------------------
 
-  /** Ordered key-only scan; count bounds work without decoding values. Continue
+  /** Ordered key-only scan without decoding values. Count limits live keys;
+   *  expired entries are reaped and do not create false empty pages. Continue
    *  with gt (or lt for reverse) set to the last key. Not a pinned snapshot:
    *  mutations between pages are visible and inserts behind the cursor are not. */
   scanKeys(opts: RangeOptions<string> = {}): string[] {
