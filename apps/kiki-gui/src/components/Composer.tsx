@@ -2152,6 +2152,7 @@ export function Composer({
                   key={`thread-${ref.start}`}
                   sessionId={ref.sessionId}
                   entry={threadRefDirectory.lookup(ref.sessionId)}
+                  group={threadRefs.map((item) => threadRefDirectory.lookup(item.sessionId))}
                   onRemove={() => { removeThreadRefAt(index); }}
                 />
               ))}

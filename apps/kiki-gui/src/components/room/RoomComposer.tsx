@@ -22,12 +22,15 @@ export interface RoomComposerMember {
 export function RoomComposer({
   roomName,
   hostName,
+  hostIsThread = false,
   members,
   sending,
   onSend,
 }: {
   readonly roomName: string;
   readonly hostName: string;
+  /** A thread host is not woken by unmentioned messages; the placeholder says so. */
+  readonly hostIsThread?: boolean;
   readonly members: readonly RoomComposerMember[];
   readonly sending: boolean;
   /** Resolves true when the message was accepted (the draft then clears). */
@@ -50,6 +53,7 @@ export function RoomComposer({
   const open = mention !== undefined && options.length > 0 && dismissedAt !== mention.start;
   const activeIndex = Math.min(active, Math.max(0, options.length - 1));
   const faces = new Map(members.map((member) => [member.personaId, member.face]));
+  const placeholder = hostIsThread ? t('room.placeholderThreadHost', { name: roomName }) : t('room.placeholder', { name: roomName, host: hostName });
 
   useLayoutEffect(() => {
     const node = textarea.current;
@@ -113,8 +117,8 @@ export function RoomComposer({
           rows={1}
           value={text}
           data-room-input
-          aria-label={t('room.placeholder', { name: roomName, host: hostName })}
-          placeholder={t('room.placeholder', { name: roomName, host: hostName })}
+          aria-label={placeholder}
+          placeholder={placeholder}
           role="combobox"
           aria-expanded={open}
           aria-controls={open ? listId : undefined}

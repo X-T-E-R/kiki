@@ -5,7 +5,9 @@ import type { ListThreadMessagesQuery, ListThreadMessagesResponse } from '@kiki/
 import {
   endpointHref,
   groupByPeer,
+  groupByRoom,
   messageJumpHref,
+  roomMessageSummary,
   readThreadMessagesPage,
   type ThreadToThreadMessage,
 } from './threadMessages';
@@ -46,11 +48,11 @@ describe('readThreadMessagesPage', () => {
     ]);
   });
 
-  it('stops at the end of the chain and skips reserved room messages', async () => {
+  it('stops at the end of the chain and keeps room deliveries', async () => {
     const room = { ...message('r1', 'a', 'b', 5), source: { kind: 'room' as const, room_id: 'room-1' } };
     const list = vi.fn(async () => ({ items: [room], next_cursor: undefined }));
     const page = await readThreadMessagesPage(list, {});
-    expect(page).toEqual({ items: [], nextCursor: undefined, incomplete: false });
+    expect(page).toEqual({ items: [room], nextCursor: undefined, incomplete: false });
   });
 
   it('hands a cursor back after a bounded run of empty pages', async () => {
@@ -86,5 +88,36 @@ describe('navigation', () => {
     expect(messageJumpHref(message('m', 'a', 'b', 1, { delivery: 'undeliverable' }))).toBeUndefined();
     expect(endpointHref(endpoint('x', { deleted: true }))).toBeUndefined();
     expect(endpointHref(endpoint('x', { archived: true }))).toBe('/s/x');
+  });
+});
+
+describe('room deliveries', () => {
+  const room = (id: string, roomId: string, at: number, content: string) => ({
+    ...message(id, 'x', 'self', at), source: { kind: 'room' as const, room_id: roomId }, content,
+  });
+
+  it('groups by room, most recent room first', () => {
+    const groups = groupByRoom([
+      room('r3', 'contract', 30, 'c'),
+      message('m2', 'b', 'self', 20),
+      room('r1', 'release', 10, 'a'),
+      room('r2', 'contract', 25, 'b'),
+    ]);
+    expect(groups.map((group) => [group.roomId, group.messages.map((item) => item.message_id)])).toEqual([
+      ['contract', ['r3', 'r2']],
+      ['release', ['r1']],
+    ]);
+  });
+
+  it('summarizes the last room line as author and text, skipping system rows', () => {
+    const content = [
+      '<room-messages room="contract" since="">[m_1 User] @thread-b Please review the API',
+      '[m_2 后端线程 (thread-a)] 字段改成 camelCase',
+      '[system member_busy] thread-b is busy',
+      '</room-messages>',
+      'You were selected for room message m_2.',
+    ].join('\n');
+    expect(roomMessageSummary(content)).toBe('后端线程: 字段改成 camelCase');
+    expect(roomMessageSummary('plain text')).toBe('plain text');
   });
 });

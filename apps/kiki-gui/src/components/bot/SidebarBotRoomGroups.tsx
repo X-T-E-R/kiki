@@ -20,7 +20,7 @@ import { registerOverlay } from '../../lib/uiBusy';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
-import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
+import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { usePersonaList } from '../persona/usePersonas';
 import { CreateRoomDialog } from '../room/CreateRoomDialog';
 
@@ -193,11 +193,14 @@ function errorText(error: unknown): string {
 export function AvatarStack({
   members,
   avatars,
+  faces,
   max = 3,
   size = 16,
 }: {
   readonly members: readonly { readonly personaId: string }[];
   readonly avatars: ReadonlyMap<string, PersonaSummary>;
+  /** Faces for ids that are not personas (thread members), by member id. */
+  readonly faces?: ReadonlyMap<string, PersonaAvatarData>;
   readonly max?: number;
   readonly size?: number;
 }) {
@@ -206,7 +209,7 @@ export function AvatarStack({
     <span aria-hidden className="flex shrink-0 items-center">
       {shown.map((member, index) => {
         const summary = avatars.get(member.personaId);
-        const face = summary === undefined ? { id: member.personaId, name: member.personaId } : personaAvatarOf(summary);
+        const face = summary === undefined ? faces?.get(member.personaId) ?? { id: member.personaId, name: member.personaId } : personaAvatarOf(summary);
         return (
           <span key={member.personaId} className={`rounded-[5px] ring-2 ring-canvas ${index === 0 ? '' : '-ml-1'}`}>
             <PersonaAvatar persona={face} size={size} decorative />
@@ -233,7 +236,7 @@ function RoomRow({
 }) {
   const { t } = useI18n();
   const working = room.members.some((member) => sessionById.get(member.sessionId)?.busy === true);
-  const waiting = room.members.some((member) => sessionById.get(member.sessionId)?.pending_interaction !== undefined);
+  const waiting = room.members.some((member) => { const pending = sessionById.get(member.sessionId)?.pending_interaction; return pending !== undefined && pending !== 'none'; });
   const life = waiting ? 'waiting' as const : working ? 'working' as const : 'idle' as const;
   return (
     <button type="button" data-sidebar-room={room.id}

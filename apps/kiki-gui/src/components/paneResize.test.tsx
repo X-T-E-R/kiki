@@ -21,6 +21,7 @@ const mounts: { container: HTMLDivElement; root: Root }[] = [];
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
+  useOptionalConnection: () => null,
   useConnection: () => ({
     client: { searchMessages: () => Promise.resolve({ items: [], has_more: false }) },
     meta: {

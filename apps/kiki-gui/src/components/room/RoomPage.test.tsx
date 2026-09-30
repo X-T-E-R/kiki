@@ -32,6 +32,9 @@ const rooms = vi.hoisted(() => ({
   stop: vi.fn(),
   delete: vi.fn(),
   list: vi.fn(async () => []),
+  addMember: vi.fn(),
+  removeMember: vi.fn(),
+  searchThreads: vi.fn(),
 }));
 const client = vi.hoisted(() => ({
   klient: { rest: { rooms, bots: { list: async () => [] } } },
@@ -39,6 +42,7 @@ const client = vi.hoisted(() => ({
   getSession: vi.fn(),
   listPendingQuestions: vi.fn(async () => []),
   getPersonaAvatar: vi.fn(async () => null),
+  getConfig: vi.fn(async () => ({ thread_communication: { enabled: true } })),
 }));
 
 vi.mock('../../state/connection', () => ({
@@ -56,9 +60,9 @@ function roomDoc(overrides: Partial<RoomDocument> = {}): RoomDocument {
   return {
     version: 1, id: 'release-031', name: '0.31 发布',
     members: [
-      { personaId: 'lin-lan', sessionId: 'sess_lin', muted: false },
-      { personaId: 'a-che', sessionId: 'sess_che', muted: false },
-      { personaId: 'xiao-lan', sessionId: 'sess_lan', muted: false },
+      { kind: 'persona', personaId: 'lin-lan', sessionId: 'sess_lin', muted: false },
+      { kind: 'persona', personaId: 'a-che', sessionId: 'sess_che', muted: false },
+      { kind: 'persona', personaId: 'xiao-lan', sessionId: 'sess_lan', muted: false },
     ],
     host: 'lin-lan', mode: 'mention', budget: { botMessagesPerUserMessage: 12 },
     workspace: 'C:/work/kiki', createdAt: '2026-10-01T08:00:00.000Z', generation: 0,
@@ -231,5 +235,45 @@ describe('RoomPage', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-member="a-che"] [data-room-set-host]')?.click(); });
     await flush();
     expect(rooms.update).toHaveBeenCalledWith('release-031', { host: 'a-che' });
+  });
+
+  it('shows thread members by title, says a busy one replies after its turn, and leaves without touching the thread', async () => {
+    const threadRoom = roomDoc({
+      id: 'release-031', host: 'sess_backend',
+      members: [
+        { kind: 'thread', sessionId: 'sess_backend', muted: false, joinedAt: '2026-10-01T08:00:00.000Z', queueWhenBusy: true },
+        { kind: 'thread', sessionId: 'sess_frontend', muted: false, joinedAt: '2026-10-01T08:00:00.000Z', queueWhenBusy: true },
+        { kind: 'thread', sessionId: 'sess_tests', muted: false, joinedAt: '2026-10-01T08:00:00.000Z', queueWhenBusy: false },
+      ],
+    });
+    rooms.get.mockResolvedValue(threadRoom);
+    rooms.log.mockResolvedValue({ entries: [
+      { id: 's1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'member_joined', text: '', data: { memberId: 'sess_backend' } },
+      { id: 'm1', at: '2026-10-01T09:01:00.000Z', kind: 'message', from: 'sess_frontend', text: '字段名对一下', mentions: ['sess_backend'] },
+    ] });
+    rooms.removeMember.mockResolvedValue(roomDoc({ ...threadRoom, members: threadRoom.members.slice(0, 2) }));
+    rooms.update.mockResolvedValue(threadRoom);
+    const titles: Record<string, string> = { sess_backend: '后端线程', sess_frontend: '前端线程', sess_tests: '测试线程' };
+    client.getSession.mockImplementation(async (id: string) => ({ id, title: titles[id] ?? '', busy: id === 'sess_backend', metadata: { cwd: 'C:/' }, agent_config: { model: 'm' } }));
+    const container = await renderRoom();
+    if (container.querySelector('[data-room-members]') === null) {
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-roster]')?.click(); });
+    }
+    await flush();
+    expect(container.querySelector('[data-room-system="member_joined"]')?.textContent).toBe('后端线程 加入了房间');
+    expect(container.querySelector('[data-room-message="m1"]')?.textContent).toContain('前端线程');
+    expect(container.querySelector('[data-room-queued]')?.textContent).toBe('后端线程 正忙，结束后回复');
+    expect(container.querySelector('[data-room-member="sess_backend"] [data-room-member-status]')?.textContent).toBe('正忙，结束后回复');
+    expect(container.querySelector('[data-room-input]')?.getAttribute('placeholder')).toContain('@ 谁就唤醒谁');
+    const toggle = container.querySelector<HTMLInputElement>('[data-room-member="sess_tests"] input[type="checkbox"]')!;
+    expect(toggle.checked).toBe(false);
+    await act(async () => { toggle.click(); });
+    await flush();
+    expect(rooms.update).toHaveBeenCalledWith('release-031', { members: expect.arrayContaining([
+      { kind: 'thread', sessionId: 'sess_tests', muted: false, queueWhenBusy: true },
+    ]) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-member="sess_tests"] [data-room-leave]')?.click(); });
+    await flush();
+    expect(rooms.removeMember).toHaveBeenCalledWith('release-031', 'sess_tests');
   });
 });

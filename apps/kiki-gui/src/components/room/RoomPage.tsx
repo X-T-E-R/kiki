@@ -7,13 +7,18 @@
  *
  * The log and usage are polled (no room push stream yet); a send or an
  * action refreshes both at once.
+ *
+ * Members are personas (a room-only session each) or threads that joined as
+ * themselves; both resolve through `nameOf` / `faceOf` by member id. A busy
+ * thread with "wait while busy" on is named under the log: it replies after
+ * its current turn.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 
-import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
+import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
 import { formatTokens } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
@@ -35,6 +40,7 @@ import { RelativeTime } from '../RelativeTime';
 import { RoomComposer } from './RoomComposer';
 import { RoomMembersPanel } from './RoomMembersPanel';
 import { isStopFirstError, livePauseIndex, ROOM_LOG_WINDOW, ROOM_POLL_MS, roomTokenTotal, useRoomLog } from './roomLog';
+import { roomMemberId, threadMemberFace, threadMemberName } from './threadRooms';
 
 const HEADER_BUTTON =
   'flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[12.5px] text-ink-soft transition-colors hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:opacity-50 lg:h-8 lg:min-w-8';
@@ -143,15 +149,28 @@ function RoomView({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [stopFirst, setStopFirst] = useState(false);
 
-  const nameOf = (personaId: string) => personas.get(personaId)?.name ?? personaId;
-  const faceOf = (personaId: string): PersonaAvatarData => {
-    const summary = personas.get(personaId);
-    return summary === undefined ? { id: personaId, name: personaId } : personaAvatarOf(summary);
+  const untitled = t('comms.untitled');
+  // Thread members are keyed by session id; a thread that left keeps its
+  // name in the log as long as the session is still known.
+  const threadName = (sessionId: string): string | undefined => {
+    const session = sessionById.get(sessionId);
+    if (session === undefined && !room.members.some((member) => member.kind === 'thread' && member.sessionId === sessionId)) return undefined;
+    return threadMemberName(session, sessionId, untitled);
+  };
+  const nameOf = (id: string) => personas.get(id)?.name ?? threadName(id) ?? id;
+  const faceOf = (id: string): PersonaAvatarData => {
+    const summary = personas.get(id);
+    if (summary !== undefined) return personaAvatarOf(summary);
+    const name = threadName(id);
+    return name === undefined ? { id, name: id } : threadMemberFace(sessionById.get(id), id, name);
   };
   const hostName = nameOf(room.host);
-  const working = room.members.filter((member) => sessionById.get(member.sessionId)?.busy === true);
+  const hostIsThread = room.members.some((member) => member.kind === 'thread' && member.sessionId === room.host);
+  const busyMembers = room.members.filter((member) => sessionById.get(member.sessionId)?.busy === true);
+  const working = busyMembers.filter((member) => member.kind === 'persona' || !member.queueWhenBusy);
+  const queuedBusy = busyMembers.filter((member) => member.kind === 'thread' && member.queueWhenBusy);
   const questions = usageQuery.data?.questions;
-  const running = working.length > 0 || questions?.activeSessionId !== undefined;
+  const running = busyMembers.some((member) => member.kind === 'persona') || questions?.activeSessionId !== undefined;
   const tokens = roomTokenTotal(usageQuery.data);
 
   const refreshAll = () => {
@@ -187,6 +206,12 @@ function RoomView({
       pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) });
     },
   });
+  const membership = useMutation({
+    mutationFn: (change: { readonly add: RoomMemberInput } | { readonly remove: string }) =>
+      'add' in change ? api.addRoomMember(room.id, change.add) : api.removeRoomMember(room.id, change.remove),
+    onSuccess: applyRoom,
+    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) }); },
+  });
   const send = useMutation({
     mutationFn: (text: string) => api.postRoomMessage(room.id, { text, idempotencyKey: crypto.randomUUID() }),
     onSuccess: refreshAll,
@@ -205,10 +230,14 @@ function RoomView({
     },
   });
 
+  const personaMembers = room.members.filter((member) => member.kind === 'persona');
   const composerMembers = room.members.map((member) => {
-    const summary = personas.get(member.personaId);
-    return { personaId: member.personaId, name: nameOf(member.personaId), hint: summary?.title ?? summary?.job, face: faceOf(member.personaId) };
+    const id = roomMemberId(member);
+    const summary = member.kind === 'persona' ? personas.get(member.personaId) : undefined;
+    return { personaId: id, name: nameOf(id), hint: member.kind === 'thread' ? t('room.threadTag') : summary?.title ?? summary?.job, face: faceOf(id) };
   });
+  const roster = room.members.map((member) => ({ personaId: roomMemberId(member) }));
+  const faces = new Map(room.members.map((member) => [roomMemberId(member), faceOf(roomMemberId(member))] as const));
 
   return (
     <div className="flex h-full min-h-0 bg-paper" data-room-page={room.id} data-room-paused={room.paused || undefined}>
@@ -224,7 +253,7 @@ function RoomView({
           </h1>
           <button type="button" data-room-roster aria-expanded={membersOpen} aria-label={t('room.membersOpen')} title={t('room.membersOpen')}
             onClick={() => { setMembersOpen((open) => !open); }} className={`${HEADER_BUTTON} ml-1`}>
-            <AvatarStack members={room.members} avatars={personas} max={6} size={20} />
+            <AvatarStack members={roster} avatars={personas} faces={faces} max={6} size={20} />
           </button>
           <span className="hidden min-w-0 truncate text-[12.5px] text-ink-faint lg:inline" data-room-host-line>
             {t('room.hostLine', { name: hostName })}
@@ -269,10 +298,12 @@ function RoomView({
           error={log.error}
           nameOf={nameOf}
           faceOf={faceOf}
-          working={working.map((member) => nameOf(member.personaId))}
+          working={working.map((member) => nameOf(roomMemberId(member)))}
+          queued={queuedBusy.map((member) => nameOf(roomMemberId(member)))}
+          hostIsThread={hostIsThread}
           questions={questions}
           questionSessionPersona={questions?.activeSessionId === undefined ? undefined
-            : room.members.find((member) => member.sessionId === questions.activeSessionId)?.personaId}
+            : personaMembers.find((member) => member.sessionId === questions.activeSessionId)?.personaId}
           busy={action.isPending}
           onContinue={() => { action.mutate('continue'); }}
           onAdjustBudget={() => {
@@ -289,6 +320,7 @@ function RoomView({
             <RoomComposer
               roomName={room.name}
               hostName={hostName}
+              hostIsThread={hostIsThread}
               members={composerMembers}
               sending={send.isPending}
               onSend={async (text) => {
@@ -315,8 +347,10 @@ function RoomView({
               sessionById={sessionById}
               running={running}
               stopFirst={stopFirst}
-              busy={update.isPending || action.isPending}
+              busy={update.isPending || action.isPending || membership.isPending}
               onUpdate={(input) => { update.mutate(input); }}
+              onAddMember={(member) => { membership.mutate({ add: member }); }}
+              onRemoveMember={(memberId) => { membership.mutate({ remove: memberId }); }}
               onStop={() => { action.mutate('stop'); }}
               onClose={() => { setMembersOpen(false); }}
             />
@@ -383,6 +417,9 @@ function systemLine(entry: Extract<RoomLogEntry, { kind: 'system' }>, t: ReturnT
     case 'host_changed': return t('room.system.hostChanged', { name: typeof data['host'] === 'string' ? nameOf(data['host']) : '' });
     case 'room_renamed': return t('room.system.renamed', { name: typeof data['name'] === 'string' ? data['name'] : '' });
     case 'workspace_changed': return t('room.system.workspaceChanged');
+    case 'member_joined': return t('room.threadJoined', { name: typeof data['memberId'] === 'string' ? nameOf(data['memberId']) : '' });
+    case 'member_left': return t('room.threadLeft', { name: typeof data['memberId'] === 'string' ? nameOf(data['memberId']) : '' });
+    case 'member_busy': return t('room.threadBusy', { name: typeof data['sessionId'] === 'string' ? nameOf(data['sessionId']) : '' });
     case 'wake_failed': {
       const text = entry.text.match(/wake (\S+);/u)?.[1];
       return t('room.system.wakeFailed', { name: text === undefined ? '' : nameOf(text) });
@@ -400,6 +437,8 @@ function RoomLogView({
   nameOf,
   faceOf,
   working,
+  queued,
+  hostIsThread,
   questions,
   questionSessionPersona,
   busy,
@@ -414,6 +453,9 @@ function RoomLogView({
   readonly nameOf: (id: string) => string;
   readonly faceOf: (id: string) => PersonaAvatarData;
   readonly working: readonly string[];
+  /** Busy thread members whose room messages wait for their turn to end. */
+  readonly queued: readonly string[];
+  readonly hostIsThread: boolean;
   readonly questions: { readonly activeSessionId?: string; readonly queued: number } | undefined;
   readonly questionSessionPersona: string | undefined;
   readonly busy: boolean;
@@ -429,7 +471,7 @@ function RoomLogView({
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
-  }, [entries.length, working.length, questions?.activeSessionId]);
+  }, [entries.length, working.length, queued.length, questions?.activeSessionId]);
 
   return (
     <div ref={scroller} data-room-log role="log" aria-label={room.name}
@@ -444,7 +486,9 @@ function RoomLogView({
           <p role="alert" className="py-8 text-center text-[12.5px] text-danger">{t('room.loadFailed')} · {errorText(error)}</p>
         ) : null}
         {loaded && entries.length === 0 ? (
-          <p data-room-empty className="py-16 text-center text-[13px] text-ink-faint">{t('room.emptyLog', { host: nameOf(room.host) })}</p>
+          <p data-room-empty className="py-16 text-center text-[13px] text-ink-faint text-pretty">
+            {hostIsThread ? t('room.emptyLogThreadHost') : t('room.emptyLog', { host: nameOf(room.host) })}
+          </p>
         ) : null}
         {entries.map((entry, index) => {
           const previous = entries[index - 1];
@@ -471,6 +515,12 @@ function RoomLogView({
         ) : null}
         {working.length > 0 ? (
           <div className="mt-4"><PresenceLine text={t('message.working', { name: working.join('、') })} /></div>
+        ) : null}
+        {queued.length > 0 ? (
+          <p role="status" data-room-queued className={`${working.length > 0 ? 'mt-1' : 'mt-4'} flex min-h-6 items-center gap-2 text-[12.5px] text-ink-faint`}>
+            <span className={`${MESSAGE_FACE} flex justify-center`}><Icon name="hold" size={12} /></span>
+            <span className="min-w-0 truncate">{t('room.threadBusy', { name: queued.join('、') })}</span>
+          </p>
         ) : null}
       </div>
     </div>

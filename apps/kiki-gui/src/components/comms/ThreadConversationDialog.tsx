@@ -25,7 +25,7 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
-import { DeliveryNote, EndpointState, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
+import { DeliveryNote, EndpointState, LoadOlder, loadedPeerMessages, useEndpointName, useThreadMessages } from './commsShared';
 
 const LINK =
   'inline-flex h-7 items-center gap-1 rounded-md px-1.5 -mx-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11';
@@ -84,7 +84,7 @@ export function ThreadConversationDialog({
   );
   const query = useThreadMessages(filter);
   // Oldest first for reading; the server's newest-first pages stack upward.
-  const messages = useMemo(() => loadedMessages(query.data?.pages).toReversed(), [query.data]);
+  const messages = useMemo(() => loadedPeerMessages(query.data?.pages).toReversed(), [query.data]);
   const title = t('comms.pairTitle', { name: name(peer) });
   const peerHref = endpointHref(peer);
   const go = (href: string) => {

@@ -42,6 +42,7 @@ const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued:
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
+  useOptionalConnection: () => undefined,
   useConnection: () => ({
     client: { searchMessages, retrySearchIndexer, setWorkspacePinned, listEphemeralSessions, listTasks, listPrompts },
     scopeId: connectionScope.id,

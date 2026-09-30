@@ -89,6 +89,8 @@ import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { isBotOrRoomSession, SidebarBotRoomGroups } from './bot/SidebarBotRoomGroups';
+import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
+import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './room/threadRooms';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
 
@@ -337,6 +339,25 @@ export function Sidebar({
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
+  // Ctrl/⌘-click multi-select, for pulling several threads into one room.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [roomDraft, setRoomDraft] = useState<readonly Session[] | null>(null);
+  const [joiningRoom, setJoiningRoom] = useState<Session | null>(null);
+  const threadCommsEnabled = useThreadCommsEnabled(client);
+  const toggleSelected = (session: Session) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(session.id)) next.delete(session.id);
+      else if (next.size < ROOM_MAX_MEMBERS) next.add(session.id);
+      return next;
+    });
+  };
+  useEffect(() => {
+    if (selected.size === 0) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setSelected(new Set()); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
+  }, [selected.size]);
   const [renaming, setRenaming] = useState<Session | null>(null);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [confirmArchiveWorktree, setConfirmArchiveWorktree] = useState<Session | null>(null);
@@ -1020,6 +1041,24 @@ export function Sidebar({
             {actionNotice}
           </p>
         ) : null}
+        {selected.size > 0 ? (
+          <div data-session-selection role="status"
+            className="sticky top-0 z-[2] mb-1 flex min-h-9 items-center gap-1.5 rounded-lg bg-selected px-2 text-[12.5px] text-selected-ink">
+            <span className="min-w-0 flex-1 truncate font-medium tabular-nums">{t('room.selectionCount', { count: selected.size })}</span>
+            <button type="button" data-session-selection-room
+              disabled={threadCommsEnabled === false || selected.size < 2}
+              title={threadCommsEnabled === false ? t('room.commsOff') : selected.size < 2 ? t('room.threadsNeeded') : undefined}
+              onClick={() => { setRoomDraft(sessions.filter((item) => selected.has(item.id))); }}
+              className="h-7 shrink-0 rounded-md px-2 font-medium transition-colors hover:bg-paper/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-55">
+              {t('room.fromThreads')}
+            </button>
+            <button type="button" data-session-selection-clear aria-label={t('room.clearSelection')} title={t('room.clearSelection')}
+              onClick={() => { setSelected(new Set()); }}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-paper/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        ) : null}
         {ephemeralSessions.length > 0 ? (
           <div
             data-session-group-block="ephemeral"
@@ -1080,6 +1119,8 @@ export function Sidebar({
                     ? undefined
                     : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
                   onOpen={() => { navigate(`/s/${session.id}`); }}
+                  selected={selected.has(session.id)}
+                  onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                   onMenu={(x, y, toggle) => {
                     setMenu((current) =>
                       toggle && current?.session.id === session.id ? null : { session, x, y });
@@ -1263,8 +1304,20 @@ export function Sidebar({
           onAction={(action) => { runAction(menu.session, action); }}
           onArchive={() => { archive(menu.session); }}
           onRestore={() => { restore(menu.session); }}
+          roomSelection={selected.has(menu.session.id) ? selected.size : 0}
+          threadCommsEnabled={threadCommsEnabled}
+          onNewRoom={() => {
+            const ids = selected.has(menu.session.id) && selected.size >= 2 ? selected : new Set([menu.session.id]);
+            setRoomDraft(sessions.filter((item) => ids.has(item.id)));
+            setMenu(null);
+          }}
+          onJoinRoom={() => { setJoiningRoom(menu.session); setMenu(null); }}
         />
       ) : null}
+      {roomDraft !== null ? (
+        <NewThreadRoomDialog threads={roomDraft} onClose={() => { setRoomDraft(null); setSelected(new Set()); }} />
+      ) : null}
+      {joiningRoom !== null ? <JoinRoomDialog session={joiningRoom} onClose={() => { setJoiningRoom(null); }} /> : null}
       {renaming !== null ? (
         <RenameDialog
           session={renaming}
@@ -1353,6 +1406,8 @@ function SessionRow({
   onTogglePin,
   seen,
   temporary = false,
+  selected = false,
+  onToggleSelect,
 }: {
   session: Session;
   active: boolean;
@@ -1376,6 +1431,10 @@ function SessionRow({
   seen: SessionSeenMap;
   /** A temporary conversation: no pin, no menu (end or keep it from its header). */
   temporary?: boolean;
+  /** Part of the Ctrl/⌘-click selection (pull into a room). */
+  selected?: boolean;
+  /** Ctrl/⌘-click toggles selection; absent for rows that cannot join a room. */
+  onToggleSelect?: () => void;
 }) {
   const { t, tp } = useI18n();
   const archived = session.archived === true;
@@ -1435,6 +1494,7 @@ function SessionRow({
       className="group relative"
       data-session-row={session.id}
       data-session-row-state={rowState}
+      data-session-selected={selected || undefined}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, false);
@@ -1442,11 +1502,19 @@ function SessionRow({
     >
       <button
         type="button"
-        onClick={onOpen}
+        onClick={(event) => {
+          if ((event.metaKey || event.ctrlKey) && onToggleSelect !== undefined) {
+            event.preventDefault();
+            onToggleSelect();
+            return;
+          }
+          onOpen();
+        }}
         aria-current={active ? 'page' : undefined}
+        aria-pressed={onToggleSelect !== undefined && selected ? true : undefined}
         aria-label={nestedName}
         title={nestedName}
-        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${
+        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${selected ? 'shadow-[inset_0_0_0_1px_var(--color-selected-ink)]' : ''} ${
           nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
         }`}
       >
@@ -2185,6 +2253,10 @@ function SessionMenu({
   onAction,
   onArchive,
   onRestore,
+  roomSelection,
+  threadCommsEnabled,
+  onNewRoom,
+  onJoinRoom,
 }: {
   session: Session;
   scopeId: string;
@@ -2198,6 +2270,12 @@ function SessionMenu({
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
   onArchive: () => void;
   onRestore: () => void;
+  /** Size of the multi-select this row belongs to (0 when it is not selected). */
+  roomSelection: number;
+  /** `[thread_communication].enabled`; undefined while the config loads. */
+  threadCommsEnabled: boolean | undefined;
+  onNewRoom: () => void;
+  onJoinRoom: () => void;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -2320,6 +2398,36 @@ function SessionMenu({
           >
             {t('menu.addToConversation')}
           </button>
+          {isSubagentSession(session) ? null : (
+            <>
+              <div className="mx-1 my-1 border-t border-hairline" />
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="new-thread-room"
+                disabled={threadCommsEnabled === false}
+                title={threadCommsEnabled === false ? t('room.commsOff') : undefined}
+                className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+                onClick={onNewRoom}
+              >
+                {roomSelection >= 2 ? t('room.fromThreadsCount', { count: roomSelection }) : t('room.fromThreads')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="join-room"
+                disabled={threadCommsEnabled === false}
+                title={threadCommsEnabled === false ? t('room.commsOff') : undefined}
+                className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
+                onClick={onJoinRoom}
+              >
+                {t('room.joinRoom')}
+              </button>
+              {threadCommsEnabled === false ? (
+                <p className="px-2.5 pt-0.5 pb-1 text-[11.5px] leading-4 text-ink-faint">{t('room.commsOffShort')}</p>
+              ) : null}
+            </>
+          )}
           {cwd !== '' ? (
             <button
               type="button"

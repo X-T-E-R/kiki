@@ -3,7 +3,8 @@
  * workspaces, newest first, optionally scoped to one workspace. One row per
  * message: sender → recipient, first line, delivery when it is news, time.
  * The row opens the recipient's prompt; each name opens that thread. Deleted
- * threads read as such and never link.
+ * threads read as such and never link. A room delivery reads `# room → thread`
+ * with the room line that woke the thread; the room name opens the room.
  */
 
 import { useMemo } from 'react';
@@ -14,9 +15,11 @@ import {
   endpointHref,
   messageJumpHref,
   messageSummary,
+  roomMessageSummary,
   type ThreadEndpoint,
-  type ThreadToThreadMessage,
+  type ThreadMessage,
 } from '../../lib/threadMessages';
+import { roomHref, useRoomNames } from './roomNames';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
 import { DeliveryNote, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
@@ -37,12 +40,24 @@ function EndpointLink({ endpoint, onOpen }: { readonly endpoint: ThreadEndpoint;
   );
 }
 
+function RoomSource({ roomId, onOpen }: { readonly roomId: string; readonly onOpen: (href: string) => void }) {
+  const room = useRoomNames(true)(roomId);
+  if (!room.exists) return <span className="min-w-0 truncate text-ink-faint italic"># {room.name}</span>;
+  return (
+    <button type="button" data-comms-room={roomId}
+      onClick={(event) => { event.stopPropagation(); onOpen(roomHref(roomId)); }}
+      className="min-w-0 truncate rounded-sm text-left font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+      <span aria-hidden className="font-mono font-normal text-ink-faint"># </span>{room.name}
+    </button>
+  );
+}
+
 function MessageRow({
   message,
   workspaceName,
   onOpen,
 }: {
-  readonly message: ThreadToThreadMessage;
+  readonly message: ThreadMessage;
   readonly workspaceName: string | undefined;
   readonly onOpen: (href: string) => void;
 }) {
@@ -59,13 +74,15 @@ function MessageRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-[19px]">
-          <EndpointLink endpoint={message.source.thread} onOpen={onOpen} />
+          {message.source.kind === 'thread'
+            ? <EndpointLink endpoint={message.source.thread} onOpen={onOpen} />
+            : <RoomSource roomId={message.source.room_id} onOpen={onOpen} />}
           <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
           <span className="sr-only">{t('comms.to')}</span>
           <EndpointLink endpoint={message.target} onOpen={onOpen} />
           <RelativeTime at={acceptedIso(message)} className="ml-auto shrink-0 pl-2 text-[12px] leading-4 text-ink-faint tabular-nums" />
         </span>
-        <span className="mt-px block truncate text-[12px] leading-4 text-ink-soft">{messageSummary(message.content)}</span>
+        <span className="mt-px block truncate text-[12px] leading-4 text-ink-soft">{message.source.kind === 'room' ? roomMessageSummary(message.content, (author, text) => t('comms.roomLine', { author, text })) : messageSummary(message.content)}</span>
         <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
           <DeliveryNote message={message} />
           {workspaceName !== undefined ? (
@@ -103,8 +120,9 @@ export function ActivityComms({
   const query = useThreadMessages(filter);
   const messages = useMemo(() => loadedMessages(query.data?.pages), [query.data]);
   // Name the workspace only when the list spans several of them.
-  const nameOf = (message: ThreadToThreadMessage) => workspaceId !== undefined ? undefined
-    : workspaceNames.get(message.target.ref.workspace_id) ?? workspaceNames.get(message.source.thread.ref.workspace_id);
+  const nameOf = (message: ThreadMessage) => workspaceId !== undefined ? undefined
+    : workspaceNames.get(message.target.ref.workspace_id)
+      ?? (message.source.kind === 'thread' ? workspaceNames.get(message.source.thread.ref.workspace_id) : undefined);
 
   return (
     <section data-activity-group="comms" aria-label={t('comms.title')} className="flex flex-col gap-0.5">

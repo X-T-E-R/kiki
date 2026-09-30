@@ -12,18 +12,22 @@
  *     navigation uses `?block=user-<message_id>`; `target_seq` is a mailbox
  *     sequence number and is never used as a turn;
  *   - a deleted endpoint is never a link;
- *   - `source.kind === 'room'` is reserved and skipped until rooms land.
+ *   - a `source.kind === 'room'` row is a room delivery into its target
+ *     thread: grouped by room, never by peer, and summarized from the room
+ *     line that woke the thread rather than from the raw catch-up block.
  */
 
 import type { ListThreadMessagesQuery, ListThreadMessagesResponse } from '@kiki/protocol';
 
 export type ThreadMessage = ListThreadMessagesResponse['items'][number];
 export type ThreadEndpoint = ThreadMessage['target'];
-/** A message whose source is a thread (the only kind the server emits today). */
+/** A message whose source is another thread. */
 export type ThreadToThreadMessage = ThreadMessage & { readonly source: { readonly kind: 'thread'; readonly thread: ThreadEndpoint } };
+/** A room delivery into one member thread. */
+export type RoomSourcedMessage = ThreadMessage & { readonly source: { readonly kind: 'room'; readonly room_id: string } };
 
 export interface ThreadMessagesPage {
-  readonly items: readonly ThreadToThreadMessage[];
+  readonly items: readonly ThreadMessage[];
   readonly nextCursor?: string;
   /** The last hop stopped at the server's scan budget. */
   readonly incomplete: boolean;
@@ -39,6 +43,10 @@ export function isThreadSourced(message: ThreadMessage): message is ThreadToThre
   return message.source.kind === 'thread';
 }
 
+export function isRoomSourced(message: ThreadMessage): message is RoomSourcedMessage {
+  return message.source.kind === 'room';
+}
+
 /**
  * One reader-visible page: follows empty pages (at most `MAX_EMPTY_HOPS`)
  * so a scan-budget stop does not read as "no more messages".
@@ -52,7 +60,7 @@ export async function readThreadMessagesPage(
   let incomplete = false;
   for (let hop = 0; ; hop += 1) {
     const page = await list({ ...filter, cursor: next });
-    const items = page.items.filter(isThreadSourced);
+    const items = page.items;
     next = page.next_cursor;
     incomplete = page.incomplete === 'scan_budget';
     if (items.length > 0 || next === undefined || hop + 1 >= MAX_EMPTY_HOPS) {
@@ -134,6 +142,45 @@ export function messageJumpHref(message: ThreadMessage): string | undefined {
 /** The thread itself, unless it was deleted. */
 export function endpointHref(endpoint: ThreadEndpoint): string | undefined {
   return endpoint.deleted ? undefined : `/s/${encodeURIComponent(endpoint.ref.session_id)}`;
+}
+
+export interface RoomGroup {
+  readonly roomId: string;
+  /** Newest first. */
+  readonly messages: readonly RoomSourcedMessage[];
+  readonly latest: RoomSourcedMessage;
+}
+
+/** Room deliveries grouped by room, most recent room first. */
+export function groupByRoom(messages: readonly ThreadMessage[]): RoomGroup[] {
+  const groups = new Map<string, RoomSourcedMessage[]>();
+  for (const message of messages) {
+    if (!isRoomSourced(message)) continue;
+    const list = groups.get(message.source.room_id);
+    if (list === undefined) groups.set(message.source.room_id, [message]);
+    else list.push(message);
+  }
+  return [...groups.entries()]
+    .map(([roomId, list]) => {
+      const sorted = list.toSorted(newestFirst);
+      return { roomId, messages: sorted, latest: sorted[0]! };
+    })
+    .sort((a, b) => newestFirst(a.latest, b.latest));
+}
+
+/**
+ * One line for a room delivery: the last room line in the catch-up block
+ * (`[id author] @mentions text`), as `author: text` (or `format`). Falls back to the
+ * first line when the block does not parse.
+ */
+export function roomMessageSummary(content: string, format: (author: string, text: string) => string = (author, text) => `${author}: ${text}`): string {
+  const rows = content.split(/\r?\n/u).map((line) => line.replace(/^<room-messages[^>]*>/u, '').trim())
+    .filter((line) => line.startsWith('[') && !line.startsWith('[system '));
+  const last = rows.at(-1);
+  const match = last === undefined ? null : /^\[\S+ ([^\]]+)\](?: @\S+)* (.*)$/u.exec(last);
+  if (match === null) return messageSummary(content);
+  const author = match[1]!.replace(/ \([^)]*\)$/u, '');
+  return format(author, match[2]!.trim());
 }
 
 /** The first non-empty line of a message, for one-line summaries. */

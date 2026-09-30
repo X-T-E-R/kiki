@@ -12,12 +12,16 @@ import type {
   BotSummary,
   BotUpdateInput,
   CreateRoomInput,
+  CreateThreadRoomInput,
   PostRoomMessageInput,
   RoomDocument,
   RoomLogOptions,
   RoomLogResult,
+  RoomMemberInput,
   RoomMessage,
   RoomUsage,
+  SearchRoomThreadsInput,
+  SearchRoomThreadsResult,
   UpdateRoomInput,
 } from '@kiki/protocol';
 
@@ -34,6 +38,13 @@ export interface BotRoomApi {
   listRooms(): Promise<readonly RoomDocument[]>;
   getRoom(roomId: string): Promise<RoomDocument | undefined>;
   createRoom(input: CreateRoomInput): Promise<RoomDocument>;
+  /** A room whose members are existing threads; no member session is created. */
+  createRoomFromThreads(input: CreateThreadRoomInput): Promise<RoomDocument>;
+  /** Threads that may join a room (top-level, unarchived, communication on). */
+  searchRoomThreads(input?: SearchRoomThreadsInput): Promise<SearchRoomThreadsResult>;
+  addRoomMember(roomId: string, member: RoomMemberInput): Promise<RoomDocument>;
+  /** `memberId` is a thread's session id or a persona id. */
+  removeRoomMember(roomId: string, memberId: string): Promise<RoomDocument>;
   /** Members, mute, host and budget all change through this one patch. */
   updateRoom(roomId: string, input: UpdateRoomInput): Promise<RoomDocument>;
   deleteRoom(roomId: string): Promise<void>;
@@ -60,6 +71,10 @@ export function createBotRoomApi(client: KikiClient): BotRoomApi {
     listRooms: () => rest().rooms.list(),
     getRoom: (id) => rest().rooms.get(id),
     createRoom: (input) => rest().rooms.create(input),
+    createRoomFromThreads: (input) => rest().rooms.createFromThreads(input),
+    searchRoomThreads: (input) => rest().rooms.searchThreads(input),
+    addRoomMember: (id, member) => rest().rooms.addMember(id, member),
+    removeRoomMember: (id, memberId) => rest().rooms.removeMember(id, memberId),
     updateRoom: (id, input) => rest().rooms.update(id, input),
     deleteRoom: (id) => rest().rooms.delete(id),
     postRoomMessage: (id, input) => rest().rooms.postUserMessage(id, input),

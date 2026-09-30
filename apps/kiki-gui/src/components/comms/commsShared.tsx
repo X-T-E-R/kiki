@@ -13,6 +13,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 
 import { useI18n } from '../../i18n';
 import {
+  isThreadSourced,
   readThreadMessagesPage,
   type ThreadEndpoint,
   type ThreadMessage,
@@ -44,8 +45,13 @@ export function useThreadMessages(filter: ThreadMessagesFilter, enabled = true) 
 }
 
 /** Loaded rows across pages, in server order (newest first). */
-export function loadedMessages(pages: readonly { readonly items: readonly ThreadToThreadMessage[] }[] | undefined): ThreadToThreadMessage[] {
+export function loadedMessages(pages: readonly { readonly items: readonly ThreadMessage[] }[] | undefined): ThreadMessage[] {
   return (pages ?? []).flatMap((page) => page.items);
+}
+
+/** Thread-to-thread rows only (pair views and per-peer grouping). */
+export function loadedPeerMessages(pages: readonly { readonly items: readonly ThreadMessage[] }[] | undefined): ThreadToThreadMessage[] {
+  return loadedMessages(pages).filter(isThreadSourced);
 }
 
 /** The name a thread goes by here: its title, or what is left of it. */

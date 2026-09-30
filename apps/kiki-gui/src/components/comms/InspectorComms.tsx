@@ -2,7 +2,9 @@
  * Session rail › Thread messages: what this session sent to and received
  * from other threads, grouped by the thread on the other side. A row names
  * the peer, the direction and first line of the latest exchange, and when;
- * pressing it opens the full back-and-forth with that thread.
+ * pressing it opens the full back-and-forth with that thread. Room
+ * deliveries into this session group by room instead; their row opens the
+ * room.
  *
  * Follows the rail's rule that an empty chapter renders nothing: no section
  * until the first message arrives. A failed read keeps a one-line retry so a
@@ -12,11 +14,13 @@
 import { memo, useMemo, useState } from 'react';
 
 import { useI18n } from '../../i18n';
-import { groupByPeer, messageSummary, acceptedIso, type PeerGroup } from '../../lib/threadMessages';
+import { groupByPeer, groupByRoom, isThreadSourced, messageSummary, acceptedIso, roomMessageSummary, type PeerGroup, type RoomGroup } from '../../lib/threadMessages';
+import { useGuardedNavigate } from '../dirtyGuard';
 import { InspectorSection } from '../agent-panel/InspectorSection';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
 import { EndpointState, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
+import { roomHref, useRoomNames } from './roomNames';
 import { ThreadConversationDialog } from './ThreadConversationDialog';
 
 /** Peers shown before the rest fold behind "Show all". */
@@ -72,16 +76,57 @@ const PeerRow = memo(function PeerRow({ group, onOpen }: { readonly group: PeerG
   );
 });
 
+const RoomRow = memo(function RoomRow({ group, name, exists, onOpen }: {
+  readonly group: RoomGroup;
+  readonly name: string;
+  readonly exists: boolean;
+  readonly onOpen: () => void;
+}) {
+  const { t } = useI18n();
+  const body = (
+    <>
+      <span aria-hidden className="flex h-[19px] w-3.5 shrink-0 items-center justify-center font-mono text-[12px] text-ink-faint">#</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-baseline gap-2 leading-[19px]">
+          <span className={`min-w-0 truncate text-[13px] ${exists ? 'text-ink' : 'text-ink-faint italic'}`}>{name}</span>
+          <span className="shrink-0 text-[11.5px] text-ink-faint">{t('comms.fromRoom')}</span>
+          <RelativeTime at={acceptedIso(group.latest)} className="ml-auto shrink-0 text-[12px] text-ink-faint tabular-nums" />
+        </span>
+        <span className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-[18px] text-ink-faint">
+          <span className="min-w-0 flex-1 truncate">{roomMessageSummary(group.latest.content, (author, text) => t('comms.roomLine', { author, text }))}</span>
+          {group.messages.length > 1 ? <span className="shrink-0 tabular-nums">{group.messages.length}</span> : null}
+        </span>
+      </span>
+    </>
+  );
+  const shape = '-mx-2 flex w-[calc(100%+1rem)] items-start gap-1.5 rounded-lg px-2 py-1.5 text-left';
+  return (
+    <li>
+      {exists ? (
+        <button type="button" data-rail-item data-comms-room={group.roomId} onClick={onOpen}
+          aria-label={t('room.open', { name })}
+          className={`${shape} transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink`}>
+          {body}
+        </button>
+      ) : <div data-comms-room={group.roomId} className={shape}>{body}</div>}
+    </li>
+  );
+});
+
 export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
   const { t } = useI18n();
   const filter = useMemo(() => ({ session_id: sessionId }), [sessionId]);
   const query = useThreadMessages(filter, sessionId !== '');
   const messages = useMemo(() => loadedMessages(query.data?.pages), [query.data]);
-  const groups = useMemo(() => groupByPeer(messages, sessionId), [messages, sessionId]);
+  const groups = useMemo(() => groupByPeer(messages.filter(isThreadSourced), sessionId), [messages, sessionId]);
+  const roomGroups = useMemo(() => groupByRoom(messages), [messages]);
+  const roomName = useRoomNames(roomGroups.length > 0);
+  const navigate = useGuardedNavigate();
+  const total = groups.length + roomGroups.length;
   const [showAll, setShowAll] = useState(false);
   const [openPeer, setOpenPeer] = useState<PeerGroup | null>(null);
 
-  if (query.isError && groups.length === 0) {
+  if (query.isError && total === 0) {
     return (
       <InspectorSection title={t('comms.title')} collapsible={false} data-inspector-comms="error">
         <p role="alert" className="flex items-center gap-2 text-[12.5px] text-ink-soft">
@@ -94,15 +139,19 @@ export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
       </InspectorSection>
     );
   }
-  if (groups.length === 0 && !query.hasNextPage) return null;
+  if (total === 0 && !query.hasNextPage) return null;
 
   const visible = showAll ? groups : groups.slice(0, PEER_PREVIEW);
   return (
-    <InspectorSection title={t('comms.title')} count={groups.length} data-inspector-comms="">
-      {groups.length === 0 ? (
+    <InspectorSection title={t('comms.title')} count={total} data-inspector-comms="">
+      {total === 0 ? (
         <p className="text-[12.5px] text-ink-faint">{t('comms.scanning')}</p>
       ) : (
         <ul className="space-y-0.5">
+          {roomGroups.map((group) => {
+            const room = roomName(group.roomId);
+            return <RoomRow key={`room:${group.roomId}`} group={group} name={room.name} exists={room.exists} onOpen={() => { navigate(roomHref(group.roomId)); }} />;
+          })}
           {visible.map((group) => (
             <PeerRow key={group.peer.ref.session_id} group={group} onOpen={() => { setOpenPeer(group); }} />
           ))}
