@@ -4,7 +4,7 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, revealedSecretSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
 import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
@@ -1389,6 +1389,27 @@ export class KikiClient {
 
   async writeNbSearchCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<NbSearchManagedCredentialView> {
     return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.writeCredential(instanceId, value, expectedVersion, expectedBinding)));
+  }
+
+  /** `/api/request-identity/*`, parsed against the protocol schemas with errors mapped like every other call. */
+  get requestIdentity() {
+    const api = this.rest.requestIdentity;
+    const catalog = async (call: Promise<unknown>) => requestIdentityCatalogSchema.parse(await this.run(call));
+    return {
+      get: () => catalog(api.get()),
+      preview: async (body: import('@kiki/protocol').RequestIdentityPreviewRequest) =>
+        requestIdentityPreviewSchema.parse(await this.run(api.preview(body))),
+      duplicateProfile: (from: string, label?: string) => catalog(api.duplicateProfile(from, label)),
+      updateProfile: (id: string, draft: import('@kiki/protocol').RequestIdentityProfileDraft) => catalog(api.updateProfile(id, draft)),
+      deleteProfile: (id: string) => catalog(api.deleteProfile(id)),
+      checkTrack: (track: import('@kiki/protocol').RequestIdentityTrackId, source: import('@kiki/protocol').RequestIdentityUpdateSource) =>
+        catalog(api.checkTrack(track, source)),
+      applyTrack: (track: import('@kiki/protocol').RequestIdentityTrackId, version: string) => catalog(api.applyTrack(track, version)),
+      trackAction: (track: import('@kiki/protocol').RequestIdentityTrackId, action: 'dismiss' | 'rollback' | 'reset') =>
+        catalog(api.trackAction(track, action)),
+      pinTrack: (track: import('@kiki/protocol').RequestIdentityTrackId, pinned: boolean) => catalog(api.pinTrack(track, pinned)),
+      setManifestUrl: (url: string | null) => catalog(api.setManifestUrl(url)),
+    };
   }
 
   /** `/api/notifications/*` (nb-IM), with errors mapped like every other call. Credential values are write-only; read one through `revealSecret`. */

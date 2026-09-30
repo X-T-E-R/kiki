@@ -37,6 +37,7 @@ import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
 import { GlobalCompactionCard, ModelContextFields } from './ContextWindowSettings';
 import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
+import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './IdentitySection';
 import { SearchableSelect } from '../SearchableSelect';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -82,6 +83,7 @@ export function GlobalRequestIdentityCard() {
   const [jsonIssue, setJsonIssue] = useState<string | null>(null);
   const [saved, markSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const customProfiles = useCustomIdentityChoices();
   const dirty = !requestIdentityDraftsEqual(draft, baseline);
 
   useEffect(() => {
@@ -104,6 +106,7 @@ export function GlobalRequestIdentityCard() {
     try {
       const echoed = await client.patchConfig({ request_identity: requestIdentity ?? null });
       queryClient.setQueryData(['config'], echoed);
+      void queryClient.invalidateQueries({ queryKey: REQUEST_IDENTITY_QUERY_KEY });
       const next = requestIdentityLayerDraftFromPolicy(echoed.request_identity);
       setDraft(next);
       setBaseline(next);
@@ -124,6 +127,7 @@ export function GlobalRequestIdentityCard() {
         inheritLabel={t('st.requestIdentity.inheritBuiltin')}
         hint={t('st.requestIdentity.defaultHint')}
         issue={jsonIssue}
+        customProfiles={customProfiles}
       />
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       <SettingsDraftFooter id="global-request-identity" dirty={dirty} saving={saving} saved={saved}
@@ -961,7 +965,6 @@ export function DefaultsTab() {
       <ThinkingCard />
       <GlobalCompactionCard />
       <LoopLimitsCard />
-      <GlobalRequestIdentityCard />
     </div>
   );
 }

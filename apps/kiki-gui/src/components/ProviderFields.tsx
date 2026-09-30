@@ -61,6 +61,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { useCustomIdentityChoices } from './settings/IdentitySection';
 import { ConnectionMethodPicker } from './ConnectionMethodPicker';
 import {
   API_PROTOCOLS,
@@ -553,11 +554,14 @@ function ModelDraftRow({
   onSaved?: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const customProfiles = useCustomIdentityChoices();
   const [open, setOpen] = useState(model.remoteId === '');
   const n = index + 1;
   const requestIdentitySummary = model.requestIdentityChoice === 'inherit'
     ? 'inherit'
-    : model.requestIdentityChoice;
+    : model.requestIdentityChoice.startsWith('profile:')
+      ? 'custom'
+      : model.requestIdentityChoice as Exclude<typeof model.requestIdentityChoice, `profile:${string}`>;
   const rowLabel = model.id || model.remoteId;
   const selectedChoice = catalogModels.find((candidate) => candidate.remoteId === model.remoteId);
   // A row without a stored alias does not exist on the server yet, so a
@@ -740,6 +744,7 @@ function ModelDraftRow({
               label={t('st.models.requestIdentity')}
               inheritLabel={t('st.requestIdentity.inheritProvider')}
               hint={t('st.models.requestIdentityHint')}
+              customProfiles={customProfiles}
             />
           </AdvancedDisclosure>
         </div>
@@ -821,6 +826,7 @@ export function ProviderFields({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const customProfiles = useCustomIdentityChoices();
   const idIssue = fieldIssue?.field === 'id' ? issueText(locale, fieldIssue.issue) : null;
   const baseUrlIssue = fieldIssue?.field === 'baseUrl' ? issueText(locale, fieldIssue.issue) : null;
   const [probing, setProbing] = useState(false);
@@ -1056,6 +1062,7 @@ export function ProviderFields({
           label={t('st.providers.requestIdentity')}
           inheritLabel={t('st.requestIdentity.inheritGlobal')}
           hint={t('st.providers.requestIdentityHint')}
+          customProfiles={customProfiles}
         />
         <ImagePolicyEditor
           value={draft}

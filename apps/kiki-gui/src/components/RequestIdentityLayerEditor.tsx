@@ -1,5 +1,7 @@
 import {
   REQUEST_IDENTITY_CHOICES,
+  requestIdentityChoiceProfile,
+  requestIdentityProfileChoice,
   type RequestIdentityChoice,
   type RequestIdentityLayerDraft,
 } from '@kiki/session-core/settings';
@@ -8,6 +10,16 @@ import { Hint } from './controls';
 import { INPUT, SECONDARY_BUTTON } from './ui';
 import { SettingsSelect } from './settings/SettingsPrimitives';
 
+function missingProfileChoice(
+  choice: RequestIdentityChoice,
+  profiles: readonly { readonly id: string }[],
+  t: ReturnType<typeof useI18n>['t'],
+): { value: RequestIdentityChoice; label: string }[] {
+  const id = requestIdentityChoiceProfile(choice);
+  if (id === undefined || profiles.some((profile) => profile.id === id)) return [];
+  return [{ value: choice, label: t('st.requestIdentity.option.custom', { label: id }) }];
+}
+
 export function RequestIdentityLayerEditor({
   value,
   onChange,
@@ -15,6 +27,7 @@ export function RequestIdentityLayerEditor({
   inheritLabel,
   hint,
   issue = null,
+  customProfiles = [],
 }: {
   value: RequestIdentityLayerDraft;
   onChange: (value: RequestIdentityLayerDraft) => void;
@@ -23,6 +36,8 @@ export function RequestIdentityLayerEditor({
   hint: string;
   /** Why the last save was refused (bad JSON, empty custom layer); shown under the textarea. */
   issue?: string | null;
+  /** Custom identities from Settings → Request identity, offered after the built-ins. */
+  customProfiles?: readonly { readonly id: string; readonly label: string }[];
 }) {
   const { t } = useI18n();
   const authored = value.requestIdentityChoice !== 'inherit';
@@ -46,10 +61,17 @@ export function RequestIdentityLayerEditor({
             ariaLabel={label}
             value={value.requestIdentityChoice}
             onChange={choose}
-            choices={REQUEST_IDENTITY_CHOICES.map((choice) => ({
-              value: choice,
-              label: choice === 'inherit' ? inheritLabel : t(`st.requestIdentity.option.${choice}`),
-            }))}
+            choices={[
+              ...REQUEST_IDENTITY_CHOICES.map((choice) => ({
+                value: choice,
+                label: choice === 'inherit' ? inheritLabel : t(`st.requestIdentity.option.${choice as Exclude<RequestIdentityChoice, `profile:${string}` | 'inherit'>}`),
+              })),
+              ...customProfiles.map((profile) => ({
+                value: requestIdentityProfileChoice(profile.id),
+                label: t('st.requestIdentity.option.custom', { label: profile.label }),
+              })),
+              ...missingProfileChoice(value.requestIdentityChoice, customProfiles, t),
+            ]}
           />
         </div>
         <Hint>{hint}</Hint>

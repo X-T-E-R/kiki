@@ -27,6 +27,7 @@ import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
 import { MemorySection } from './settings/MemorySection';
 import { NbSearchSection } from './settings/NbSearchSection';
+import { IdentitySection } from './settings/IdentitySection';
 import { NotificationsSection } from './settings/NotificationsSection';
 import { PermissionsSection } from './settings/PermissionsSection';
 import { PluginsSection } from './settings/PluginsSection';
@@ -264,6 +265,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'appearance' ? <AppearanceSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
+    : active === 'identity' ? <IdentitySection />
     : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
     : active === 'subagents' ? <SubagentsSection />
     : active === 'sessions' ? <SessionsSection />
