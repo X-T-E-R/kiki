@@ -131,7 +131,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): Promise<HTMLDivElement> {
+async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): Promise<HTMLElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -155,7 +155,9 @@ async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): P
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  return container;
+  // The model editor opens in a side panel portaled to <body>: query the
+  // whole document so the card and its panel read as one surface.
+  return document.body;
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
@@ -402,13 +404,13 @@ describe('ModelCatalogCard row editor', () => {
  * explicit Close — confirmed while dirty — drops the draft.
  */
 describe('ModelCatalogCard context window and compaction point', () => {
-  const openEditor = async (container: HTMLDivElement) => {
+  const openEditor = async (container: HTMLElement) => {
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     return container.querySelector<HTMLElement>('[data-model-context-fields]')!;
   };
-  const saveButton = (container: HTMLDivElement) =>
+  const saveButton = (container: HTMLElement) =>
     [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!;
 
   it('keeps the window and the compaction point apart and saves the point as tokens', async () => {
@@ -478,22 +480,17 @@ describe('ModelCatalogCard row editor draft retention', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
 
-  it('hides a collapsed editor without dropping its draft', async () => {
+  it('opens the editor beside the list and keeps the rows in place', async () => {
     const container = await renderCard();
+    const rowsBefore = container.querySelectorAll('[data-model-row]').length;
     await openEditor(container);
-    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
-    expect(buttonByText(container, 'Save').disabled).toBe(false);
-
-    await act(async () => { editToggle(container).click(); });
-    expect(editorWrapper(container)!.querySelector('[data-inline-editor]')?.getAttribute('data-inline-editor')).toBe('closed');
-    expect(nameInput(container).value).toBe('K2 Thinking');
-    expect(container.querySelector('[data-collapsed-draft]')?.textContent).toBe('Unsaved');
-
-    await act(async () => { editToggle(container).click(); });
-    expect(editorWrapper(container)!.querySelector('[data-inline-editor]')?.getAttribute('data-inline-editor')).toBe('open');
-    expect(nameInput(container).value).toBe('K2 Thinking');
-    expect(buttonByText(container, 'Save').disabled).toBe(false);
-    expect(updateModel).not.toHaveBeenCalled();
+    const panel = container.querySelector('[data-model-detail="kimi-code/kimi-k2"]');
+    expect(panel).not.toBeNull();
+    // The editor lives in the panel, not inside the row, so the list never reflows.
+    expect(panel!.contains(editorWrapper(container))).toBe(true);
+    expect(container.querySelector('[data-model-row="kimi-code/kimi-k2"] [data-model-row-editor]')).toBeNull();
+    expect(container.querySelectorAll('[data-model-row]')).toHaveLength(rowsBefore);
+    expect(editToggle(container).getAttribute('aria-expanded')).toBe('true');
   });
 
   it('keeps a draft that survives the collapse when the discard is refused', async () => {
@@ -530,48 +527,28 @@ describe('ModelCatalogCard row editor draft retention', () => {
     expect(editorWrapper(container)).toBeNull();
   });
 
-  it('keeps a dirty editor mounted across filtering for another model and clearing the query', async () => {
+  it('keeps an open draft while the list is searched, filtered empty and cleared', async () => {
     listModels.mockResolvedValue({ items: [...MODELS, { ...MODELS[0], id: 'other', remote_id: 'other-model', display_name: 'Other model' }] });
-    const container = await renderCard();
-    await openEditor(container);
-    const input = nameInput(container);
-    await act(async () => { setInputValue(input, 'K2 Thinking'); });
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
-    await act(async () => { setInputValue(search, 'other-model'); });
-    const row = editorWrapper(container)!.parentElement!;
-    expect(row.style.display).toBe('none');
-    expect(nameInput(container)).toBe(input);
-    expect(input.value).toBe('K2 Thinking');
-    expect(container.textContent).not.toContain('No models match');
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for other"]')!.closest<HTMLElement>('.rounded-lg')!.style.display).toBe('');
-
-    await act(async () => { setInputValue(search, 'zzz-no-match'); });
-    expect(container.textContent).toContain('No models match');
-    expect(row.parentElement!.parentElement!.style.display).toBe('none');
-    await act(async () => { setInputValue(search, ''); });
-    expect(row.style.display).toBe('');
-    expect(row.parentElement!.parentElement!.style.display).toBe('');
-    expect(nameInput(container)).toBe(input);
-    expect(input.value).toBe('K2 Thinking');
-    expect(buttonByText(container, 'Save').disabled).toBe(false);
-    expect(updateModel).not.toHaveBeenCalled();
-  });
-
-  it('reports the dirty state to the guard while the row is hidden by search', async () => {
     const reportDirty = vi.fn();
     const container = await renderCard(reportDirty);
     await openEditor(container);
-    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
+    const input = nameInput(container);
+    await act(async () => { setInputValue(input, 'K2 Thinking'); });
     expect(reportDirty).toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', true);
     reportDirty.mockClear();
     const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    await act(async () => { setInputValue(search, 'other-model'); });
+    expect(container.querySelector('[data-model-row="kimi-code/kimi-k2"]')).toBeNull();
+    expect(container.querySelector('[data-model-row="other"]')).not.toBeNull();
     await act(async () => { setInputValue(search, 'zzz-no-match'); });
-    expect(editorWrapper(container)!.parentElement!.style.display).toBe('none');
-    expect(reportDirty).not.toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', false);
+    expect(container.querySelector('[data-list-empty="no-match"]')).not.toBeNull();
     await act(async () => { setInputValue(search, ''); });
+    // The panel never unmounted: same input, same draft, still dirty.
+    expect(nameInput(container)).toBe(input);
+    expect(input.value).toBe('K2 Thinking');
+    expect(buttonByText(container, 'Save').disabled).toBe(false);
     expect(reportDirty).not.toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', false);
-    await act(async () => { editToggle(container).click(); });
-    expect(container.querySelector('[data-collapsed-draft]')?.textContent).toBe('Unsaved');
+    expect(updateModel).not.toHaveBeenCalled();
   });
 });
 
@@ -662,8 +639,10 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     listModels.mockResolvedValue({ items: [{ ...MODELS[0], capabilities: ['thinking', 'image_in', 'tool_use', 'video_in', 'audio_in'] }] });
     const container = await renderCard();
     expect(container.querySelector('[data-default-model-line]')!.textContent).toContain('Kimi K2');
-    // Exactly one visible "Default" statement: the line above the list, not a pill per row and group.
-    expect(container.querySelectorAll('[data-model-row][data-default="true"]')).toHaveLength(1);
+    // One default statement above the list; the default model appears once in
+    // In use and once under its own connection, starred in both, with no pill.
+    expect(container.querySelectorAll('[data-list-group="in-use"] [data-model-row][data-default="true"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-list-group^="provider:"] [data-model-row][data-default="true"]')).toHaveLength(1);
     const marks = container.querySelector('[data-capability-marks]')!;
     expect([...marks.querySelectorAll('[data-capability]')].map((node) => node.getAttribute('data-capability')))
       .toEqual(['thinking', 'image_in', 'tool_use']);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem, ModelGenerationMigrationPreviewResponse, ProviderCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, ModelGenerationMigrationPreviewResponse } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -24,7 +24,6 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { InlineEditor } from '../InlineEditor';
 import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import {
@@ -61,6 +60,19 @@ import { useSavedTick } from './useSavedTick';
 import { DisclosureChevron, Icon } from '../icons';
 import { isInSubspace } from '../../lib/spaces';
 import { OriginBadge } from './spaces/OriginBadge';
+import { SidePanel } from '../SidePanel';
+import {
+  LIST_ROW_HEIGHT,
+  ListBody,
+  ListEmpty,
+  ListGroup,
+  ListToolbar,
+  groupItems,
+  useListView,
+  type ListDensity,
+  type ListFilterSpec,
+  type ListSortSpec,
+} from './list';
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -158,8 +170,7 @@ export function ModelCatalogCard() {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
-  const [modelQuery, setModelQuery] = useState('');
-
+  const [editing, setEditing] = useState<string | null>(null);
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
@@ -187,44 +198,65 @@ export function ModelCatalogCard() {
     ]);
   }, [queryClient]);
 
-  // Provider grouping: default provider's group first, default model first
-  // inside its group; the search box filters by id, name, provider, or chip.
-  // Search HIDES non-matching rows instead of unmounting them, so a row with
-  // an unsaved draft (and its dirty flag) survives filtering and clearing the
-  // query — the same retention a collapse gets.
-  const matchedIds = useMemo(() => {
-    if (modelQuery.trim() === '') return null;
-    const needle = modelQuery.trim().toLowerCase();
-    return new Set(items
-      .filter((item) =>
-        item.id.toLowerCase().includes(needle)
-        || item.remote_id.toLowerCase().includes(needle)
-        || (item.display_name ?? '').toLowerCase().includes(needle)
-        || item.provider_id.toLowerCase().includes(needle)
-        || (item.capabilities ?? []).some((capability) => capability.toLowerCase().includes(needle)))
-      .map((item) => item.id));
-  }, [items, modelQuery]);
+  // "In use": every model a default points at, with the jobs it serves. It
+  // leads the list so the few models that matter are never scrolled for.
+  const config = configQuery.data;
+  const roles = useMemo(() => {
+    const out = new Map<string, string[]>();
+    const add = (id: string | undefined, label: string) => {
+      if (id === undefined || id === '') return;
+      out.set(id, [...(out.get(id) ?? []), label]);
+    };
+    add(defaultModel, t('st.defaults.row.newSession'));
+    add(config?.session_title?.model, t('st.defaults.row.title'));
+    add(config?.fast_model, t('st.defaults.row.fast'));
+    add(config?.subagent?.defaultModel, t('st.defaults.row.subagent'));
+    return out;
+  }, [defaultModel, config, t]);
+  const attention = useCallback((item: ModelCatalogItem) => {
+    // No connection, or one that is not working: either way the model cannot run.
+    const status = providers.get(item.provider_id)?.status;
+    return status !== 'connected';
+  }, [providers]);
+  const accountLabels = useMemo(
+    () => new Map((methodsQuery.data ?? []).map((method) => [method.provider, method.label])),
+    [methodsQuery.data],
+  );
+  const groupLabel = useCallback((providerId: string) => providerId === '' ? t('st.models.group.noProvider') :
+    accountLabels.get(providerId) ?? vendorLabelFor(providers.get(providerId)?.base_url) ?? providerId,
+  [accountLabels, providers, t]);
+
+  const filters = useMemo<ListFilterSpec<ModelCatalogItem>[]>(() => [
+    { id: 'in-use', label: t('st.models.filter.inUse'), test: (item) => roles.has(item.id) },
+    { id: 'attention', label: t('st.models.filter.attention'), test: attention, tone: 'attention' },
+    { id: 'reasoning', label: t('st.models.filter.reasoning'), test: (item) => hasCapability(item, 'thinking') },
+    { id: 'vision', label: t('st.models.filter.vision'), test: (item) => hasCapability(item, 'image_in') },
+  ], [t, roles, attention]);
+  const sorts = useMemo<ListSortSpec<ModelCatalogItem>[]>(() => [
+    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id) },
+  ], [t]);
+  const keyOf = useCallback((item: ModelCatalogItem) => item.id, []);
+  const textOf = useCallback((item: ModelCatalogItem) => [
+    item.id, item.remote_id, item.display_name, item.provider_id, groupLabel(item.provider_id), ...(item.capabilities ?? []),
+  ], [groupLabel]);
+  const view = useListView({ listId: 'models', items, keyOf, textOf, filters, sorts });
+
+  // Group order: In use, then the default provider, then providers by name.
   const groups = useMemo(() => {
-    const byProvider = new Map<string, ModelCatalogItem[]>();
-    // Every row stays rendered (mounted); visibility is a `hidden` flag on the
-    // row, so a row with an unsaved draft keeps its editor, baseline and dirty
-    // reporter while the query does not match it.
-    for (const item of items) {
-      const list = byProvider.get(item.provider_id) ?? [];
-      list.push(item);
-      byProvider.set(item.provider_id, list);
-    }
-    return [...byProvider.entries()]
-      .map(([provider, models]) => ({
-        provider,
-        models: models.toSorted((a, b) =>
-          Number(b.id === defaultModel) - Number(a.id === defaultModel)
-          || (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
-      }))
-      .toSorted((a, b) =>
-        Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider)
-        || a.provider.localeCompare(b.provider));
-  }, [items, defaultModel, defaultProvider]);
+    const providerIds = [...new Set(items.map((item) => item.provider_id))]
+      .toSorted((a, b) => Number(b === defaultProvider) - Number(a === defaultProvider) || groupLabel(a).localeCompare(groupLabel(b)));
+    const inUseLabel = t('st.models.group.inUse');
+    return groupItems(
+      items,
+      view.visible,
+      (item) => {
+        const own = { key: `provider:${item.provider_id}`, label: groupLabel(item.provider_id) };
+        // Under the In-use chip the extra group would only repeat the list.
+        return roles.has(item.id) && view.filter !== 'in-use' ? [{ key: 'in-use', label: inUseLabel }, own] : [own];
+      },
+      ['in-use', ...providerIds.map((id) => `provider:${id}`)],
+    ).filter((group) => group.items.length > 0);
+  }, [items, view.visible, view.filter, roles, defaultProvider, groupLabel, t]);
 
   // Starring a model carries its provider along as the global default provider.
   const selectDefaultModel = async (item: ModelCatalogItem) => {
@@ -249,13 +281,23 @@ export function ModelCatalogCard() {
     }
   };
 
-  const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError
-    && items.length === 0 && modelQuery.trim() === '';
-
+  const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError && items.length === 0;
   const defaultItem = items.find((item) => item.id === defaultModel);
-  const accountLabels = new Map((methodsQuery.data ?? []).map((method) => [method.provider, method.label]));
-  const groupLabel = (providerId: string) =>
-    accountLabels.get(providerId) ?? vendorLabelFor(providers.get(providerId)?.base_url) ?? providerId;
+  const editingItem = items.find((item) => item.id === editing);
+
+  const renderRow = (item: ModelCatalogItem) => (
+    <ModelRow
+      item={item}
+      density={view.density}
+      isDefault={item.id === defaultModel}
+      roles={roles.get(item.id)}
+      attention={attention(item)}
+      busy={busy}
+      open={item.id === editing}
+      onSetDefault={() => void selectDefaultModel(item)}
+      onOpen={() => { setEditing(item.id); }}
+    />
+  );
 
   return (
     <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
@@ -274,63 +316,58 @@ export function ModelCatalogCard() {
           )}
           <span className="ml-auto"><SavedTick show={tick} /></span>
         </div>
-        <input
-          type="search"
-          aria-label={t('st.models.searchAria')}
-          placeholder={t('st.models.searchPlaceholder')}
-          className={INPUT}
-          value={modelQuery}
-          onChange={(event) => { setModelQuery(event.target.value); }}
-        />
-        <div className="space-y-4">
+        {items.length > 0 ? (
+          <ListToolbar view={view} total={items.length} filters={filters}
+            searchLabel={t('st.models.searchAria')} searchPlaceholder={t('st.models.searchWide')} />
+        ) : null}
+        {items.length > 0 && view.visible.length === 0 ? (
+          <ListEmpty kind="no-match" title={t('st.models.noMatchTitle')}
+            body={view.query.trim() === '' ? undefined : t('st.models.searchEmpty', { query: view.query.trim() })}
+            onClear={view.clear} />
+        ) : null}
+        <div>
           {groups.map((group) => {
-            const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
-            const hidden = matchedIds !== null && !group.models.some((item) => matchedIds.has(item.id));
+            const isProvider = group.key.startsWith('provider:');
+            const provider = isProvider ? providers.get(group.key.slice('provider:'.length)) : undefined;
+            // A provider id no connection answers to is as broken as a failing one.
+            // The no-connection group already says so in its label.
+            const broken = !isProvider || group.key === 'provider:' || providersQuery.data === undefined ? undefined
+              : provider === undefined ? 'missing' : provider.status !== 'connected' ? provider.status : undefined;
             return (
-              <div key={group.provider} data-model-group={group.provider} style={hidden ? { display: 'none' } : undefined}>
-                <p className="mb-1.5 flex items-baseline gap-2 px-1 text-[12px] font-medium text-ink-soft">
-                  {groupLabel(group.provider)}
-                  <span className="font-normal text-ink-faint">
-                    {matchedIds === null ? group.models.length : group.models.filter((item) => matchedIds.has(item.id)).length}
+              <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
+                folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}
+                trailing={broken !== undefined ? (
+                  <span data-group-attention className="inline-flex shrink-0 items-center gap-1 text-[12px] text-attention">
+                    <Icon name="warning" size={12} />{t(broken === 'unconfigured' ? 'st.models.providerUnconfigured' : broken === 'missing' ? 'st.models.group.noProvider' : 'st.models.providerAttention')}
                   </span>
-                </p>
-                <div className="overflow-hidden rounded-lg border border-hairline bg-panel">
-                  {group.models.map((item) => (
-                    <ModelRow
-                      key={item.id}
-                      item={item}
-                      provider={provider}
-                      isDefault={item.id === defaultModel}
-                      busy={busy}
-                      hidden={matchedIds !== null && !matchedIds.has(item.id)}
-                      onSetDefault={() => void selectDefaultModel(item)}
-                      onSaved={refreshCatalog}
-                    />
-                  ))}
-                </div>
-              </div>
+                ) : undefined}>
+                <ListBody items={group.items} keyOf={keyOf} density={view.density} renderRow={renderRow} label={group.label} />
+              </ListGroup>
             );
           })}
         </div>
-        {modelQuery.trim() !== '' && matchedIds !== null && matchedIds.size === 0 ? (
-          <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
-        ) : null}
         {catalogEmpty ? (
-          <div data-models-empty className="space-y-2 rounded-lg border border-dashed border-hairline-strong px-4 py-5">
-            <p className="text-[13px] text-ink-soft">{t('st.models.emptyCatalog')}</p>
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              onClick={() => { navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-            >
-              {t('st.models.goProviders')}
-            </button>
-          </div>
+          <ListEmpty kind="none" title={t('st.models.emptyCatalog')}
+            action={(
+              <button type="button" className={SECONDARY_BUTTON}
+                onClick={() => { navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
+                {t('st.models.goProviders')}
+              </button>
+            )} />
         ) : null}
         {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
         {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
+      {editingItem !== undefined ? (
+        <ModelDetailPanel
+          key={editingItem.id}
+          item={editingItem}
+          inheritedImageTypes={providers.get(editingItem.provider_id)?.images?.accepted_types}
+          onSaved={refreshCatalog}
+          onClose={() => { setEditing(null); }}
+        />
+      ) : null}
     </SectionCard>
   );
 }
@@ -979,128 +1016,138 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
   'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
 };
 
+function hasCapability(item: ModelCatalogItem, capability: string): boolean {
+  const caps = item.effective_capabilities ?? item.capabilities ?? [];
+  return caps.includes(capability) || (capability === 'thinking' && caps.includes('always_thinking'));
+}
+
+/**
+ * One catalog row: star (global default), name + remote id, context, the
+ * jobs it serves, capability words. The whole row opens the model's detail
+ * panel; nothing expands in place, so a 40-model list never reflows.
+ */
 function ModelRow({
   item,
-  provider,
+  density,
   isDefault,
+  roles,
+  attention,
   busy,
-  hidden,
+  open,
   onSetDefault,
-  onSaved,
+  onOpen,
 }: {
   item: ModelCatalogItem;
-  provider: ProviderCatalogItem | undefined;
+  density: ListDensity;
   isDefault: boolean;
+  /** The jobs this model is the default for, if any. */
+  roles: readonly string[] | undefined;
+  /** Its connection is not working. */
+  attention: boolean;
   busy: boolean;
-  /** Search filtering hides the row instead of unmounting it, keeping any draft. */
-  hidden: boolean;
+  /** Its detail panel is open. */
+  open: boolean;
   onSetDefault: () => void;
-  onSaved: () => Promise<void>;
+  onOpen: () => void;
 }) {
   const { t } = useI18n();
-  // Collapsing the row folds the editor away (InlineEditor, inert while
-  // closed) instead of unmounting it, so a half-finished draft, its baseline and its dirty flag survive a peek
-  // at the catalog. Only the editor's own Close button unmounts it — after the
-  // discard confirmation when the draft is dirty.
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editorMounted, setEditorMounted] = useState(false);
-  const [editorDirty, setEditorDirty] = useState(false);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const toggleEditor = () => {
-    if (editorMounted) {
-      setEditorOpen((value) => !value);
-      return;
-    }
-    setEditorMounted(true);
-    setEditorOpen(true);
-  };
-  const requestClose = () => {
-    if (editorDirty) {
-      setConfirmingDiscard(true);
-      return;
-    }
-    setEditorMounted(false);
-    setEditorOpen(false);
-  };
+  const compact = density === 'compact';
   return (
     <div
       data-model-row={item.id}
       data-default={isDefault ? 'true' : undefined}
-      className="border-b border-hairline last:border-b-0"
-      style={hidden ? { display: 'none' } : undefined}
+      data-open={open ? '' : undefined}
+      style={{ minHeight: LIST_ROW_HEIGHT[density] }}
+      className={`flex h-full items-center gap-1 pr-2 pl-1 transition-colors ${open ? 'bg-paper shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]' : 'hover:bg-ink/[0.02]'}`}
     >
-      <div className="flex min-h-11 items-center gap-2 py-1.5 pr-2 pl-1.5">
-        <button
-          type="button"
-          onClick={onSetDefault}
-          disabled={busy || isDefault}
-          aria-label={t('st.models.starAria', { model: item.id })}
-          title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
-          aria-pressed={isDefault}
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default pointer-coarse:h-11 pointer-coarse:w-11 ${
-            isDefault ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
-          }`}
-        >
-          <Icon name={isDefault ? 'starFilled' : 'star'} size={14} />
-        </button>
-        <button
-          type="button"
-          aria-label={t('st.models.editAria', { model: item.id })}
-          aria-expanded={editorOpen}
-          title={t('st.models.editTitle')}
-          onClick={toggleEditor}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
-        >
-          <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
-              {isDefault ? <span className="sr-only">{t('st.models.default')}</span> : null}
-              {editorMounted && !editorOpen && editorDirty ? (
-                <span data-collapsed-draft className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
-              ) : null}
-            </span>
-            <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
-              <span className="truncate font-mono text-[11px]">{item.remote_id}</span>
-              <span aria-hidden>·</span>
-              <span className="shrink-0 tabular-nums">{formatTokens(item.max_context_size)}</span>
-              {item.auto_compact !== undefined ? (
-                <span className="hidden shrink-0 sm:inline">· {t('st.compact.rowPoint', { tokens: formatTokens(item.auto_compact) })}</span>
-              ) : null}
-            </span>
+      <button
+        type="button"
+        onClick={onSetDefault}
+        disabled={busy || isDefault}
+        aria-label={t('st.models.starAria', { model: item.id })}
+        title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
+        aria-pressed={isDefault}
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-default pointer-coarse:h-11 pointer-coarse:w-11 ${
+          isDefault ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
+        }`}
+      >
+        <Icon name={isDefault ? 'starFilled' : 'star'} size={14} />
+      </button>
+      <button
+        type="button"
+        aria-label={t('st.models.editAria', { model: item.id })}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={t('st.models.editTitle')}
+        onClick={onOpen}
+        className="flex min-h-8 min-w-0 flex-1 items-center gap-3 self-stretch rounded-md pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+      >
+        <span className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
+          <span className={`flex min-w-0 items-center gap-2 ${compact ? 'shrink' : ''}`}>
+            <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
+            {isDefault ? <span className="sr-only">{t('st.models.default')}</span> : null}
+            {attention ? <span className="shrink-0 text-attention" title={t('st.models.providerAttention')}><Icon name="warning" size={12} /></span> : null}
           </span>
-          <span className="hidden sm:inline-flex"><CapabilityMarks capabilities={item.capabilities} /></span>
-          <DisclosureChevron open={editorOpen} className="text-ink-faint" />
-        </button>
+          <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+            <span className="truncate font-mono text-[11px]">{item.remote_id}</span>
+            <span aria-hidden>·</span>
+            <span className="shrink-0 tabular-nums">{formatTokens(item.max_context_size)}</span>
+            {roles !== undefined && !compact ? (
+              <span className="hidden min-w-0 truncate text-ink-soft sm:inline">· {t('st.models.inUseAs', { roles: roles.join('、') })}</span>
+            ) : null}
+          </span>
+        </span>
+        <span className="hidden sm:inline-flex"><CapabilityMarks capabilities={item.capabilities} /></span>
+        <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The model's editor, in a side panel beside the list rather than inside
+ * the row. Closing with unsaved changes asks first; the list and its scroll
+ * position stay exactly where they were.
+ */
+function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
+  item: ModelCatalogItem;
+  inheritedImageTypes: readonly string[] | undefined;
+  onSaved: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [dirty, setDirty] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const requestClose = () => { if (dirty) setConfirming(true); else onClose(); };
+  return (
+    <SidePanel
+      title={item.display_name ?? item.id}
+      description={<span className="font-mono text-[11px]">{item.id}</span>}
+      overlayId={`catalog-model:${item.id}`}
+      onClose={requestClose}
+      width="lg"
+      data={{ 'data-model-detail': item.id }}
+    >
+      <div data-model-row-editor={item.id}>
+        <ModelCatalogRowEditor
+          item={item}
+          inheritedImageTypes={inheritedImageTypes}
+          onSaved={onSaved}
+          onDirtyChange={setDirty}
+          onClose={requestClose}
+        />
       </div>
-      {editorMounted ? (
-        <div data-model-row-editor={item.id} className="px-2 sm:pl-12">
-          <InlineEditor open={editorOpen} className="mb-3">
-            <ModelCatalogRowEditor
-              item={item}
-              inheritedImageTypes={provider?.images?.accepted_types}
-              onSaved={onSaved}
-              onDirtyChange={setEditorDirty}
-              onClose={requestClose}
-            />
-          </InlineEditor>
-        </div>
-      ) : null}
       <ConfirmDialog
-        open={confirmingDiscard}
+        open={confirming}
         overlayId={`catalog-model-discard:${item.id}`}
         title={t('st.dirty.leaveTitle')}
         body={t('st.dirty.leaveBody')}
         confirmLabel={t('st.dirty.leaveConfirm')}
         cancelLabel={t('st.dirty.stay')}
-        onConfirm={() => {
-          setConfirmingDiscard(false);
-          setEditorDirty(false);
-          setEditorMounted(false);
-          setEditorOpen(false);
-        }}
-        onCancel={() => { setConfirmingDiscard(false); }}
+        onConfirm={() => { setConfirming(false); onClose(); }}
+        onCancel={() => { setConfirming(false); }}
       />
-    </div>
+    </SidePanel>
   );
 }
 
@@ -1237,7 +1284,7 @@ function ModelCatalogRowEditor({
   };
 
   return (
-    <div className="space-y-4 border-t border-hairline pt-3">
+    <div className="space-y-4">
       {entity.issues.length > 0 ? (
         <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
           {entity.issues.map((issue) => {
