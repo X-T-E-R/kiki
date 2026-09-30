@@ -131,6 +131,7 @@ export class FileStorageService implements IFileSystemStorageService {
       start: range?.start,
       end: range?.end,
       signal: options.signal,
+      highWaterMark: 1024 * 1024,
     });
     try {
       for await (const chunk of stream) {
