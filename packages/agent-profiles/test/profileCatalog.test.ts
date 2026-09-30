@@ -99,14 +99,14 @@ describe('projectAgentProfileCatalog', () => {
     expect(result.snapshot.defaultProfile).toMatchObject({ main: true, tools: ['Read'] });
   });
 
-  it('does not make an external executor eligible as a main profile', () => {
-    const external = normalizeAgentProfile({ ...profile('agent'), executor: 'example-acp' });
+  it('preserves context opt-ins for an external main profile', () => {
+    const external = normalizeAgentProfile({ ...profile('agent'), executor: 'example-acp', kikiContext: ['memory', 'hooks'] });
     const { result, warnings } = project([
       { sourceId: 'user', priority: 10, contribution: { profiles: [external] } },
     ]);
-    expect(result.profiles.get('agent')).toBeUndefined();
-    expect(result.snapshot.defaultProfile).toBeUndefined();
-    expect(warnings.join(' ')).toContain('unsupported for main');
+    expect(result.profiles.get('agent')).toMatchObject({ ...external, main: true });
+    expect(result.snapshot.defaultProfile).toMatchObject({ executor: 'example-acp', kikiContext: ['memory', 'hooks'] });
+    expect(warnings).toEqual([]);
   });
 
   it('keeps private profiles and routes resolvable while omitting them from public projections', () => {

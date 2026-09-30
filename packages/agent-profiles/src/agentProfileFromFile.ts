@@ -41,6 +41,7 @@ export function agentProfileFromFile(
     executorOptions: definition.executorOptions,
     executorPrompt: definition.executorPrompt,
     allowKikiSubagents: definition.allowKikiSubagents,
+    kikiContext: definition.kikiContext,
     modelAlias: definition.modelAlias,
     thinkingEffort: definition.thinkingEffort,
     allowedModels: definition.allowedModels,

@@ -1,5 +1,6 @@
 import type {
   AgentModelProfile,
+  AgentProfile,
   ContextStrategy,
   AgentProfileRouteDefinition,
   AgentSubagentPolicy,
@@ -52,6 +53,7 @@ export interface AgentFileDefinition {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly kikiContext?: AgentProfile['kikiContext'];
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

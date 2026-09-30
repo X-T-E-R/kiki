@@ -1,6 +1,7 @@
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
+import { KikiContextSchema } from '@kiki/agent-profiles/agentProfile';
 import { join } from 'pathe';
 
 import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
@@ -71,6 +72,7 @@ const TOP_LEVEL_KEYS = new Set([
   'executor',
   'executorPrompt',
   'allowKikiSubagents',
+  'kikiContext',
   'modelAlias',
   'thinkingEffort',
   'allowedModels',
@@ -249,6 +251,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     }
     if (request.allowKikiSubagents !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'allow_kiki_subagents', request.allowKikiSubagents);
+    }
+    if (request.kikiContext !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'kiki_context', request.kikiContext);
     }
     if (request.allowedModels !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_models', request.allowedModels);
@@ -502,6 +507,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   if (request.allowKikiSubagents !== undefined && request.allowKikiSubagents !== null && typeof request.allowKikiSubagents !== 'boolean') {
     issues.push({ path: 'allowKikiSubagents', message: 'allowKikiSubagents must be boolean or null' });
   }
+  if (request.kikiContext !== undefined && request.kikiContext !== null && !KikiContextSchema.safeParse(request.kikiContext).success) {
+    issues.push({ path: 'kikiContext', message: 'kikiContext must contain admitted Kiki context groups' });
+  }
   if (request.executorPrompt !== undefined && request.executorPrompt !== null) {
     const parsed = executorPromptSchema.safeParse(request.executorPrompt);
     if (!parsed.success) issues.push({ path: 'executorPrompt', message: parsed.error.message });
@@ -571,6 +579,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.executor,
     request.executorPrompt,
     request.allowKikiSubagents,
+    request.kikiContext,
     request.modelAlias,
     request.thinkingEffort,
     request.allowedModels,

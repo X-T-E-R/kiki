@@ -56,6 +56,7 @@ export interface AgentProfileWriteRequest {
   readonly executor?: string | null;
   readonly executorPrompt?: ExecutorPrompt | null;
   readonly allowKikiSubagents?: boolean | null;
+  readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'] | null;
   readonly modelAlias?: string | null;
   readonly thinkingEffort?: string | null;
   readonly allowedModels?: readonly string[] | null;

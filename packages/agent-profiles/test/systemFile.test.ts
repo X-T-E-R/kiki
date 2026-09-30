@@ -226,11 +226,11 @@ describe('loadSystemMdProfile', () => {
     expect((await loadProfile(hostFs, BUILTIN_DEFAULT, warn))?.main).toBe(false);
   });
 
-  it('does not accept an external executor through inherited main status', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\nexecutor: example-acp\n---\nExternal prompt.');
+  it('retains context opt-ins through inherited external main status', async () => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\nexecutor: example-acp\nkiki_context: [memory, hooks]\n---\nExternal prompt.');
     const { warnings, warn } = collectWarnings();
-    expect(await loadProfile(hostFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
-    expect(warnings.join(' ')).toContain('unsupported for main');
+    expect(await loadProfile(hostFs, BUILTIN_DEFAULT, warn)).toMatchObject({ main: true, executor: 'example-acp', kikiContext: ['memory', 'hooks'] });
+    expect(warnings).toEqual([]);
   });
 
   it('inherits builtin tools when an upgraded SYSTEM.md omits them', async () => {

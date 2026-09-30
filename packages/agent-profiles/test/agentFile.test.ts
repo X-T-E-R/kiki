@@ -29,6 +29,17 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('keeps context groups opt-in and round-trips each explicit group', () => {
+    expect(parse('---\nname: solo\ndescription: d\n---\nbody\n').kikiContext).toBeUndefined();
+    for (const group of ['memory', 'board', 'cron', 'threads', 'history', 'hooks']) {
+      const definition = parse(`---\nname: solo\ndescription: d\nkiki_context: [${group}]\n---\nbody\n`);
+      expect(definition.kikiContext).toEqual([group]);
+      expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).kikiContext).toEqual([group]);
+    }
+    expect(parse('---\nname: solo\ndescription: d\nkiki_context: []\n---\nbody\n').kikiContext).toEqual([]);
+    expect(() => parse('---\nname: solo\ndescription: d\nkiki_context: [filesystem]\n---\nbody\n')).toThrow();
+    expect(() => parse('---\nname: solo\ndescription: d\nkiki_context: true\n---\nbody\n')).toThrow();
+  });
   it('keeps Kiki harness delegation opt-in and preserves explicit false', () => {
     expect(parse('---\nname: solo\ndescription: d\n---\nbody\n').allowKikiSubagents).toBeUndefined();
     for (const flag of [true, false]) {

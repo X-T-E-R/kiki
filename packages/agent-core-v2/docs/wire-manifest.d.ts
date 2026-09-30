@@ -605,6 +605,7 @@ interface ProfileBindPayload {
   executorOptions?: Record<string, string | number | boolean>;
   executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   allowKikiSubagents?: boolean;
+  kikiContext?: 'memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks'[];
   executorDescriptorRevision?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});

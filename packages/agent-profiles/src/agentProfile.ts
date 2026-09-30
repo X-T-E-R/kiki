@@ -11,6 +11,8 @@ export type RequestParams = Readonly<Record<string, RequestParamValue>>;
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
+export const KikiContextSchema = z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks']));
+
 export const AgentSystemPromptModeSchema = z.enum(['replace', 'prepend', 'append', 'inherit']);
 export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
@@ -116,6 +118,7 @@ export interface AgentProfile extends AgentModelParameters {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

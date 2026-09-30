@@ -1838,6 +1838,7 @@ export interface AgentStateSnapshot {
       }>;
     };
     readonly allowKikiSubagents?: boolean;
+    readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
@@ -1872,7 +1873,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
-    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
     readonly subagentPolicy?: 'strict' | 'advisory';
     readonly subagentDeclaration?: {
       readonly kind: 'inherit';
@@ -2109,7 +2110,7 @@ export interface AgentStateSnapshot {
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
-        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
         readonly subagentPolicy?: 'strict' | 'advisory';
         readonly subagentDeclaration?: {
           readonly kind: 'inherit';
@@ -2214,6 +2215,7 @@ export interface AgentStateSnapshot {
           }>;
         };
         readonly allowKikiSubagents?: boolean;
+        readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
         readonly allowedModels?: readonly string[];
@@ -2281,7 +2283,7 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
-      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
       readonly subagentDeclaration?: {
         readonly kind: 'inherit';
@@ -2386,6 +2388,7 @@ export interface AgentStateSnapshot {
         }>;
       };
       readonly allowKikiSubagents?: boolean;
+      readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -2504,7 +2507,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2609,6 +2612,7 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];
@@ -2709,12 +2713,13 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2992,7 +2997,7 @@ export interface AgentStateSnapshot {
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
-            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
             readonly subagentPolicy?: 'strict' | 'advisory';
             readonly subagentDeclaration?: {
               readonly kind: 'inherit';
@@ -3097,6 +3102,7 @@ export interface AgentStateSnapshot {
               }>;
             };
             readonly allowKikiSubagents?: boolean;
+            readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
             readonly modelAlias?: string;
             readonly thinkingEffort?: string;
             readonly allowedModels?: readonly string[];
@@ -3159,7 +3165,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -3264,6 +3270,7 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly thinkingEffort?: string;
           readonly allowedModels?: readonly string[];

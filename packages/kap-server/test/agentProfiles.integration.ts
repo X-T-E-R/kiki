@@ -81,6 +81,37 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('persists explicit context groups and removes the opt-in through REST', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    const path = join(home!, 'agents', 'context-main.md');
+    await writeFile(path, '---\nname: context-main\ndescription: External main\nmain: true\nexecutor: claude-acp\n---\nPrompt.\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    expect((await created.json() as Envelope<unknown>).code).toBe(0);
+    const list = async () => {
+      const response = await authedFetch(server!, base, '/api/agents');
+      const body = await response.json() as Envelope<unknown>;
+      return listNamedAgentProfilesResponseSchema.parse(body.data).items.find((profile) => profile.name === 'context-main');
+    };
+    const initial = await list();
+    expect(initial).toBeDefined();
+    expect(initial?.kiki_context).toBeUndefined();
+    for (const groups of [['memory', 'board', 'cron', 'threads', 'history', 'hooks'], [], null]) {
+      const response = await authedFetch(server, base, '/api/agents/context-main', {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope: 'user', workspace_id: initial!.workspace_id, kiki_context: groups }),
+      });
+      expect(await response.json()).toMatchObject({ code: 0 });
+      expect((await list())?.kiki_context).toEqual(groups ?? undefined);
+      if (groups === null) expect(await readFile(path, 'utf8')).not.toContain('kiki_context:');
+      else expect(await readFile(path, 'utf8')).toContain('kiki_context:');
+    }
+  });
+
   it('lists managed adapter releases without installing and rejects unknown adapter IDs', async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;

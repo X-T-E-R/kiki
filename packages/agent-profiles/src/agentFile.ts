@@ -1,7 +1,7 @@
 import { dirname } from 'pathe';
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
-import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema } from './agentProfile';
+import { AgentSubagentPolicySchema, AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
 import { executorPromptSchema } from './executorPrompt';
 import type { AgentFileDefinition, AgentFileSource } from './agentFileTypes';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
@@ -54,6 +54,7 @@ const AGENT_FILE_KEYS = new Set([
   'executor_options',
   'executor_prompt',
   'allow_kiki_subagents',
+  'kiki_context',
   'model_alias',
   'thinking_effort',
   'allowed_models',
@@ -71,6 +72,13 @@ const AGENT_FILE_KEYS = new Set([
   'model_preference',
   'whenToUse',
 ]);
+
+function parseKikiContext(value: unknown, path: string): AgentFileDefinition['kikiContext'] {
+  if (value === undefined) return undefined;
+  const parsed = KikiContextSchema.safeParse(value);
+  if (!parsed.success) throw new AgentFileParseError(`kiki_context in ${path} must be a list of memory, board, cron, threads, history, or hooks`);
+  return parsed.data;
+}
 
 export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDefinition {
   let parsed;
@@ -311,6 +319,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     executorOptions,
     executorPrompt: parsedExecutorPrompt?.data,
     allowKikiSubagents: parseOptionalBoolean(frontmatter['allow_kiki_subagents'], 'allow_kiki_subagents', options.path),
+    kikiContext: parseKikiContext(frontmatter['kiki_context'], options.path),
     modelAlias,
     thinkingEffort,
     allowedModels,

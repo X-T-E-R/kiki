@@ -237,6 +237,7 @@ export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot)
       systemPrompt: binding.systemPrompt,
       executorPrompt: binding.executorPrompt,
       allowKikiSubagents: binding.allowKikiSubagents === true ? true : undefined,
+      kikiContext: binding.kikiContext?.length ? [...new Set(binding.kikiContext)].sort() : undefined,
       renderGeneration: binding.renderGeneration,
     }))
     .digest('hex');
