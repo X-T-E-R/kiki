@@ -42,6 +42,8 @@ Trust the workspace before creating or editing cards. Storage is controlled by t
 
 Changing the storage setting does not migrate cards; existing cards keep referencing their original store. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can read and write the board with the `BoardRead` and `BoardWrite` tools under normal tool policy and approval rules. Subagents keep their own `TodoList`; board tools require [explicit permission](../configuration/config-files.md#subagent). Plan mode cannot use `BoardWrite`.
 
+When context is compacted, the handoff lists up to five cards linked to the current session, with their IDs, titles, and statuses. This read-only list requires the board feature and `BoardRead` to be enabled; it is omitted if the read fails or takes longer than 500 ms. Card status never updates automatically from Todo lists or completed agent runs.
+
 ## Starting and resuming sessions
 
 On the desktop or browser **New session** page, you can use an existing workspace, enter an absolute project directory, or select **Automatically create a workspace**. When no workspaces are registered, the automatic option is selected by default. On your first send, Kiki creates a new directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it as a workspace, and opens the session there. An explicitly selected workspace that was later deleted stays invalid until you choose another workspace or the automatic option; Kiki will not silently use a different existing one. See [Data locations](../configuration/data-locations.md#directory-layout) for the directory layout and cleanup implications.

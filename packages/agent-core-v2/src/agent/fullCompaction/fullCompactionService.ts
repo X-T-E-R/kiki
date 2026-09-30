@@ -1,4 +1,9 @@
 import type { IDisposable } from '#/_base/di/lifecycle';
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { timeoutOutcome } from '#/_base/utils/promise';
+import { IFlagService } from '#/app/flag/flag';
+import { TASK_BOARD_FLAG_ID } from '#/app/taskBoard/flag';
+import { ITaskBoardService } from '#/app/taskBoard/taskBoard';
 import { Service } from "#/_base/di/service";
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -33,7 +38,7 @@ import { type LoopControl } from '#/agent/loop/configSection';
 import { contextWindowEpochKey } from './windowEpoch';
 import { ContextStrategyOverrideChanged, contextStrategyOverrideKey } from './contextStrategyOps';
 import { evaluateFreshEligibility, type ReasonCode } from './freshEligibility';
-import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from './relayPackage';
+import { renderLinkedBoardCards, renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from './relayPackage';
 import {
   APIContextOverflowError,
   APIEmptyResponseError,
@@ -165,6 +170,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @IConfigService private readonly appConfig: IConfigService,
     @ISessionContext private readonly session: ISessionContext,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this.states.contributeState(contextStrategyOverrideKey);
@@ -752,16 +758,17 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       };
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
-      const [liveEntries, memoryReferences] = await Promise.all([
+      const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([
         this.memorySnapshot.liveSessionEntries(),
         this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
+        this.readLinkedBoardCards(),
       ]);
       const memoryEntries = liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`);
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
         notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
-        estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries, memoryReferences,
+        estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries, memoryReferences, linkedBoardCards,
       };
       let relaySummary: string | undefined;
       let renderFailed = false;
@@ -994,12 +1001,34 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
   }
 
+  private async readLinkedBoardCards(): Promise<NonNullable<RelayInput['linkedBoardCards']>> {
+    if (!this.toolPolicy.isToolActive('BoardRead')) return [];
+    const timeout = timeoutOutcome(500, undefined);
+    try {
+      const board = this.instantiation.invokeFunction((accessor) => accessor.get(IFlagService).enabled(TASK_BOARD_FLAG_ID)
+        ? accessor.get(ITaskBoardService) : undefined);
+      if (board === undefined) return [];
+      const result = await Promise.race([board.read({ action: 'list', workspaceId: this.session.workspaceId,
+        sessionId: this.session.sessionId, limit: 5 }), timeout]);
+      if (result === undefined) {
+        this.log.debug('Linked board cards skipped', { reason: 'deadline' });
+        return [];
+      }
+      if (!result.ok || !('cards' in result.value)) return [];
+      return result.value.cards.filter((card) => card.workspaceId === this.session.workspaceId && card.sessionIds.includes(this.session.sessionId))
+        .slice(0, 5).map(({ id, title, status }) => ({ id, title, status }));
+    } catch {
+      this.log.debug('Linked board cards skipped', { reason: 'read_failed' });
+      return [];
+    } finally { timeout.clear(); }
+  }
+
   private postProcessSummary(summary: string, input: RelayInput): string {
     const todos = this.currentTodos();
     const notes = renderTodoNotes(this.todo.getNotes?.(this.scope.agentId)?.notes);
     const receipts = renderPendingReceipts(input);
     return [summary.trim(), todos.length ? renderTodoList(todos, '## TODO List') : '',
-      notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), receipts].filter(Boolean).join('\n\n');
+      notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input), receipts].filter(Boolean).join('\n\n');
   }
 
   private currentTodos(): readonly TodoItem[] {

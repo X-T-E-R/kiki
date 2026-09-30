@@ -15,6 +15,7 @@ export interface RelayInput {
   readonly todos: readonly TodoItem[];
   readonly memoryEntries?: readonly string[];
   readonly memoryReferences?: readonly string[];
+  readonly linkedBoardCards?: readonly { readonly id: string; readonly title: string; readonly status: string }[];
   readonly estimateText: (text: string) => number;
 }
 
@@ -127,6 +128,12 @@ export function renderStandingDirectives(input: RelayInput): string {
   ].join('\n\n');
 }
 
+export function renderLinkedBoardCards(input: RelayInput): string {
+  const cards = input.linkedBoardCards?.slice(0, 5) ?? [];
+  if (cards.length === 0) return '';
+  return `## Linked board cards\n${cards.map((card) => `- ${card.id}: ${card.title.replaceAll(/\s+/g, ' ').slice(0, 1_000)} (${card.status})`).join('\n')}\nUse BoardRead for details. Card status is independent of TodoList and agent runs.`;
+}
+
 export function renderPendingReceipts(input: RelayInput): string {
   const section = input.history.slice(0, input.compactCount);
   const after = section.slice(coveredMessageIndex(section, input.meta) + 1);
@@ -183,6 +190,7 @@ export function renderRelay(input: RelayInput): string {
     `## Window\n${input.agentId}/${input.epoch + 1}\nRemoved history boundary: ${boundary}\n${boundaryPointers}`,
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
     renderStandingDirectives(input),
+    renderLinkedBoardCards(input),
     `## Notes metadata\nrevision ${input.meta?.rev ?? 0} · covered ${input.meta?.writtenStep ?? 'none'}`,
     input.todos.length > 0 ? renderTodoList(input.todos, '## TODO List') : '',
     lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer}` : '',

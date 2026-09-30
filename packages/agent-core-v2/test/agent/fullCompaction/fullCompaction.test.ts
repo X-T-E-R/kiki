@@ -24,6 +24,8 @@ import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { MASTER_ENV } from '#/app/flag/flagService';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { ITaskBoardService, type BoardSummary } from '#/app/taskBoard/taskBoard';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
@@ -3540,6 +3542,50 @@ describe('FullCompaction', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each(['summarize', 'relay'] as const)('adds only read-only linked board pointers to the %s handoff', async (strategy) => {
+    const fixture = boardCompactionFixture(strategy);
+    const session = fixture.ctx.get(ISessionContext);
+    const cards: BoardSummary[] = Array.from({ length: 7 }, (_, index) => ({
+      id: `card-${index}`, workspaceId: session.workspaceId, storage: { root: '/example', storageId: 'example', kind: 'workspace' },
+      title: `Requirement ${index}\ncontinued`, priority: 'P1', status: index === 0 ? 'paused' : 'active', revision: 1,
+      createdAt: '', updatedAt: '', completedAt: null, archived: false, category: '', sessionIds: [session.sessionId], executionIds: [],
+    }));
+    fixture.read.mockResolvedValue({ ok: true, value: { workspaceId: session.workspaceId, cards: [
+      { ...cards[0]!, id: 'unrelated-session', sessionIds: ['other-session'] },
+      { ...cards[0]!, id: 'unrelated-workspace', workspaceId: 'other-workspace' }, ...cards,
+    ], issues: [] } });
+    const notes = fixture.ctx.get(ISessionTodoService).getNotes('main');
+    const text = await fixture.compact();
+    expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ action: 'list', workspaceId: session.workspaceId, sessionId: session.sessionId, limit: 5 });
+    expect(text).toContain('## Linked board cards\n- card-0: Requirement 0 continued (paused)');
+    expect(text).toContain('- card-4: Requirement 4 continued (active)');
+    expect(text).not.toContain('card-5');
+    expect(text).not.toContain('unrelated-');
+    expect(text).toContain('Card status is independent of TodoList and agent runs.');
+    expect(fixture.write).not.toHaveBeenCalled();
+    expect(fixture.ctx.get(ISessionTodoService).getNotes('main')).toEqual(notes);
+    await fixture.ctx.expectResumeMatches();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['summarize', 'relay'] as const)('keeps the %s handoff byte-identical when linked board cards are unavailable', async (strategy) => {
+    const baseline = boardCompactionFixture(strategy, { active: false });
+    const expected = await baseline.compact();
+    expect(baseline.read).not.toHaveBeenCalled();
+    for (const reason of ['disabled', 'missing', 'empty', 'failed', 'throws', 'timeout'] as const) {
+      const fixture = boardCompactionFixture(strategy, { enabled: reason !== 'disabled', missing: reason === 'missing' });
+      const late = deferred<Awaited<ReturnType<ITaskBoardService['read']>>>();
+      if (reason === 'failed') fixture.read.mockResolvedValue({ ok: false, error: { code: 'BOARD_STORAGE_INVALID', message: 'Unavailable' } });
+      if (reason === 'throws') fixture.read.mockRejectedValue(new Error('Read unavailable'));
+      if (reason === 'timeout') fixture.read.mockReturnValue(late.promise);
+      expect(await fixture.compact(), reason).toBe(expected);
+      if (reason === 'disabled' || reason === 'missing') expect(fixture.read).not.toHaveBeenCalled();
+      expect(fixture.write).not.toHaveBeenCalled();
+      late.resolve({ ok: true, value: { workspaceId: 'test-workspace', cards: [], issues: [] } });
+      await late.promise;
+      expect(messageText(fixture.ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary'))).toBe(expected);
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('hands summarized directives to the notes service after the window switch', async () => {
     const recorded: string[] = [];
     const ctx = testAgent(sessionServices((reg) => {
@@ -4073,3 +4119,40 @@ describe('goal reminder re-injection after full compaction', () => {
     expect(turnRequest.some((text) => text.includes('Compacted summary.'))).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
+
+function boardCompactionFixture(strategy: 'summarize' | 'relay', options: { enabled?: boolean; active?: boolean; missing?: boolean } = {}) {
+  vi.stubEnv('KIKI_EXPERIMENTAL_TASK_BOARD', options.enabled === false ? 'false' : 'true');
+  const read = vi.fn<ITaskBoardService['read']>().mockResolvedValue({ ok: true, value: { workspaceId: 'test-workspace', cards: [], issues: [] } });
+  const write = vi.fn<ITaskBoardService['write']>();
+  const ctx = testAgent(
+    appServices((reg) => { if (!options.missing) reg.defineInstance(ITaskBoardService, { _serviceBrand: undefined, read, write }); }),
+    sessionServices((reg) => {
+      reg.definePartialInstance(ISessionTodoService, {
+        getTodos: () => [], getNotes: () => ({ notes: { goal: 'finish task', directives: 'Keep requirements separate from steps.' },
+          meta: { rev: 1, hash: 'fixture', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: 'toolcall:notes-call', windowEpoch: 0 } }),
+        setCompactionDirectives: () => {},
+      });
+    }),
+  );
+  ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    tools: ['HistoryRead', 'HistorySearch', 'TodoList', ...(options.active === false ? [] : ['BoardRead'])] });
+  return { ctx, read, write, async compact() {
+    const registry = ctx.get(IAgentToolRegistryService);
+    const historyRead = registry.register(mcpTool('HistoryRead', {}), { source: 'builtin' });
+    const historySearch = registry.register(mcpTool('HistorySearch', {}), { source: 'builtin' });
+    try {
+      ctx.appendExchange(1, 'old request', 'old answer', 20);
+      ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'notes-call', name: 'TodoList', arguments: '{}' }] });
+      ctx.appendExchange(2, 'recent request', 'recent answer', 80);
+      ctx.mockNextResponse({ type: 'text', text: 'Compacted task.' });
+      const compactor = ctx.get(IAgentFullCompactionService);
+      expect(compactor.begin({ source: 'manual', strategy })).toBe(true);
+      await compactor.compacting!.promise;
+      expect(ctx.llmCalls).toHaveLength(strategy === 'relay' ? 0 : 1);
+      return messageText(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary'));
+    } finally {
+      historyRead.dispose();
+      historySearch.dispose();
+    }
+  } };
+}
