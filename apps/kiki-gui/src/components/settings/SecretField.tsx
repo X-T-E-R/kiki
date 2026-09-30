@@ -148,7 +148,7 @@ export function SecretField({
     <div className="min-w-0 space-y-1.5" data-secret-field data-secret-source={source} data-secret-mode={draft.mode}>
       <label htmlFor={inputId} className={labelHidden ? 'sr-only' : 'block text-[13px] font-medium text-ink'}>{label}</label>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className={`flex min-w-0 flex-[1_1_16rem] items-center rounded-lg border bg-paper transition-colors focus-within:border-accent ${
+        <div className={`flex min-w-0 flex-[1_1_16rem] items-center rounded-lg border bg-paper transition-colors focus-within:border-selected-ink ${
           draft.mode === 'clear' ? 'border-dashed border-hairline-strong' : 'border-hairline'} ${disabled ? 'bg-hairline/20' : ''}`}>
           <input
             ref={inputRef}
@@ -211,7 +211,7 @@ export function SecretField({
           <SourceText text={sourceLine} name={envName} />
         </span>
         {draft.mode === 'clear' ? <span className="text-amber-ink">· {t('st.secret.clearPending')}</span> : null}
-        {overrides ? <span className="text-accent-ink">· {t('st.secret.overrideHint')}</span> : null}
+        {overrides ? <span className="text-ink-soft">· {t('st.secret.overrideHint')}</span> : null}
         {copied ? <span className="text-success">· {t('st.secret.copied')}</span> : null}
         {error !== null ? <span role="alert" className="text-danger">· {t(error === 'reveal' ? 'st.secret.revealError' : 'st.secret.copyError')}</span> : null}
       </p>
@@ -228,7 +228,7 @@ function SourceText({ text, name }: { text: string; name?: string }) {
 }
 
 function sourceDot(source: SecretSource): string {
-  return source === 'kiki' ? 'bg-accent' : source === 'none' ? 'bg-hairline-strong' : 'bg-amber-rule';
+  return source === 'kiki' ? 'bg-ink-soft' : source === 'none' ? 'bg-hairline-strong' : 'bg-amber-rule';
 }
 
 export function secretSourceText(

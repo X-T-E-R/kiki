@@ -145,7 +145,7 @@ function AlignmentGrid({ value, onChange, labelledBy }: { value: BackgroundAlign
             }}
             className="flex h-6 items-center justify-center rounded-[4px] hover:bg-panel focus-visible:outline-2 focus-visible:outline-selected-ink"
           >
-            <span className={`block rounded-full transition-all ${selected ? 'h-2 w-2 bg-accent' : 'h-1 w-1 bg-ink-faint'}`} />
+            <span className={`block rounded-full transition-all ${selected ? 'h-2 w-2 bg-selected-ink' : 'h-1 w-1 bg-ink-faint'}`} />
           </button>
         );
       })}

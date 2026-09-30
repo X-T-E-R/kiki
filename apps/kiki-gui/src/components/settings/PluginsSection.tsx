@@ -21,7 +21,7 @@ import { SectionCard } from './SectionCard';
 function BusyHint({ children }: { children: React.ReactNode }) {
   return (
     <p className="anim-enter flex items-center gap-2 text-[12px] leading-4 text-ink-faint">
-      <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+      <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
       {children}
     </p>
   );
@@ -112,7 +112,7 @@ function WebBridgeReadiness() {
                 ? t('st.plugins.runtimeIdentityUnverified') : capability.install.note}
             </p> : null}
             {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
-              <a className="inline-block text-[11px] font-medium text-accent-ink hover:underline"
+              <a className="inline-block text-[11px] font-medium text-selected-ink hover:underline"
                 href={capability.plan.browserExtensionUrl} target="_blank" rel="noopener noreferrer"
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}

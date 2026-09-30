@@ -293,7 +293,7 @@ export function AgentProfileEditorDialog({
             searchPlaceholder="provider/model"
             ariaLabel={t('st.namedAgents.modelPin')}
             emptyText={t('st.namedAgents.unsetModelPin')}
-            buttonClassName="mt-1 flex w-full items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 font-mono text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+            buttonClassName="mt-1 flex w-full items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 font-mono text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
             onChange={(next) => {
               if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
               setModelAlias(next);

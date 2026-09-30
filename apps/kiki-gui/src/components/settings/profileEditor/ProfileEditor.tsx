@@ -166,7 +166,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     </div>
     {writable ? <textarea id="profile-prompt" value={draft.prompt} disabled={saving} spellCheck={false}
       onChange={(event) => set('prompt', event.target.value)} placeholder={t('st.profiles.promptPlaceholder')}
-      className="min-h-[22rem] flex-1 resize-none rounded-lg border border-hairline bg-paper px-4 py-3 font-mono text-[12.5px] leading-[1.65] text-ink outline-none placeholder:text-ink-faint focus:border-accent lg:min-h-0" />
+      className="min-h-[22rem] flex-1 resize-none rounded-lg border border-hairline bg-paper px-4 py-3 font-mono text-[12.5px] leading-[1.65] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink lg:min-h-0" />
       : <div id="profile-prompt" className="min-h-[16rem] flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-hairline bg-paper px-4 py-3 font-mono text-[12.5px] leading-[1.65] text-ink">{draft.prompt === '' ? <span className="font-sans text-ink-faint">{t('st.profiles.promptEmpty')}</span> : draft.prompt}</div>}
     {external ? <p data-prompt-delivery className="text-[11.5px] text-ink-faint">{fieldState('prompt')?.reason ?? t('st.profiles.promptDelivery', { engine })}</p> : null}
   </div>;

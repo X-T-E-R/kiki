@@ -471,7 +471,7 @@ export function McpConfigManager({
                   && draft.bearerTokenEnvVar.trim() === draft.original?.config.bearerTokenEnvVar ? (
                   <McpBearerValue label={t('st.secret.bearerValue')} envName={draft.bearerTokenEnvVar.trim()} reveal={revealBearer} />
                 ) : null}
-                <p role="status" className="border-l-2 border-accent pl-2 text-[11px] text-ink-soft">
+                <p role="status" className="border-l-2 border-hairline-strong pl-2 text-[11px] text-ink-soft">
                   {t(bearerRefActive ? 'st.mcp.authSourceEnv' : hasAuthorizationHeader ? 'st.mcp.authSourceHeader' : 'st.mcp.authSourceOAuth')}
                 </p>
                 {draft.auth === 'oauth' ? <Hint>{t('st.mcp.oauthConfigured')}</Hint> : null}
@@ -620,7 +620,7 @@ export function McpConfigManager({
                     <div className="flex flex-wrap gap-2">
                       {entry.plugin !== undefined ? (
                         <Link to={{ pathname: '/capabilities', search: `?tab=plugins&plugin=${encodeURIComponent(entry.plugin.id)}` }}
-                          className="inline-flex min-h-8 items-center text-[13px] font-medium text-accent-ink hover:underline">
+                          className="inline-flex min-h-8 items-center text-[13px] font-medium text-selected-ink hover:underline">
                           {t('st.plugins.manageLink')}
                         </Link>
                       ) : null}

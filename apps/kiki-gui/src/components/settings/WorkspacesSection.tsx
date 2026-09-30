@@ -246,7 +246,7 @@ function WorkspaceRenameDialog({
       <h2 className="font-display text-[16px] font-semibold text-ink">{t('st.workspaces.renameTitle')}</h2>
       <input
         data-autofocus
-        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
+        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
         value={name}
         maxLength={100}
         onChange={(event) => { setName(event.target.value); }}

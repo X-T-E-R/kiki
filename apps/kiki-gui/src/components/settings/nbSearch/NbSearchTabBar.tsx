@@ -99,7 +99,7 @@ export function NbSearchTabBar({
             ) : null}
             {active && dirty ? (
               <span
-                className="h-1.5 w-1.5 rounded-full bg-accent"
+                className="h-1.5 w-1.5 rounded-full bg-ink-soft"
                 title={t('st.tools.unsaved')}
               />
             ) : null}

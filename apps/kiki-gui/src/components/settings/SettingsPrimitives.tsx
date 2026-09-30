@@ -94,7 +94,7 @@ export function CommitInput({ id, value, onCommit, validate, disabled = false, c
       aria-label={ariaLabel} aria-invalid={issue !== null} aria-describedby={describedBy}
       {...(dataAttr !== undefined ? { [dataAttr]: '' } : {})}
       autoComplete="off" spellCheck={false}
-      className={`h-8 rounded-md border bg-paper px-2.5 text-[13px] tabular-nums text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint ${issue !== null ? 'border-danger' : 'border-hairline hover:border-hairline-strong'} ${className}`}
+      className={`h-8 rounded-md border bg-paper px-2.5 text-[13px] tabular-nums text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint ${issue !== null ? 'border-danger' : 'border-hairline hover:border-hairline-strong'} ${className}`}
       onChange={(event) => { setText(event.target.value); if (issue !== null) setIssue(null); }}
       onBlur={commit}
       onKeyDown={(event) => {
@@ -137,7 +137,7 @@ export const FORM_LABEL = 'block text-[12px] font-medium text-ink-soft';
 
 /** A SearchableSelect trigger that sits in a form grid next to `INPUT` fields. */
 export const FORM_SELECT_TRIGGER =
-  'flex w-full min-w-0 items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 text-left text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus-visible:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
+  'flex w-full min-w-0 items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 text-left text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus-visible:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
 
 /** The error line that belongs to one field; pair with `aria-describedby`. */
 export function FieldIssue({ id, text }: { id: string; text: string | null }) {

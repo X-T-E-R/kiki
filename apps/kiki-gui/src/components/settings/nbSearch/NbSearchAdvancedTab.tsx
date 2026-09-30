@@ -7,7 +7,7 @@ import { FeedbackLine, Hint } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { INPUT, SECONDARY_BUTTON } from '../../ui';
 
 function NumberField({
   label,
@@ -202,7 +202,7 @@ export function NbSearchAdvancedTab({
             ) : (
               <button
                 type="button"
-                className={PRIMARY_BUTTON}
+                className={SECONDARY_BUTTON}
                 onClick={onRunCheck}
               >
                 {t('st.nbSearch.runCheck')}
