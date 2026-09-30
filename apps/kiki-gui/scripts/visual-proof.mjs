@@ -3754,9 +3754,22 @@ async function scenarioSelectionAnnotate() {
     await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
     await page.fill('[data-selection-annotate-input]', comment);
     await page.press('[data-selection-annotate-input]', 'Enter');
-    await page.waitForTimeout(300); // let the chip entrance animation settle
+    await page.waitForTimeout(300); // let the pill entrance animation settle
   };
-  const annotationChips = page.locator('[data-annotation-chip]');
+  // Unsent notes fold into ONE pill; its panel lists them one row each.
+  const notesPill = page.locator('[data-composer-notes-pill]');
+  const noteRows = page.locator('[data-composer-note]');
+  const openNotesPanel = async () => {
+    await page.waitForSelector('[data-composer-notes-pill]', { timeout: 5000 });
+    await notesPill.click();
+    await page.waitForSelector('[data-composer-notes-panel]', { timeout: 5000 });
+  };
+  // A second click on the pill closes the pinned panel again, so the panel
+  // never sits between the pointer and the transcript selection popover.
+  const closeNotesPanel = async () => {
+    await notesPill.click();
+    await page.waitForSelector('[data-composer-notes-panel]', { state: 'detached', timeout: 5000 });
+  };
 
   // A1: the popover offers both actions above the selection.
   await selectFragment(FRAGMENT_A);
@@ -3767,35 +3780,57 @@ async function scenarioSelectionAnnotate() {
   }
   await shot('selection-annotate-actions');
 
-  // A2: annotate opens the in-place comment input.
+  // A2: annotate opens the in-place comment input; the note lands in the
+  // composer's single notes pill, which lists it in its panel.
   await page.click('[data-selection-annotate-action]');
   await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
   await shot('selection-annotate-input');
   await page.fill('[data-selection-annotate-input]', COMMENT_A);
   await page.press('[data-selection-annotate-input]', 'Enter');
-  await page.waitForSelector('[data-annotation-chip]', { timeout: 5000 });
-  if ((await annotationChips.count()) !== 1) throw new Error('first annotation chip missing');
-
-  // A3: annotations accumulate — a second selection adds a second chip.
-  await annotate(FRAGMENT_B, COMMENT_B);
-  if ((await annotationChips.count()) !== 2) {
-    throw new Error(`annotations did not accumulate: ${await annotationChips.count()}`);
+  await page.waitForSelector('[data-composer-notes-pill]', { timeout: 5000 });
+  const oneNotePill = (await notesPill.innerText()).trim();
+  if (oneNotePill !== S.notesPillOne) {
+    throw new Error(`notes pill should read the one-note count, saw ${oneNotePill}`);
   }
-  await shot('selection-annotate-chips');
+  await openNotesPanel();
+  if ((await noteRows.count()) !== 1) throw new Error('first note missing from the notes panel');
+  const firstRow = await noteRows.nth(0).innerText();
+  if (!firstRow.includes(COMMENT_A) || !firstRow.includes(FRAGMENT_A)) {
+    throw new Error(`notes panel row does not name its note: ${firstRow}`);
+  }
+  await shot('selection-annotate-note-panel');
+  await closeNotesPanel();
 
-  // A4: chips are individually removable; the other one stays.
-  await annotationChips.nth(1).locator(`button[aria-label="${S.removeAnnotation}"]`).click();
-  if ((await annotationChips.count()) !== 1) throw new Error('annotation chip was not removable');
-  const remaining = await annotationChips.nth(0).innerText();
-  if (!remaining.includes(COMMENT_A)) throw new Error(`wrong chip survived removal: ${remaining}`);
+  // A3: notes accumulate — a second selection keeps the one pill and adds a row.
   await annotate(FRAGMENT_B, COMMENT_B);
-  if ((await annotationChips.count()) !== 2) throw new Error('re-annotation did not restore the chip');
+  const twoNotePill = (await notesPill.innerText()).trim();
+  if (twoNotePill !== S.notesPillTwo) {
+    throw new Error(`notes did not accumulate in the pill: ${twoNotePill}`);
+  }
+  await openNotesPanel();
+  if ((await noteRows.count()) !== 2) {
+    throw new Error(`notes did not accumulate: ${await noteRows.count()}`);
+  }
+  await shot('selection-annotate-notes');
 
-  // A5: the quote action still lands its own chip beside the annotations.
+  // A4: notes are individually removable; the other one stays.
+  await noteRows.nth(1).getByRole('button', { name: S.removeAnnotation }).click();
+  if ((await noteRows.count()) !== 1) throw new Error('note was not removable');
+  const remaining = await noteRows.nth(0).innerText();
+  if (!remaining.includes(COMMENT_A)) throw new Error(`wrong note survived removal: ${remaining}`);
+  await closeNotesPanel();
+  await annotate(FRAGMENT_B, COMMENT_B);
+  await openNotesPanel();
+  if ((await noteRows.count()) !== 2) throw new Error('re-annotation did not restore the note');
+  await closeNotesPanel();
+
+  // A5: the quote action still lands its own chip beside the notes.
   await selectFragment(QUOTE);
   await page.locator('[data-selection-quote] button', { hasText: S.quoteAction }).click();
   await page.waitForSelector('[data-quote-chip]', { timeout: 5000 });
-  if ((await annotationChips.count()) !== 2) throw new Error('quote replaced the annotations');
+  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) {
+    throw new Error('quote replaced the annotations');
+  }
   await page.waitForTimeout(300); // let the chip entrance animation settle
   await shot('selection-annotate-quote-chip');
 
