@@ -2292,6 +2292,7 @@ export const roomChangedEventSchema = z.object({
   room_id: z.string().min(1),
   room: roomDocumentSchema,
   entry: roomLogEntrySchema.optional(),
+  deleted: z.boolean().optional(),
 });
 export type RoomChangedEvent = z.infer<typeof roomChangedEventSchema>;
 

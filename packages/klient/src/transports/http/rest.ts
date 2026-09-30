@@ -263,6 +263,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
     rooms: {
       list: () => transport.json('/rooms'),
+      listItems: () => transport.json('/rooms/items'),
       get: (id) => transport.json(`/rooms/${encodeURIComponent(id)}`),
       create: (body) => transport.json('/rooms', { method: 'POST', body }),
       createFromThreads: (body) => transport.json('/rooms/from-threads', { method: 'POST', body }),

@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { botSummarySchema, botUpdateInputSchema, createRoomInputSchema, updateRoomInputSchema, postRoomMessageInputSchema, roomLogResultSchema, roomMemberSchema, createThreadRoomInputSchema, searchRoomThreadsInputSchema, sessionCreateSchema, sessionUpdateSchema } from '../index';
+import { botSummarySchema, botUpdateInputSchema, createRoomInputSchema, updateRoomInputSchema, postRoomMessageInputSchema, roomLogResultSchema, roomMemberSchema, roomListItemSchema, createThreadRoomInputSchema, searchRoomThreadsInputSchema, sessionCreateSchema, sessionUpdateSchema } from '../index';
 
 describe('Bot and room protocol', () => {
+  it('validates thread-like metadata and complete room list activity', () => {
+    expect(updateRoomInputSchema.parse({ pinned: true, archived: false, name: ' Renamed ' })).toEqual({ pinned: true, archived: false, name: 'Renamed' });
+    for (const input of [{ pinned: 'true' }, { archived: 1 }, { name: '' }, { name: 'x'.repeat(201) }]) {
+      expect(updateRoomInputSchema.safeParse(input).success).toBe(false);
+    }
+    const item = { kind: 'room', id: 'example', title: 'Room', workspace: 'workspace', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', lastSeq: 3, memberCount: 2, busy: false, needsYou: false, pendingInteraction: 'none', failed: true, pinned: true, archived: false };
+    expect(roomListItemSchema.parse(item)).toEqual(item);
+    expect(roomListItemSchema.safeParse({ ...item, lastSeq: -1 }).success).toBe(false);
+    expect(roomListItemSchema.safeParse({ ...item, kind: 'session' }).success).toBe(false);
+  });
   it('exposes persistent home identity without requiring a home session for every card', () => {
     expect(botSummarySchema.parse({ personaId: 'example-bot', name: 'Example', pinned: false, hidden: false }).homeSessionId).toBeUndefined();
     expect(botUpdateInputSchema.parse({ pinned: true })).toEqual({ pinned: true });

@@ -33,6 +33,8 @@ export interface RoomDocument {
   readonly budget: RoomBudget;
   readonly workspace: string;
   readonly createdAt: string;
+  readonly pinned?: boolean;
+  readonly archived?: boolean;
   readonly generation: number;
   readonly paused: boolean;
   readonly pauseReason?: RoomPauseReason;
@@ -85,6 +87,25 @@ export interface UpdateRoomInput {
   readonly mode?: RoomMode;
   readonly budget?: Partial<RoomBudget>;
   readonly workspace?: string;
+  readonly pinned?: boolean;
+  readonly archived?: boolean;
+}
+
+export interface RoomListItem {
+  readonly kind: 'room';
+  readonly id: string;
+  readonly title: string;
+  readonly workspace: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lastSeq: number;
+  readonly memberCount: number;
+  readonly busy: boolean;
+  readonly needsYou: boolean;
+  readonly pendingInteraction: 'approval' | 'question' | 'none';
+  readonly failed: boolean;
+  readonly pinned: boolean;
+  readonly archived: boolean;
 }
 
 export interface RoomAttachment {
@@ -146,6 +167,7 @@ export interface RoomLogOptions {
 export interface RoomLogResult {
   readonly entries: readonly RoomLogEntry[];
   readonly nextCursor?: string;
+  readonly lastSeq?: number;
 }
 
 export interface RoomMemberUsage {
@@ -168,12 +190,14 @@ export interface RoomChangeEvent {
   readonly roomId: string;
   readonly room: RoomDocument;
   readonly entry?: RoomLogEntry;
+  readonly deleted?: boolean;
 }
 
 export interface IRoomService {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<RoomChangeEvent>;
   list(): Promise<readonly RoomDocument[]>;
+  listItems(): Promise<readonly RoomListItem[]>;
   get(roomId: string): Promise<RoomDocument | undefined>;
   create(input: CreateRoomInput): Promise<RoomDocument>;
   createFromThreads(input: CreateThreadRoomInput): Promise<RoomDocument>;

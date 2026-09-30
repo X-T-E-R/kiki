@@ -42,6 +42,7 @@ import {
   type RoomBudget,
   type RoomChangeEvent,
   type RoomDocument,
+  type RoomListItem,
   type RoomLogEntry,
   type RoomLogOptions,
   type RoomLogResult,
@@ -112,10 +113,14 @@ interface RoomLogState {
   nextSeq: number;
   userMessages: number;
   botMessages: number;
+  activitySeq?: number;
+  updatedAt?: string;
+  failed?: boolean;
 }
 
 interface RoomLogRecord {
   readonly seq: number;
+  readonly activitySeq?: number;
   readonly entry: RoomLogEntry;
 }
 
@@ -166,6 +171,35 @@ export class RoomService extends Disposable implements IRoomService {
     return rooms.filter((room): room is RoomDocument => room !== undefined).map(normalizeRoom);
   }
 
+  async listItems(): Promise<readonly RoomListItem[]> {
+    const items: RoomListItem[] = [];
+    for (const listed of await this.list()) {
+      const item = await this.withRoomLock(listed.id, async (): Promise<RoomListItem | undefined> => {
+        const room = await this.get(listed.id);
+        if (room === undefined) return undefined;
+        const state = await this.ensureLogState(room.id);
+        const last = state.updatedAt === undefined ? await this.readIndexedRecord(room.id, state.nextSeq - 1) : undefined;
+        const activities = room.members.flatMap((member) => {
+          const session = this.sessions.get(member.sessionId);
+          return session === undefined ? [] : [session.accessor.get(ISessionActivityView).state()];
+        });
+        const pendingInteraction = activities.some((activity) => activity.pendingInteraction === 'approval') ? 'approval'
+          : activities.some((activity) => activity.pendingInteraction === 'question') || room.questionQueue?.some((question) => question.status === 'active') ? 'question' : 'none';
+        const runtime = this.runtimes.get(room.id);
+        return {
+          kind: 'room', id: room.id, title: room.name, workspace: room.workspace, createdAt: room.createdAt,
+          updatedAt: state.updatedAt ?? (state.activitySeq === undefined ? last?.entry.at : undefined) ?? room.createdAt, lastSeq: state.activitySeq ?? state.nextSeq - 1,
+          memberCount: room.members.length, pinned: room.pinned === true, archived: room.archived === true,
+          busy: activities.some((activity) => activity.busy) || (runtime?.pending.size ?? 0) > 0 || runtime?.active !== undefined,
+          needsYou: pendingInteraction !== 'none' || room.pauseReason === 'budget', pendingInteraction,
+          failed: state.failed ?? (last?.entry.kind === 'system' && last.entry.event === 'wake_failed'),
+        };
+      });
+      if (item !== undefined) items.push(item);
+    }
+    return items.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+  }
+
   async get(roomId: string): Promise<RoomDocument | undefined> {
     validateRoomId(roomId);
     const room = await this.documents.get<RoomDocument>(roomScope(roomId), 'room.json');
@@ -183,9 +217,18 @@ export class RoomService extends Disposable implements IRoomService {
       await this.stopActive(roomId);
       for (const member of room.members) await this.leaveMember(room, member);
       await this.appendLogs.rewrite(roomScope(roomId), ROOM_LOG_KEY, []);
+      for (const prefix of [ROOM_LOG_SEGMENT_PREFIX, ROOM_LOG_POINTER_PREFIX]) {
+        const keys = new Set([
+          ...await this.documents.list(roomScope(roomId), prefix),
+          ...(await this.documents.list(`${roomScope(roomId)}/${prefix.slice(0, -1)}`)).map((key) => `${prefix}${key}`),
+        ]);
+        for (const key of keys) await this.documents.delete(roomScope(roomId), key);
+      }
+      await this.documents.delete(roomScope(roomId), ROOM_LOG_STATE_KEY);
       await this.documents.delete(roomScope(roomId), 'room.json');
       await this.updateIndex((current) => ({ ...current, rooms: current.rooms.filter((entry) => entry.id !== roomId) }));
       this.runtimes.delete(roomId);
+      this.fire({ roomId, room, deleted: true });
     });
   }
 
@@ -311,14 +354,17 @@ export class RoomService extends Disposable implements IRoomService {
     const personaIds = (list: readonly RoomMember[]) => list.flatMap((member) => member.kind === 'persona' ? [member.personaId] : []).toSorted().join(',');
     const rosterChanged = personaIds(current.members) !== personaIds(members);
     const next: RoomDocument = { ...current, name, mode, workspace, budget, host, members,
+      pinned: input.pinned ?? current.pinned ?? false, archived: input.archived ?? current.archived ?? false,
       cursors: Object.fromEntries(members.map((member) => [member.sessionId, current.cursors[member.sessionId]])),
-      generation: rosterChanged ? current.generation + 1 : current.generation, pendingWakes: rosterChanged ? [] : (current.pendingWakes ?? []).filter((wake) => members.some((member) => member.sessionId === wake.sessionId)) };
-    if (rosterChanged) {
+      generation: rosterChanged || (input.archived === true && !current.archived) ? current.generation + 1 : current.generation,
+      pendingWakes: rosterChanged || input.archived === true ? [] : (current.pendingWakes ?? []).filter((wake) => members.some((member) => member.sessionId === wake.sessionId)) };
+    if (rosterChanged || (input.archived === true && !current.archived)) {
       const runtime = this.runtime(roomId);
       this.cancelPending(runtime);
       if (runtime.active !== undefined) runtime.active.cancelled = true;
       runtime.generation = next.generation;
       await this.cancelRoomDeliveries(roomId, current.generation);
+      if (input.archived === true) await this.stopActive(roomId);
     }
     await this.documents.set(roomScope(roomId), 'room.json', next);
     await this.updateIndex((index) => ({ version: 1, rooms: index.rooms.map((entry) => entry.id === roomId ? { ...entry, name } : entry) }));
@@ -572,9 +618,13 @@ export class RoomService extends Disposable implements IRoomService {
     const limit = Math.min(Math.max(options.limit ?? MAX_LOG_LIMIT, 1), MAX_LOG_LIMIT);
     const entries = await this.readIndexedLog(roomId, options.afterId, limit + 1);
     const page = entries.slice(0, limit);
+    const lastId = page.at(-1)?.id ?? options.afterId;
+    const pointer = lastId === undefined ? undefined : await this.documents.get<RoomLogPointer>(roomScope(roomId), roomLogPointerKey(lastId));
+    const record = pointer === undefined ? undefined : await this.readIndexedRecord(roomId, pointer.seq);
     return {
       entries: page,
       nextCursor: entries.length > limit ? page.at(-1)?.id : undefined,
+      lastSeq: record?.activitySeq ?? record?.seq ?? 0,
     };
   }
 
@@ -1015,7 +1065,12 @@ export class RoomService extends Disposable implements IRoomService {
     const segments = new Map<number, RoomLogRecord[]>();
     for await (const entry of this.appendLogs.read<RoomLogEntry>(roomScope(roomId), ROOM_LOG_KEY)) {
       const seq = state.nextSeq;
-      const record = { seq, entry } satisfies RoomLogRecord;
+      if (roomEntryIsActivity(entry)) {
+        state.activitySeq = (state.activitySeq ?? 0) + 1;
+        state.updatedAt = entry.at;
+        state.failed = entry.kind === 'system' && entry.event === 'wake_failed';
+      }
+      const record = { seq, entry, activitySeq: state.activitySeq } satisfies RoomLogRecord;
       const segmentNumber = roomLogSegmentNumber(seq);
       const segment = segments.get(segmentNumber) ?? [];
       segment.push(record);
@@ -1054,9 +1109,12 @@ export class RoomService extends Disposable implements IRoomService {
   private async appendIndexedEntry(roomId: string, entry: RoomLogEntry): Promise<void> {
     const state = await this.ensureLogState(roomId);
     const seq = state.nextSeq;
+    const previous = state.updatedAt === undefined ? await this.readIndexedRecord(roomId, seq - 1) : undefined;
+    const activity = roomEntryIsActivity(entry);
+    const activitySeq = (state.activitySeq ?? seq - 1) + Number(activity);
     const segmentKey = roomLogSegmentKey(seq);
     await this.documents.update<RoomLogSegment>(roomScope(roomId), segmentKey, (current) => ({
-      entries: [...(current?.entries ?? []), { seq, entry }],
+      entries: [...(current?.entries ?? []), { seq, entry, activitySeq }],
     }));
     await this.documents.set(roomScope(roomId), roomLogPointerKey(entry.id), { seq });
     if (entry.kind === 'message' && entry.idempotencyKey !== undefined) {
@@ -1067,6 +1125,9 @@ export class RoomService extends Disposable implements IRoomService {
       nextSeq: seq + 1,
       userMessages: state.userMessages + (entry.kind === 'message' && entry.from === 'user' ? 1 : 0),
       botMessages: state.botMessages + (entry.kind === 'message' && entry.from !== 'user' ? 1 : 0),
+      activitySeq,
+      updatedAt: activity ? entry.at : state.updatedAt ?? (state.activitySeq === undefined ? previous?.entry.at : undefined),
+      failed: activity ? entry.kind === 'system' && entry.event === 'wake_failed' : state.failed ?? (previous?.entry.kind === 'system' && previous.entry.event === 'wake_failed'),
     } satisfies RoomLogState);
     this.appendLogs.append(roomScope(roomId), ROOM_LOG_KEY, entry);
     await this.appendLogs.flush(roomScope(roomId), ROOM_LOG_KEY);
@@ -1110,8 +1171,12 @@ export class RoomService extends Disposable implements IRoomService {
   }
 }
 
+function roomEntryIsActivity(entry: RoomLogEntry): boolean {
+  return entry.kind === 'message' || entry.event === 'wake_failed' || entry.event === 'budget_exhausted';
+}
+
 function emptyRoomLogState(): RoomLogState {
-  return { version: 1, nextSeq: 1, userMessages: 0, botMessages: 0 };
+  return { version: 1, nextSeq: 1, userMessages: 0, botMessages: 0, activitySeq: 0, failed: false };
 }
 
 function roomLogSegmentNumber(seq: number): number {

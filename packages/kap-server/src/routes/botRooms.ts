@@ -4,7 +4,7 @@ import { IRoomService } from '@kiki/agent-core-v2/app/room/room';
 import { z } from 'zod';
 import {
   botIdParamsSchema, botSummarySchema, botStateSchema, botUpdateInputSchema,
-  roomIdParamsSchema, roomDocumentSchema, createRoomInputSchema, updateRoomInputSchema,
+  roomIdParamsSchema, roomDocumentSchema, roomListItemSchema, createRoomInputSchema, updateRoomInputSchema,
   postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema,
   roomUsageSchema, deleteRoomResponseSchema, createThreadRoomInputSchema, roomMemberInputSchema,
   roomMemberParamsSchema, searchRoomThreadsInputSchema, searchRoomThreadsResultSchema,
@@ -39,6 +39,8 @@ export function registerBotRoomRoutes(app: BotRoomRouteHost, core: Scope): void 
     (req, reply) => handle(req.id, reply, () => bots().update(req.params.id, req.body))));
   add('get', defineRoute({ method: 'GET', path: '/rooms', success: { data: z.array(roomDocumentSchema) }, tags: ['rooms'] },
     (req, reply) => handle(req.id, reply, () => rooms().list())));
+  add('get', defineRoute({ method: 'GET', path: '/rooms/items', success: { data: z.array(roomListItemSchema) }, tags: ['rooms'] },
+    (req, reply) => handle(req.id, reply, () => rooms().listItems())));
   add('post', defineRoute({ method: 'POST', path: '/rooms', body: createRoomInputSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },
     (req, reply) => handle(req.id, reply, () => rooms().create(req.body))));
   add('post', defineRoute({ method: 'POST', path: '/rooms/from-threads', body: createThreadRoomInputSchema, success: { data: roomDocumentSchema }, tags: ['rooms'] },

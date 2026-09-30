@@ -1,4 +1,4 @@
-import type { BotSummary, BotState, BotUpdateInput, RoomDocument, CreateRoomInput, UpdateRoomInput, RoomMessage, PostRoomMessageInput, RoomLogOptions, RoomLogResult, RoomUsage, RoomMemberInput, CreateThreadRoomInput, SearchRoomThreadsInput, SearchRoomThreadsResult } from '@kiki/protocol';
+import type { BotSummary, BotState, BotUpdateInput, RoomDocument, RoomListItem, CreateRoomInput, UpdateRoomInput, RoomMessage, PostRoomMessageInput, RoomLogOptions, RoomLogResult, RoomUsage, RoomMemberInput, CreateThreadRoomInput, SearchRoomThreadsInput, SearchRoomThreadsResult } from '@kiki/protocol';
 import type { Caller } from './global.js';
 
 export interface GlobalBotsFacade {
@@ -9,6 +9,7 @@ export interface GlobalBotsFacade {
 }
 export interface GlobalRoomsFacade {
   list(): Promise<readonly RoomDocument[]>;
+  listItems(): Promise<readonly RoomListItem[]>;
   get(roomId: string): Promise<RoomDocument | undefined>;
   create(input: CreateRoomInput): Promise<RoomDocument>;
   createFromThreads(input: CreateThreadRoomInput): Promise<RoomDocument>;
@@ -35,6 +36,7 @@ export function createGlobalBots(call: Caller): GlobalBotsFacade {
 export function createGlobalRooms(call: Caller): GlobalRoomsFacade {
   return {
     list: () => call('roomService', 'list', []) as Promise<RoomDocument[]>,
+    listItems: () => call('roomService', 'listItems', []) as Promise<RoomListItem[]>,
     get: (id) => call('roomService', 'get', [id]) as Promise<RoomDocument | undefined>,
     create: (input) => call('roomService', 'create', [input]) as Promise<RoomDocument>,
     createFromThreads: (input) => call('roomService', 'createFromThreads', [input]) as Promise<RoomDocument>,

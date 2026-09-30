@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { roomChangeEventSchema, type RoomChangeEvent } from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@kiki/agent-core-v2/kosong/model/model';
@@ -41,6 +42,7 @@ export type CatalogChangedPayload = Awaited<
 
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
+  'room.changed': RoomChangeEvent;
   'config.changed': ConfigChangedEvent;
   'config.sectionChanged': ConfigChangedEvent;
   'kosong.providers.changed': ProvidersChangedEvent;
@@ -116,6 +118,9 @@ export const antigravityInstallProgressSchema = z.discriminatedUnion('stage', [
 
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
+  'room.changed': {
+    kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
+  },
   'search.indexStateChanged': {
     kind: 'bus', type: 'event.search.index_state_changed',
     schema: searchIndexStateSchema,

@@ -18,10 +18,13 @@ import { renderRoomPrompt, RoomService } from '#/app/room/roomService';
 import { IRoomService, type RoomDocument, type RoomLogEntry, type RoomMessage } from '#/app/room/room';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ISessionMetadata as SessionMetadataId } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 
 class MemoryDocuments implements IAtomicDocumentStore {
   readonly _serviceBrand = undefined;
   private readonly values = new Map<string, unknown>();
+
+  constructor(private readonly flatListing = false) {}
 
   async get<T>(scope: string, key: string): Promise<T | undefined> {
     return this.values.get(`${scope}\0${key}`) as T | undefined;
@@ -42,7 +45,11 @@ class MemoryDocuments implements IAtomicDocumentStore {
     this.values.delete(`${scope}\0${key}`);
   }
 
-  async list(): Promise<readonly string[]> { return []; }
+  async list(scope: string, prefix = ''): Promise<readonly string[]> {
+    if (this.flatListing) return [...this.values.keys()].filter((key) => key.startsWith(`${scope}\0${prefix}`)).map((key) => key.slice(scope.length + 1));
+    const paths = [...this.values.keys()].map((key) => key.replace('\0', '/'));
+    return [...new Set(paths.filter((path) => path.startsWith(`${scope}/`)).map((path) => path.slice(scope.length + 1).split('/')[0]!))].filter((key) => key.startsWith(prefix));
+  }
   watch(): Event<void> { return Event.None as Event<void>; }
   acquire(): { dispose(): void } { return { dispose: () => {} }; }
 }
@@ -103,7 +110,7 @@ function fakeMeta(id: string): ISessionMetadata {
   };
 }
 
-function setup(enabled = true, wakeError?: unknown): {
+function setup(enabled = true, wakeError?: unknown, flatListing = false): {
   service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
@@ -112,7 +119,7 @@ function setup(enabled = true, wakeError?: unknown): {
   seedRoom(room: RoomDocument): Promise<void>;
   room: Promise<RoomDocument>;
 } {
-  const documents = new MemoryDocuments();
+  const documents = new MemoryDocuments(flatListing);
   const logs = new MemoryAppendLog();
   const sessions = new Map<string, FakeSession>();
   const summaries = new Map<string, { id: string; workspaceId: string; cwd: string; createdAt: number; updatedAt: number; archived: boolean; usage: { total: { inputOther: number; inputCacheRead: number; inputCacheCreation: number; output: number } } }>();
@@ -144,7 +151,7 @@ function setup(enabled = true, wakeError?: unknown): {
         id,
         kind: 'session',
         metadata,
-        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : undefined as T) },
+        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : service === ISessionActivityView ? { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) } : undefined as T) },
         dispose: () => {},
       } as unknown as FakeSession;
       sessions.set(id, session);
@@ -235,6 +242,67 @@ async function eventually(predicate: () => boolean): Promise<void> {
 }
 
 describe('RoomService', () => {
+  it('persists pin, archive and rename without changing the read high-water or classification', async () => {
+    const { service, room, legacyReads } = setup();
+    const created = await room;
+    const before = (await service.listItems())[0]!;
+    expect(before).toMatchObject({ kind: 'room', id: created.id, title: 'Release', workspace: '/workspace', memberCount: 3, pinned: false, archived: false, busy: false, needsYou: false, failed: false });
+    await service.update(created.id, { name: ' Renamed ', pinned: true, archived: true });
+    const after = (await service.listItems())[0]!;
+    expect(after).toMatchObject({ title: 'Renamed', pinned: true, archived: true, updatedAt: before.updatedAt, lastSeq: before.lastSeq });
+    expect((await service.get(created.id))?.members).toEqual(created.members);
+    await service.update(created.id, { pinned: false, archived: false });
+    expect((await service.listItems())[0]).toMatchObject({ pinned: false, archived: false, title: 'Renamed' });
+    await expect(service.update(created.id, { name: ' ' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    await expect(service.update('missing', { pinned: true })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(legacyReads()).toBe(0);
+  });
+
+  it('returns only the observed page high-water and does not count metadata as new activity', async () => {
+    const { service, room } = setup();
+    const created = await room;
+    await service.update(created.id, { members: created.members.map((member) => ({ ...member, muted: true })) });
+    const before = (await service.listItems())[0]!;
+    await service.postUserMessage(created.id, { text: 'New message', idempotencyKey: 'example-message' });
+    await service.postUserMessage(created.id, { text: 'New message', idempotencyKey: 'example-message' });
+    const after = (await service.listItems())[0]!;
+    expect(after.lastSeq).toBe(before.lastSeq + 1);
+    const first = await service.log(created.id, { limit: 1 });
+    expect(first.nextCursor).toBeDefined();
+    expect(first.lastSeq).toBeLessThan(after.lastSeq);
+    const rest = await service.log(created.id, { afterId: first.nextCursor });
+    expect(rest.lastSeq).toBe(after.lastSeq);
+    await service.update(created.id, { name: 'Only metadata', pinned: true });
+    expect((await service.listItems())[0]).toMatchObject({ lastSeq: after.lastSeq, updatedAt: after.updatedAt });
+    expect((await service.log(created.id)).lastSeq).toBe(after.lastSeq);
+  });
+
+  it('projects budget and question attention without treating manual pause as attention', async () => {
+    const { service, room, seedRoom } = setup();
+    const created = await room;
+    await seedRoom({ ...created, paused: true, pauseReason: 'budget' });
+    expect((await service.listItems())[0]).toMatchObject({ needsYou: true, pendingInteraction: 'none' });
+    await seedRoom({ ...created, paused: true, pauseReason: 'manual' });
+    expect((await service.listItems())[0]).toMatchObject({ needsYou: false, busy: false });
+    await seedRoom({ ...created, questionQueue: [{ id: 'question', sessionId: created.members[0]!.sessionId, status: 'active', enqueuedAt: 1 }] });
+    expect((await service.listItems())[0]).toMatchObject({ needsYou: true, pendingInteraction: 'question' });
+  });
+
+  it.each([false, true])('deletes its projections and broadcasts deletion, without leaking an old log into a reused id (flat listing: %s)', async (flatListing) => {
+    const { service, room } = setup(true, undefined, flatListing);
+    const created = await room;
+    const changes: boolean[] = [];
+    service.onDidChange((event) => { if (event.deleted) changes.push(event.deleted); });
+    await service.delete(created.id);
+    expect(await service.get(created.id)).toBeUndefined();
+    expect(await service.listItems()).toEqual([]);
+    expect(changes).toEqual([true]);
+    await expect(service.delete(created.id)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    await service.create({ id: created.id, name: 'Fresh', workspace: '/fresh', members: [{ personaId: 'bravo' }, { personaId: 'bravo-two' }] });
+    expect((await service.log(created.id)).entries).toEqual([]);
+    expect((await service.listItems())[0]).toMatchObject({ lastSeq: 0, title: 'Fresh', workspace: '/fresh' });
+  });
+
   it.each([
     [new Error2(ErrorCodes.AUTH_LOGIN_REQUIRED, 'Sign in to the model provider.', { details: { provider: 'example-provider' } }), 'auth.login_required', false],
     [new Error('Unexpected delivery failure'), 'internal', false],
@@ -253,6 +321,7 @@ describe('RoomService', () => {
     if (code === 'auth.login_required') expect(failure).toMatchObject({ data: { provider: 'example-provider' } });
     expect((await service.get(created.id))?.cursors).toEqual(created.cursors);
     expect((await service.get(created.id))?.pendingWakes).toHaveLength(1);
+    expect((await service.listItems())[0]).toMatchObject({ failed: true, busy: false });
   });
 
   it('wakes the thread host for a message that mentions no one and keeps other threads for their next wake', async () => {

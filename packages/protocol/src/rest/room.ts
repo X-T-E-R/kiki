@@ -20,19 +20,28 @@ export const roomDocumentSchema = z.object({
   version: z.literal(1), id: roomIdSchema, name: z.string(),
   members: z.array(roomMemberSchema), host: roomMemberIdSchema, mode: z.literal('mention'),
   budget: roomBudgetSchema, workspace: z.string(), createdAt: z.string(),
+  pinned: z.boolean().optional(), archived: z.boolean().optional(),
   generation: z.number().int().nonnegative(), paused: z.boolean(), pauseReason: z.enum(['budget', 'manual']).optional(),
   budgetUsed: z.number().int().nonnegative(), userMessageCount: z.number().int().nonnegative(),
   cursors: z.record(z.string(), z.string().optional()),
   pendingWakes: z.array(z.object({ sessionId: z.string(), sourceMessageId: z.string(), generation: z.number().int() })).optional(),
 });
 export type RoomDocument = z.infer<typeof roomDocumentSchema>;
+export const roomListItemSchema = z.object({
+  kind: z.literal('room'), id: roomIdSchema, title: z.string(), workspace: z.string(),
+  createdAt: z.string(), updatedAt: z.string(), lastSeq: z.number().int().nonnegative(),
+  memberCount: z.number().int().nonnegative(), busy: z.boolean(), needsYou: z.boolean(),
+  pendingInteraction: z.enum(['approval', 'question', 'none']), failed: z.boolean(),
+  pinned: z.boolean(), archived: z.boolean(),
+});
+export type RoomListItem = z.infer<typeof roomListItemSchema>;
 export const createRoomInputSchema = z.object({
   id: roomIdSchema.optional(), name: z.string().trim().min(1).max(200),
   members: z.array(roomMemberInputSchema).min(2).max(6), host: roomMemberIdSchema.optional(),
   mode: z.literal('mention').optional(), budget: roomBudgetSchema.partial().optional(), workspace: z.string().min(1),
 }).strict();
 export type CreateRoomInput = z.infer<typeof createRoomInputSchema>;
-export const updateRoomInputSchema = createRoomInputSchema.omit({ id: true }).partial().extend({ members: z.array(roomMemberInputSchema).max(6).optional() });
+export const updateRoomInputSchema = createRoomInputSchema.omit({ id: true }).partial().extend({ members: z.array(roomMemberInputSchema).max(6).optional(), pinned: z.boolean().optional(), archived: z.boolean().optional() });
 export type UpdateRoomInput = z.infer<typeof updateRoomInputSchema>;
 export const createThreadRoomInputSchema = createRoomInputSchema.omit({ members: true }).extend({ sessionIds: z.array(roomMemberIdSchema).min(2).max(6) });
 export type CreateThreadRoomInput = z.infer<typeof createThreadRoomInputSchema>;
@@ -72,7 +81,7 @@ export const postRoomMessageInputSchema = z.object({
 export type PostRoomMessageInput = z.infer<typeof postRoomMessageInputSchema>;
 export const roomLogOptionsSchema = z.object({ afterId: z.string().optional(), limit: z.coerce.number().int().min(1).max(500).optional() });
 export type RoomLogOptions = z.infer<typeof roomLogOptionsSchema>;
-export const roomLogResultSchema = z.object({ entries: z.array(roomLogEntrySchema), nextCursor: z.string().optional() });
+export const roomLogResultSchema = z.object({ entries: z.array(roomLogEntrySchema), nextCursor: z.string().optional(), lastSeq: z.number().int().nonnegative().optional() });
 export type RoomLogResult = z.infer<typeof roomLogResultSchema>;
 export const roomUsageSchema = z.object({
   userMessages: z.number(), botMessages: z.number(), budgetUsed: z.number(), budgetLimit: z.number(), paused: z.boolean(),
@@ -80,7 +89,7 @@ export const roomUsageSchema = z.object({
   questions: z.object({ activeSessionId: z.string().optional(), queued: z.number().int().nonnegative() }).optional(),
 });
 export type RoomUsage = z.infer<typeof roomUsageSchema>;
-export const roomChangeEventSchema = z.object({ roomId: roomIdSchema, room: roomDocumentSchema, entry: roomLogEntrySchema.optional() });
+export const roomChangeEventSchema = z.object({ roomId: roomIdSchema, room: roomDocumentSchema, entry: roomLogEntrySchema.optional(), deleted: z.boolean().optional() });
 export type RoomChangeEvent = z.infer<typeof roomChangeEventSchema>;
 export const deleteRoomResponseSchema = z.object({ deleted: z.literal(true) });
 export type DeleteRoomResponse = z.infer<typeof deleteRoomResponseSchema>;

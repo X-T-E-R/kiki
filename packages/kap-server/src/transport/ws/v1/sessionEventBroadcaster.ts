@@ -268,12 +268,14 @@ export class SessionEventBroadcaster {
     readonly roomId: string;
     readonly room: import('@kiki/agent-core-v2/app/room/room').RoomDocument;
     readonly entry?: import('@kiki/agent-core-v2/app/room/room').RoomLogEntry;
+    readonly deleted?: boolean;
   }): void {
     const event = {
       type: 'event.room.changed' as const,
       room_id: change.roomId,
       room: change.room,
       entry: change.entry,
+      deleted: change.deleted,
       agentId: 'main',
       sessionId: GLOBAL_SESSION_ID,
     };

@@ -13,6 +13,31 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('lists room rows and sends pin, archive, rename and delete through authenticated room routes', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      if (path === '/api/rooms/items') return envelope([]);
+      if (path === '/api/rooms/missing') return envelope(null, 40001);
+      return envelope({ deleted: true });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.rooms.listItems()).resolves.toEqual([]);
+      const body = { name: 'Renamed', pinned: true, archived: false };
+      await channel.rest.rooms.update('example', body);
+      await channel.rest.rooms.delete('example');
+      await expect(channel.rest.rooms.update('missing', { archived: true })).rejects.toMatchObject({ code: 40001 });
+      expect(calls).toEqual([
+        { path: '/api/rooms/items', method: 'GET', body: undefined },
+        { path: '/api/rooms/example', method: 'PATCH', body },
+        { path: '/api/rooms/example', method: 'DELETE', body: undefined },
+        { path: '/api/rooms/missing', method: 'PATCH', body: { archived: true } },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('reads repeated pricing model ids and writes overrides through the shared authenticated transport', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
