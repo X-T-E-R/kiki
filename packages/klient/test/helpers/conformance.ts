@@ -100,6 +100,14 @@ export function defineKlientConformance(
       const b = await sessions.create({ workDir: rootB, title: 'Room search example beta' });
       const child = await target.klient.session(a.id).createChild({});
       const config = target.app.accessor.get(IConfigService);
+      // This test overrides two memory-layer domains. Remember what they held —
+      // every transport's target setup enables thread communication there — and
+      // put those values back in the finally, rather than clearing the layer and
+      // silently disabling thread communication for every later test.
+      const previousMemory = {
+        bot: config.inspect('bot').memoryValue,
+        threadCommunication: config.inspect('threadCommunication').memoryValue,
+      };
       let roomId: string | undefined;
       try {
         await config.replace('bot', { enabled: false }, ConfigTarget.Memory);
@@ -153,8 +161,8 @@ export function defineKlientConformance(
         } finally { await edge.delete(edgeRoom.id); }
       } finally {
         if (roomId !== undefined) await rooms.delete(roomId);
-        await config.replace('bot', null, ConfigTarget.Memory);
-        await config.replace('threadCommunication', null, ConfigTarget.Memory);
+        await config.replace('bot', previousMemory.bot ?? null, ConfigTarget.Memory);
+        await config.replace('threadCommunication', previousMemory.threadCommunication ?? null, ConfigTarget.Memory);
         for (const id of [a.id, b.id, child.id]) await target.klient.session(id).delete();
         await rm(rootA, { recursive: true, force: true });
         await rm(rootB, { recursive: true, force: true });
