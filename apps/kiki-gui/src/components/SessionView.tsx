@@ -358,7 +358,7 @@ function Header({
         aria-expanded={railOpen}
         data-rail-toggle
         data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
-        className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 ${
+        className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 ${
           railOpen
             ? 'bg-canvas text-ink'
             : 'text-ink-faint hover:bg-canvas hover:text-ink'

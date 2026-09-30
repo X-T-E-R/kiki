@@ -360,7 +360,7 @@ export function PreviewToggleButton({ className }: { className?: string }) {
       aria-label={t('preview.toggleAria')}
       aria-expanded={preview.previewPanelOpen}
       data-preview-toggle
-      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
+      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
         preview.previewPanelOpen
           ? 'bg-canvas text-ink'
           : 'text-ink-faint hover:bg-canvas hover:text-ink'

@@ -91,7 +91,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
             </div>
             <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-paper border border-hairline">
               <div
-                className={`h-full rounded-full transition-all duration-300 ${contextBarTone}`}
+                className={`h-full rounded-full transition-all duration-[var(--kiki-motion-base)] ${contextBarTone}`}
                 style={{ width: `${contextPct ?? 0}%` }}
               />
             </div>

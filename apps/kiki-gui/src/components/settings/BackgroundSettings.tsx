@@ -387,7 +387,7 @@ export function BackgroundSettings({ theme, compact = false }: { theme: Resolved
           </div>
           <details className="group" data-bg-more>
             <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-[13px] text-ink-soft select-none hover:text-ink">
-              <Icon name="chevron" size={12} className="text-ink-faint transition-transform duration-150 ease-out motion-reduce:transition-none group-open:rotate-90" />
+              <Icon name="chevron" size={12} className="text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out motion-reduce:transition-none group-open:rotate-90" />
               {t('st.bg.more')}
             </summary>
             <div className="space-y-2 pt-1">

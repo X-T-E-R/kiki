@@ -228,7 +228,7 @@ export function ContextMeter({
         aria-controls={detailsId}
         // Quiet at rest: a bare ring inside the composer card; the percent
         // label and a tint only appear once the window deserves attention.
-        className={`flex h-7 items-center gap-1 rounded-md px-1 transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-10 ${
+        className={`flex h-7 items-center gap-1 rounded-md px-1 transition-colors duration-[var(--kiki-motion-quick)] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-10 ${
           level === 'danger'
             ? 'text-danger hover:bg-danger/10'
             : warn
@@ -257,7 +257,7 @@ export function ContextMeter({
               strokeDasharray="100"
               strokeDashoffset={100 - percent}
               stroke={LEVEL_STROKE[level]}
-              className="transition-[stroke-dashoffset,stroke] duration-300"
+              className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
             />
           </svg>
         </span>
@@ -316,7 +316,7 @@ export function ContextMeter({
                   strokeDasharray="100"
                   strokeDashoffset={100 - percent}
                   stroke={LEVEL_STROKE[level]}
-                  className="transition-[stroke-dashoffset,stroke] duration-300"
+                  className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
                 />
               </svg>
               <span className="absolute font-mono text-[11px] leading-none font-medium tabular-nums">

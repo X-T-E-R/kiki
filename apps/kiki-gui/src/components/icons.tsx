@@ -352,7 +352,7 @@ export function DisclosureChevron({
     <Icon
       name="chevron"
       size={size}
-      className={`transition-transform duration-150 ease-out motion-reduce:transition-none ${open ? 'rotate-90' : ''} ${className}`}
+      className={`transition-transform duration-[var(--kiki-motion-quick)] ease-out motion-reduce:transition-none ${open ? 'rotate-90' : ''} ${className}`}
     />
   );
 }

@@ -11,7 +11,7 @@ import { useI18n } from '../../i18n';
 import type { TimelineView } from './messageViewMode';
 
 const SEGMENT =
-  'min-h-7 rounded-[6px] px-3 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+  'min-h-7 rounded-[6px] px-3 text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
 
 export function TimelineViewSwitch({
   view,

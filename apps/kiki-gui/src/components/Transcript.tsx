@@ -371,7 +371,7 @@ const UserMessage = memo(function UserMessage({
         ) : null}
         <span
           data-user-time
-          className={`text-[12px] text-ink-faint transition-opacity duration-150 ${
+          className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${
             senderLabel !== undefined
               ? ''
               : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100'
@@ -1163,7 +1163,7 @@ const SubagentCard = memo(function SubagentCard({
     );
   }
   const cardClass =
-    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2 transition-colors duration-150 hover:bg-bubble-user/60';
+    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-bubble-user/60';
   const body = (
     <SubagentCardBody
       name={block.name}
@@ -2459,7 +2459,7 @@ function JumpToBottom({
       type="button"
       data-jump-to-latest
       onClick={() => { virtualizer.scrollToEnd(); }}
-      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-150 hover:text-ink"
+      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
     </button>
@@ -2611,7 +2611,7 @@ const CANCELLATION_LABEL_KEY = {
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
-const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60';
+const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60';
 
 export const TurnTailLine = memo(function TurnTailLine({
   tail,
@@ -2687,7 +2687,7 @@ export const TurnTailLine = memo(function TurnTailLine({
                 onClick={onResume}
                 disabled={resumeDisabled}
                 title={t('transcript.resumeTitle')}
-                className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-150 hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
+                className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
               >
                 {t('transcript.resume')}
               </button>

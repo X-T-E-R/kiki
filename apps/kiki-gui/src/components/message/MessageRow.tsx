@@ -68,7 +68,7 @@ export function SpeakerHead({
       <span data-message-sender className="min-w-0 truncate text-[13px] leading-5 font-medium text-ink">{persona.name}</span>
       {children}
       {at !== undefined ? (
-        <span className="shrink-0 text-[12px] text-ink-faint tabular-nums opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100">
+        <span className="shrink-0 text-[12px] text-ink-faint tabular-nums opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100">
           <RelativeTime at={at} />
         </span>
       ) : null}

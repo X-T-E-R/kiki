@@ -350,7 +350,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
               title={`${contextPct}%`}
               className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-ink/[0.08]"
             >
-              <div className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${barColor}`} style={{ width: `${contextPct}%` }} />
+              <div className={`h-full rounded-full transition-[width] duration-[var(--kiki-motion-base)] motion-reduce:transition-none ${barColor}`} style={{ width: `${contextPct}%` }} />
             </div>
           ) : <span className="flex-1" />}
           <span className="shrink-0 text-ink tabular-nums">
@@ -561,7 +561,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
           short definition list. No Unknown / Not reported rows. */}
       {contextPct !== null ? (
         <div aria-hidden className="h-1 w-full overflow-hidden rounded-full bg-hairline">
-          <div className={`h-full rounded-full transition-[width] duration-300 ${barColor}`} style={{ width: `${contextPct}%` }} />
+          <div className={`h-full rounded-full transition-[width] duration-[var(--kiki-motion-base)] ${barColor}`} style={{ width: `${contextPct}%` }} />
         </div>
       ) : null}
       {metricRows.length > 0 ? (

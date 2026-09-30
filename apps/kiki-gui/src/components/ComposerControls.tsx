@@ -250,10 +250,10 @@ function Switch({ on }: { on: boolean }) {
   return (
     <span
       aria-hidden
-      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors duration-150 ${on ? 'bg-selected-ink' : 'bg-hairline-strong'}`}
+      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors duration-[var(--kiki-motion-quick)] ${on ? 'bg-selected-ink' : 'bg-hairline-strong'}`}
     >
       <span
-        className={`absolute top-0.5 h-3 w-3 rounded-full bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.2)] transition-[left] duration-150 motion-reduce:transition-none ${on ? 'left-3.5' : 'left-0.5'}`}
+        className={`absolute top-0.5 h-3 w-3 rounded-full bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.2)] transition-[left] duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${on ? 'left-3.5' : 'left-0.5'}`}
       />
     </span>
   );
@@ -645,7 +645,7 @@ export function AddMenu({
         disabled={attachDisabled}
         aria-label={t('composer.attachAria')}
         title={t('composer.attachTitle')}
-        className="flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
+        className="flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-md text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
       >
         <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden>
           <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
@@ -848,10 +848,10 @@ export function AddMenu({
         aria-label={t('composer.addMenuAria')}
         title={t('composer.addMenuAria')}
         onClick={() => { if (open) close(); else { drilledRef.current = false; onViewChange('root'); } }}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none aria-expanded:bg-paper aria-expanded:text-ink pointer-coarse:h-10 pointer-coarse:w-10"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none aria-expanded:bg-paper aria-expanded:text-ink pointer-coarse:h-10 pointer-coarse:w-10"
       >
         <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden
-          className={`transition-transform duration-150 motion-reduce:transition-none ${open ? 'rotate-45' : ''}`}>
+          className={`transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${open ? 'rotate-45' : ''}`}>
           <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
         </svg>
       </button>

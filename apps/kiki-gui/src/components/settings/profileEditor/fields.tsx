@@ -121,7 +121,7 @@ export function Section({ title, summary, defaultOpen = false, children, dataSec
   return <details open={defaultOpen} data-profile-section={dataSection}
     className="group border-t border-hairline [&[open]>summary_[data-chevron]]:rotate-90">
     <summary aria-controls={id} className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50 [&::-webkit-details-marker]:hidden">
-      <span data-chevron className="flex shrink-0 text-ink-faint transition-transform duration-150 motion-reduce:transition-none"><Icon name="chevron" size={12} /></span>
+      <span data-chevron className="flex shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none"><Icon name="chevron" size={12} /></span>
       <span className="text-[13px] font-medium text-ink">{title}</span>
       {count !== undefined && count > 0 ? <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] tabular-nums text-ink-soft">{count}</span> : null}
       {summary !== undefined ? <span className="ml-auto min-w-0 truncate text-[12px] text-ink-faint">{summary}</span> : null}

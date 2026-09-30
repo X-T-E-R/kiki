@@ -44,7 +44,7 @@ export function CapabilityGroup({
         </span>
         <span
           aria-hidden
-          className={`flex shrink-0 text-ink-faint transition-transform duration-150 motion-reduce:transition-none ${
+          className={`flex shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
             open ? 'rotate-180' : ''
           }`}
         >

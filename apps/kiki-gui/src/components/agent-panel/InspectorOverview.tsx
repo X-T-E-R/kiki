@@ -200,7 +200,7 @@ export const InspectorOverview = memo(function InspectorOverview({
               aria-valuetext={t('inspector.ofWindow', { pct })}
               className="relative h-1.5 rounded-full bg-ink/[0.08]"
             >
-              <div className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${barTone}`} style={{ width: `${pct}%` }} />
+              <div className={`h-full rounded-full transition-[width] duration-[var(--kiki-motion-base)] motion-reduce:transition-none ${barTone}`} style={{ width: `${pct}%` }} />
               {pointPct !== undefined ? (
                 <span
                   aria-hidden

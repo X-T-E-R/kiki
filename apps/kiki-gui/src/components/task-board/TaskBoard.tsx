@@ -422,7 +422,7 @@ export const TaskBoard = memo(function TaskBoard({
                     }
                   }
                 }}
-                className={`flex min-h-0 w-[min(320px,calc(100vw-1.5rem))] min-w-0 snap-start flex-col overflow-hidden rounded-xl bg-canvas/55 transition-shadow duration-150 ${laneLayout === 'fill' ? 'sm:w-auto' : ''} ${dropping ? 'shadow-[inset_0_0_0_1.5px_var(--color-hairline-strong)] bg-canvas/80' : ''}`}
+                className={`flex min-h-0 w-[min(320px,calc(100vw-1.5rem))] min-w-0 snap-start flex-col overflow-hidden rounded-xl bg-canvas/55 transition-shadow duration-[var(--kiki-motion-quick)] ${laneLayout === 'fill' ? 'sm:w-auto' : ''} ${dropping ? 'shadow-[inset_0_0_0_1.5px_var(--color-hairline-strong)] bg-canvas/80' : ''}`}
               >
                 {/* Lane header: status mark, sentence-case label, count. */}
                 <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2">

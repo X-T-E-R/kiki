@@ -2034,7 +2034,7 @@ export function Composer({
           ref={cardRef}
           data-composer-card
           data-composer-takeover={takenOver ? '' : undefined}
-          className={`composer-card relative rounded-[18px] bg-panel transition-[box-shadow] duration-150 ${
+          className={`composer-card relative rounded-[18px] bg-panel transition-[box-shadow] duration-[var(--kiki-motion-quick)] ${
             dragActive ? 'ring-2 ring-accent/50' : ''
           } ${takenOver ? 'ring-1 ring-attention/35' : ''}`}
           onDragEnter={(event) => {
@@ -2583,7 +2583,7 @@ export function Composer({
                 data-send-ready={canSend ? '' : undefined}
                 // Filled accent only once there is something to send; at rest
                 // the button is a quiet ink glyph on paper.
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
                   canSend
                     ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
                     : 'bg-paper text-ink-faint'
@@ -2653,7 +2653,7 @@ export function Composer({
           ) : text.trim() === '' && !busy ? (
             <p
               data-composer-hints
-              className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100 motion-reduce:transition-none"
+              className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
             >
               {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
               {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}

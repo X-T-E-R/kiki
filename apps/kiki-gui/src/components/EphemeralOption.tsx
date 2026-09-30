@@ -25,12 +25,12 @@ export function EphemeralOption({ state }: { state: NewSessionDraftState }) {
         />
         <span
           aria-hidden
-          className={`relative inline-flex h-[14px] w-[24px] shrink-0 items-center rounded-full ring-1 transition-colors duration-150 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-selected-ink ${
+          className={`relative inline-flex h-[14px] w-[24px] shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-selected-ink ${
             checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
           }`}
         >
           <span
-            className={`inline-block h-2 w-2 rounded-full transition-transform duration-150 motion-reduce:transition-none ${
+            className={`inline-block h-2 w-2 rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
               checked ? 'translate-x-[13px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
             }`}
           />

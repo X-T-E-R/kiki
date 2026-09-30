@@ -831,7 +831,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-150 hover:bg-panel"
+          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel"
         >
           <span className="text-accent"><Icon name="plus" size={14} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -1588,7 +1588,7 @@ function SessionRow({
         * from the keyboard via focus-within. */}
       {temporary ? null : (
       <div
-        className={`absolute top-0.5 right-1 flex items-center transition-opacity duration-150 ${
+        className={`absolute top-0.5 right-1 flex items-center transition-opacity duration-[var(--kiki-motion-quick)] ${
           menuOpen ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
         }`}
       >
@@ -1724,7 +1724,7 @@ function WorkspaceGroupHeader({
           aria-label={pinned ? t('sidebar.unpinWorkspaceFor', { name: label }) : t('sidebar.pinWorkspaceFor', { name: label })}
           title={pinned ? t('sidebar.unpinWorkspace') : t('sidebar.pinWorkspace')}
           onClick={onTogglePin}
-          className={`absolute top-1/2 right-1 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md transition-[opacity,background-color,color] duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+          className={`absolute top-1/2 right-1 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md transition-[opacity,background-color,color] duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
             pinned ? 'text-ink-soft' : 'text-ink-faint'
           } opacity-0 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 [@media(hover:none)]:opacity-100`}
         >

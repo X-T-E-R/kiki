@@ -77,7 +77,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
           aria-expanded={open}
           data-activity-summary-toggle
           onClick={() => { setOpen((value) => !value); }}
-          className="group/sum -ml-1.5 flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-[12.5px] text-ink-faint transition-colors duration-150 hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          className="group/sum -ml-1.5 flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-[12.5px] text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
         >
           <span aria-hidden className="shrink-0">·</span>
           <span className="min-w-0 truncate">

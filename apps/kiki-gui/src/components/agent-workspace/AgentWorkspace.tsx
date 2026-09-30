@@ -226,7 +226,7 @@ export function WorkspaceHeader({ children, main = false }: { children: ReactNod
  * (44px touch target below lg), ink-faint at rest, a paper-deep wash on
  * hover, and the pressed state reads as a filled wash rather than accent. */
 export const HEADER_ICON_BUTTON =
-  'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors duration-150 hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8';
+  'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8';
 
 function AgentWorkspaceHeader({
   target,

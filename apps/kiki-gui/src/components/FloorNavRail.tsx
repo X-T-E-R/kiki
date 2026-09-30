@@ -135,7 +135,7 @@ export function FloorNavRail({
               // past keep estimated heights and paint over their neighbours.
               virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, { align: 'start' });
             }}
-            className={`h-[2px] rounded-full transition-[width,background-color] duration-150 motion-reduce:transition-none ${
+            className={`h-[2px] rounded-full transition-[width,background-color] duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
               active ? 'w-4 bg-accent' : 'w-2 bg-ink-faint/25 group-hover/floor:w-2.5 group-hover/floor:bg-ink-faint/45 hover:!w-3.5 hover:!bg-ink-soft'
             }`}
           />
