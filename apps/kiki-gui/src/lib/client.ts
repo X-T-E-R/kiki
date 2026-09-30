@@ -99,6 +99,14 @@ import type {
   UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
   Workspace,
+  PersonaAvatarUploadResponse,
+  PersonaCardFormat,
+  PersonaDeleteResponse,
+  PersonaImportPreview,
+  PersonaImportResponse,
+  PersonaPutInput,
+  PersonaSnapshot,
+  PersonaSummary,
 } from '@kiki/protocol';
 
 import { RPCError, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
@@ -499,7 +507,8 @@ export interface ListCronTasksResponse {
  * entry and journal types mirror agent-core-v2 `app/memory/memoryStore.ts`).
  * Not part of `@kiki/protocol`, so they are hand-rolled here.
  */
-export type MemoryScopeKind = 'global' | 'workspace';
+/** `persona*` scopes are one persona's own namespace (global, or inside one workspace). */
+export type MemoryScopeKind = 'global' | 'workspace' | 'persona' | 'persona_workspace';
 export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
 export type MemoryStatus = 'active' | 'pending' | 'superseded' | 'archived';
 export type MemoryWriter = 'user' | 'agent' | 'consolidator' | 'import';
@@ -549,10 +558,14 @@ export interface MemoryJournalRecord {
   readonly afterRevision: string | null;
 }
 
-/** Which store a memory call addresses; `workspaceId` is required for `workspace`. */
+/**
+ * Which store a memory call addresses: `workspaceId` is required for the two
+ * workspace scopes, `personaId` for the two persona scopes.
+ */
 export interface MemoryTarget {
   readonly scope: MemoryScopeKind;
   readonly workspaceId?: string;
+  readonly personaId?: string;
 }
 
 export interface MemoryPutBody {
@@ -1981,7 +1994,12 @@ export class KikiClient {
   ): Promise<T> {
     const root = this.baseUrl.replace(/\/+$/u, '');
     const url = root === '' ? new URL(`/api${path}`, globalThis.location?.origin ?? 'http://localhost') : new URL(`${root}/api${path}`);
-    const query = { ...options.query, workspace_id: options.target?.scope === 'workspace' ? options.target.workspaceId : undefined };
+    const scope = options.target?.scope;
+    const query = {
+      ...options.query,
+      workspace_id: scope === 'workspace' || scope === 'persona_workspace' ? options.target?.workspaceId : undefined,
+      persona_id: scope === 'persona' || scope === 'persona_workspace' ? options.target?.personaId : undefined,
+    };
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, value);
     }
@@ -2100,4 +2118,76 @@ export class KikiClient {
   async patchConfig(body: KikiConfigPatch): Promise<KikiConfigResponse> {
     return parseKikiConfigResponse(await this.run(this.rest.config.patch(body as import('@kiki/klient').HttpRestConfigPatch)));
   }
+
+  // Personas (`/api/personas/*`) through klient's REST facade; File inputs
+  // become bytes here so the rest of the GUI keeps passing browser files.
+
+  listPersonas(options: { readonly includeArchived?: boolean } = {}): Promise<readonly PersonaSummary[]> {
+    return this.run(() => this.rest.personas.list(options));
+  }
+
+  getPersona(id: string): Promise<PersonaSnapshot> {
+    return this.run(() => this.rest.personas.get(id));
+  }
+
+  /** Create (no `revision`) or update; a stale `revision` fails with 40946. */
+  putPersona(input: PersonaPutInput): Promise<PersonaSnapshot> {
+    return this.run(() => this.rest.personas.put(input));
+  }
+
+  duplicatePersona(id: string, options: { readonly id?: string; readonly name?: string } = {}): Promise<PersonaSnapshot> {
+    return this.run(() => this.rest.personas.duplicate(id, options));
+  }
+
+  archivePersona(id: string, archived: boolean): Promise<{ readonly version: 1; readonly archived: boolean }> {
+    return this.run(() => this.rest.personas.archive(id, archived));
+  }
+
+  deletePersona(id: string, expectedRevision?: string): Promise<PersonaDeleteResponse> {
+    return this.run(() => this.rest.personas.delete(id, { expectedRevision }));
+  }
+
+  /** Parses a CCv3 card without writing anything. */
+  async previewPersonaImport(file: File): Promise<PersonaImportPreview> {
+    const data = new Uint8Array(await file.arrayBuffer());
+    return this.run(() => this.rest.personas.previewImport({ data, filename: file.name, format: personaCardFormatOf(file) }));
+  }
+
+  async importPersonaCard(file: File, fields: { readonly id?: string; readonly name?: string } = {}): Promise<PersonaImportResponse> {
+    const data = new Uint8Array(await file.arrayBuffer());
+    return this.run(() => this.rest.personas.importCard({ data, filename: file.name, format: personaCardFormatOf(file), ...fields }));
+  }
+
+  async exportPersonaCard(id: string, format: PersonaCardFormat): Promise<{ readonly blob: Blob; readonly filename: string }> {
+    const file = await this.run(() => this.rest.personas.exportCard(id, format));
+    return { blob: new Blob([file.bytes.slice().buffer as ArrayBuffer], { type: file.mime }), filename: file.name ?? `${id}.${format}` };
+  }
+
+  /** `null` when the persona has no avatar (the route needs the bearer header an <img> cannot send). */
+  async getPersonaAvatar(id: string, signal?: AbortSignal): Promise<Blob | null> {
+    try {
+      const file = await this.rest.personas.getAvatar(id, { signal });
+      return new Blob([file.bytes.slice().buffer as ArrayBuffer], { type: file.mime });
+    } catch {
+      return null;
+    }
+  }
+
+  async putPersonaAvatar(id: string, file: File): Promise<PersonaAvatarUploadResponse> {
+    const data = new Uint8Array(await file.arrayBuffer());
+    return this.run(() => this.rest.personas.putAvatar(id, data, file.type));
+  }
+}
+
+/** Persona error codes (`@kiki/protocol` error-codes). */
+export const PERSONA_NOT_FOUND = 40425;
+export const PERSONA_ALREADY_EXISTS = 40945;
+export const PERSONA_REVISION_CONFLICT = 40946;
+
+/** Card format from the file name; PNG cards carry their data in a tEXt chunk. */
+export function personaCardFormatOf(file: { readonly name: string; readonly type: string }): PersonaCardFormat {
+  const name = file.name.toLowerCase();
+  if (file.type === 'image/png' || name.endsWith('.png')) return 'png';
+  if (name.endsWith('.charx')) return 'charx';
+  return 'json';
 }

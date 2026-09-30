@@ -29,6 +29,8 @@ import { useConversationShell, useRegisterSeat, type ConversationSeat } from './
 import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
+import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
+import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
 import { useI18n } from '../i18n';
 import { staggerStyle } from '../lib/motion';
@@ -205,9 +207,18 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
   const agentParam = searchParams.get('agent') ?? undefined;
+  const personaParam = searchParams.get('persona') ?? undefined;
   const { slots } = useConversationShell();
 
-  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam, prefillNavigationKey });
+  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam, initialPersona: personaParam, prefillNavigationKey });
+  // The chip's face needs the summary's avatar flag; the list is shared with the picker.
+  const personaList = usePersonaList();
+  const personaChip = useMemo(() => {
+    if (state.persona === undefined) return undefined;
+    const { id, name } = state.persona.definition;
+    return personaAvatarOf({ id, name, avatarMime: personaList.data?.find((item) => item.id === id)?.avatarMime });
+  }, [state.persona, personaList.data]);
+  const personaPick = useMemo(() => ({ value: personaChip, onChange: state.selectPersona }), [personaChip, state.selectPersona]);
   const echo = useTypingEcho(state.draft);
 
   // Only creation locks input. Catalog validation and missing targets block
@@ -263,6 +274,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
           modelSource={state.modelSource}
           agentProfile={state.agentProfile}
           onChangeAgentProfile={state.setAgentProfile}
+          personaPick={personaPick}
           permissionMode={state.permissionMode}
           planMode={state.planMode}
           goalObjective={state.goalObjective}
@@ -296,6 +308,7 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
       state.modelOverride,
       state.agentProfile,
       state.setAgentProfile,
+      personaPick,
       state.inheritedDefault,
       state.modelSource,
       state.permissionMode,
@@ -356,13 +369,28 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
             <span data-hero-masthead className="hero-wordmark inline-flex cursor-default self-start">
               <Wordmark size="xl" echo={echo} />
             </span>
-            <p
-              data-hero-headline
-              className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink-soft"
-              style={{ fontVariationSettings: '"opsz" 32' }}
-            >
-              {t('new.headline')}
-            </p>
+            {state.persona !== undefined && personaChip !== undefined && state.persona.definition.greeting?.trim() ? (
+              // A chosen persona opens the conversation in its own voice, in
+              // the headline's place. Local only: nothing reaches the model
+              // unless the first message replies to it.
+              <figure data-hero-persona-greeting={state.persona.definition.id} className="mt-3 flex min-w-0 items-start gap-3">
+                <PersonaAvatar persona={personaChip} size={36} decorative />
+                <div className="min-w-0">
+                  <figcaption className="text-[12px] text-ink-faint">{t('persona.greetingFrom', { name: state.persona.definition.name })}</figcaption>
+                  <blockquote className="mt-0.5 font-display text-[20px] leading-7 tracking-tight whitespace-pre-wrap text-ink" style={{ fontVariationSettings: '"opsz" 32' }}>
+                    {state.persona.definition.greeting}
+                  </blockquote>
+                </div>
+              </figure>
+            ) : (
+              <p
+                data-hero-headline
+                className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink-soft"
+                style={{ fontVariationSettings: '"opsz" 32' }}
+              >
+                {t('new.headline')}
+              </p>
+            )}
           </div>
           <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
             <span className="-ml-2.5 inline-flex"><HeroWorkspaceChip state={state} /></span>

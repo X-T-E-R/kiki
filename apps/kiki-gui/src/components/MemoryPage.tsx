@@ -23,7 +23,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { To } from 'react-router-dom';
+import { useSearchParams, type To } from 'react-router-dom';
 
 import type { Workspace } from '@kiki/protocol';
 
@@ -50,6 +50,8 @@ import { RelativeTime } from './RelativeTime';
 import { Toggle } from './controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { WorkspaceScopeControl, segmentClass } from './WorkspaceScopeControl';
+import { memoryTargetKey, PersonaMemoryScope, personaMemoryTarget } from './persona/PersonaMemoryScope';
+import { usePersonaList } from './persona/usePersonas';
 
 export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
 
@@ -63,18 +65,20 @@ type MemoryTab = 'entries' | 'inbox';
 
 /** Where a scope's files live, shown verbatim in the turn-on guide. */
 function storagePath(target: MemoryTarget): string {
+  if (target.scope === 'persona') return `$KIKI_HOME/memory/global/personas/${target.personaId ?? ''}/`;
+  if (target.scope === 'persona_workspace') return `$KIKI_HOME/memory/workspaces/${target.workspaceId ?? ''}/personas/${target.personaId ?? ''}/`;
   return target.scope === 'global'
     ? '$KIKI_HOME/memory/global/'
     : `$KIKI_HOME/memory/workspaces/${target.workspaceId ?? ''}/`;
 }
 
-function memoryTargetOf(scope: string | undefined): MemoryTarget {
+/** A picked persona narrows the scope to its own namespace in that range. */
+function memoryTargetOf(scope: string | undefined, personaId?: string): MemoryTarget {
+  if (personaId !== undefined) return personaMemoryTarget(personaId, scope);
   return scope === undefined ? { scope: 'global' } : { scope: 'workspace', workspaceId: scope };
 }
 
-function targetKey(target: MemoryTarget): string {
-  return target.scope === 'global' ? 'global' : `workspace:${target.workspaceId ?? ''}`;
-}
+const targetKey = memoryTargetKey;
 
 /** Journal actions the history list names; anything else shows its raw verb. */
 const HISTORY_LABELS = {
@@ -106,7 +110,20 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const { scope, setScope } = useWorkspaceScope(workspaceOptions);
-  const target = memoryTargetOf(scope);
+  // The persona group narrows the page to one persona's own namespace
+  // (`?persona=`); the workspace control keeps choosing the range.
+  const [params, setParams] = useSearchParams();
+  const personasQuery = usePersonaList();
+  const personas = (personasQuery.data ?? []).filter((item) => !item.archived);
+  const personaParam = params.get('persona') ?? undefined;
+  const persona = personas.find((item) => item.id === personaParam);
+  const setPersona = (next: string | undefined) => {
+    const updated = new URLSearchParams(params);
+    if (next === undefined) updated.delete('persona');
+    else updated.set('persona', next);
+    setParams(updated);
+  };
+  const target = memoryTargetOf(scope, persona?.id);
 
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_QUERY_KEY,
@@ -165,6 +182,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
               onChange={(next) => { setScope(next); }}
               dataAttribute="data-memory-scope"
             />
+            <PersonaMemoryScope personas={personas} value={persona?.id} workspaceId={scope} onChange={setPersona} />
             {scope !== undefined ? (
               <div className="flex min-w-0 items-center gap-2" data-memory-workspace-switch>
                 <span className="shrink-0 text-[12px] text-ink-faint">{t('memory.ws.label')}</span>
@@ -189,6 +207,12 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
               </div>
             ) : null}
           </div>
+          {persona !== undefined ? (
+            <p data-memory-persona-intro className="shrink-0 border-b border-hairline px-4 py-2 text-[12.5px] leading-relaxed text-ink-soft lg:px-6">
+              {t('persona.memoryIntro', { name: persona.name })}
+              <span className="ml-2 font-mono text-[11px] text-ink-faint">{storagePath(target)}</span>
+            </p>
+          ) : null}
           <MemoryScopeView
             key={targetKey(target)}
             target={target}

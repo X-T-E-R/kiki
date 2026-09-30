@@ -34,6 +34,11 @@ import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { Icon } from './icons';
+import { PersonaAvatar } from './persona/PersonaAvatar';
+import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
+import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
+import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
+import { BotSettingsPanel } from './bot/BotSettingsPanel';
 import { WorktreeMark } from './WorktreeMark';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
@@ -211,7 +216,15 @@ function Header({
   onToggleSidebar,
   onRenameSession,
   onSessionAction,
+  view,
+  onView,
+  onDelivery,
+  deliveryPending,
+  botPersonaId,
+  onOpenBotSettings,
 }: {
+  botPersonaId?: string;
+  onOpenBotSettings: () => void;
   controller: SessionController | null;
   railOpen: boolean;
   terminalAvailable: boolean;
@@ -221,6 +234,10 @@ function Header({
   onToggleSidebar: () => void;
   onRenameSession: (title: string) => Promise<void>;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  view: TimelineView;
+  onView: (view: TimelineView) => void;
+  onDelivery: (delivery: 'reply' | 'message') => void;
+  deliveryPending: boolean;
 }) {
   const { t, tp } = useI18n();
   const [renaming, setRenaming] = useState(false);
@@ -236,6 +253,7 @@ function Header({
   const questions = pendingQuestionCount(state);
   const waiting = approvals + questions;
   const runningTasks = state.tasks.filter((task) => task.status === 'running').length;
+  const isNarrow = useMediaQuery('(max-width: 639px)');
 
   return (
     <WorkspaceHeader main>
@@ -249,6 +267,20 @@ function Header({
       </button>
       {session !== undefined ? (
         <>
+          {session.agent_config.persona !== undefined ? (
+            // Who this conversation is with, frozen at creation: the face
+            // leads the title; on narrow headers the name moves to the label.
+            <span
+              data-session-persona={session.agent_config.persona.id}
+              title={t('persona.headerTitle', { name: session.agent_config.persona.name })}
+              className="flex shrink-0 items-center gap-2 self-center"
+            >
+              <PersonaAvatar persona={session.agent_config.persona} size={26} decorative />
+              <span className="hidden max-w-[10rem] truncate text-[13px] font-medium text-section-ink sm:inline">{session.agent_config.persona.name}</span>
+              <span className="sr-only sm:hidden">{t('persona.headerTitle', { name: session.agent_config.persona.name })}</span>
+              <span aria-hidden className="hidden h-3.5 w-px bg-hairline-strong sm:inline-block" />
+            </span>
+          ) : null}
           <SessionTitle
             title={session.title}
             cwd={session.metadata.cwd}
@@ -269,12 +301,40 @@ function Header({
               {t('sv.working')}
             </span>
           ) : null}
+          {/* 消息 | 过程: on the header from sm up; the ⋯ menu carries it below. */}
+          <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" />
           <SessionActionsMenu
             terminalAvailable={terminalAvailable}
             terminalOpen={terminalOpen}
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
             onAction={onSessionAction}
+            leading={(close) => (
+              <>
+                {botPersonaId !== undefined ? (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-bot-settings-open
+                      className="flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper"
+                      onClick={() => { close(); onOpenBotSettings(); }}
+                    >
+                      {t('bot.settings')}
+                    </button>
+                    <div className="my-1 h-px bg-hairline" />
+                  </>
+                ) : null}
+                <TimelineMenuRows
+                  view={view}
+                  onView={(next) => { close(); onView(next); }}
+                  delivery={session.delivery ?? 'reply'}
+                  onDelivery={(next) => { close(); onDelivery(next); }}
+                  deliveryPending={deliveryPending}
+                  showView={isNarrow}
+                />
+              </>
+            )}
           />
         </>
       ) : (
@@ -457,12 +517,15 @@ export function SessionActionsMenu({
   onToggleTerminal,
   onBeginRename,
   onAction,
+  leading,
 }: {
   terminalAvailable: boolean;
   terminalOpen: boolean;
   onToggleTerminal: () => void;
   onBeginRename: () => void;
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  /** Session-mode rows (view, delivery) above the actions; `close` dismisses the menu. */
+  leading?: (close: () => void) => ReactNode;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -511,6 +574,12 @@ export function SessionActionsMenu({
       </button>
       {open ? (
         <div role="menu" className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+          {leading !== undefined ? (
+            <>
+              {leading(() => { setOpen(false); })}
+              <div className="my-1 h-px bg-hairline" />
+            </>
+          ) : null}
           <button
             type="button"
             role="menuitem"
@@ -626,6 +695,8 @@ interface SessionCreateHandoff {
   readonly permissionMode?: PermissionMode;
   readonly planMode?: boolean;
   readonly goalObjective?: string;
+  /** The first message answers the persona's local greeting (see NewSessionDraft). */
+  readonly personaGreetingReply?: boolean;
 }
 
 export type SessionCreateSubmission =
@@ -634,6 +705,7 @@ export type SessionCreateSubmission =
       readonly text: string;
       readonly attachments: readonly ComposerAttachment[];
       readonly goalObjective?: string;
+      readonly personaGreetingReply?: boolean;
     }
   | {
       readonly kind: 'skill';
@@ -667,6 +739,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
     permissionMode: raw.permissionMode,
     planMode: raw.planMode,
     goalObjective: raw.goalObjective,
+    personaGreetingReply: raw.personaGreetingReply === true ? true : undefined,
   };
 }
 
@@ -689,6 +762,7 @@ export function resolveSessionCreateSubmission(
     text: handoff.initialPrompt,
     attachments: handoff.initialAttachments ?? [],
     goalObjective: handoff.goalObjective,
+    ...(handoff.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
   };
 }
 
@@ -1488,6 +1562,50 @@ export function SessionView({
     controller?.getState ?? emptyState,
   );
 
+  // Bot mode: which projection of the timeline this session shows (remembered
+  // per session; a `message` delivery opens in the message view) and the
+  // delivery switch. Delivery freezes per turn on the server, so a change
+  // made mid-turn is labelled "下一轮生效" until the turn ends.
+  const [timelineView, setTimelineView] = useTimelineView(sessionId, state.session);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isTimelineViewShortcut(event)) return;
+      event.preventDefault();
+      setTimelineView(timelineView === 'message' ? 'process' : 'message');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
+  }, [timelineView, setTimelineView]);
+  const [deliveryChangedInTurn, setDeliveryChangedInTurn] = useState(false);
+  useEffect(() => { if (!state.busy) setDeliveryChangedInTurn(false); }, [state.busy]);
+  const changeDelivery = useCallback((delivery: 'reply' | 'message') => {
+    if ((state.session?.delivery ?? 'reply') === delivery) return;
+    const busyNow = state.busy;
+    void client.updateSessionProfile(sessionId, { delivery })
+      .then(() => {
+        if (busyNow) setDeliveryChangedInTurn(true);
+        void controller?.refreshSession();
+      })
+      .catch((error: unknown) => {
+        pushToast({ tone: 'error', text: t('message.deliverySwitchFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+      });
+  }, [client, controller, sessionId, state.busy, state.session?.delivery, t]);
+  // A Bot's home session (`bot_persona_id`) offers "Bot 设置" in its ⋯ menu,
+  // which takes over the right rail (design §5.3).
+  const botPersonaId = typeof state.session?.metadata['bot_persona_id'] === 'string'
+    ? state.session.metadata['bot_persona_id'] as string
+    : undefined;
+  const [botSettingsOpen, setBotSettingsOpen] = useState(false);
+  const openBotSettingsRef = useRef<() => void>(() => undefined);
+  const openBotSettings = useCallback(() => { openBotSettingsRef.current(); }, []);
+  const closeBotSettings = useCallback(() => { setBotSettingsOpen(false); }, []);
+  const messageViewContext = useMemo<MessageViewContextValue>(() => ({
+    persona: state.session?.agent_config.persona,
+    sessionId,
+    internalProse: state.session?.delivery === 'message',
+    onOpenSession: (target) => { navigate(`/s/${target}`); },
+  }), [state.session?.agent_config.persona, state.session?.delivery, sessionId, navigate]);
+
   // Read state: while a session is on screen, keep its seen-mark at the newest
   // event the user has therefore looked at. This clears the session from the
   // activity inbox and from the sidebar's unread state, and re-arms both the
@@ -1750,7 +1868,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -1802,6 +1920,7 @@ export function SessionView({
             planGate,
             goalObjective: promptGoalObjective(options),
             appendTiming: liveSettings.defaultAppendTiming,
+            ...(options?.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
           })
           .then((result) => {
             setQuote(null);
@@ -2297,8 +2416,18 @@ export function SessionView({
     },
     [location.pathname, navigate, sessionId],
   );
-  const toggleRail = useCallback(() => { setRailOpen((value) => !value); }, []);
-  const closeRail = useCallback(() => { setRailOpen(false); }, []);
+  const toggleRail = useCallback(() => {
+    setRailOpen((value) => !value);
+    setBotSettingsOpen(false);
+  }, []);
+  const closeRail = useCallback(() => {
+    setRailOpen(false);
+    setBotSettingsOpen(false);
+  }, []);
+  openBotSettingsRef.current = () => {
+    setBotSettingsOpen(true);
+    setRailOpen(true);
+  };
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
     () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail } }),
     [openAgent, openAgentRoute, openSession, railOpen, toggleRail],
@@ -2592,9 +2721,9 @@ export function SessionView({
     void actions.send(
       submission.text,
       submission.attachments,
-      submission.goalObjective === undefined
+      submission.goalObjective === undefined && submission.personaGreetingReply !== true
         ? undefined
-        : { goalObjective: submission.goalObjective },
+        : { goalObjective: submission.goalObjective, personaGreetingReply: submission.personaGreetingReply },
     );
   }, [
     controller,
@@ -3114,6 +3243,7 @@ export function SessionView({
       onStopAgentTask={stopAgentTask}
     >
       <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
+      <MessageViewContext.Provider value={messageViewContext}>
       <InteractionPlacementContext.Provider value={interactionPlacement}>
       <AgentWorkspace
         target={{ sessionId, agentId: MAIN_AGENT_ID }}
@@ -3135,8 +3265,13 @@ export function SessionView({
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
             onSessionAction={runSessionAction}
+            view={timelineView} onView={setTimelineView}
+            onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
+            botPersonaId={botPersonaId}
+            onOpenBotSettings={openBotSettings}
           />,
           timeline: {
+            view: timelineView,
             state: { ...state, blocks: mainTranscriptBlocks },
             onLoadOlder: handleLoadOlder,
             onResolveApproval: handleResolveApproval,
@@ -3172,7 +3307,14 @@ export function SessionView({
             ) : null}
             <AnnotationTray sessionId={sessionId} blocks={mainTranscriptBlocks} />
           </>,
-          rail: <RightRail
+          rail: botSettingsOpen && botPersonaId !== undefined ? (
+            <BotSettingsPanel
+              className={`app-rail ${railOpen ? 'open' : ''}`}
+              personaId={botPersonaId}
+              session={state.session}
+              onClose={closeBotSettings}
+            />
+          ) : <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
@@ -3185,6 +3327,7 @@ export function SessionView({
         }}
       />
       </InteractionPlacementContext.Provider>
+      </MessageViewContext.Provider>
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
             <TerminalPanel

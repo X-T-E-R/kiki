@@ -88,6 +88,9 @@ import {
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
+  type ActivitySummary,
+  type MessageBlock,
+  type MessageViewNode,
 } from '@kiki/session-core/session';
 import { firstSentence, formatTokensPerSecond, plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -159,6 +162,11 @@ import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './To
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
 import { useTranscriptDetail } from './transcriptDetail';
+import { MessageRow, SpeakerHead, speakerOf, MESSAGE_FACE } from './message/MessageRow';
+import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
+import { buildMessageNodes, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
+import { writeTimelineView, type TimelineView } from './message/messageViewMode';
+import { useMessageViewContext } from './message/messageViewContext';
 
 /**
  * Split streaming assistant text into a settled prefix (safe to parse as
@@ -460,6 +468,7 @@ const AssistantMessage = memo(function AssistantMessage({
 }) {
   const { t, time } = useI18n();
   const messageLink = useMessageLink();
+  const internalProse = useMessageViewContext().internalProse && block.text !== '';
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
@@ -474,6 +483,13 @@ const AssistantMessage = memo(function AssistantMessage({
     (block.text !== '' || (rowActions !== undefined && isLatestFinal));
   return (
     <div className="anim-enter group/msg relative" title={time.absoluteTime(block.createdAt)}>
+      {/* Bot mode: plain prose never reaches the user; the process view marks
+          it once, in the margin, without restyling the text itself. */}
+      {internalProse ? (
+        <span data-assistant-internal className="mb-0.5 block text-[11px] leading-4 font-medium tracking-wide text-ink-faint">
+          {t('message.internal')}
+        </span>
+      ) : null}
       {/* No leading marker: the right-aligned user bubble already carries
           the turn boundary, so the answer sits on the page as prose. */}
       <div data-assistant-prose className="kiki-prose min-w-0">
@@ -1658,6 +1674,8 @@ const BlockView = memo(function BlockView({
       );
     case 'thinking':
       return <ThinkingMessage block={block} />;
+    case 'message':
+      return <ProcessMessage block={block} />;
     case 'shell':
       return <ShellMessage block={block} />;
     case 'subagent':
@@ -1746,7 +1764,156 @@ const BlockView = memo(function BlockView({
   }
 });
 
-function nodeKey(node: DisplayNode): string {
+/**
+ * SendMessage in the process view: the same speech row as the message view,
+ * so "this is what it said out loud" reads the same in both.
+ */
+function ProcessMessage({ block }: { block: MessageBlock }) {
+  const { t } = useI18n();
+  const context = useMessageViewContext();
+  const speaker = speakerOf(block, context.persona, t('agentMessage.agent'));
+  if (block.handoff !== undefined && block.status === 'sent') {
+    const handoff = block.handoff;
+    return (
+      <HandoffRow
+        from={speaker.name}
+        to={handoff.targetName}
+        text={block.text}
+        openLabel={t('message.openHandoff', { name: handoff.targetName })}
+        onOpen={context.onOpenSession === undefined ? undefined : () => { context.onOpenSession?.(handoff.targetSessionId); }}
+      />
+    );
+  }
+  return <MessageRow block={block} speaker={speaker} continued={false} currentSessionId={context.sessionId} />;
+}
+
+/** A timeline row: the process view's display nodes plus the message view's activity summaries. */
+type TimelineNode = DisplayNode | ActivitySummary;
+
+/**
+ * Rows the message view draws itself; everything else (your bubbles, open
+ * question and approval cards, dividers) keeps the process view's row.
+ */
+function isMessageViewOwnRow(node: TimelineNode): node is MessageBlock | ActivitySummary | NoticeBlock | UserBlock {
+  if (node.kind === 'message' || node.kind === 'activity-summary') return true;
+  if (node.kind === 'notice') return node.executor === undefined;
+  if (node.kind === 'user') return isInboundHandoff(node);
+  return false;
+}
+
+const MessageViewRow = memo(function MessageViewRow({
+  node,
+  previous,
+  blockById,
+  agentId,
+  agentNames,
+  onOpenAgent,
+  onOpenProcess,
+}: {
+  node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
+  previous: MessageViewNode | undefined;
+  blockById: ReadonlyMap<string, Block>;
+  agentId: string;
+  agentNames: ReadonlyMap<string, string>;
+  onOpenAgent?: (agentId: string) => void;
+  onOpenProcess: (turnId: string | undefined, blockId?: string) => void;
+}) {
+  const { t } = useI18n();
+  const context = useMessageViewContext();
+  const agentLabel = t('agentMessage.agent');
+  const turnId = displayNodeTurnId(node);
+  let body: ReactNode;
+  if (node.kind === 'message') {
+    const speaker = speakerOf(node, context.persona, agentLabel);
+    if (node.handoff !== undefined && node.status === 'sent') {
+      const handoff = node.handoff;
+      body = (
+        <HandoffRow
+          from={speaker.name}
+          to={handoff.targetName}
+          text={node.text}
+          openLabel={t('message.openHandoff', { name: handoff.targetName })}
+          onOpen={context.onOpenSession === undefined ? undefined : () => { context.onOpenSession?.(handoff.targetSessionId); }}
+        />
+      );
+    } else {
+      const quoted = node.replyTo === undefined ? undefined : blockById.get(node.replyTo) ?? [...blockById.values()].find(
+        (block) => (block.kind === 'user' && block.userMessageId === node.replyTo) || (block.kind === 'message' && block.messageId === node.replyTo),
+      );
+      const replyToText = quoted?.kind === 'user' || quoted?.kind === 'message' ? quoted.text : undefined;
+      body = (
+        <MessageRow
+          block={node}
+          speaker={speaker}
+          continued={speakerKey(previous) === speakerKey(node) && speakerKey(node) !== undefined}
+          replyToText={replyToText}
+          currentSessionId={context.sessionId}
+          onOpenProcess={() => { onOpenProcess(turnId, node.id); }}
+        />
+      );
+    }
+  } else if (node.kind === 'user') {
+    const sender = node.peerThread?.senderName ?? node.peerThread?.personaId ?? agentLabel;
+    const receiver = context.persona?.name ?? agentLabel;
+    const sourceSession = node.peerThread?.sessionId;
+    body = (
+      <HandoffRow
+        from={sender}
+        to={receiver}
+        text={node.text.replace(/^来自\s*[^：:]+[：:]\s*/u, '')}
+        openLabel={t('message.openHandoff', { name: sender })}
+        onOpen={sourceSession === undefined || context.onOpenSession === undefined ? undefined : () => { context.onOpenSession?.(sourceSession); }}
+      />
+    );
+  } else if (node.kind === 'notice') {
+    body = <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
+  } else {
+    body = (
+      <ActivitySummaryRow
+        summary={node}
+        onOpenProcess={() => { onOpenProcess(turnId, node.members[0]?.id); }}
+        renderMember={(member) =>
+          member.kind === 'tool' ? (
+            <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+          ) : member.kind === 'shell' ? (
+            <ShellMessage block={member} />
+          ) : member.kind === 'thinking' ? (
+            <ThinkingMessage block={member} />
+          ) : member.kind === 'assistant' ? (
+            <p className="line-clamp-3 text-[12.5px] leading-snug text-ink-faint">
+              <span className="mr-1.5 text-[11px] font-medium">{t('message.internal')}</span>
+              {member.text}
+            </p>
+          ) : member.kind === 'subagent' ? (
+            <SubagentEventLine name={member.name} status={member.status} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
+          ) : null
+        }
+      />
+    );
+  }
+  return (
+    <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}>
+      {body}
+    </div>
+  );
+});
+
+function SubagentEventLine({ name, status, onOpen }: { name: string; status: SubagentBlock['status']; onOpen?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={onOpen === undefined}
+      className="flex min-h-6 items-center gap-2 rounded-sm text-left text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusTone(status)}`} />
+      <Icon name="agent" size={12} className="text-ink-faint" />
+      <span className="truncate">{name}</span>
+    </button>
+  );
+}
+
+function nodeKey(node: TimelineNode): string {
   return node.id;
 }
 
@@ -1762,11 +1929,26 @@ function nodeKey(node: DisplayNode): string {
  * measured height moves by exactly the same amount as its content: positions,
  * anchoring and the overlap gate all see one consistent geometry.
  */
-function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode): string {
+function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode, view: 'process' | 'message' = 'process'): string {
   if (previous === undefined || node === undefined) return '';
+  if (view === 'message') {
+    // One-line status rows (a work summary, "no reply", a failed send) hang
+    // off the message above them: 6px instead of the 16px between speakers.
+    if (isMessageViewStatusRow(node)) return '-mt-2.5';
+    // A speaker's consecutive messages read as one run: 8px.
+    const speaker = speakerKey(node as MessageViewNode);
+    if (speaker !== undefined && speakerKey(previous as MessageViewNode) === speaker) return '-mt-2';
+  }
   if (node.kind === 'user') return 'mt-2';
   const lane = timelineLane(node);
   return lane === 'activity' && timelineLane(previous) === 'activity' ? '-mt-3.5' : '';
+}
+
+/** Message-view rows that are a single status line rather than speech. */
+function isMessageViewStatusRow(node: TimelineNode): boolean {
+  if (node.kind === 'activity-summary') return true;
+  if (node.kind === 'notice') return node.executor === undefined;
+  return node.kind === 'message' && (node.status === 'failed' || node.status === 'cancelled');
 }
 
 /** Lifecycle entries a subagent card already states through its own status. */
@@ -1848,7 +2030,7 @@ function AnnotationNotes({ annotations, align }: { annotations: readonly Timelin
 }
 
 /** Turn a display node belongs to (tool groups take their first tool's). */
-function displayNodeTurnId(node: DisplayNode): string | undefined {
+function displayNodeTurnId(node: TimelineNode): string | undefined {
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
   if (node.kind === 'subagent') return node.parentTurnId;
   return 'turnId' in node ? node.turnId : undefined;
@@ -1867,10 +2049,11 @@ function displayNodeTurnId(node: DisplayNode): string | undefined {
  * `divider`: a boundary between regions rather than an event inside one
  *   (compaction, markers, stop notices, system injections) — spans the column.
  */
-function timelineLane(node: DisplayNode): 'conversation' | 'activity' | 'divider' {
+function timelineLane(node: TimelineNode): 'conversation' | 'activity' | 'divider' {
   switch (node.kind) {
     case 'user':
     case 'assistant':
+    case 'message':
       return 'conversation';
     case 'approval':
       return node.resolution === undefined ? 'conversation' : 'activity';
@@ -2026,7 +2209,7 @@ const EMPTY_HELD: ReadonlySet<string> = new Set();
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
-type TranscriptVirtualNode = DisplayNode | undefined;
+type TranscriptVirtualNode = TimelineNode | undefined;
 type TranscriptViewportAnchor = {
   atEnd: boolean;
   key: string | undefined;
@@ -2541,9 +2724,12 @@ export function Transcript({
   onOpenAgent,
   rowActions,
   visible = true,
+  view = 'process',
 }: {
   state: SessionViewState;
   agentId?: string;
+  /** `message`: only delivered speech, your cards and one-line activity summaries. */
+  view?: TimelineView;
   /**
    * False while the timeline sits in a hidden tab or collapsed panel: its
    * viewport anchor is frozen, and showing it again restores the reader's
@@ -2774,10 +2960,34 @@ export function Transcript({
   // scrolled up (`heldRows`) are left in place until they return.
   const liveTurnId = latestTurnId(mergedNodes);
   const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
-  const groupedNodes = useMemo(
+  const processNodes = useMemo(
     () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows }),
     [mergedNodes, liveTurnId, heldRows],
   );
+  // Message view: the same blocks through the delivery projection — speech,
+  // your cards, one activity line per stretch, outcomes. Nothing is dropped:
+  // every block stays inside a summary's members.
+  const messageContext = useMessageViewContext();
+  const messageNodes = useMemo<readonly MessageViewNode[]>(
+    () => (view === 'message'
+      // A silent stretch draws nothing; as a virtual row it would still
+      // take a gap, so it is not a row at all.
+      ? buildMessageNodes(timelineBlocks, { busy: state.busy, personaName: messageContext.persona?.name })
+        .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
+      : []),
+    [view, timelineBlocks, state.busy, messageContext.persona?.name],
+  );
+  const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  const blockById = useMemo(() => new Map(timelineBlocks.map((block) => [block.id, block] as const)), [timelineBlocks]);
+  // "查看过程" / "在过程中查看": flip this session to the process view, then
+  // let the process timeline (same locator key) scroll to the turn.
+  const pendingProcessTarget = useRef<{ turnId?: string; blockId?: string } | null>(null);
+  const openProcessAt = useCallback((turnId: string | undefined, blockId?: string) => {
+    if (sessionIdForLocate === undefined) return;
+    pendingProcessTarget.current = { turnId, blockId };
+    writeTimelineView(sessionIdForLocate, 'process');
+  }, [sessionIdForLocate]);
+  const presence = useMemo(() => (view === 'message' ? presenceOf(messageNodes, state.busy) : undefined), [view, messageNodes, state.busy]);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -2873,13 +3083,15 @@ export function Transcript({
     const blocks = new Map<string, { index: number; foldId?: string }>();
     const turns = new Map<string, number>();
     const subagents = new Map<string, { index: number; foldId?: string }>();
-    const visit = (node: DisplayNode, index: number, foldId: string | undefined) => {
+    const visit = (node: TimelineNode, index: number, foldId: string | undefined) => {
       blocks.set(node.id, { index, foldId });
       if (node.kind === 'subagent' && !subagents.has(node.subagentId)) subagents.set(node.subagentId, { index, foldId });
       if (node.kind === 'history-fold') {
         for (const member of node.members) visit(member, index, node.id);
       } else if (node.kind === 'subagent-group' || node.kind === 'media-run') {
         for (const member of node.members) visit(member, index, foldId);
+      } else if (node.kind === 'activity-summary') {
+        for (const member of node.members) blocks.set(member.id, { index, foldId });
       } else if (node.kind === 'tool-group') {
         for (const member of node.members) blocks.set(member.id, { index, foldId });
       }
@@ -3294,7 +3506,14 @@ export function Transcript({
   const [findReveal] = useState(createFindRevealStore);
   const [findOwner] = useState(() => Symbol('transcript-find'));
   const findOpen = findRequest !== null;
-  const findItems = useMemo(() => (findOpen ? buildFindItems(groupedNodes) : []), [findOpen, groupedNodes]);
+  // Find reads what the rows show; a message-view activity summary is one
+  // collapsed line whose members stay in the process view.
+  const findItems = useMemo(
+    () => (findOpen
+      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'))
+      : []),
+    [findOpen, groupedNodes],
+  );
   const loadedTurns = useMemo(() => {
     const turns = new Set<number>();
     for (const item of findItems) {
@@ -3491,6 +3710,18 @@ export function Transcript({
     if (missing.length > 0) setHeldRows((previous) => new Set([...previous, ...missing]));
   });
 
+  // The message view asked to see a turn's process: once the process rows
+  // are on the page, land on the exact block (or the turn when it has none).
+  useEffect(() => {
+    const target = pendingProcessTarget.current;
+    if (view !== 'process' || target === null) return;
+    pendingProcessTarget.current = null;
+    const blockTarget = target.blockId !== undefined && locateIndexRef.current.blocks.has(target.blockId);
+    void locate(blockTarget
+      ? { kind: 'block', blockId: target.blockId! }
+      : target.turnId !== undefined ? { kind: 'turn', turnId: target.turnId } : { kind: 'latest' });
+  }, [view, locate]);
+
   useEffect(() => () => {
     const initialFrame = initialScrollFrameRef.current;
     if (initialFrame !== null) cancelAnimationFrame(initialFrame);
@@ -3562,7 +3793,7 @@ export function Transcript({
             const node = virtualNodes[virtualItem.index];
             const first = virtualItem.index === 0;
             const last = virtualItem.index === virtualNodes.length - 1;
-            const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node);
+            const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node, view);
             return (
               <div
                 key={virtualItem.key}
@@ -3573,10 +3804,28 @@ export function Transcript({
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} /> : null}
-                  {node === undefined ? null : (
-                    <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
-                      <TranscriptRow
+                  {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
+                    <div data-transcript-lane="agent" className={AGENT_LANE}>
+                      <MessageViewRow
                         node={node}
+                        previous={virtualNodes[virtualItem.index - 1] as MessageViewNode | undefined}
+                        blockById={blockById}
+                        agentId={agentId}
+                        agentNames={agentNames}
+                        onOpenAgent={onOpenAgent}
+                        onOpenProcess={openProcessAt}
+                      />
+                    </div>
+                  ) : (
+                    <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
+                      {view === 'message' && node.kind === 'question'
+                        && speakerKey(virtualNodes[virtualItem.index - 1] as MessageViewNode | undefined) !== 'bot:self' ? (
+                          // A question in Bot mode is the Bot talking: its face
+                          // and name lead the card (design §4.6).
+                          <SpeakerHead persona={messageContext.persona ?? { id: 'kiki-agent', name: t('agentMessage.agent') }} />
+                        ) : null}
+                      <TranscriptRow
+                        node={node as DisplayNode}
                         agentId={agentId}
                         readOnly={readOnly}
                         approvalShortcutHints={hasUnresolvedApproval}
@@ -3601,7 +3850,22 @@ export function Transcript({
                       />
                     </div>
                   )}
-                  {last && showTurnStatus ? (
+                  {last && view === 'message' && presence !== undefined ? (
+                    <div className={AGENT_LANE}>
+                      <PresenceLine
+                        text={t(presence.kind === 'typing' ? 'message.typing' : 'message.working', {
+                          name: messageContext.persona?.name ?? t('agentMessage.agent'),
+                        })}
+                        detail={presence.kind === 'working'
+                          ? presence.reads > 0
+                            ? t('message.readSoFar', { count: presence.reads })
+                            : presence.commands > 0
+                              ? t('message.ranSoFar', { count: presence.commands })
+                              : presence.steps > 0 ? t('message.steps', { count: presence.steps }) : undefined
+                          : undefined}
+                      />
+                    </div>
+                  ) : last && showTurnStatus && view !== 'message' ? (
                     <div className={AGENT_LANE}>
                       <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
                     </div>

@@ -58,6 +58,13 @@
  * `memoryJournal`). Writes mutate that state and append journal records, so the
  * page's save / delete / undo / inbox and the 40944 revision conflict are all
  * exercisable; `approval: 'review'` makes new entries land in the inbox.
+ * Persona scopes key as `persona:<id>` and `workspace:<wd>/persona:<id>`.
+ *
+ * Bots / rooms: `/bots*` and `/rooms*` are served by fixture-bot-rooms.mjs
+ * from scenario `bots` / `rooms` (see that file for the seed shape).
+ *
+ * Personas: `/personas*` is served by fixture-personas.mjs from scenario
+ * `personas` / `personaImport` (see that file).
  *
  * Terminals: `/sessions/{id}/terminals*` REST plus the `terminal_*` WS control
  * frames are served by FakeTerminal, a line-oriented echo shell (`echo`, `pwd`,
@@ -75,6 +82,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { FixtureKlient } from './fixture-klient.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
+import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
+import { handleBotRooms, resetBotRooms } from './fixture-bot-rooms.mjs';
 import { handleAutoCompact } from './fixture-auto-compact.mjs';
 import { handleContextStrategy, resetContextStrategy } from './fixture-context-strategy.mjs';
 import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
@@ -566,6 +575,8 @@ class FixtureServer {
       Object.entries(structuredClone(data.memoryJournal ?? {})).map(([scope, records]) => [scope, records]),
     );
     this.memoryOpCounter = 0;
+    resetPersonas(this, data);
+    resetBotRooms(this, data);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -589,7 +600,9 @@ class FixtureServer {
   }
 
   /** Scope key for the memory stores: `global` or `workspace:<wd>`. */
-  memoryScopeKey(scope, workspaceId) {
+  memoryScopeKey(scope, workspaceId, personaId) {
+    if (scope === 'persona') return `persona:${personaId ?? ''}`;
+    if (scope === 'persona_workspace') return `workspace:${workspaceId ?? ''}/persona:${personaId ?? ''}`;
     return scope === 'global' ? 'global' : `workspace:${workspaceId ?? ''}`;
   }
 
@@ -648,9 +661,9 @@ class FixtureServer {
       return true;
     }
 
-    const scopeMatch = /^\/memory\/(global|workspace)(?:\/(.+))?$/.exec(path);
+    const scopeMatch = /^\/memory\/(global|workspace|persona_workspace|persona)(?:\/(.+))?$/.exec(path);
     if (scopeMatch === null) return false;
-    const key = this.memoryScopeKey(scopeMatch[1], query.get('workspace_id') ?? undefined);
+    const key = this.memoryScopeKey(scopeMatch[1], query.get('workspace_id') ?? undefined, query.get('persona_id') ?? undefined);
     const tail = scopeMatch[2];
     const entries = this.memoryList(key);
     const withRevision = (entry) => ({ ...structuredClone(entry), revision: this.memoryRevision(entry) });
@@ -1364,6 +1377,8 @@ class FixtureServer {
     }
     const path = url.pathname.slice('/api'.length);
     if (handleAppearance(this, req, res, path)) return;
+    if (await handlePersonas(this, req, res, path, url.searchParams)) return;
+    if (await handleBotRooms(this, req, res, path, url.searchParams)) return;
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
       : undefined;
@@ -2364,6 +2379,14 @@ class FixtureServer {
           ...(body.agent_config?.profile !== undefined
             ? { profile: body.agent_config.profile }
             : {}),
+          // kap-server echoes the bound persona as avatar data.
+          ...(typeof body.persona === 'string' && this.personas?.has(body.persona)
+            ? { persona: {
+                id: body.persona,
+                name: this.personas.get(body.persona).definition.name,
+                ...(this.personas.get(body.persona).avatar !== undefined ? { avatarUrl: `/api/personas/${body.persona}/avatar` } : {}),
+              } }
+            : {}),
         },
         usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
         permission_rules: [],
@@ -2379,6 +2402,7 @@ class FixtureServer {
     if (tail === '' ) return this.envelope(res, session.record);
     if (tail === '/profile' && body !== undefined) {
       if (typeof body.title === 'string') session.record.title = body.title;
+      if (body.delivery === 'reply' || body.delivery === 'message') session.record.delivery = body.delivery;
       // Mirror the real `updateSessionProfile`: a metadata patch merges onto
       // the existing custom document (pin flags survive renames that omit it).
       if (body.metadata !== undefined && typeof body.metadata === 'object' && body.metadata !== null) {

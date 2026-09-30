@@ -204,6 +204,20 @@ describe('buildNewSessionCreate', () => {
     expect(body.agent_config).toMatchObject({ profile: 'agent' });
   });
 
+  it('binds a persona and leaves its profile to the persona', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      permissionMode: 'manual',
+      planMode: false,
+      persona: 'lin-lan',
+    });
+    expect(body).toMatchObject({ persona: 'lin-lan', metadata: { cwd: 'C:/repo' } });
+    expect(body.agent_config).not.toHaveProperty('profile');
+    const plain = buildNewSessionCreate({ cwd: 'C:/repo', profile: 'agent', permissionMode: 'manual', planMode: false });
+    expect(plain).not.toHaveProperty('persona');
+  });
+
   it('marks the create temporary only when asked', () => {
     const base = { profile: 'agent', permissionMode: 'manual' as const, planMode: false, cwd: '' };
     expect(buildNewSessionCreate(base).ephemeral).toBeUndefined();

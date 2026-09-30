@@ -1255,7 +1255,8 @@ button.context-image:hover {
 /* The composer card's border carries the input's focus state; the global
  * :focus-visible outline would draw a second box inside the card. */
 .conversation-seat textarea[data-composer]:focus-visible,
-[data-composer-variant] textarea[data-composer]:focus-visible {
+[data-composer-variant] textarea[data-composer]:focus-visible,
+.composer-card textarea[data-room-input]:focus-visible {
   outline: none;
 }
 /* The ＋ menu's search field: its rounded well carries the focus ring. */
@@ -1389,8 +1390,10 @@ input[data-add-search]:focus-visible {
  * bubbles, activity rows and cards all end on the same right edge. */
 .kiki-prose,
 .thinking-row {
+  /* YaHei before Noto Sans SC: on Windows the system Noto SC is a variable
+   * font whose fallback instance renders visibly heavier than regular. */
   --kiki-prose-font: 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC', 'Hiragino Sans GB',
-    'Noto Sans SC', 'Microsoft YaHei', serif;
+    'Microsoft YaHei', 'Noto Sans SC', serif;
 }
 .kiki-prose {
   font-family: var(--kiki-prose-font);

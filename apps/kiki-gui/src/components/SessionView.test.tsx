@@ -442,6 +442,14 @@ describe('parseSessionCreateHandoff', () => {
     });
   });
 
+  it('carries the persona greeting-reply bit to the first prompt only when set', () => {
+    const handoff = parseSessionCreateHandoff({ initialPrompt: 'hi', personaGreetingReply: true });
+    expect(handoff.personaGreetingReply).toBe(true);
+    expect(resolveSessionCreateSubmission(handoff)).toMatchObject({ kind: 'prompt', text: 'hi', personaGreetingReply: true });
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', personaGreetingReply: 'yes' }).personaGreetingReply).toBeUndefined();
+    expect(resolveSessionCreateSubmission({ initialPrompt: 'hi' })).not.toHaveProperty('personaGreetingReply');
+  });
+
   it('ignores a malformed skill payload and empty location state', () => {
     expect(parseSessionCreateHandoff({ initialSkill: { name: 'review' } }).initialSkill).toBeUndefined();
     expect(parseSessionCreateHandoff(null)).toEqual({});

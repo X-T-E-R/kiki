@@ -590,12 +590,13 @@ describe('Sidebar temporary conversations', () => {
 });
 
 describe('Sidebar entry distribution', () => {
-  it('lists the five tool pages in the primary nav, in order', async () => {
+  it('lists the six tool pages in the primary nav, in order', async () => {
     const { container } = await mount();
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
     const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.textContent);
-    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Usage', 'Capabilities']);
+    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities']);
+    expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();

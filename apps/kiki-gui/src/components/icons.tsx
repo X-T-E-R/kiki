@@ -78,6 +78,7 @@ export type IconName =
   | 'usage'
   | 'bell'
   | 'notes'
+  | 'persona'
   | 'branch'
   | 'thread';
 
@@ -296,6 +297,14 @@ const PATHS: Record<IconName, ReactNode> = {
   ),
   // An arrow leaving a line: a session another session started.
   thread: <path d="M4 2.8v5.4c0 1.4 1.1 2.5 2.5 2.5H12m-2.6-2.6 2.6 2.6-2.6 2.6" />,
+  // A face on a kept card: the Personas page (who, not what it can do).
+  persona: (
+    <>
+      <rect x="2.5" y="2.5" width="11" height="11" rx="3" />
+      <circle cx="8" cy="6.8" r="1.8" />
+      <path d="M4.9 11.6c.6-1.4 1.7-2.1 3.1-2.1s2.5.7 3.1 2.1" />
+    </>
+  ),
 };
 
 interface IconProps {

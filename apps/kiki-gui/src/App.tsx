@@ -51,6 +51,8 @@ import { MemoryPage } from './components/MemoryPage';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView } from './components/SessionView';
+import { PersonasPage } from './components/persona/PersonasPage';
+import { RoomPage } from './components/room/RoomPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
@@ -670,6 +672,14 @@ export function App() {
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
             }
+          />
+          <Route
+            path="/personas"
+            element={<PersonasPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
+          <Route
+            path="/rooms/:id"
+            element={<RoomPage sessions={sessions} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route
             path="/capabilities"

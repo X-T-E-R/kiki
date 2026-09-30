@@ -187,6 +187,13 @@ describe('find matching', () => {
     expect(items.find((item) => item.blockId === 'a1')?.text).toBe('Found it: needle lives in src/needle.ts.');
   });
 
+  it('indexes a delivered message by its text', () => {
+    const message: Block = {
+      kind: 'message', id: 'm1', origin: 'send_message', status: 'sent', text: '证书那边还差一步', attachments: [], deliveredTo: [], turnId: 't1',
+    };
+    expect(buildFindItems([message])).toEqual([expect.objectContaining({ blockId: 'm1', text: '证书那边还差一步' })]);
+  });
+
   it('splits server hits into still-loadable and compacted history', () => {
     const hit = (turn: number, snippet: string): SearchMessageHit => ({
       session_id: 's', workspace_id: 'w', session_title: '', agent_id: 'main', role: 'assistant', snippet, time: 0, turn, score: 1,

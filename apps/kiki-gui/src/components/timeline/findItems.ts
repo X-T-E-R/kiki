@@ -90,6 +90,8 @@ export function blockFindText(block: Block): string {
       return [block.name, block.message ?? '', block.error ?? ''].filter((part) => part !== '').join('\n');
     case 'notice':
       return block.i18n === undefined ? block.text : '';
+    case 'message':
+      return block.text;
     case 'approval':
     case 'question':
       return '';

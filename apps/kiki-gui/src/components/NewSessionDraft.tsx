@@ -17,6 +17,7 @@ import type {
   AuthSummary,
   NamedAgentProfile,
   PermissionMode,
+  PersonaSnapshot,
   SessionCreate,
   Workspace,
 } from '@kiki/protocol';
@@ -127,9 +128,16 @@ export function buildNewSessionCreate(input: {
   /** Opt-in only: run in a fresh Kiki-managed worktree of the target repository. */
   readonly worktree?: boolean;
   readonly ephemeral?: boolean;
+  /**
+   * Bind a persona. Its own profile then applies (the profile field is left
+   * out so the server does not override it with the default), and model /
+   * thinking are sent only when the user picked them after the persona.
+   */
+  readonly persona?: string;
 }): SessionCreate {
+  const persona = input.persona === undefined ? {} : { persona: input.persona };
   const agent_config = {
-    profile: input.profile,
+    ...(input.persona === undefined ? { profile: input.profile } : {}),
     model: input.model,
     thinking: input.thinking,
     permission_mode: input.permissionMode,
@@ -137,8 +145,13 @@ export function buildNewSessionCreate(input: {
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
   return input.cwd !== ''
-    ? { metadata: { cwd: input.cwd }, agent_config, ...isolation, ephemeral: input.ephemeral }
-    : { workspace_id: input.workspaceId, agent_config, ...isolation, ephemeral: input.ephemeral };
+    ? { metadata: { cwd: input.cwd }, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral }
+    : { workspace_id: input.workspaceId, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral };
+}
+
+/** Whether a bound persona shows a greeting the first message would answer. */
+export function hasGreeting(persona: PersonaSnapshot | undefined): boolean {
+  return persona?.definition.greeting !== undefined && persona.definition.greeting.trim() !== '';
 }
 
 /**
@@ -172,11 +185,14 @@ export function needsProviderSetup(
 export function useNewSessionDraft({
   initialWorkspaceId,
   initialProfile,
+  initialPersona,
   prefillNavigationKey,
 }: {
   initialWorkspaceId?: string;
   /** `?agent=` prefill — the profile the new session binds at creation. */
   initialProfile?: string;
+  /** `?persona=` prefill — the persona the new session binds at creation. */
+  initialPersona?: string;
   /** Router history-entry identity survives reload/back but changes on a new navigation. */
   prefillNavigationKey?: string;
 } = {}) {
@@ -232,6 +248,10 @@ export function useNewSessionDraft({
   const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
     initialRestoredDraft.effortOverride,
   );
+  // The persona bound at creation. Kept for this window only (like the
+  // temporary choice); `?persona=` prefills it from the Personas page.
+  const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
+  const [personaPending, setPersonaPending] = useState(initialPersona !== undefined);
   const [selectionRevision, setSelectionRevision] = useState(0);
   const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
   const profileCatalogTransitionRef = useRef(false);
@@ -398,7 +418,7 @@ export function useNewSessionDraft({
   // memoized composer element into the conversation shell, and a send that
   // changes identity on every keystroke would defeat the memo.
   const sendContextRef = useRef({
-    busy: busy || selectionBlocked,
+    busy: busy || selectionBlocked || personaPending,
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
@@ -410,9 +430,10 @@ export function useNewSessionDraft({
     goalObjective,
     worktree,
     ephemeral,
+    persona,
   });
   sendContextRef.current = {
-    busy: busy || selectionBlocked,
+    busy: busy || selectionBlocked || personaPending,
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
@@ -424,6 +445,7 @@ export function useNewSessionDraft({
     goalObjective,
     worktree,
     ephemeral,
+    persona,
   };
 
   const createThenNavigate = useCallback((handoff: {
@@ -461,6 +483,7 @@ export function useNewSessionDraft({
       planMode: context.planMode,
       worktree: context.worktree,
       ephemeral: context.ephemeral || undefined,
+      persona: context.persona?.definition.id,
     });
 
     // Returned so the composer's send latch rides the create round trip: a
@@ -486,6 +509,10 @@ export function useNewSessionDraft({
               permissionMode: context.permissionMode,
               planMode: context.planMode,
               goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+              // The greeting was the last thing on screen and this is the first
+              // message: the engine materializes it as history from the frozen
+              // persona (the client never sends the greeting text itself).
+              personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
             },
             replace: false,
           }),
@@ -563,7 +590,55 @@ export function useNewSessionDraft({
     applyAgentProfile(items, profile.name);
   }, [agentProfilesQuery.data, applyAgentProfile]);
 
+  /**
+   * Bind (or clear) a persona. Its profile becomes the draft's profile so the
+   * catalog check and capability panel describe what will run, and its model
+   * and effort pins replace the composer's model and effort, exactly like
+   * picking a pinned profile. Clearing drops back to the default profile.
+   */
+  const applyPersona = useCallback((snapshot: PersonaSnapshot | undefined) => {
+    const items = agentProfilesQuery.data?.items ?? [];
+    setPersonaState(snapshot);
+    if (snapshot === undefined) {
+      applyAgentProfile(items, DEFAULT_AGENT_PROFILE);
+      return;
+    }
+    const definition = snapshot.definition;
+    const profile = definition.profile ?? DEFAULT_AGENT_PROFILE;
+    const defaults = composerDefaultsForProfile(items, profile);
+    setAgentProfileState(profile);
+    // A persona pin is held like a user choice so the profile-default effect
+    // does not replace it; an unpinned value still follows the profile.
+    modelOverrideFromProfile.current = definition.modelAlias === undefined;
+    effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
+    setModelOverrideState(definition.modelAlias ?? defaults.model);
+    setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);
+    setSelectionRevision((value) => value + 1);
+  }, [agentProfilesQuery.data, applyAgentProfile]);
+
+  const selectPersona = useCallback((id: string | undefined) => {
+    if (id === undefined) { applyPersona(undefined); return; }
+    setPersonaPending(true);
+    void client.getPersona(id)
+      .then((snapshot) => { applyPersona(snapshot); })
+      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)); })
+      .finally(() => { setPersonaPending(false); });
+  }, [applyPersona, client]);
+
+  // `?persona=` from the Personas page's "Start a chat" — applied once the
+  // profile catalog is there, so the persona's profile validates.
+  const initialPersonaRef = useRef(initialPersona);
+  useEffect(() => {
+    const id = initialPersonaRef.current;
+    if (id === undefined || agentProfilesQuery.data === undefined) return;
+    initialPersonaRef.current = undefined;
+    selectPersona(id);
+  }, [agentProfilesQuery.data, selectPersona]);
+
   return {
+    persona,
+    personaPending,
+    selectPersona,
     draft,
     attachments,
     busy,

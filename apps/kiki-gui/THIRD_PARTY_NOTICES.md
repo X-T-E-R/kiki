@@ -32,5 +32,6 @@ This static notice covers the bundled sidecar, major direct desktop runtime depe
 | [LiveAgent `00a2c6f`](https://github.com/Stack-Cairn/LiveAgent/commit/00a2c6fc43754f40022b0703459824559bee73ea) | Reconnect policy and managed-child shutdown behavior | MIT |
 | [deepseek-harness `47f9438`](https://github.com/deepseek-ai/deepseek-harness/commit/47f943859bef60e4160492346772ded9b24f765a) | Conversation-shell, composer, status, tool, queue, and reference-chip interaction patterns | MIT |
 | [dsh-web-ui `6265187`](https://github.com/zhu1090093659/dsh-web-ui/commit/62651870dd18ad3d9bf54a9cb934b75d0fbaf639) | Grouped collapsible capability cards | Apache-2.0 |
+| [Letta Code `c0956ed`](https://github.com/letta-ai/letta-code/commit/c0956ed3263da7f781a958ce35ff3042ef97adfa) | Partial JSON string-field scanner for streaming SendMessage drafts (`src/lib/partialJson.ts`) | Apache-2.0 |
 
 The Kiki repository itself is distributed under the MIT License in the repository root. Copyright and license notices supplied by third-party projects remain the property of their respective authors.

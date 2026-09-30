@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadPinnedLanes, savePinnedLanes } from '../components/settings/nbSearch/types';
+import { readTimelineView, writeTimelineView } from '../components/message/messageViewMode';
 import { writeBackgroundPrefs } from './skins/background';
 import { readSkinPrefs, writeSkinPrefs } from './skins/store';
 import {
@@ -134,6 +135,16 @@ describe('call sites route through the wrapper', () => {
     expect(loadPinnedLanes()).toEqual(['lane-a']);
     expect(localStorage.getItem('kiki.space.acme.kiki.nb_search.pinned_lanes')).toBe('["lane-a"]');
     expect(localStorage.getItem('kiki.nb_search.pinned_lanes')).toBeNull();
+  });
+
+  it('isolates timeline choices for the same session id across spaces', () => {
+    writeTimelineView('shared-session-id', 'message');
+    configureSpaceStorage({ homeId: 'acme' });
+    expect(readTimelineView('shared-session-id', { delivery: 'reply' })).toBe('process');
+    writeTimelineView('shared-session-id', 'process');
+    expect(localStorage.getItem('kiki.space.acme.kiki.timelineView')).toContain('process');
+    configureSpaceStorage(null);
+    expect(readTimelineView('shared-session-id', { delivery: 'reply' })).toBe('message');
   });
 
   it('reads the same key the main space wrote before the switch', () => {

@@ -88,6 +88,7 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
+import { isBotOrRoomSession, SidebarBotRoomGroups } from './bot/SidebarBotRoomGroups';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
 
@@ -108,6 +109,7 @@ const ClockIcon = () => <Icon name="clock" size={16} />;
 const UsageIcon = () => <Icon name="usage" size={16} />;
 /** Memory is a kept leaf of notes (a place), not the timeline's spark. */
 const MemoryIcon = () => <Icon name="notes" size={16} />;
+const PersonaIcon = () => <Icon name="persona" size={16} />;
 const CapabilitiesIcon = () => <Icon name="star" size={16} />
 
 function PinIcon({ className = '' }: { className?: string }) {
@@ -212,7 +214,7 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
   );
 }
 
-type NavKey = 'board' | 'cron' | 'memory' | 'usage' | 'capabilities';
+type NavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities';
 
 const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, string>; icon: () => React.ReactNode }[] = [
   { key: 'board', route: '/board', hook: { 'data-nav-board': '' }, icon: BoardIcon },
@@ -220,6 +222,9 @@ const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, str
   // Always present, on or off: switched off it opens the turn-on guide, so
   // "what does Kiki remember" has one stable address either way.
   { key: 'memory', route: '/memory', hook: { 'data-nav-memory': '' }, icon: MemoryIcon },
+  // Who talks to you sits beside what it remembers: a persona owns a memory
+  // namespace, and carries no tools or permissions (those are Capabilities).
+  { key: 'personas', route: '/personas', hook: { 'data-nav-personas': '' }, icon: PersonaIcon },
   { key: 'usage', route: '/usage', hook: { 'data-nav-usage': '' }, icon: UsageIcon },
   { key: 'capabilities', route: '/capabilities', hook: { 'data-nav-capabilities': '' }, icon: CapabilitiesIcon },
 ];
@@ -263,7 +268,7 @@ function PrimaryNav({
                 }`}
               >
                 <span className={current ? 'text-selected-ink' : 'text-ink-faint'}><Icon /></span>
-                <span className="min-w-0 flex-1 truncate">{t(`nav.${item.key}`)}</span>
+                <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`)}</span>
                 {badge !== undefined && badge.count > 0 ? (
                   <span
                     data-nav-badge={item.key}
@@ -286,7 +291,7 @@ function PrimaryNav({
 export function Sidebar({
   activeSessionId,
   sessions,
-  sessionGroups,
+  sessionGroups: allSessionGroups,
   sessionsQuery,
   workspaceOptions,
   filters,
@@ -361,6 +366,14 @@ export function Sidebar({
     setExpandedGroups(new Set(memory.expanded));
   }, [scopeId]);
 
+  // A live Bot home or room-member session is reached from its Bot / room
+  // row above; archived ones (a deleted room's members) stay findable here.
+  const sessionGroups = useMemo(
+    () => allSessionGroups
+      .map((group) => ({ ...group, items: group.items.filter((session) => session.archived === true || !isBotOrRoomSession(session)) }))
+      .filter((group) => group.items.length > 0),
+    [allSessionGroups],
+  );
   const activity = useSessionActivity(sessions);
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
@@ -847,6 +860,7 @@ export function Sidebar({
       </div>
 
       <PrimaryNav activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
+      <SidebarBotRoomGroups sessions={sessions} activeSessionId={activeSessionId} seen={seen} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
         {/* The section label never gives way: it is T5, unshrinkable and

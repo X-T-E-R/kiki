@@ -42,6 +42,8 @@ vi.mock('../state/connection', () => ({
       uploadFile,
     },
   }),
+  // The persona chip's face; letter avatars need no connection.
+  useOptionalConnection: () => undefined,
 }));
 vi.mock('../host', () => ({
   useHost: () =>
@@ -521,6 +523,20 @@ describe('Composer non-text sends', () => {
 });
 
 describe('Composer agent profile picker', () => {
+  it('keeps the picked persona name on the chip at any toolbar width', async () => {
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
+    });
+    const chip = container.querySelector('[data-composer-persona-chip="lin-lan"]');
+    const name = chip?.querySelector('button span.truncate');
+    expect(name?.textContent).toBe('林岚');
+    // No container-query rule may turn the name into a screen-reader-only label.
+    expect(chip?.innerHTML).not.toContain('sr-only');
+    expect(chip?.querySelector('[data-composer-persona-clear]')?.getAttribute('aria-label')).toBe('Remove persona 林岚');
+  });
+
   it('renders the bound profile without a main suffix and lists only enabled main profiles', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',

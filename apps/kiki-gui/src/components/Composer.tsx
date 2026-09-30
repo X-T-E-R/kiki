@@ -96,6 +96,8 @@ import { ThreadRefChip } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from './persona/PersonaAvatar';
+import { usePersonaList } from './persona/usePersonas';
 import {
   AddMenu,
   type AddMenuView,
@@ -191,6 +193,27 @@ export function buildAgentProfileOptions(
   return pickable.map((item) => toOption(item, t('composer.profileGroupMain')));
 }
 
+const PERSONA_OPTION_PREFIX = 'persona:';
+
+/** The agent picker's last row on /new: where personas are made. */
+function PersonaPickerFooter() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  return (
+    <div className="border-t border-hairline p-1.5">
+      <button
+        type="button"
+        data-composer-persona-manage
+        onClick={() => { void navigate('/personas'); }}
+        className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11"
+      >
+        <Icon name="persona" size={14} className="text-ink-faint" />
+        {t('persona.pickerManage')}
+      </button>
+    </div>
+  );
+}
+
 type ComposerMenu =
   | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
   | { kind: 'mention'; start: number; query: string };
@@ -247,6 +270,7 @@ export function Composer({
   onCompactContext,
   onChangeModel,
   onChangeAgentProfile,
+  personaPick,
   onRebuildContext,
   onChangePermissionMode,
   onChangePlanMode,
@@ -381,6 +405,15 @@ export function Composer({
   onChangeModel: (model: string | undefined) => void | Promise<void>;
   /** Profile picked in the select; the parent owns the confirm/pending flow. */
   onChangeAgentProfile?: (name: string) => void;
+  /**
+   * /new only: the agent chip also offers personas. A picked persona replaces
+   * the chip's label with its face and name on a paper chip; picking a profile
+   * (or "no persona") clears it. Omit to keep the chip profile-only.
+   */
+  personaPick?: {
+    readonly value: PersonaAvatarData | undefined;
+    readonly onChange: (id: string | undefined) => void;
+  };
   onRebuildContext?: () => Promise<{ readonly changed: boolean }>;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
@@ -1727,6 +1760,38 @@ export function Composer({
       ? t('composer.agentPendingSuffix', { name: agentDisplayName(agentProfile) })
       : agentDisplayName(agentProfile);
 
+  // /new: personas ride the same chip as profiles. Their option values carry
+  // a prefix so one select can hold both kinds without a name collision.
+  const personasQuery = usePersonaList({ enabled: personaPick !== undefined });
+  const personaItems = personaPick === undefined ? [] : (personasQuery.data ?? []).filter((item) => !item.archived);
+  const agentOptions: readonly SearchableSelectOption[] = useMemo(() => {
+    if (personaPick === undefined) return agentProfileOptions;
+    const personaRows: SearchableSelectOption[] = personaItems.map((item) => ({
+      value: `${PERSONA_OPTION_PREFIX}${item.id}`,
+      label: item.title === undefined ? item.name : `${item.name} · ${item.title}`,
+      description: item.job,
+      title: item.name,
+      keywords: item.id,
+      group: t('persona.pickerGroup'),
+    }));
+    return [
+      ...personaRows,
+      ...agentProfileOptions.map((option) => ({ ...option, group: personaRows.length > 0 ? t('persona.pickerProfiles') : option.group })),
+    ];
+  }, [agentProfileOptions, personaItems, personaPick, t]);
+  const agentSelectValue = personaPick?.value !== undefined
+    ? `${PERSONA_OPTION_PREFIX}${personaPick.value.id}`
+    : agentProfile ?? DEFAULT_AGENT_PROFILE;
+  const changeAgent = (value: string) => {
+    if (value.startsWith(PERSONA_OPTION_PREFIX)) {
+      personaPick?.onChange(value.slice(PERSONA_OPTION_PREFIX.length));
+      return;
+    }
+    personaPick?.onChange(undefined);
+    onChangeAgentProfile?.(value);
+  };
+  const pickedPersona = personaPick?.value;
+
   // The status line under the input: ordered segments, each a quiet trigger
   // for its own picker. Order and grouping live only in this list.
   const statusSegments: { key: string; node: ReactNode }[] = [];
@@ -1744,12 +1809,50 @@ export function Composer({
     statusSegments.push({
       key: 'agent',
       node: (
-        <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
+        <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
+        {pickedPersona !== undefined ? (
+          // The persona chip: a raised paper token with the face, so "who
+          // answers" reads as a person, not a setting. The ✕ is its own
+          // control; the chip itself reopens the picker.
+          <span data-composer-persona-chip={pickedPersona.id} className="flex min-w-[5.5rem] items-center rounded-full bg-paper py-0.5 pr-0.5 pl-0.5 shadow-[var(--kiki-sheet-shadow)]">
+            <SearchableSelect
+              id="composer-agent-profile-select"
+              options={agentOptions}
+              value={agentSelectValue}
+              onChange={changeAgent}
+              disabled={busy}
+              title={t('persona.chipAria')}
+              ariaLabel={t('persona.chipAria')}
+              searchPlaceholder={t('composer.profileSearchPlaceholder')}
+              placement="above"
+              hideChevron
+              triggerIcon={<PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />}
+              // The name is who answers: it truncates on a narrow toolbar but
+              // never collapses to a bare face.
+              triggerLabel={pickedPersona.name}
+              panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-96 overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+              panelFooter={<PersonaPickerFooter />}
+              buttonClassName="flex h-6 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 text-[13px] font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-9"
+            />
+            <button
+              type="button"
+              data-composer-persona-clear
+              disabled={busy}
+              aria-label={t('persona.chipRemove', { name: pickedPersona.name })}
+              title={t('persona.chipRemove', { name: pickedPersona.name })}
+              onClick={() => { personaPick?.onChange(undefined); }}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 pointer-coarse:w-9"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          </span>
+        ) : (
         <SearchableSelect
           id="composer-agent-profile-select"
-          options={agentProfileOptions}
-          value={agentProfile ?? DEFAULT_AGENT_PROFILE}
-          onChange={onChangeAgentProfile}
+          options={agentOptions}
+          value={agentSelectValue}
+          onChange={changeAgent}
+          panelFooter={personaPick !== undefined ? <PersonaPickerFooter /> : undefined}
           disabled={busy}
           title={
             busy
@@ -1778,6 +1881,7 @@ export function Composer({
               : agentProfile !== DEFAULT_AGENT_PROFILE ? STATUS_SEGMENT_SET : ''
           }`}
         />
+        )}
         </ComposerPanelOrigin>
       ),
     });
