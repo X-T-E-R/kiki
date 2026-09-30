@@ -1,5 +1,5 @@
 import {
-  IAgentExecutorRegistry, IFlagService, ILocalSessionCatalog, ISessionIndex, ISessionManager,
+  IAgentExecutorRegistry, IFlagService, ILocalSessionCatalog, ISessionIndex, ISessionManager, ISessionMetadata,
   LOCAL_SESSION_RESUME_FLAG, localSessionKikiId, localSourceFromRef,
   type LocalExecutorSessionSource, type Scope,
 } from '@kiki/agent-core-v2';
@@ -59,6 +59,8 @@ export async function resumeLocalSession(core: Scope, executorId: string, localI
         sessionId, workspaceId: workspace.workspaceId, workDir: summary.cwd!, localSession: source,
         mainAgentBinding: { resolvedProfile, model: body.model, thinking: body.thinking },
       });
+      const title = summary.title?.trim() || Array.from(summary.lastPrompt?.trim().replace(/\s+/g, ' ') ?? '').slice(0, 80).join('');
+      if (title !== '') await handle.accessor.get(ISessionMetadata).setGeneratedTitleIfUncustomized(title);
       return { session_id: handle.id, executor_id: executorId, created: true };
     } finally { workspace.dispose(); }
   }

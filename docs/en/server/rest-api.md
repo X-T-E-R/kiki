@@ -138,6 +138,8 @@ Claude ACP, Codex ACP, and Codex app-server expose a separate local-history cata
 
 Continuation is enabled by default; set `KIKI_EXPERIMENTAL_LOCAL_SESSION_RESUME=false` on the server to disable new attachments. POST requires `{ "source_home": "…" }` copied from the selected summary; optional `profile`, `model`, and `thinking` choose the initial binding. An explicit profile must use the selected executor. The response is `{ session_id, executor_id, created }`; open `session_id`, and submit an ordinary prompt to resume the vendor session. Duplicate requests, including after a server restart, return `created: false` without changing the existing binding. For a Codex source already attached through another executor, `executor_id` identifies that existing executor.
 
+A new attachment uses the local source's non-empty `title` as its initial Kiki title. If absent, it uses `last_prompt` with whitespace normalized and truncated to 80 Unicode characters. If both are absent, the session remains untitled. Existing attachments, including user-renamed titles, are not changed by subsequent resume requests.
+
 Attachment does not copy the vendor transcript or send a prompt. The first prompt performs ACP resume/load or Codex `thread/resume`; unsupported engines, unavailable references, changed binding fingerprints, and changed source homes fail instead of silently creating a fresh vendor conversation. `resume.supported` reflects the known adapter capability and the latest runtime observation, not an authenticated connection check. See the [klient contract](https://github.com/X-T-E-R/kiki/blob/kiki/packages/klient/README.md#local-executor-sessions-http) for SDK methods and errors.
 
 ### Sessions

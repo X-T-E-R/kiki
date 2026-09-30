@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ErrorCode } from '@kiki/protocol';
-import { ISessionIndex, ISessionManager } from '@kiki/agent-core-v2';
+import { ILocalSessionCatalog, ISessionIndex, ISessionManager, ISessionMetadata } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { startServer, type RunningServer } from '../src/start';
@@ -25,6 +25,7 @@ describe('read-only local executor sessions', () => {
   afterEach(async () => {
     if (server !== undefined) await server.close();
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   async function boot() {
@@ -126,6 +127,41 @@ describe('read-only local executor sessions', () => {
     await boot();
     expect(await request<Receipt>(path, init)).toMatchObject({ code: 0, data: { session_id: id, created: false } });
     expect((await request(path, { ...init, body: JSON.stringify({ source_home: '/different-home' }) })).code).toBe(ErrorCode.VALIDATION_FAILED);
+  }, 60_000);
+
+  it.each([
+    { title: ' Vendor title ', lastPrompt: 'Last prompt', expected: 'Vendor title' },
+    { title: undefined, lastPrompt: `  ${'🙂'.repeat(81)}\nmore  `, expected: '🙂'.repeat(80) },
+    { title: '   ', lastPrompt: '  Last\n prompt  ', expected: 'Last prompt' },
+    { title: undefined, lastPrompt: undefined, expected: undefined },
+  ])('initializes local attachment titles without replacing a custom title: $expected', async ({ title, lastPrompt, expected }) => {
+    vi.stubEnv('CLAUDE_AGENT_ACP_PATH', process.execPath);
+    const project = join(home, 'vendor-claude', 'projects', 'project');
+    await mkdir(project, { recursive: true });
+    await writeFile(join(project, 'foreign-thread.jsonl'), JSON.stringify({ type: 'user', sessionId: 'foreign-thread', cwd: home,
+      message: { content: 'Existing conversation' } }) + '\n');
+    await boot();
+    const listed = await request<{ items: Array<LocalSummary & { source_home: string }> }>('/api/executors/claude-acp/local-sessions');
+    const source = listed.data.items[0]!;
+    const catalog = server!.core.accessor.get(ILocalSessionCatalog);
+    const detail = (await catalog.get('claude-acp', source.id))!;
+    vi.spyOn(catalog, 'get').mockResolvedValue({ ...detail, summary: { ...detail.summary, title, lastPrompt } });
+    const path = `/api/executors/claude-acp/local-sessions/${encodeURIComponent(source.id)}/resume`;
+    const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source_home: source.source_home }) };
+    const result = await request<{ session_id: string; created: boolean }>(path, init);
+    expect(result).toMatchObject({ code: 0, data: { created: true } });
+    const id = result.data.session_id;
+    const metadata = server!.core.accessor.get(ISessionManager).get(id)!.accessor.get(ISessionMetadata);
+    expect((await metadata.read()).title).toBe(expected);
+    expect((await server!.core.accessor.get(ISessionIndex).get(id))?.title).toBe(expected);
+    await metadata.setTitle('User title');
+    expect(await request(path, init)).toMatchObject({ code: 0, data: { session_id: id, created: false } });
+    expect((await metadata.read()).title).toBe('User title');
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect(await request(path, init)).toMatchObject({ code: 0, data: { session_id: id, created: false } });
+    expect((await server!.core.accessor.get(ISessionIndex).get(id))?.title).toBe('User title');
   }, 60_000);
 
   it('rejects disabled continuation and sources without a working directory without creating Kiki sessions', async () => {
