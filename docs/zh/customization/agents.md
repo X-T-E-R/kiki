@@ -88,6 +88,16 @@ agent 文件会被监听并在变更时热刷新。热刷新不会打断进行�
 
 内置 `kimi-acp` 执行器会把已配置的 MCP 服务器转发给 Kimi Code。`0.37.0` 至 `0.39.0` 之前的 Kimi CLI 不接受 ACP stdio MCP 服务器；预检会警告 MCP 工具将失败，并建议升级到 `0.39.0` 或更高。警告不会阻止转发。若无法探测版本号，Kiki 仍转发服务器，不发出这条版本警告。
 
+### 外部 main agent 的委派
+
+外部执行器可以担任 main agent。若要让它派遣 Kiki subagent，请在其 profile 中添加 `allow_kiki_subagents: true`，并把该 profile 绑定到 main agent。该字段默认是 `false`，不会开启外部子 Agent 的委派能力。
+
+Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，不会另建 seat 会话。harness 必须支持本机 stdio MCP，即通过进程输入输出调用工具；其进程也必须能找到 `kiki`。profile 的 `subagents`、派遣策略、模型约束和父级通知策略仍然生效。修改开关后需重新绑定 main profile；已有绑定保留冻结快照。在已绑定的 main profile 上关闭委派，或关闭执行器，都会撤销桥的权限。
+
+子 Agent 完成后，回执会非阻塞地排入同一 main agent 的收件队列。main agent 忙碌时，等待当前轮次结束再投递；空闲时，队列回执会唤醒它。父级通知也使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
+
+外部交互取决于 harness 握手声明的能力。ACP 历史 fork 在支持时使用 `session/fork`；精确定位到 Assistant 消息还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展。不支持的位置会新建远端会话并附上有长度限制的对话交接，绝不会继续源远端会话。Codex 与 DeepSeek 的 ACP 表单问题映射到 Kiki 持久化问题交互；不支持的复杂表单和 URL 模式请求会被拒绝。Grok 的计划审批映射到持久化计划审阅交互。这些映射不会把 harness 本身不支持的功能变成原生能力。
+
 ### 重建会话上下文
 
 修改提示词来源后，在会话作曲器中打开 profile 选择器并选择「重建上下文」。二次确认后，Kiki 会从磁盘重新加载当前 profile、提示字段覆写、Agent Skills、`AGENTS.md` 指令，以及 plugin 的提示词和 session-start 注入，重新协调其他运行时上下文注入，并让后续请求使用重建后的快照。对话消息会保留。轮次运行期间此操作不可用；请等待会话空闲后重试。
@@ -162,6 +172,7 @@ disallowedTools:
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或显式写 `inherit`，让 subagent 绑定调用方当前模型。未固定模型的 profile 需要派发时显式提供 `model_alias`；省略不会继承。main agent 没有调用方，不可使用 `inherit` |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
+| `allow_kiki_subagents` | 否 | 默认 `false`。该 profile 绑定到外部 main agent 时附加 Kiki 的同会话委派工具；需要本机 stdio MCP。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
 | `allowed_models` | 否 | 该 role 推荐使用的模型 alias，支持 YAML 列表或逗号分隔字符串。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。只要模型存在且 executor 支持，列表外的模型仍可执行；子 Agent 会记录结构化 advisory，而不是拒绝派发。只写一项表示强推荐，不是权限边界。省略字段或写 `"*"` 表示不提供推荐；`[]` 表示没有推荐模型，但不会阻止显式、可执行的绑定。Caller lease 与 `spawn_constraints` 采用同样的软建议语义。机器级 `[subagent].deny_models` 仍然具有最终否决权 |
 | `deny_models` | 否 | 该 role 建议避免的模型 alias 名单，写法与 `allowed_models` 相同。选中其中模型时会继续执行并产生醒目的结构化 advisory。需要在所有路径硬拒绝某个模型时，应使用机器级 `[subagent].deny_models` |
 | `allowed_efforts` | 否 | 该 role 推荐的 thinking effort 列表。角色级与命中的 `model_profiles` 条目求交，用于推荐和诊断。只要实际档位可执行，交集外的 effort 会继续运行并产生结构化 advisory；provider 或 executor 无法执行的档位仍是硬错误 |
