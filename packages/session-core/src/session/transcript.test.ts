@@ -1077,6 +1077,50 @@ describe('transcript response selectors', () => {
   });
 });
 
+describe('subagent invocation details', () => {
+  const prompt = `  Inspect the complete input.\n${'detail '.repeat(700)}\nDo not trim.  `;
+  const advisory = {
+    version: 1,
+    code: 'effort_pin_overridden',
+    dimension: 'thinking_effort',
+    ruleSource: 'profile:reviewer.thinking_effort',
+    ruleValue: 'low',
+    requestedValue: 'high',
+    effectiveValue: 'high',
+    valueSource: 'dispatch-explicit',
+    message: 'Keep the explicitly requested effort.',
+  };
+  const runOutput = `task_id: task_detail\nagent_id: agent_detail\nactual_profile: reviewer\nbinding_advisories: ${JSON.stringify([advisory])}\nstatus: completed\n\n[summary]\nStanding directives in effect: legacy receipt text\n${prompt}`;
+  const calls = [
+    { name: 'AgentRun', args: { profile: 'reviewer', name: 'detail_child', model_alias: 'large-model', effort: 'high', background: true, prompt, description: 'Inspect detail' }, output: runOutput },
+    { name: 'AgentRun', args: { resume: 'agent_detail', model_alias: 'large-model', effort: 'high', background: false, prompt, description: 'Resume detail' }, output: runOutput },
+    { name: 'AgentSend', args: { target: 'agent_detail', message: prompt }, output: JSON.stringify({ message_id: 'message_detail', status: 'queued', resumed: false, deduplicated: false, target: { task_name: 'detail_child', agent_id: 'agent_detail' } }) },
+    { name: 'AgentList', args: { include_finished: true }, output: JSON.stringify({ agents: [{ agent_id: 'agent_detail', name: 'detail_child', profile: 'reviewer', status: 'completed' }] }) },
+  ];
+
+  it.each(calls)('retains complete $name input and output independently of the agent card', ({ name, args, output }) => {
+    const inputText = JSON.stringify(args, null, 2);
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [{
+        kind: 'turn', turnId: 't-detail', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{
+          kind: 'step', stepId: 't-detail.1', turnId: 't-detail', ordinal: 1, state: 'completed', frames: [{
+            kind: 'tool', frameId: 'f-detail', toolCallId: 'call_detail', name, state: 'done',
+            input: args, inputText, output,
+            agentRefs: name === 'AgentRun' ? [{ agentId: 'agent_detail', role: 'child' }] : undefined,
+          }],
+        }],
+      }],
+    });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({ toolCallId: 'call_detail', name, argsText: inputText, args, output });
+    if (name === 'AgentRun') {
+      const card = blocks.find((block) => block.kind === 'subagent');
+      expect(card).toMatchObject({ subagentId: 'agent_detail', parentToolCallId: 'call_detail' });
+    }
+  });
+});
+
 describe('transcript projection cache', () => {
   it('reuses blocks projected from unchanged settled transcript items', () => {
     const item: AgentTranscriptSnapshot['items'][number] = {

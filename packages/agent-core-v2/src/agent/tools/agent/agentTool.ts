@@ -595,7 +595,7 @@ export class SubagentTool implements ISubagentTool {
     const info = this.tasks.getTask(taskId);
     if (info?.status === 'completed') {
       return {
-        output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(handle, await this.tasks.readOutput(taskId))),
+        output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(taskId, handle, await this.tasks.readOutput(taskId))),
       };
     }
     const timedOut = info?.status === 'timed_out';
@@ -603,7 +603,7 @@ export class SubagentTool implements ISubagentTool {
       ? `Agent timed out after ${formatSubagentTimeoutDescription(timeoutMs)}.`
       : formatSubagentStoppedMessage(info?.stopReason);
     return {
-      output: this.withMainProfileNotice(handle, formatForegroundAgentFailure(handle, message, timedOut)),
+      output: this.withMainProfileNotice(handle, formatForegroundAgentFailure(taskId, handle, message, timedOut)),
       isError: true,
     };
   }
@@ -640,6 +640,7 @@ export function bindingResultLines(handle: SubagentHandle): string[] {
     ...(bindingAdvisories.length === 0 ? [] : [
       `binding_advisory_count: ${String(bindingAdvisories.length)}`,
       `binding_advisory_first: ${JSON.stringify(bindingAdvisories[0])}`,
+      `binding_advisories: ${JSON.stringify(bindingAdvisories)}`,
     ]),
     `parent_notify: ${handle.parentNotify ?? 'enabled'}`,
   ];
@@ -660,8 +661,9 @@ function formatBackgroundAgentResult(
   ].join('\n');
 }
 
-function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
+function formatForegroundAgentSuccess(taskId: string, handle: SubagentHandle, result: string): string {
   return [
+    `task_id: ${taskId}`,
     `agent_id: ${handle.agentId}`,
     ...bindingResultLines(handle),
     'status: completed',
@@ -672,11 +674,13 @@ function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): s
 }
 
 function formatForegroundAgentFailure(
+  taskId: string,
   handle: SubagentHandle,
   message: string,
   timedOut: boolean,
 ): string {
   const lines = [
+    `task_id: ${taskId}`,
     `agent_id: ${handle.agentId}`,
     ...bindingResultLines(handle),
     'status: failed',

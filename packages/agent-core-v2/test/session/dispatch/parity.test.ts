@@ -2427,32 +2427,53 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(result.text).toBe(internal.probe.terminals[0]?.[1]);
   });
 
-  it('summarizes structured binding advisories in AgentRun receipts', () => {
+  it('preserves every structured binding advisory field in AgentRun receipts', () => {
+    const bindingAdvisories: NonNullable<ProfileData['bindingAdvisories']> = [{
+      version: 1,
+      code: 'model_not_allowed',
+      dimension: 'model',
+      ruleSource: 'profile:reviewer.allowed_models',
+      ruleValues: ['fast-model'],
+      requestedValue: 'large-model',
+      effectiveValue: 'provider/large-model',
+      valueSource: 'dispatch-explicit',
+      model: 'provider/large-model',
+      message: 'Model deviates from the role recommendation.\nKeep the requested binding.',
+    }, {
+      version: 1,
+      code: 'effort_pin_overridden',
+      dimension: 'thinking_effort',
+      ruleSource: 'profile:reviewer.thinking_effort',
+      ruleValue: 'low',
+      requestedValue: 'high',
+      effectiveValue: 'high',
+      valueSource: 'dispatch-explicit',
+      message: 'Effort deviates from the role pin.',
+    }];
     const lines = bindingResultLines({
       agentId: 'agent_child_1',
       profileName: 'reviewer',
-      bindingAdvisories: [{
-        version: 1,
-        code: 'model_not_allowed',
-        dimension: 'model',
-        ruleSource: 'profile:reviewer.allowed_models',
-        ruleValues: ['fast-model'],
-        requestedValue: 'large-model',
-        effectiveValue: 'provider/large-model',
-        valueSource: 'dispatch-explicit',
-        model: 'provider/large-model',
-        message: 'Model deviates from the role recommendation.',
-      }],
+      bindingAdvisories,
       completion: Promise.resolve({ result: '' }),
     });
     const fields = fieldMap(lines.join('\n'));
-    expect(fields['binding_advisory_count']).toBe('1');
-    expect(JSON.parse(fields['binding_advisory_first']!)).toMatchObject({
-      code: 'model_not_allowed',
-      ruleSource: 'profile:reviewer.allowed_models',
-      requestedValue: 'large-model',
-      effectiveValue: 'provider/large-model',
-    });
+    expect(fields['binding_advisory_count']).toBe('2');
+    expect(JSON.parse(fields['binding_advisory_first']!)).toEqual(bindingAdvisories[0]);
+    expect(JSON.parse(fields['binding_advisories']!)).toEqual(bindingAdvisories);
+  });
+
+  it('omits advisory receipt fields when there are no binding advisories', () => {
+    for (const bindingAdvisories of [undefined, []]) {
+      const fields = fieldMap(bindingResultLines({
+        agentId: 'agent_child_1',
+        profileName: 'reviewer',
+        bindingAdvisories,
+        completion: Promise.resolve({ result: '' }),
+      }).join('\n'));
+      expect(fields['binding_advisory_count']).toBeUndefined();
+      expect(fields['binding_advisory_first']).toBeUndefined();
+      expect(fields['binding_advisories']).toBeUndefined();
+    }
   });
 
   it('C-2 converts a foreground timeout detach into the background receipt path', async () => {
@@ -2488,6 +2509,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const result = await pending;
 
     expect(outputText(result.output)).toBe([
+      'task_id: task_1',
       'agent_id: agent_child_1',
       'actual_profile: coder',
       'dispatch_policy: advisory',
@@ -2500,6 +2522,30 @@ describe('AgentRun and dispatch parity golden', () => {
       '[summary]',
       'text result',
     ].join('\n'));
+  });
+
+  it.each(['failed', 'timed_out'] as const)('includes the task id in a %s foreground receipt', async (status) => {
+    const internal = createLane(disposables, 'internal');
+    const pending = internal.runInternal({
+      prompt: 'inspect failure',
+      description: 'Inspect failure',
+      profile: 'coder',
+    });
+    await vi.waitFor(() => { expect(internal.taskRecords.has('task_1')).toBe(true); });
+    const record = internal.taskRecords.get('task_1')!;
+    record.status = status;
+    record.terminal.resolve();
+    const result = await pending;
+
+    expect(result.isError).toBe(true);
+    expect(fieldMap(outputText(result.output))).toMatchObject({
+      task_id: 'task_1',
+      agent_id: 'agent_child_1',
+      actual_profile: 'coder',
+      status: 'failed',
+    });
+    expect(outputText(result.output).includes('resume_hint:')).toBe(status === 'timed_out');
+    await complete(internal, 0);
   });
 
   it('P10 writes collaborationLatestTaskId for AgentRun', async () => {
