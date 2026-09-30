@@ -152,6 +152,7 @@ import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
+import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -1064,6 +1065,7 @@ function SubagentCompactCard({
   toolCalls,
   onOpenAgent,
   onExpand,
+  folded = false,
 }: {
   block: SubagentBlock;
   status: AgentTreeNode['status'] | SubagentBlock['status'];
@@ -1076,6 +1078,8 @@ function SubagentCompactCard({
   toolCalls: SubagentToolCalls;
   onOpenAgent?: (agentId: string) => void;
   onExpand?: () => void;
+  /** A nested agent folded by the view rule: its expand opens it for the rest of the view. */
+  folded?: boolean;
 }) {
   const { t, tp, time } = useI18n();
   // A live run says what it is doing now (its latest step, else its task);
@@ -1100,6 +1104,7 @@ function SubagentCompactCard({
         'data-subagent-id': block.subagentId,
         'data-agent-depth': depth,
         'data-card-form': 'compact',
+        'data-nested-folded': folded || undefined,
         'data-orphaned': block.orphaned === true || undefined,
       }}
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
@@ -1163,9 +1168,17 @@ const SubagentCard = memo(function SubagentCard({
   const runError = runIsLive ? undefined : (node?.error ?? block.error);
   const runSummary = node?.summary ?? block.summary;
   // Only a genuinely active run owns the full card; a completed parent whose
-  // child still runs stays compact — the child has its own card.
+  // child still runs stays compact — the child has its own card. A nested
+  // card (a subagent's own subagent) follows the view's fold rule instead:
+  // it is a one-line summary only if it had already finished when this view
+  // first saw it; running, waiting and failed ones stay full, and one that
+  // finishes while the view is open keeps its card (timeline/nestedFold.ts).
   const active = subagentAutoForm(status) === 'full';
-  const full = formOverride !== undefined ? formOverride === 'full' : active;
+  const nested = depth > 0;
+  const nestedFold = useNestedFold(block.subagentId, status, nested);
+  const full = nested
+    ? !nestedFold.folded
+    : formOverride !== undefined ? formOverride === 'full' : active;
   const [expanded, setExpanded] = useState(() => active);
   useEffect(() => {
     if (active) setExpanded(true);
@@ -1183,10 +1196,13 @@ const SubagentCard = memo(function SubagentCard({
         depth={depth}
         toolCalls={toolCalls}
         onOpenAgent={onOpenAgent}
+        folded={nested}
         onExpand={
-          onToggleForm === undefined
-            ? undefined
-            : () => { onToggleForm(block.subagentId, 'full'); }
+          nested
+            ? nestedFold.open
+            : onToggleForm === undefined
+              ? undefined
+              : () => { onToggleForm(block.subagentId, 'full'); }
         }
       />
     );
@@ -2925,6 +2941,9 @@ export function Transcript({
   // rule no longer touches that agent's card. Keyed by subagentId so the
   // choice survives block identity churn across publishes.
   const [cardForms, setCardForms] = useState<ReadonlyMap<string, SubagentCardForm>>(new Map());
+  // Nested agents settled at first sight fold for this view only; the store
+  // lives as long as this Transcript (keyed per session and agent).
+  const [nestedFolds] = useState(() => new NestedFoldStore());
   const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
     setCardForms((previous) => {
       const next = new Map(previous);
@@ -3800,6 +3819,7 @@ export function Transcript({
   }
 
   return (
+    <NestedFoldContext.Provider value={nestedFolds}>
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <MessageLinkContext.Provider value={messageLink}>
     <FindRevealContext.Provider value={findReveal}>
@@ -3960,5 +3980,6 @@ export function Transcript({
     </FindRevealContext.Provider>
     </MessageLinkContext.Provider>
     </PromptOutcomeActionsContext.Provider>
+    </NestedFoldContext.Provider>
   );
 }

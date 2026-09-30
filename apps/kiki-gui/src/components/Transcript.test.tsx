@@ -3202,6 +3202,66 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(subagentAutoForm('unknown')).toBe('compact');
   });
 
+  describe('nested subagents that finished before the view opened', () => {
+    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+        ...Object.entries(grandStatus).map(([agentId, status]) => ({
+          agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
+          startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
+        })),
+      ],
+    );
+    const leadBlock = lifecycleSubagentBlock('lead', { status: 'running', name: 'Lead' });
+    const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
+
+    it('folds a nested agent that had already finished to one summary line', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree({ done: 'completed' }));
+      const row = card(container, 'done')!;
+      expect(row.getAttribute('data-card-form')).toBe('compact');
+      expect(row.getAttribute('data-nested-folded')).toBe('true');
+      expect(row.textContent).toContain('done result.');
+      expect(row.textContent).not.toContain('More detail');
+      expect(card(container, 'lead')?.getAttribute('data-card-form')).toBe('full');
+    });
+
+    it('never folds a nested agent that is running, waiting on you or failed', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree({ live: 'running', asks: 'suspended', broke: 'failed' }));
+      for (const id of ['live', 'asks', 'broke']) {
+        expect(card(container, id)?.getAttribute('data-card-form')).toBe('full');
+        expect(card(container, id)?.hasAttribute('data-nested-folded')).toBe(false);
+      }
+    });
+
+    it('keeps a nested agent that finishes while the view is open expanded', async () => {
+      const { root, container } = makeRoot();
+      const render = (status: 'running' | 'completed') => renderSettled(
+        root,
+        <Transcript
+          state={transcriptState([leadBlock])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+          forest={tree({ worker: status })}
+          onOpenAgent={() => {}}
+        />,
+      );
+      await render('running');
+      expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
+      await render('completed');
+      expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
+    });
+
+    it('opens a folded nested agent on click and keeps it open', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree({ done: 'completed' }));
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-card-expand="done"]')!.click(); });
+      expect(card(container, 'done')?.getAttribute('data-card-form')).toBe('full');
+    });
+  });
+
   it('renders a suspended card compact and a completed parent does not inflate for a running child', async () => {
     const forest = buildAgentForest(
       [],
