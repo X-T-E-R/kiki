@@ -59,6 +59,7 @@ import {
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
 import { PageHeader } from './PageChrome';
+import { PricingPanel } from './usage/PricingPanel';
 import { segmentClass } from './WorkspaceScopeControl';
 import { Icon } from './icons';
 import { DimensionBreakdown } from './usage/UsageBreakdown';
@@ -872,6 +873,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   const summary = firstPage?.summary;
   const reliability = firstPage?.reliability;
+  const unpricedCount = reliability?.unknown_price_models.length ?? 0;
+  const [pricingOpen, setPricingOpen] = useState(false);
   const summaryHasUnknownSubtotal = summary !== undefined && hasUnknownTokenSubtotal(summary);
   const showAllHistoryChip = firstPage?.query.range.defaulted_to_all_history === true;
   const incompleteReason = reliability?.incomplete_reason ?? null;
@@ -885,7 +888,22 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} />
+      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar}>
+        <button
+          type="button"
+          data-usage-pricing-open
+          aria-haspopup="dialog"
+          onClick={() => { setPricingOpen(true); }}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11"
+        >
+          <Icon name="sliders" size={14} />
+          {t('usage.pricing.open')}
+          {unpricedCount > 0 ? <span className="text-[12px] text-amber-ink tabular-nums">{unpricedCount}</span> : null}
+        </button>
+      </PageHeader>
+      {pricingOpen ? (
+        <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
+      ) : null}
       <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <LiveStrip />

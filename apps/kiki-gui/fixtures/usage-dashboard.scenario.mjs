@@ -327,6 +327,21 @@ export const usageV2 = {
 };
 
 export default {
+  // Model prices panel: two configured aliases, one priced from the catalog,
+  // one billed as another model, one user override, and one unpriced model
+  // (mystery-9, named by the usage view). Prices are per token, as on the wire.
+  models: [
+    { id: K2, provider_id: 'kimi', remote_id: K2, display_name: 'Kimi K2 Thinking' },
+    { id: SONNET, provider_id: 'anthropic', remote_id: SONNET, display_name: 'Claude Sonnet 4.5', pricing_model: 'claude-sonnet-4-5' },
+    { id: 'gpt-5.1-codex', provider_id: 'openai', remote_id: 'gpt-5.1-codex', display_name: 'GPT-5.1 Codex' },
+  ],
+  catalogPrices: {
+    [K2]: { input_cost_per_token: 0.6e-6, output_cost_per_token: 2.5e-6, cache_read_input_token_cost: 0.15e-6 },
+    'claude-sonnet-4-5': { input_cost_per_token: 3e-6, output_cost_per_token: 15e-6, cache_read_input_token_cost: 0.3e-6, cache_creation_input_token_cost: 3.75e-6 },
+  },
+  priceOverrides: {
+    'gpt-5.1-codex': { input_cost_per_token: 1.25e-6, output_cost_per_token: 10e-6, cache_read_input_token_cost: 0.125e-6, currency: 'USD' },
+  },
   workspaces: [
     { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: ts(40 * DAY_MIN), last_opened_at: ts(3), session_count: 7, pinned: false },
     { id: DOCS_WS, root: 'C:/fixture-docs', name: 'docs-site', created_at: ts(20 * DAY_MIN), last_opened_at: ts(300), session_count: 2, pinned: false },

@@ -564,6 +564,8 @@ class FixtureServer {
     ]);
     this.shippedAgentProfiles = structuredClone(data.shippedAgentProfiles ?? []);
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
+    this.catalogPrices = structuredClone(data.catalogPrices ?? {});
+    this.priceOverrides = structuredClone(data.priceOverrides ?? {});
     this.plugins = structuredClone(data.plugins ?? []);
     this.autoCompactOverrides = new Map();
     resetContextStrategy(this);
@@ -1405,6 +1407,7 @@ class FixtureServer {
       // The unified path keeps the former advanced-session, usage, and MCP
       // management domains distinct from the flat session/runtime routes.
       const advanced = path === '/usage'
+        || path === '/usage/pricing'
         || path === '/sessions/query'
         || path === '/mcp/servers'
         || path.startsWith('/mcp/servers/')
@@ -1417,6 +1420,26 @@ class FixtureServer {
     }
   }
 
+  /**
+   * `GET/PUT /api/usage/pricing` in the production shape: one row per
+   * configured model, override and requested model; overrides win, catalog
+   * prices come from the scenario's `catalogPrices` (source `litellm-cache`).
+   */
+  usagePricingResponse(requested = []) {
+    const keys = new Set([...requested, ...this.models.map((model) => model.id), ...Object.keys(this.priceOverrides)]);
+    const items = [...keys].toSorted().map((model) => {
+      const configured = this.models.find((entry) => entry.id === model);
+      const override = this.priceOverrides[model];
+      const catalogKey = configured?.pricing_model ?? configured?.remote_id ?? model;
+      const catalog = this.catalogPrices[catalogKey];
+      const identity = { model, pricing_model: configured?.pricing_model ?? null };
+      if (override !== undefined) return { ...identity, matched_key: model, source: 'override', prices: override };
+      if (catalog !== undefined) return { ...identity, matched_key: catalogKey, source: 'litellm-cache', prices: { currency: 'USD', ...catalog } };
+      return { ...identity, matched_key: null, source: 'unknown', prices: null };
+    });
+    return { items, overrides: structuredClone(this.priceOverrides) };
+  }
+
   /** Unified advanced-session, usage, and MCP management routes. */
   routeV2(res, path, query, body, method) {
     if (path === '/sessions/query' && method === 'GET') {
@@ -1424,6 +1447,16 @@ class FixtureServer {
     }
     if (path === '/usage' && method === 'GET') {
       return this.usageV2Response(res, query);
+    }
+    if (path === '/usage/pricing' && method === 'GET') {
+      return this.envelope(res, this.usagePricingResponse(query.getAll('model')));
+    }
+    if (path === '/usage/pricing' && method === 'PUT' && body !== undefined) {
+      for (const [model, price] of Object.entries(body.overrides ?? {})) {
+        if (price === null) delete this.priceOverrides[model];
+        else this.priceOverrides[model] = price;
+      }
+      return this.envelope(res, this.usagePricingResponse(Object.keys(body.overrides ?? {})));
     }
     if (path === '/mcp/servers' && method === 'GET') {
       return this.envelope(res, this.managedMcpServers());

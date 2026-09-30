@@ -157,6 +157,18 @@
   transition: grid-template-rows var(--kiki-motion-base) var(--kiki-ease-out);
 }
 
+/* SidePanel: the sheet slides in from the right edge it is docked to. The
+ * durations collapse under reduced motion, so it simply appears. */
+@keyframes kiki-slide-in-right {
+  from {
+    opacity: 0.4;
+    transform: translateX(24px);
+  }
+}
+.kiki-side-panel {
+  animation: kiki-slide-in-right var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+
 /* Staggered entrance for a short list of siblings: set --kiki-i on each. */
 .motion-stagger > * {
   animation: kiki-rise var(--kiki-motion-slow) var(--kiki-ease-out) both;

@@ -1107,6 +1107,16 @@ export class KikiClient {
     return this.run(() => this.rest.usage(query));
   }
 
+  /** Per-model prices the usage estimate uses, with where each came from. */
+  getUsagePricing(models?: readonly string[]): Promise<import('@kiki/protocol').UsagePricingResponse> {
+    return this.run(() => this.rest.usagePricing.get(models));
+  }
+
+  /** Set (a price) or clear (`null`) per-model overrides; unlisted models keep theirs. */
+  setUsagePricing(update: import('@kiki/protocol').UsagePricingUpdate): Promise<import('@kiki/protocol').UsagePricingResponse> {
+    return this.run(() => this.rest.usagePricing.set(update));
+  }
+
   getSession(sessionId: string): Promise<Session> {
     return this.sessions.getSession(sessionId);
   }
