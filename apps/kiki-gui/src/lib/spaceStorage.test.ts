@@ -304,7 +304,7 @@ function scannedSources(): readonly ScannedSource[] {
 
 /** True when the module reads or writes `localStorage`, code rather than prose. */
 function usesRawLocalStorage(file: ScannedSource): boolean {
-  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*[.\[])/g, '');
+  const withoutAvailabilityChecks = file.code.replace(/\btypeof\s+localStorage\b(?!\s*(?:[.\[]|\?\.|!(?!=)))/g, '');
   return /\blocalStorage\b/.test(withoutAvailabilityChecks);
 }
 
@@ -342,6 +342,9 @@ describe('storage source scan', () => {
     ["localStorage.getItem('kiki.drafts')", true],
     ["typeof localStorage.getItem === 'function'", true],
     ["typeof localStorage['getItem'] === 'function'", true],
+    ["typeof localStorage?.getItem === 'function'", true],
+    ["typeof localStorage!.getItem === 'function'", true],
+    ["typeof localStorage!['getItem'] === 'function'", true],
     ['const storage = localStorage', true],
     ["window.localStorage.getItem('kiki.drafts')", true],
     ["typeof localStorage !== 'undefined' && localStorage.getItem('kiki.drafts')", true],
