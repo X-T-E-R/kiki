@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, type Scope } from '@kiki/agent-core-v2';
 import type { NotificationChannel, NotificationSettings } from '@kiki/klient';
 import { startServer, type RunningServer } from '../src/start';
 import { NotificationService } from '../src/services/notifications/notificationService';
@@ -43,7 +43,11 @@ describe('notification coordinator', () => {
       listPending: (kind: string) => kind === 'question' ? pending.map((id) => ({ id, kind: 'question' })) : [],
       onDidChangePending: pendingEvent.on, onDidResolve: resolved.on,
     };
+    const disposing = emitter<void>();
+    let sessionDisposed = false;
     const session = { id: 'session1', accessor: { get: (key: unknown) => {
+      if (sessionDisposed) throw new Error('session_scope_disposed');
+      if (key === IInstantiationService) return { onWillDispose: disposing.on };
       if (key === ISessionActivityView) return activityView;
       if (key === ISessionInteractionService) return interaction;
       if (key === IAgentLifecycleService) return { list: () => [] };
@@ -99,6 +103,20 @@ describe('notification coordinator', () => {
       pending = ['q3'];
       pendingEvent.fire({});
       await vi.advanceTimersByTimeAsync(120);
+      expect(service.listDeliveries()).toHaveLength(2);
+      pending = ['q4'];
+      pendingEvent.fire({});
+      activity.busy = true;
+      work.fire({});
+      await vi.advanceTimersByTimeAsync(1100);
+      activity.busy = false;
+      pending = [];
+      work.fire({});
+      disposing.fire();
+      sessionDisposed = true;
+      work.fire({});
+      pendingEvent.fire({});
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(service.listDeliveries()).toHaveLength(2);
     } finally {
       await service.close();

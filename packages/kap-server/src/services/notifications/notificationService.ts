@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
   ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
-  MAIN_AGENT_ID, type Scope, type ISessionScopeHandle,
+  MAIN_AGENT_ID, IInstantiationService, type Scope, type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
 import {
   DEFAULT_NOTIFICATIONS_CONFIG, NOTIFICATIONS_SECTION, NotificationsConfigSchema,
@@ -116,6 +116,7 @@ export class NotificationService {
   private state?: RuntimeState;
   private readonly epochs = new Map<string, string>();
   private readonly watched = new Map<string, Watched>();
+  private readonly retired = new WeakSet<ISessionScopeHandle>();
   private readonly subscriptions: { dispose(): void }[] = [];
   private readonly lastSent = new Map<string, number>();
   private readonly health = new Map<string, { state: import('@kiki/klient').NotificationHealth; at: number }>();
@@ -338,12 +339,16 @@ export class NotificationService {
   }
 
   private watch(session: ISessionScopeHandle): void {
-    if (this.watched.has(session.id) || this.stopped) return;
+    if (this.watched.has(session.id) || this.retired.has(session) || this.stopped) return;
     const activity = session.accessor.get(ISessionActivityView);
     const interactions = session.accessor.get(ISessionInteractionService);
     const state: Watched = { session, subscriptions: [], startedAt: activity.state().busy ? Date.now() : undefined,
       cycle: randomUUID(), questions: new Map() };
     this.watched.set(session.id, state);
+    state.subscriptions.push(session.accessor.get(IInstantiationService).onWillDispose(() => {
+      this.retired.add(session);
+      this.unwatch(session.id);
+    }));
     state.subscriptions.push(activity.onDidChange(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidChangePending(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
