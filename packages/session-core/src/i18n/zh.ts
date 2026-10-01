@@ -6577,4 +6577,5 @@ export const zh = {
   'st.mcp.filter.connected': '已连接',
   'st.mcp.noMatchTitle': '没有匹配的服务器',
   'st.mcp.noMatches': '没有匹配“{query}”的服务器。',
+  'transcript.moreActions': '更多操作',
 };

@@ -1923,6 +1923,29 @@ describe('message row actions', () => {
     expect(regenerate?.disabled).toBe(true);
     expect(copy?.disabled).toBe(false);
   });
+
+  it('toggles the framed more-actions dropdown menu on click and closes on escape', async () => {
+    const container = await renderTranscript([
+      assistantBlock('assistant-m2-0', 'assistant message text'),
+    ]);
+    const moreBtn = container.querySelector<HTMLButtonElement>('[data-row-more]')!;
+    expect(moreBtn).not.toBeNull();
+    expect(moreBtn.getAttribute('aria-expanded')).toBe('false');
+    const menu = container.querySelector('[role="menu"]')!;
+    expect(menu.className).toContain('hidden');
+
+    await act(async () => {
+      flushSync(() => { click(moreBtn); });
+    });
+    expect(moreBtn.getAttribute('aria-expanded')).toBe('true');
+    expect(menu.className).toContain('flex');
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(moreBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(menu.className).toContain('hidden');
+  });
 });
 
 describe('collapsible user message', () => {

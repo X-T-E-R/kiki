@@ -10,10 +10,12 @@
  * and warns that attachments are not carried over by a full-replacement edit.
  */
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { clampOverlayPosition } from '../lib/overlayPosition';
+import { registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
 
 /**
@@ -98,11 +100,16 @@ export function MessageRowActions({
 }: MessageRowActionsProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState<'text' | 'link' | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [openUp, setOpenUp] = useState(false);
+  const menuContainerRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   const showCopy = copyText !== undefined && copyText !== '';
   const showLink = linkHref !== undefined && linkHref !== '';
   if (!showCopy && !showLink && !canEdit && !canRegenerate && !canFork) return null;
-  const visibility =
-    'opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+
   const copy = (what: 'text' | 'link', text: string) => {
     void copyTextToClipboard(text)
       .then(() => {
@@ -111,18 +118,201 @@ export function MessageRowActions({
       })
       .catch(() => undefined);
   };
+
+  const toggleMenu = () => {
+    if (!menuOpen) {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect !== undefined) {
+        // Dropdown menu height is ~160px. If space below is constrained and space above is larger, flip upward.
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        setOpenUp(spaceBelow < 180 && spaceAbove > spaceBelow);
+      }
+      setMenuOpen(true);
+    } else {
+      setMenuOpen(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!framed || !menuOpen) return;
+    const unregister = registerOverlay('row-actions-menu');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setMenuOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (buttons.length === 0) return;
+        event.preventDefault();
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'ArrowDown'
+          ? (index + 1) % buttons.length
+          : (index - 1 + buttons.length) % buttons.length;
+        buttons[next]?.focus();
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof Node) ||
+        !menuContainerRef.current?.contains(event.target)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    const onScrollOrResize = () => {
+      setMenuOpen(false);
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [framed, menuOpen]);
+
+  const visibility =
+    'opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+
+  if (framed) {
+    return (
+      <span
+        ref={menuContainerRef}
+        data-row-actions
+        className={`${visibility} absolute top-0 right-0 z-20 inline-flex flex-col items-end`}
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          data-row-more
+          aria-label={t('transcript.moreActions')}
+          title={t('transcript.moreActions')}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={toggleMenu}
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-hairline bg-panel text-ink-faint shadow-xs transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+        >
+          <Icon name="more" size={14} />
+        </button>
+
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={t('transcript.moreActions')}
+          className={`${
+            menuOpen ? 'flex anim-enter' : 'hidden'
+          } absolute right-0 ${
+            openUp ? 'bottom-full mb-1' : 'top-full mt-1'
+          } min-w-[124px] max-w-[calc(100vw-1rem)] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
+        >
+          {showCopy ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-row-action="copy"
+              title={t('transcript.copyTitle')}
+              aria-label={t('transcript.copyTitle')}
+              onClick={() => {
+                copy('text', copyText);
+                setMenuOpen(false);
+              }}
+              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span>{t('transcript.copy')}</span>
+              {copied === 'text' ? <Icon name="check" size={12} className="text-success" /> : null}
+            </button>
+          ) : null}
+          {showLink ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-row-action="link"
+              title={t('transcript.copyLinkTitle')}
+              aria-label={t('transcript.copyLinkTitle')}
+              onClick={() => {
+                copy('link', linkHref);
+                setMenuOpen(false);
+              }}
+              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span>{t('transcript.copyLink')}</span>
+              {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
+            </button>
+          ) : null}
+          {canEdit && onEdit !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-row-action="edit"
+              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
+              aria-label={t('transcript.editTitle')}
+              disabled={disabled}
+              onClick={() => {
+                setMenuOpen(false);
+                onEdit();
+              }}
+              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('transcript.edit')}
+            </button>
+          ) : null}
+          {canRegenerate && onRegenerate !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-row-action="regenerate"
+              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
+              aria-label={t('transcript.regenerateTitle')}
+              disabled={disabled}
+              onClick={() => {
+                setMenuOpen(false);
+                onRegenerate();
+              }}
+              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('transcript.regenerate')}
+            </button>
+          ) : null}
+          {canFork && onFork !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-row-action="fork"
+              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
+              aria-label={t('transcript.forkTitle')}
+              disabled={disabled}
+              onClick={() => {
+                setMenuOpen(false);
+                onFork();
+              }}
+              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('transcript.fork')}
+            </button>
+          ) : null}
+        </div>
+      </span>
+    );
+  }
+
   const copyClass = (what: 'text' | 'link') =>
     `rounded px-1 py-px font-mono text-[10px] transition-colors ${
       copied === what ? 'text-success' : 'text-ink-faint hover:text-ink'
     }`;
+
   return (
     <span
       data-row-actions
-      className={
-        framed
-          ? `${visibility} absolute -top-1 right-0 inline-flex items-center gap-0.5 rounded-md border border-hairline bg-panel px-1.5 py-0.5`
-          : `${visibility} inline-flex items-center gap-0.5`
-      }
+      className={`${visibility} inline-flex items-center gap-0.5`}
     >
       {showCopy ? (
         <button

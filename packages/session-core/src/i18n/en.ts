@@ -6640,4 +6640,5 @@ export const en = {
   'st.mcp.filter.connected': 'Connected',
   'st.mcp.noMatchTitle': 'No servers match',
   'st.mcp.noMatches': 'No servers match “{query}”.',
+  'transcript.moreActions': 'More actions',
 } as const;
