@@ -48,7 +48,7 @@ import { zh as ZH_DICTIONARY } from '../../../packages/session-core/src/i18n/zh.
  * than a few frames at any point of the walk.
  */
 const TIMELINE_GATED = new Set([
-  'long-transcript', 'subagents', 'subagents-burst', 'subagent-approval',
+  'long-transcript', 'subagents', 'subagents-burst', 'subagent-approval', 'subagent-invocations',
   'goal-swarm', 'tool-pipeline', 'rewrite-flow', 'error-abort', 'steer',
 ]);
 
@@ -739,6 +739,47 @@ async function scenarioPromptDedupe() {
   console.log(`[check] prompt dedupe user blocks: ${userCount}`);
   if (userCount !== 1) throw new Error(`expected exactly one user block, saw ${userCount}`);
   await shot('prompt-dedupe');
+}
+
+async function scenarioSubagentInvocations() {
+  await selectSession('Fixture: subagent invocations');
+  const log = page.locator('[role="log"]').first();
+  const folds = log.locator('[data-history-fold] [data-activity-toggle][aria-expanded="false"]');
+  for (const fold of await folds.all()) await fold.click();
+  const runToggle = log.locator('[data-invocation-toggle="call-lead"]');
+  await runToggle.waitFor();
+  await runToggle.click();
+  const run = log.locator('[data-invocation-tool="call-lead"]');
+  await run.locator('[data-binding-advisories]').waitFor();
+  if (!(await run.innerText()).includes('model_not_preferred')) throw new Error('binding advisory missing');
+  if (!(await run.innerText()).includes('actual_profile: explore')) throw new Error('actual binding missing');
+  if (await run.locator('details').getAttribute('open') !== null) throw new Error('prompt was not folded by default');
+  await log.evaluate((node) => { node.scrollTop = 0; });
+  await shot('subagent-agentrun-details');
+  await runToggle.click();
+  await log.locator('[data-invocation-toggle="send-lead"]').click();
+  const send = log.locator('[data-invocation-tool="send-lead"]');
+  await send.locator('summary').click();
+  if (!(await send.innerText()).includes('message-example')) throw new Error('send receipt missing');
+  await send.scrollIntoViewIfNeeded();
+  await shot('subagent-agentsend-details');
+  await log.locator('[data-invocation-toggle="send-lead"]').click();
+  await log.locator('[data-agent-open="agent-lead"]').first().click();
+  const childLog = page.locator('[data-preview-tabpanel="panel:agent-lead"] [role="log"]');
+  await childLog.waitFor();
+  await page.locator('[data-preview-fullscreen-toggle]').click();
+  for (const fold of await childLog.locator('[data-history-fold] [data-activity-toggle][aria-expanded="false"]').all()) await fold.click();
+  const done = childLog.locator('[data-subagent-id="agent-done"]');
+  const live = childLog.locator('[data-subagent-id="agent-live"]');
+  await done.waitFor();
+  await live.waitFor();
+  if (await done.getAttribute('data-nested-folded') !== 'true') throw new Error('completed nested agent did not default-fold');
+  if (await live.getAttribute('data-card-form') !== 'full') throw new Error('running nested agent was folded');
+  await done.scrollIntoViewIfNeeded();
+  await shot('subagent-nested-completed-folded');
+  await live.locator('[data-invocation-toggle="call-live"]').click();
+  await live.scrollIntoViewIfNeeded();
+  await shot('subagent-nested-running-expanded');
 }
 
 async function scenarioSubagents() {
@@ -5207,6 +5248,7 @@ const BODIES = [
   ['queue', scenarioQueue],
   ['steer', scenarioSteer],
   ['subagents', scenarioSubagents],
+  ['subagent-invocations', scenarioSubagentInvocations],
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
   ['goal-swarm', scenarioGoalSwarm],

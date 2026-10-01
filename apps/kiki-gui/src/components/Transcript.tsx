@@ -15,6 +15,7 @@
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useInsertionEffect,
   useLayoutEffect,
@@ -154,6 +155,7 @@ import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
+import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -1118,7 +1120,11 @@ function SubagentCompactCard({
   onOpenAgent,
   onExpand,
   folded = false,
+  invocationButton,
+  invocationBody,
 }: {
+  invocationButton?: ReactNode;
+  invocationBody?: ReactNode;
   block: SubagentBlock;
   status: AgentTreeNode['status'] | SubagentBlock['status'];
   /** Terminal-run error for the current run; undefined while a live run is active. */
@@ -1151,7 +1157,7 @@ function SubagentCompactCard({
   );
   return (
     <ActivityRow
-      className={depth === 0 ? '' : `ml-4${block.orphaned === true ? ' opacity-60' : ''}`}
+      className={`@container ${depth === 0 ? '' : `ml-4${block.orphaned === true ? ' opacity-60' : ''}`}`}
       attrs={{
         'data-subagent-id': block.subagentId,
         'data-agent-depth': depth,
@@ -1166,11 +1172,11 @@ function SubagentCompactCard({
       detail={detail}
       title={error ?? t('subagent.openAgent', { name: block.name })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
-      stats={toolCalls.known ? <span className="font-sans">{tp('transcript.toolCalls', toolCalls.count)}</span> : undefined}
+      stats={toolCalls.known && !folded ? <span className="font-sans">{tp('transcript.toolCalls', toolCalls.count)}</span> : undefined}
       meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
       metaWidth="wide"
       aside={
-        onExpand === undefined ? undefined : (
+        <>{invocationButton}{onExpand === undefined ? null : (
           <button
             type="button"
             data-card-expand={block.subagentId}
@@ -1181,9 +1187,9 @@ function SubagentCompactCard({
           >
             <DisclosureChevron open={false} className="text-current" />
           </button>
-        )
+        )}</>
       }
-    />
+    >{invocationBody}</ActivityRow>
   );
 }
 
@@ -1226,11 +1232,13 @@ const SubagentCard = memo(function SubagentCard({
   // first saw it; running, waiting and failed ones stay full, and one that
   // finishes while the view is open keeps its card (timeline/nestedFold.ts).
   const active = subagentAutoForm(status) === 'full';
-  const nested = depth > 0;
+  const invocationScope = useContext(InvocationContext);
+  const nested = depth > 0 || (invocationScope !== null && invocationScope.callerAgentId !== MAIN_AGENT_ID);
   const nestedFold = useNestedFold(block.subagentId, status, nested);
   const full = nested
     ? !nestedFold.folded
     : formOverride !== undefined ? formOverride === 'full' : active;
+  const invocation = useInvocationDetails(block.parentToolCallId, block.parentAgentId, !full);
   const [expanded, setExpanded] = useState(() => active);
   useEffect(() => {
     if (active) setExpanded(true);
@@ -1249,6 +1257,8 @@ const SubagentCard = memo(function SubagentCard({
         toolCalls={toolCalls}
         onOpenAgent={onOpenAgent}
         folded={nested}
+        invocationButton={invocation.button}
+        invocationBody={invocation.body}
         onExpand={
           nested
             ? nestedFold.open
@@ -1295,7 +1305,8 @@ const SubagentCard = memo(function SubagentCard({
             >
               {body}
             </button>
-            {onToggleForm !== undefined ? (
+            {invocation.button}
+            {onToggleForm !== undefined && !nested ? (
               <button
                 type="button"
                 data-card-collapse={block.subagentId}
@@ -1308,6 +1319,7 @@ const SubagentCard = memo(function SubagentCard({
               </button>
             ) : null}
           </div>
+          {invocation.body}
           {block.orphaned === true ? (
             <p className="mt-1 pl-1 text-[12px] text-ink-faint italic">
               {t('transcript.orphanedSubagent')}
@@ -1369,6 +1381,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
+  const invocation = useInvocationDetails(block.anchorToolCallId);
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
   const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);
@@ -1421,7 +1434,8 @@ const SubagentEventRow = memo(function SubagentEventRow({
         'data-agent-event': block.event,
       }}
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
-    />
+      aside={invocation.button}
+    >{invocation.body}</ActivityRow>
   );
 });
 
@@ -3004,7 +3018,15 @@ export function Transcript({
   const [cardForms, setCardForms] = useState<ReadonlyMap<string, SubagentCardForm>>(new Map());
   // Nested agents settled at first sight fold for this view only; the store
   // lives as long as this Transcript (keyed per session and agent).
-  const [nestedFolds] = useState(() => new NestedFoldStore());
+  const nestedFolds = useMemo(() => new NestedFoldStore(), [state.sessionId, agentId, visible]);
+  if (visible) {
+    for (const node of Object.values(stableForest?.byId ?? {})) nestedFolds.see(node.agentId, node.status);
+    for (const block of blocks) {
+      if (block.kind === 'subagent') nestedFolds.see(block.subagentId, stableForest?.byId[block.subagentId]?.status ?? block.status);
+    }
+  }
+  const invocationTools = useMemo(() => new Map(blocks.filter((block): block is ToolBlock => block.kind === 'tool').map((block) => [block.toolCallId, block])), [blocks]);
+  const invocationContext = useMemo(() => ({ callerAgentId: agentId, tools: invocationTools, hasMore: state.hasMoreHistory, loadOlder: onLoadOlder }), [agentId, invocationTools, state.hasMoreHistory, onLoadOlder]);
   const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
     setCardForms((previous) => {
       const next = new Map(previous);
@@ -3902,6 +3924,7 @@ export function Transcript({
   }
 
   return (
+    <InvocationContext.Provider value={invocationContext}>
     <NestedFoldContext.Provider value={nestedFolds}>
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <MessageLinkContext.Provider value={messageLink}>
@@ -4065,5 +4088,6 @@ export function Transcript({
     </MessageLinkContext.Provider>
     </PromptOutcomeActionsContext.Provider>
     </NestedFoldContext.Provider>
+    </InvocationContext.Provider>
   );
 }

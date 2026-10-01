@@ -47,6 +47,7 @@ import {
   type Block,
   type DisplayNode,
   type SessionViewState,
+  type ToolBlock,
 } from '@kiki/session-core/session';
 import { writeSettings } from '@kiki/session-core/settings';
 import {
@@ -3187,6 +3188,7 @@ describe('external executor badge', () => {
 
 
 describe('subagent timeline dual form (G-4)', () => {
+  const toolDefaults = { display: undefined, description: undefined, isError: undefined, durationMs: undefined, progressText: undefined };
   function lifecycleSubagentBlock(
     subagentId: string,
     overrides: Partial<Extract<Block, { kind: 'subagent' }>> = {},
@@ -3304,6 +3306,59 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(card?.textContent).toContain('Researcher');
     expect(card?.textContent).toContain('Completed');
     expect(card?.textContent).not.toContain('completed ');
+  });
+
+  it('opens original cold-replay invocation details without replacing child navigation', async () => {
+    const output = 'task_id: task-example\nagent_id: agent-1\nactual_profile: explore\nbinding_advisories: [{"code":"model_not_preferred","requestedValue":"requested","effectiveValue":"effective","futureField":42},{"code":"effort_not_preferred","effectiveValue":"high"}]\n\nStanding directives in effect: historical raw text';
+    const prompt = '  Complete prompt\nwith trailing whitespace  ';
+    const call: ToolBlock = {
+      ...toolDefaults,
+      kind: 'tool', id: 'tool-call-agent-1', toolCallId: 'call-agent-1', name: 'AgentRun', argsText: '',
+      args: { profile: 'explore', name: 'research', model_alias: 'requested', effort: 'high', background: false, prompt },
+      status: 'done', output,
+    };
+    const opened: string[] = [];
+    const container = await renderWithAgents([call, lifecycleSubagentBlock('agent-1')], opened);
+    expect(container.querySelector('[data-tool-id="call-agent-1"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="call-agent-1"]')!); });
+    const details = container.querySelector('[data-invocation-tool="call-agent-1"]')!;
+    expect(details.textContent).toContain('"background": false');
+    expect(details.textContent).toContain('task_id: task-example');
+    expect(details.querySelectorAll('[data-binding-advisories] pre')).toHaveLength(2);
+    expect(details.textContent).toContain('"futureField": 42');
+    expect(details.querySelector('[data-invocation-output]')?.textContent).toBe(output);
+    const disclosure = details.querySelector<HTMLDetailsElement>('details')!;
+    expect(disclosure.open).toBe(false);
+    expect(disclosure.querySelector('pre')?.textContent).toBe(prompt);
+    expect(opened).toEqual([]);
+    await act(async () => { click(container.querySelector('[data-agent-open="agent-1"]')!); });
+    expect(opened).toEqual(['agent-1']);
+  });
+
+  it('matches AgentSend and resume by invocation anchor, not child identity', async () => {
+    const send: ToolBlock = { ...toolDefaults, kind: 'tool', id: 'tool-send', toolCallId: 'send', name: 'AgentSend', argsText: '', args: { target: 'agent-1', message: 'Complete message\nsecond line' }, status: 'done', output: '{"message_id":"msg-1","status":"queued","deduplicated":false,"resumed":true,"target":{"task_name":"research","agent_id":"agent-1"}}' };
+    const resume: ToolBlock = { ...send, id: 'tool-resume', toolCallId: 'resume', name: 'AgentRun', args: { resume: 'agent-1', prompt: 'Resume prompt', description: 'Continue' }, output: 'task_id: task-resume\nagent_id: agent-1\nactual_profile: explore' };
+    const sent: Block = { ...eventBlock('agent-1', 'sent'), kind: 'subagent-event', anchorToolCallId: 'send' } as Block;
+    const resumed: Block = { ...eventBlock('agent-1', 'resumed'), kind: 'subagent-event', anchorToolCallId: 'resume' } as Block;
+    const container = await renderWithAgents([send, sent, resume, resumed], []);
+    for (const id of ['send', 'resume']) await act(async () => { click(container.querySelector(`[data-invocation-toggle="${id}"]`)!); });
+    expect(container.querySelector('[data-invocation-tool="send"]')?.textContent).toContain('Complete message\nsecond line');
+    expect(container.querySelector('[data-invocation-tool="send"] [data-invocation-output]')?.textContent).toBe(send.output);
+    expect(container.querySelector('[data-invocation-tool="resume"]')?.textContent).toContain('task-resume');
+    expect(container.querySelector('[data-invocation-tool="resume"]')?.textContent).not.toContain('Complete message');
+  });
+
+  it('fetches a missing invocation from older parent pages and does not fabricate input', async () => {
+    const { root, container } = makeRoot();
+    const call: ToolBlock = { ...toolDefaults, kind: 'tool', id: 'tool-call-agent-1', toolCallId: 'call-agent-1', name: 'AgentRun', argsText: '', args: { prompt: 'Earlier prompt' }, status: 'done', output: 'task_id: old-task' };
+    let loads = 0;
+    const render = (blocks: Block[], more: boolean) => renderSettled(root, <Transcript state={{ ...transcriptState(blocks), hasMoreHistory: more }} onLoadOlder={async () => { loads += 1; return false; }} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+    await render([lifecycleSubagentBlock('agent-1')], true);
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="call-agent-1"]')!); });
+    expect(loads).toBe(1);
+    expect(container.querySelector('[data-invocation-tool]')).toBeNull();
+    await render([call, lifecycleSubagentBlock('agent-1')], false);
+    expect(container.querySelector('[data-invocation-tool="call-agent-1"]')?.textContent).toContain('Earlier prompt');
   });
 
   it('keeps a failed dispatch call visible next to its card', () => {
@@ -3451,6 +3506,30 @@ describe('subagent timeline dual form (G-4)', () => {
       await render('running');
       expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
       await render('completed');
+      expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
+    });
+
+    it('tracks running agents even before their collapsed parent mounts them', async () => {
+      const { root, container } = makeRoot();
+      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }])} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+      await render('running');
+      expect(card(container, 'worker')).toBeNull();
+      await render('completed');
+      await act(async () => { click(container.querySelector('[data-card-expand="lead"]')!); });
+      await act(async () => { click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Show child agents')!); });
+      expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
+    });
+
+    it('folds direct children in a child timeline only after leaving and returning', async () => {
+      const { root, container } = makeRoot();
+      const render = (status: 'running' | 'completed', visible = true) => renderSettled(root, <Transcript agentId="lead" visible={visible} state={transcriptState([lifecycleSubagentBlock('worker', { parentAgentId: 'lead', status, summary: 'Result.' })])} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+      await render('running');
+      await render('completed');
+      expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
+      await render('completed', false);
+      await render('completed');
+      expect(card(container, 'worker')?.getAttribute('data-nested-folded')).toBe('true');
+      await act(async () => { click(container.querySelector('[data-card-expand="worker"]')!); });
       expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
     });
 

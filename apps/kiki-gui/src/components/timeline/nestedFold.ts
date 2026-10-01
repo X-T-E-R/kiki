@@ -22,9 +22,9 @@ export class NestedFoldStore {
   private readonly listeners = new Set<() => void>();
   private version = 0;
 
-  /** Record the status the view first saw for this agent (later ones are ignored). */
+  /** Record initial history; a resumed run stays expanded even after settling again. */
   see(agentId: string, status: string): void {
-    if (!this.firstSeen.has(agentId)) this.firstSeen.set(agentId, status);
+    if (!this.firstSeen.has(agentId) || !FOLDS_AT_OPEN.has(status)) this.firstSeen.set(agentId, status);
   }
 
   folded(agentId: string, status: string): boolean {
