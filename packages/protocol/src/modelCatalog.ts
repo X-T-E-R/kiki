@@ -11,7 +11,7 @@ export const requestIdentityOverridesSchema = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -32,7 +32,7 @@ export const requestIdentityOverridesSchema = z
             }).strict(),
           ])
           .optional(),
-        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -57,6 +57,7 @@ export const requestIdentityPresetSchema = z.enum([
   'codex_compatible',
   'claude_code_compatible',
   'grok_build_compatible',
+  'opencode_compatible',
   'kimi_code',
   'none',
 ]);

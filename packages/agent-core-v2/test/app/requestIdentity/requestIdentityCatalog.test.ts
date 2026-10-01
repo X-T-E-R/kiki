@@ -71,7 +71,7 @@ describe('RequestIdentityCatalog profiles', () => {
   it('lists read-only built-ins for every supported client', async () => {
     const { catalog } = createCatalog();
     const profiles = await catalog.listProfiles();
-    expect(profiles.map((profile) => profile.id)).toEqual(['kimi_code', 'codex', 'claude_code', 'grok_build', 'none']);
+    expect(profiles.map((profile) => profile.id)).toEqual(['kimi_code', 'codex', 'claude_code', 'grok_build', 'opencode', 'none']);
     expect(profiles.every((profile) => profile.builtin)).toBe(true);
     await expect(catalog.updateProfile('codex', { ...draftOf(profiles[1]!), label: 'x' })).rejects.toThrow('read-only');
     await expect(catalog.deleteProfile('codex')).rejects.toThrow('cannot be deleted');
@@ -137,6 +137,22 @@ describe('RequestIdentityCatalog profiles', () => {
 });
 
 describe('RequestIdentityCatalog preview', () => {
+  it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('renders the OpenCode service identity over %s', async (protocol) => {
+    const { catalog } = createCatalog();
+    const preview = await catalog.preview({ profile: 'opencode', protocol, model: 'example-model' });
+    expect(preview.error).toBeUndefined();
+    expect(preview.version).toBe('1.18.21');
+    expect(preview.version_origin).toBe('track:builtin');
+    expect(preview.headers).toEqual([
+      { name: 'x-opencode-session', value: '00000000-0000-4000-8000-000000000004', kind: 'per_request', origin: 'lineage' },
+      { name: 'x-opencode-request', value: '00000000-0000-7000-8000-000000000005', kind: 'per_request', origin: 'lineage' },
+      { name: 'User-Agent', value: 'opencode/1.18.21', kind: 'static', origin: 'profile' },
+      { name: 'x-opencode-client', value: 'cli', kind: 'static', origin: 'profile' },
+    ]);
+    expect(preview.params).toEqual({});
+    expect(preview.suppressed_user_agent).toBe(false);
+  });
+
   it('renders the exact values a Codex request sends, marking per-request identifiers', async () => {
     const { catalog } = createCatalog();
     const preview = await catalog.preview({ profile: 'codex', protocol: 'openai_responses', model: 'gpt-example' });
@@ -180,6 +196,30 @@ describe('RequestIdentityCatalog preview', () => {
 });
 
 describe('RequestIdentityCatalog release tracks', () => {
+  it('stages, applies, pins and rolls back OpenCode versions without changing a custom fixed copy', async () => {
+    const url = 'https://registry.npmjs.org/opencode-ai/latest';
+    const { catalog } = createCatalog({
+      responses: { [url]: { name: 'opencode-ai', version: '1.19.0' } },
+      cli: { opencode: '1.19.1\n' },
+    });
+    const copy = await catalog.duplicateProfile('opencode');
+    await catalog.updateProfile(copy.id, { ...draftOf(copy), version: { mode: 'fixed', value: '1.18.21' } });
+    const checked = await catalog.checkTrack('opencode_cli', 'npm');
+    expect(checked.candidate?.version).toBe('1.19.0');
+    const preview = () => catalog.preview({ profile: 'opencode', protocol: 'openai', model: 'm' });
+    expect((await preview()).version).toBe('1.18.21');
+    await catalog.applyCandidate('opencode_cli', '1.19.0');
+    expect((await preview()).headers).toContainEqual(expect.objectContaining({ name: 'User-Agent', value: 'opencode/1.19.0' }));
+    expect((await catalog.preview({ profile: copy.id, protocol: 'anthropic', model: 'm' })).version).toBe('1.18.21');
+    await catalog.pinTrack('opencode_cli', true);
+    const local = await catalog.checkTrack('opencode_cli', 'local_cli');
+    expect(local.candidate?.version).toBe('1.19.1');
+    await expect(catalog.applyCandidate('opencode_cli', '1.19.1')).rejects.toThrow('unpin');
+    await catalog.pinTrack('opencode_cli', false);
+    await catalog.rollbackTrack('opencode_cli');
+    expect((await preview()).version).toBe('1.18.21');
+  });
+
   it('stages an npm release as a candidate and changes nothing until it is applied', async () => {
     const { catalog } = createCatalog({ responses: { [CODEX_NPM]: codexRelease('0.160.0') } });
     const checked = await catalog.checkTrack('codex_cli', 'npm');

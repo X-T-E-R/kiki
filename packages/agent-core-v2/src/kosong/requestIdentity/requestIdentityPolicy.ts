@@ -7,15 +7,17 @@ export type RequestIdentityPreset =
   | 'codex_compatible'
   | 'claude_code_compatible'
   | 'grok_build_compatible'
+  | 'opencode_compatible'
   | 'kimi_code'
   | 'none';
 
-export type RequestIdentityLineageFormat = 'codex' | 'claude_code' | 'grok_build' | 'kimi_code' | 'none';
+export type RequestIdentityLineageFormat = 'codex' | 'claude_code' | 'grok_build' | 'opencode' | 'kimi_code' | 'none';
 
 export type RequestIdentityUserAgentMode =
   | 'codex'
   | 'claude_code'
   | 'grok_build'
+  | 'opencode'
   | 'kimi_code'
   | 'host'
   | 'none';
@@ -43,6 +45,7 @@ export const BUILTIN_PROFILE_FOR_PRESET: Readonly<Record<RequestIdentityPreset, 
   codex_compatible: 'codex',
   claude_code_compatible: 'claude_code',
   grok_build_compatible: 'grok_build',
+  opencode_compatible: 'opencode',
   kimi_code: 'kimi_code',
   none: 'none',
 };
@@ -89,6 +92,7 @@ const RequestIdentityPresetSchema = z.enum([
   'codex_compatible',
   'claude_code_compatible',
   'grok_build_compatible',
+  'opencode_compatible',
   'kimi_code',
   'none',
 ]);
@@ -108,7 +112,7 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         threadIdentity: z.enum(['agent', 'none']).optional(),
         parentThread: z.enum(['immediate_agent', 'none']).optional(),
@@ -120,7 +124,7 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
       .object({
         installationIdentity: z.enum(['persistent_local', 'none']).optional(),
         originator: RequestIdentityOriginatorSchema.optional(),
-        userAgent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        userAgent: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -157,7 +161,7 @@ const RequestIdentityOverridesWireSchema = z
   .object({
     lineage: z
       .object({
-        format: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'none']).optional(),
+        format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -169,7 +173,7 @@ const RequestIdentityOverridesWireSchema = z
       .object({
         installation_identity: z.enum(['persistent_local', 'none']).optional(),
         originator: RequestIdentityOriginatorSchema.optional(),
-        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+        user_agent: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'host', 'none']).optional(),
       }).strict()
       .optional(),
     request: z
@@ -378,6 +382,24 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     cache: { source: 'session', responses: 'none', messages: 'metadata_user_id' },
     responsesMetadata: 'none',
   },
+  opencode_compatible: {
+    lineage: {
+      format: 'opencode',
+      sessionScope: 'agent_session',
+      threadIdentity: 'none',
+      parentThread: 'none',
+      subagentMarker: 'none',
+      turnAncestry: 'none',
+    },
+    client: {
+      installationIdentity: 'none',
+      originator: { mode: 'none' },
+      userAgent: 'opencode',
+    },
+    request: { logicalId: 'turn', turnIndex: 'none' },
+    cache: { source: 'none', responses: 'none', messages: 'none' },
+    responsesMetadata: 'none',
+  },
   kimi_code: {
     lineage: {
       format: 'kimi_code',
@@ -540,8 +562,8 @@ export function validateResolvedRequestIdentity(
   if (policy.cache.source === 'session' && policy.lineage.sessionScope === 'none') {
     throw invalid('cache source=session requires a non-none session scope');
   }
-  if (policy.request.logicalId === 'turn' && !['codex', 'grok_build'].includes(policy.lineage.format)) {
-    throw invalid('logicalId=turn requires a Codex or Grok Build projector');
+  if (policy.request.logicalId === 'turn' && !['codex', 'grok_build', 'opencode'].includes(policy.lineage.format)) {
+    throw invalid('logicalId=turn requires a Codex, Grok Build or OpenCode projector');
   }
   if (
     policy.cache.messages === 'metadata_user_id' &&
@@ -552,6 +574,14 @@ export function validateResolvedRequestIdentity(
   }
   if (policy.responsesMetadata === 'codex' && policy.lineage.format !== 'codex') {
     throw invalid('responsesMetadata=codex requires the Codex projector');
+  }
+  if (policy.lineage.format === 'opencode' && (
+    policy.lineage.threadIdentity !== 'none' ||
+    policy.lineage.parentThread !== 'none' ||
+    policy.lineage.subagentMarker !== 'none' ||
+    policy.lineage.turnAncestry !== 'none'
+  )) {
+    throw invalid('the OpenCode projector does not support thread or parent lineage');
   }
   if (policy.lineage.format === 'grok_build' || policy.lineage.format === 'claude_code') {
     if (
@@ -599,6 +629,10 @@ export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
   'x-grok-client-version',
   'x-grok-model-override',
   'x-claude-code-session-id',
+  'x-opencode-session',
+  'x-opencode-request',
+  'x-opencode-client',
+  'x-opencode-project',
   'x-msh-platform',
   'x-msh-version',
   'x-msh-device-name',

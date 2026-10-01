@@ -50,11 +50,17 @@ describe('server-v2 /api/request-identity', () => {
   it('duplicates, edits, previews, assigns and deletes a custom identity', async () => {
     const listed = await call<RequestIdentityCatalog>('GET', '/request-identity');
     expect(listed.code).toBe(0);
-    expect(listed.data.profiles.map((profile) => profile.id)).toEqual(['kimi_code', 'codex', 'claude_code', 'grok_build', 'none']);
+    expect(listed.data.profiles.map((profile) => profile.id)).toEqual(['kimi_code', 'codex', 'claude_code', 'grok_build', 'opencode', 'none']);
     expect(listed.data.tracks.map((track) => [track.id, track.current.origin])).toEqual([
-      ['codex_cli', 'builtin'], ['claude_code', 'builtin'], ['grok_cli', 'builtin'],
+      ['codex_cli', 'builtin'], ['claude_code', 'builtin'], ['grok_cli', 'builtin'], ['opencode_cli', 'builtin'],
     ]);
     expect(listed.data.usage[0]).toMatchObject({ scope: 'global', effective_profile: 'kimi_code' });
+    const opencode = await call<RequestIdentityPreview>('POST', '/request-identity/preview', {
+      profile: 'opencode', protocol: 'openai', model: 'example-model',
+    });
+    expect(opencode.code).toBe(0);
+    expect(opencode.data.headers).toContainEqual(expect.objectContaining({ name: 'User-Agent', value: 'opencode/1.18.21' }));
+    expect(opencode.data.headers).toContainEqual(expect.objectContaining({ name: 'x-opencode-client', value: 'cli' }));
 
     const created = await call<RequestIdentityCatalog>('POST', '/request-identity/profiles', { from: 'claude_code', label: 'Claude SDK' });
     const custom = created.data.profiles.find((profile) => profile.id === 'custom:claude_code-1');

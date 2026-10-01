@@ -989,6 +989,29 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     }]);
   });
 
+  it.each(['anthropic', 'openai', 'openai_responses', 'google-genai'] as const)('sends the OpenCode identity through the requester over %s', async (protocol) => {
+    const identityDimensions: RequestIdentityDimensions[] = [];
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol });
+    const captured = captureRequestParams(requester);
+    const { service, identityCatalog } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { profile: 'opencode' } } },
+      identityDimensions,
+    });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(captured[0]?.headers).toEqual({
+      'x-opencode-session': '00000000-0000-4000-8000-000000000003',
+      'x-opencode-request': '00000000-0000-7000-8000-000000000004',
+      'User-Agent': 'opencode/1.18.21',
+      'x-opencode-client': 'cli',
+    });
+    expect(captured[0]?.cacheKey).toBeUndefined();
+    expect(identityDimensions).toEqual([{
+      installationIdentity: false, sharedSessionIdentity: false, agentSessionIdentity: true,
+      threadIdentity: false, logicalRequestIdentity: true, turnIndex: false, turnState: false,
+    }]);
+    expect(identityCatalog.observations()[0]?.profile).toBe('opencode');
+  });
+
   it('reads an override-only global request identity layer', async () => {
     const requester = createRequester({ value: 0 }, null, [], undefined, {
       protocol: 'openai_responses',

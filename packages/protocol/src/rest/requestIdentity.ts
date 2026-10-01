@@ -13,7 +13,7 @@ import {
  * requests actually sent. Values are shown verbatim; credentials never enter this surface.
  */
 
-export const requestIdentityTrackIdSchema = z.enum(['codex_cli', 'claude_code', 'grok_cli']);
+export const requestIdentityTrackIdSchema = z.enum(['codex_cli', 'claude_code', 'grok_cli', 'opencode_cli']);
 export type RequestIdentityTrackId = z.infer<typeof requestIdentityTrackIdSchema>;
 
 export const requestIdentityUpdateSourceSchema = z.enum(['npm', 'local_cli', 'manifest']);

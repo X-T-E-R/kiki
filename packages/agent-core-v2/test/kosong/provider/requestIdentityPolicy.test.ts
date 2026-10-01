@@ -58,6 +58,7 @@ describe('request identity policy', () => {
     ['codex_compatible', 'codex', 'shared_session', 'codex'],
     ['claude_code_compatible', 'claude_code', 'shared_session', 'claude_code'],
     ['grok_build_compatible', 'grok_build', 'agent_session', 'grok_build'],
+    ['opencode_compatible', 'opencode', 'agent_session', 'opencode'],
     ['kimi_code', 'kimi_code', 'shared_session', 'kimi_code'],
     ['none', 'none', 'none', 'none'],
   ] as const)('expands %s into complete orthogonal axes', (preset, format, scope, userAgent) => {
@@ -65,6 +66,28 @@ describe('request identity policy', () => {
     expect(resolved.lineage.format).toBe(format);
     expect(resolved.lineage.sessionScope).toBe(scope);
     expect(resolved.client.userAgent).toBe(userAgent);
+  });
+
+  it('projects OpenCode session and logical request ids without unrelated client lineage', () => {
+    const projection = project({ profile: 'opencode' });
+    expect(projection.headers).toEqual({
+      'x-opencode-session': SNAPSHOT.agentSessionId,
+      'x-opencode-request': SNAPSHOT.logicalId,
+      'User-Agent': 'opencode/1.0.0',
+    });
+    expect(projection.cacheKey).toBeUndefined();
+    expect(projection.wire?.responsesClientMetadata).toBeUndefined();
+    const next = project({ profile: 'opencode' }, { snapshot: { ...SNAPSHOT, logicalId: 'next-turn' } });
+    expect(next.headers?.['x-opencode-session']).toBe(SNAPSHOT.agentSessionId);
+    expect(next.headers?.['x-opencode-request']).toBe('next-turn');
+    expect(project({ profile: 'opencode', overrides: {
+      lineage: { sessionScope: 'none' }, request: { logicalId: 'none' }, client: { userAgent: 'host' },
+    } }).headers).toBeUndefined();
+    expect(() => resolveRequestIdentityLayers({ profile: 'opencode', overrides: { lineage: { threadIdentity: 'agent' } } }))
+      .toThrow('OpenCode projector does not support thread or parent lineage');
+    expect(RequestIdentityPolicySchema.parse({ preset: 'opencode_compatible' })).toEqual({ preset: 'opencode_compatible' });
+    expect(RequestIdentityPolicyWireSchema.parse({ overrides: { lineage: { format: 'opencode' }, client: { user_agent: 'opencode' } } }))
+      .toEqual({ overrides: { lineage: { format: 'opencode' }, client: { user_agent: 'opencode' } } });
   });
 
   it('applies overrides leaf-by-leaf without replacing sibling defaults', () => {

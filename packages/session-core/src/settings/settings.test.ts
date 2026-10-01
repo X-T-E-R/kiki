@@ -665,6 +665,13 @@ describe('settings persistence and validation', () => {
     }))).toEqual({ images: null });
   });
 
+  it('round-trips the OpenCode identity through a settings layer', () => {
+    const policy = { preset: 'opencode_compatible' as const };
+    const draft = requestIdentityLayerDraftFromPolicy(policy);
+    expect(draft.requestIdentityChoice).toBe('opencode_compatible');
+    expect(requestIdentityPolicyFromDraft(draft)).toEqual(policy);
+  });
+
   it('maps authored request identity layers to the wire without inventing presets', () => {
     const draft = providerDraftFromCatalog(
       {

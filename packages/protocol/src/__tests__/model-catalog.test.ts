@@ -74,6 +74,15 @@ describe('model catalog schemas', () => {
     expect(probeProviderResponseSchema.safeParse({ ok: false, error: { kind: 'unknown', message: 'Failed.' } }).success).toBe(false);
   });
 
+  it('accepts the OpenCode preset and its behavior axes', () => {
+    const identity = {
+      preset: 'opencode_compatible',
+      overrides: { lineage: { format: 'opencode' }, client: { user_agent: 'opencode' } },
+    };
+    expect(requestIdentityPolicySchema.parse(identity)).toEqual(identity);
+    expect(patchProviderRequestSchema.parse({ request_identity: identity })).toEqual({ request_identity: identity });
+  });
+
   it('round-trips a model catalog item', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);
   });

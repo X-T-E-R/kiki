@@ -42,10 +42,10 @@ const PROTOCOL_LABELS = ['openai_responses', 'anthropic', 'openai'] as const;
 type PreviewProtocol = (typeof PROTOCOL_LABELS)[number];
 
 const PRESETS: readonly RequestIdentityPresetWire[] = [
-  'codex_compatible', 'claude_code_compatible', 'grok_build_compatible', 'kimi_code',
+  'codex_compatible', 'claude_code_compatible', 'grok_build_compatible', 'opencode_compatible', 'kimi_code',
 ];
 
-const TRACKS: readonly RequestIdentityTrackId[] = ['codex_cli', 'claude_code', 'grok_cli'];
+const TRACKS: readonly RequestIdentityTrackId[] = ['codex_cli', 'claude_code', 'grok_cli', 'opencode_cli'];
 
 const PREVIEW_MODEL = 'example-model';
 

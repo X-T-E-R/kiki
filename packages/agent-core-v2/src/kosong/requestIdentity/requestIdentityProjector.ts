@@ -98,6 +98,13 @@ export function projectRequestIdentity(input: {
     headers['x-grok-client-identifier'] = 'grok-shell';
     headers['x-grok-client-version'] = input.runtimeVersion;
     headers['x-grok-model-override'] = input.model;
+  } else if (policy.lineage.format === 'opencode') {
+    if (policy.lineage.sessionScope !== 'none') {
+      headers['x-opencode-session'] = sessionIdentity();
+    }
+    if (policy.request.logicalId === 'turn') {
+      headers['x-opencode-request'] = requiredSnapshot(input.snapshot.logicalId, 'logical request identity');
+    }
   } else if (policy.lineage.format === 'claude_code') {
     if (policy.lineage.sessionScope !== 'none') {
       headers['X-Claude-Code-Session-Id'] = sessionIdentity();
@@ -118,6 +125,8 @@ export function projectRequestIdentity(input: {
     headers['User-Agent'] = `claude-cli/${asciiHeader(input.runtimeVersion)} (external, cli)`;
   } else if (policy.client.userAgent === 'grok_build') {
     headers['User-Agent'] = `grok-shell/${input.runtimeVersion} (${input.platform}; ${input.arch})`;
+  } else if (policy.client.userAgent === 'opencode') {
+    headers['User-Agent'] = `opencode/${asciiHeader(input.runtimeVersion)}`;
   } else if (policy.client.userAgent === 'kimi_code') {
     headers['User-Agent'] = hostUserAgent(input.hostRequestHeaders) ?? `kiki-cli/${asciiHeader(input.runtimeVersion)}`;
   } else if (policy.client.userAgent === 'none') {

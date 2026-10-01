@@ -249,6 +249,7 @@ export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
   'codex_compatible',
   'claude_code_compatible',
   'grok_build_compatible',
+  'opencode_compatible',
   'kimi_code',
   'none',
 ];
@@ -2390,7 +2391,7 @@ export function msUnitFor(ms: number): MsUnit {
 }
 
 function isRequestIdentityPreset(value: RequestIdentityChoice): value is RequestIdentityPreset {
-  return ['codex_compatible', 'claude_code_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
+  return ['codex_compatible', 'claude_code_compatible', 'grok_build_compatible', 'opencode_compatible', 'kimi_code', 'none'].includes(value);
 }
 
 function isPermissionMode(value: unknown): value is DesktopSettings['defaultPermissionMode'] {

@@ -639,6 +639,8 @@ const PER_REQUEST_HEADERS = new Set([
   'x-grok-agent-id',
   'x-grok-model-override',
   'x-claude-code-session-id',
+  'x-opencode-session',
+  'x-opencode-request',
   'x-msh-device-id',
 ]);
 

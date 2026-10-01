@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { RequestIdentityCatalog, RequestIdentityProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { IdentitySection } from './IdentitySection';
+import { optionLabels } from './testControls';
 
 const api = {
   get: vi.fn(),
@@ -114,6 +115,23 @@ async function type(element: HTMLInputElement, value: string): Promise<void> {
 }
 
 describe('IdentitySection', () => {
+  it('renders an OpenCode built-in from the catalog and offers it in the global picker', async () => {
+    const opencode: RequestIdentityProfile = {
+      id: 'opencode', builtin: true, label: 'OpenCode', base_preset: 'opencode_compatible', track: 'opencode_cli',
+      version: { mode: 'track' }, user_agent: 'opencode/{version}',
+      headers: [{ name: 'x-opencode-client', value: 'cli' }], params: [],
+    };
+    api.get.mockResolvedValue(catalog({ profiles: [CODEX, opencode] }));
+    const container = await render();
+    const row = container.querySelector<HTMLButtonElement>('[data-identity-row="opencode"]')!;
+    expect(row.textContent).toContain('OpenCode');
+    await act(async () => { row.click(); });
+    await settle();
+    expect(container.querySelector('[data-identity-detail="opencode"]')!.textContent).toContain('opencode/{version}');
+    expect(api.preview).toHaveBeenCalledWith({ profile: 'opencode', protocol: 'openai_responses', model: 'example-model' });
+    expect(await optionLabels(container.querySelector('[data-request-identity-choice]')!)).toContain('OpenCode-compatible');
+  });
+
   it('shows a built-in identity read-only with the exact values it sends, unmasked', async () => {
     const container = await render();
     const detail = container.querySelector('[data-identity-detail="codex"]')!;

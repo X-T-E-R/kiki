@@ -65,7 +65,7 @@ export interface RequestIdentityTrackSeed {
 
 const SEEDED_AT = '2026-09-30T00:00:00.000Z';
 
-/** Versions verified against the npm registry when this Kiki build was cut. */
+/** Upstream client versions shipped with this Kiki build. */
 export const REQUEST_IDENTITY_TRACK_SEEDS: readonly RequestIdentityTrackSeed[] = [
   {
     id: 'codex_cli',
@@ -84,6 +84,12 @@ export const REQUEST_IDENTITY_TRACK_SEEDS: readonly RequestIdentityTrackSeed[] =
     npmPackage: '@xai-official/grok',
     cliCommand: 'grok',
     builtin: { version: '1.0.44', origin: 'builtin', source_detail: '@xai-official/grok', at: SEEDED_AT },
+  },
+  {
+    id: 'opencode_cli',
+    npmPackage: 'opencode-ai',
+    cliCommand: 'opencode',
+    builtin: { version: '1.18.21', origin: 'builtin', source_detail: 'opencode-ai', at: SEEDED_AT },
   },
 ];
 
@@ -147,6 +153,17 @@ export const BUILTIN_REQUEST_IDENTITY_PROFILES: readonly RequestIdentityProfile[
       { name: 'x-grok-client-identifier', value: 'grok-shell' },
       { name: 'x-grok-client-version', value: '{version}' },
     ],
+    params: [],
+  },
+  {
+    id: 'opencode',
+    builtin: true,
+    label: 'OpenCode',
+    base_preset: 'opencode_compatible',
+    track: 'opencode_cli',
+    version: { mode: 'track' },
+    user_agent: 'opencode/{version}',
+    headers: [{ name: 'x-opencode-client', value: 'cli' }],
     params: [],
   },
   {
