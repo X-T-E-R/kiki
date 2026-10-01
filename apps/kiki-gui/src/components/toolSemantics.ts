@@ -872,9 +872,28 @@ function describeTodo(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     : todos.map((todo) => ({ status: str(todo['status']) ?? 'pending', title: str(todo['title']) ?? '' }));
   const done = read.filter((item) => item.status === 'done').length;
   const active = read.find((item) => item.status === 'in_progress');
+  const notes = rec(args['notes']);
+  const noteSections = ['goal', 'directives', 'decided', 'rejected', 'evidence', 'files', 'next', 'open'] as const;
+  const noteFields: SemanticField[] = noteSections.flatMap((key) => {
+    const value = notes?.[key];
+    if (typeof value !== 'string') return [];
+    return [{ label: t(`agentPanel.notes.${key}`), value: value.trim() === ''
+      ? toolRecordCopy('notesCleared', ctx.locale) : clipLine(value, 160) }];
+  });
+  if (args['notes'] === null) noteFields.push({ label: t('agentPanel.notes'), value: toolRecordCopy('notesCleared', ctx.locale) });
+  const notesChanged = noteFields.length > 0;
+  const noteLabels = noteFields.map((field) => field.label).join(' · ');
+  const notesTruncated = noteSections.some((key) => {
+    const value = notes?.[key];
+    return typeof value === 'string' && value.replaceAll(/\s+/g, ' ').trim().length > 160;
+  });
   const verb = todos === undefined
-    ? args['notes'] !== undefined ? t('tc.sem.todo.notes') : t('tc.sem.todo.read')
+    ? notesChanged ? t('tc.sem.todo.notes') : t('tc.sem.todo.read')
     : todos.length === 0 ? t('tc.sem.todo.clear') : t('tc.sem.todo.update');
+  const fields = [...noteFields];
+  if (read.length === 0 && todos === undefined && text.startsWith('Todo list is empty')) {
+    fields.push({ label: t('tc.sem.field.status'), value: tp('tc.todoItems', 0) });
+  }
   return {
     icon: 'plan',
     verb,
@@ -885,7 +904,10 @@ function describeTodo(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       primary: item.title,
       secondary: item.status === 'in_progress' ? t('tc.sem.todo.inProgress') : item.status === 'done' ? t('tc.sem.todo.done') : undefined,
     })),
-    fields: read.length === 0 && todos === undefined && text.startsWith('Todo list is empty') ? [{ label: t('tc.sem.field.status'), value: tp('tc.todoItems', 0) }] : undefined,
+    note: notesChanged ? clipLine(noteLabels) : undefined,
+    noteTitle: notesChanged ? noteLabels : undefined,
+    fields: fields.length > 0 ? fields : undefined,
+    previewNotice: notesTruncated ? toolRecordCopy('notesSummaryTruncated', ctx.locale) : undefined,
   };
 }
 

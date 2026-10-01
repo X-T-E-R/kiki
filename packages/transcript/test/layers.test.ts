@@ -1325,15 +1325,19 @@ describe('TranscriptWireAdapter', () => {
       rev: 2, hash: 'abc123', writtenTurn: 4, writtenStep: 't4.3',
       coveredMessageId: 'msg-4', windowEpoch: 1,
     };
+    const notes = {
+      goal: 'Ship', directives: 'Read only', decided: 'Reuse channel', rejected: 'New endpoint',
+      evidence: 'Tests pass', files: 'example.ts', next: 'Review', open: 'None',
+    };
     reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo', value: [{ title: 'keep', status: 'pending' }] }));
-    reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo_notes', value: { notes: { goal: 'Ship' }, notesMeta: meta } }));
+    reducer.apply(adapter.add({ type: 'tools.update_store', key: 'todo_notes', value: { notes, notesMeta: meta } }));
     const checkpoint = adapter.checkpoint();
     const restored = new TranscriptWireAdapter('main');
     restored.restore(checkpoint);
     reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo', value: [{ title: 'next', status: 'in_progress' }] }));
     const todo = transcript.getTodo('todo');
-    expect(todo).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }], notes: { goal: 'Ship' }, notesMeta: meta });
-    expect(transcriptOperationSchema.parse({ op: 'todo.upsert', todo })).toMatchObject({ todo: { notesMeta: meta } });
+    expect(todo).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }], notes, notesMeta: meta });
+    expect(transcriptOperationSchema.parse({ op: 'todo.upsert', todo })).toMatchObject({ todo: { notes, notesMeta: meta } });
     reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo_notes', value: { notesMeta: { ...meta, rev: 3 } } }));
     expect(transcript.getTodo('todo')).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }], notesMeta: { rev: 3 } });
     expect(transcript.getTodo('todo')?.notes).toBeUndefined();

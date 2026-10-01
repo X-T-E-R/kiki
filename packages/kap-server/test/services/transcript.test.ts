@@ -34,6 +34,8 @@ import {
   TranscriptFactReducer,
   TranscriptStore,
   TranscriptWireAdapter,
+  transcriptResponseSchema,
+  transcriptResetPayloadSchema,
   type AgentTranscriptSnapshot,
   type AppendOp,
   type FrameUpsertOp,
@@ -60,7 +62,7 @@ import {
 } from '../../src/services/transcript/configSection';
 import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
 import { registerTranscriptRoutes } from '../../src/routes/transcript';
-import { readSessionViewTranscriptPage } from '../../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readSessionViewTranscriptPage } from '../../src/transport/klient/sessionViewReads';
 import { TestInstantiationService } from '../../../agent-core-v2/src/_base/di/test';
 import { SyncDescriptor } from '../../../agent-core-v2/src/_base/di/descriptors';
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '../../../agent-core-v2/src/_base/errors/unexpectedError';
@@ -701,6 +703,64 @@ describe('TranscriptService live integration', () => {
       },
     } as unknown as Scope;
   }
+
+  it('carries independent working notes through live ops, validated pages and cold reconnect after restart', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const cold = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const child = agents.add('child-notes', { wire: stubAgentWire() });
+      const events: { agentId: string; ops: readonly TranscriptOperation[] }[] = [];
+      service.onSessionOps('s1', (event) => events.push(event));
+      for (const handle of [main, child]) {
+        const notes = {
+          goal: `${handle.id} goal`, directives: 'Read only', decided: 'Reuse existing channel', rejected: 'New endpoint',
+          evidence: 'Tests pass', files: 'example.ts', next: 'Review', open: 'None',
+        };
+        const notesMeta = { rev: 1, hash: `${handle.id}-hash`, writtenTurn: 0, writtenStep: 't0.1', coveredMessageId: 'msg-1', windowEpoch: 0 };
+        const records = [
+          { type: 'tools.update_store', key: 'todo_notes', value: { notes, notesMeta }, time: 4000 },
+          { type: 'tools.update_store', key: 'todo', value: [{ title: `${handle.id} todo`, status: 'pending' }], time: 5000 },
+        ];
+        for (const record of records) handle.bus.emit(ev(record));
+        const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', handle.id);
+        await mkdir(wireDir, { recursive: true });
+        const serialized = `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+        if (handle.id === 'main') await appendFile(join(wireDir, 'wire.jsonl'), serialized);
+        else await writeFile(join(wireDir, 'wire.jsonl'), serialized);
+        expect(store.getAgent(handle.id)?.getTodo('todo')).toMatchObject({ notes, notesMeta });
+        expect(events.some((event) => event.agentId === handle.id && event.ops.some((op) => op.op === 'todo.upsert' && op.todo.notes?.goal === notes.goal))).toBe(true);
+        const livePage = transcriptResponseSchema.parse(await readSessionViewTranscriptPage(service, 's1', { agentId: handle.id }));
+        expect(livePage.todos).toEqual([expect.objectContaining({ todoId: 'todo', notes, notesMeta })]);
+      }
+      service.dispose();
+      for (const agentId of ['main', 'child-notes']) {
+        const page = transcriptResponseSchema.parse(await readSessionViewTranscriptPage(cold, 's1', { agentId }));
+        expect(page.todos[0]).toMatchObject({ notes: { goal: `${agentId} goal`, directives: 'Read only', open: 'None' }, notesMeta: { rev: 1 } });
+        for (const grade of ['turn', 'block', 'delta'] as const) {
+          const baseline = transcriptResetPayloadSchema.parse(await readColdSessionViewBaseline(cold, 's1', agentId, grade, new AbortController().signal));
+          expect(baseline.snapshot.todos).toEqual(page.todos);
+        }
+      }
+      const cleared = { type: 'tools.update_store', key: 'todo_notes', value: { notesMeta: { rev: 2, hash: 'cleared', writtenTurn: 0, writtenStep: 't0.2', coveredMessageId: 'msg-2', windowEpoch: 0 } }, time: 6000 };
+      await appendFile(join(home, 'sessions', 'ws', 's1', 'agents', 'child-notes', 'wire.jsonl'), `${JSON.stringify(cleared)}\n`);
+      const childPage = transcriptResponseSchema.parse(await readSessionViewTranscriptPage(cold, 's1', { agentId: 'child-notes' }));
+      expect(childPage.todos[0]?.notes).toBeUndefined();
+      expect(childPage.todos[0]?.notesMeta?.rev).toBe(2);
+      expect((await readSessionViewTranscriptPage(cold, 's1', { agentId: 'main' }))?.todos[0]?.notes?.goal).toBe('main goal');
+    } finally {
+      service.dispose();
+      cold.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 
   it.each(['rewrite', 'backfill retry'] as const)(
     'keeps an engine-pending question pending across %s before and after 30 seconds',

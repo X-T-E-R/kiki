@@ -148,3 +148,76 @@ describe('network tool previews', () => {
     expect(semantics('WebSearch', output).count).toBe('0 results');
   });
 });
+
+describe('TodoList working note previews', () => {
+  it.each([
+    ['goal', 'Goal'], ['directives', 'User instructions'], ['decided', 'Decided'], ['rejected', 'Ruled out'],
+    ['evidence', 'Evidence'], ['files', 'Files'], ['next', 'Next'], ['open', 'Open questions'],
+  ])('previews a %s-only update without needing tool output', (section, label) => {
+    const view = semantics('TodoList', undefined, { notes: { [section]: 'Useful\n  section content' } });
+    expect(view.verb).toBe('Update notes');
+    expect(view.note).toBe(label);
+    expect(view.fields).toEqual([{ label, value: 'Useful section content' }]);
+    expect(view.previewNotice).toBeUndefined();
+  });
+
+  it('previews todos and only the supplied note sections together', () => {
+    const view = semantics('TodoList', 'Todo list updated', {
+      todos: [{ title: 'Run tests', status: 'in_progress' }, { title: 'Read code', status: 'done' }],
+      notes: { next: 'Run targeted tests', goal: 'Ship feature' },
+    });
+    expect(view.verb).toBe('Update todos');
+    expect(view.object).toBe('Run tests');
+    expect(view.count).toBe('1/2');
+    expect(view.items).toHaveLength(2);
+    expect(view.note).toBe('Goal · Next');
+    expect(view.fields).toEqual([{ label: 'Goal', value: 'Ship feature' }, { label: 'Next', value: 'Run targeted tests' }]);
+  });
+
+  it.each([{}, { notes: {} }, { notes: { future: 'Unknown section', goal: undefined } }])('does not invent a notes update from %j', (args) => {
+    const view = semantics('TodoList', '', args);
+    expect(view.verb).toBe('Read todos');
+    expect(view.note).toBeUndefined();
+    expect(view.fields).toBeUndefined();
+    expect(view.previewNotice).toBeUndefined();
+  });
+
+  it('keeps an empty notes patch quiet alongside a todo update', () => {
+    const view = semantics('TodoList', '', { todos: [], notes: {} });
+    expect(view.verb).toBe('Clear todos');
+    expect(view.note).toBeUndefined();
+    expect(view.fields).toBeUndefined();
+  });
+
+  it.each(['', '   \n'])('shows section deletion for empty text %j', (value) => {
+    expect(semantics('TodoList', '', { notes: { open: value } }).fields).toEqual([{ label: 'Open questions', value: 'Cleared' }]);
+  });
+
+  it('distinguishes clearing all notes from an empty patch', () => {
+    const view = semantics('TodoList', '', { notes: null });
+    expect(view.verb).toBe('Update notes');
+    expect(view.fields).toEqual([{ label: 'Working notes', value: 'Cleared' }]);
+  });
+
+  it('marks display truncation and leaves the complete payload for Raw, without a third preview level', () => {
+    const args = { notes: { goal: 'g'.repeat(161), next: 'n'.repeat(160) } };
+    const block = tool('TodoList', 'Updated', args);
+    const view = describeTool(block, context)!;
+    expect(view.fields?.[0]?.value).toBe(`${'g'.repeat(159)}…`);
+    expect(view.fields?.[1]?.value).toBe('n'.repeat(160));
+    expect(view.previewNotice).toBe('Note summaries are shortened; open Raw for full content');
+    expect(view.previewFull).toBeUndefined();
+    expect(block.args).toEqual(args);
+    expect(block.argsText).toBe(JSON.stringify(args));
+  });
+
+  it('localizes section labels, deletion and truncation notices', () => {
+    const zhContext: SemanticContext = { ...context, locale: 'zh',
+      t: (key, params) => translate('zh', key, params), tp: (key, count, params) => translatePlural('zh', key, count, params) };
+    const view = describeTool(tool('TodoList', '', { notes: { goal: '中'.repeat(161), next: '' } }), zhContext)!;
+    expect(view.verb).toBe('更新笔记');
+    expect(view.note).toBe('目标 · 下一步');
+    expect(view.fields?.[1]?.value).toBe('已清除');
+    expect(view.previewNotice).toContain('原始数据');
+  });
+});

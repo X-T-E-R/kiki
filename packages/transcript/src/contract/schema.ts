@@ -454,6 +454,7 @@ export const todoItemSchema = z.object({
 
 export const todoNotesSchema = z.object({
   goal: z.string().optional(),
+  directives: z.string().optional(),
   decided: z.string().optional(),
   rejected: z.string().optional(),
   evidence: z.string().optional(),

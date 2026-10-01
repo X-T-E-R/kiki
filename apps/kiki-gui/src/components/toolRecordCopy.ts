@@ -33,6 +33,8 @@ const COPY = {
   encodedChunks: ['Encoded result chunks, not a reconstructed full document', '编码结果分块，并非已还原的完整正文'],
   poll: ['Poll after (ms)', '下次查询间隔（毫秒）'],
   schema: ['Schema', '数据格式'],
+  notesCleared: ['Cleared', '已清除'],
+  notesSummaryTruncated: ['Note summaries are shortened; open Raw for full content', '笔记摘要已截断；打开原始数据查看完整内容'],
 } as const;
 
 export function toolRecordCopy(key: keyof typeof COPY, locale: Locale = 'en'): string {
