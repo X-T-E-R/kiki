@@ -143,7 +143,7 @@ export function resetLaunchWindowMode(): void {
 }
 
 /** Space colors offered on create. Muted so a dot never outshouts the accent. */
-export const SPACE_COLORS = ['#c2410c', '#0f766e', '#4d7c0f', '#1d4ed8', '#7e22ce', '#be185d', '#78716c'] as const;
+export const SPACE_COLORS = ['#945439', '#295c58', '#49612a', '#4c64a9', '#7b4da3', '#944264', '#75726f'] as const;
 
 /** `~/.kiki-spaces/<slug>` next to the main home, with the main path's separator. */
 export function suggestSpacePath(mainPath: string, name: string): string {

@@ -46,7 +46,7 @@ vi.mock('../../host', () => ({ useHost: () => host }));
 const LIST = {
   items: [
     { id: 'main', name: 'Main space', path: 'C:\\Users\\me\\.kiki', primary: true, credentials_shared: true },
-    { id: 'h-acme', name: 'ACME', color: '#0f766e', path: 'D:\\acme', primary: false, credentials_shared: true },
+    { id: 'h-acme', name: 'ACME', color: '#295c58', path: 'D:\\acme', primary: false, credentials_shared: true },
     { id: 'h-paper', name: 'Paper', path: 'D:\\paper', primary: false, credentials_shared: false },
   ],
 };
@@ -228,7 +228,7 @@ describe('SpacesSection in the main space', () => {
 
 describe('inside a space', () => {
   beforeEach(() => {
-    configureSpaceStorage({ homeId: 'h-acme', name: 'ACME', color: '#0f766e' });
+    configureSpaceStorage({ homeId: 'h-acme', name: 'ACME', color: '#295c58' });
     getConfig.mockResolvedValue({ default_model: 'a', origins: { default_model: { '': 'home' }, fast_model: { '': 'base' } } });
   });
 

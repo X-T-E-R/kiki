@@ -58,7 +58,7 @@ async function render() {
 
 const TWO = { items: [
   { id: 'main', name: 'Main space', path: 'C:/k', primary: true },
-  { id: 'h-a', name: 'ACME', color: '#0f766e', path: 'D:/a', primary: false },
+  { id: 'h-a', name: 'ACME', color: '#295c58', path: 'D:/a', primary: false },
   { id: 'h-b', name: 'Paper', path: 'D:/b', primary: false },
 ] };
 
@@ -99,7 +99,7 @@ describe('SpaceSwitcher', () => {
   });
 
   it('names the current space inside one and jumps with Ctrl+Alt+1', async () => {
-    configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#0f766e' });
+    configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#295c58' });
     list.mockResolvedValue(TWO);
     await render();
     const trigger = document.querySelector<HTMLButtonElement>('[data-space-switcher="h-a"]')!;
