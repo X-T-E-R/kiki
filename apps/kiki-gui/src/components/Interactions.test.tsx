@@ -17,7 +17,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { QuestionAnswer, QuestionItem } from '@kiki/protocol';
-import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
+import { createViewState, projectAgentTranscriptView, type ApprovalBlock, type QuestionBlock } from '@kiki/session-core/session';
+import { AgentTranscript, type InteractionState } from '@kiki/transcript';
 import { I18nProvider } from '../i18n';
 import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard } from './Interactions';
 import { getToasts } from '../lib/toasts';
@@ -433,6 +434,54 @@ describe('QuestionCard', () => {
     setter.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
+
+  it('shows expiry only from terminal lifecycle state, never from 30 seconds of pending time', async () => {
+    const transcript = new AgentTranscript('main');
+    const createdAt = '2026-01-01T00:00:00.000Z';
+    const onAnswer = vi.fn(() => Promise.resolve());
+    const onDismiss = vi.fn(() => Promise.resolve());
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(createdAt));
+    let view = createViewState('session_test');
+    const project = (state: InteractionState): QuestionBlock => {
+      transcript.apply([{ op: 'interaction.upsert', interaction: {
+        interactionId: 'question-lifecycle', interactionKind: 'question', state,
+        request: { created_at: createdAt, questions: [{ id: 'q1', question: 'Pick one', options: TWO_OPTIONS }] },
+      } }]);
+      view = projectAgentTranscriptView(view, 'main', transcript.snapshot());
+      const block = view.blocks.find((entry): entry is QuestionBlock => entry.kind === 'question');
+      if (block === undefined) throw new Error('Expected a projected question card');
+      return block;
+    };
+    try {
+      const container = await renderQuestion(project('pending'), onAnswer);
+      const root = roots.at(-1)!;
+      const render = async (block: QuestionBlock) => {
+        await act(async () => {
+          flushSync(() => { root.render(<I18nProvider><QuestionCard block={block} onAnswer={onAnswer} onDismiss={onDismiss} /></I18nProvider>); });
+        });
+      };
+      for (const elapsed of [29_999, 30_001, 120_000]) {
+        clock.mockReturnValue(Date.parse(createdAt) + elapsed);
+        await render(project('pending'));
+        expect(container.querySelector('[data-question-history]')).toBeNull();
+        expect(optionButton(container, 'Option A')).toBeDefined();
+        expect(container.textContent).not.toContain('Question expired');
+      }
+      await render(project('answered'));
+      expect(container.textContent).toContain('Question answered');
+      expect(container.textContent).not.toContain('Question expired');
+      await render(project('dismissed'));
+      expect(container.textContent).toContain('Question dismissed');
+      expect(container.textContent).not.toContain('Question expired');
+      await render(project('cancelled'));
+      expect(container.querySelector('[data-question-history] summary')?.textContent).toBe('Question expired');
+      expect(container.querySelector('button[aria-pressed]')).toBeNull();
+      expect(onAnswer).not.toHaveBeenCalled();
+      expect(onDismiss).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it('always renders the Other input, even without allow_other', async () => {
     const container = await renderQuestion(

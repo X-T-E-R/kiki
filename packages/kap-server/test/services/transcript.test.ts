@@ -14,6 +14,7 @@ import {
   IEventBus,
   ISessionIndex,
   ISessionInteractionService,
+  ISessionStateService,
   ISessionMetadata,
   IQueryStore,
   ISessionLifecycleService,
@@ -25,7 +26,6 @@ import {
   StateRegistry,
   type Event2,
   type ISessionScopeHandle,
-  type ISessionStateService,
   type Scope,
 } from '@kiki/agent-core-v2';
 import {
@@ -62,6 +62,7 @@ import { readWireRecordsBounded } from '../../src/services/transcript/boundedWir
 import { registerTranscriptRoutes } from '../../src/routes/transcript';
 import { readSessionViewTranscriptPage } from '../../src/transport/klient/sessionViewReads';
 import { TestInstantiationService } from '../../../agent-core-v2/src/_base/di/test';
+import { SyncDescriptor } from '../../../agent-core-v2/src/_base/di/descriptors';
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '../../../agent-core-v2/src/_base/errors/unexpectedError';
 import { InMemoryStorageService } from '../../../agent-core-v2/src/persistence/backends/memory/inMemoryStorageService';
 import { FileStorageService } from '../../../agent-core-v2/src/persistence/backends/node-fs/fileStorageService';
@@ -602,7 +603,7 @@ describe('TranscriptService live integration', () => {
   }
 
   function fakeSession(
-    interactions: SessionInteractionService,
+    interactions: ISessionInteractionService,
     agents?: FakeAgents,
   ): ISessionScopeHandle {
     return {
@@ -657,7 +658,7 @@ describe('TranscriptService live integration', () => {
     return home;
   }
 
-  function fakeCoreWithAgents(interactions: SessionInteractionService, agents: FakeAgents): Scope {
+  function fakeCoreWithAgents(interactions: ISessionInteractionService, agents: FakeAgents): Scope {
     const queryValues = new Map<string, unknown>();
     const queryStore = {
       get: async <T>(collection: string, key: string) => queryValues.get(`${collection}\0${key}`) as T | undefined,
@@ -700,6 +701,153 @@ describe('TranscriptService live integration', () => {
       },
     } as unknown as Scope;
   }
+
+  it.each(['rewrite', 'backfill retry'] as const)(
+    'keeps an engine-pending question pending across %s before and after 30 seconds',
+    async (refresh) => {
+      const home = await seedWireHome();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const ix = new TestInstantiationService();
+      ix.set(ISessionStateService, new TestSessionStateService());
+      ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+      const interactions = ix.get(ISessionInteractionService);
+      const agents = new FakeAgents();
+      agents.add('main', { loopStatus: { state: 'running', activeTurnId: 0 } });
+      const request = { turnId: 0, questions: [{ question: 'Choose?', options: [{ label: 'Alpha' }, { label: 'Beta' }] }] };
+      const record = { type: 'interaction.request', id: 'question-live', kind: 'question', request, origin: { agentId: 'main', turnId: 0 }, time: 1_000 };
+      interactions.enqueue({ id: record.id, kind: 'question', payload: request, origin: record.origin });
+      if (refresh === 'rewrite') await appendFile(wirePath, `${JSON.stringify(record)}\n`);
+      const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(interactions, agents) });
+      if (refresh === 'backfill retry') vi.spyOn(service, 'readColdSnapshot').mockResolvedValueOnce(undefined);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      try {
+        const store = service.forSessionLive('s1')!;
+        await service.whenReady('s1');
+        const transcript = store.ensureAgent('main');
+        expect(transcript.getInteractions().get(record.id)?.state).toBe('pending');
+        if (refresh === 'backfill retry') await appendFile(wirePath, `${JSON.stringify(record)}\n`);
+        for (const elapsed of [29_999, 30_001]) {
+          clock.mockReturnValue(1_000 + elapsed);
+          if (refresh === 'rewrite') await service.reconcileAfterRewrite('s1');
+          else await service.ensureAgentHistory('s1', 'main');
+          expect(interactions.listPending('question').map((entry) => entry.id)).toEqual([record.id]);
+          expect(transcript.getInteractions().get(record.id)?.state).toBe('pending');
+          const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+          expect(page?.interactions).toContainEqual(expect.objectContaining({ interactionId: record.id, state: 'pending' }));
+        }
+        transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { ...transcript.snapshot(), hasMoreOlder: true } }]);
+        const older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't1' });
+        expect(older?.interactions).toContainEqual(expect.objectContaining({ interactionId: record.id, state: 'pending' }));
+        expect(older?.pending_interactions).toEqual([record.id]);
+        interactions.respond(record.id, { answers: { 'Choose?': 'Alpha' } });
+        expect(interactions.listPending('question')).toEqual([]);
+        expect(transcript.getInteractions().get(record.id)?.state).toBe('answered');
+        await appendFile(wirePath, `${JSON.stringify({ type: 'interaction.resolved', id: record.id, response: { answers: { 'Choose?': 'Alpha' } }, time: 31_002 })}\n`);
+        await service.reconcileAfterRewrite('s1');
+        expect(transcript.getInteractions().get(record.id)?.state).toBe('answered');
+      } finally {
+        clock.mockRestore();
+        service.dispose();
+        ix.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    },
+  );
+
+  it.each(['answered', 'dismissed'] as const)('keeps a question %s during an asynchronous history read terminal', async (state) => {
+    const home = await seedWireHome();
+    const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new TestSessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    const interactions = ix.get(ISessionInteractionService);
+    const agents = new FakeAgents();
+    agents.add('main');
+    const request = { questions: [{ question: 'Choose?', options: [{ label: 'Alpha' }, { label: 'Beta' }] }] };
+    const response = state === 'answered' ? { answers: { 'Choose?': 'Alpha' } } : null;
+    interactions.enqueue({ id: 'question-race', kind: 'question', payload: request, origin: { agentId: 'main' } });
+    await appendFile(wirePath, `${JSON.stringify({ type: 'interaction.request', id: 'question-race', kind: 'question', request })}\n`);
+    let onRead: (() => void) | undefined;
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(interactions, agents),
+      wireRecordReader: async (path, options) => {
+        const read = await streamWireRecords(path, options);
+        onRead?.();
+        return read;
+      },
+    });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      onRead = () => { interactions.respond('question-race', response); };
+      await service.reconcileAfterRewrite('s1');
+      expect(interactions.listPending()).toEqual([]);
+      expect(store.getAgent('main')?.getInteractions().get('question-race')).toMatchObject({ state, response });
+    } finally {
+      service.dispose();
+      ix.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('preserves live child question mirrors absent from the main wire during a rewrite', async () => {
+    const home = await seedWireHome();
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new TestSessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    const interactions = ix.get(ISessionInteractionService);
+    const agents = new FakeAgents();
+    agents.add('main');
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(interactions, agents) });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      agents.add('child');
+      interactions.enqueue({
+        id: 'question-child', kind: 'question', origin: { agentId: 'child' },
+        payload: { questions: [{ question: 'Choose?', options: [{ label: 'Alpha' }, { label: 'Beta' }] }] },
+      });
+      await service.reconcileAfterRewrite('s1');
+      for (const agentId of ['main', 'child']) {
+        expect(store.getAgent(agentId)?.getInteractions().get('question-child')?.state).toBe('pending');
+      }
+      interactions.respond('question-child', { answers: { 'Choose?': 'Alpha' } });
+      for (const agentId of ['main', 'child']) {
+        expect(store.getAgent(agentId)?.getInteractions().get('question-child')?.state).toBe('answered');
+      }
+    } finally {
+      service.dispose();
+      ix.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('settles only orphan questions when rebuilding a cold or live session with no engine pending', async () => {
+    const home = await seedWireHome();
+    const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    await appendFile(wirePath, `${JSON.stringify({ type: 'interaction.request', id: 'question-orphan', kind: 'question', request: { questions: [] } })}\n`);
+    const cold = new TranscriptService({ homeDir: home, core: coldCore() });
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new TestSessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    const agents = new FakeAgents();
+    agents.add('main');
+    const live = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(ix.get(ISessionInteractionService), agents) });
+    try {
+      expect((await cold.readColdSnapshot('s1'))?.interactions).toContainEqual(expect.objectContaining({ interactionId: 'question-orphan', state: 'cancelled' }));
+      const store = live.forSessionLive('s1')!;
+      await live.whenReady('s1');
+      await live.reconcileAfterRewrite('s1');
+      expect(store.getAgent('main')?.getInteractions().get('question-orphan')?.state).toBe('cancelled');
+      expect(store.getAgent('main')?.listPendingInteractions()).toEqual([]);
+    } finally {
+      cold.dispose();
+      live.dispose();
+      ix.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 
   it('keeps replayed and live completed turns resident under explicit memory limits without durability clearance', async () => {
     const home = await seedWireHome(undefined, true);

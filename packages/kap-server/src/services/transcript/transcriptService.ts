@@ -12,6 +12,7 @@ import {
   IFlagService,
   IQueryStore,
   ISessionIndex,
+  ISessionInteractionService,
   ISessionMetadata,
   IWireService,
   followSessionLifecycles,
@@ -625,6 +626,30 @@ export class TranscriptService {
     if (result.accepted.length > 0) this.dispatchOps(sessionId, { agentId, ops: result.accepted });
   }
 
+  private reconcileLiveInteractionSnapshot(
+    sessionId: string,
+    transcript: AgentTranscript,
+    snapshot: AgentTranscriptSnapshot,
+  ): AgentTranscriptSnapshot {
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    if (session === undefined) return snapshot;
+    const pendingIds = new Set(session.accessor.get(ISessionInteractionService).listPending().map((entry) => entry.id));
+    const current = transcript.getInteractions();
+    const interactions = new Map(snapshot.interactions.map((interaction) => {
+      const live = current.get(interaction.interactionId);
+      const value = pendingIds.has(interaction.interactionId)
+        ? { ...(live ?? interaction), state: 'pending' as const, response: undefined }
+        : live?.response !== undefined ? live : interaction;
+      return [interaction.interactionId, value];
+    }));
+    for (const interaction of current.values()) {
+      if (!interactions.has(interaction.interactionId) && pendingIds.has(interaction.interactionId)) {
+        interactions.set(interaction.interactionId, { ...interaction, state: 'pending', response: undefined });
+      }
+    }
+    return { ...snapshot, interactions: [...interactions.values()] };
+  }
+
   /** Initial backfill: main-agent history + the full roster from session metadata. */
   private async backfillMain(sessionId: string, store: TranscriptStore): Promise<void> {
     await this.backfillAgent(sessionId, store, MAIN_AGENT_ID);
@@ -704,7 +729,7 @@ export class TranscriptService {
               agent: { ...snapshot.meta.agent, phase: livePhase },
             } }
           : snapshot;
-        const result = transcript.apply(snapshotToOps(backfill));
+        const result = transcript.apply(snapshotToOps(this.reconcileLiveInteractionSnapshot(sessionId, transcript, backfill)));
         if (result.gap !== undefined) {
           this.deps.logger?.warn({ sessionId, agentId, gap: result.gap }, 'transcript: backfill append gap');
         }
@@ -1873,7 +1898,7 @@ export class TranscriptService {
         agentId,
         grade: 'delta',
         coverage: { kind: 'full', hasMoreOlder: false },
-        snapshot,
+        snapshot: this.reconcileLiveInteractionSnapshot(sessionId, transcript, snapshot),
       },
     ]);
     const materialized = transcript.snapshot();

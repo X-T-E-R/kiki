@@ -112,7 +112,7 @@ export async function readSessionViewTranscriptPage(
       return {
         session_id: sessionId, agent_id: input.agentId,
         items: page.items, has_more: page.hasMore, tool_call_count: verified ? cold.toolCallCount : undefined,
-        tasks: cold.tasks, interactions: cold.interactions, attachments: cold.attachments,
+        tasks: cold.tasks, interactions: [...transcript.getInteractions().values()], attachments: cold.attachments,
         todos: cold.todos, prompts: cold.prompts, meta: cold.meta, agents: store.agents(),
         pending_interactions: transcript.listPendingInteractions(),
         cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
