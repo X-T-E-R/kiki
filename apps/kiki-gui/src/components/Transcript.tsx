@@ -59,6 +59,7 @@ import {
   latestTurnId,
   MAIN_AGENT_ID,
   readSubagentEndings,
+  snapshotSubagentAgentId,
   stepObject,
   stabilizeAgentForest,
   type AgentForest,
@@ -285,17 +286,32 @@ export interface TranscriptRowActions {
   onResumeStopped?: (block: AssistantBlock) => void;
 }
 
+/**
+ * The role profile and model an injected message's sender agent runs under,
+ * read from the session's subagent roster (`snapshot.subagents`). The wire
+ * prompt origin carries only `senderAgentId`/`senderTaskName`, so the label
+ * joins the roster by agent id and degrades to the name alone when the
+ * roster has no row for that sender yet.
+ */
+export interface SenderIdentity {
+  readonly profile?: string;
+  readonly model?: string;
+}
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued: _onCancelQueued,
   rowActions,
   annotations,
+  senderIdentities,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
   rowActions?: TranscriptRowActions;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
+  /** senderAgentId → role profile / model, for the injected-message label. */
+  senderIdentities?: ReadonlyMap<string, SenderIdentity>;
 }) {
   const { t, time } = useI18n();
   const outcomeActions = usePromptOutcomeActions();
@@ -327,6 +343,32 @@ const UserMessage = memo(function UserMessage({
       ? undefined
       : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
   const senderLabel = agentMessageLabel ?? peerThreadLabel;
+  // The sender's role profile and model come from the session roster, keyed by
+  // the sender's agent id: the prompt origin carries no profile/model of its
+  // own. A sender with no roster row keeps the plain "{name} injected" label.
+  const senderAgentId = block.agentMessage?.senderAgentId;
+  const senderIdentity =
+    senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
+  const senderMeta = [
+    senderIdentity?.profile === undefined
+      ? undefined
+      : t('agentMessage.senderProfile', { profile: senderIdentity.profile }),
+    senderIdentity?.model === undefined
+      ? undefined
+      : t('agentMessage.senderModel', { model: senderIdentity.model }),
+  ].filter((part): part is string => part !== undefined).join(' · ');
+  // Hover details: every field the row knows, with an explicit "unknown" for
+  // the roster facts the client has no row for (rather than omitting a line).
+  const unknownDetail = t('agentMessage.detailsUnknown');
+  const senderDetails =
+    senderAgentId === undefined
+      ? undefined
+      : t('agentMessage.senderDetails', {
+          agentId: senderAgentId,
+          profile: senderIdentity?.profile ?? unknownDetail,
+          model: senderIdentity?.model ?? unknownDetail,
+          task: block.agentMessage?.senderTaskName ?? unknownDetail,
+        });
   // Linked threads ride the prompt as a trailing <thread_refs> block for the
   // model; the bubble (and copy / edit / retry) works on the text as typed.
   const typedText = useMemo(() => stripThreadRefContext(block.text), [block.text]);
@@ -364,10 +406,20 @@ const UserMessage = memo(function UserMessage({
             data-agent-message-sender={block.agentMessage?.senderAgentId}
             data-peer-thread={block.peerThread?.sessionId}
             className="text-[12px] font-medium text-ink-soft"
+            title={senderDetails}
           >
             {senderLabel}
           </span>
         ) : null}
+        {senderMeta === '' ? null : (
+          <span
+            data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
+            className="text-[12px] text-ink-faint"
+            title={senderDetails}
+          >
+            {senderMeta}
+          </span>
+        )}
         <span
           data-user-time
           className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${
@@ -1658,6 +1710,7 @@ const BlockView = memo(function BlockView({
   onDismissQuestion,
   onCancelQueued,
   agentNames,
+  senderIdentities,
   approvalShortcutHints,
   readOnly,
   forest,
@@ -1685,6 +1738,8 @@ const BlockView = memo(function BlockView({
   onCancelQueued?: (promptId: string) => void;
   /** subagentId → display name, for tagging child-origin interaction cards. */
   agentNames?: ReadonlyMap<string, string>;
+  /** senderAgentId → role profile / model, for the injected-message label. */
+  senderIdentities?: ReadonlyMap<string, SenderIdentity>;
   /** y/n shortcut hints show on every pending approval card. */
   approvalShortcutHints?: boolean;
   forest?: AgentForest;
@@ -1723,6 +1778,7 @@ const BlockView = memo(function BlockView({
           onCancelQueued={readOnly ? undefined : onCancelQueued}
           rowActions={liveRowActions}
           annotations={annotations}
+          senderIdentities={senderIdentities}
         />
       );
     case 'system-reminder':
@@ -2279,6 +2335,8 @@ type TranscriptRowProps = {
   readOnly: boolean;
   approvalShortcutHints: boolean;
   agentNames: ReadonlyMap<string, string>;
+  /** senderAgentId → role profile / model, for the injected-message label. */
+  senderIdentities: ReadonlyMap<string, SenderIdentity>;
   childBlocks: ReadonlyMap<string, SubagentBlock>;
   forest?: AgentForest;
   rowActions?: TranscriptRowActions;
@@ -2348,6 +2406,7 @@ const TranscriptRow = memo(
     readOnly,
     approvalShortcutHints,
     agentNames,
+    senderIdentities,
     childBlocks,
     forest,
     rowActions,
@@ -2400,6 +2459,7 @@ const TranscriptRow = memo(
           onDismissQuestion={onDismissQuestion}
           onCancelQueued={onCancelQueued}
           agentNames={agentNames}
+          senderIdentities={senderIdentities}
           approvalShortcutHints={approvalShortcutHints}
           readOnly={readOnly}
           forest={forest}
@@ -2436,6 +2496,7 @@ const TranscriptRow = memo(
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
+    (prev.node.kind !== 'user' || prev.senderIdentities === next.senderIdentities) &&
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
@@ -3065,6 +3126,20 @@ export function Transcript({
     }
     return map;
   });
+  // Sender identities for injected bubbles: the roster (`snapshot.subagents`)
+  // is the one place the client holds an agent's role profile and model, and
+  // its array identity only changes when the roster itself does, so rows keep
+  // referentially stable props across ordinary deltas.
+  const senderIdentities = useMemo(() => {
+    const map = new Map<string, SenderIdentity>();
+    for (const row of state.snapshotSubagents) {
+      const profile = row.profile === undefined || row.profile === '' ? undefined : row.profile;
+      const model = row.model === undefined || row.model === '' ? undefined : row.model;
+      if (profile === undefined && model === undefined) continue;
+      map.set(snapshotSubagentAgentId(row), { profile, model });
+    }
+    return map;
+  }, [state.snapshotSubagents]);
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -3890,6 +3965,7 @@ export function Transcript({
                         readOnly={readOnly}
                         approvalShortcutHints={hasUnresolvedApproval}
                         agentNames={agentNames}
+                        senderIdentities={senderIdentities}
                         childBlocks={childBlocks}
                         forest={stableForest}
                         rowActions={rowActions}

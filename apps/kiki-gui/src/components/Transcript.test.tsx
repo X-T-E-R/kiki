@@ -1135,6 +1135,102 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-agent-message-sender="main"]')?.textContent).toBe(
       'Main agent injected',
     );
+    // No roster row for the main agent: nothing is claimed about its profile.
+    expect(container.querySelector('[data-agent-message-sender-meta="main"]')).toBeNull();
+  });
+
+  it('adds the sender profile and model to a subagent-injected label', async () => {
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-message-2',
+          text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+        },
+      ],
+      undefined,
+      {
+        snapshotSubagents: [
+          {
+            id: 'agent-244',
+            agent_id: 'agent-244',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'readme_kiki_worker',
+            status: 'completed',
+            created_at: '2026-01-01T00:00:00.000Z',
+            profile: 'worker',
+            model: 'axon/gpt-5.6-luna',
+          },
+        ],
+      },
+    );
+    expect(container.querySelector('[data-agent-message-sender="agent-244"]')?.textContent).toBe(
+      'readme_kiki_worker injected',
+    );
+    const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
+    expect(meta?.textContent).toBe('profile worker · model axon/gpt-5.6-luna');
+    expect(meta?.getAttribute('title')).toBe(
+      'Sender Agent: agent-244\nProfile: worker\nModel: axon/gpt-5.6-luna\nTask: readme_kiki_worker',
+    );
+  });
+
+  it('names only the roster facts it has for an injected sender', async () => {
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-message-3',
+          text: 'Message from agent "worker" (agent-900):\n\nping',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'agent-900', senderTaskName: 'probe' },
+        },
+      ],
+      undefined,
+      {
+        snapshotSubagents: [
+          {
+            id: 'agent-900',
+            agent_id: 'agent-900',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'worker',
+            status: 'running',
+            created_at: '2026-01-01T00:00:00.000Z',
+            model: 'axon/gpt-5.6-luna',
+          },
+        ],
+      },
+    );
+    // The model is on the roster row, the profile is not: the label stays
+    // quiet about the missing half instead of inventing one.
+    expect(container.querySelector('[data-agent-message-sender-meta="agent-900"]')?.textContent).toBe(
+      'model axon/gpt-5.6-luna',
+    );
+    expect(container.querySelector('[data-agent-message-sender="agent-900"]')?.getAttribute('title')).toBe(
+      'Sender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
+    );
+  });
+
+  it('labels a subagent-injected bubble it has no roster row for', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'user',
+        id: 'user-agent-message-4',
+        text: 'Message from agent "explorer" (agent-901):\n\nping',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        agentMessage: { senderAgentId: 'agent-901', senderTaskName: 'explorer' },
+      },
+    ]);
+    expect(container.querySelector('[data-agent-message-sender="agent-901"]')?.textContent).toBe(
+      'explorer injected',
+    );
+    expect(container.querySelector('[data-agent-message-sender-meta="agent-901"]')).toBeNull();
+    expect(container.querySelector('[data-agent-message-sender="agent-901"]')?.getAttribute('title')).toBe(
+      'Sender Agent: agent-901\nProfile: unknown\nModel: unknown\nTask: explorer',
+    );
   });
 
   it('labels a peer-thread bubble with its source thread', async () => {
