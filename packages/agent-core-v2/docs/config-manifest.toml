@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (45 sections · 1 overlay(s))
+# Index (46 sections · 1 overlay(s))
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -46,6 +46,7 @@
 #   sessionResidency                src/app/sessionManager/configSection.ts
 #   sessionTitle                    src/session/sessionTitle/configSection.ts
 #   skipBuiltinProfileInstallation  src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   spaceUi                         src/app/bootstrap/spacePresets.ts
 #   subagent                        src/session/subagent/configSection.ts
 #   task                            src/agent/task/configSection.ts
 #   thinking                        src/app/kosongConfig/configSection.ts
@@ -727,6 +728,17 @@ max_queued_restores = 8
 # ##########################################################################
 
 # skip_builtin_profile_installation: string[]
+
+# ##########################################################################
+# spaceUi (config.toml: space_ui)
+#   owner: src/app/bootstrap/spacePresets.ts
+#   scope: core
+# ##########################################################################
+
+[space_ui]
+default_skin = "paper"
+landing_page = "/new"
+plugins = []
 
 # ##########################################################################
 # subagent
