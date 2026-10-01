@@ -1,5 +1,7 @@
 import { defineConfig } from 'tsdown';
 
+import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+
 export default defineConfig({
   entry: [
     './src/index.ts',
@@ -14,6 +16,7 @@ export default defineConfig({
   dts: false,
   outDir: 'dist',
   clean: true,
+  plugins: [rawTextPlugin()],
   deps: {
     alwaysBundle: [/^@kiki\//],
     neverBundle: [],
