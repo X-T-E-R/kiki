@@ -245,8 +245,6 @@ function styleMedia(element: HTMLElement, slot: BackgroundSlot, tile: string | n
   const filter = [look.blur > 0 ? `blur(${look.blur}px)` : '', look.brightness !== 1 ? `brightness(${look.brightness})` : ''].filter(Boolean).join(' ');
   element.style.opacity = String(look.opacity);
   element.style.filter = filter;
-  // Blur spreads transparent edges inward; overscan hides them.
-  element.style.inset = look.blur > 0 ? `-${Math.ceil(look.blur * 2)}px` : '0';
   if (tile !== null) {
     element.style.backgroundImage = `url("${tile}")`;
     element.style.backgroundRepeat = 'repeat';
@@ -351,6 +349,8 @@ function applySurfaceVars(slot: BackgroundSlot): void {
   root.style.setProperty('--kiki-solid-alpha', `${Math.ceil(solid * 100)}%`);
   root.style.setProperty('--kiki-surface-blur', `${slot.look.surfaceBlur}px`);
   root.style.setProperty('--kiki-backdrop-scrim', String(slot.look.scrim));
+  // Three blur radii keep transparent filter edges outside the scoped box.
+  root.style.setProperty('--kiki-backdrop-overscan', `${Math.ceil(slot.look.blur * 3)}px`);
   if (assistEnabled) root.dataset['kikiBgAssist'] = '';
   else delete root.dataset['kikiBgAssist'];
   setStatus({ surfaceAlpha: canvas, textAlpha: solid });
@@ -367,7 +367,7 @@ function clearBackdrop(): void {
   const root = document.documentElement;
   delete root.dataset['kikiBg'];
   delete root.dataset['kikiBgAssist'];
-  for (const name of ['--kiki-surface-alpha', '--kiki-text-alpha', '--kiki-solid-alpha', '--kiki-surface-blur', '--kiki-backdrop-scrim']) root.style.removeProperty(name);
+  for (const name of ['--kiki-surface-alpha', '--kiki-text-alpha', '--kiki-solid-alpha', '--kiki-surface-blur', '--kiki-backdrop-scrim', '--kiki-backdrop-overscan']) root.style.removeProperty(name);
   setStatus(IDLE_STATUS);
 }
 

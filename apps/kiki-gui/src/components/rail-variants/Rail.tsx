@@ -504,8 +504,8 @@ export function Rail({
         }}
       >
       <div data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
-      {/* Pinned head: crumbs, who this agent is, and what it is doing. Opaque,
-          with a hairline where the scrolling page passes under it. */}
+      {/* Pinned head: crumbs, who this agent is, and what it is doing. Shares
+          the rail's ground, with a hairline over the scrolling page. */}
       <div data-rail-pinned className="sticky top-0 z-20 -mx-4 border-b border-hairline bg-panel px-4 pb-3">
       <RailCrumbs
         forest={forest}

@@ -49,7 +49,7 @@ afterEach(() => {
 describe('wallpaper material', () => {
   const css = readFileSync(resolve(import.meta.dirname, '../../styles/skin.css'), 'utf8');
   const rule = (selector: string) => {
-    const start = css.indexOf(`${selector} {`);
+    const start = css.search(new RegExp(`${selector.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,{ ]`));
     expect(start, selector).toBeGreaterThanOrEqual(0);
     return css.slice(start, css.indexOf('\n}', start));
   };
@@ -68,7 +68,7 @@ describe('wallpaper material', () => {
     for (const [selector, surface] of [
       [":root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar", 'canvas'],
       [":root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell .conversation-center", 'paper'],
-      [":root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, .preview-workspace)", 'panel'],
+      [":root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, [data-preview-workspace])", 'panel'],
     ]) {
       const panel = rule(selector!);
       expect(panel).toContain(`var(--kiki-surface-${surface})`);
@@ -79,9 +79,41 @@ describe('wallpaper material', () => {
     expect(css).not.toContain('blur(12px)');
     expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-surface-filter: none;');
   });
+
+  it('sizes replaced media explicitly instead of falling back to intrinsic dimensions', () => {
+    const media = rule('[data-kiki-backdrop-item]');
+    expect(media).toContain('inset: calc(-1 * var(--kiki-backdrop-overscan, 0px));');
+    expect(media).toContain('width: calc(100% + 2 * var(--kiki-backdrop-overscan, 0px));');
+    expect(media).toContain('height: calc(100% + 2 * var(--kiki-backdrop-overscan, 0px));');
+    expect(media).toContain('max-width: none;');
+    expect(css).not.toContain("[data-kiki-backdrop-item][style*='inset: -']");
+  });
+
+  it('shares sheet and header washes with embedded agents and rail sticky chrome', () => {
+    const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    expect(rule(`${scope} [data-agent-tab-workspace]`)).toContain('background: var(--kiki-surface-paper);');
+    expect(rule(`${scope} [data-agent-relations-surface]`)).toContain('background-color: transparent;');
+    expect(rule(`${assist} [data-agent-relations-surface]`)).toContain('background: var(--kiki-text-paper);');
+    expect(rule(`${scope} .app-rail .sticky.bg-panel`)).toContain('background-color: var(--kiki-surface-panel);');
+    expect(rule(`${assist} .app-rail .sticky.bg-panel`)).toContain('background-color: transparent;');
+    expect(css).toContain(`${scope} [data-agent-tab-workspace] header.bg-paper,`);
+    expect(css).toContain(`${assist} [data-agent-tab-workspace] header.bg-paper,`);
+  });
 });
 
 describe('wallpaper switching', () => {
+  it('publishes three blur radii of overscan and clears it with the background', () => {
+    setBackdropMediaResolver(async () => null);
+    const root = document.documentElement;
+    applyBackdrop(slot(image('local-pad-1'), { blur: 20.1 }), false);
+    expect(root.style.getPropertyValue('--kiki-backdrop-overscan')).toBe('61px');
+    applyBackdrop(slot(image('local-pad-1'), { blur: 0 }), false);
+    expect(root.style.getPropertyValue('--kiki-backdrop-overscan')).toBe('0px');
+    applyBackdrop(null);
+    expect(root.style.getPropertyValue('--kiki-backdrop-overscan')).toBe('');
+  });
+
   it('loads a picture once and keeps its element through a burst of dial changes', async () => {
     const resolve = vi.fn<MediaResolver>(async () => new Blob(['x'], { type: 'image/jpeg' }));
     setBackdropMediaResolver(resolve);

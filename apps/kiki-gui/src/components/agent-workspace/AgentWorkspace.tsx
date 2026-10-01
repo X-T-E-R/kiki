@@ -304,7 +304,7 @@ function AgentWorkspaceHeader({
           </button>
         ) : null}
       </WorkspaceHeader>
-      <div className="shrink-0 bg-paper px-4 pb-2 text-[12px] lg:px-5">
+      <div data-agent-relations-surface className="shrink-0 bg-paper px-4 pb-2 text-[12px] lg:px-5">
         <AgentRelations
           key={target.agentId}
           forest={forest}

@@ -12,18 +12,18 @@
  * .tmp/appearance2/ (gitignored).
  */
 
-import { execSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
+import { createServer as createViteServer } from 'vite';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = join(ROOT, '.tmp', 'appearance2');
+const OUT = process.env.KIKI_PROOF_OUTPUT_DIR ?? join(ROOT, '.tmp', 'appearance2');
 const MEDIA = join(ROOT, 'fixtures', 'appearance-media');
 const EXAMPLE = join(ROOT, '..', '..', 'docs', 'examples', 'appearance-packs', 'dusk-harbor');
 const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
@@ -53,18 +53,12 @@ const webPort = await freePort();
 const fixtureUrl = `http://127.0.0.1:${fixturePort}`;
 const webUrl = `http://127.0.0.1:${webPort}`;
 const fixture = await startFixtureServer({ port: fixturePort, scenario: 'appearance-bg' });
-const vite = spawn('pnpm --filter @kiki/gui dev', {
-  cwd: join(ROOT, '..', '..'),
-  env: { ...process.env, KIKI_GUI_PORT: String(webPort) },
-  stdio: ['ignore', 'pipe', 'pipe'],
-  shell: true,
-});
-vite.stderr.on('data', (d) => { if (/error/i.test(String(d))) process.stdout.write(`[vite:err] ${d}`); });
+// A shared worktree can change during the walk; HMR must not navigate a page
+// in the middle of an IndexedDB write or geometry assertion.
+const vite = await createViteServer({ root: ROOT, server: { host: '127.0.0.1', port: webPort, strictPort: true, hmr: false } });
+await vite.listen();
 const cleanup = async () => {
-  if (process.platform === 'win32' && vite.pid !== undefined) {
-    try { execSync(`taskkill /PID ${vite.pid} /F /T`, { stdio: 'ignore' }); } catch { /* gone */ }
-  }
-  vite.kill();
+  await vite.close();
   await fixture.stop();
 };
 
@@ -525,6 +519,156 @@ async function scenarioOnboarding(page) {
   await page.evaluate(() => { localStorage.removeItem('kiki.skin'); localStorage.removeItem('kiki.background'); });
 }
 
+/** Exercise the production DOM/CSS in Chromium: jsdom cannot size replaced media. */
+async function scenarioGeometry(page) {
+  await setTheme(page, 'light');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const results = [];
+  for (const [file, mime] of [['bright-sky.jpg', 'image/jpeg'], ['drift-720.mp4', 'video/mp4'], [null, 'image/png']]) {
+    if (file !== null) {
+      await setLocalBackground(page, join(MEDIA, file), mime, { opacity: 1, scrim: 0 });
+    } else {
+      // A smaller-than-viewport picture is the other half of the intrinsic-size regression.
+      await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 960; canvas.height = 540;
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#2389ac'; context.fillRect(0, 0, 960, 540);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve));
+        const { putMedia } = await import('/src/lib/skins/mediaStore.ts');
+        const id = 'local-proof-small';
+        await putMedia(id, blob);
+        const ref = { id, kind: 'image', mime: blob.type, name: 'small-proof.png', bytes: blob.size };
+        localStorage.setItem('kiki.background', JSON.stringify({ light: { media: [ref], interval: 0, look: { opacity: 1, scrim: 0 } }, dark: null, linked: true }));
+      });
+    }
+    await open(page, SESSION, '[data-kiki-backdrop-item]');
+    for (const fit of mime.startsWith('video/') ? ['cover', 'contain', 'center'] : ['cover', 'contain', 'center', 'tile']) {
+      for (const blur of [0, 20, 40]) {
+        await page.evaluate(async ({ fit, blur }) => {
+          const { applyBackdrop } = await import('/src/lib/skins/backdrop.ts');
+          const { normalizeSlot } = await import('/src/lib/skins/background.ts');
+          const raw = JSON.parse(localStorage.getItem('kiki.background')).light;
+          applyBackdrop(normalizeSlot({ ...raw, look: { ...raw.look, fit, blur, alignment: 'bottomRight' } }), false);
+        }, { fit, blur });
+        await page.waitForFunction(() => {
+          const media = document.querySelector('[data-kiki-backdrop-item]');
+          return media instanceof HTMLImageElement ? media.complete && media.naturalWidth > 0 : media instanceof HTMLVideoElement ? media.readyState >= 2 : media !== null;
+        });
+        const geometry = await page.evaluate(() => {
+          const root = document.querySelector('[data-kiki-backdrop]').getBoundingClientRect();
+          const element = document.querySelector('[data-kiki-backdrop-item]');
+          const box = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return { root: { x: root.x, y: root.y, width: root.width, height: root.height }, box: { x: box.x, y: box.y, width: box.width, height: box.height }, fit: style.objectFit, position: style.objectPosition, tilePosition: style.backgroundPosition };
+        });
+        const pad = Math.ceil(blur * 3);
+        const near = (a, b) => Math.abs(a - b) < 0.1;
+        const { root, box } = geometry;
+        const label = `${file ?? '960x540.png'} ${fit} blur ${blur}`;
+        check(near(box.width, root.width + 2 * pad) && near(box.height, root.height + 2 * pad)
+          && near(box.x, root.x - pad) && near(box.y, root.y - pad), `${label}: explicit overscan geometry ${JSON.stringify(box)}`);
+        check(fit === 'tile' ? geometry.tilePosition === '100% 100%' : geometry.position === '100% 100%' && geometry.fit === (fit === 'center' ? 'none' : fit), `${label}: fit and alignment survive blur`);
+        results.push({ media: file ?? '960x540.png', fit, blur, ...geometry });
+      }
+    }
+    await shot(page, `geometry-${file?.replace(/\.[^.]+$/, '') ?? 'small'}-blur40`);
+  }
+  // CSS calc must follow the scoped box and viewport resizes without a JS size snapshot.
+  for (const scope of ['window', 'main', 'sidebar']) {
+    for (const width of [1440, 700, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(async (scope) => {
+        const { applyBackdrop } = await import('/src/lib/skins/backdrop.ts');
+        const { normalizeSlot } = await import('/src/lib/skins/background.ts');
+        const raw = JSON.parse(localStorage.getItem('kiki.background')).light;
+        applyBackdrop(normalizeSlot({ ...raw, look: { ...raw.look, scope, fit: 'cover', blur: 20 } }), false);
+      }, scope);
+      await page.waitForTimeout(150);
+      const boxes = await page.evaluate(() => {
+        const root = document.querySelector('[data-kiki-backdrop]').getBoundingClientRect();
+        const box = document.querySelector('[data-kiki-backdrop-item]').getBoundingClientRect();
+        return { root: { x: root.x, width: root.width, height: root.height }, box: { x: box.x, width: box.width, height: box.height } };
+      });
+      check(Math.abs(boxes.box.width - boxes.root.width - 120) < 0.1 && Math.abs(boxes.box.height - boxes.root.height - 120) < 0.1
+        && Math.abs(boxes.box.x - boxes.root.x + 60) < 0.1, `${scope} ${width}: overscan tracks scope and resize`);
+    }
+  }
+  writeFileSync(join(OUT, 'geometry.json'), JSON.stringify(results, null, 2));
+  await clearBackground(page);
+}
+
+/** Main timeline, shared rail and the default embedded subagent tab at two dial values. */
+async function scenarioRegression(page) {
+  await fetch(`${fixtureUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'subagent-invocations' }) });
+  const path = '/s/session_fixture_subagent_invocations';
+  await open(page, path, '[role="log"]');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setTheme(page, 'light');
+  for (const assist of [false, true]) {
+    for (const dial of [0.3, 0.9]) {
+      await setLocalBackground(page, join(MEDIA, 'bright-sky.jpg'), 'image/jpeg', { opacity: 1, surfaceOpacity: dial, blur: 20, surfaceBlur: 0, scrim: 0 });
+      await page.evaluate((assist) => {
+        const prefs = JSON.parse(localStorage.getItem('kiki.background'));
+        localStorage.setItem('kiki.background', JSON.stringify({ ...prefs, assist }));
+      }, assist);
+      await open(page, path, '[role="log"]');
+      if (await page.locator('[data-session-rail]').count() === 0) await page.locator('[data-rail-toggle]').click();
+      await page.locator('[data-rail-pinned]').waitFor();
+      const tag = `${assist ? 'assist' : 'off'}-dial${Math.round(dial * 100)}`;
+      await shot(page, `regression-main-rail-${tag}`);
+      await page.locator('[data-agent-open="agent-lead"]').first().click();
+      await page.locator('[data-agent-tab-workspace="agent-lead"] [role="log"]').waitFor();
+      await page.waitForTimeout(300);
+      await shot(page, `regression-subagent-rail-${tag}`);
+      const colors = await page.evaluate(() => {
+        const read = (selector) => {
+          const element = document.querySelector(selector);
+          return element === null ? null : getComputedStyle(element).backgroundColor;
+        };
+        return { pinned: read('[data-rail-pinned]'), owner: read('[data-rail-owner]'), footer: read('[data-session-rail] .sticky.bottom-0'), tab: read('[data-agent-tab-workspace]'), header: read('[data-agent-tab-workspace] header'), relations: read('[data-agent-tab-workspace] [data-agent-relations-surface]') };
+      });
+      console.log(`[info] ${tag} surfaces ${JSON.stringify(colors)}`);
+      const alpha = (color) => color === null ? null : color === 'rgba(0, 0, 0, 0)' ? 0 : color.includes('/') ? Number.parseFloat(color.split('/')[1]) : color.startsWith('rgba') ? Number.parseFloat(color.split(',')[3]) : 1;
+      for (const key of ['pinned', 'owner']) check(alpha(colors[key]) === (assist ? 0 : dial), `${tag}: ${key} uses the rail wash without an opaque band`);
+      check(alpha(colors.tab) === dial, `${tag}: agent tab uses the requested paper wash`);
+      check(alpha(colors.header) !== 1 && alpha(colors.relations) !== 1, `${tag}: agent header and relations are not opaque`);
+      await open(page, `${path}/agent/agent-lead`, '[role="log"]');
+      await shot(page, `regression-agent-route-${tag}`);
+      const relationColor = await page.locator('[data-agent-relations-surface]').evaluate((node) => getComputedStyle(node).backgroundColor);
+      check(alpha(relationColor) !== 1, `${tag}: routed agent relations share the session header wash`);
+      // The bare-provider fullscreen branch has this hook but no preview-workspace class.
+      const bareColor = await page.evaluate(() => {
+        const probe = document.createElement('aside');
+        probe.dataset.kikiPreviewProof = '';
+        probe.setAttribute('data-preview-workspace', '');
+        probe.className = 'fixed inset-0 bg-panel';
+        document.body.append(probe);
+        const color = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return color;
+      });
+      check(alpha(bareColor) === (assist ? (await layerVars(page)).solid / 100 : dial), `${tag}: bare-provider fullscreen gets the preview wash`);
+    }
+  }
+  await fetch(`${fixtureUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'busy-rail' }) });
+  await open(page, '/s/session_fixture_busy', '[role="log"]');
+  for (const assist of [false, true]) {
+    await page.evaluate(async (assist) => {
+      const { applyBackdrop } = await import('/src/lib/skins/backdrop.ts');
+      const { normalizeSlot } = await import('/src/lib/skins/background.ts');
+      const raw = JSON.parse(localStorage.getItem('kiki.background')).light;
+      applyBackdrop(normalizeSlot({ ...raw, look: { ...raw.look, surfaceOpacity: 0.3 } }), assist);
+    }, assist);
+    if (await page.locator('[data-session-rail]').count() === 0) await page.locator('[data-rail-toggle]').click();
+    const footer = page.locator('[data-tasks-scroll] .sticky.bottom-0');
+    await footer.waitFor();
+    const color = await footer.evaluate((node) => getComputedStyle(node).backgroundColor);
+    check(assist ? color === 'rgba(0, 0, 0, 0)' : color.includes('/ 0.3)'), `tasks footer ${assist ? 'assist' : 'off'} uses rail wash (${color})`);
+    await shot(page, `regression-tasks-footer-${assist ? 'assist' : 'off'}`);
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await waitForServer(webUrl, 180_000);
@@ -549,6 +693,8 @@ try {
     video: scenarioVideoPolicy,
     settings: scenarioSettingsPage,
     onboarding: scenarioOnboarding,
+    geometry: scenarioGeometry,
+    regression: scenarioRegression,
   };
   for (const [name, run] of Object.entries(scenarios)) {
     if (!wanted(name)) continue;
