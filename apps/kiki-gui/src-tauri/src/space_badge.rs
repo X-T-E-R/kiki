@@ -1,10 +1,13 @@
-//! Taskbar overlay showing only a round pending-count badge in the top-right
-//! corner. Every space keeps the plain app icon when nothing waits on the user.
+//! Taskbar overlay showing only a round pending-count badge toward the top-right.
+//! Its 10 px outer ring is centred at (19.5, 12.5) on the 32×32 canvas, leaving
+//! at least 2.5 px of transparent padding on every side so scaling cannot clip it.
+//! Every space keeps the plain app icon when nothing waits on the user.
 //!
 //! Drawn at 32×32 (Windows scales the overlay to the small-icon size, and at
 //! 150 % / 200 % DPI it shows at 24 / 32 px, where a 16 px source goes soft).
 //! Shapes are 4×4 supersampled for coverage; the digits are a 5×7 pixel font
-//! placed on whole pixels so they stay crisp instead of being smoothed away.
+//! centred on the badge and placed on whole pixels so they stay crisp instead
+//! of being smoothed away.
 
 /// Token A attention vermilion (`--color-attention`): the "needs you" badge.
 const BADGE_RGB: [u8; 3] = [0xb3, 0x3a, 0x12];
@@ -95,15 +98,15 @@ pub fn render(pending: usize) -> Option<Vec<u8>> {
         return None;
     }
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    let (cx, cy) = (22.0, 10.0);
+    let (cx, cy) = (19.5, 12.5);
     paint(&mut rgba, Circle { cx, cy, r: 10.0 }, RING_RGB);
     paint(&mut rgba, Circle { cx, cy, r: 8.5 }, BADGE_RGB);
     if pending > 9 {
-        // "9+": the nine and a narrow plus, centred as one 9-px word.
-        stamp(&mut rgba, &GLYPHS[9], 17, 7, 5);
-        stamp(&mut rgba, &GLYPHS[10], 22, 7, 5);
+        // "9+": two 5-px glyphs with a 1-px gap, centred as one 11-px word.
+        stamp(&mut rgba, &GLYPHS[9], 14, 9, 5);
+        stamp(&mut rgba, &GLYPHS[10], 20, 9, 5);
     } else {
-        stamp(&mut rgba, &GLYPHS[pending], 20, 7, 5);
+        stamp(&mut rgba, &GLYPHS[pending], 17, 9, 5);
     }
     Some(rgba)
 }
@@ -126,35 +129,74 @@ mod tests {
     }
 
     #[test]
-    fn only_the_round_ringed_count_badge_is_painted() {
-        let rgba = render(3).unwrap();
-        assert_eq!(rgba.len(), OVERLAY_SIZE as usize * OVERLAY_SIZE as usize * 4);
-        for y in 0..SIZE {
-            for x in 0..12 {
-                assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0]);
+    fn every_count_has_transparent_padding_on_all_four_sides() {
+        for pending in 1..=10 {
+            let rgba = render(pending).unwrap();
+            assert_eq!(rgba.len(), OVERLAY_SIZE as usize * OVERLAY_SIZE as usize * 4);
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    if x < 9 || x >= 30 || y < 2 || y >= 23 {
+                        assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0], "count {pending} at ({x}, {y})");
+                    }
+                }
             }
         }
-        for y in 20..SIZE {
-            for x in 0..SIZE {
-                assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0]);
-            }
-        }
-        assert_eq!(pixel(&rgba, 31, 0)[3], 0);
-        assert_eq!(pixel(&rgba, 22, 0), [255, 255, 255, 255]);
-        assert!((0..SIZE).any(|x| { let a = pixel(&rgba, x, 1)[3]; a > 0 && a < 255 }));
     }
 
     #[test]
-    fn counts_cap_at_nine_plus_and_draw_white_digits_on_the_badge() {
-        let one = render(1).unwrap();
-        let many = render(42).unwrap();
-        assert_ne!(one, many);
+    fn the_complete_round_ring_is_visible_in_every_direction() {
+        let rgba = render(3).unwrap();
+        for (x, y) in [(19, 3), (28, 12), (19, 21), (10, 12)] {
+            assert_eq!(pixel(&rgba, x, y), [255, 255, 255, 255]);
+        }
+        for (x, y) in [(19, 2), (29, 12), (19, 22), (9, 12)] {
+            let edge = pixel(&rgba, x, y);
+            assert_eq!(&edge[..3], &RING_RGB);
+            assert!(edge[3] > 0 && edge[3] < 255);
+        }
+        for (x, y) in [(19, 5), (26, 12), (19, 19), (12, 12)] {
+            assert_eq!(pixel(&rgba, x, y), [BADGE_RGB[0], BADGE_RGB[1], BADGE_RGB[2], 255]);
+        }
+        for (x, y) in [(9, 2), (29, 2), (9, 22), (29, 22)] {
+            assert_eq!(pixel(&rgba, x, y), [0, 0, 0, 0]);
+        }
+        for y in 2..=22 {
+            for x in 9..=29 {
+                assert_eq!(pixel(&rgba, x, y)[3], pixel(&rgba, 38 - x, y)[3]);
+                assert_eq!(pixel(&rgba, x, y)[3], pixel(&rgba, x, 24 - y)[3]);
+            }
+        }
+    }
+
+    #[test]
+    fn digits_and_nine_plus_are_centred_on_whole_pixels() {
+        for pending in 1..=10 {
+            let rgba = render(pending).unwrap();
+            for row in 0..7 {
+                for x in 14..=24 {
+                    let ink = if pending <= 9 {
+                        (17..22).contains(&x) && GLYPHS[pending][row] & (1 << (21 - x)) != 0
+                    } else if x < 19 {
+                        GLYPHS[9][row] & (1 << (18 - x)) != 0
+                    } else if x >= 20 {
+                        GLYPHS[10][row] & (1 << (24 - x)) != 0
+                    } else {
+                        false
+                    };
+                    let expected = if ink { [255, 255, 255, 255] } else {
+                        [BADGE_RGB[0], BADGE_RGB[1], BADGE_RGB[2], 255]
+                    };
+                    assert_eq!(pixel(&rgba, x, 9 + row), expected, "count {pending} at ({x}, {})", 9 + row);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn counts_cap_at_nine_plus() {
+        assert_ne!(render(9), render(10));
         assert_eq!(render(10), render(99));
         assert_eq!(render(10), render(usize::MAX));
-        // Badge ground at its edge is the attention colour.
-        assert_eq!(&pixel(&one, 15, 10)[..3], &BADGE_RGB);
-        // A white digit pixel inside the badge: the 1's stem.
-        assert_eq!(pixel(&one, 22, 10), [255, 255, 255, 255]);
     }
 
     /// `KIKI_BADGE_DUMP=<dir> cargo test --lib space_badge -- --ignored`
