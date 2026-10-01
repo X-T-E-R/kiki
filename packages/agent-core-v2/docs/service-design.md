@@ -248,7 +248,7 @@ reverse):
 2. **Data / state**: `records`, `filestore`, `workspace`, `blobStore`, `config`.
 3. **Capabilities**: `tool`, `permission`, `prompt`, `contextMemory`, `chatProvider`,
    `modelRuntime`, `skill`, …
-4. **Orchestrators**: `session`, `agentLifecycle`, `loop`, `turn`, `swarm`.
+4. **Orchestrators**: `session`, `agentLifecycle`, `loop`, `turn`.
 5. **Edge**: `gateway`, `rpc`.
 
 **Red lines:**

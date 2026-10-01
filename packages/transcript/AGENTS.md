@@ -8,7 +8,7 @@ No comments — no file headers, no section banners, no statement-level narratio
 
 ## Cold rebuild
 
-The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `TranscriptFactReducer`, the same durable fact path used by live binding. Context, turns, tasks, interactions, todos, goal/plan/swarm meta, markers, and taskrefs converge through the canonical store; interactions left pending at shutdown become `cancelled` when the adapter finishes.
+The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `TranscriptFactReducer`, the same durable fact path used by live binding. Context, turns, tasks, interactions, todos, goal/plan meta, markers, and taskrefs converge through the canonical store; interactions left pending at shutdown become `cancelled` when the adapter finishes.
 
 ## Plan content
 

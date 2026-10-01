@@ -4,7 +4,7 @@
 
 > **权限系统应是一个「可组合、可注册的责任链（微内核）」**：内核只负责按顺序跑链、首个命中赢；具体权限维度（policy）由各自的 Domain Service 通过注册表插入；工具只需在 `resolveExecution` 里声明标准化的资源访问（`accesses`），通用维度集中消费这份元数据。
 >
-> **链只裁决危险程度**。policy 节点回答的是「这个调用有多危险、用户能否逐次豁免这个判断」——它产出的 `ask`/`deny` 永远可被用户豁免。**Harness 约束不是权限**：运行机制为自身正确性施加的限制（plan 模式禁写、AgentSwarm 批量排他、btw side-question fork 禁工具、goal 预算拒绝）产出的是无 ask 通道、用户无法逐次豁免的硬 deny，它们以 `onBeforeExecuteTool` veto 监听器挂在各自 domain，用 `event.veto(...)` 表态（先例：`goalService.ts` 的预算/过期拒绝）。产物审批（plan review、goal-start review）同样不是权限：由 owning domain 用 cold 的 `event.waitUntil(factory)` 拦截自己的工具、直接驱动共享的 `IAgentToolApprovalService` 审批往返——审批只可能在没有任何监听器 veto 该调用之后才开始。
+> **链只裁决危险程度**。policy 节点回答的是「这个调用有多危险、用户能否逐次豁免这个判断」——它产出的 `ask`/`deny` 永远可被用户豁免。**Harness 约束不是权限**：运行机制为自身正确性施加的限制（plan 模式禁写、btw side-question fork 禁工具、goal 预算拒绝）产出的是无 ask 通道、用户无法逐次豁免的硬 deny，它们以 `onBeforeExecuteTool` veto 监听器挂在各自 domain，用 `event.veto(...)` 表态（先例：`goalService.ts` 的预算/过期拒绝）。产物审批（plan review、goal-start review）同样不是权限：由 owning domain 用 cold 的 `event.waitUntil(factory)` 拦截自己的工具、直接驱动共享的 `IAgentToolApprovalService` 审批往返——审批只可能在没有任何监听器 veto 该调用之后才开始。
 >
 > **不引入 Casbin**——因为这里「难的是决策行为」（续体、副作用、RPC、状态机），不是「匹配 + 标量决策」。
 
@@ -17,7 +17,7 @@
 这个决策有三个特点，决定了它的架构取向：
 
 1. **决策携带行为**。返回 `ask` 不是一个枚举值，而是一条含 RPC 往返、hook、telemetry、状态写入、续体的工作流；返回 `deny` 可能是执行了一段外部 hook 的结果。
-2. **策略异质**。有的查工具名集合，有的数同批 AgentSwarm 个数，有的跑 hook，有的检查 plan 状态机——没有统一的 `(sub, obj, act)` 形状。
+2. **策略异质**。有的查工具名集合，有的跑 hook，有的检查 plan 状态机——没有统一的 `(sub, obj, act)` 形状。
 3. **多 agent × 多 mode × 外部扩展**。不同 agent / mode 需要不同权限，且要允许外部（组织管理员、插件）解耦地贡献规则或行为。
 
 ---
@@ -50,20 +50,19 @@ type PermissionPolicyResult =
 
 ### 2.2 11 个权限维度（19 个 policy）
 
-链目前在 `policies/index.ts#createPermissionDecisionPolicies()` 中**硬编码**，顺序即优先级。19 个 policy 可归并为 11 个权限维度：
+链目前在 `policies/index.ts#createPermissionDecisionPolicies()` 中**硬编码**，顺序即优先级。19 个 policy 可归并为 10 个权限维度：
 
 | # | 维度 | 对应 policy | 决策看什么 |
 |---|---|---|---|
 | 1 | 外部钩子否决 | `pre-tool-call-hook` | 用户 `PreToolUse` hook 是否返回 block |
-| 2 | 工具批量排他 | `agent-swarm-exclusive-deny`、`swarm-mode-agent-swarm-approve` | 同批工具结构（AgentSwarm 须单独）+ swarm 模式 |
-| 3 | 运行模式姿态 | `auto-mode-approve`、`yolo-mode-approve`（当前实现；Auto 不再禁止 `AskUserQuestion`） | `permission.mode` |
-| 4 | Plan 模式约束 | `plan-mode-guard-deny`、`plan-mode-tool-approve`、`exit-plan-mode-review-ask` | `planMode.isActive` + plan 文件路径 + review 状态 |
-| 5 | Goal 启动审批 | `goal-start-review-ask` | `tool === CreateGoal` 且非 auto |
-| 6 | 静态配置规则 | `user-configured-deny/ask/allow` | 用户/项目/turn 配置的 DSL 规则 |
-| 7 | 会话批准记忆 | `session-approval-history` | 本会话 "approve for session" 缓存 |
-| 8 | 敏感/特殊路径 | `sensitive-file-access-ask`、`git-control-path-access-ask` | 工具访问的文件路径 |
-| 9 | 工具内在风险 | `default-tool-approve` | 工具名 ∈ 默认安全集合 |
-| 10 | 工作区写信任 | `git-cwd-write-approve` | POSIX + git worktree + cwd 内写 |
+| 2 | 运行模式姿态 | `auto-mode-approve`、`yolo-mode-approve`（当前实现；Auto 不再禁止 `AskUserQuestion`） | `permission.mode` |
+| 3 | Plan 模式约束 | `plan-mode-guard-deny`、`plan-mode-tool-approve`、`exit-plan-mode-review-ask` | `planMode.isActive` + plan 文件路径 + review 状态 |
+| 4 | Goal 启动审批 | `goal-start-review-ask` | `tool === CreateGoal` 且非 auto |
+| 5 | 静态配置规则 | `user-configured-deny/ask/allow` | 用户/项目/turn 配置的 DSL 规则 |
+| 6 | 会话批准记忆 | `session-approval-history` | 本会话 "approve for session" 缓存 |
+| 7 | 敏感/特殊路径 | `sensitive-file-access-ask`、`git-control-path-access-ask` | 工具访问的文件路径 |
+| 8 | 工具内在风险 | `default-tool-approve` | 工具名 ∈ 默认安全集合 |
+| 9 | 工作区写信任 | `git-cwd-write-approve` | POSIX + git worktree + cwd 内写 |
 | 11 | 兜底 | `fallback-ask` | 无（默认 ask） |
 
 链的顺序是一条**从高到低的安全级联**：外部强制 → 结构性拒绝 → 状态机拒绝 → 静态 deny → mode 放行 → 会话记忆放行 → 静态 ask → 静态 allow → 流程放行 → 敏感路径 ask → 默认放行 → 兜底 ask。
@@ -274,7 +273,6 @@ type ToolResourceAccess =
 | 维度 | 拥有者 | 类型 |
 |---|---|---|
 | 外部钩子否决 | `externalHooks` domain | 通用 |
-| 工具批量排他 | `swarm` domain —— `onBeforeExecuteTool` veto 监听器 | Harness 约束（链外） |
 | Plan 写守卫 | `plan` domain —— `onBeforeExecuteTool` veto 监听器 | Harness 约束（链外） |
 | Plan 审批 | `plan` domain —— 同监听器的 `waitUntil` + `toolApproval` | 产物审批（链外） |
 | Goal 启动审批 | `goal` domain —— veto 监听器的 `waitUntil` + `toolApproval` | 产物审批（链外） |
@@ -316,7 +314,7 @@ type ToolResourceAccess =
 
 渐进式，避免一步到位：
 
-1. ~~**Domain 维度下沉**~~（已完成）。plan guard/review、goal-start review、swarm 批量排他、btw deny-all 已从链上移出，以 `onBeforeExecuteTool` veto 监听器挂在各自 domain（即时 `veto`/`allow`/`pass` 表态 + cold `waitUntil` factory 承载审批往返）；审批往返提取为共享的 `IAgentToolApprovalService`；`registerPolicy` 机制删除（btw 是唯一生产用例）。链上只剩 12 个危险度判定节点。
+1. ~~**Domain 维度下沉**~~（已完成）。plan guard/review、goal-start review、btw deny-all 已从链上移出，以 `onBeforeExecuteTool` veto 监听器挂在各自 domain（即时 `veto`/`allow`/`pass` 表态 + cold `waitUntil` factory 承载审批往返）；审批往返提取为共享的 `IAgentToolApprovalService`；`registerPolicy` 机制删除（btw 是唯一生产用例）。链上只剩 12 个危险度判定节点。
 2. **档位 × 路由拆分**。把「危险度档位」（只读/读写/yolo——`yolo-mode-approve` 的实质）与「交互路由」（将审批送给已连接用户、无人连接时取消请求）拆开。当前 `auto-mode-approve` 仍自动批准普通操作，敏感访问会请求审批，`AskUserQuestion` 可用；将路由层落在 `session/approval` broker 后再评估剩余 mode policy 的位置。
 3. **注册表 + Composer（行为零变化）**。把 `PermissionPolicyService` 构造函数里硬编码的 `new`，改为从 `IPermissionPolicyRegistry` 读取并组装；mode 守门提升为 `modes` 元数据。获得多 agent/mode 可选链与外部注册入口。
 4. **第四步（按需）：扩展资源类型**。当非文件资源（网络/DB/shell）需要结构化维度时，扩展 `ToolResourceAccess` 联合。

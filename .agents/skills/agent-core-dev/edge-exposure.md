@@ -106,8 +106,6 @@ Read = `GET`, write = `POST`. `sid` = `session_id`, `aid` = `agent_id`.
 | `tasks` | `stop` / `detach` | IBackgroundService.* | POST |
 | `usage` | `status` | IUsageService.status | GET |
 | `context` | `status` | IAgentTokenCountingService.get | GET |
-| `swarm` | `isActive` | ISwarmService.isActive | GET |
-| `swarm` | `enter` / `exit` | ISwarmService.* | POST |
 | `permission` | `getMode` | IPermissionModeService.mode | GET |
 | `permission` | `setMode` | IPermissionModeService.setMode | POST |
 | `permissionRules` | `list` | IPermissionRulesService.rules | GET |

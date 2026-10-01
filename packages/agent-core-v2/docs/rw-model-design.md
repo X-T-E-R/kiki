@@ -70,7 +70,7 @@
   但 recordService 仍然 foldViews、仍然跑 facet——"进内存不进磁盘"完全隐式。
 
 **读路径**
-- R1 手写读模型 ~12 处（goal/usage/plan/swarm/permission*/turn/task/todo…），
+- R1 手写读模型 ~12 处（goal/usage/plan/permission*/turn/task/todo…），
   live 与 resume 两份 apply 靠人肉保持一致。
 - R2 replay 读模型双通道：声明式 `toReplay` + 命令式 `push/patchLast/removeLastMessages`；
   boundary 判定逻辑两处重复（`recordService.ts:55-64` vs `contextMemoryService.ts:137`）。
@@ -83,9 +83,9 @@
 - V1 `task.started/terminated` 在 WireRecordMap 和 AgentEvent 双注册，写路径
   append+signal 同名两连发（`taskService.ts:796-807`）；`toLive` facet 全库仅
   permissionMode 一处使用。
-- V2 `agent.status.updated` 是"多域共写的散装快照事件"：plan/swarm/usage/
+- V2 `agent.status.updated` 是"多域共写的散装快照事件"：plan/usage/
   contextSize/profile 各自手动拼不同字段。
-- V3 resume 期 signal 靠 `emitLive` 隐式压制（skill/swarm）——"这个 signal 发不发
+- V3 resume 期 signal 靠 `emitLive` 隐式压制（skill 等）——"这个 signal 发不发
   得出去"取决于调用时相位，调用点看不出来。
 - V4 `IEventService` payload 无类型、事件名裸字符串、同一事件两处发布者。
 - V5 `prompt.submitted` 曾长期只存在于协议而无人发，现已由 `AgentPromptService`
@@ -455,8 +455,8 @@ view 定义是无依赖纯函数（§3.2），可经 contract 包共享给 node-
    dispatch-in-reducer 禁令）。onChange 处理器里再 commit → 入队排后，
    不重入折叠（解决 L2）。同一 microtask 内多次变更可合并（views 天然支持
    equals 去重）。
-2. **Effect 注册制**：订阅者回写（L1 的 goal 续跑、swarm 自动退出、steer
-   flush、overflow→compaction）显式注册为
+2. **Effect 注册制**：订阅者回写（L1 的 goal 续跑、steer flush、
+   overflow→compaction）显式注册为
    `defineEffect(name, { on: [...types] | view, run(ctx) })`：
    - 只在 live 相位运行（替代 4 处手写 restoring guard）；
    - 只能调 Command（不能直接 commit 裸 fact，保证决策逻辑不被绕过）；
@@ -815,14 +815,14 @@ const inFlightTurnView: View<InFlightState, InFlightFold, InFlightTurn | null> =
 ### D.5 场景：Effect（订阅者回写的唯一合法形态）
 
 ```ts
-// swarm 自动退出：今天挂在 turn.hooks.onEnded 里直接写（L1）
-export class AgentSwarmService extends Disposable {
+// goal 续跑：今天挂在 turn.hooks.onEnded 里直接写（L1）
+export class GoalContinuationService extends Disposable {
   constructor(@IAgentStream private readonly stream: IAgentStream) {
     super();
-    this._register(stream.defineEffect('swarm-auto-exit', {
+    this._register(stream.defineEffect('goal-continuation', {
       on: ['turn.ended'],                // 只在 live 相位运行；replay 期物理不存在（§8.3）
       run: () => {
-        if (this.isActive()) this.exit();   // 只能调 Command——exit() 内部 commit
+        if (this.hasActiveGoal()) this.continueGoal();   // 只能调 Command——continueGoal() 内部 commit
       },
     }));
   }

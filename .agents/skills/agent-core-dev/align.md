@@ -92,7 +92,7 @@ Reference mapping (a **starting point**, not gospel — verify against the curre
 | `loop/`, `agent/` (turn loop) | `loop`, `llmRequester`, `llmRequestLog`, `turn` |
 | `agent/context/`, `agent/compaction/` | `contextMemory`, `contextProjector`, `contextSize`, `fullCompaction`, `dynamicInjector` |
 | `agent/permission/` | `permission`, `permissionMode`, `permissionPolicy`, `permissionRules`, `approval`, `externalHooks` |
-| `agent/goal/`, `agent/plan/`, `agent/swarm/`, `agent/cron/`, `agent/background/` | `goal`, `plan`, `swarm`, `cron`, `background`, `subagentHost` |
+| `agent/goal/`, `agent/plan/`, `agent/cron/`, `agent/background/` | `goal`, `plan`, `cron`, `background`, `subagentHost` |
 | `services/config/`, `agent/config/` | `config` |
 | `services/event/`, `base/common/event` | `event`, `eventBus` |
 | `services/logger/`, `logging/` | `log` |

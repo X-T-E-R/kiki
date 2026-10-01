@@ -44,7 +44,7 @@ capabilities exposed by the v1 configuration.
 
 - Replacing the React Webview with VS Code native views or Chat Participants.
 - Migrating to the v2 engine.
-- Adding TUI-only features such as goals, cron, swarm, or BTW.
+- Adding TUI-only features such as goals, cron, or BTW.
 - Keeping a Python CLI fallback or a custom executable setting.
 - Adding cross-process locks for concurrent access to one session.
 - Making the core wait for VS Code before file tools execute.
