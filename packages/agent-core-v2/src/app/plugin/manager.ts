@@ -355,6 +355,13 @@ export class PluginManager {
     return out;
   }
 
+  enabledHookRules(): readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[] {
+    return [...this.records.values()].filter((record) => record.enabled && record.state === 'ok' && record.manifest?.hookRules !== undefined).map((record) => ({
+      namespace: `plugin/${record.id}`, path: record.manifestPath ?? record.root,
+      root: record.root, config: record.manifest!.hookRules, trusted: true, mutable: false,
+    }));
+  }
+
   async enabledCommands(): Promise<readonly PluginCommandDef[]> {
     const out: PluginCommandDef[] = [];
     const records = [...this.records.values()];

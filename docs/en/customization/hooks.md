@@ -1,12 +1,68 @@
 # Hooks
 
-Hooks are an automatic trigger mechanism: you tell Kiki in advance "whenever X happens, run this script." The script runs on your local machine, and you can put any logic inside it. Typical use cases:
+Hooks subscribe to engine events. Declarative v2 rules add guidance or observe events without running a process; legacy hooks run local shell commands. Typical use cases:
 
 - **Security interception**: Before the Agent executes a shell command, check whether it contains dangerous operations (such as `rm -rf`) and block execution if so
 - **Desktop notifications**: When a background task completes, pop up a system notification to bring you back to review the results
 - **Automatic checks**: Each time the user submits a message, automatically append some background information to the context (such as the current Git branch)
 
+## Declarative rules (v2)
+
+Use v2 for fixed guidance, such as a reminder after every five completed steps. Add this to your [user configuration](../configuration/config-files.md), replacing `example-model` with a configured model key or alias:
+
+```toml
+[hooks]
+schema_version = 2
+
+[[hooks.rules]]
+id = "evidence-check"
+event = "step.before"
+priority = 100
+
+[hooks.rules.match]
+models = ["example-model"]
+executors = ["native"]
+agent_roles = ["root", "subagent"]
+
+[hooks.rules.cadence]
+every_completed_steps = 5
+counter_scope = "agent"
+partition_by = "model"
+
+[hooks.rules.action]
+type = "inject"
+text = "Check the goal, existing evidence, and next action before continuing."
+```
+
+A step is one committed model response with all its tool results settled, not one tool call or retry attempt. After five such steps, the reminder appears before the next model request. If the fifth step ends the turn, no extra turn is created: delivery waits for the next request on that model. Counts belong to each agent and canonical model configuration identity, so switching A → B → A preserves A's count. `counter_scope = "turn"` instead clears the count at the next turn. Recovery, compaction, and undo do not rewind counts or replay delivered reminders. Changing the matcher or cadence starts a new semantic revision at zero; changing only the text uses the new text at the next milestone.
+
+The current v2 implementation accepts only `inject` and `observe`. `inject` is available on `step.before` and `prompt.submit`; `observe` is available on those events plus `step.after`, `tool.before`, `tool.after`, `turn.stopping`, `turn.after`, and `session.start`. Cadence is limited to step events. An observer records metadata without changing the operation. V2 `command`, `block`, `gate`, and `continue` actions are rejected during loading; script automation remains on the legacy contract below.
+
+### Sources and matching
+
+Rules combine across user configuration, a trusted project's `.kiki/hooks.toml`, and enabled plugin manifests. They receive distinct IDs such as `user/evidence-check`, `workspace/check`, and `plugin/example/check`. Lower `priority` runs first, with the qualified ID breaking ties. There is no model-over-profile override chain. Duplicate IDs within one namespace are errors; the same short ID in different namespaces is allowed. Untrusted project rules remain visible but inactive, including text-only rules.
+
+`match.models`, `profiles`, `routes`, `executors`, and `agent_roles` use exact values. Different fields must all match; values within one field are alternatives; omitted fields are unrestricted. Model aliases resolve at loading, so a misspelled alias is diagnosed before the first request. Tool names use `match.tools`; tool outcomes use `match.statuses` (`success`, `error`, `cancelled`, `denied`). `prompt.submit` defaults to `source = user`; select other sources explicitly with `match.sources`. External executors without native step/tool interception are reported as unsupported by inspection rather than simulated from tool counts.
+
+Long guidance can use `text_file = "reminders/check.md"` instead of `text`; the two are mutually exclusive. `[hooks] files = ["hooks.toml"]` includes other v2 documents. Paths are relative to the declaring file and must remain inside its source scope after realpath resolution. Includes cannot be URLs, cyclic, or repeated. Missing files, empty text, unsupported actions, invalid cadence, and injections exceeding the 8 KiB UTF-8 budget are load-time diagnostics. Guidance is source-labelled conversation context, not a replacement system prompt, and cannot override higher-priority instructions.
+
+Set a rule's `enabled = false` to disable it. The user section can disable qualified IDs from any source with `disabled = ["workspace/check"]`, or disable all v2 rules with `enabled = false`. Project and plugin declarations can disable only their own rules. Changes take effect at the next safe event boundary; the current event keeps its snapshot.
+
+### Inspecting effective rules
+
+The engine's contributed command `hooks-inspect` reports source, activation or failure reason, execution order, binding, semantic revision, completed counts, and the next due count. Invoke it through the existing client command API:
+
+```ts
+await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
+```
+
+The result is a `hook.result` diagnostic event (`hookEvent = "hooks.inspect"`); it is not appended to the model's conversation. This engine inspection is shared by clients; there is no dedicated GUI hooks settings page yet.
+
+TOML cannot declare both `[[hooks]]` and `[hooks]` under the same key. Existing arrays continue unchanged. To keep legacy commands in a v2 document, move those entries explicitly to `[[hooks.legacy]]`, preserving their `event`, `matcher`, `command`, and seconds-based `timeout`. They still use the legacy runner and output protocol; no automatic migration or script-protocol conversion occurs.
+
 ## How Hooks Work
+
+The remaining sections describe the legacy command contract, not v2 declarative rules.
 
 Configuring a hook rule requires specifying three things: **which event to trigger on**, **which targets to match**, and **which script to run**.
 
@@ -14,13 +70,13 @@ When triggered, the CLI packages the event's details (trigger reason, tool name,
 
 The script's response is determined by two things:
 
-- **Exit code**: `0` means allow, `2` means block, other non-zero values default to allow
-- **Standard output** (stdout): can include explanatory text
+- **Exit code**: `0` means allow; non-zero values block a blocking event, while observation-only events continue.
+- **Standard output** (stdout): can include explanatory text.
 
-Even if the script errors or times out, the CLI **will not interrupt your work** as a result — this "allow on failure" design is called fail-open, preventing hook errors from becoming blockers.
+Blocking events fail closed when a script fails or times out: the pending operation stops with a reason. Observation-only events do not interrupt the main flow. The [return-value table](#return-values) explains both cases.
 
 ::: warning Note
-Precisely because of fail-open, Hooks are suitable for alerts and lightweight interception, but **should not be used as the sole security barrier**. For truly high-risk operations, rely on permission approvals and manual confirmation.
+Hooks supplement permissions; they are not an operating-system sandbox and cannot approve a tool on the user's behalf. Keep permission checks and manual confirmation for high-risk operations.
 :::
 
 ## Quick Start: A Minimal Hook

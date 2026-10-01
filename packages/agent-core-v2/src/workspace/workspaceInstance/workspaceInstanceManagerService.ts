@@ -376,6 +376,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.modelProviders,
           input.acquireWorkspaceReference,
           input.onDispose,
+          input.hookWorkspace,
         ),
       },
     );

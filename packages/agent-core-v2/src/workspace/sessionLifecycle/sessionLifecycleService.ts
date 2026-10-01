@@ -61,6 +61,7 @@ import { ISessionInstructionsProvider } from '#/session/sessionInstructions/inst
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
+import { ISessionHookWorkspace } from '#/features/externalHooks/session/hookRules';
 import { drainSessionMetadataWrites, toEpochMs } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionTerminalService } from '#/session/terminal/terminalService';
@@ -237,6 +238,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IProviderService private readonly providers: IProviderService,
     private readonly acquireWorkspaceReference: () => IDisposable,
     onDispose?: () => void,
+    private readonly hookWorkspace?: ISessionHookWorkspace,
   ) {
     super();
     if (onDispose !== undefined) this._register({ dispose: onDispose });
@@ -434,6 +436,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
           ],
           configureContainer: (container) => {
+            if (this.hookWorkspace !== undefined) container.provide(ISessionHookWorkspace, this.hookWorkspace);
             container.anchorKernelEntry(
               () => void this.releaseSessionLock(opts.sessionId),
               'sessionLifecycle:sessionLock',

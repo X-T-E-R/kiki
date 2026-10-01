@@ -33,6 +33,9 @@ export interface BeforeStepContext {
   readonly turnId: number;
   readonly step: number;
   readonly firstStepOfTurn: boolean;
+  readonly stepId?: string;
+  readonly logicalStepId?: string;
+  readonly attempt?: number;
   readonly signal: AbortSignal;
 }
 

@@ -1,5 +1,5 @@
 import type { IWaitUntil } from '#/_base/event';
-import type { HookDefConfig } from '#/features/externalHooks/configSection';
+import type { HookDefConfig, HooksV2Config } from '#/features/externalHooks/configSection';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import type { PluginPrerequisites } from './prerequisites';
@@ -54,6 +54,7 @@ export interface PluginManifest {
   readonly sessionStart?: PluginSessionStart;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly hooks?: readonly HookDefConfig[];
+  readonly hookRules?: HooksV2Config;
   readonly commands?: readonly PluginCommandEntry[];
   readonly interface?: PluginInterface;
   readonly skillInstructions?: string;

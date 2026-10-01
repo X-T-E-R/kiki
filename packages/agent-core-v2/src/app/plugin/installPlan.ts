@@ -41,6 +41,7 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.agents ?? []).map((_, i) => `agent:${i}`),
     ...Object.keys(manifest.mcpServers ?? {}).map((name) => `mcp:${name}`),
     ...(manifest.hooks ?? []).map((hook, i) => `hook:${i}:${hook.event}`),
+    ...(manifest.hookRules?.rules ?? []).map((rule) => `hook:${rule.id}:${rule.event}`),
     ...(manifest.commands ?? []).map((command) => `command:${command.name}`),
     ...(manifest.kiki?.themes ?? []).map((theme) => `theme:${theme.id}`),
     ...(manifest.kiki?.providerPresets ?? []).map((preset) => `provider:${preset.id}`),

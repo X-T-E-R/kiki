@@ -71,6 +71,8 @@ import {
 } from '#/session/subagent/subagent';
 import { ISessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooks';
 import { SessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooksService';
+import { IHookRulesSession } from '#/features/externalHooks/session/hookRules';
+import { HookRuleSchema } from '#/features/externalHooks/internal/rules';
 import {
   ISessionAgentProfileCatalog,
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -202,6 +204,7 @@ function stubModelService(model = 'kimi-test'): IModelService {
   return {
     _serviceBrand: undefined,
     getDefaultModel: () => model,
+    resolveId: (alias: string) => alias,
   } as unknown as IModelService;
 }
 
@@ -919,6 +922,7 @@ describe('IExternalHooksRunnerService integration', () => {
       const path = hookLogPath();
       const command = appendHookLogCommand(path);
       const cwd = mkdtempSync(join(tmpdir(), 'session-external-hooks-cwd-'));
+      const observe = vi.fn();
 
       ix = createServices(disposables, {
         strict: true,
@@ -940,6 +944,14 @@ describe('IExternalHooksRunnerService integration', () => {
           reg.defineInstance(ISessionMetadata, stubSessionMetadata());
           reg.defineInstance(ISessionAgentProfileCatalog, stubProfileCatalog());
           reg.defineInstance(IModelService, stubModelService());
+          reg.definePartialInstance(IHookRulesSession, {
+            ready: Promise.resolve(), observe,
+            snapshot: () => ({ revision: 'example-revision', diagnostics: [], rules: [{
+              rule: HookRuleSchema.parse({ id: 'start', event: 'session.start', action: { type: 'observe' } }),
+              id: 'user/start', namespace: 'user', path: '/example/hooks.toml', mutable: true,
+              contentHash: 'example-content', semanticHash: 'example-semantic', active: true,
+            }] }),
+          });
           reg.definePartialInstance(ISessionSubagentService, {
             hooks: createHooks<AgentTaskHooks, keyof AgentTaskHooks>(['onWillStartAgentTask']),
             onDidStopAgentTask: Event.None as Event<AgentTaskStopHookContext>,
@@ -964,6 +976,7 @@ describe('IExternalHooksRunnerService integration', () => {
       });
       ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
       ix.set(ISessionExternalHooksService, new SyncDescriptor(SessionExternalHooksService));
+      expect(ix.get(IHookRulesSession).snapshot().rules).toHaveLength(1);
       ix.get(ISessionExternalHooksService);
 
       await lifecycle.fireDidCreate('startup');
@@ -971,6 +984,9 @@ describe('IExternalHooksRunnerService integration', () => {
       await lifecycle.fireDidCreate('fork');
       await lifecycle.fireWillClose('exit');
       await lifecycle.fireWillClose('archive');
+      expect(observe).toHaveBeenCalledTimes(2);
+      expect(observe).toHaveBeenNthCalledWith(1, expect.objectContaining({ event: 'session.start', reason: 'new', sessionId: 'session-1', configRevision: 'example-revision', isReplay: false, allowedActions: ['observe'] }), 'user/start');
+      expect(observe).toHaveBeenNthCalledWith(2, expect.objectContaining({ event: 'session.start', reason: 'resume' }), 'user/start');
 
       expect(readHookLog(path)).toEqual([
         {

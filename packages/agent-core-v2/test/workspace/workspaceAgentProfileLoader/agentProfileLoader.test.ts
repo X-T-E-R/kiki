@@ -278,6 +278,7 @@ function pluginStub(
     enabledMcpServers: async () => ({}),
     mcpServerEntries: async () => [],
     enabledHooks: async () => [],
+    enabledHookRules: async () => [],
     hasLoadedSnapshot: () => true,
   };
 }

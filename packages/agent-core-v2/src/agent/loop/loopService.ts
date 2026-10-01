@@ -52,6 +52,7 @@ import {
   IAgentLoopService,
   isMaxStepsExceededError,
   type AfterStepContext,
+  type BeforeStepContext,
   type AgentLoopStatus,
   type EnqueueReceipt,
   type LoopErrorContext,
@@ -677,6 +678,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             begun.step.uuid,
             options.onStarted,
             runtime.job?.steerController.signal,
+            { stepId: begun.step.uuid, logicalStepId: `${runtime.turnId}/${begun.step.batch.driver.id}`, attempt: begun.step.attempt },
           );
           const completed = this.completeLoopStep(runtime, result);
           if (completed !== undefined) return completed;
@@ -698,6 +700,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       job,
       queue: job?.queue ?? this.standaloneStepQueue,
       steps: 0,
+      attempts: new Map(),
       lastStopReason: undefined,
       current: undefined,
     };
@@ -727,7 +730,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       mutableStep.controller = new AbortController();
       mutableStep.signal = mutableStep.controller.signal;
     }
+    const attempt = (runtime.attempts.get(batch.driver.id) ?? 0) + 1;
+    runtime.attempts.set(batch.driver.id, attempt);
     const step: StepRuntime = {
+      attempt,
       number: ++runtime.steps,
       uuid: randomUUID(),
       batch,
@@ -889,9 +895,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     stepUuid: string,
     onStarted: ((step: number) => void) | undefined,
     steerSignal: AbortSignal | undefined,
+    stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
-    await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal });
+    await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity });
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
     let stepEndAppended = false;
     try {
@@ -939,6 +946,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         firstStepOfTurn,
         response.usage,
         finishReason,
+        stepIdentity,
       );
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
@@ -1177,8 +1185,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     firstStepOfTurn: boolean,
     usage: TokenUsage,
     finishReason: FinishReason,
+    stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
   ): Promise<boolean> {
     const context: AfterStepContext = {
+      ...stepIdentity,
       turnId,
       step: currentStep,
       firstStepOfTurn,
@@ -1393,12 +1403,14 @@ interface LoopRuntime {
   readonly turnSignal: AbortSignal;
   readonly job: TurnJob | undefined;
   readonly queue: StepRequestQueue;
+  readonly attempts: Map<string, number>;
   steps: number;
   lastStopReason: FinishReason | undefined;
   current: StepRuntime | undefined;
 }
 
 interface StepRuntime {
+  readonly attempt: number;
   readonly number: number;
   readonly uuid: string;
   readonly batch: StepRequestBatch;

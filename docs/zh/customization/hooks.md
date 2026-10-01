@@ -1,12 +1,68 @@
 # Hooks
 
-Hooks（钩子）是一种自动触发机制：你预先告诉 Kiki"每当发生 X，运行这个脚本"。脚本在你的本机执行，你可以在里面写任何逻辑。典型的使用场景：
+Hooks（钩子）订阅引擎事件。声明式 v2 规则无需启动进程，就能附加指导文本或观察事件；legacy（旧协议）hooks 则执行本机 Shell 命令。典型的使用场景：
 
 - **安全拦截**：Agent 要执行 Shell 命令前，检查是否包含危险操作（如 `rm -rf`），包含则阻断执行
 - **桌面通知**：后台任务完成时，弹出系统通知提醒你回来查看结果
 - **自动检查**：每次用户提交消息时，自动在上下文里附加一些背景信息（如当前 Git 分支）
 
+## 声明式规则（v2）
+
+固定指导文本优先用 v2，例如每完成五步提醒一次。把下面的配置写入[用户配置文件](../configuration/config-files.md)，将 `example-model` 换成已配置的模型键或别名：
+
+```toml
+[hooks]
+schema_version = 2
+
+[[hooks.rules]]
+id = "evidence-check"
+event = "step.before"
+priority = 100
+
+[hooks.rules.match]
+models = ["example-model"]
+executors = ["native"]
+agent_roles = ["root", "subagent"]
+
+[hooks.rules.cadence]
+every_completed_steps = 5
+counter_scope = "agent"
+partition_by = "model"
+
+[hooks.rules.action]
+type = "inject"
+text = "继续前核对目标、已有证据和下一步。"
+```
+
+一步指一次模型响应及其全部工具结果已落定并提交，不是一次工具调用或重试尝试。完成五步后，提醒在下一次模型请求前送达。第五步若恰好结束本轮，不会额外创建轮次，而是等待该模型的下一个请求。计数属于各 Agent 和模型配置的规范身份，因此 A → B → A 切换会保留 A 的计数；`counter_scope = "turn"` 则在新轮次清零。恢复、压缩和 undo 不倒拨计数，也不重放已投递提醒。修改 matcher 或节拍会开启从零计数的新语义 revision；只修改文本，会在下一个到期点使用新文本。
+
+当前 v2 只接受 `inject` 和 `observe` 动作。`inject` 可用于 `step.before` 和 `prompt.submit`；`observe` 除这两个事件外，还支持 `step.after`、`tool.before`、`tool.after`、`turn.stopping`、`turn.after` 和 `session.start`。节拍仅适用于 step 事件。观察器只记录元数据，不改变原操作。v2 的 `command`、`block`、`gate` 和 `continue` 动作会在加载时被拒绝；脚本自动化仍使用下文的 legacy 协议。
+
+### 来源与匹配
+
+用户配置、已信任项目的 `.kiki/hooks.toml` 和已启用插件 manifest 的规则组合执行，分别使用 `user/evidence-check`、`workspace/check`、`plugin/example/check` 等全限定 ID。`priority` 较小的先执行，同优先级按全限定 ID 排序；没有模型规则覆盖 profile 规则的优先链。同一命名空间的重复 ID 是错误，不同命名空间可使用相同短 ID。未信任项目的规则仍可查看，但不激活，纯文本规则也不例外。
+
+`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 使用精确值。不同字段必须同时命中，同一字段内的多个值是备选项，省略字段表示不限。模型别名在加载时解析，因此拼错别名会在首个请求前报告。工具名用 `match.tools`；工具结果状态用 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认仅匹配 `source = user`，其他来源需在 `match.sources` 中显式选择。无法提供 native step/tool 拦截的外部 executor 在检查视图中标为 unsupported，不会靠工具数量模拟步数。
+
+长文本可用 `text_file = "reminders/check.md"` 替代 `text`，二者互斥；`[hooks] files = ["hooks.toml"]` 可包含其他 v2 文档。路径相对于声明文件，经过 realpath（解析符号链接后的真实路径）检查后仍须留在该来源的作用域内。include 不能是 URL、不能循环或重复加载。缺文件、空文本、不支持的动作、无效节拍，以及超过 8 KiB UTF-8 字节预算的注入，都会形成加载期诊断。指导文本作为带来源标记的对话上下文投递，不替换系统提示词，也不能覆盖更高层指令。
+
+在规则上设 `enabled = false` 可停用该规则。用户 section 可用 `disabled = ["workspace/check"]` 停用任意来源的全限定 ID，或用 `enabled = false` 停用全部 v2 规则。项目和插件只能停用自身规则。变更在下一个安全事件边界生效，当前事件保留其配置快照。
+
+### 查看有效规则
+
+引擎贡献命令 `hooks-inspect` 输出来源、激活或失败原因、执行顺序、绑定、语义 revision、已完成计数和下一次到期计数。可通过现有客户端命令 API 调用：
+
+```ts
+await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
+```
+
+结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会附加到模型对话。这是各客户端共用的引擎检查入口，目前没有独立的 GUI hooks 设置页。
+
+TOML 不能在同一个 key 下同时声明 `[[hooks]]` 和 `[hooks]`。已有数组继续保持原义。需要在 v2 文档中保留 legacy 命令时，显式把旧条目移至 `[[hooks.legacy]]`，保持 `event`、`matcher`、`command` 和以秒计的 `timeout` 不变；它们仍使用 legacy runner 和输出协议，不会自动迁移或转换脚本协议。
+
 ## Hooks 是怎么工作的
+
+以下章节描述 legacy 命令协议，不是 v2 声明式规则。
 
 配置一条 hook 规则，需要指定三件事：**在什么事件上触发**、**匹配哪些目标**、**运行哪个脚本**。
 
@@ -14,13 +70,13 @@ Hooks（钩子）是一种自动触发机制：你预先告诉 Kiki"每当发生
 
 脚本的响应结果由两样东西决定：
 
-- **退出码**（exit code，程序结束时向操作系统报告的状态数字）：`0` 表示放行，`2` 表示阻断，其他数字默认放行
-- **标准输出**（stdout，就是你用 `console.log` 或 `print` 打印出来的内容）：可以附带说明文字
+- **退出码**（exit code，程序结束时向操作系统报告的状态数字）：`0` 表示放行；非零值在阻断类事件上阻止原操作，纯观察事件则继续。
+- **标准输出**（stdout，就是你用 `console.log` 或 `print` 打印出来的内容）：可以附带说明文字。
 
-即使脚本报错、超时，CLI 也**不会因此中断你的工作**——这种"出错就放行"的设计叫 fail-open（失败开放），避免 hook 异常变成绊脚石。
+阻断类事件在脚本失败或超时时采用 fail-closed（失败即拒绝）：尚未执行的操作停止，并提供原因。纯观察事件不打断主流程。[返回值表](#返回值)列出两类行为。
 
 ::: warning 注意
-正因为 fail-open，Hooks 适合做提醒和轻量拦截，但**不应作为唯一的安全防线**。对真正高风险的操作，仍需依赖权限审批和人工确认。
+Hooks 是权限系统的补充，不是操作系统沙箱，也不能代用户批准工具执行。高风险操作仍应保留权限检查和人工确认。
 :::
 
 ## 快速上手：一个最简单的 hook

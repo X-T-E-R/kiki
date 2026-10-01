@@ -8,6 +8,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { makeHookRunner, nodeCommand } from './runner-stub';
 
 describe('ExternalHooksRunnerService', () => {
+  it('runs explicit v2 legacy commands with the old regex, deduplication and output contract', async () => {
+    const command = nodeCommand('process.stdout.write("legacy"); process.exit(2);');
+    const runner = makeHookRunner({ schemaVersion: 2, enabled: true, disabled: [], files: [], rules: [],
+      legacy: [{ event: 'PreToolUse', matcher: 'Read|Write', command, timeout: 5 }, { event: 'PreToolUse', matcher: 'Read', command, timeout: 5 }],
+    });
+    const results = await runner.trigger('PreToolUse', { matcherValue: 'Read' });
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ action: 'block', stdout: 'legacy' });
+    expect(await runner.trigger('PreToolUse', { matcherValue: 'Bash' })).toEqual([]);
+  });
   it('fires a hook whose matcher regex matches the matcher value', async () => {
     const runner = makeHookRunner([
       { event: 'PreToolUse', matcher: 'Bash|Write', command: nodeCommand('process.exit(0);'), timeout: 5 },

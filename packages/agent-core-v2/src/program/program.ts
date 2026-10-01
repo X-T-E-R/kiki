@@ -209,6 +209,7 @@ export class Program {
       return this.dependencies.createSessionController({
         context: this.context,
         fs: runtime.fs!,
+        hookWorkspace: { _serviceBrand: undefined, runtime, root: this.context.cwd, trust: generation.trust },
         workspaceAgentProfiles: generation.agentProfiles,
         extraAgentProfiles: generation.extraAgentProfiles,
         explicitAgentProfiles: generation.explicitAgentProfiles,

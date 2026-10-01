@@ -34,6 +34,7 @@ import type { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/w
 export interface ProgramSessionControllerInput {
   readonly context: IWorkspaceContext;
   readonly fs: IHostFileSystem;
+  readonly hookWorkspace: import('#/features/externalHooks/session/hookRules').ISessionHookWorkspace;
   readonly workspaceAgentProfiles: IWorkspaceAgentProfileLoader;
   readonly extraAgentProfiles: IExtraAgentProfileLoader;
   readonly explicitAgentProfiles: IExplicitAgentProfileLoader;
