@@ -19,7 +19,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../i18n';
-import { BUILTIN_SKINS, declaredVariants, writeSkinPrefs } from '../lib/skins';
+import { BUILTIN_SKINS, builtinSkinNameKey, declaredVariants, writeSkinPrefs } from '../lib/skins';
 import { prefersDark, resolveTheme, type ResolvedTheme } from '../lib/theme';
 import { BackgroundSettings, useBackgroundPrefs } from './settings/BackgroundSettings';
 import { SettingsSegmented } from './settings/SettingsPrimitives';
@@ -46,7 +46,7 @@ export function OnboardingRow({ label, labelId, children }: {
 /** Four color cells from the palette itself, in the theme on screen. */
 function Swatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
   const variant = skin.variants[theme] ?? skin.variants[declaredVariants(skin)[0] ?? 'light'];
-  // Paper sets no colors (it is the stylesheet palette); see PAPER_SWATCH.
+  // An empty variant uses the default palette, not the active skin.
   const colors = variant?.colors ?? PAPER_SWATCH[theme];
   const cells = [colors.canvas, colors.paper, colors.ink, colors.accent].map((value) => value ?? 'var(--color-paper)');
   return (
@@ -98,7 +98,7 @@ export function OnboardingAppearanceStep() {
                 >
                   <Swatch skin={option} theme={theme} />
                   <span className={`px-0.5 text-[12px] leading-4 ${selected ? 'font-medium text-selected-ink' : 'text-ink-soft'}`}>
-                    {t(`onboarding.appearance.palette.${option.id}` as 'onboarding.appearance.palette.paper')}
+                    {t(builtinSkinNameKey(option.id)!)}
                   </span>
                 </button>
               </li>

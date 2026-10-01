@@ -5023,9 +5023,11 @@ async function scenarioSkins() {
   ];
   const SKINS = [
     ['builtin', 'paper', ['light', 'dark']],
-    ['builtin', 'graphite', ['light', 'dark']],
+    ['builtin', 'porcelain', ['light', 'dark']],
+    ['builtin', 'celadon', ['light', 'dark']],
+    ['builtin', 'apricot', ['light', 'dark']],
+    ['builtin', 'iris', ['light', 'dark']],
     ['builtin', 'contrast', ['light', 'dark']],
-    ['builtin', 'nocturne', ['dark']],
     ['user', 'ocean', ['light', 'dark']],
     ['user', 'midnight', ['dark']],
   ];
@@ -5065,7 +5067,7 @@ async function scenarioSkins() {
 
   // Adjustments apply at once (the page has no draft): the accent repaints
   // the whole app and lands in storage in the same step.
-  await applySkin('builtin', 'graphite', 'light');
+  await applySkin('builtin', 'porcelain', 'light');
   await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-skin-settings]', { timeout: 15_000 });
 
@@ -5139,7 +5141,7 @@ async function scenarioSettingsAppearance() {
   const shots = [
     ['paper', 'light'],
     ['paper', 'dark'],
-    ['graphite', 'light'],
+    ['porcelain', 'light'],
   ];
   for (const [skin, theme] of shots) {
     await setLook(skin, theme);

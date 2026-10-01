@@ -1,6 +1,6 @@
 # GUI Skins
 
-A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships eight skins, and you can add your own as a JSON file. You can also put a picture or video behind the window, or install an appearance pack that bundles colors with art.
+A skin changes how the Kiki GUI looks: its palette, its fonts, its corner radius and its density. Kiki ships six light–dark skin families, and you can add your own as a JSON file. You can also put a picture or video behind the window, or install an appearance pack that bundles colors with art.
 
 Skins are declarative only. A skin sets design tokens — it cannot add CSS rules or scripts, so it cannot hide an approval prompt, break a layout on upgrade, or run code.
 
@@ -10,16 +10,14 @@ Light and dark stay a separate choice. A skin supplies a light variant, a dark v
 
 | Skin | Variants | What it is |
 | --- | --- | --- |
-| **Paper** (default) | light, dark | Warm paper, brown ink, a rust mark. Kiki's own voice. |
-| **Linen** | light, dark | Unbleached cloth and ink-blue thread. Plain, calm, cool. |
-| **Graphite** | light, dark | Brushed steel and a cyan signal. Cool, exact, quiet. |
-| **Forest** | light, dark | Pine shade and moss, with a lantern for what needs you. |
-| **Claret** | light, dark | Wine and cocoa after dark, blush paper by day. |
-| **Heather** | light, dark | Lavender haze, dusty mauve, a sage mark. Colour without shouting. |
-| **Nocturne** | dark only | A clear-night navy lit by starlight gold. In light mode it keeps showing its dark palette, and the settings page says so. |
-| **High contrast** | light, dark | Solid borders, text at AAA on every surface, one bold signal per role. |
+| **Paper × Inkstone** (default) | light, dark | Warm white paper and ink-blue marks; cool charcoal and copper after dark. |
+| **Porcelain × Deepwater** | light, dark | Cool white paper and cobalt details; layered navy and mist-blue controls at night. |
+| **Celadon × Night Garden** | light, dark | Celadon glaze and soft white paper; deep pine surfaces and jade details at night. |
+| **Apricot × Afterglow** | light, dark | Apricot-white paper and berry controls; plum-charcoal layers and peach light after dark. |
+| **Iris × Starveil** | light, dark | Violet-white paper and iris ink; indigo-violet layers and silver-lilac controls at night. |
+| **High contrast × Obsidian** | light, dark | Visible borders and AAA main text; layered charcoal, ice-cyan focus and near-white controls at night. |
 
-Sand and Slate were retired. If you had one of them selected, Kiki switches you to Paper and keeps your accent, font, radius and density overrides.
+Inkstone replaces the previous default dark palette within the Paper family. Linen, Graphite, Forest, Claret, Heather, Nocturne, Sand and Slate are retired. Stored built-in selections fall back to Paper in light mode and Inkstone in dark mode, including desktop space preferences. Your light / dark / system choice and accent, font, radius and density overrides stay intact. User skin files with the same names are not retired.
 
 ## Pick and adjust a skin
 
@@ -131,7 +129,7 @@ Every value is `#rgb` or `#rrggbb`.
 | `shadowInk` | The color shadows and modal scrims are mixed from |
 
 ::: tip Keep text readable
-Kiki's built-in skins hold WCAG AA (4.5:1) for every text token against `canvas`, `paper` and `panel`, and for `onAccent` against `accent`. A skin that drops below that is still loaded — Kiki will not override your choice — but text gets hard to read. Check your `ink`, `inkSoft` and `inkFaint` against all three surfaces.
+Kiki's untweaked built-in palettes hold WCAG AA (4.5:1) for body, secondary, faint and semantic text against `canvas`, `paper` and `panel`, and for `onAccent` against `accent`. Use `accentInk` for text rather than the button fill `accent`, especially in Paper. A skin that drops below that is still loaded — Kiki will not override your choice — but text gets hard to read. Check your `ink`, `inkSoft` and `inkFaint` against all three surfaces.
 :::
 
 ### Fonts

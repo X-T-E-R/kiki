@@ -97,7 +97,7 @@ export function normalizeSkinPrefs(raw: unknown): SkinPrefs {
 }
 
 /**
- * A built-in that was retired (Sand, Slate) becomes the default. The user's
+ * A retired built-in becomes Paper / Inkstone. The user's
  * tweaks are kept: they chose an accent or a radius, not the retired palette.
  */
 function migrateSelection(selection: SkinSelection): SkinSelection {

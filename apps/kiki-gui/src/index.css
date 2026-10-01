@@ -79,14 +79,12 @@
   --kiki-sheet-radius: 12px;
   --kiki-stage-gap: 8px;
 
-  /* The always-dark shell: the terminal island, tool-output wells, and modal
-   * scrims. These are deliberately NOT part of the light/dark dual — a scrim
-   * that inverts stops being a scrim, and the terminal reads as an inset well
-   * in both themes. Only the ground moves, to stay darker than the page. */
+  /* The shell stays an inset well in both modes; its own text and surface
+   * ladder follow each independently designed palette. */
   --color-shell: #1f1b16;
   --color-shell-ink: #e8dcc4;
   --color-shell-ink-strong: #f3e9d8;
-  --color-shell-ink-soft: #8a7f6d;
+  --color-shell-ink-soft: #9B8E7A;
   --color-shell-danger: #d9a08a;
 
   /* Streamdown's components are built on shadcn custom properties; map them
@@ -98,7 +96,7 @@
   --color-border: #e4ddd0;
   --color-input: #e4ddd0;
   --color-primary: #c8401a;
-  --color-primary-foreground: #fffdfa;
+  --color-primary-foreground: #FFFFFF;
   --color-sidebar: #fbfaf6;
 
   /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
@@ -125,61 +123,53 @@
   color-scheme: light;
 }
 
-/* The dark dual. Same palette intent inverted, not a different design: warm
- * near-black paper, ink that stays slightly warm rather than pure white, and
- * the accent lifted just enough to survive on a dark ground. */
+/* Inkstone: cool charcoal surfaces, warm white text and copper actions.
+ * These defaults also hold before boot and when a user skin is unavailable. */
 [data-theme='dark'] {
   color-scheme: dark;
-
-  /* Canvas sinks below the paper so the sheet still reads as raised. */
-  --color-canvas: #13120f;
-  --color-paper: #1a1915;
-  --color-panel: #211f1b;
-  --color-hairline: #2e2b25;
-  --color-hairline-strong: #433f36;
-  --color-ink: #ece8e0;
-  --color-ink-soft: #bab3a7;
-  /* Faint text is the most-used label role, so it is sized for the tinted
-   * grounds it lands on, not just the ladder: ≥4.9:1 on the selected and
-   * accent-soft washes and the hover wash, and a clear step below ink-soft
-   * (6.0 vs 8.8:1 on paper) so the hierarchy survives. */
-  --color-ink-faint: #9d968a;
-  --color-accent: #f07a4c;
-  --color-accent-deep: #f59a74;
-  --color-accent-ink: #f5946b;
-  --color-accent-soft: #3a2218;
-  --color-amber-ink: #e3a64a;
-  --color-amber-card: #2c2114;
-  --color-amber-rule: #7a5a20;
-  --color-success: #86c79a;
-  --color-danger: #f08a80;
-
-  --color-section-ink: #bab3a7;
-  --color-selected: #1c2b36;
-  --color-selected-ink: #8fc6ea;
-  --color-attention: #ff8f5e;
-  --color-attention-soft: #3b2216;
-
-  --color-bubble-user: #25231e;
-  --color-scrollbar: #453d31;
-  --color-scrollbar-hover: #5a5142;
-  --color-term-scrollbar: #5a5142;
-  /* Stays an inset well: darker than the dark paper, not lighter. */
-  --color-shell: #0e0c09;
-  /* Shadows on a dark ground read as depth only when they are darker than the
-   * surface, so the scrim ink goes to near-black rather than following ink. */
+  --color-canvas: #13191C;
+  --color-paper: #1B2226;
+  --color-panel: #252D31;
+  --color-hairline: #354047;
+  --color-hairline-strong: #596870;
+  --color-ink: #EEEAE2;
+  --color-ink-soft: #C1C5C5;
+  --color-ink-faint: #A2ACAF;
+  --color-accent: #EB946F;
+  --color-accent-deep: #F4B08F;
+  --color-accent-ink: #F4AE8D;
+  --color-accent-soft: #382A25;
+  --color-amber-ink: #E6BD78;
+  --color-amber-card: #322B20;
+  --color-amber-rule: #96783F;
+  --color-success: #9AC6AE;
+  --color-danger: #F1A29A;
+  --color-section-ink: #C1C5C5;
+  --color-selected: #24323B;
+  --color-selected-ink: #A3CBDE;
+  --color-attention: #F4AE8D;
+  --color-attention-soft: #382A25;
+  --color-bubble-user: #293238;
+  --color-scrollbar: #4F5F68;
+  --color-scrollbar-hover: #74838C;
+  --color-term-scrollbar: #526068;
+  --color-shell: #101518;
+  --color-shell-ink: #D1D9DA;
+  --color-shell-ink-strong: #F0F2EF;
+  --color-shell-ink-soft: #9AA7AB;
+  --color-shell-danger: #F1A29A;
   --kiki-shadow-ink: 0 0 0;
-  --kiki-sheet-shadow: 0 0 0 1px rgb(236 232 224 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+  --kiki-sheet-shadow: 0 0 0 1px rgb(238 234 226 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
 
-  --color-background: #211f1b;
-  --color-foreground: #ece8e0;
-  --color-muted: #1a1915;
-  --color-muted-foreground: #bab3a7;
-  --color-border: #2e2b25;
-  --color-input: #2e2b25;
-  --color-primary: #f07a4c;
-  --color-primary-foreground: #1a1915;
-  --color-sidebar: #1a1915;
+  --color-background: #252D31;
+  --color-foreground: #EEEAE2;
+  --color-muted: #1B2226;
+  --color-muted-foreground: #C1C5C5;
+  --color-border: #354047;
+  --color-input: #354047;
+  --color-primary: #EB946F;
+  --color-primary-foreground: #261A14;
+  --color-sidebar: #1B2226;
 }
 
 html,

@@ -28,12 +28,11 @@
 /* The dark dual for the tokens this file introduces. Kept in the same shape
  * as index.css's dual so both read as one system. */
 [data-theme='dark'] {
-  /* The dark accent is a light orange; white on it is 2.5:1, so the label
-   * goes dark instead. */
-  --color-on-accent: #2a1408;
-  --color-on-danger: #2b0603;
-  --color-shell-hairline: #2a251d;
-  --color-shell-hover: #221e18;
+  /* Inkstone's lifted copper and red surfaces take dark labels. */
+  --color-on-accent: #261A14;
+  --color-on-danger: #301414;
+  --color-shell-hairline: #354047;
+  --color-shell-hover: #202B30;
 }
 
 /* A skin may set `--spacing` (the density dial). Tailwind v4 derives every

@@ -146,17 +146,15 @@ const SNEAKY = {
 
 export default {
   models: [
-    { id: 'fixture/model-a', display_name: 'Fixture A', provider: 'fixture' },
+    { id: 'fixture/model-a', display_name: 'Fixture A', provider_id: 'fixture', remote_id: 'model-a', max_context_size: 262144 },
   ],
   sessions: [
-    sessionRecord({
-      id: SID,
+    sessionRecord(SID, {
       title: 'Appearance and skins',
-      model: 'fixture/model-a',
-      updatedMinutesAgo: 3,
+      agent_config: { model: 'fixture/model-a' },
     }),
   ],
-  transcripts: {
+  snapshots: {
     [SID]: {
       messages: [
         userMsg(SID, 'Show me what the interface looks like under a different skin.', 8),
