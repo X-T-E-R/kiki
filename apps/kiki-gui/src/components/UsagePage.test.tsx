@@ -34,6 +34,7 @@ const getSession = vi.fn();
 const listWorkspaces = vi.fn();
 
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => undefined,
   useConnection: () => ({ client: { getUsage, getSession, listWorkspaces } }),
 }));
 

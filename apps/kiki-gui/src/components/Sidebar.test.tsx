@@ -37,6 +37,7 @@ import {
 } from './Sidebar';
 
 const searchMessages = vi.fn();
+const getSession = vi.fn<(id: string) => Promise<Session>>();
 const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
 const setWorkspacePinned = vi.fn(async () => {});
 const listEphemeralSessions = vi.fn(async (): Promise<{ items: Session[] }> => ({ items: [] }));
@@ -54,7 +55,7 @@ const roomRest = vi.hoisted(() => ({
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
-  useOptionalConnection: () => undefined,
+  useOptionalConnection: () => ({ client: { getSession } }),
   useConnection: () => ({
     client: {
       searchMessages,
@@ -176,6 +177,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   searchMessages.mockReset();
+  getSession.mockReset();
+  getSession.mockRejectedValue(new Error('Thread not found'));
   retrySearchIndexer.mockClear();
   setWorkspacePinned.mockClear();
   listEphemeralSessions.mockReset();
@@ -214,12 +217,14 @@ type SidebarOverrides = Omit<Partial<SidebarProps>, 'sessionGroups'> & {
 async function mount(
   overrides: SidebarOverrides = {},
   host: HostAdapter = browserHost,
-): Promise<{ container: HTMLDivElement; root: Root }> {
+  cachedSessions: readonly Session[] = [],
+): Promise<{ container: HTMLDivElement; root: Root; queryClient: QueryClient }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
   const { sessionGroups: rawGroups, ...rest } = overrides;
   const sessionGroups = (rawGroups ?? []).map((group) => ({
     ...group,
@@ -259,7 +264,7 @@ async function mount(
       </QueryClientProvider>,
     );
   });
-  return { container, root };
+  return { container, root, queryClient: client };
 }
 
 function workspace(id: string, name: string, pinned = false): Workspace {
@@ -323,6 +328,77 @@ async function waitForText(container: HTMLDivElement, text: string): Promise<voi
   }
   throw new Error(`"${text}" never rendered`);
 }
+
+describe('Sidebar thread-link titles', () => {
+  it('projects cached names in recent and earlier groups and reacts to renames', async () => {
+    const linked = { ...session('session_reference'), title: '被引用线程的完整名称' };
+    const recent = { ...session('recent'), title: `Review /s/${linked.id} now` };
+    const earlier = { ...session('earlier'), title: `Compare kiki://s/${linked.id} next` };
+    const { container, root, queryClient } = await mount({
+      sessions: [recent, earlier],
+      sessionGroups: [
+        { key: 'today', label: 'Today', items: [recent] },
+        { key: 'earlier', label: 'Earlier', items: [earlier] },
+      ],
+    }, browserHost, [linked]);
+    const recentRow = container.querySelector('[data-session-row="recent"]');
+    const earlierRow = container.querySelector('[data-session-row="earlier"]');
+    expect(recentRow?.textContent).toContain('Review 被引用线程的完整… now');
+    expect(earlierRow?.textContent).toContain('Compare 被引用线程的完整… next');
+    expect(recentRow?.innerHTML).not.toContain('/s/session_');
+    expect(earlierRow?.innerHTML).not.toContain('kiki://');
+    expect(getSession).not.toHaveBeenCalled();
+    await act(async () => {
+      queryClient.setQueryData(['sessions', 'cached'], { items: [{ ...linked, title: 'Updated name' }] });
+    });
+    expect(recentRow?.textContent).toContain('Review Updated … now');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('fetches an uncached reference once and replaces the short-id placeholder', async () => {
+    const linked = { ...session('session_remote_thread'), title: 'Referenced thread' };
+    getSession.mockResolvedValue(linked);
+    const owner = { ...session('owner'), title: `Review /s/${linked.id}` };
+    const { container, root } = await mount({
+      sessions: [owner], sessionGroups: [{ key: 'earlier', label: 'Earlier', items: [owner] }],
+    });
+    await waitForText(container, 'Review Referenc…');
+    expect(getSession).toHaveBeenCalledExactlyOnceWith(linked.id);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('uses existing short ids for failed and untitled references, including last-prompt titles', async () => {
+    const missing = { ...session('missing'), title: 'Check /s/session_abcdefghijk and kiki://s/session_untitled' };
+    const prompt = { ...session('prompt'), title: '', last_prompt: 'Read /s/session_abcdefghijk again' };
+    const blank = { ...session('session_untitled'), title: ' ' };
+    const { container, root } = await mount({
+      sessions: [missing, prompt],
+      sessionGroups: [{ key: 'earlier', label: 'Earlier', items: [missing, prompt] }],
+    }, browserHost, [blank]);
+    await settle();
+    expect(container.querySelector('[data-session-row="missing"]')?.textContent).toContain('Check abcdefgh and untitled');
+    expect(container.querySelector('[data-session-row="prompt"]')?.textContent).toContain('Read abcdefgh again');
+    expect(container.innerHTML).not.toContain('/s/session_');
+    expect(container.innerHTML).not.toContain('kiki://');
+    expect(getSession).toHaveBeenCalledExactlyOnceWith('session_abcdefghijk');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('searches and highlights the projected title while content results use the same labels', async () => {
+    const linked = { ...session('session_reference'), title: 'Referenced thread' };
+    const owner = { ...session('owner'), title: 'Review /s/session_reference now' };
+    searchMessages.mockResolvedValue(page([hit({ session_id: owner.id, session_title: owner.title, snippet: 'match' })], false));
+    const { container, root } = await mount({ sessions: [owner] }, browserHost, [linked]);
+    await typeQuery(container, 'Referenc');
+    await waitForText(container, 'match');
+    const local = container.querySelector('[data-search-result="s:owner"]');
+    expect(local?.textContent).toContain('Review Referenc… now');
+    expect(local?.querySelector('mark')?.textContent).toBe('Referenc');
+    expect(container.querySelector('[data-search-result="h:0"]')?.textContent).toContain('Review Referenc… now');
+    expect(container.innerHTML).not.toContain('/s/session_');
+    await act(async () => { root.unmount(); });
+  });
+});
 
 describe('Sidebar global search pagination', () => {
   it('appends the second page instead of replacing the first', async () => {

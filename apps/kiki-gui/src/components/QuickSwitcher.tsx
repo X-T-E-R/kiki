@@ -26,6 +26,7 @@ import { useSessionSearch } from '../lib/sessionSearch';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
+import { ThreadTitle } from './ThreadTitle';
 
 export function QuickSwitcher({
   sessions,
@@ -244,7 +245,7 @@ export function QuickSwitcher({
                   ) : item.kind === 'session' ? (
                     <>
                       <span className="truncate text-[13px] font-medium text-ink">
-                        {item.title}
+                        <ThreadTitle text={item.title} />
                       </span>
                       <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
                         <span className="truncate">{item.cwd}</span>
@@ -258,7 +259,7 @@ export function QuickSwitcher({
                       </span>
                       <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
                         <span className="truncate">
-                          {item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled}
+                          <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
                         </span>
                         <span className="shrink-0">· {t(`sidebar.results.role.${item.role}`)}</span>
                       </span>

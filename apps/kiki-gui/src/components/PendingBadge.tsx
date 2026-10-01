@@ -12,6 +12,7 @@ import type { Session } from '@kiki/protocol';
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
 import { useGuardedNavigate } from './dirtyGuard';
+import { ThreadTitle } from './ThreadTitle';
 
 export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
   const { t, tp } = useI18n();
@@ -82,7 +83,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
                   : t('pending.kind.question')}
               </span>
               <span className="min-w-0 truncate text-[12px] text-ink">
-                {session.title.trim() !== '' ? session.title : t('sidebar.untitled')}
+                <ThreadTitle text={session.title.trim() !== '' ? session.title : t('sidebar.untitled')} />
               </span>
             </button>
           ))}

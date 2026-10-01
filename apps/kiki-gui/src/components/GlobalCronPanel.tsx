@@ -25,6 +25,7 @@ import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { ApiError, type CronTask, type ListCronTasksResponse } from '../lib/client';
 import { pushToast } from '../lib/toasts';
+import { useThreadTitle } from '../lib/threadTitles';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PageHeader, useWorkspaceScope } from './PageChrome';
@@ -141,6 +142,7 @@ function CronTaskRow({
 }: CronTaskRowProps) {
   const { t } = useI18n();
   const sessionId = task.session_id;
+  const shownTitle = useThreadTitle(sessionTitle ?? '');
   return (
     <li
       data-cron-task={task.id}
@@ -195,9 +197,9 @@ function CronTaskRow({
                 data-cron-session={sessionId}
                 onClick={() => { onOpenSession(sessionId); }}
                 className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
-                title={sessionTitle}
+                title={shownTitle}
               >
-                {sessionTitle}
+                {shownTitle}
               </button>
             ) : (
               <span className="max-w-48 truncate font-mono" title={sessionId}>

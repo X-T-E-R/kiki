@@ -22,6 +22,7 @@ import {
   type ThreadToThreadMessage,
 } from '../../lib/threadMessages';
 import { useOptionalConnection } from '../../state/connection';
+import { useThreadTitleResolver } from '../../lib/threadTitles';
 
 export const THREAD_MESSAGES_QUERY_KEY = ['thread-messages'] as const;
 
@@ -74,12 +75,13 @@ export function loadedPeerMessages(pages: readonly { readonly items: readonly Th
 }
 
 /** The name a thread goes by here: its title, or what is left of it. */
-export function useEndpointName(): (endpoint: ThreadEndpoint) => string {
+export function useEndpointName(endpoints: readonly ThreadEndpoint[]): (endpoint: ThreadEndpoint) => string {
   const { t } = useI18n();
+  const resolveTitle = useThreadTitleResolver(endpoints.filter((endpoint) => !endpoint.deleted).map((endpoint) => endpoint.title ?? ''));
   return (endpoint) => {
     if (endpoint.deleted) return t('comms.deletedThread');
     const title = endpoint.title?.trim();
-    return title !== undefined && title !== '' ? title : t('comms.untitled');
+    return title !== undefined && title !== '' ? resolveTitle(title) : t('comms.untitled');
   };
 }
 

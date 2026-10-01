@@ -36,6 +36,7 @@ const board = {
 };
 
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => undefined,
   useConnection: () => ({ client: { sessions: {} }, klient: { global: { board }, session: () => ({ view: {} }) } }),
   useControllerRegistry: () => ({
     add: () => undefined,

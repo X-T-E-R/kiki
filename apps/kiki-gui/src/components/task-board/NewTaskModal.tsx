@@ -3,6 +3,7 @@ import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n
 import { useI18n } from '../../i18n';
 import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Icon } from '../icons';
+import { useThreadTitleResolver } from '../../lib/threadTitles';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
 export interface NewTaskModalProps {
@@ -34,6 +35,7 @@ export const NewTaskModal = memo(function NewTaskModal({
   workspaces = [], sessions = [], defaultWorkspaceId, showPrompt = true, onClose, onCreate,
 }: NewTaskModalProps) {
   const { t, locale } = useI18n();
+  const resolveTitle = useThreadTitleResolver(sessions.map((session) => session.title), sessions);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -192,7 +194,7 @@ export const NewTaskModal = memo(function NewTaskModal({
               <option value="">{t('taskBoard.new.noSession')}</option>
               {sessions.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.title} ({s.id})
+                  {resolveTitle(s.title)} ({s.id})
                 </option>
               ))}
             </select>

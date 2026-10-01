@@ -12,6 +12,7 @@ import type { Session } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
+import { useThreadTitle } from '../lib/threadTitles';
 import { worktreeApi, type WorktreeRemovalOutcome } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
@@ -37,7 +38,8 @@ export function WorktreeArchiveDialog({
   const [removeWorktree, setRemoveWorktree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const title = t('worktree.archiveTitle', { title: session.title !== '' ? session.title : t('sidebar.untitled') });
+  const sessionTitle = useThreadTitle(session.title !== '' ? session.title : t('sidebar.untitled'));
+  const title = t('worktree.archiveTitle', { title: sessionTitle });
   const branch = session.worktree.branch;
 
   const describe = (outcome: WorktreeRemovalOutcome): WorktreeArchiveResult => {

@@ -14,6 +14,7 @@ import type { Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { shortCwd } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
+import { useThreadTitle } from '../../lib/threadTitles';
 import {
   visibleWorktrees,
   worktreeApi,
@@ -277,7 +278,8 @@ function WorktreeRow({
   const inUse = session !== undefined && session.archived !== true;
   const ownerPending = owner?.settled !== true;
   const busy = record.state === 'creating' || record.state === 'removing';
-  const title = session === undefined ? undefined : (session.title !== '' ? session.title : t('sidebar.untitled'));
+  const shownTitle = useThreadTitle(session?.title || t('sidebar.untitled'));
+  const title = session === undefined ? undefined : shownTitle;
   const removeDisabled = inUse || ownerPending || busy;
   const stateClass = state.tone === 'danger' ? 'text-danger' : state.tone === 'soft' ? 'text-ink-soft' : 'text-ink-faint';
   const inUseId = `worktree-in-use-${record.id}`;

@@ -122,6 +122,7 @@ import { harnessDenies, useSessionHarness, type SessionHarness } from './harness
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
+import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -442,7 +443,7 @@ export function SessionTitle({
     void onRename(next);
   };
 
-  const shown = title !== '' ? title : t('sidebar.untitled');
+  const shown = useThreadTitle(title !== '' ? title : t('sidebar.untitled'));
   // Title keeps its width; the cwd beside it yields first (shrink-[100]) so a
   // roomy header never truncates the name to make space for the path.
   return (

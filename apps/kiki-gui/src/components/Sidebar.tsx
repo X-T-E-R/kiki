@@ -80,6 +80,7 @@ import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
 import { nestConversationItems, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
 import { runToastAction } from '../lib/toasts';
+import { useThreadTitleResolver } from '../lib/threadTitles';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
@@ -97,6 +98,7 @@ import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
 import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './room/threadRooms';
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
+import { ThreadTitle } from './ThreadTitle';
 
 // Re-exported for callers and tests that paged the old in-component search.
 export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
@@ -719,7 +721,7 @@ export function Sidebar({
     } else if (action === 'export') {
       void exportSessionArchive(actionContext, session)
         .then((saved) => {
-          if (saved) setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) }));
+          if (saved) setActionNotice(t('action.exportDone', { title: resolveTitle(sessionLabel(session, untitled)) }));
         })
         .catch((error: unknown) => {
           setActionError(t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }));
@@ -727,7 +729,7 @@ export function Sidebar({
     } else {
       void compactSessionContext(actionContext, session)
         .then(() => {
-          setActionNotice(t('action.compactRequested', { title: sessionLabel(session, untitled) }));
+          setActionNotice(t('action.compactRequested', { title: resolveTitle(sessionLabel(session, untitled)) }));
         })
         .catch((error: unknown) => {
           setActionError(t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }));
@@ -926,9 +928,12 @@ export function Sidebar({
     ? sessionTree.map((group) => group.key)
     : [];
   const allFolded = workspaceGroupKeys.length > 0 && workspaceGroupKeys.every((key) => collapsedGroups.has(key));
+  const titleSessions = useMemo(() => [...sessions, ...ephemeralSessions, ...sessionGroups.flatMap((group) =>
+    group.items.flatMap((item) => item.kind === 'session' ? [item.session] : []))], [sessions, ephemeralSessions, sessionGroups]);
+  const resolveTitle = useThreadTitleResolver(titleSessions.map((session) => sessionLabel(session, untitled)), titleSessions);
   const titleOf = useMemo(
-    () => new Map(sessions.map((session) => [session.id, sessionLabel(session, untitled)])),
-    [sessions, untitled],
+    () => new Map(sessions.map((session) => [session.id, resolveTitle(sessionLabel(session, untitled))])),
+    [sessions, untitled, resolveTitle],
   );
   // Bound once per render so the kind narrowing survives into the menu's
   // callbacks (property-access narrowing does not reach into closures).
@@ -1281,6 +1286,7 @@ export function Sidebar({
                   active={session.id === activeSessionId}
                   menuOpen={false}
                   untitled={untitled}
+                  resolveTitle={resolveTitle}
                   activity={activity.byId.get(session.id)}
                   elapsedFor={activity.elapsedFor}
                   showLocation
@@ -1339,6 +1345,7 @@ export function Sidebar({
                   active={session.id === activeSessionId}
                   menuOpen={menu?.item.key === item.key}
                   untitled={untitled}
+                  resolveTitle={resolveTitle}
                   activity={activity.byId.get(session.id)}
                   elapsedFor={activity.elapsedFor}
                   relation={node.relation}
@@ -1616,7 +1623,7 @@ export function Sidebar({
         >
           <h2 className="font-display text-[18px] font-semibold text-ink">{t('undo.title')}</h2>
           <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
-            {t('undo.bodyNamed', { title: sessionLabel(confirmUndo, untitled) })}
+            {t('undo.bodyNamed', { title: resolveTitle(sessionLabel(confirmUndo, untitled)) })}
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <button
@@ -1634,7 +1641,7 @@ export function Sidebar({
                 setActionError(null);
                 void undoLastTurn(actionContext, session)
                   .then(() => {
-                    setActionNotice(t('action.undoDone', { title: sessionLabel(session, untitled) }));
+                    setActionNotice(t('action.undoDone', { title: resolveTitle(sessionLabel(session, untitled)) }));
                   })
                   .catch((error: unknown) => {
                     setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
@@ -1674,6 +1681,7 @@ function SessionRow({
   active,
   menuOpen,
   untitled,
+  resolveTitle,
   activity,
   elapsedFor,
   relation,
@@ -1693,6 +1701,7 @@ function SessionRow({
   active: boolean;
   menuOpen: boolean;
   untitled: string;
+  resolveTitle: (text: string) => string;
   activity: ActivityEntry | undefined;
   elapsedFor: (entry: ActivityEntry) => number | undefined;
   /** Where this session came from, when its metadata records a creator. */
@@ -1723,7 +1732,7 @@ function SessionRow({
   // Four states share one row: blocked, running, finished-unseen, caught up.
   // Weight and marker carry the difference; the active row still wins on lift.
   const rowState = sessionRowState(session, seen);
-  const label = sessionLabel(session, untitled);
+  const label = resolveTitle(sessionLabel(session, untitled));
   const elapsed = activity === undefined ? undefined : elapsedFor(activity);
   // The second line holds one fact, the first that exists (nested rows have
   // none: their position already says where they came from):
@@ -2559,7 +2568,7 @@ function SearchResults({
                 <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
               </span>
               <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
-                <span className="min-w-0 truncate text-ink-soft">{hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')}</span>
+                <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
                 <span className="shrink-0">· {t(`sidebar.results.role.${hit.role}`)}</span>
                 <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
               </span>

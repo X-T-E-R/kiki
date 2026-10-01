@@ -53,9 +53,11 @@ async function render(sessions: readonly Session[], path = '/activity', rooms: r
   document.body.append(container);
   const root = createRoot(container);
   mounts.push({ container, root });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(['sessions'], { items: sessions });
   await act(async () => {
     root.render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <I18nProvider>
           <ActivityPage
@@ -73,6 +75,18 @@ async function render(sessions: readonly Session[], path = '/activity', rooms: r
 }
 
 describe('ActivityPage', () => {
+  it('projects thread-link titles in communication endpoint names', async () => {
+    const endpoint = { ref: { host_id: 'h', workspace_id: 'ws-1', session_id: 'a' },
+      title: 'Review /s/session_reference', deleted: false, archived: false };
+    client.listThreadMessages.mockResolvedValue({ items: [{ message_id: 'linked-title',
+      source: { kind: 'thread', thread: endpoint }, target: endpoint,
+      content: 'Ping', accepted_at: 1, target_seq: 1, delivery: 'delivered' }], has_more: false });
+    const page = await render([session({ id: 'session_reference', title: 'Referenced thread' })], '/activity?view=comms');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const row = page.querySelector('[data-activity-comms-item="linked-title"]');
+    expect(row?.querySelector('[data-comms-endpoint="a"]')?.textContent).toBe('Review Referenc…');
+    expect(row?.innerHTML).not.toContain('/s/session_reference');
+  });
   it.each(['preparing', 'error'] as const)('does not show empty history while coverage is %s', async (state) => {
     client.listThreadMessages.mockReset();
     client.listThreadMessages.mockResolvedValue({ items: [], incomplete: 'history_preparing',

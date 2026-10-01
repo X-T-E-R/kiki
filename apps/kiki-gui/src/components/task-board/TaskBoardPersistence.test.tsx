@@ -10,6 +10,7 @@ import { TaskBoardContainer } from './TaskBoardContainer';
 import { boardCardKey, TaskBoardController } from './TaskBoardController';
 
 vi.mock('../../state/connection', () => ({
+  useOptionalConnection: () => undefined,
   useConnection: () => ({ client: { sessions: {} }, klient: { session: () => ({ view: {} }) } }),
   useControllerRegistry: () => [],
 }));

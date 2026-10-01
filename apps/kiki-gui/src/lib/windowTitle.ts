@@ -4,6 +4,7 @@
  */
 
 import type { Session } from '@kiki/protocol';
+import { resolveThreadTitle } from './threadTitles';
 
 export type WindowRoute =
   | { kind: 'session'; sessionId: string }
@@ -37,7 +38,7 @@ export function resolveWindowTitle(
           : session.last_prompt !== undefined && session.last_prompt.trim() !== ''
             ? session.last_prompt
             : text.untitled;
-      return composeWindowTitle(label);
+      return composeWindowTitle(resolveThreadTitle(label, (id) => sessions.find((item) => item.id === id)?.title));
     }
     case 'other':
       return composeWindowTitle(undefined);

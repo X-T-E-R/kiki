@@ -40,7 +40,7 @@ function MessageItem({
   readonly onNavigate: (href: string) => void;
 }) {
   const { t, time } = useI18n();
-  const name = useEndpointName();
+  const name = useEndpointName([message.target]);
   const { direction } = peerOf(message, sessionId);
   const out = direction === 'out';
   const jump = messageJumpHref(message);
@@ -77,7 +77,7 @@ export function ThreadConversationDialog({
 }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
-  const name = useEndpointName();
+  const name = useEndpointName([peer]);
   const filter = useMemo(
     () => ({ session_id: sessionId, peer_session_id: peer.ref.session_id }),
     [sessionId, peer.ref.session_id],

@@ -17,6 +17,7 @@ import { TaskDetailModal } from './TaskDetailModal';
 import { NewTaskModal } from './NewTaskModal';
 import { WorkspaceScopeControl } from '../WorkspaceScopeControl';
 import { Icon } from '../icons';
+import { useThreadTitleResolver } from '../../lib/threadTitles';
 
 const ISSUE_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   BOARD_UNAVAILABLE: 'taskBoard.issueReason.BOARD_UNAVAILABLE',
@@ -132,9 +133,10 @@ export const TaskBoard = memo(function TaskBoard({
   const [selectedTask, setSelectedTask] = useState<BoardTask | null>(null);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
   const [dropTarget, setDropTarget] = useState<BoardTaskStatus | null>(null);
+  const resolveTitle = useThreadTitleResolver(sessions.map((session) => session.title), sessions);
   const sessionLabels = useMemo(
-    () => Object.fromEntries(sessions.map((session) => [session.id, session.title])),
-    [sessions],
+    () => Object.fromEntries(sessions.map((session) => [session.id, resolveTitle(session.title)])),
+    [sessions, resolveTitle],
   );
 
   const workspaceTitle = useMemo(() => {
@@ -317,7 +319,7 @@ export const TaskBoard = memo(function TaskBoard({
               <option value="all">{t('taskBoard.sessionFilter.all')}</option>
               {sessions.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.title}
+                  {sessionLabels[s.id]}
                 </option>
               ))}
             </select>

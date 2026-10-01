@@ -42,7 +42,7 @@ export function DirectionMark({ direction }: { readonly direction: 'in' | 'out' 
 
 const PeerRow = memo(function PeerRow({ group, onOpen }: { readonly group: PeerGroup; readonly onOpen: () => void }) {
   const { t } = useI18n();
-  const name = useEndpointName();
+  const name = useEndpointName([group.peer]);
   const summary = messageSummary(group.latest.content);
   return (
     <li>

@@ -27,6 +27,7 @@ import { sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/se
 import type { HostAdapter, HostNotification } from '../host';
 import { useI18n } from '../i18n';
 import { awayNotifier, notificationRoute } from './awayNotify';
+import { useThreadTitleResolver } from './threadTitles';
 
 /** Poll cadence while the document is hidden (the visible app polls on its own). */
 export const HIDDEN_POLL_INTERVAL_MS = 20_000;
@@ -39,8 +40,9 @@ export interface AwayNotificationsOptions {
   readonly navigate: (route: string) => void;
 }
 
-function useFormatter(): (notification: AttentionNotification) => HostNotification {
+function useFormatter(sessions: readonly Session[]): (notification: AttentionNotification) => HostNotification {
   const { t, tp } = useI18n();
+  const resolveTitle = useThreadTitleResolver(sessions.map((session) => session.title), sessions);
   return useMemo(() => (notification: AttentionNotification): HostNotification => {
     const route = notificationRoute(notification);
     if (notification.type === 'merged') {
@@ -56,18 +58,18 @@ function useFormatter(): (notification: AttentionNotification) => HostNotificati
       };
     }
     const { event } = notification;
-    const title = event.title.trim() === '' ? t('sidebar.untitled') : event.title;
+    const title = resolveTitle(event.title.trim() === '' ? t('sidebar.untitled') : event.title);
     return {
       title: t(`away.${event.kind}.title`, { title }),
       body: t(`away.${event.kind}.body`),
       route,
       tag: `kiki-session-${event.sessionId}`,
     };
-  }, [t, tp]);
+  }, [t, tp, resolveTitle]);
 }
 
 export function useAwayNotifications({ host, sessions, listSessions, navigate }: AwayNotificationsOptions): void {
-  const format = useFormatter();
+  const format = useFormatter(sessions);
   const sinceRef = useRef(Date.now());
   const baselineRef = useRef<AttentionBaseline | undefined>(undefined);
 

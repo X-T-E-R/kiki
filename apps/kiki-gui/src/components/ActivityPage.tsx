@@ -43,6 +43,7 @@ import { Icon } from './icons';
 import { LifeMark } from './LifeMark';
 import { PageHeader, useWorkspaceScope } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
+import { ThreadTitle } from './ThreadTitle';
 import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
 import { pushToast } from '../lib/toasts';
 
@@ -108,7 +109,7 @@ function InboxRow({
         <ReasonMark item={item} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink">{item.title.trim() === '' ? t('sidebar.untitled') : item.title}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink"><ThreadTitle text={item.title.trim() === '' ? t('sidebar.untitled') : item.title} /></span>
             <RelativeTime at={item.at} className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums" />
           </span>
           <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">

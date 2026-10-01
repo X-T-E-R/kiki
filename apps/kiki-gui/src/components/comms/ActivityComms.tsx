@@ -25,7 +25,7 @@ import { RelativeTime } from '../RelativeTime';
 import { DeliveryNote, HistoryNote, LoadOlder, loadedMessages, useEndpointName, useThreadMessages } from './commsShared';
 
 function EndpointLink({ endpoint, onOpen }: { readonly endpoint: ThreadEndpoint; readonly onOpen: (href: string) => void }) {
-  const name = useEndpointName();
+  const name = useEndpointName([endpoint]);
   const href = endpointHref(endpoint);
   if (href === undefined) return <span className="min-w-0 truncate text-ink-faint italic">{name(endpoint)}</span>;
   return (

@@ -57,6 +57,27 @@ describe('resolveWindowTitle', () => {
     );
   });
 
+  it('replaces thread links with short names or short ids', () => {
+    const sessions = [
+      session('s1', { title: 'Review /s/session_reference and kiki://s/session_unknown_id' }),
+      session('session_reference', { title: 'Referenced thread' }),
+    ];
+    expect(resolveWindowTitle({ kind: 'session', sessionId: 's1' }, sessions, TEXT)).toBe(
+      'Review Referenc… and unknown_ — Kiki',
+    );
+  });
+
+  it('keeps Unicode names intact and does not follow cyclic title references', () => {
+    const sessions = [
+      session('s1', { title: 'Read /s/session_unicode and /s/session_cycle' }),
+      session('session_unicode', { title: '😀😀😀😀😀😀😀😀😀' }),
+      session('session_cycle', { title: 'Back /s/session_cycle' }),
+    ];
+    expect(resolveWindowTitle({ kind: 'session', sessionId: 's1' }, sessions, TEXT)).toBe(
+      'Read 😀😀😀😀😀😀😀😀… and Back cyc… — Kiki',
+    );
+  });
+
   it('uses the last prompt, then the untitled label, for nameless sessions', () => {
     const prompted = [session('s1', { last_prompt: 'draw a persimmon' })];
     expect(resolveWindowTitle({ kind: 'session', sessionId: 's1' }, prompted, TEXT)).toBe(

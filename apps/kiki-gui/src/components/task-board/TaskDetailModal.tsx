@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Markdown } from '../Markdown';
+import { ThreadTitle } from '../ThreadTitle';
 import { RelativeTime } from '../RelativeTime';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { segmentClass } from '../WorkspaceScopeControl';
@@ -309,7 +310,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                                 : [...current, session.id])}
                               className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
                             />
-                            <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                            <span className="min-w-0 flex-1 truncate"><ThreadTitle text={session.title} /></span>
                           </label>
                         </li>
                       );

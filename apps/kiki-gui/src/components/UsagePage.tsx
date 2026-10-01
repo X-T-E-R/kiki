@@ -33,6 +33,8 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { readLastSessionId } from '@kiki/session-core/settings';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { useThreadTitleResolver } from '../lib/threadTitles';
+import { ThreadTitle } from './ThreadTitle';
 import {
   bucketLabel,
   browserTimezoneOffsetMinutes,
@@ -221,7 +223,7 @@ function LiveStrip() {
       {item(t('usage.strip.currentSession'), current !== undefined ? (
         <>
           <span className="min-w-0 max-w-64 truncate text-ink">
-            {current.title.trim() !== '' ? current.title : t('sidebar.untitled')}
+            <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
           </span>
           <span className="shrink-0 font-mono text-ink-soft tabular-nums">
             {formatCostUsd(current.usage.total_cost_usd)}
@@ -562,7 +564,7 @@ function SessionsTab({
                   </span>
                   <span className="min-w-0">
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 truncate text-[13px] text-ink">{item.title ?? t('sidebar.untitled')}</span>
+                      <span className="min-w-0 truncate text-[13px] text-ink"><ThreadTitle text={item.title ?? t('sidebar.untitled')} /></span>
                       {item.archived ? (
                         <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('sidebar.archived')}</span>
                       ) : null}
@@ -867,8 +869,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     }
     return map;
   }, [usageQuery.data]);
+  const resolveTitle = useThreadTitleResolver([...sessionTitles.values()]);
   const workspaceName = (id: string) => workspaceNames.get(id);
-  const sessionTitle = (id: string) => sessionTitles.get(id);
+  const sessionTitle = (id: string) => {
+    const title = sessionTitles.get(id);
+    return title === undefined ? undefined : resolveTitle(title);
+  };
   const lookups = { unknownLabel: t('usage.dim.unknown'), workspaceName, sessionTitle };
 
   const summary = firstPage?.summary;

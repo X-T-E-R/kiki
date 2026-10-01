@@ -20,6 +20,7 @@ const runCronTask = vi.fn();
 const deleteCronTask = vi.fn();
 
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => undefined,
   useConnection: () => ({
     client: { listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask },
   }),
