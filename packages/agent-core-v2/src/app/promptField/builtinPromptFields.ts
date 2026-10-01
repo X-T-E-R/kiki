@@ -25,6 +25,8 @@ const STATIC_TOOL_FIELDS = [
   ['ReadMediaFile', 'agent/tools/read-media-file/read-media.md'],
   ['AskUserQuestion', 'agent/tools/ask-user-question/ask-user.md'],
   ['TaskList', 'agent/tools/task/task-list/task-list.md'],
+  ['Cron', 'agent/tools/cron/cron.md'],
+  ['Goal', 'agent/tools/goal/goal.md'],
   ['CronCreate', 'agent/tools/cron/cron-create/cron-create.md'],
   ['TaskWait', 'agent/tools/task/task-wait/task-wait.md'],
   ['TaskStop', 'agent/tools/task/task-stop/task-stop.md'],
@@ -45,6 +47,16 @@ const STATIC_TOOL_FIELDS = [
   ['EnterPlanMode', 'features/plan/tools/enter-plan-mode/enter-plan-mode.md'],
   ['ExitPlanMode', 'features/plan/tools/exit-plan-mode/exit-plan-mode.md'],
 ] as const;
+
+const LEGACY_TOOL_REPLACEMENTS: Readonly<Record<string, string>> = {
+  CronCreate: 'Cron',
+  CronList: 'Cron',
+  CronDelete: 'Cron',
+  CreateGoal: 'Goal',
+  GetGoal: 'Goal',
+  UpdateGoal: 'Goal',
+  SetGoalBudget: 'Goal',
+};
 
 const TOOL_DESCRIPTION_PREFIXES: Readonly<Record<string, string>> = {
   'agent-run': AGENT_DESCRIPTION_BASE,
@@ -95,6 +107,11 @@ const delegationFields: PromptFieldDefinition[] = [
 
 const toolFields: PromptFieldDefinition[] = STATIC_TOOL_FIELDS.flatMap(([name, resource]) => {
   const segment = promptToolFieldSegment(name);
+  const replacement = LEGACY_TOOL_REPLACEMENTS[name];
+  const deprecation = (part: 'description' | 'guidance') => replacement === undefined ? undefined : {
+    replacement: `tool.${promptToolFieldSegment(replacement)}.${part}`,
+    message: `${name} is no longer model-visible. This override is retained but not consumed. Review and migrate it to ${replacement}; multiple legacy action overrides require manual reconciliation, not concatenation.`,
+  };
   return [
     {
       id: `tool.${segment}.description`,
@@ -106,6 +123,7 @@ const toolFields: PromptFieldDefinition[] = STATIC_TOOL_FIELDS.flatMap(([name, r
       readonly: false,
       consumers: [`tool:${name}`],
       contractVersion: 1,
+      deprecated: deprecation('description'),
     },
     {
       id: `tool.${segment}.guidance`,
@@ -117,6 +135,7 @@ const toolFields: PromptFieldDefinition[] = STATIC_TOOL_FIELDS.flatMap(([name, r
       readonly: false,
       consumers: [`tool:${name}`],
       contractVersion: 1,
+      deprecated: deprecation('guidance'),
     },
   ];
 });

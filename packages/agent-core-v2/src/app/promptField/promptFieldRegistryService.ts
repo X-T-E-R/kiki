@@ -95,8 +95,11 @@ export class PromptFieldRegistryService extends Disposable implements IPromptFie
       return {
         id,
         value,
-        status: applies(definition.appliesTo, context) ? 'effective' as const : 'inactive' as const,
+        status: definition.deprecated !== undefined ? 'unsupported' as const
+          : applies(definition.appliesTo, context) ? 'effective' as const : 'inactive' as const,
         sources: overrides.sources[id] ?? [],
+        diagnostic: definition.deprecated === undefined ? undefined
+          : { code: 'deprecated' as const, ...definition.deprecated },
       };
     });
     return {

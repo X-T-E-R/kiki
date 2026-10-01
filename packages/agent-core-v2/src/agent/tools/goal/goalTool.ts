@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import GOAL_DESCRIPTION from './goal.md?raw';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -26,7 +27,7 @@ export const IGoalTool = createDecorator<IGoalTool>('goalTool');
 export class GoalTool implements IGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Goal';
-  readonly description = 'Manage an autonomous, multi-turn goal: action=create, get, set_budget, or update. Create only when the user explicitly requests autonomous goal work; give it a verifiable objective, and use replace only with authorization. Get shows current status and remaining budget. Set_budget requires a user-given turns/tokens/time limit. Update with status=active, complete, or blocked only after checking the actual outcome; do not mark partial work complete. A nonterminal blocker must persist for three consecutive goal turns before blocking.';
+  readonly description = GOAL_DESCRIPTION;
   readonly parameters = toInputJsonSchema(GoalInputSchema);
 
   constructor(

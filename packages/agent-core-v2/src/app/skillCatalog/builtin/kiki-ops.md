@@ -11,7 +11,7 @@ Help the user use, configure, and troubleshoot the installed Kiki. Creating or e
 ## Decision path
 
 1. **Classify the intent.** Question → answer. Change → configure. Breakage → troubleshoot. If the user only needs where a control is, name it and stop.
-2. **Check state before asking.** Read the config or run a read-only check (`/status`, `/mcp`, `CronList`, `TaskList`). Ask only for what you cannot infer.
+2. **Check state before asking.** Read the config or run a read-only check (`/status`, `/mcp`, `Cron` with `action=list`, `TaskList`). Ask only for what you cannot infer.
 3. **One change at a time.** Say what changes and where (GUI location, or file + key), make it, verify.
 4. **Verify the effect, not the write.** Re-read the setting and exercise it (one search, one tool call, the profile in the dispatch list). Report what was verified and what still needs `/reload` or a new session.
 
@@ -38,7 +38,7 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 
 - **Permission modes** (composer or `/permission` per session; `default_permission_mode`, default `auto`, for new ones): `manual` asks before anything not on the safe list · `auto` approves routine work and plan exits, but sensitive files, external links, and dangerous Bash still ask · `review` is `auto` with a `[permission.reviewer]` deciding first and asking the user only when unsure · `yolo` approves everything, sensitive files included. `[[permission.rules]]` `deny`/`ask` win in every mode. "Stop asking me" usually means `auto` or one `allow` rule; name the tradeoff before suggesting `yolo`.
 - **Plan and goals.** Plan mode via the composer or `/plan` (`default_plan_mode` for new sessions). `/goal <objective>` runs until complete, blocked, or paused; the objective needs a finish line and evidence.
-- **Scheduled tasks.** `CronCreate`/`CronList`/`CronDelete` schedule prompts into this session (5-field cron, local time). Unattended fires cannot get approvals: requests are cancelled, questions dismissed.
+- **Scheduled tasks.** `Cron` with `action=create/list/delete` schedules prompts into this session (5-field cron, local time). Unattended fires cannot get approvals: requests are cancelled, questions dismissed.
 - **Search and fetch.** The default `WebSearch` lane, `github.repositories`, covers repositories only. General web search needs a provider lane, its credential (Search & retrieval → Services & credentials, or the slot's env var on the server), and `[nb_search.defaults] search_lane`. `FetchURL` works keyless. Keys never go in `config.toml`.
 - **Connection.** The desktop app finds or starts a local server itself. A browser needs the URL and the token in `<KIKI_HOME>/server.token`; `kiki web rotate-token` replaces a leaked one; `kiki doctor` checks reachability.
 - **Subagents vs threads.** `AgentRun` starts a child in this session that reports back. `ThreadCreate` opens an independent session, only when the user asks.

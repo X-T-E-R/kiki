@@ -72,7 +72,7 @@ export const IMemoryWriteTool = createDecorator<IMemoryWriteTool>('memoryWriteTo
 export class MemoryWriteTool implements IMemoryWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryWrite';
-  readonly description = 'Save or change durable memory that later sessions receive at start. Write without asking when the user states a preference, corrects how you work, sets, tightens, relaxes, or revokes a standing rule or limit (models, concurrency, tools, process), or settles a decision meant to outlast this task. When such a rule changes, `update` or `supersede` the existing entry, or `archive` a revoked one, in the same turn; do not leave a stale value active. `update`, `supersede`, and `archive` need `id` and `expected_revision` from MemorySearch or MemoryRead. Types: `feedback` for how to work, `user` for who the user is, `project` for project facts the repository does not record, `reference` for pointers. Keep one fact per entry, written as a dated declarative statement close to the user\'s words; never store secrets, task progress, or facts the repository already holds. With a bound persona, omitted scope saves to that persona memory; otherwise it saves to the workspace. Use `global` for rules about how the user wants you to work anywhere (models, delegation, concurrency, reply style); use `workspace` only for facts tied to this project.';
+  readonly description = 'Save or change durable memory eligible for scoped startup recall and on-demand retrieval. Persist only preferences, rules, or decisions useful across tasks, not one-off requests. Write without asking when the user states a preference, corrects how you work, sets, tightens, relaxes, or revokes a standing rule or limit (models, concurrency, tools, process), or settles a decision meant to outlast this task. When such a rule changes, `update` or `supersede` the existing entry, or `archive` a revoked one, in the same turn; do not leave a stale value active. `update`, `supersede`, and `archive` need `id` and `expected_revision` from MemorySearch or MemoryRead. Types: `feedback` for how to work, `user` for who the user is, `project` for project facts the repository does not record, `reference` for pointers. Keep one fact per entry, written as a dated declarative statement close to the user\'s words; never store secrets, task progress, or facts the repository already holds. With a bound persona, omitted scope saves to that persona memory; otherwise it saves to the workspace. Honor explicit user scope. Use `workspace` for project-specific facts or working rules; use `global` only when a rule is meant to apply across workspaces, not merely because it concerns models or concurrency. Keep persona-specific rules in the bound persona scope. A `pending` receipt means awaiting review, not active memory; do not claim it is an effective standing rule. Storage review does not suspend a direct user instruction for the current task.';
   readonly parameters = toInputJsonSchema(writeSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -96,7 +96,9 @@ export class MemoryWriteTool implements IMemoryWriteTool {
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId },
           pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review',
         });
-        return { output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: scope.kind, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: `Reference it in TodoList notes.directives as [${result.entry.id}] if it constrains the current task.` }) };
+        return { output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: scope.kind, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: result.entry.status === 'pending'
+          ? 'Awaiting review; not active memory. Do not cite this pending entry as an effective standing rule. Follow direct user instructions for the current task independently of storage review.'
+          : `Reference it in TodoList notes.directives as [${result.entry.id}] if it constrains the current task.` }) };
       } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
     } };
   }
@@ -107,7 +109,7 @@ export const IMemorySearchTool = createDecorator<IMemorySearchTool>('memorySearc
 export class MemorySearchTool implements IMemorySearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemorySearch';
-  readonly description = 'Search saved memory visible to this persona: before relying on a remembered rule, when the user refers to an earlier preference or decision, and before MemoryWrite to find an entry to update instead of duplicating it. Returns up to 8 active hits with `id`, `revision`, and a snippet; `include_superseded` also shows replaced entries.';
+  readonly description = 'Search saved memory visible to this persona when a task depends on an earlier preference, decision, or rule missing or only partially shown, and before MemoryWrite to find an entry to update instead of duplicating it. Reuse relevant entries already complete and current in view; do not re-search for greetings or unrelated tasks. Returns up to 8 active hits with `id`, `revision`, and a snippet; read omitted details with MemoryRead before relying on them. `include_superseded` also shows replaced entries, not current rules.';
   readonly parameters = toInputJsonSchema(searchSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -136,7 +138,7 @@ export const IMemoryReadTool = createDecorator<IMemoryReadTool>('memoryReadTool'
 export class MemoryReadTool implements IMemoryReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryRead';
-  readonly description = 'Read full saved memory entries visible to this persona by `id` or `ids` (up to 10), including the `revision` that update, supersede, and archive require.';
+  readonly description = 'Read full saved memory entries visible to this persona by `id` or `ids` (up to 10) when a startup preview or search snippet is truncated or may omit conditions needed for the task. Includes the `revision` that update, supersede, and archive require. Pending entries are not active memory and are not returned.';
   readonly parameters = toInputJsonSchema(readSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,

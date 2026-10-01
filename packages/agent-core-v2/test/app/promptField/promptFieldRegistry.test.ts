@@ -138,6 +138,45 @@ describe('PromptFieldRegistryService', () => {
     expect(ids).toContain('tool.agent-run.description');
   });
 
+  it('consumes every non-deprecated registered tool field using its declared model-visible name', () => {
+    for (const field of BUILTIN_PROMPT_FIELD_DEFINITIONS.filter((item) => item.id.startsWith('tool.') && item.deprecated === undefined)) {
+      const name = field.consumers[0]!.slice('tool:'.length);
+      const rendered = applyToolPromptFields(name, 'DEFAULT', { values: { [field.id]: 'CUSTOM' }, fields: [] });
+      expect(rendered, field.id).toBe(field.id.endsWith('.description') ? 'CUSTOM' : 'DEFAULT\n\nUser-configured guidance:\nCUSTOM');
+    }
+  });
+
+  it('retains all seven legacy action override pairs with explicit manual migration diagnostics', () => {
+    _clearPromptFieldContributionsForTests();
+    for (const field of BUILTIN_PROMPT_FIELD_DEFINITIONS) registerPromptField(field);
+    ({ services } = createRegistry());
+    const legacy = BUILTIN_PROMPT_FIELD_DEFINITIONS.filter((field) => field.deprecated !== undefined);
+    expect(legacy).toHaveLength(14);
+    const values = Object.fromEntries(legacy.map((field) => [field.id, `CUSTOM ${field.id}`]));
+    const resolved = services.get(IPromptFieldRegistry).validate({ values, sources: {} });
+    expect(resolved.values).toEqual({});
+    for (const field of resolved.fields) {
+      expect(field.value).toBe(values[field.id]);
+      expect(field.status).toBe('unsupported');
+      expect(field.diagnostic).toMatchObject({ code: 'deprecated', replacement: expect.stringMatching(/^tool\.(cron|goal)\.(description|guidance)$/), message: expect.stringContaining('manual reconciliation') });
+    }
+    expect(applyToolPromptFields('Cron', 'DEFAULT CRON', resolved)).toBe('DEFAULT CRON');
+    expect(applyToolPromptFields('Goal', 'DEFAULT GOAL', resolved)).toBe('DEFAULT GOAL');
+  });
+
+  it.each(['cron', 'goal'])('makes canonical %s overrides effective without concatenating conflicting legacy overrides', (name) => {
+    _clearPromptFieldContributionsForTests();
+    for (const field of BUILTIN_PROMPT_FIELD_DEFINITIONS) registerPromptField(field);
+    ({ services } = createRegistry());
+    const resolved = services.get(IPromptFieldRegistry).validate({ values: {
+      [`tool.${name}.description`]: 'CANONICAL', [`tool.${name}.guidance`]: 'GUIDANCE',
+      'tool.cron-create.description': 'OLD CREATE', 'tool.cron-list.description': 'OLD LIST',
+      'tool.create-goal.description': 'OLD GOAL',
+    }, sources: {} });
+    expect(applyToolPromptFields(name === 'cron' ? 'Cron' : 'Goal', 'DEFAULT', resolved)).toBe('CANONICAL\n\nUser-configured guidance:\nGUIDANCE');
+    expect(resolved.fields.filter((field) => field.status === 'unsupported')).toHaveLength(3);
+  });
+
   it('replaces only the static AgentRun description and preserves its dynamic projection', () => {
     const description = `${AGENT_DESCRIPTION_BASE}\n\nDYNAMIC PROFILE LIST`;
     const rendered = applyToolPromptFields('AgentRun', description, {

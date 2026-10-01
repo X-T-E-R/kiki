@@ -199,8 +199,11 @@ describe('memory persistence and snapshot', () => {
     expect((await store.get(workspace, receipt.id))?.source).toMatchObject({ writer: 'agent', turn: 3, session: 'session_one' });
     settings = MemoryConfigSchema.parse({ enabled: true, approval: 'review' });
     const review = await execute('Review language');
-    const pending = JSON.parse(review.output as string) as { id: string; status: string };
+    const pending = JSON.parse(review.output as string) as { id: string; status: string; reference_hint: string };
     expect(pending.status).toBe('pending');
+    expect(pending.reference_hint).toContain('Awaiting review; not active memory');
+    expect(pending.reference_hint).not.toContain('notes.directives');
+    expect(pending.reference_hint).toContain('Follow direct user instructions for the current task');
     expect((await store.search([workspace], 'Review language')).map((entry) => entry.id)).toEqual([receipt.id]);
     const context = { turnId: 3, toolCallId: 'tool-memory-2', signal: new AbortController().signal };
     const search = searchTool.resolveExecution({ query: 'Review language', include_superseded: true });
@@ -209,6 +212,24 @@ describe('memory persistence and snapshot', () => {
     const read = readTool.resolveExecution({ id: pending.id });
     if (!('execute' in read)) throw new Error('Read was rejected');
     expect(JSON.parse((await read.execute(context)).output as string)).toEqual([{ id: pending.id, missing: true }]);
+  });
+
+  it('keeps a project working rule in workspace by default while honoring explicit cross-workspace scope', async () => {
+    const { store, writeTool } = start();
+    const args = { action: 'create' as const, type: 'feedback' as const, title: 'Project concurrency', body: 'Use at most two parallel workers in this project.', reason: 'User project rule' };
+    const execute = async (scope?: 'global' | 'workspace') => {
+      const execution = writeTool.resolveExecution({ ...args, scope });
+      if (!('execute' in execution)) throw new Error('Write rejected');
+      return JSON.parse((await execution.execute({ turnId: 4, toolCallId: 'scope-write', signal: new AbortController().signal })).output as string) as { id: string; scope: string };
+    };
+    const project = await execute();
+    expect(project.scope).toBe('workspace');
+    expect((await store.get(workspace, project.id))?.body).toBe(args.body);
+    expect(await store.list(global)).toEqual([]);
+    const explicit = await execute('global');
+    expect(explicit.scope).toBe('global');
+    expect((await store.get(global, explicit.id))?.body).toBe(args.body);
+    expect(await store.get(global, project.id)).toBeUndefined();
   });
 
   it('serializes parallel writes in one scope and keeps the catalog and journal complete', async () => {

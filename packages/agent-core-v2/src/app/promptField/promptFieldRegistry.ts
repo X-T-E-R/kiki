@@ -32,6 +32,7 @@ export interface PromptFieldDefinition {
   readonly consumers: readonly string[];
   readonly appliesTo?: PromptFieldApplicability;
   readonly contractVersion: number;
+  readonly deprecated?: { readonly replacement: string; readonly message: string };
 }
 
 export interface PromptFieldContext {
@@ -54,6 +55,7 @@ export interface ResolvedPromptFieldOverride {
   readonly value: string;
   readonly status: PromptFieldResolutionStatus;
   readonly sources: readonly PromptOverrideSource[];
+  readonly diagnostic?: { readonly code: 'deprecated'; readonly replacement: string; readonly message: string };
 }
 
 export interface PromptOverrideScopeInput {

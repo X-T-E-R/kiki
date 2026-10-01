@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import CRON_DESCRIPTION from './cron.md?raw';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
@@ -24,7 +25,7 @@ export const ICronTool = createDecorator<ICronTool>('cronTool');
 export class CronTool implements ICronTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Cron';
-  readonly description = 'Manage prompts scheduled in this session: action=create, list, or delete. Create uses a local-time 5-field cron expression (minute hour day month weekday), `prompt`, and `recurring` (default true; false fires once). For one-shot dates pin minute/hour/day/month. A recurring task auto-expires after its seventh day; recreate it if still wanted. List returns ids and next fire times; delete requires a listed id and cannot be undone. Schedules survive an unloaded session but do not carry into a new one.';
+  readonly description = CRON_DESCRIPTION;
   readonly parameters = toInputJsonSchema(CronInputSchema);
 
   constructor(
