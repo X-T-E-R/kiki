@@ -44,6 +44,19 @@ function render(target: AgentProfile, available: readonly string[]): string {
 }
 
 describe('buildProfileDescriptions recommended models: advisory lines, catalog filtering, and placement relative to the binding and Tools lines', () => {
+  it('shows the declared hard menu separately without advertising filtered lease candidates', () => {
+    const target = profile({ restrictModelsToMenu: true, modelProfiles: [{ alias: 'outside', when: 'lease entry' }, { alias: 'original' }],
+      modelMenuConstraint: { source: 'profile:implementer.restrict_models_to_menu', defaultAlias: 'original', aliases: ['original'], identities: ['original'] },
+      effectiveModelAliases: ['original'], modelMenuDiagnostics: ['outside is not executable'] });
+    const text = render(target, ['outside', 'original']);
+    expect(text).toContain('Declared model menu (hard ceiling, restrict_models_to_menu): original');
+    expect(text).toContain('Effective model candidates: original');
+    expect(text).toContain('Configuration diagnostic: outside is not executable');
+    expect(text).toContain('Alternative models: original');
+    expect(text).not.toContain('outside — lease entry');
+    expect(target.modelProfiles).toHaveLength(2);
+  });
+
   it('renders alternative models after binding lines and before Tools', () => {
     const text = render(profile(), [
       'axon-message/grok-4.6',

@@ -3,9 +3,13 @@ import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentPro
 export { buildProfileDescriptions } from '#/session/dispatch/profileCatalogProjection';
 
 export function compactProfileDescriptions(profiles: readonly AgentProfile[], limit = 8): string {
-  return profiles.slice(0, limit).map((profile) =>
-    `- ${profile.name}: ${firstSentence(profile.whenToUse ?? profile.description ?? 'Use when this profile fits the task.')}`,
-  ).join('\n');
+  return profiles.slice(0, limit).map((profile) => {
+    const menu = profile.restrictModelsToMenu === true
+      ? ` Model menu restriction (hard): ${[...new Set(profile.effectiveModelAliases ?? [])].join(', ') || 'no effective candidates'}; pins cannot expand the declared menu.`
+      : '';
+    const diagnostics = (profile.modelMenuDiagnostics ?? []).map((message) => ` Configuration diagnostic: ${message}`).join('');
+    return `- ${profile.name}: ${firstSentence(profile.whenToUse ?? profile.description ?? 'Use when this profile fits the task.')}${menu}${diagnostics}`;
+  }).join('\n');
 }
 
 export function compactRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[], limit = 4): string {

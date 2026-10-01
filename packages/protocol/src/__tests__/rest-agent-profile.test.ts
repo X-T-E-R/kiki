@@ -19,6 +19,17 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('retains the top-level menu switch on profile, create and update while accepting only booleans', () => {
+    for (const flag of [true, false]) {
+      expect(namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [], restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
+      expect(createNamedAgentProfileRequestSchema.parse({ workspace_id: 'workspace', name: 'helper', scope: 'user', description: 'helper', prompt: 'body', restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
+      expect(updateNamedAgentProfileRequestSchema.parse({ workspace_id: 'workspace', scope: 'user', restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
+    }
+    for (const flag of ['true', null, 1]) {
+      expect(updateNamedAgentProfileRequestSchema.safeParse({ workspace_id: 'workspace', scope: 'user', restrict_models_to_menu: flag }).success).toBe(false);
+    }
+    expect(updateNamedAgentProfileRequestSchema.safeParse({ workspace_id: 'workspace', scope: 'user', raw_text: 'body', restrict_models_to_menu: false }).success).toBe(false);
+  });
   it('retains hard constraints and explicit soft recommendations in profile and nested projections', () => {
     const rules = { allowed_models: ['fast', 'premium'], deny_models: ['blocked'], allowed_efforts: [],
       preferred_models: ['fast'], discouraged_models: ['premium'], preferred_efforts: ['max'] };

@@ -779,6 +779,24 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('writes the boolean menu switch and preserves it through unrelated edits and menu expansion', async () => {
+    await withFixture(async (fixture) => {
+      await writeAgent(join(fixture.homeDir, 'agents'), 'lead.md', agentMd('lead', 'Lead'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const enabled = await stack.writer.update({ name: 'lead', scope: 'user', restrictModelsToMenu: true });
+        expect(enabled.profile.restrictModelsToMenu).toBe(true);
+        const expanded = await stack.writer.update({ name: 'lead', scope: 'user', modelAlias: 'new-default', modelProfiles: [{ alias: 'added' }] });
+        expect(expanded.profile).toMatchObject({ restrictModelsToMenu: true, modelAlias: 'new-default', modelProfiles: [{ alias: 'added' }] });
+        expect((await stack.writer.update({ name: 'lead', scope: 'user', description: 'Edited' })).profile.restrictModelsToMenu).toBe(true);
+        expect((await stack.writer.update({ name: 'lead', scope: 'user', restrictModelsToMenu: false })).profile.restrictModelsToMenu).toBe(false);
+        await expect(stack.writer.update({ name: 'lead', scope: 'user', restrictModelsToMenu: true, rawText: agentMd('lead', 'Lead') })).rejects.toMatchObject({ code: 'validation.failed' });
+        const created = await stack.writer.create({ name: 'created', scope: 'user', description: 'Created', prompt: 'body', restrictModelsToMenu: true });
+        expect(created.profile.restrictModelsToMenu).toBe(true);
+      });
+    });
+  });
+
   it('writes and clears soft recommendations while preserving nested advice on structured edits', async () => {
     await withFixture(async (fixture) => {
       const original = '---\nname: lead\ndescription: Lead\nspawn_constraints:\n  preferred_models: [fast]\nsubagents:\n  - name: explore\n    preferred_efforts: [max]\nmodel_profiles:\n  - alias: fast\n    preferred_efforts: [max]\n---\nLead body.';

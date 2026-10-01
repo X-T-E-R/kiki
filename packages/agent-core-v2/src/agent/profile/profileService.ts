@@ -1,3 +1,4 @@
+import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import {
   bindingAdvisoryKey,
   type BindingAdvisory,
@@ -541,10 +542,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const resolveId = external
       ? (id: string): string => id
       : aliasIdentity(this.models);
-    const routedProfile = selection.route === undefined ? selection.profile : {
+    const baseProfile = captureProfileModelMenu(selection.baseProfile, external ? (id) => id : (id) => this.models.resolveId(id));
+    const routedProfile = {
       ...selection.profile,
-      thinkingEffort: selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
-        selection.baseProfile, selection.profile.modelAlias ?? '', resolveId ?? ((id) => id),
+      restrictModelsToMenu: baseProfile.restrictModelsToMenu,
+      modelMenuConstraint: baseProfile.modelMenuConstraint,
+      modelMenuDiagnostics: baseProfile.modelMenuDiagnostics,
+      thinkingEffort: selection.route === undefined ? selection.profile.thinkingEffort : selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
+        baseProfile, selection.profile.modelAlias ?? '', resolveId ?? ((id) => id),
       ),
     };
     const leased = applyLease(routedProfile, input.lease, resolveId);
@@ -563,7 +568,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       await this.bindExternal(
         input,
         persona,
-        selection,
+        { ...selection, baseProfile },
         profile,
         allowParentNotify,
         spawnPolicy,
@@ -656,7 +661,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requestedValue: thinkingLevel,
     };
     const bindingAdvisories = this.collectBindingAdvisories({
-      profile: selection.baseProfile,
+      profile: baseProfile,
       profileName: selection.baseProfile.name,
       route: selection.route,
       lease: input.lease,
@@ -2260,7 +2265,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.routeId !== undefined) {
       try {
         const restored = this.catalog.resolveSelection({ route: this.routeId }).profile;
-        return bound === undefined ? restored : { ...bound, systemPrompt: restored.systemPrompt, renderSystemPrompt: restored.renderSystemPrompt };
+        return bound === undefined ? { ...restored, restrictModelsToMenu: false, modelMenuConstraint: undefined } : { ...bound, systemPrompt: restored.systemPrompt, renderSystemPrompt: restored.renderSystemPrompt };
       } catch { return undefined; }
     }
     const definitionId = this.profileState.profileDefinitionId;
@@ -2274,11 +2279,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           : resolveSnapshotProfileDefinition(this.catalog.snapshot(), definitionId, profileName);
     if (catalogProfile === undefined) return undefined;
     const resolveId = aliasIdentity(this.models);
-    return applySpawnPolicy(
-      applyLease(catalogProfile, this.profileState.appliedLease, resolveId),
+    const restored = applySpawnPolicy(
+      applyLease({ ...catalogProfile, restrictModelsToMenu: false, modelMenuConstraint: undefined }, this.profileState.appliedLease, resolveId),
       this.profileState.spawnPolicy,
       resolveId,
     );
+    return bound === undefined ? restored : { ...bound, systemPrompt: restored.systemPrompt, renderSystemPrompt: restored.renderSystemPrompt };
   }
 
   private cacheAgentsMdWarning(context: Pick<SystemPromptContext, 'agentsMdWarning'>): void {

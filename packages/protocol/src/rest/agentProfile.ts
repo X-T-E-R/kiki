@@ -115,6 +115,7 @@ export const namedAgentProfileSchema = z.object({
   allow_kiki_subagents: z.boolean().optional(),
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).optional(),
   pinned_model_alias: z.string().optional(),
+  restrict_models_to_menu: z.boolean().optional(),
   thinking_effort: z.string().optional(),
   /** Hard role model allowlist (`["*"]` normalizes to absent; `[]` permits none). */
   allowed_models: z.array(z.string()).optional(),
@@ -442,6 +443,7 @@ export const createNamedAgentProfileRequestSchema = z.object({
   description: z.string().trim().min(1).optional(),
   when_to_use: z.string().trim().min(1).optional(),
   pinned_model_alias: modelAliasSchema.optional(),
+  restrict_models_to_menu: z.boolean().optional(),
   thinking_effort: z.string().trim().min(1).optional(),
   tools: z.array(z.string().trim().min(1)).optional(),
   prompt: z.string().optional(),
@@ -483,6 +485,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   allow_kiki_subagents: z.boolean().nullable().optional(),
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).nullable().optional(),
   pinned_model_alias: modelAliasSchema.nullable().optional(),
+  restrict_models_to_menu: z.boolean().optional(),
   thinking_effort: optionalProfileStringSchema,
   allowed_models: profileStringListSchema,
   deny_models: profileStringListSchema,
@@ -516,6 +519,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.allow_kiki_subagents !== undefined ||
     value.kiki_context !== undefined ||
     value.pinned_model_alias !== undefined ||
+    value.restrict_models_to_menu !== undefined ||
     value.thinking_effort !== undefined ||
     value.allowed_models !== undefined ||
     value.deny_models !== undefined ||

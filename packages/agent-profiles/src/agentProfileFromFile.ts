@@ -1,5 +1,6 @@
 import {
   normalizeAgentProfile,
+  captureProfileModelMenu,
   type AgentProfile,
   type AgentProfileContext,
   type SystemPromptRenderResult,
@@ -43,6 +44,7 @@ export function agentProfileFromFile(
     allowKikiSubagents: definition.allowKikiSubagents,
     kikiContext: definition.kikiContext,
     modelAlias: definition.modelAlias,
+    restrictModelsToMenu: definition.restrictModelsToMenu ?? false,
     thinkingEffort: definition.thinkingEffort,
     preferredModels: definition.preferredModels,
     discouragedModels: definition.discouragedModels,
@@ -194,6 +196,7 @@ function validateExecutorProfile(
   validation: ExecutorProfileValidation | undefined,
 ): { readonly profile: AgentProfile; readonly error?: string } {
   if (validation === undefined || profile.executor === 'native') return { profile };
+  profile = captureProfileModelMenu(profile);
   if (!validation.allowExternal) {
     return {
       profile,

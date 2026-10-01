@@ -971,6 +971,7 @@ describe('GET /api/agents', () => {
       executor: 'native',
       executor_protocol: 'native',
       pinned_model_alias: 'provider/pinned',
+      restrict_models_to_menu: false,
       thinking_effort: 'high',
       service_tier: 'priority',
       request_params: { temperature: 0.4 },
@@ -1896,7 +1897,7 @@ describe('GET /api/agents', () => {
     const patch = await authedFetch(server, base, '/api/agents/team-lead', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        workspace_id: workspaceId, scope: 'user', main: true,
+        workspace_id: workspaceId, scope: 'user', main: true, restrict_models_to_menu: true,
         allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
         subagents: ['explore', { name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' }],
         model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
@@ -1905,7 +1906,7 @@ describe('GET /api/agents', () => {
     const patched = (await patch.json()) as Envelope<unknown>;
     expect(patched.code).toBe(0);
     expect(patched.data).toMatchObject({
-      main: true, allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
+      main: true, restrict_models_to_menu: true, allowed_models: ['fixture/a'], allowed_efforts: ['max'], subagent_policy: 'strict',
       model_profiles: [{ alias: 'fixture/a', when: 'long tasks', thinking_effort: 'max' }],
     });
     const subagents = (patched.data as { subagents?: unknown[] }).subagents;
@@ -1913,6 +1914,7 @@ describe('GET /api/agents', () => {
     expect(subagents?.[1]).toMatchObject({ name: 'reviewer', model_alias: 'fixture/b', thinking_effort: 'high' });
     const text = await readFile(join(home!, 'agents', 'team-lead.md'), 'utf8');
     expect(text).toContain('main: true');
+    expect(text).toContain('restrict_models_to_menu: true');
     expect(text.trimEnd().endsWith('Lead the team.')).toBe(true);
   });
 

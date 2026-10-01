@@ -1,4 +1,4 @@
-import type { AgentModelConstraints } from '@kiki/agent-profiles/agentProfile';
+import type { AgentModelConstraints, ProfileModelMenuConstraint } from '@kiki/agent-profiles/agentProfile';
 import {
   BINDING_ADVISORY_VERSION,
   type BindingAdvisory,
@@ -15,6 +15,8 @@ import type { IModelService } from '#/kosong/model/model';
 export interface SubagentRoleModelConstraints extends AgentModelConstraints {
   readonly modelProfiles?: readonly AgentModelProfile[];
   readonly modelConstraintProfiles?: readonly AgentModelProfile[];
+  readonly restrictModelsToMenu?: boolean;
+  readonly modelMenuConstraint?: ProfileModelMenuConstraint;
   readonly origin?: string;
 }
 
@@ -31,6 +33,8 @@ export function roleConstraintsFromProfile(
     preferredEfforts: profile.preferredEfforts,
     modelProfiles: profile.modelProfiles,
     modelConstraintProfiles: profile.modelConstraintProfiles,
+    restrictModelsToMenu: profile.restrictModelsToMenu,
+    modelMenuConstraint: profile.modelMenuConstraint,
     origin,
   };
 }
@@ -58,8 +62,16 @@ interface BindingConstraintCheck {
 }
 
 export function assertRoleBindingConstraints(input: BindingConstraintCheck): void {
+  const canonical = resolveModelIdentity(input.model, input.models);
+  const menu = input.constraints?.modelMenuConstraint;
+  if (input.checkModel !== false && !menuModelAllowed(canonical, input.constraints, input.models)) {
+    const ruleSource = menu?.source ?? `${input.ruleSource}.restrict_models_to_menu`;
+    throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+      `Hard constraint ${ruleSource} rejects model "${canonical}". Select an effective menu item or edit the profile declaration.`,
+      { details: { strength: 'hard', ruleSource, ruleValues: [...(menu?.identities ?? [])], effectiveValue: canonical,
+        requestedValue: input.requestedModel, valueSource: input.modelValueSource, dimension: 'model', model: canonical } });
+  }
   for (const layer of constraintLayers(input.constraints, input.model, input.models, input.ruleSource)) {
-    const canonical = resolveModelIdentity(input.model, input.models);
     const reject = (field: string, values: readonly string[], value: string, dimension: BindingAdvisoryDimension) => {
       const ruleSource = `${layer.source}.${field}`;
       throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
@@ -151,6 +163,7 @@ export function pinBindingAdvisory(input: {
 
 export function roleModelAllowed(model: string, constraints: SubagentRoleModelConstraints | undefined, models?: IModelService): boolean {
   const canonical = resolveModelIdentity(model, models);
+  if (!menuModelAllowed(canonical, constraints, models)) return false;
   return constraintLayers(constraints, model, models, 'profile').every((layer) =>
     !identitySet(layer.constraints.denyModels, models).has(canonical)
     && (layer.constraints.allowedModels === undefined || identitySet(layer.constraints.allowedModels, models).has(canonical)));
@@ -201,6 +214,10 @@ function resolveModelIdentity(model: string, models?: IModelService): string {
 
 function identitySet(entries: readonly string[] | undefined, models?: IModelService): Set<string> {
   return new Set((entries ?? []).map((model) => resolveModelIdentity(model, models)));
+}
+
+function menuModelAllowed(canonical: string, constraints: SubagentRoleModelConstraints | undefined, models: IModelService | undefined): boolean {
+  return constraints?.restrictModelsToMenu !== true || identitySet(constraints.modelMenuConstraint?.identities ?? [], models).has(canonical);
 }
 
 function resolveId(models: IModelService | undefined): (id: string) => string | undefined {

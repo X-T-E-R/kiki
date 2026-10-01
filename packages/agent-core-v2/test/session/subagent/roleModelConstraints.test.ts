@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
+import { applyLease } from '@kiki/agent-profiles/applySubagentLease';
+import { roleConstraintsFromProfile, roleModelAllowed } from '#/session/subagent/modelConstraints';
 
 import {
   normalizeAgentProfile,
@@ -92,6 +95,50 @@ function routePin(modelAlias: string): AgentProfileRouteDefinition {
     path: '/agents/.routes/reviewer/ui-k3.md',
   };
 }
+
+describe('restricted profile model menu', () => {
+  const base = (overrides: Partial<AgentProfile> = {}) => captureProfileModelMenu(reviewer({ allowedModels: undefined, restrictModelsToMenu: true,
+    modelAlias: 'fast-model', modelProfiles: [{ alias: 'k3-review', when: 'Never matches at runtime', allowedEfforts: ['high'] }], ...overrides }), (id) => catalog.resolveId(id));
+
+  it('permits the original default and canonical menu identities regardless of when', () => {
+    const constraints = roleConstraintsFromProfile(base());
+    expect(bindSubagent({ modelAlias: 'provider/fast' }, constraints).model).toBe('provider/fast');
+    expect(bindSubagent({ modelAlias: 'provider/k3', thinkingEffort: 'high' }, constraints).model).toBe('provider/k3');
+    expect(roleModelAllowed('fast', constraints, catalog)).toBe(true);
+    expect(roleModelAllowed('provider/heavy', constraints, catalog)).toBe(false);
+    expect(() => bindSubagent({ modelAlias: 'heavy-model' }, constraints)).toThrowError(expect.objectContaining({
+      code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, details: expect.objectContaining({ strength: 'hard', ruleSource: 'profile:reviewer.restrict_models_to_menu' }),
+    }));
+    expect(bindSubagent({ modelAlias: 'heavy-model' }, roleConstraintsFromProfile(base({ restrictModelsToMenu: false }))).model).toBe('heavy-model');
+  });
+
+  it('does not scan the menu when the default is absent or configured fallback is outside', () => {
+    const constraints = roleConstraintsFromProfile(base({ modelAlias: undefined }));
+    expect(() => bindSubagent(undefined, constraints)).toThrowError(expect.objectContaining({ code: ErrorCodes.MODEL_NOT_CONFIGURED }));
+    expect(() => resolveSubagentBinding(new StubConfigService({ [SUBAGENT_SECTION]: { defaultModel: 'heavy-model' } }), {}, {}, catalog, constraints)).toThrow(/restrict_models_to_menu/);
+    expect(() => bindSubagent({ modelAlias: 'fast' }, roleConstraintsFromProfile(base({ modelAlias: undefined, modelProfiles: [] })))).toThrow(/restrict_models_to_menu/);
+  });
+
+  it('intersects independent allow and deny domains without escalating soft recommendations', () => {
+    expect(() => bindSubagent({ modelAlias: 'k3-review', thinkingEffort: 'high' }, roleConstraintsFromProfile(base({ allowedModels: ['fast'] })))).toThrow(/allowed_models/);
+    expect(() => bindSubagent({ modelAlias: 'fast' }, roleConstraintsFromProfile(base({ denyModels: ['provider/fast'] })))).toThrow(/deny_models/);
+    expect(() => bindSubagent({ modelAlias: 'k3-review', thinkingEffort: 'low' }, roleConstraintsFromProfile(base()))).toThrow(/allowed_efforts/);
+    expect(() => bindSubagent({ modelAlias: 'fast' }, roleConstraintsFromProfile(base()), {}, ['provider/fast'])).toThrow(/deny_models/);
+    const constraints = roleConstraintsFromProfile(base({ discouragedModels: ['fast'], preferredEfforts: ['max'] }));
+    expect(roleBindingAdvisories({ model: 'fast', thinking: 'low', constraints, models: catalog, ruleSource: 'profile:reviewer', modelValueSource: 'dispatch-explicit' })).toMatchObject([{ code: 'model_discouraged' }, { code: 'effort_not_preferred' }]);
+  });
+
+  it('keeps original membership and entry hard rules under lease and route rewrites', () => {
+    const routed = resolveAgentProfileRoute(routePin('heavy-model'), base(), (id) => catalog.resolveId(id)).effectiveProfile;
+    for (const modelProfiles of [[], [{ alias: 'heavy-model' }], [{ alias: 'k3-review', allowedEfforts: ['low'] }]]) {
+      const leased = applyLease(routed, { name: 'reviewer', modelAlias: 'heavy-model', modelProfiles }, (id) => catalog.resolveId(id) ?? id);
+      const constraints = roleConstraintsFromProfile(leased);
+      expect(() => bindSubagent(undefined, constraints, { modelAlias: leased.modelAlias })).toThrow(/restrict_models_to_menu/);
+      expect(bindSubagent({ modelAlias: 'fast' }, constraints).model).toBe('fast');
+      expect(() => bindSubagent({ modelAlias: 'k3-review', thinkingEffort: 'low' }, constraints)).toThrow(/allowed_efforts/);
+    }
+  });
+});
 
 describe('model-scoped effort defaults', () => {
   it('does not carry the profile default effort onto another model', () => {

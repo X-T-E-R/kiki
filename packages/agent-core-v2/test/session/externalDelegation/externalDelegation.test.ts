@@ -99,6 +99,11 @@ type ProjectionInternals = {
 describe('SessionExternalDelegationService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
+  const resolveSelection: ISessionAgentProfileCatalog['resolveSelection'] = (input) => {
+    const catalog = ix.get(ISessionAgentProfileCatalog);
+    const selected = input.profile === undefined ? catalog.getDefault() : catalog.get(input.profile)!;
+    return { profile: selected, baseProfile: selected };
+  };
   let documents: Map<string, unknown>;
   let handles: Map<string, IAgentScopeHandle>;
   let agentMetas: Record<string, AgentMeta>;
@@ -214,7 +219,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(IBootstrapService, { getEnv: (name) => bootstrapEnv[name] });
     ix.stub(IConfigService, { get: <T>() => undefined as T });
     ix.stub(IExternalHooksRunnerService, { fireAndForgetTrigger: async () => [] });
-    ix.stub(IModelService, { resolveId: (id: string) => id });
+    ix.stub(IModelService, { resolveId: (id: string) => id, list: () => ({ model: {}, 'alternate-model': {} }) });
     ix.stub(IModelCatalog, {
       get: (id: string) => ({ id }) as Model,
     } as IModelCatalog);
@@ -238,6 +243,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === profile.name ? profile : undefined,
       getDefault: () => profile,
       list: () => [profile],
@@ -1209,6 +1215,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === fakeExecutorProfile.name ? fakeExecutorProfile : undefined,
       getDefault: () => profile,
       list: () => [fakeExecutorProfile],
@@ -2518,6 +2525,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === inheritedProfile.name ? inheritedProfile : undefined,
       getDefault: () => inheritedProfile,
       list: () => [inheritedProfile],
@@ -2620,6 +2628,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === pinnedProfile.name ? pinnedProfile : undefined,
       getDefault: () => pinnedProfile,
       list: () => [pinnedProfile],
@@ -2663,6 +2672,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === unboundProfile.name ? unboundProfile : undefined,
       getDefault: () => profile,
       list: () => [unboundProfile],
@@ -2738,6 +2748,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => snapshot.publicProfiles.get(name),
       getDefault: () => profile,
       list: () => [...snapshot.publicProfiles.values()],
@@ -2840,6 +2851,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => snapshot.publicProfiles.get(name),
       getDefault: () => profile,
       list: () => [...snapshot.publicProfiles.values()],
@@ -2894,6 +2906,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === richProfile.name ? richProfile : undefined,
       getDefault: () => richProfile,
       list: () => [richProfile],
@@ -2910,6 +2923,9 @@ describe('SessionExternalDelegationService', () => {
       modelAlias: 'model',
       thinkingEffort: 'high',
       allowedModels: ['model', 'alternate-model'],
+      restrictModelsToMenu: false,
+      declaredModelMenu: ['alternate-model', 'model'],
+      effectiveModelAliases: ['model', 'alternate-model'],
       alternativeModels: [
         {
           alias: 'alternate-model',
@@ -2947,6 +2963,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === profile.name ? profile : name === mainProfile.name ? mainProfile : undefined,
       getDefault: () => mainProfile,
       list: () => [mainProfile, profile],
@@ -2990,6 +3007,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
+      resolveSelection,
       get: (name: string) => name === profile.name ? profile : undefined,
       getDefault: () => profile,
       list: () => [profile],

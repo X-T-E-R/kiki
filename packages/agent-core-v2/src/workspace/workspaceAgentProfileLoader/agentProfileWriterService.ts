@@ -74,6 +74,7 @@ const TOP_LEVEL_KEYS = new Set([
   'allowKikiSubagents',
   'kikiContext',
   'modelAlias',
+  'restrictModelsToMenu',
   'thinkingEffort',
   'allowedModels',
   'denyModels',
@@ -171,6 +172,7 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.description !== undefined) text = updateFrontmatterScalar(text, 'description', request.description);
     if (request.whenToUse !== undefined) text = updateFrontmatterScalar(text, 'whenToUse', request.whenToUse);
     if (request.modelAlias !== undefined) text = updateFrontmatterScalar(text, 'model_alias', request.modelAlias);
+    if (request.restrictModelsToMenu !== undefined) text = updateFrontmatterScalar(text, 'restrict_models_to_menu', request.restrictModelsToMenu);
     if (request.thinkingEffort !== undefined) text = updateFrontmatterScalar(text, 'thinking_effort', request.thinkingEffort);
     if (request.tools !== undefined) text = updateFrontmatterScalar(text, 'tools', request.tools);
     if (request.prompt !== undefined && request.template !== undefined && request.template !== 'blank') {
@@ -257,6 +259,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     }
     if (request.kikiContext !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'kiki_context', request.kikiContext);
+    }
+    if (request.restrictModelsToMenu !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'restrict_models_to_menu', request.restrictModelsToMenu);
     }
     if (request.allowedModels !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'allowed_models', request.allowedModels);
@@ -469,6 +474,9 @@ function validateCreateRequest(request: AgentProfileCreateRequest): void {
   validateRequiredString(request.description, 'description', issues);
   validateRequiredString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  if (request.restrictModelsToMenu !== undefined && typeof request.restrictModelsToMenu !== 'boolean') {
+    issues.push({ path: 'restrictModelsToMenu', message: 'restrictModelsToMenu must be boolean' });
+  }
   validateRequiredString(request.thinkingEffort, 'thinkingEffort', issues);
   validateStringList(request.tools, 'tools', issues);
   if (request.prompt !== undefined && typeof request.prompt !== 'string') {
@@ -501,6 +509,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateRequiredString(request.description, 'description', issues);
   validateOptionalString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  if (request.restrictModelsToMenu !== undefined && typeof request.restrictModelsToMenu !== 'boolean') {
+    issues.push({ path: 'restrictModelsToMenu', message: 'restrictModelsToMenu must be boolean' });
+  }
   validateOptionalString(request.thinkingEffort, 'thinkingEffort', issues);
   validateServiceTier(request.serviceTier, issues);
   if (request.autoCompact !== undefined && request.autoCompact !== null &&
@@ -593,6 +604,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.allowKikiSubagents,
     request.kikiContext,
     request.modelAlias,
+    request.restrictModelsToMenu,
     request.thinkingEffort,
     request.allowedModels,
     request.denyModels,

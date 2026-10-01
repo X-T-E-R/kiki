@@ -1289,6 +1289,81 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
   });
 
+  it.each(['main', 'sub'] as const)('enforces the frozen menu for %s binding, switches and resume without mutation', async (delegationPosition) => {
+    const configured = resumeProfile({ restrictModelsToMenu: true });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const unbound = svc.data();
+    await expect(svc.bind({ profile: configured.name, model: RESUME_NEW_MODEL, delegationPosition })).rejects.toMatchObject({
+      code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, details: { ruleSource: 'profile:resume-profile.restrict_models_to_menu' },
+    });
+    expect(svc.data()).toEqual(unbound);
+    await expect(svc.bind({ profile: configured.name, lease: { name: configured.name, modelAlias: RESUME_NEW_MODEL, modelProfiles: [{ alias: RESUME_NEW_MODEL }] }, delegationPosition })).rejects.toThrow(/restrict_models_to_menu/);
+    await svc.bind({ profile: configured.name, thinking: 'low', lease: { name: configured.name, modelProfiles: [{ alias: RESUME_NEW_MODEL }] }, delegationPosition });
+    const before = svc.data();
+    expect(before.boundProfile).toMatchObject({ restrictModelsToMenu: true, modelProfiles: [{ alias: RESUME_NEW_MODEL }],
+      modelMenuConstraint: { defaultAlias: RESUME_OLD_MODEL, aliases: [RESUME_OLD_MODEL], identities: [RESUME_OLD_MODEL] } });
+    await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toThrow(/restrict_models_to_menu/);
+    await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true })).rejects.toThrow(/restrict_models_to_menu/);
+    await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL })).rejects.toThrow(/allow_model_change/);
+    await expect(prepareResumeBinding(svc, { callerConstraints: [{ allowedModels: [RESUME_NEW_MODEL] }] })).rejects.toThrow(/allowed_models/);
+    (await prepareResumeBinding(svc, {}))();
+    expect(svc.data()).toEqual(before);
+    await ctx.expectResumeMatches();
+  });
+
+  it.each([true, false])('keeps frozen switch=%s and menu authority despite live catalog edits', async (restrictModelsToMenu) => {
+    const original = resumeProfile({ restrictModelsToMenu });
+    const catalog = singleProfileCatalog(original);
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, catalog));
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: original.name, thinking: 'low', delegationPosition: 'sub' });
+    const modified = resumeProfile({ restrictModelsToMenu: !restrictModelsToMenu, modelAlias: RESUME_NEW_MODEL });
+    vi.spyOn(catalog, 'get').mockReturnValue(modified);
+    vi.spyOn(catalog, 'resolveSelection').mockReturnValue({ profile: modified, baseProfile: modified });
+    (await prepareResumeBinding(svc, {}))();
+    expect(svc.data().boundProfile?.restrictModelsToMenu).toBe(restrictModelsToMenu);
+    if (restrictModelsToMenu) {
+      await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true })).rejects.toThrow(/restrict_models_to_menu/);
+    } else {
+      (await prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }))();
+      expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
+    }
+    await ctx.expectResumeMatches();
+  });
+
+  it('keeps an allowed menu model change subject to resume confirmation', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile({ restrictModelsToMenu: true, modelProfiles: [{ alias: RESUME_NEW_MODEL, when: 'An informational condition' }] }));
+    await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL })).rejects.toThrow(/allow_model_change/);
+    (await prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }))();
+    expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
+    expect(svc.data().boundProfile?.modelMenuConstraint?.defaultAlias).toBe(RESUME_OLD_MODEL);
+    await ctx.expectResumeMatches();
+  });
+
+  it('enforces the menu after external executor normalization and on resume', async () => {
+    const configured = resumeProfile({ executor: 'grok-acp', restrictModelsToMenu: true, modelAlias: 'external-allowed', thinkingEffort: 'low' });
+    const svc = await bindExternalResumeProfile(configured, externalExecutorRegistry());
+    const before = svc.data();
+    await expect(svc.setModel('external-blocked')).rejects.toThrow(/restrict_models_to_menu/);
+    await expect(prepareResumeBinding(svc, { modelAlias: 'external-blocked', allowModelChange: true })).rejects.toThrow(/restrict_models_to_menu/);
+    expect(svc.data()).toEqual(before);
+    await ctx.expectResumeMatches();
+  });
+
+  it('rejects executor-normalized models outside the original menu before any binding state changes', async () => {
+    const configured = resumeProfile({ executor: 'grok-acp', restrictModelsToMenu: true, modelAlias: 'external-default' });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass),
+      appService(IAgentExecutorRegistry, externalExecutorRegistry(DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR, (binding) => ({ ok: true, binding: { ...binding, modelAlias: 'outside-normalized' } }))),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const before = svc.data();
+    await expect(svc.bind({ profile: configured.name, delegationPosition: 'sub' })).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+      details: { ruleSource: 'profile:resume-profile.restrict_models_to_menu', effectiveValue: 'outside-normalized', valueSource: 'executor-normalized' } });
+    expect(svc.data()).toEqual(before);
+  });
+
   it('enforces external executor hard bindings before switches and resume without starting the executor', async () => {
     const configured = resumeProfile({ executor: 'grok-acp', modelAlias: 'external-allowed', thinkingEffort: 'low', allowedModels: ['external-allowed'], allowedEfforts: ['low'] });
     const svc = await bindExternalResumeProfile(configured, externalExecutorRegistry());

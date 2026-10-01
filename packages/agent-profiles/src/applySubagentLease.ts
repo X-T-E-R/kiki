@@ -1,5 +1,6 @@
 import {
   normalizeAgentProfile,
+  captureProfileModelMenu,
   type AgentProfile,
   type AgentProfileRouteCatalogEntry,
 } from './agentProfile';
@@ -7,7 +8,7 @@ import { applyModelProfilePromptDelta, resolveProfileThinkingDefault } from './m
 import type { ModelAliasResolver } from './ports';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
-export type AliasIdentity = (alias: string) => string;
+export type AliasIdentity = (alias: string) => string | undefined;
 
 export type CallerLeaseOwner = {
   readonly profileName?: string;
@@ -25,9 +26,9 @@ export function aliasIdentity(models: ModelAliasResolver | undefined): AliasIden
   if (models === undefined) return undefined;
   return (alias) => {
     try {
-      return models.resolveId(alias) ?? alias;
+      return models.resolveId(alias);
     } catch {
-      return alias;
+      return undefined;
     }
   };
 }
@@ -42,6 +43,7 @@ export function applyLease(
   lease: SubagentLease | undefined,
   resolveId?: AliasIdentity,
 ): AgentProfile {
+  profile = captureProfileModelMenu(profile, resolveId);
   if (lease === undefined) return profile;
   const toolsDeclared = lease.tools !== undefined;
   const tools = !toolsDeclared ? profile.tools : lease.tools === null ? undefined : lease.tools;
@@ -95,6 +97,12 @@ export function applyLease(
     preferredEfforts: intersectAllowlists(profile.preferredEfforts, lease.preferredEfforts),
     modelConstraintProfiles: [...(profile.modelConstraintProfiles ?? []), ...(lease.modelProfiles === undefined ? [] : profile.modelProfiles ?? [])],
     modelProfiles: lease.modelProfiles ?? profile.modelProfiles,
+    modelMenuDiagnostics: profile.restrictModelsToMenu !== true ? profile.modelMenuDiagnostics : [
+      ...(profile.modelMenuDiagnostics ?? []),
+      ...[...(lease.modelProfiles ?? []).map((entry) => entry.alias), ...(lease.modelAlias === undefined ? [] : [lease.modelAlias])]
+        .filter((alias) => !(profile.modelMenuConstraint?.identities ?? []).some((identity) => ident(identity, resolveId) === ident(alias, resolveId)))
+        .map((alias) => `Caller lease model "${alias}" is outside ${profile.modelMenuConstraint?.source}; it is not an executable menu candidate.`),
+    ],
     serviceTier,
     requestParams,
     delegationNotice: lease.delegationNotice ?? profile.delegationNotice,
@@ -139,7 +147,8 @@ export function intersectSpawnPolicy(
 }
 
 export function isDispatchBlocked(profile: AgentProfile): boolean {
-  return profile.allowedModels !== undefined && profile.allowedModels.length === 0;
+  return (profile.allowedModels !== undefined && profile.allowedModels.length === 0)
+    || (profile.restrictModelsToMenu === true && (profile.modelMenuConstraint?.identities.length ?? 0) === 0);
 }
 
 export function fillLeasePins<
@@ -175,6 +184,7 @@ export function routePermittedByProfile(
   const identity = ident(locked, aliasIdentity(models));
   const denied = new Set((profile.denyModels ?? []).map((alias) => ident(alias, aliasIdentity(models))));
   if (denied.has(identity)) return false;
+  if (profile.restrictModelsToMenu === true && !(profile.modelMenuConstraint?.identities ?? []).some((alias) => ident(alias, aliasIdentity(models)) === identity)) return false;
   const allowed = profile.allowedModels;
   if (allowed === undefined) return true;
   if (allowed.length === 0) return false;

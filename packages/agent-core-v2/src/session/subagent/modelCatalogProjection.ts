@@ -47,19 +47,21 @@ export function projectSubagentModelCatalog(
       ...profile,
       modelAlias: projected.modelAlias,
       thinkingEffort: projected.thinkingEffort,
-      allowedModels: projected.allowedModels,
-      modelProfiles: profile.modelProfiles?.filter((entry) => {
+      effectiveModelAliases: [...new Set([...projected.allowedModels, ...(profile.modelProfiles ?? []).flatMap((entry) => {
         try {
-          return permitted.has(resolver.resolveId(entry.alias) ?? entry.alias);
+          return permitted.has(resolver.resolveId(entry.alias) ?? entry.alias) ? [entry.alias] : [];
         } catch {
-          return false;
+          return [];
         }
-      }),
+      })])],
+      modelMenuDiagnostics: profile.modelMenuDiagnostics,
     }];
   });
   const routes = targets.routes.flatMap((route) => {
     try {
       const projected = projectTarget(route.profile, route.id);
+      const resolver = modelAliasResolverForExecutor(projected.profile.executor, models);
+      if (route.modelAlias !== undefined && !projected.allowedModels.some((alias) => resolver.resolveId(alias) === resolver.resolveId(route.modelAlias!))) return [];
       return [{ ...route, allowedModels: projected.allowedModels }];
     } catch (error) {
       if (isError2(error) && (
@@ -92,6 +94,7 @@ export function projectSubagentModelCatalog(
     const candidates = native ? Object.keys(models.list()) : [
       resolvedAlias,
       ...(profile.allowedModels ?? []),
+      ...(profile.modelMenuConstraint?.identities ?? []),
       ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ].filter((alias): alias is string => alias !== undefined);
     const constraints = roleConstraintsFromProfile(profile);
@@ -105,6 +108,6 @@ export function projectSubagentModelCatalog(
       }
     });
     for (const alias of allowedModels) aliases.add(alias);
-    return { modelAlias, thinkingEffort, allowedModels };
+    return { profile, modelAlias, thinkingEffort, allowedModels };
   }
 }

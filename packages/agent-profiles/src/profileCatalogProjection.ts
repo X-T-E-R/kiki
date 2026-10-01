@@ -19,6 +19,10 @@ export interface DispatchProfileCatalogEntry {
   readonly allowedEfforts?: readonly string[];
   readonly denyModels?: readonly string[];
   readonly allowedModels?: readonly string[];
+  readonly restrictModelsToMenu?: boolean;
+  readonly declaredModelMenu?: readonly string[];
+  readonly effectiveModelAliases?: readonly string[];
+  readonly modelMenuDiagnostics?: readonly string[];
   readonly alternativeModels: readonly {
     readonly alias: string;
     readonly when: string;
@@ -46,6 +50,10 @@ export function buildProfileCatalogEntries(
     modelAlias: profile.modelAlias,
     thinkingEffort: profile.thinkingEffort,
     allowedModels: profile.allowedModels,
+    restrictModelsToMenu: profile.restrictModelsToMenu ?? false,
+    declaredModelMenu: profile.modelMenuConstraint?.aliases ?? [...new Set([...(profile.modelProfiles ?? []).map((entry) => entry.alias), ...(profile.modelAlias === undefined ? [] : [profile.modelAlias])])],
+    effectiveModelAliases: profile.effectiveModelAliases,
+    modelMenuDiagnostics: profile.modelMenuDiagnostics,
     denyModels: profile.denyModels,
     allowedEfforts: profile.allowedEfforts,
     preferredModels: profile.preferredModels,
@@ -75,6 +83,9 @@ export function renderProfileCatalogEntries(
       if (entry.thinkingEffort !== undefined) {
         lines.push(`  Thinking effort: ${entry.thinkingEffort}`);
       }
+      if (entry.restrictModelsToMenu === true) lines.push(`  Declared model menu (hard ceiling, restrict_models_to_menu): ${entry.declaredModelMenu?.join(', ') || 'none'}`);
+      if (entry.effectiveModelAliases !== undefined) lines.push(`  Effective model candidates: ${[...new Set(entry.effectiveModelAliases)].join(', ') || 'none'}`);
+      for (const diagnostic of entry.modelMenuDiagnostics ?? []) lines.push(`  Configuration diagnostic: ${diagnostic}`);
       if (entry.allowedModels !== undefined) lines.push(`  Allowed models (hard): ${entry.allowedModels.join(', ') || 'none'}`);
       if (entry.denyModels !== undefined) lines.push(`  Denied models (hard): ${entry.denyModels.join(', ') || 'none'}`);
       if (entry.allowedEfforts !== undefined) lines.push(`  Allowed efforts (hard): ${entry.allowedEfforts.join(', ') || 'none'}`);
@@ -129,7 +140,8 @@ function availableAlternativeModels(
   if (profile.modelProfiles === undefined) return [];
   const external = profile.executor !== undefined && profile.executor !== 'native';
   return profile.modelProfiles.flatMap((entry) =>
-    external || isModelAliasAvailable(entry.alias)
+    (external || isModelAliasAvailable(entry.alias))
+      && (profile.effectiveModelAliases === undefined || profile.effectiveModelAliases.includes(entry.alias))
       ? [{
           alias: entry.alias,
           when: collapseWhitespace(entry.when ?? ''),

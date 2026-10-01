@@ -321,6 +321,10 @@ function updateProfileDescriptions(
         modelAlias: z.string().optional(),
         thinkingEffort: z.string().optional(),
         allowedModels: z.array(z.string()).optional(),
+        restrictModelsToMenu: z.boolean().optional(),
+        declaredModelMenu: z.array(z.string()).optional(),
+        effectiveModelAliases: z.array(z.string()).optional(),
+        modelMenuDiagnostics: z.array(z.string()).optional(),
         alternativeModels: z.array(z.object({
           alias: z.string(),
           when: z.string(),

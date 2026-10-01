@@ -65,6 +65,20 @@ describe('subagent capability final bindings', () => {
     return normalizeAgentProfile({ name: 'helper', modelAlias: 'example', systemPrompt: () => '', ...fields });
   }
 
+  it('keeps the original menu distinct from effective candidates under lease and route replacement', () => {
+    services.models.list = () => ({ example: {}, cheap: {}, outside: {} });
+    const profile = helper({ restrictModelsToMenu: true, modelProfiles: [{ alias: 'cheap', when: 'Never evaluated' }] });
+    const route: ResolvedAgentProfileRoute = { id: 'helper.outside', profile: profile.name, modelAlias: 'outside', lockedModelAlias: 'outside', description: '', overriddenFields: ['model_alias'], effectiveProfile: { ...profile, modelAlias: 'outside' } };
+    const catalog = { get: () => profile, list: () => [profile], getDefault: () => profile,
+      resolveSelection: ({ route: routeId }: { route?: string }) => ({ profile: routeId === undefined ? profile : route.effectiveProfile, baseProfile: profile, route: routeId === undefined ? undefined : route }) };
+    const projected = projectSubagentModelCatalog(catalog, { profileName: 'lead', subagentLeases: { helper: { name: 'helper', modelProfiles: [{ alias: 'outside' }], modelAlias: 'outside' } }, spawnPolicy: { denyModels: ['cheap'] } }, { profiles: [profile], routes: [route] }, services.models, services.config);
+    expect(projected.aliases).toEqual(['example']);
+    expect(projected.routes).toEqual([]);
+    expect(projected.profiles[0]).toMatchObject({ modelAlias: 'outside', modelProfiles: [{ alias: 'outside' }], effectiveModelAliases: ['example'],
+      modelMenuConstraint: { aliases: ['cheap', 'example'], defaultAlias: 'example' } });
+    expect(projected.profiles[0]?.modelMenuDiagnostics?.join(' ')).toContain('outside');
+  });
+
   it('projects only configured allowed models, applying caller leases and retaining permitted routes', () => {
     vi.spyOn(services.models, 'resolveId').mockImplementation((id) => {
       if (id === 'ambiguous') throw new Error('Ambiguous model alias');
@@ -85,7 +99,8 @@ describe('subagent capability final bindings', () => {
     }, { profiles: [profile], routes: [route] }, services.models, services.config);
     expect(projected.aliases).toEqual(['cheap', 'alternate']);
     expect(projected.profiles[0]).toMatchObject({ modelAlias: 'cheap', thinkingEffort: 'high', allowedModels: ['cheap', 'alternate'] });
-    expect(projected.profiles[0]?.modelProfiles?.map((entry) => entry.alias)).toEqual(['short']);
+    expect(projected.profiles[0]?.modelProfiles).toEqual(profile.modelProfiles);
+    expect(projected.profiles[0]?.effectiveModelAliases).toEqual(['cheap', 'alternate', 'short']);
     expect(projected.routes.map((item) => item.id)).toEqual(['helper.cheap']);
     const unrestricted = projectSubagentModelCatalog({ ...catalog, get: () => helper(), getDefault: () => helper() },
       { profileName: 'lead' }, { profiles: [helper()], routes: [] }, services.models, services.config);

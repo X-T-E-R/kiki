@@ -29,6 +29,20 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('defaults menu restriction off and accepts only top-level booleans', () => {
+    expect(parse(FULL_FILE).restrictModelsToMenu).toBe(false);
+    for (const flag of [true, false]) {
+      const definition = parse(`---\nname: helper\ndescription: d\nrestrict_models_to_menu: ${flag}\n---\nbody`);
+      expect(definition.restrictModelsToMenu).toBe(flag);
+      expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).restrictModelsToMenu).toBe(flag);
+    }
+    for (const value of ['"true"', 'null', '1', '[]']) {
+      expect(() => parse(`---\nname: helper\ndescription: d\nrestrict_models_to_menu: ${value}\n---\nbody`)).toThrow(/must be a boolean/);
+    }
+    for (const nested of ['spawn_constraints:\n  restrict_models_to_menu: true', 'subagents:\n  - name: child\n    restrict_models_to_menu: true', 'model_profiles:\n  - alias: fast\n    restrict_models_to_menu: true']) {
+      expect(() => parse(`---\nname: helper\ndescription: d\n${nested}\n---\nbody`)).toThrow(/restrict_models_to_menu/);
+    }
+  });
   it('parses literal hard rules and named soft recommendations in every model scope', () => {
     const rules = 'allowed_models: [fast, premium]\ndeny_models: [blocked]\nallowed_efforts: []\npreferred_models: [fast]\ndiscouraged_models: [premium]\npreferred_efforts: [max]';
     const text = `---\nname: helper\ndescription: d\n${rules}\nspawn_constraints:\n${rules.split('\n').map((line) => `  ${line}`).join('\n')}\nsubagents:\n  - name: explore\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\nmodel_profiles:\n  - alias: fast\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\n---\nbody`;

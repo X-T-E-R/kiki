@@ -1,3 +1,4 @@
+import { captureProfileModelMenu } from './agentProfile';
 import type {
   AgentProfile,
   AgentProfileRouteDefinition,
@@ -11,6 +12,7 @@ export function resolveAgentProfileRoute(
   base: AgentProfile,
   resolveId: (id: string) => string | undefined = (id) => id,
 ): ResolvedAgentProfileRoute {
+  base = captureProfileModelMenu(base, resolveId);
   const tools = route.tools !== undefined ? route.tools : base.tools;
   const disallowedTools =
     route.disallowedTools !== undefined ? route.disallowedTools : base.disallowedTools;

@@ -1,3 +1,4 @@
+import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import { Error2, ErrorCodes } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 import { resolveProfileThinkingDefault } from './modelProfileOverlay';
@@ -266,10 +267,14 @@ export function resolveSubagentTarget(
   const resolved = resolveSubagentDispatch(catalog, caller, input);
   const selection = resolved.selection;
   const resolveId = (selection.profile.executor ?? 'native') === 'native' ? aliasIdentity(models)! : (id: string) => id;
-  const profile = selection.route === undefined ? selection.profile : {
+  const base = captureProfileModelMenu(selection.baseProfile, (selection.profile.executor ?? 'native') === 'native' ? (id) => models.resolveId(id) : (id) => id);
+  const profile = {
     ...selection.profile,
-    thinkingEffort: selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
-      selection.baseProfile, selection.profile.modelAlias ?? '', resolveId,
+    restrictModelsToMenu: base.restrictModelsToMenu,
+    modelMenuConstraint: base.modelMenuConstraint,
+    modelMenuDiagnostics: base.modelMenuDiagnostics,
+    thinkingEffort: selection.route === undefined ? selection.profile.thinkingEffort : selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
+      base, selection.profile.modelAlias ?? '', resolveId,
     ),
   };
   const dispatched = appliedDispatchProfile(

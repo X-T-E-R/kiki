@@ -5,6 +5,10 @@ export interface DispatchProfileCatalogEntry {
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
+  readonly restrictModelsToMenu?: boolean;
+  readonly declaredModelMenu?: readonly string[];
+  readonly effectiveModelAliases?: readonly string[];
+  readonly modelMenuDiagnostics?: readonly string[];
   readonly alternativeModels: readonly {
     readonly alias: string;
     readonly when: string;
@@ -30,6 +34,9 @@ export function renderProfileCatalogEntries(
       if (entry.thinkingEffort !== undefined) {
         lines.push(`  Thinking effort: ${entry.thinkingEffort}`);
       }
+      if (entry.restrictModelsToMenu === true) lines.push(`  Declared model menu (hard ceiling, restrict_models_to_menu): ${entry.declaredModelMenu?.join(', ') || 'none'}`);
+      if (entry.effectiveModelAliases !== undefined) lines.push(`  Effective model candidates: ${entry.effectiveModelAliases.join(', ') || 'none'}`);
+      for (const diagnostic of entry.modelMenuDiagnostics ?? []) lines.push(`  Configuration diagnostic: ${diagnostic}`);
       if (entry.allowedModels !== undefined && entry.allowedModels.length > 0) {
         lines.push(`  Allowed models: ${entry.allowedModels.join(', ')}`);
       }

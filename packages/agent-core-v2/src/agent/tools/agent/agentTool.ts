@@ -166,6 +166,7 @@ export class SubagentTool implements ISubagentTool {
       description += `\n\nAvailable profiles (pass via profile; preferred first):\n${typeLines}`;
       if (ordered.length > 8) description += `\n${ordered.length - 8} more profiles omitted; use an exact profile name supplied by the user.`;
     }
+    description += '\n\nA profile model menu is non-exhaustive when restrict_models_to_menu is off. When on, only its original default and declared menu can bind, intersected with all other hard constraints. Omitted models follow existing defaults; no menu fallback is attempted. Route/lease pins and resume model-change confirmation cannot expand this frozen menu.';
     const routeLines = compactRouteDescriptions(targets.routes);
     if (routeLines) description += `\n\nAvailable routes (pass via route):\n${routeLines}`;
     const modelLines = buildSubagentModelDescriptions(targets.aliases.slice(0, 4));

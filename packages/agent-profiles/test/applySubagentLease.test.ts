@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeAgentProfile, type AgentProfile } from '#/agentProfile';
+import { captureProfileModelMenu, normalizeAgentProfile, type AgentProfile } from '#/agentProfile';
 import { resolveAgentProfileRoute } from '#/agentProfileRoute';
 import {
   appliedDispatchProfile,
@@ -32,6 +32,36 @@ function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
 }
 
 describe('applyLease', () => {
+  it('diagnoses redundant hard tables and empty intersections without discarding declarations', () => {
+    const resolveId = (id: string) => id === 'fast' ? 'provider/fast' : id === 'missing' ? undefined : id;
+    const base = child({ restrictModelsToMenu: true, modelAlias: 'fast', modelProfiles: [{ alias: 'missing' }], allowedModels: ['provider/fast'] });
+    const captured = captureProfileModelMenu(base, resolveId);
+    expect(captured.modelMenuConstraint?.aliases).toEqual(['missing', 'fast']);
+    expect(captured.modelMenuConstraint?.identities).toEqual(['provider/fast']);
+    expect(captured.modelMenuDiagnostics?.join(' ')).toContain('redundant allowed_models');
+    expect(captureProfileModelMenu({ ...base, denyModels: ['provider/fast'] }, resolveId).modelMenuDiagnostics?.join(' ')).toContain('no effective model candidates');
+    expect(captured.modelProfiles).toEqual(base.modelProfiles);
+    expect(captured.allowedModels).toEqual(base.allowedModels);
+  });
+  it('freezes the original default and deduplicated menu before route and lease rewrites', () => {
+    const base = child({ modelAlias: 'fast', restrictModelsToMenu: true, allowedModels: undefined,
+      modelProfiles: [{ alias: 'provider/fast' }, { alias: 'other', allowedEfforts: ['high'] }] });
+    const resolveId = (id: string) => id === 'fast' ? 'provider/fast' : id;
+    const route = { id: 'explore.outside', profile: 'explore', description: '', promptMode: 'inherit' as const,
+      prompt: '', modelAlias: 'outside', overriddenFields: ['model_alias'], path: '/agents/route.md' };
+    const routed = resolveAgentProfileRoute(route, base, resolveId).effectiveProfile;
+    expect(routed.modelMenuConstraint).toEqual({ source: 'profile:explore.restrict_models_to_menu', defaultAlias: 'fast', aliases: ['provider/fast', 'other', 'fast'], identities: ['provider/fast', 'other'] });
+    for (const entries of [[], [{ alias: 'provider/fast' }], [{ alias: 'outside' }]]) {
+      const leased = applyLease(routed, { name: 'explore', modelAlias: 'outside', modelProfiles: entries }, resolveId);
+      expect(leased.modelMenuConstraint).toEqual(routed.modelMenuConstraint);
+      expect(leased.modelConstraintProfiles).toEqual(base.modelProfiles);
+      expect(routePermittedByProfile({ modelAlias: 'outside' }, leased, { resolveId })).toBe(false);
+      expect(routePermittedByProfile({ modelAlias: 'fast' }, leased, { resolveId })).toBe(true);
+      expect(leased.modelMenuDiagnostics?.join(' ')).toContain('outside');
+    }
+    expect(base.modelMenuConstraint).toBeUndefined();
+    expect(isDispatchBlocked(applyLease(child({ restrictModelsToMenu: true, modelAlias: undefined, modelProfiles: [], allowedModels: undefined }), undefined))).toBe(true);
+  });
   it('keeps model-profile hard constraints when a lease replaces the default entries', () => {
     const original = [{ alias: 'fast', allowedEfforts: ['max'], preferredEfforts: ['max'] }];
     const applied = applyLease(child({ modelProfiles: original }), { name: 'explore', modelProfiles: [{ alias: 'fast', thinkingEffort: 'low' }] });

@@ -98,7 +98,52 @@ export interface SystemPromptRenderResult {
   readonly environment: EnvironmentDisclosureSnapshot;
 }
 
+export interface ProfileModelMenuConstraint {
+  readonly source: string;
+  readonly defaultAlias?: string;
+  readonly aliases: readonly string[];
+  readonly identities: readonly string[];
+}
+
+export function captureProfileModelMenu<T extends Pick<AgentProfile,
+  'name' | 'modelAlias' | 'modelProfiles' | 'restrictModelsToMenu' | 'modelMenuConstraint' | 'allowedModels' | 'denyModels' | 'modelMenuDiagnostics'
+>>(profile: T, resolveId: (alias: string) => string | undefined = (alias) => alias): T {
+  if (profile.restrictModelsToMenu !== true || profile.modelMenuConstraint !== undefined) return profile;
+  const aliases = [...new Set([
+    ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
+    ...(profile.modelAlias === undefined ? [] : [profile.modelAlias]),
+  ])];
+  const resolve = (entries: readonly string[]) => [...new Set(entries.flatMap((alias) => {
+    try {
+      const identity = resolveId(alias);
+      return identity === undefined || identity.trim() === '' ? [] : [identity];
+    } catch {
+      return [];
+    }
+  }))];
+  const identities = resolve(aliases);
+  const allowed = profile.allowedModels === undefined ? undefined : resolve(profile.allowedModels);
+  const denied = new Set(resolve(profile.denyModels ?? []));
+  const source = `profile:${profile.name}.restrict_models_to_menu`;
+  const diagnostics = [...(profile.modelMenuDiagnostics ?? [])];
+  if (allowed !== undefined && allowed.length === identities.length && allowed.every((id) => identities.includes(id))) {
+    diagnostics.push(`${source} and allowed_models declare equivalent hard domains; remove the redundant allowed_models declaration.`);
+  }
+  if (!identities.some((id) => !denied.has(id) && (allowed === undefined || allowed.includes(id)))) {
+    diagnostics.push(`${source} has no effective model candidates after profile hard allow/deny constraints; binding is unavailable.`);
+  }
+  return {
+    ...profile,
+    modelMenuConstraint: { source, defaultAlias: profile.modelAlias, aliases, identities },
+    modelMenuDiagnostics: diagnostics,
+  };
+}
+
 export interface AgentProfile extends AgentModelParameters, AgentModelConstraints {
+  readonly restrictModelsToMenu?: boolean;
+  readonly modelMenuConstraint?: ProfileModelMenuConstraint;
+  readonly effectiveModelAliases?: readonly string[];
+  readonly modelMenuDiagnostics?: readonly string[];
   readonly modelConstraintProfiles?: readonly AgentModelProfile[];
   readonly contextStrategy?: ContextStrategy;
   readonly fileDefinition?: import('./agentFileTypes').AgentFileDefinition;
@@ -201,6 +246,7 @@ export function normalizeAgentProfile(input: AgentProfileInput): AgentProfile {
     const render = input.renderSystemPrompt.bind(input);
     return {
       ...input,
+      restrictModelsToMenu: input.restrictModelsToMenu ?? false,
       executor: input.executor ?? 'native',
       executorOptions:
         input.executorOptions === undefined
@@ -214,6 +260,7 @@ export function normalizeAgentProfile(input: AgentProfileInput): AgentProfile {
     const systemPrompt = input.systemPrompt.bind(input);
     return {
       ...input,
+      restrictModelsToMenu: input.restrictModelsToMenu ?? false,
       executor: input.executor ?? 'native',
       executorOptions:
         input.executorOptions === undefined

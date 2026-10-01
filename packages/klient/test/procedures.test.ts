@@ -54,6 +54,19 @@ const parity: { readonly [Name in keyof CoreInputs]: AssertCoreToProcedure<Name>
 void parity;
 
 describe('external delegation procedures', () => {
+  it('retains declared menus, effective candidates and constraint diagnostics in strict outputs', () => {
+    const binding = { version: 1, seatId: 'seat', sessionId: 'session', principalId: 'principal' };
+    const profile = { kind: 'named', profileName: 'helper', restrictModelsToMenu: true,
+      declaredModelMenu: ['default', 'denied'], effectiveModelAliases: ['default'], modelMenuDiagnostics: ['A caller lease cannot expand the menu.'],
+      allowedModels: ['default', 'denied'], denyModels: ['denied'], preferredModels: ['default'], allowedEfforts: ['high'], preferredEfforts: ['high'], discouragedModels: ['denied'],
+      alternativeModels: [] };
+    const profiles = delegationProcedureTable.find((procedure) => procedure.name === 'profiles')!;
+    expect(profiles.outputSchema.parse({ profiles: [profile], binding })).toEqual({ profiles: [profile], binding });
+    const list = delegationProcedureTable.find((procedure) => procedure.name === 'list')!;
+    const root = { version: 1, delegationId: 'delegation', lifecycle: 'active', dispatchables: [profile], children: [], continuations: [], binding };
+    expect(list.outputSchema.parse(root)).toEqual(root);
+    expect(profiles.outputSchema.safeParse({ profiles: [{ ...profile, restrictModelsToMenu: 'true' }], binding }).success).toBe(false);
+  });
   it('owns thirteen unique procedure and MCP names with strict JSON schemas', () => {
     expect(delegationProcedureTable).toHaveLength(13);
     expect(new Set(delegationProcedureTable.map((procedure) => procedure.name)).size).toBe(13);

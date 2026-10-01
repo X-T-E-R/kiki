@@ -218,6 +218,18 @@ describe('Kiki external delegation MCP projector', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('renders the frozen menu ceiling separately from current executable candidates', async () => {
+    const { client } = await connect(fakeKlient([], { profiles: { profiles: [{ kind: 'named', profileName: 'helper',
+      restrictModelsToMenu: true, declaredModelMenu: ['default', 'denied'], effectiveModelAliases: ['default'],
+      modelMenuDiagnostics: ['outside is not an executable menu candidate'], alternativeModels: [] }], binding } }));
+    await client.callTool({ name: 'kiki_profiles', arguments: {} });
+    const tools = await client.listTools();
+    const description = tools.tools.find((tool) => tool.name === 'kiki_dispatch')?.description;
+    expect(description).toContain('Declared model menu (hard ceiling, restrict_models_to_menu): default, denied');
+    expect(description).toContain('Effective model candidates: default');
+    expect(description).toContain('Configuration diagnostic: outside is not an executable menu candidate');
+  });
+
   it('refreshes dynamic profile descriptions for A, B, and an empty catalog', async () => {
     const catalogs = [
       [{ kind: 'named' as const, profileName: 'profile_a', description: 'Catalog A.', alternativeModels: [] }],
