@@ -39,7 +39,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "node --max-old-space-size=8192 ../../node_modules/tsdown/dist/run.mjs",
     "bench": "vitest run --config vitest.bench.config.ts",
     "model-prices:update": "node scripts/update-model-prices.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
