@@ -13,6 +13,9 @@ import type { AgentTaskInfo, AgentTaskOutputSnapshot } from '#/agent/task/task';
 import { TERMINAL_STATUSES } from '#/agent/task/types';
 import { formatPlainObject } from '#/agent/task/tools/format';
 import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { IFlagService } from '#/app/flag/flag';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { abortError, isAbortError, linkAbortSignal } from '#/_base/utils/abort';
@@ -85,12 +88,23 @@ export function startWaitProgress(
   const tick = (): void => {
     onUpdate(taskWaitProgressUpdate(args, tasks.list(true).length, startedAt, Date.now()));
   };
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const schedule = (): void => {
+    const intervalMs = Date.now() - startedAt < 60_000 ? PROGRESS_INTERVAL_MS : 60_000;
+    timer = setTimeout(() => {
+      if (stopped) return;
+      tick();
+      schedule();
+    }, intervalMs);
+    timer.unref?.();
+  };
   tick();
-  const interval = setInterval(tick, PROGRESS_INTERVAL_MS);
-  interval.unref?.();
+  schedule();
   return {
     stop: () => {
-      clearInterval(interval);
+      stopped = true;
+      clearTimeout(timer);
     },
     tick,
   };
@@ -106,6 +120,8 @@ export class TaskWaitTool implements ITaskWaitTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @IAgentGoalService private readonly goals: IAgentGoalService,
   ) {}
 
   resolveExecution(args: TaskWaitInput): ToolExecution {
@@ -148,6 +164,23 @@ export class TaskWaitTool implements ITaskWaitTool {
     } else if (this.tasks.getTask(args.task_id) === undefined) {
       this.track(args, startedAt, timeoutMs, 'task_not_found', 0);
       return { isError: true, output: `Task not found: ${args.task_id}` };
+    }
+
+    const target = args.task_id === undefined ? undefined : this.tasks.getTask(args.task_id);
+    const hasRunningAgent = args.task_id === undefined
+      ? runningAtStart.some((task) => task.kind === 'agent')
+      : target?.kind === 'agent' && !TERMINAL_STATUSES.has(target.status);
+    if (
+      hasRunningAgent &&
+      this.scope.agentId === MAIN_AGENT_ID &&
+      this.scope.parentAgentId === undefined &&
+      this.goals.getGoal().goal?.status !== 'active' &&
+      !(args.sync_wait === true && args.task_id !== undefined && args.sync_reason?.trim())
+    ) {
+      return {
+        isError: true,
+        output: 'TaskWait did not wait: outside active goal mode, a main agent must not wait merely to collect automatically notifying subagent reports. Do independent work or end the turn with a brief pending status, then continue on notification; the task remains running and its completion notification has not been consumed. Specify a process task_id to wait for your own process, or use sync_wait=true with a specific agent task_id and a non-empty concrete sync_reason for a genuine same-turn dependency. A wait-any call cannot use this exception; routine report collection is not a valid reason.',
+      };
     }
 
     let waited: AgentTaskInfo | undefined;

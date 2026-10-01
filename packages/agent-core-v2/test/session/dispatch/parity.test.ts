@@ -2126,7 +2126,16 @@ describe('AgentRun and dispatch parity golden', () => {
       dispatch: { dispatchId: first.dispatchId, status: expect.stringMatching(/queued|running/) },
     });
 
+    const hostWait = external.externalM1.wait({
+      authority,
+      dispatchId: first.dispatchId,
+      timeoutMs: 86_400_000,
+    });
     await completeExternal(external, first.dispatchId, 0);
+    await expect(hostWait).resolves.toMatchObject({
+      waitStatus: 'completed',
+      dispatch: { dispatchId: first.dispatchId, status: 'completed' },
+    });
     const terminal = await external.externalM1.wait({
       authority,
       dispatchId: first.dispatchId,

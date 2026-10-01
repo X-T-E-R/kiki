@@ -1,6 +1,14 @@
 import { PassThrough, Readable, type Writable } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import type { GoalSnapshot } from '#/agent/goal/types';
+import { IFlagService } from '#/app/flag/flag';
+import { ITelemetryService } from '#/app/telemetry/telemetry';
 
 import {
   IAgentTaskService,
@@ -22,7 +30,7 @@ import { TaskOutputInputSchema } from '#/agent/tools/task/task-output/task-outpu
 import { TaskOutputTool } from '#/agent/tools/task/task-output/taskOutputTool';
 import { TaskStopInputSchema } from '#/agent/tools/task/task-stop/task-stop';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
-import { TaskWaitInputSchema } from '#/agent/tools/task/task-wait/task-wait';
+import { ITaskWaitTool, TaskWaitInputSchema } from '#/agent/tools/task/task-wait/task-wait';
 import { TaskWaitTool, startWaitProgress, taskWaitProgressUpdate } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { abortError } from '#/_base/utils/abort';
 import type { ITaskHandle } from '#/app/task/task';
@@ -31,7 +39,6 @@ import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validato
 import { ProcessTask, type ProcessTaskInfo } from '#/agent/tools/os/bash/process-task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import type { SubagentTaskInfo } from '#/agent/tools/agent/subagent-task';
-import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -39,11 +46,37 @@ import { executeTool } from '../../../tools/fixtures/execute-tool';
 import { recordingTelemetry, type TelemetryRecord } from '../../../app/telemetry/stubs';
 import { stubFlag } from '../../../app/flag/stubs';
 import { agentService, createTestAgent, permissionModeServices, telemetryServices } from '../../../harness';
-import { stubLoopWithHooks } from '../../loop/stubs';
+import { runWillBeginStepHooks, stubLoopWithHooks } from '../../loop/stubs';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 const signal = new AbortController().signal;
+const waitToolDisposables = new DisposableStore();
+
+afterEach(() => {
+  waitToolDisposables.clear();
+});
+
+function createWaitTool(
+  tasks: IAgentTaskService,
+  telemetry: ITelemetryService,
+  flags: IFlagService,
+  scope: IAgentScopeContext = makeAgentScopeContext({ agentId: 'main', agentScope: 'main' }),
+  goal: GoalSnapshot | null = null,
+): ITaskWaitTool {
+  const ix = createServices(waitToolDisposables, {
+    strict: true,
+    additionalServices: (reg) => {
+      reg.defineInstance(IAgentTaskService, tasks);
+      reg.defineInstance(ITelemetryService, telemetry);
+      reg.defineInstance(IFlagService, flags);
+      reg.defineInstance(IAgentScopeContext, scope);
+      reg.definePartialInstance(IAgentGoalService, { getGoal: () => ({ goal }) });
+      reg.define(ITaskWaitTool, TaskWaitTool);
+    },
+  });
+  return ix.get(ITaskWaitTool);
+}
 
 function context<Input>(
   toolCallId: string,
@@ -691,7 +724,7 @@ describe('TaskOutputTool', () => {
         }));
         const result = kind === 'output'
           ? await executeTool(new TaskOutputTool(tasks), context('retrieval_hint', { task_id: taskId }))
-          : await executeTool(new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)), context('retrieval_hint', { task_id: taskId, timeout: 1 }));
+          : await executeTool(createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)), context('retrieval_hint', { task_id: taskId, timeout: 1 }));
         const output = outputString(result);
         expect(output.includes('full_output_hint:')).toBe(truncated && fullOutputAvailable);
         expect(output).not.toContain('lines per page');
@@ -897,10 +930,17 @@ describe('TaskWait tool', () => {
     const ctx = createTestAgent();
     try {
       const tool = ctx.get(ITaskWaitTool);
-      expect(tool.description).toContain('Wait for an owned background task to finish within the current turn');
-      expect(tool.description).toContain('Use only for a genuine same-turn dependency, not to poll an automatically notifying task');
-      expect(tool.description).toContain('A task reported here does not also send an automatic completion notification');
-      expect(tool.description).toContain('Subagents must resolve their own dependencies before returning a final receipt');
+      expect(tool.description).toContain('concrete same-turn dependency (e.g. verifying your own build or deletion)');
+      expect(tool.description).toContain('An interactive main agent outside active goal mode must not wait merely to collect automatically notifying subagent reports');
+      expect(tool.description).toContain('requires `sync_wait=true`, a specific `task_id`, and a concrete `sync_reason`');
+      expect(tool.description).toContain('Do other useful work or end the turn with a brief pending status, then continue on notification');
+      expect(tool.description).toContain("this neither cancels the work nor completes the user's task");
+      expect(tool.description).toContain('Do not poll TaskWait/TaskOutput/TaskList/AgentList to hold that turn open');
+      expect(tool.description).toContain('A timeout leaves tasks running; reassess rather than automatically repeat');
+      expect(tool.description).toContain('Terminal tasks reported here do not also send an automatic completion notification');
+      expect(tool.description).toContain('Subagents must instead resolve their own dependencies before returning a final receipt');
+      expect(TaskWaitInputSchema.shape.sync_wait.description).toContain('not needed for subagents');
+      expect(TaskWaitInputSchema.shape.sync_reason.description).toContain('main-to-agent sync_wait exception');
       expect(tool.description).not.toContain('To wait longer, call TaskWait again');
       expect(TaskWaitInputSchema.shape.timeout.description).toContain('explicit same-turn wait');
       expect(TaskWaitInputSchema.shape.timeout.description).toContain('do not automatically repeat');
@@ -919,7 +959,7 @@ describe('TaskWait tool', () => {
   }
 
   it('has name and accepts the current schema', () => {
-    const tool = new TaskWaitTool(new FakeTaskService(), recordingTelemetry([]), stubFlag(true));
+    const tool = createWaitTool(new FakeTaskService(), recordingTelemetry([]), stubFlag(true));
 
     expect(tool.name).toBe('TaskWait');
     expect(TaskWaitInputSchema.safeParse({ timeout: 60 }).success).toBe(true);
@@ -928,23 +968,151 @@ describe('TaskWait tool', () => {
     expect(TaskWaitInputSchema.safeParse({}).success).toBe(false);
     expect(TaskWaitInputSchema.safeParse({ timeout: 0 }).success).toBe(false);
     expect(TaskWaitInputSchema.safeParse({ timeout: -5 }).success).toBe(false);
-    expect(TaskWaitInputSchema.safeParse({ timeout: 601 }).success).toBe(false);
-    expect(TaskWaitInputSchema.safeParse({ timeout: 1.5 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 601 }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 86_400 }).success).toBe(true);
+    for (const timeout of [86_401, 1.5, NaN, Infinity, -Infinity, '60', null]) {
+      expect(TaskWaitInputSchema.safeParse({ timeout }).success).toBe(false);
+    }
+    for (const exception of [
+      { sync_wait: false },
+      { sync_wait: true },
+      { sync_reason: 'User requires this response to contain the result' },
+      { task_id: 'agent-1', sync_wait: true, sync_reason: 'Host consumes only this final response' },
+    ]) {
+      expect(TaskWaitInputSchema.safeParse({ timeout: 60, ...exception }).success).toBe(true);
+    }
+    expect(TaskWaitInputSchema.safeParse({ timeout: 60, sync_wait: 'true' }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 60, sync_reason: 1 }).success).toBe(false);
     expect(tool.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
       required: ['timeout'],
       properties: {
-        timeout: { type: 'integer' },
+        timeout: { type: 'integer', maximum: 86_400 },
         task_id: { type: 'string' },
+        sync_wait: { type: 'boolean' },
+        sync_reason: { type: 'string' },
       },
     });
+  });
+
+  it.each([
+    {},
+    { sync_wait: false, sync_reason: 'Host consumes only this final response' },
+    { sync_wait: true },
+    { sync_wait: true, sync_reason: '' },
+    { sync_wait: true, sync_reason: ' \n\t ' },
+    { sync_reason: 'I am in goal mode' },
+  ])('rejects a main wait on a running agent without a complete exception: %j', async (exception) => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(agentTaskInfo({ taskId: 'bash-not-a-process', status: 'running' }));
+    const onUpdate = vi.fn();
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      { ...context('wait_guard', { timeout: 86_400, task_id: taskId, ...exception }), onUpdate },
+    );
+    expect(result.isError).toBe(true);
+    expect(outputString(result)).toContain('Do independent work or end the turn');
+    expect(outputString(result)).toContain('continue on notification');
+    expect(tasks.waitCalls).toEqual([]);
+    expect(tasks.waitDeliveries).toEqual([]);
+    expect(tasks.suppressCalls).toEqual([]);
+    expect(tasks.stopCalls).toEqual([]);
+    expect(tasks.getTask(taskId)?.status).toBe('running');
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('allows the explicit main-to-agent synchronous exception', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(agentTaskInfo({ status: 'running' }));
+    tasks.waitDelegate = async (id) => {
+      tasks.settle(id);
+      return tasks.getTask(id);
+    };
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      context('wait_sync', {
+        timeout: 86_400, task_id: taskId, sync_wait: true,
+        sync_reason: 'The host consumes only this final response and needs the result in it',
+      }),
+    );
+    expect(result.isError).toBe(false);
+    expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: 86_400_000 }]);
+    expect(tasks.waitDeliveries).toEqual([[{ taskId, status: 'completed' }]]);
+  });
+
+  it.each([false, true])('rejects mixed wait-any without silently filtering agents (sync_wait=%s)', async (sync_wait) => {
+    const tasks = new FakeTaskService();
+    tasks.add(processTask());
+    tasks.add(agentTaskInfo({ status: 'running' }));
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      context('wait_mixed', { timeout: 86_400, sync_wait, sync_reason: 'Host consumes this response' }),
+    );
+    expect(result.isError).toBe(true);
+    expect(outputString(result)).toContain('Specify a process task_id');
+    expect(outputString(result)).toContain('A wait-any call cannot use this exception');
+    expect(tasks.waitCalls).toEqual([]);
+    expect(tasks.waitDeliveries).toEqual([]);
+  });
+
+  it.each(['completed', 'failed', 'killed', 'timed_out', 'lost'] as const)('returns a terminal agent (%s) without the main guard and preserves delivery deduplication', async (status) => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(agentTaskInfo({ status }), outputSnapshot('FINAL RECEIPT'));
+    tasks.add(agentTaskInfo({ taskId: 'other-running-agent', status: 'running' }));
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      context('wait_terminal_agent', { timeout: 86_400, task_id: taskId }),
+    );
+    expect(result.isError).toBe(false);
+    expect(outputString(result)).toContain('FINAL RECEIPT');
+    expect(tasks.waitDeliveries).toEqual([[{ taskId, status }]]);
+  });
+
+  it.each([
+    { agentId: 'main', parentAgentId: undefined, kind: 'process' },
+    { agentId: 'worker', parentAgentId: 'main', kind: 'process' },
+    { agentId: 'worker', parentAgentId: 'main', kind: 'agent' },
+    { agentId: 'main', parentAgentId: 'parent', kind: 'agent' },
+  ] as const)('allows owned $kind waits using runtime binding ($agentId, parent=$parentAgentId)', async ({ agentId, parentAgentId, kind }) => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(kind === 'agent'
+      ? agentTaskInfo({ status: 'running' }) : processTask({ taskId: 'agent-not-an-agent' }));
+    tasks.waitDelegate = async (id) => {
+      tasks.settle(id);
+      return tasks.getTask(id);
+    };
+    const scope = makeAgentScopeContext({ agentId, parentAgentId, agentScope: 'test' });
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true), scope),
+      context('wait_binding', { timeout: 86_400, task_id: taskId }),
+    );
+    expect(result.isError).toBe(false);
+    expect(tasks.waitCalls).toHaveLength(1);
+  });
+
+  it('allows a subagent mixed wait-any without main exception parameters', async () => {
+    const tasks = new FakeTaskService();
+    const taskId = tasks.add(agentTaskInfo({ status: 'running' }));
+    tasks.add(processTask());
+    tasks.waitDelegate = async (id) => {
+      tasks.settle(id);
+      return tasks.getTask(id);
+    };
+    const scope = makeAgentScopeContext({ agentId: 'child', parentAgentId: 'main', agentScope: 'child' });
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true), scope),
+      context('wait_sub_any', { timeout: 86_400 }),
+    );
+    expect(result.isError).toBe(false);
+    expect(tasks.waitCalls).toHaveLength(2);
+    expect(outputString(result)).toContain(taskId);
   });
 
   it('returns error and tracks task_not_found for an unknown task_id', async () => {
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new TaskWaitTool(new FakeTaskService(), telemetry, stubFlag(true)),
+      createWaitTool(new FakeTaskService(), telemetry, stubFlag(true)),
       context('wait_unknown', { timeout: 10, task_id: 'bash-unknown0' }),
     );
 
@@ -961,7 +1129,7 @@ describe('TaskWait tool', () => {
   it('returns immediately without waiting when no background tasks are running', async () => {
     const tasks = new FakeTaskService();
     const result = await executeTool(
-      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_none', { timeout: 10 }),
     );
     const output = outputString(result);
@@ -987,7 +1155,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
+      createWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_done', { timeout: 10, task_id: taskId }),
     );
     const output = outputString(result);
@@ -1017,7 +1185,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
+      createWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_extras', { timeout: 10, task_id: 'bash-wait001' }),
     );
     const output = outputString(result);
@@ -1050,7 +1218,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
+      createWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_any', { timeout: 10 }),
     );
     const output = outputString(result);
@@ -1076,7 +1244,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
+      createWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_timeout', { timeout: 10, task_id: 'bash-running9' }),
     );
     const output = outputString(result);
@@ -1108,7 +1276,7 @@ describe('TaskWait tool', () => {
     const { records, telemetry } = waitTelemetry();
     const controller = new AbortController();
     const pending = executeTool(
-      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
+      createWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_abort', { timeout: 600, task_id: 'bash-abort01' }, controller.signal),
     );
     controller.abort();
@@ -1129,7 +1297,7 @@ describe('TaskWait tool', () => {
 
     const controller = new AbortController();
     const pending = executeTool(
-      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_abort_any', { timeout: 600 }, controller.signal),
     );
     controller.abort();
@@ -1154,7 +1322,7 @@ describe('TaskWait tool', () => {
 
     await expect(
       executeTool(
-        new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+        createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
         context('wait_fmt_fail', { timeout: 10, task_id: taskId }),
       ),
     ).rejects.toThrow('snapshot read failed');
@@ -1176,7 +1344,7 @@ describe('TaskWait tool', () => {
     };
 
     const result = await executeTool(
-      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_losers', { timeout: 600 }),
     );
 
@@ -1189,7 +1357,7 @@ describe('TaskWait tool', () => {
     tasks.add(processTask({ taskId: 'bash-flagoff1' }));
 
     const result = await executeTool(
-      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(false)),
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(false)),
       context('wait_flag_off', { timeout: 10, task_id: 'bash-flagoff1' }),
     );
 
@@ -1218,6 +1386,32 @@ describe('TaskWait tool', () => {
       'Waiting 1m / 3m',
     );
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('limits a 24-hour wait to first-minute seconds and subsequent minute progress updates', () => {
+    vi.useFakeTimers();
+    const tasks = new FakeTaskService();
+    tasks.add(processTask());
+    const onUpdate = vi.fn();
+    const progress = startWaitProgress({ timeout: 86_400 }, tasks, onUpdate, Date.now());
+    try {
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(60_000);
+      expect(onUpdate).toHaveBeenCalledTimes(61);
+      vi.advanceTimersByTime(59_999);
+      expect(onUpdate).toHaveBeenCalledTimes(61);
+      vi.advanceTimersByTime(1);
+      expect(onUpdate).toHaveBeenCalledTimes(62);
+      vi.advanceTimersByTime(86_400_000 - 120_000);
+      expect(onUpdate).toHaveBeenCalledTimes(1_500);
+      expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'Waiting 24h / 24h · 1 background task still running' }));
+      progress.stop();
+      vi.advanceTimersByTime(60_000);
+      expect(onUpdate).toHaveBeenCalledTimes(1_500);
+    } finally {
+      progress.stop();
+      vi.useRealTimers();
+    }
+  });
 
   it('routes the composed progress update through onUpdate on a manual tick', () => {
     const tasks = new FakeTaskService();
@@ -1542,6 +1736,144 @@ describe('TaskWait tool (harness)', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('preserves automatic completion notification after rejecting a main agent wait', async () => {
+    const loop = stubLoopWithHooks();
+    const ctx = createTestAgent(agentService(IAgentLoopService, loop));
+    let settle!: (value: { result: string }) => void;
+    const completion = new Promise<{ result: string }>((resolve) => { settle = resolve; });
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new SubagentTask(
+        { agentId: 'child', profileName: 'coder', completion }, 'report work', new AbortController(),
+      ));
+      const result = await executeTool(ctx.get(ITaskWaitTool), context('wait_rejected', { timeout: 86_400, task_id: taskId }));
+      expect(result.isError).toBe(true);
+      await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'wait_rejected', isError: true });
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+      settle({ result: 'NOTIFICATION RECEIPT' });
+      await vi.waitFor(() => expect(loop.hasPendingRequests()).toBe(true));
+      loop.drainNextBatch(ctx.context);
+      await runWillBeginStepHooks(loop);
+      expect(JSON.stringify(ctx.context.get())).toContain('NOTIFICATION RECEIPT');
+      expect(ctx.allEvents.some((event) => event.event === 'task.waitDelivered')).toBe(false);
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+      expect(ctx.allEvents.filter((event) => event.type === '[wire]' && event.event === 'task.notified')).toHaveLength(1);
+    } finally {
+      settle({ result: 'NOTIFICATION RECEIPT' });
+      await ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['active', 'paused', 'blocked', 'complete'] as const)('uses real goal state (%s) for specific and mixed waits', async (status) => {
+    const ctx = createTestAgent();
+    let settle!: (value: { result: string }) => void;
+    const completion = new Promise<{ result: string }>((resolve) => { settle = resolve; });
+    const process = controllableProcess();
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new SubagentTask(
+        { agentId: 'goal-child', profileName: 'coder', completion }, 'goal work', new AbortController(),
+      ));
+      tasks.registerTask(new ProcessTask(process.proc, 'sleep 60', 'mixed process'));
+      const goals = ctx.get(IAgentGoalService);
+      await goals.createGoal({ objective: 'Finish synchronous work' });
+      if (status === 'paused') await goals.pauseGoal();
+      if (status === 'blocked') await goals.markBlocked();
+      if (status === 'complete') await goals.markComplete();
+      const tool = ctx.get(ITaskWaitTool);
+      const specific = executeTool(tool, context('wait_goal_specific', { timeout: 86_400, task_id: taskId }));
+      const any = executeTool(tool, context('wait_goal_any', { timeout: 86_400 }));
+      if (status === 'active') settle({ result: 'GOAL RECEIPT' });
+      const results = await Promise.all([specific, any]);
+      for (const result of results) {
+        expect(result.isError).toBe(status !== 'active');
+        expect(outputString(result)).toContain(status === 'active' ? 'wait_status: completed' : 'Do independent work or end the turn');
+      }
+    } finally {
+      settle({ result: 'GOAL RECEIPT' });
+      process.resolveWait(0);
+      await ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('keeps foreign tasks invisible even with an explicit synchronous exception', async () => {
+    const owner = createTestAgent();
+    const other = createTestAgent();
+    const process = controllableProcess();
+    try {
+      const taskId = owner.get(IAgentTaskService).registerTask(new ProcessTask(process.proc, 'sleep 60', 'private work'));
+      const result = await executeTool(other.get(ITaskWaitTool), context('wait_foreign', {
+        timeout: 86_400, task_id: taskId, sync_wait: true, sync_reason: 'Host needs this result now',
+      }));
+      expect(result.isError).toBe(true);
+      expect(outputString(result)).toBe(`Task not found: ${taskId}`);
+      expect(owner.get(IAgentTaskService).getTask(taskId)?.status).toBe('running');
+    } finally {
+      process.resolveWait(0);
+      await owner.dispose();
+      await other.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['terminal', 'steer', 'abort', 'task_budget'] as const)('ends a 24-hour wait early on %s without extending the task budget', async (ending) => {
+    const ctx = createTestAgent();
+    let settle!: (value: { result: string }) => void;
+    let rejectCompletion!: (reason: unknown) => void;
+    const completion = new Promise<{ result: string }>((resolve, reject) => {
+      settle = resolve;
+      rejectCompletion = reject;
+    });
+    const childController = new AbortController();
+    childController.signal.addEventListener('abort', () => { rejectCompletion(childController.signal.reason); }, { once: true });
+    try {
+      const tasks = ctx.get(IAgentTaskService);
+      vi.useFakeTimers();
+      const taskId = tasks.registerTask(new SubagentTask(
+        { agentId: 'long-child', profileName: 'coder', completion }, 'bounded work', childController,
+      ), { timeoutMs: ending === 'task_budget' ? 120_000 : undefined });
+      const cancelled = new AbortController();
+      const steered = new AbortController();
+      const onUpdate = vi.fn();
+      const pending = executeTool(ctx.get(ITaskWaitTool), {
+        ...context('wait_long', {
+          timeout: 86_400, task_id: taskId, sync_wait: true,
+          sync_reason: 'The host needs the result in this synchronous response',
+        }, cancelled.signal),
+        steerSignal: steered.signal, onUpdate,
+      });
+      const checked = ending === 'abort' ? expect(pending).rejects.toThrow('Aborted by the user') : undefined;
+      await vi.advanceTimersByTimeAsync(120_000);
+      if (ending === 'terminal') settle({ result: 'LONG WAIT RECEIPT' });
+      if (ending === 'steer') steered.abort(abortError('Steered by new input'));
+      if (ending === 'abort') cancelled.abort(new Error('Aborted by the user'));
+      if (ending === 'abort') {
+        await checked;
+      } else {
+        const result = await pending;
+        expect(result.isError).toBe(false);
+        const output = outputString(result);
+        expect(output).toContain(ending === 'steer' ? 'wait_status: interrupted' : 'wait_status: completed');
+        expect(output).toContain('timeout_ms: 86400000');
+        if (ending === 'task_budget') {
+          expect(output).toContain('terminal_reason: timed_out');
+          expect(tasks.getTask(taskId)?.status).toBe('timed_out');
+          expect(childController.signal.aborted).toBe(true);
+        }
+      }
+      if (ending === 'steer' || ending === 'abort') {
+        expect(tasks.getTask(taskId)?.status).toBe('running');
+        expect(childController.signal.aborted).toBe(false);
+      }
+      const updatesAtEnd = onUpdate.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onUpdate).toHaveBeenCalledTimes(updatesAtEnd);
+    } finally {
+      vi.useRealTimers();
+      settle({ result: 'LONG WAIT RECEIPT' });
+      await ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('returns from a wait on a task that never settles once the timeout elapses', async () => {
     const ctx = createTestAgent();
     try {
@@ -1559,14 +1891,22 @@ describe('TaskWait tool (harness)', () => {
         ),
       );
 
-      const result = await executeTool(tool, context('wait_hang', { timeout: 1, task_id: taskId }));
+      vi.useFakeTimers();
+      const pending = executeTool(tool, context('wait_hang', {
+        timeout: 86_400, task_id: taskId, sync_wait: true,
+        sync_reason: 'The user explicitly requires a result in this response',
+      }));
+      await vi.advanceTimersByTimeAsync(86_400_000);
+      const result = await pending;
       const output = outputString(result);
 
       expect(result.isError ?? false).toBe(false);
       expect(output).toContain('wait_status: timed_out');
       expect(output).toContain('[still_running]');
       expect(output).toContain(taskId);
+      expect(tasks.getTask(taskId)?.status).toBe('running');
     } finally {
+      vi.useRealTimers();
       await ctx.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);

@@ -37,10 +37,12 @@ import { AgentStateService } from '#/agent/state/agentStateService';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
+import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IFlagService } from '#/app/flag/flag';
+import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
-import { type TaskWaitInput } from '#/agent/tools/task/task-wait/task-wait';
+import { ITaskWaitTool, type TaskWaitInput } from '#/agent/tools/task/task-wait/task-wait';
 import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
@@ -910,10 +912,12 @@ describe('AgentTaskService', () => {
   it('unwinds a nested wait chain leaf-first without deadlocking', async () => {
     const docs = mapBackedDocs();
     const bytes = new InMemoryStorageService();
-    const mainSvc = buildAgentIx('main', docs, bytes).get(IAgentTaskService);
-    const childSvc = buildAgentIx('child-1', docs, bytes).get(IAgentTaskService);
-    const mainTool = new TaskWaitTool(mainSvc, noopTelemetryService, stubFlag(true));
-    const childTool = new TaskWaitTool(childSvc, noopTelemetryService, stubFlag(true));
+    const mainIx = buildAgentIx('main', docs, bytes);
+    const childIx = buildAgentIx('child-1', docs, bytes);
+    const mainSvc = mainIx.get(IAgentTaskService);
+    const childSvc = childIx.get(IAgentTaskService);
+    const mainTool = mainIx.get(ITaskWaitTool);
+    const childTool = childIx.get(ITaskWaitTool);
 
     const leaf = pendingSubagentTask('agent-grandchild', 'leaf work');
     const taskC = childSvc.registerTask(leaf.task);
@@ -940,7 +944,10 @@ describe('AgentTaskService', () => {
     );
     const mainWait = executeTool(
       mainTool,
-      waitContext('wait_main', { timeout: 30, task_id: taskM }),
+      waitContext('wait_main', {
+        timeout: 30, task_id: taskM, sync_wait: true,
+        sync_reason: 'The host needs the nested result in this synchronous response',
+      }),
     );
     void mainWait.then(() => {
       order.push('mainWait');
@@ -960,10 +967,12 @@ describe('AgentTaskService', () => {
   it('rejects waiting on a task owned by another agent, so a wait cycle cannot form', async () => {
     const docs = mapBackedDocs();
     const bytes = new InMemoryStorageService();
-    const mainSvc = buildAgentIx('main', docs, bytes).get(IAgentTaskService);
-    const childSvc = buildAgentIx('child-1', docs, bytes).get(IAgentTaskService);
-    const mainTool = new TaskWaitTool(mainSvc, noopTelemetryService, stubFlag(true));
-    const childTool = new TaskWaitTool(childSvc, noopTelemetryService, stubFlag(true));
+    const mainIx = buildAgentIx('main', docs, bytes);
+    const childIx = buildAgentIx('child-1', docs, bytes);
+    const mainSvc = mainIx.get(IAgentTaskService);
+    const childSvc = childIx.get(IAgentTaskService);
+    const mainTool = mainIx.get(ITaskWaitTool);
+    const childTool = childIx.get(ITaskWaitTool);
 
     const parent = pendingSubagentTask('agent-parent', 'parent work');
     const taskM = mainSvc.registerTask(parent.task);
@@ -1326,6 +1335,9 @@ describe('AgentTaskService', () => {
     ix.set(IAgentStateService, new AgentStateService());
     ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
+    ix.stub(IFlagService, stubFlag(true));
+    ix.stub(IAgentGoalService, { getGoal: () => ({ goal: null }) });
+    ix.set(ITaskWaitTool, new SyncDescriptor(TaskWaitTool));
     return ix;
   }
 

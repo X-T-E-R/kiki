@@ -2,9 +2,8 @@ import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
-import { DEFAULT_BACKGROUND_TIMEOUT_S } from '#/agent/tools/os/bash/bash';
 
-export const TASK_WAIT_MAX_TIMEOUT_S = DEFAULT_BACKGROUND_TIMEOUT_S;
+export const TASK_WAIT_MAX_TIMEOUT_S = 86_400;
 
 export const TaskWaitInputSchema = z.object({
   timeout: z
@@ -20,6 +19,18 @@ export const TaskWaitInputSchema = z.object({
     .optional()
     .describe(
       'The background task ID to wait for. When omitted, the wait ends as soon as any background task that was running at call time finishes.',
+    ),
+  sync_wait: z
+    .boolean()
+    .optional()
+    .describe(
+      'Explicit synchronous exception for a main agent waiting on a running agent task outside active goal mode (default false). Requires a specific task_id and a concrete sync_reason; not needed for subagents waiting on their own tasks or a main agent waiting on a process task.',
+    ),
+  sync_reason: z
+    .string()
+    .optional()
+    .describe(
+      'Concrete same-turn dependency justifying the main-to-agent sync_wait exception. Routine report collection is not a valid reason; not needed for subagents waiting on their own tasks or a main agent waiting on a process task.',
     ),
 });
 
