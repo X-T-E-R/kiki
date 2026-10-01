@@ -211,6 +211,7 @@ function useActiveController(
 function Header({
   controller,
   railOpen,
+  railAvailable = true,
   terminalAvailable,
   terminalOpen,
   onToggleRail,
@@ -233,6 +234,7 @@ function Header({
   onOpenBotSettings: () => void;
   controller: SessionController | null;
   railOpen: boolean;
+  railAvailable?: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
   onToggleRail: () => void;
@@ -296,7 +298,7 @@ function Header({
             editing={renaming}
             onEditingChange={setRenaming}
             onRename={onRenameSession}
-            onOpenRail={onToggleRail}
+            onOpenRail={railAvailable ? onToggleRail : undefined}
           />
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
           {harness !== undefined ? <HarnessMark harness={harness} /> : null}
@@ -352,35 +354,37 @@ function Header({
         <span className="flex-1" />
       )}
       <PreviewToggleButton />
-      <button
-        type="button"
-        onClick={onToggleRail}
-        title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-        aria-label={t('sv.togglePanelAria')}
-        aria-expanded={railOpen}
-        data-rail-toggle
-        data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
-        className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 ${
-          railOpen
-            ? 'bg-canvas text-ink'
-            : 'text-ink-faint hover:bg-canvas hover:text-ink'
-        }`}
-      >
-        <PanelIcon />
-        {/* The closed inspector stays discoverable: what is waiting on you
-            (accent), else a quiet running mark with the task count. */}
-        {waiting > 0 ? (
-          // A bare count, no fill: the tray already carries the loud mark.
-          <span data-rail-toggle-badge className="text-[12px] leading-[18px] font-medium text-accent-ink tabular-nums" aria-label={tp('inspector.waiting', waiting)} title={tp('inspector.waiting', waiting)}>
-            {waiting}
-          </span>
-        ) : state.busy || runningTasks > 0 ? (
-          <span data-rail-toggle-running className="flex items-center gap-1 text-[12px] text-ink-soft" title={runningTasks > 0 ? tp('inspector.tasks', runningTasks) : t('inspector.running')}>
-            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
-            {runningTasks > 0 ? <span className="tabular-nums">{runningTasks}</span> : null}
-          </span>
-        ) : null}
-      </button>
+      {railAvailable ? (
+        <button
+          type="button"
+          onClick={onToggleRail}
+          title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+          aria-label={t('sv.togglePanelAria')}
+          aria-expanded={railOpen}
+          data-rail-toggle
+          data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
+          className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:min-w-8 ${
+            railOpen
+              ? 'bg-canvas text-ink'
+              : 'text-ink-faint hover:bg-canvas hover:text-ink'
+          }`}
+        >
+          <PanelIcon />
+          {/* The closed inspector stays discoverable: what is waiting on you
+              (accent), else a quiet running mark with the task count. */}
+          {waiting > 0 ? (
+            // A bare count, no fill: the tray already carries the loud mark.
+            <span data-rail-toggle-badge className="text-[12px] leading-[18px] font-medium text-accent-ink tabular-nums" aria-label={tp('inspector.waiting', waiting)} title={tp('inspector.waiting', waiting)}>
+              {waiting}
+            </span>
+          ) : state.busy || runningTasks > 0 ? (
+            <span data-rail-toggle-running className="flex items-center gap-1 text-[12px] text-ink-soft" title={runningTasks > 0 ? tp('inspector.tasks', runningTasks) : t('inspector.running')}>
+              <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
+              {runningTasks > 0 ? <span className="tabular-nums">{runningTasks}</span> : null}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
     </WorkspaceHeader>
   );
 }
@@ -389,7 +393,8 @@ function Header({
  * Session title + cwd. The title renames in place (Enter commits, Esc
  * reverts, blur commits) through the same profile patch the sidebar's
  * dialog uses; the cwd beside it is quiet text, not a control — clicking it
- * opens the rail, which is where the rest of that context lives.
+ * opens the rail when that surface is available, which is where the rest of
+ * that context lives.
  */
 export function SessionTitle({
   title,
@@ -407,7 +412,7 @@ export function SessionTitle({
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   onRename: (title: string) => Promise<void>;
-  onOpenRail: () => void;
+  onOpenRail?: () => void;
 }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(title);
@@ -476,16 +481,27 @@ export function SessionTitle({
         </h1>
       )}
       {cwd !== undefined && cwd !== '' && !editing ? (
-        <button
-          type="button"
-          data-session-cwd
-          onClick={onOpenRail}
-          title={cwd}
-          className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
-        >
-          {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
-          {shortCwd(worktree?.source_root ?? cwd)}
-        </button>
+        onOpenRail !== undefined ? (
+          <button
+            type="button"
+            data-session-cwd
+            onClick={onOpenRail}
+            title={cwd}
+            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
+          >
+            {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
+            {shortCwd(worktree?.source_root ?? cwd)}
+          </button>
+        ) : (
+          <span
+            data-session-cwd
+            title={cwd}
+            className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint sm:block"
+          >
+            {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
+            {shortCwd(worktree?.source_root ?? cwd)}
+          </span>
+        )
       ) : null}
       {!editing ? <WorktreeMark worktree={worktree} className="max-w-[8rem] shrink-[50] self-center sm:max-w-[12rem]" /> : null}
     </div>
@@ -1310,15 +1326,13 @@ export function SessionView({
   // only): attachment chips and pill overrides restore instead of vanishing
   // on every session switch. The /new hand-off state wins on first mount.
   const restoredComposer = useMemo(() => readComposerState(sessionId), [sessionId]);
-  // The inspector starts open on wide windows (Settings › General can turn
-  // that off). Below lg it is a fixed overlay drawer, so it always starts
-  // closed there and opens from the header toggle.
-  const railIsOverlay = useMediaQuery('(max-width: 1023px)');
-  const [railOpen, setRailOpen] = useState(() => defaults.railOpenByDefault && !railIsOverlay);
-  // A desktop rail becomes a fixed drawer on resize. Do not let that drawer
-  // cover a full-width preview tab that was already open; a deliberate rail
-  // toggle while narrow still works because this runs only at the breakpoint.
-  useEffect(() => { if (railIsOverlay) setRailOpen(false); }, [railIsOverlay]);
+  // The right rail disappears when horizontal space is constrained (<1024px, lg breakpoint)
+  // rather than showing as a floating overlay drawer. When the window widens (>=1024px),
+  // it restores inline following the user's explicit preference (defaults to railOpenByDefault).
+  const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
+  const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
+  const railOpen = !isNarrowScreen && userRailOpen;
+  const railIsOverlay = false;
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
   // rail's owner when the user is looking at an embedded subagent view — the
@@ -1508,8 +1522,8 @@ export function SessionView({
     writeLastSessionId(sessionId);
   }, [sessionId]);
 
-  // Close the rail drawer on Escape (the app-level sidebar closes itself).
-  // Overlay / PTY own the key first; abort lives in the other listener and
+  // Close the inline rail on Escape (the app-level sidebar closes itself).
+  // Overlays / PTY own the key first; abort lives in the other listener and
   // skips when the terminal panel is open so the two cannot double-fire.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1525,7 +1539,7 @@ export function SessionView({
       }
       if (!railOpen && !terminalOpen) return;
       event.preventDefault();
-      setRailOpen(false);
+      setUserRailOpen(false);
       if (terminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
@@ -2493,10 +2507,6 @@ export function SessionView({
   const forest = useStableForest(forestRaw);
 
   const previewRef = useRef<MediaPreviewApi | null>(null);
-  // Read at open time; kept off openAgent's deps so its identity (a memo
-  // input across the transcript) does not change when the rail toggles.
-  const overlayRailOpenRef = useRef(false);
-  overlayRailOpenRef.current = railIsOverlay && railOpen;
 
   const openAgent = useCallback(
     (agentId: string) => {
@@ -2505,9 +2515,6 @@ export function SessionView({
         return;
       }
       const mode = liveSettings.subagentPanelOpenMode;
-      // A narrow viewport uses the same preview tab as desktop. Its shell
-      // becomes a full-width overlay; only the explicit fullscreen preference
-      // or action navigates to the agent route.
       if (mode === 'fullscreen' || previewRef.current === null) {
         void navigate(agentDetailPath(sessionId, agentId));
         return;
@@ -2515,14 +2522,6 @@ export function SessionView({
       const node = forest.byId[agentId];
       const title = node?.label ?? agentId;
       previewRef.current.openAgentPanel(agentId, title);
-      // On narrow viewports the rail is an overlay over the preview: an agent
-      // opened from it (a row, a Needs-you origin, a relation) would get its
-      // tab underneath. The overlay steps aside and the new tab takes focus.
-      // The docked rail stays open.
-      if (overlayRailOpenRef.current) {
-        setRailOpen(false);
-        focusAgentTabWhenMounted(agentId);
-      }
     },
     [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
   );
@@ -2540,7 +2539,6 @@ export function SessionView({
         const title = t('btw.tabTitle');
         if (previewRef.current !== null) {
           previewRef.current.openAgentPanel(agentId, title);
-          if (overlayRailOpenRef.current) setRailOpen(false);
           focusAgentTabWhenMounted(agentId);
         } else {
           void navigate(agentDetailPath(sessionId, agentId));
@@ -2569,16 +2567,16 @@ export function SessionView({
     [location.pathname, navigate, sessionId],
   );
   const toggleRail = useCallback(() => {
-    setRailOpen((value) => !value);
+    setUserRailOpen((value) => !value);
     setBotSettingsOpen(false);
   }, []);
   const closeRail = useCallback(() => {
-    setRailOpen(false);
+    setUserRailOpen(false);
     setBotSettingsOpen(false);
   }, []);
   openBotSettingsRef.current = () => {
     setBotSettingsOpen(true);
-    setRailOpen(true);
+    setUserRailOpen(true);
   };
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
     () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail } }),
@@ -3431,7 +3429,7 @@ export function SessionView({
         inheritMediaPreview
         main={{
           header: <Header
-            controller={controller} railOpen={railOpen}
+            controller={controller} railOpen={railOpen} railAvailable={!isNarrowScreen}
             terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}

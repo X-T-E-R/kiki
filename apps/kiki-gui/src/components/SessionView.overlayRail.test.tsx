@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
 import type { MediaPreviewApi } from './mediaPreviewContext';
-import { SessionRouteView } from './SessionView';
+import { SessionRouteView, SessionTitle } from './SessionView';
 
 // SessionView with its surroundings stubbed down to what an agent open from
 // the rail touches: the rail (which calls onOpenSubagent), the preview
@@ -114,23 +114,42 @@ function StubRail({ onOpenSubagent }: { onOpenSubagent: (agentId: string) => voi
 vi.mock('./RightRail', () => ({ RightRail: StubRail }));
 
 let narrow = true;
+type MediaChangeListener = (event: MediaQueryListEvent) => void;
+const narrowListeners = new Set<MediaChangeListener>();
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.setItem('kiki.locale', 'en');
-  vi.stubGlobal('matchMedia', (query: string) => ({
-    matches: query.includes('max-width') ? narrow : false,
-    media: query,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }));
+  vi.stubGlobal('matchMedia', (query: string) => {
+    const isNarrowQuery = query.includes('max-width: 1023px');
+    return {
+      matches: isNarrowQuery ? narrow : false,
+      media: query,
+      addEventListener: (event: string, listener: MediaChangeListener) => {
+        if (isNarrowQuery && event === 'change') narrowListeners.add(listener);
+      },
+      removeEventListener: (event: string, listener: MediaChangeListener) => {
+        if (isNarrowQuery && event === 'change') narrowListeners.delete(listener);
+      },
+    };
+  });
 });
 afterAll(() => {
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   vi.unstubAllGlobals();
 });
 
-async function mountAt(width: 'narrow' | 'wide') {
+async function resizeTo(width: 'narrow' | 'wide'): Promise<void> {
+  await act(async () => {
+    narrow = width === 'narrow';
+    const event = { matches: narrow, media: '(max-width: 1023px)' } as MediaQueryListEvent;
+    for (const listener of narrowListeners) listener(event);
+  });
+}
+
+async function mountAt(width: 'narrow' | 'wide', railOpenByDefault = true) {
   narrow = width === 'narrow';
+  localStorage.setItem('kiki.settings', JSON.stringify({ railOpenByDefault }));
   opened.length = 0;
   const host = document.createElement('div');
   document.body.append(host);
@@ -157,47 +176,108 @@ async function mountAt(width: 'narrow' | 'wide') {
     );
   });
   const rail = () => host.querySelector('[data-session-rail]');
-  const openRail = async () => {
-    if (rail() === null) await act(async () => { host.querySelector<HTMLButtonElement>('[data-rail-toggle]')!.click(); });
-  };
+  const toggle = () => host.querySelector<HTMLButtonElement>('[data-rail-toggle]');
   const unmount = async () => {
     await act(async () => { root.unmount(); });
     host.remove();
     for (const name of Object.keys(slots)) slots[name] = null;
   };
-  return { host, rail, openRail, unmount };
+  return { host, rail, toggle, unmount };
 }
 
-const frames = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+async function mountTitleWithoutRail() {
+  const onEditingChange = vi.fn();
+  const onRename = vi.fn(async () => {});
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(
+      <I18nProvider>
+        <SessionTitle
+          title="Release prep"
+          cwd="C:/fixture/workshop"
+          editing={false}
+          onEditingChange={onEditingChange}
+          onRename={onRename}
+        />
+      </I18nProvider>,
+    );
+  });
+  return {
+    host,
+    unmount: async () => {
+      await act(async () => { root.unmount(); });
+      host.remove();
+    },
+  };
+}
 
-describe('opening a subagent from the overlay rail', () => {
-  it.each(['roster', 'needs-you', 'relation'])('closes the narrow rail and focuses the new tab (%s)', async (entry) => {
+describe('right rail responsive layout', () => {
+  it('does not render the rail or a header entry below the lg breakpoint', async () => {
     const view = await mountAt('narrow');
     try {
-      await view.openRail();
-      expect(view.rail()).not.toBeNull();
-      await act(async () => { view.host.querySelector<HTMLButtonElement>(`[data-entry="${entry}"]`)!.click(); });
-      await frames();
-      expect(opened).toEqual(['worker']);
       expect(view.rail()).toBeNull();
-      const tab = view.host.querySelector<HTMLElement>('[data-preview-tab-key="panel:worker"]')!;
-      expect(tab.getAttribute('aria-selected')).toBe('true');
-      expect(document.activeElement).toBe(tab);
-      expect(view.host.querySelector('[data-rail-toggle]')!.getAttribute('aria-expanded')).toBe('false');
+      expect(view.host.querySelector('.app-overlay-backdrop')).toBeNull();
+      expect(view.toggle()).toBeNull();
+      expect(view.host.querySelector('[data-agent-rail-toggle]')).toBeNull();
     } finally {
       await view.unmount();
     }
   });
 
-  it('keeps the docked rail open on a wide viewport', async () => {
-    const view = await mountAt('wide');
+  it('renders the rail inline on wide screens and follows railOpenByDefault', async () => {
+    const openByDefault = await mountAt('wide', true);
     try {
-      await view.openRail();
-      await act(async () => { view.host.querySelector<HTMLButtonElement>('[data-entry="roster"]')!.click(); });
-      await frames();
-      expect(opened).toEqual(['worker']);
+      expect(openByDefault.rail()).not.toBeNull();
+      expect(openByDefault.toggle()?.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await openByDefault.unmount();
+    }
+
+    const closedByDefault = await mountAt('wide', false);
+    try {
+      expect(closedByDefault.rail()).toBeNull();
+      expect(closedByDefault.toggle()?.getAttribute('aria-expanded')).toBe('false');
+    } finally {
+      await closedByDefault.unmount();
+    }
+  });
+
+  it('preserves the wide-screen preference across wide → narrow → wide', async () => {
+    const view = await mountAt('wide', true);
+    try {
       expect(view.rail()).not.toBeNull();
-      expect(view.host.querySelector('[data-preview-tab-key="panel:worker"]')!.getAttribute('aria-selected')).toBe('true');
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
+
+      await resizeTo('narrow');
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()).toBeNull();
+
+      await resizeTo('wide');
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
+
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).not.toBeNull();
+      await resizeTo('narrow');
+      await resizeTo('wide');
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('does not make the cwd a rail entry when the rail is unavailable', async () => {
+    const view = await mountTitleWithoutRail();
+    try {
+      const cwd = view.host.querySelector('[data-session-cwd]');
+      expect(cwd?.tagName).toBe('SPAN');
+      await act(async () => { cwd?.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(view.host.querySelector('[data-session-rail]')).toBeNull();
     } finally {
       await view.unmount();
     }
