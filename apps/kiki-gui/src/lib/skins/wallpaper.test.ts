@@ -80,6 +80,22 @@ describe('wallpaper material', () => {
     expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-surface-filter: none;');
   });
 
+  it('keeps page and inspector washes on the dial with assist using frost instead of an opaque floor', () => {
+    const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const page = '.app-sheet:not(:has(> .conversation-shell)):not(:has([data-settings-scroll]))';
+    for (const selector of [page, ':is(.app-rail, [data-preview-workspace])']) {
+      const reading = rule(`${assist} ${selector}`);
+      expect(reading).toContain('backdrop-filter: var(--kiki-reading-filter);');
+      expect(reading).not.toMatch(/background(?:-color)?:/);
+    }
+    expect(rule(`${scope} .app-sheet > .bg-paper`)).toContain('background-color: transparent;');
+    expect(rule(`${scope} [data-task-board-page] [data-task-board-container]`)).toContain('background-color: transparent;');
+    expect(css).toContain('--kiki-reading-filter: blur(max(6px, var(--kiki-surface-blur, 0px))) saturate(1.1);');
+    expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-reading-filter: none;');
+    expect(css).not.toMatch(/background(?:-color)?: var\(--kiki-solid-(?:paper|panel)\)/);
+  });
+
   it('sizes replaced media explicitly instead of falling back to intrinsic dimensions', () => {
     const media = rule('[data-kiki-backdrop-item]');
     expect(media).toContain('inset: calc(-1 * var(--kiki-backdrop-overscan, 0px));');

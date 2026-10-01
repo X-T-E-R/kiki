@@ -120,6 +120,7 @@
   --kiki-surface-panel: color-mix(in srgb, var(--color-panel) var(--kiki-surface-alpha, 100%), transparent);
   --kiki-surface-canvas: color-mix(in srgb, var(--color-canvas) var(--kiki-surface-alpha, 100%), transparent);
   --kiki-surface-filter: blur(var(--kiki-surface-blur, 0px)) saturate(1.1);
+  --kiki-reading-filter: blur(max(6px, var(--kiki-surface-blur, 0px))) saturate(1.1);
 }
 
 /* Sidebar: translucent in window and sidebar scope. */
@@ -154,6 +155,13 @@
   background: var(--kiki-surface-paper);
   /* Keep negative-z reading layers inside the sheet without a second blur. */
   isolation: isolate;
+}
+/* Routed page roots sit on the sheet wash, rather than covering it with a
+ * second paper fill. Board has one more full-size paper wrapper. Controls,
+ * cards and dialogs inside the page keep their own fills. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .bg-paper,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-task-board-page] [data-task-board-container] {
+  background-color: transparent;
 }
 /* The session header sits on the sheet's own ground; over a picture that
  * ground is the translucent sheet, not a second opaque band. */
@@ -281,17 +289,16 @@
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:has([data-settings-scroll]) > header {
   background: var(--kiki-text-paper);
 }
-/* Pages without their own text layer yet (tasks, memory, usage, …): the
- * whole sheet is text, so it takes the solved floor, as before the split. */
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:not(:has(> .conversation-shell)):not(:has([data-settings-scroll])) {
-  background: var(--kiki-solid-paper);
-}
-/* The inspector and preview are dense text panels. */
+/* Page sheets, inspector and preview honor the dial even with assist on.
+ * Keep the existing frost as a basic reading aid (at least 6px), not a solved
+ * opaque floor across the whole panel. Low dials intentionally trade contrast
+ * for the picture; the transcript and settings retain their local text bands. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:not(:has(> .conversation-shell)):not(:has([data-settings-scroll])),
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, [data-preview-workspace]) {
-  background-color: var(--kiki-solid-panel);
+  -webkit-backdrop-filter: var(--kiki-reading-filter);
+  backdrop-filter: var(--kiki-reading-filter);
 }
-/* The solved panel already carries the text floor; sticky chrome must not
- * repaint that floor as a second, denser band. */
+/* Sticky chrome reads on the rail's wash/frost; do not stack a second wash. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky.bg-panel {
   background-color: transparent;
   -webkit-backdrop-filter: none;
@@ -387,6 +394,7 @@
 @media (prefers-reduced-transparency: reduce) {
   :root[data-kiki-bg] {
     --kiki-surface-filter: none;
+    --kiki-reading-filter: none;
   }
 }
 /* Phone widths: the sidebar is a drawer over the sheet, not over the media,

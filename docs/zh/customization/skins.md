@@ -205,6 +205,8 @@ Kiki 内置皮肤保证每个文字 token 在 `canvas`、`paper`、`panel` 上�
 - `background.media` 列出 1–12 个文件；多于一个时，`interval`（秒）会让它们轮播。`poster` 是视频暂停时显示的静帧。
 - 背景参数有 `fit`（`cover` `contain` `tile` `center`）、`alignment`（`center` `top` `bottom` `left` `right` `topLeft` `topRight` `bottomLeft` `bottomRight`）、`opacity`（0–1）、`blur`（0–40）、`brightness`（0.4–1.4）、`scrim`（0–0.9）、`scope`（`window` `main` `sidebar`）、`surfaceOpacity`（0.3–1）和 `surfaceBlur`（0–32）。命名沿用 Windows Terminal 的背景设置。
 
+`surfaceOpacity` 控制所选背景范围内所有 GUI 页面的纸面和右栏底色。阅读辅助保留聊天区和设置页的局部文字底色，对其他页面纸面和右栏使用磨砂，不再提高它们的不透明度。低不透明度下，复杂背景上的文字即使开启辅助也可能更难读；提高 `surfaceOpacity` 可以加强文字与背景的分隔。对话框、弹出菜单和输入卡片仍保留实心底色。
+
 内置技能 `kiki-appearance` 会带着 agent 做一个外观包：格式、每个颜色的对比度要求、媒体尺寸与编码、打包，以及常见的坑。
 
 ### 外观包能放什么、不能放什么
