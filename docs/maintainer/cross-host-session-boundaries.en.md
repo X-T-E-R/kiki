@@ -20,6 +20,8 @@ The home directory is also the root of the server's file storage. Session metada
 
 Two runtimes on one physical computer are different thread hosts when they use independent homes with independent device IDs.
 
+In thread tool inputs, `host_id: "local"`, an empty `host_id`, or an omitted `host_id` addresses the current server's host; references are normalized to its stable host ID before cursor comparisons and persistence. These aliases do not bridge homes: an explicit different host ID still fails with `thread.cross_host` and the existing error message.
+
 ## Current topology
 
 The supported GUI and Codex paths deliberately construct different storage and authority domains.

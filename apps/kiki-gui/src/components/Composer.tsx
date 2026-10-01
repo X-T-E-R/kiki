@@ -961,7 +961,8 @@ export function Composer({
   const threadRefs = useMemo(() => findThreadRefs(text), [text]);
   const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.sessionId), [threadRefs]);
   const fetchThreadSession = useCallback((id: string) => client.getSession(id), [client]);
-  const threadRefDirectory = useThreadRefDirectory(threadRefIds, fetchThreadSession);
+  const fetchThreadHostId = useCallback(() => client.klient.global.threads.hostId(), [client]);
+  const threadRefDirectory = useThreadRefDirectory(threadRefIds, fetchThreadSession, fetchThreadHostId);
   const threadRefBackdropRef = useRef<HTMLDivElement>(null);
   const removeThreadRefAt = (index: number) => {
     const ref = threadRefs[index];

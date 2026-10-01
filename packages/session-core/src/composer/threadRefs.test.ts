@@ -55,6 +55,7 @@ describe('isAppRouteLink', () => {
 describe('thread context block', () => {
   const info = {
     sessionId: ID,
+    hostId: 'host-example',
     title: 'Fix "flaky" <tests>',
     workspaceId: 'wd_1',
     workspaceName: 'kiki',
@@ -67,10 +68,10 @@ describe('thread context block', () => {
     const sent = appendThreadRefContext(`compare with /s/${ID} and /s/${ID}`, () => info);
     expect(sent).toBe(
       `compare with /s/${ID} and /s/${ID}\n\n<thread_refs>\n` +
-        `<thread_ref id="${ID}" title="Fix &quot;flaky&quot; &lt;tests&gt;" workspace="kiki" workspace_id="wd_1" ` +
+        `<thread_ref id="${ID}" host_id="host-example" title="Fix &quot;flaky&quot; &lt;tests&gt;" workspace="kiki" workspace_id="wd_1" ` +
         'cwd="C:/src/kiki" status="running" updated_at="2026-01-01T12:00:00.000Z"/>\n' +
-        'The user linked the Kiki threads above. Read one with ThreadRead (ThreadList returns the host_id it needs) ' +
-        'or search it with HistorySearch (scope=session, session_id=<id>).\n</thread_refs>',
+        'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id ' +
+        '(omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).\n</thread_refs>',
     );
     expect(stripThreadRefContext(sent)).toBe(`compare with /s/${ID} and /s/${ID}`);
   });
@@ -83,6 +84,12 @@ describe('thread context block', () => {
 
   it('omits what is unknown instead of guessing', () => {
     expect(threadRefTag({ sessionId: ID, status: 'unknown' })).toBe(`<thread_ref id="${ID}" status="unknown"/>`);
+  });
+
+  it('preserves and escapes the host ID, including for unloaded threads', () => {
+    const resolved = threadRefInfoOf(ID, undefined, undefined, 'host-"example&');
+    expect(resolved.hostId).toBe('host-"example&');
+    expect(threadRefTag(resolved)).toBe(`<thread_ref id="${ID}" host_id="host-&quot;example&amp;" status="unknown"/>`);
   });
 
   it('derives status from the record, pending interaction first', () => {

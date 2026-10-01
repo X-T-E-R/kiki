@@ -19,7 +19,7 @@ import { IRoomService } from '#/app/room/room';
 
 const ThreadRefSchema = z
   .object({
-    host_id: z.string().min(1).max(256),
+    host_id: z.string().max(256).optional().describe('Local host ID; omit, use an empty string, or use "local" for this host. Other host IDs are rejected.'),
     workspace_id: z.string().min(1).max(512),
     session_id: z.string().min(1).max(256),
   })
@@ -257,7 +257,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
 }
 
 function fromToolRef(ref: z.infer<typeof ThreadRefSchema>): ThreadRef {
-  return { hostId: ref.host_id, workspaceId: ref.workspace_id, sessionId: ref.session_id };
+  return { hostId: ref.host_id ?? 'local', workspaceId: ref.workspace_id, sessionId: ref.session_id };
 }
 
 function mainAgentOnly(accessor: ServicesAccessor): boolean {

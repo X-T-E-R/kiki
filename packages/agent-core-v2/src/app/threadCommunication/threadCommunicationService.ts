@@ -342,6 +342,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   async readThread(input: ReadThreadInput): Promise<ReadThreadResult> {
     await this.ensureRecovery();
+    input = { ...input, thread: this.requireLocalHost(input.thread) };
     const summary = await this.requireThread(input.thread, input.caller);
     const limit = boundedLimit(input.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'read');
@@ -430,6 +431,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
+    input = { ...input, source: this.requireLocalHost(input.source), target: this.requireLocalHost(input.target) };
     await this.requireThread(input.source, input.source, input.allowWhenDisabled !== true);
     if (sameThread(input.source, input.target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
@@ -457,6 +459,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }, requireCommunication = true): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
+    input = { ...input, target: this.requireLocalHost(input.target) };
     await this.requireThread(input.target, input.caller, requireCommunication);
     const storedInput = {
       producer: input.producer,
@@ -520,9 +523,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         `ThreadWait accepts between 1 and ${MAX_WAIT_THREADS} threads.`,
       );
     }
+    input = { ...input, threads: input.threads.map((item) => ({ ...item, thread: this.requireLocalHost(item.thread) })) };
     const seen = new Set<string>();
     for (const item of input.threads) {
-      this.requireLocalHost(item.thread);
       const key = threadIdentity(item.thread);
       if (seen.has(key)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'ThreadWait contains duplicate threads.');
@@ -612,12 +615,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     })) !== false;
   }
 
-  private requireLocalHost(ref: ThreadRef): void {
-    if (ref.hostId !== this.hostId) {
+  private requireLocalHost(ref: ThreadRef): ThreadRef {
+    const hostId = ref.hostId === 'local' || ref.hostId === '' || ref.hostId === undefined ? this.hostId : ref.hostId;
+    if (hostId !== this.hostId) {
       throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'Cross-host thread communication is not supported.', {
         details: { hostId: ref.hostId },
       });
     }
+    return { ...ref, hostId };
   }
 
   private async requireThread(ref: ThreadRef, caller?: ThreadCaller, requireCommunication = true): Promise<SessionSummary> {

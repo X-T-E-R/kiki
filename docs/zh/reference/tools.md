@@ -186,6 +186,8 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 主 Agent 默认提供 5 个线程工具：`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。`ThreadCreate` 创建独立的顶层会话；另外 4 个工具通过主机/工作区/会话引用访问同一台本地主机上的现有会话，其输入字段为 `host_id`、`workspace_id` 与 `session_id`。子 Agent 无法调用这些工具。
 
+在 `ThreadRead`、`ThreadSend` 和 `ThreadWait` 中，省略 `host_id`、留空或设为 `"local"` 都表示当前 server 的 host。不同的 host ID 仍会被拒绝，即使运行在同一台物理计算机上。GUI 线程链接会在模型收到的引用上下文中附带 `host_id`，模型可以直接使用，无需先调用 `ThreadList`。
+
 - `ThreadCreate` 仅在用户明确要求新建线程或会话时使用，不能用于常规委派。可选 `cwd` 必须是已存在目录的绝对路径，可以在当前工作区之外；省略时采用当前会话的工作区根目录。可选 `profile` 必须是已启用的主 Agent profile；省略时使用默认主 Agent。可选 `prompt` 最多 100,000 字符，会作为新线程的首条用户消息立即启动；省略时保持空会话，等待用户输入。可选 `title` 优先于自动标题；省略时若提供了 `prompt`，取首行前 80 个字符作为标题，否则沿用会话的默认名称。结果返回 `id`、`title`、`cwd`、`profile` 和 `prompt_started`。新线程几秒内会出现在左侧会话列表中；之后可用 `ThreadSend` 和 `ThreadWait` 继续交互。
 - `ThreadList` 按更新时间从新到旧列出已启用且未归档的会话，也可以用 `workspace_id` 筛选。`limit` 默认为 50，取值为 1–100；还有下一页时会返回不透明 cursor。
 - `ThreadRead` 读取已完成的主 Agent turn，不会恢复冷会话。参数包括 thread 引用与可选 cursor；`limit` 默认为 20，取值为 1–100。

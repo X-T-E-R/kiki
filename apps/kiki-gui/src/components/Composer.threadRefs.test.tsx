@@ -17,6 +17,7 @@ const REF_ID = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const getSession = vi.fn();
+const getHostId = vi.fn();
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client: {
@@ -24,8 +25,11 @@ vi.mock('../state/connection', () => ({
       listSessionSkills,
       listWorkspaceSkills: vi.fn().mockResolvedValue({ skills: [] }),
       listNamedAgentProfiles: vi.fn().mockResolvedValue({ items: [] }),
+      getAgentCapabilities: vi.fn().mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true,
+        profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] }),
       uploadFile: vi.fn(),
       getSession,
+      klient: { global: { threads: { hostId: getHostId } } },
     },
   }),
 }));
@@ -71,6 +75,7 @@ beforeEach(() => {
   listModels.mockReset().mockResolvedValue({ items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   getSession.mockReset().mockRejectedValue(new Error('not found'));
+  getHostId.mockReset().mockResolvedValue('host-example');
 });
 afterEach(() => {
   act(() => { for (const root of roots.splice(0)) root.unmount(); });
@@ -165,13 +170,23 @@ describe('Composer thread links', () => {
     await settle();
     expect(onSend.mock.calls[0]?.[0]).toBe(
       `compare with /s/${REF_ID}\n\n<thread_refs>\n` +
-        `<thread_ref id="${REF_ID}" title="Fix the flaky upload test" workspace="kiki" workspace_id="wd_kiki" ` +
+        `<thread_ref id="${REF_ID}" host_id="host-example" title="Fix the flaky upload test" workspace="kiki" workspace_id="wd_kiki" ` +
         'cwd="C:/src/kiki" status="running" updated_at="2026-01-01T11:30:00.000Z"/>\n' +
-        'The user linked the Kiki threads above. Read one with ThreadRead (ThreadList returns the host_id it needs) ' +
-        'or search it with HistorySearch (scope=session, session_id=<id>).\n</thread_refs>',
+        'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id ' +
+        '(omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).\n</thread_refs>',
     );
     // The record came from the cache: no extra fetch.
     expect(getSession).not.toHaveBeenCalled();
+    expect(getHostId).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the local alias while the host ID is loading', async () => {
+    getHostId.mockReturnValue(new Promise<string>(() => {}));
+    const onSend = vi.fn();
+    const container = await render({ sessionId: 'session_current', onSend, initial: `/s/${REF_ID}` }, seedLists);
+    await click(sendButton(container));
+    await settle();
+    expect(onSend.mock.calls[0]?.[0]).toContain(`id="${REF_ID}" host_id="local"`);
   });
 
   it('shows a tray chip with title, workspace and status, and removes the whole link from it', async () => {

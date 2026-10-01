@@ -20,6 +20,8 @@ Home 目录同时也是 server 文件存储的根。会话元数据、wire 记�
 
 即使运行在同一台物理计算机上，只要两个运行时使用独立 home 和独立 device ID，它们就是不同的 thread host。
 
+在线程工具输入中，`host_id: "local"`、空 `host_id` 或省略 `host_id` 都表示当前 server 的 host；引用会在 cursor 比较和持久化前规范化为它的稳定 host ID。这些别名不会桥接 home：显式指定不同 host ID 仍以 `thread.cross_host` 和原有错误文案失败。
+
 ## 当前拓扑
 
 受支持的 GUI 与 Codex 路径会有意建立不同的存储与权限域。

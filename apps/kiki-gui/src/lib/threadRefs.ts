@@ -68,6 +68,7 @@ const noopSubscribe = () => () => {};
 export function useThreadRefDirectory(
   ids: readonly string[] = [],
   fetchSession?: (sessionId: string) => Promise<Session>,
+  fetchHostId?: () => Promise<string>,
 ): ThreadRefDirectory {
   const client = useContext(QueryClientContext);
   // Re-render on cache changes; the version counter keeps the snapshot stable.
@@ -94,6 +95,12 @@ export function useThreadRefDirectory(
       void client.prefetchQuery({ queryKey: ['thread-ref', id], queryFn: () => fetchSession(id), staleTime: 60_000, retry: false });
     }
   }, [client, fetchSession, missing]);
+  const hasRefs = ids.length > 0;
+  useEffect(() => {
+    if (client === undefined || fetchHostId === undefined || !hasRefs) return;
+    void client.prefetchQuery({ queryKey: ['thread-host-id'], queryFn: fetchHostId, staleTime: Infinity, retry: false });
+  }, [client, fetchHostId, hasRefs]);
+  const hostId = client?.getQueryData<string>(['thread-host-id']) ?? 'local';
   return useMemo(() => {
     const lookup = (sessionId: string): ThreadRefEntry => {
       const session = snapshot.sessions.get(sessionId);
@@ -103,8 +110,8 @@ export function useThreadRefDirectory(
       lookup,
       info: (sessionId) => {
         const entry = lookup(sessionId);
-        return threadRefInfoOf(sessionId, entry.session, entry.workspace);
+        return threadRefInfoOf(sessionId, entry.session, entry.workspace, hostId);
       },
     };
-  }, [snapshot]);
+  }, [snapshot, hostId]);
 }

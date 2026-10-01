@@ -65,6 +65,13 @@ import { Error2, ErrorCodes } from '#/errors';
 import { createTestAgent } from '../../harness';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import {
+  IReadThreadTool, ReadThreadTool, ReadThreadToolInputSchema,
+  ISendMessageToThreadTool, SendMessageToThreadTool, SendMessageToThreadToolInputSchema,
+  IWaitThreadsTool, WaitThreadsTool, WaitThreadsToolInputSchema,
+} from '#/agent/tools/thread-communication/threadCommunicationTools';
+import { IRoomService } from '#/app/room/room';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 
 const summaries: Record<string, SessionSummary> = {
   source: {
@@ -147,6 +154,7 @@ describe('ThreadCommunicationService', () => {
     globalEnabled = true;
     workspaceOverrides = new Map();
     events = [];
+    deliveredMessage = undefined;
     activityEvents = [];
     wireRecords = [];
     acceptError = undefined;
@@ -311,6 +319,60 @@ describe('ThreadCommunicationService', () => {
   afterEach(async () => {
     disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it.each([undefined, '', 'local', 'canonical'])('resolves tool host_id=%s to the local host for read, peer send and wait', async (host) => {
+    const service = ix.get(IThreadCommunicationService);
+    ix.stub(ISessionContext, { sessionId: 'source', workspaceId: 'workspace-a' });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(IRoomService, {});
+    ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+    ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+    ix.set(IWaitThreadsTool, new SyncDescriptor(WaitThreadsTool));
+    const thread = { host_id: host === 'canonical' ? service.hostId : host, workspace_id: 'workspace-b', session_id: 'target' };
+    const read = ix.get(IReadThreadTool).resolveExecution(ReadThreadToolInputSchema.parse({ thread }));
+    const send = ix.get(ISendMessageToThreadTool).resolveExecution(SendMessageToThreadToolInputSchema.parse({ thread, content: 'hello', idempotency_key: 'alias-send' }));
+    const wait = ix.get(IWaitThreadsTool).resolveExecution(WaitThreadsToolInputSchema.parse({ threads: [{ thread }], timeout_ms: 0 }));
+    if (!('execute' in read) || !('execute' in send) || !('execute' in wait)) throw new Error('Expected executable thread tools.');
+    const canonical = ref(service.hostId, 'workspace-b', 'target');
+    expect(JSON.parse((await read.execute({} as never)).output as string).thread).toEqual(canonical);
+    expect(JSON.parse((await send.execute({} as never)).output as string).delivery).toBe('delivered');
+    expect(deliveredMessage?.target).toEqual(canonical);
+    expect(deliveredMessage?.producer).toMatchObject({ kind: 'peer_thread', source: ref(service.hostId, 'workspace-a', 'source') });
+    const waited = JSON.parse((await wait.execute({} as never)).output as string);
+    expect(waited.threads[0].thread).toEqual(canonical);
+    await expect(service.waitThreads({ threads: [{ thread: canonical, cursor: waited.threads[0].cursor }], timeoutMs: 0 })).resolves.toMatchObject({ timedOut: true });
+  });
+
+  it.each(['local', ''])('canonicalizes host alias %s for external and room sends', async (hostId) => {
+    const service = ix.get(IThreadCommunicationService);
+    const target = ref(hostId, 'workspace-b', 'target');
+    await service.sendMessage({ target, content: 'external', idempotencyKey: 'external-alias' });
+    expect(deliveredMessage?.target.hostId).toBe(service.hostId);
+    await service.sendRoomMessage({ target, roomId: 'room-a', content: 'room', idempotencyKey: 'room-alias', targeted: true });
+    expect(deliveredMessage?.target.hostId).toBe(service.hostId);
+  });
+
+  it('preserves cross-host rejection for read, send, peer send, wait and room operations', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const target = ref('other-host', 'workspace-b', 'target');
+    const expected = { code: ErrorCodes.THREAD_CROSS_HOST, message: 'Cross-host thread communication is not supported.', details: { hostId: 'other-host' } };
+    await expect(service.readThread({ thread: target })).rejects.toMatchObject(expected);
+    await expect(service.sendMessage({ target, content: 'hello', idempotencyKey: 'foreign' })).rejects.toMatchObject(expected);
+    await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({ source: ref(service.hostId, 'workspace-a', 'source'), target, content: 'hello', idempotencyKey: 'foreign-peer' })).rejects.toMatchObject(expected);
+    await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({ source: target, target: ref(service.hostId, 'workspace-a', 'source'), content: 'hello', idempotencyKey: 'foreign-source' })).rejects.toMatchObject(expected);
+    await expect(service.waitThreads({ threads: [{ thread: target }], timeoutMs: 0 })).rejects.toMatchObject(expected);
+    await expect(service.sendRoomMessage({ target, roomId: 'room-a', content: 'hello', idempotencyKey: 'foreign-room', targeted: true })).rejects.toMatchObject(expected);
+    await expect(service.waitRoomDelivery({ target, messageId: 'absent' })).rejects.toMatchObject(expected);
+    expect(deliveredMessage).toBeUndefined();
+  });
+
+  it('rejects self sends and duplicate waits across local host aliases', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const source = ref(service.hostId, 'workspace-a', 'source');
+    const alias = { ...source, hostId: 'local' };
+    await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({ source, target: alias, content: 'self', idempotencyKey: 'self' })).rejects.toMatchObject({ code: ErrorCodes.THREAD_SELF_SEND });
+    await expect(service.waitThreads({ threads: [{ thread: source }, { thread: alias }], timeoutMs: 0 })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID, message: 'ThreadWait contains duplicate threads.' });
   });
 
   it.each([true, false])('delivers durable room input through a real prompt loop with queueWhenBusy=%s', async (queueWhenBusy) => {

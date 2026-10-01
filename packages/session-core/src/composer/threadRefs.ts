@@ -78,6 +78,7 @@ export type ThreadRefStatus = 'running' | 'awaiting_approval' | 'awaiting_answer
 /** What the GUI knows about one referenced thread at send time. */
 export interface ThreadRefInfo {
   readonly sessionId: string;
+  readonly hostId?: string;
   readonly title?: string;
   readonly workspaceId?: string;
   readonly workspaceName?: string;
@@ -101,10 +102,12 @@ export function threadRefInfoOf(
   sessionId: string,
   session: Session | undefined,
   workspace: Workspace | undefined,
+  hostId?: string,
 ): ThreadRefInfo {
-  if (session === undefined) return { sessionId, status: 'unknown' };
+  if (session === undefined) return { sessionId, hostId, status: 'unknown' };
   return {
     sessionId,
+    hostId,
     title: session.title.trim() === '' ? undefined : session.title.trim(),
     workspaceId: session.workspace_id,
     workspaceName: workspace?.name,
@@ -131,6 +134,7 @@ function attr(value: string): string {
 export function threadRefTag(info: ThreadRefInfo): string {
   const fields: [string, string | undefined][] = [
     ['id', info.sessionId],
+    ['host_id', info.hostId],
     ['title', info.title?.trim() === '' ? undefined : info.title?.trim()],
     ['workspace', info.workspaceName],
     ['workspace_id', info.workspaceId],
@@ -146,7 +150,7 @@ export function threadRefTag(info: ThreadRefInfo): string {
 
 /** The note that tells the model how to read a referenced thread. */
 export const THREAD_REF_HINT =
-  'The user linked the Kiki threads above. Read one with ThreadRead (ThreadList returns the host_id it needs) or search it with HistorySearch (scope=session, session_id=<id>).';
+  'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id (omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).';
 
 /**
  * Append the context block for every distinct thread linked in `text`.
