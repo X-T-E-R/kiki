@@ -38,7 +38,7 @@ export const InvocationContext = createContext<{
   loadOlder: () => Promise<boolean>;
 } | null>(null);
 
-function CopyButton({ text }: { text: string }) {
+export function CopyButton({ text }: { text: string }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   return (

@@ -30,7 +30,10 @@ import {
   SemanticJumpSlot,
   useSemanticContext,
 } from './timeline/ToolSemanticParts';
-import { describeTool } from './toolSemantics';
+import { describeTool, toolPayloadIncomplete } from './toolSemantics';
+import { toolRecordCopy } from './toolRecordCopy';
+import { LoadedToolText, recordText } from './timeline/LoadedToolText';
+import { CopyButton } from './timeline/SubagentInvocationView';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -354,20 +357,7 @@ function OutputView({ output, agentId, island = false }: { output: unknown; agen
       );
     }
   }
-  return (
-    <pre className={wellClass(island)}>
-      {truncateJson(output, t('tc.truncated'))}
-    </pre>
-  );
-}
-
-function truncateJson(value: unknown, truncatedNote: string, limit = 6000): string {
-  try {
-    const json = JSON.stringify(value, null, 2) ?? String(value);
-    return json.length > limit ? `${json.slice(0, limit)}\n${truncatedNote}` : json;
-  } catch {
-    return String(value);
-  }
+  return <LoadedToolText text={recordText(output)} className={wellClass(island)} copy={island} />;
 }
 
 export const ToolCard = memo(function ToolCard({
@@ -477,23 +467,20 @@ ${engineError}`;
   const inputWell = (
     <div>
       <p className={label}>{t('tc.input')}</p>
-      <pre className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-        {block.args !== undefined
-          ? truncateJson(block.args, t('tc.truncated'))
-          : block.argsText !== ''
-            ? block.argsText
-            : t('tc.noInput')}
-      </pre>
+      <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
     </div>
   );
-  const outputWell = block.output !== undefined ? (
+  const outputWell = (
     <div>
-      <p className={label}>
-        {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
-      </p>
-      <OutputView output={block.output} agentId={agentId} />
+      <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
+        <span>{t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}</span>
+        {block.output === undefined ? null : <CopyButton text={recordText(block.output)} />}
+      </div>
+      {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
+      {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
+        : <OutputView output={block.output} agentId={agentId} />}
     </div>
-  ) : null;
+  );
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the

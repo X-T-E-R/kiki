@@ -15,7 +15,9 @@
 import type { I18nKey, I18nParams, PluralBase } from '@kiki/session-core/i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 
+import type { Locale } from '../i18n';
 import type { IconName } from './icons';
+import { toolRecordCopy } from './toolRecordCopy';
 
 export type SemanticTone = 'plain' | 'warn' | 'danger' | 'accent';
 
@@ -62,9 +64,13 @@ export interface ToolSemantics {
   readonly itemsMore?: boolean;
   /** A short, already-clipped preview of the text the tool returned. */
   readonly preview?: string;
+  /** Full text already loaded, kept separate from the technical record. */
+  readonly previewFull?: string;
+  readonly previewNotice?: string;
 }
 
 export interface SemanticContext {
+  readonly locale?: Locale;
   readonly t: (key: I18nKey, params?: I18nParams) => string;
   readonly tp: (base: PluralBase, count: number, params?: I18nParams) => string;
   /** A session's title from what the client already knows, if anything. */
@@ -120,6 +126,14 @@ export function outputJson(output: unknown): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Explicit payload limits only; absence of these flags does not prove source completeness. */
+export function toolPayloadIncomplete(output: unknown): boolean {
+  const record = rec(outputJson(output));
+  return record?.['truncated'] === true || record?.['status'] === 'partial'
+    || arr(record?.['documents']).some((doc) => rec(doc)?.['truncated'] === true)
+    || /^The returned content is truncated and incomplete\./.test(outputText(output) ?? '');
 }
 
 /**
@@ -911,30 +925,139 @@ function webQuery(args: Rec): string | undefined {
   return list.length === 0 ? undefined : list.join(' · ');
 }
 
+function webState(value: string | undefined, ctx: SemanticContext, knownEmpty = false): ToolSemantics['state'] {
+  if (value === undefined || (value === 'empty' && !knownEmpty)) return undefined;
+  const labels = { queued: 'queued', succeeded: 'succeeded', empty: 'empty', partial: 'partial' } as const;
+  const label = labels[value as keyof typeof labels];
+  return {
+    text: label === undefined ? wireWord(value, ctx)! : toolRecordCopy(label, ctx.locale),
+    tone: ['partial', 'failed', 'timed_out', 'cancelled'].includes(value) ? 'warn' : 'plain',
+  };
+}
+
+function webWarnings(envelope: Rec): string | undefined {
+  const output = rec(envelope['output']);
+  const hints = [envelope['hints'], output?.['hints'], ...arr(envelope['documents']).map((doc) => rec(doc)?.['warnings']),
+    ...arr(envelope['lane_outcomes'] ?? output?.['lane_outcomes']).map((lane) => rec(lane)?.['warnings'])];
+  const messages = hints.flatMap(arr).map((hint) => str(rec(hint)?.['message']) ?? str(hint)).filter((hint): hint is string => hint !== undefined);
+  const error = str(rec(envelope['error'])?.['message']);
+  return [...new Set([...messages, ...(error === undefined ? [] : [error])])].join('\n') || undefined;
+}
+
+function webPreview(body: string | undefined, notice?: string): Pick<ToolSemantics, 'preview' | 'previewFull' | 'previewNotice'> {
+  const preview = previewOf(body, 8, 900);
+  return { preview, previewFull: body, previewNotice: notice };
+}
+
+function unknownWebPreview(block: ToolBlock, ctx: SemanticContext): Pick<ToolSemantics, 'preview' | 'previewFull' | 'previewNotice'> {
+  let text = outputText(block.output);
+  if (text === undefined && block.output !== undefined) {
+    try { text = JSON.stringify(block.output, null, 2); } catch { text = String(block.output); }
+  }
+  return webPreview(text, toolRecordCopy(block.output === undefined ? 'notLoaded' : 'unavailable', ctx.locale));
+}
+
+function webResultItems(values: readonly unknown[]): SemanticItem[] {
+  return values.flatMap((value, index) => {
+    const result = rec(value);
+    const url = str(result?.['url']);
+    if (url === undefined) return [];
+    return [{
+      key: `${index}-${url}`,
+      primary: str(result?.['title']) ?? url,
+      secondary: str(result?.['snippet']) ?? str(result?.['site_name']) ?? url,
+      link: /^https?:\/\//i.test(url) ? { kind: 'external' as const, url, label: url } : undefined,
+    }];
+  });
+}
+
+function webJob(envelope: Rec | undefined, args: Rec, ctx: SemanticContext): Partial<ToolSemantics> | undefined {
+  if (envelope === undefined) return undefined;
+  const action = str(envelope['action']) ?? str(args['action']);
+  if (envelope['execution'] !== 'async' && !['get', 'read', 'cancel'].includes(action ?? '')) return undefined;
+  const job = rec(envelope['job']);
+  const state = webState(str(envelope['state']) ?? str(job?.['state']) ?? str(envelope['status']), ctx);
+  if (state === undefined) return undefined;
+  const fields: SemanticField[] = [];
+  const add = (label: Parameters<typeof toolRecordCopy>[0], value: string | undefined) => {
+    if (value !== undefined) fields.push({ label: toolRecordCopy(label, ctx.locale), value });
+  };
+  add('job', str(envelope['job_id']) ?? str(job?.['job_id']) ?? str(args['job_id']));
+  add('status', state.text);
+  if (action === 'get' || action === 'read' || action === 'cancel') add('action', toolRecordCopy(action, ctx.locale));
+  if (typeof envelope['cancel_requested'] === 'boolean') add('cancelRequested', toolRecordCopy(envelope['cancel_requested'] ? 'yes' : 'no', ctx.locale));
+  const poll = num(envelope['poll_after_ms']);
+  add('poll', poll === undefined ? undefined : String(poll));
+  const artifact = rec(envelope['artifact']);
+  add('artifact', artifact === undefined ? undefined : `${str(artifact['media_type']) ?? 'application/json'} · ${num(artifact['byte_length']) ?? '?'} bytes`);
+  let notice = webWarnings(envelope);
+  if (action === 'read') {
+    const chunks = arr(envelope['chunks']);
+    add('chunks', String(chunks.length));
+    const ranges = chunks.map((chunk) => {
+      const value = rec(chunk);
+      return `#${num(value?.['index']) ?? '?'} · offset ${num(value?.['offset']) ?? '?'} · ${num(value?.['byte_length']) ?? '?'} bytes`;
+    }).join('\n');
+    notice = [toolRecordCopy('encodedChunks', ctx.locale), str(envelope['next_cursor']) === undefined ? undefined : toolRecordCopy('moreChunks', ctx.locale), notice].filter(Boolean).join('\n');
+    return { object: str(envelope['job_id']) ?? str(args['job_id']), state, fields, ...webPreview(ranges, notice) };
+  }
+  return { object: str(envelope['job_id']) ?? str(job?.['job_id']) ?? str(args['job_id']), state, fields, previewNotice: notice };
+}
+
 function describeWebSearch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const { t, tp } = ctx;
   const args = rec(block.args) ?? {};
-  const text = outputText(block.output) ?? '';
-  const results = text.split(/\n---\n\n/).map((chunk) => {
-    const field = (name: string) => new RegExp(`^${name}: (.+)$`, 'm').exec(chunk)?.[1];
-    return { title: field('Title'), url: field('URL'), site: field('Site') };
-  }).filter((item) => item.url !== undefined);
-  const action = str(args['action']);
-  return {
+  const envelope = rec(outputJson(block.output));
+  const action = str(args['action']) ?? str(envelope?.['action']);
+  const base: ToolSemantics = {
     icon: 'web',
     verb: t(action === undefined || action === 'run' ? 'tc.sem.web.search' : 'tc.sem.web.job'),
     object: webQuery(args) ?? str(args['job_id']),
     note: str(args['lane']) ?? str(args['preset']),
-    count: block.status === 'done' && action !== 'get' && action !== 'read' && action !== 'cancel' && text !== ''
-      ? tp('tc.sem.results', text.startsWith('No search results found') ? 0 : results.length)
-      : undefined,
-    items: results.map((item, index) => ({
-      key: `${String(index)}-${item.url!}`,
-      primary: item.title ?? item.url!,
-      secondary: item.site ?? item.url,
-      link: /^https?:\/\//.test(item.url!) ? { kind: 'external' as const, url: item.url!, label: item.url! } : undefined,
-    })),
   };
+  const job = webJob(envelope, args, ctx);
+  if (job !== undefined) return { ...base, ...job };
+  const output = rec(envelope?.['output']);
+  const results = output?.['results'] ?? envelope?.['results'];
+  const status = str(envelope?.['status']) ?? str(output?.['status']);
+  const warnings = envelope === undefined ? undefined : webWarnings(envelope);
+  if (Array.isArray(results)) {
+    const items = webResultItems(results);
+    const parsed = items.length === results.length;
+    const preview = parsed
+      ? webPreview(undefined, warnings ?? (items.length === 0 ? toolRecordCopy('empty', ctx.locale) : undefined))
+      : unknownWebPreview(block, ctx);
+    return { ...base, state: webState(status, ctx, parsed && items.length === 0), items,
+      count: block.status === 'done' && parsed ? tp('tc.sem.results', items.length) : undefined,
+      ...preview,
+    };
+  }
+  if (output?.['channel'] === 'typed') {
+    const data = rec(output['data']);
+    const items = webResultItems([...arr(data?.['sources']), ...arr(data?.['results'])]);
+    const content = str(data?.['answer']) ?? str(data?.['content']);
+    const body = content ?? (output['data'] === undefined ? undefined : JSON.stringify(output['data'], null, 2));
+    return { ...base, state: webState(status, ctx), items,
+      fields: [{ label: toolRecordCopy('schema', ctx.locale), value: str(output['schema_id']) ?? 'typed' }],
+      ...webPreview(body, warnings),
+    };
+  }
+  const text = outputText(block.output) ?? '';
+  if (envelope === undefined && /^Schema: .+\nSource lane: /m.test(text)) {
+    const content = /\n(?:Content|Data):\n([\s\S]*)/.exec(text)?.[1];
+    const items = webResultItems([...text.matchAll(/^- (?:([^\n]+): )?(https?:\/\/\S+)$/gm)].map((match) => ({ title: match[1], url: match[2] })));
+    return { ...base, items, ...webPreview(content ?? text) };
+  }
+  const legacy = text.split(/\n---\n\n/).map((chunk) => {
+    const field = (name: string) => new RegExp(`^${name}: (.+)$`, 'm').exec(chunk)?.[1];
+    return { title: field('Title'), url: field('URL'), snippet: field('Snippet') ?? field('Site') };
+  });
+  const items = envelope === undefined ? webResultItems(legacy) : [];
+  if (items.length > 0 || /^No search results found\./.test(text)) {
+    return { ...base, items, count: block.status === 'done' ? tp('tc.sem.results', items.length) : undefined,
+      previewNotice: items.length === 0 ? toolRecordCopy('empty', ctx.locale) : undefined };
+  }
+  return { ...base, state: webState(status, ctx), ...unknownWebPreview(block, ctx) };
 }
 
 const FETCH_FAILURE_KEYS: Record<string, I18nKey> = {
@@ -947,16 +1070,50 @@ function describeFetch(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const { t } = ctx;
   const args = rec(block.args) ?? {};
   const source = rec(args['source']);
+  const envelope = rec(outputJson(block.output));
+  const action = str(args['action']) ?? str(envelope?.['action']);
   const url = str(args['url']) ?? str(source?.['url']) ?? str(source?.['path']);
+  const base: ToolSemantics = {
+    icon: 'web',
+    verb: action === 'get' || action === 'read' || action === 'cancel' ? toolRecordCopy(action, ctx.locale) : t('tc.sem.web.fetch'),
+    object: url ?? str(args['job_id']),
+  };
+  const job = webJob(envelope, args, ctx);
+  if (job !== undefined) return { ...base, ...job };
+  const fields: SemanticField[] = url === undefined ? [] : [{ label: toolRecordCopy('source', ctx.locale), value: url }];
+  if (Array.isArray(envelope?.['documents'])) {
+    const documents = envelope['documents'].map(rec).filter((doc): doc is Rec => doc !== undefined);
+    const warnings = webWarnings(envelope);
+    const incomplete = envelope['status'] === 'partial' || documents.some((doc) => doc['truncated'] === true);
+    const completeness = toolRecordCopy(incomplete ? 'payloadTruncated' : warnings === undefined ? 'returned' : 'warningCompleteness', ctx.locale);
+    const body = documents.map((doc) => str(doc['content']) === undefined ? undefined
+      : [documents.length > 1 ? str(doc['title']) ?? str(doc['final_url']) ?? str(doc['url']) : undefined, str(doc['content'])].filter(Boolean).join('\n\n')).filter(Boolean).join('\n\n---\n\n');
+    const doc = documents[0];
+    const origin = str(doc?.['final_url']) ?? str(doc?.['url']) ?? url;
+    const contentType = str(doc?.['content_type']) ?? str(doc?.['media_type']);
+    const parsed = documents.length === envelope['documents'].length && documents.every((document) => typeof document['content'] === 'string');
+    const knownEmpty = parsed && body === '' && envelope['status'] === 'empty';
+    const preview = parsed && (body !== '' || knownEmpty)
+      ? webPreview(body, [warnings, knownEmpty ? toolRecordCopy('empty', ctx.locale) : undefined].filter(Boolean).join('\n') || undefined)
+      : unknownWebPreview(block, ctx);
+    return { ...base, object: origin, state: webState(str(envelope['status']), ctx, knownEmpty),
+      fields: [origin === undefined ? undefined : { label: toolRecordCopy('source', ctx.locale), value: origin },
+        contentType === undefined ? undefined : { label: toolRecordCopy('contentType', ctx.locale), value: contentType },
+        { label: toolRecordCopy('completeness', ctx.locale), value: completeness }].filter((field): field is SemanticField => field !== undefined),
+      ...preview,
+    };
+  }
   const text = outputText(block.output);
   const failure = text === undefined ? undefined : /^Fetch (failed|timed out|cancelled):/.exec(text);
-  const body = text?.split(/\n\n/).slice(1).join('\n\n');
-  return {
-    icon: 'web',
-    verb: t('tc.sem.web.fetch'),
-    object: url,
-    state: failure === null || failure === undefined ? undefined : { text: t(FETCH_FAILURE_KEYS[failure[1]!]!), tone: 'warn' },
-    preview: previewOf(body, 8, 900),
+  const compact = text !== undefined && /^(?:Fetched https?:\/\/|The returned content is |The returned content has )/.test(text);
+  if (envelope === undefined && compact) {
+    const body = text.split(/\r?\n\r?\n/).slice(1).join('\n\n');
+    fields.push({ label: toolRecordCopy('completeness', ctx.locale), value: text.split(/\r?\n\r?\n/, 1)[0]! });
+    return { ...base, fields, ...webPreview(body || text) };
+  }
+  return { ...base, fields,
+    state: failure === null || failure === undefined ? webState(str(envelope?.['status']), ctx) : { text: t(FETCH_FAILURE_KEYS[failure[1]!]!), tone: 'warn' },
+    ...unknownWebPreview(block, ctx),
   };
 }
 

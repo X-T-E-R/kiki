@@ -4953,6 +4953,106 @@ describe('semantic tool cards', () => {
     ));
     expect(fetched.container.textContent).toContain('Fetch page');
     expect(fetched.container.textContent).toContain('https://example.com/docs');
+    await expand(fetched.container);
+    expect(fetched.container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Body text.');
+    expect(fetched.container.querySelector('[data-tool-raw]')).toBeNull();
+    await openRaw(fetched.container);
+    expect(fetched.container.querySelector('[data-tool-raw]')?.textContent).toContain('"url": "https://example.com/docs"');
+    expect(fetched.container.querySelector('[data-tool-raw]')?.textContent).toContain('Body text.');
+  });
+
+  it('previews a native partial fetch, expands the loaded article, and keeps Raw data separate', async () => {
+    const body = '# Article\nReadable body\n' + 'paragraph\n'.repeat(40) + 'loaded article tail';
+    const output = JSON.stringify({ schema_version: 1, mode: 'fetch', action: 'run', execution: 'sync', status: 'partial',
+      documents: [{ url: 'https://example.com/article', content: body, content_type: 'text/html', truncated: true,
+        warnings: [{ code: 'CONTENT_LIMIT', message: 'Content limit reached' }] }], hints: [] }, null, 2);
+    const { container } = await renderCard(semanticTool('FetchURL', { source: { kind: 'url', url: 'https://example.com/article' }, max_content_chars: 10000 }, output,
+      { status: 'error', isError: true }));
+    await expand(container);
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Readable body');
+    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('truncated or incomplete');
+    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain('Content limit reached');
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).not.toContain('loaded article tail');
+    await act(async () => { click(container.querySelector('[data-tool-preview-full]')!); });
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toBe(body);
+    expect(container.querySelector('[data-tool-raw]')).toBeNull();
+    await openRaw(container);
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"max_content_chars": 10000');
+  });
+
+  it('shows unknown search content rather than zero results in the first disclosure', async () => {
+    const { container } = await renderCard(semanticTool('WebSearch', { query: 'example' }, '{"future_shape":"Useful evidence"}'));
+    expect(container.querySelector('[data-tool-count]')).toBeNull();
+    await expand(container);
+    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toBe('Preview unavailable');
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Useful evidence');
+    await openRaw(container);
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"query": "example"');
+  });
+
+  it.each(['MemoryRead', 'MemorySearch'])('%s marks the display cut, reads the loaded tail and exposes the original parameters', async (name) => {
+    localStorage.setItem('kiki.locale', 'zh');
+    try {
+      const output = JSON.stringify([{ title: 'Memory title', body: 'context '.repeat(400) + 'memory result tail' }]);
+      const { container } = await renderCard(semanticTool(name, { query: 'memory query', scope: 'global' }, output));
+      await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
+      expect(container.querySelector('[data-tool-display-status]')?.textContent).toContain('显示已截断');
+      expect(container.querySelector('pre')?.textContent).not.toContain('memory result tail');
+      await act(async () => { click(container.querySelector('[data-tool-show-full]')!); });
+      expect(container.querySelector('pre')?.textContent).toBe(output);
+      await openRaw(container);
+      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"query": "memory query"');
+      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('memory result tail');
+    } finally { localStorage.removeItem('kiki.locale'); }
+  });
+
+  it('preserves MemoryWrite View and Undo while adding original parameters and results', async () => {
+    const { container } = await renderCard(semanticTool('MemoryWrite', { body: 'Remember this', reason: 'User preference' },
+      JSON.stringify({ id: 'memory-example', title: 'Preference', scope: 'global', status: 'active', revision: '1', operation_id: 'operation-example' })));
+    expect(container.querySelector('[data-memory-tool-view]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+    await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
+    expect(container.textContent).toContain('User preference');
+    await openRaw(container);
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('operation-example');
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"body": "Remember this"');
+  });
+
+  it('reads and copies loaded input and generic JSON beyond 6000 characters without conflating display and payload cuts', async () => {
+    const args = { content: 'input '.repeat(1200) + 'input record tail' };
+    const output = { result: 'output '.repeat(1100) + 'output record tail', truncated: true };
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const { container } = await renderCard(semanticTool('ExampleTool', args, output));
+      await expand(container);
+      const wells = container.querySelectorAll('[data-loaded-tool-text]');
+      expect(wells).toHaveLength(2);
+      expect(wells[0]!.textContent).toContain('Display truncated');
+      expect(wells[1]!.textContent).toContain('Display truncated');
+      expect(container.textContent).not.toContain('input record tail');
+      expect(container.textContent).not.toContain('output record tail');
+      expect(container.querySelector('[data-tool-payload-status]')?.textContent).toContain('payload is truncated or incomplete');
+      const copies = container.querySelectorAll('button[aria-label="copy"]');
+      expect(copies).toHaveLength(2);
+      await act(async () => { click(copies[0]!); click(copies[1]!); });
+      expect(writeText.mock.calls.map((call) => call[0])).toEqual([JSON.stringify(args, null, 2), JSON.stringify(output, null, 2)]);
+      for (const button of container.querySelectorAll('[data-tool-show-full]')) await act(async () => { click(button); });
+      expect(wells[0]!.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
+      expect(wells[1]!.querySelector('pre')?.textContent).toBe(JSON.stringify(output, null, 2));
+    } finally {
+      if (descriptor !== undefined) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
+  it('labels an absent result rather than showing an empty raw output well', async () => {
+    const { container } = await renderCard(semanticTool('FetchURL', { url: 'https://example.com/article' }, undefined, { status: 'running' }));
+    await expand(container);
+    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain('not yet loaded');
+    await openRaw(container);
+    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('not yet loaded');
   });
 
   it('drops a settled AgentSend call once its Input sent entry stands for it', () => {

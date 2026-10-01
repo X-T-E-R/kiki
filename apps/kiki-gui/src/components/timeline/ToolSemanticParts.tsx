@@ -18,6 +18,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
 import { useMediaPreview } from '../mediaPreviewContext';
 import type { SemanticContext, SemanticLink, SemanticTone, ToolSemantics } from '../toolSemantics';
+import { toolRecordCopy } from '../toolRecordCopy';
 
 export const SEMANTIC_STATE_TONE: Record<SemanticTone, string> = {
   plain: 'text-ink-faint',
@@ -43,9 +44,9 @@ function useKnownSessionTitles(): (sessionId: string) => string | undefined {
 }
 
 export function useSemanticContext(): SemanticContext {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
   const threadTitle = useKnownSessionTitles();
-  return useMemo(() => ({ t, tp, threadTitle }), [t, tp, threadTitle]);
+  return useMemo(() => ({ t, tp, locale, threadTitle }), [t, tp, locale, threadTitle]);
 }
 
 /**
@@ -138,14 +139,15 @@ export function SemanticBody({
 }: {
   semantics: ToolSemantics;
   onOpenAgent?: (agentId: string) => void;
-  /** The untouched input/output wells, shown under "Raw data". */
+  /** The input/output wells, shown under "Raw data". */
   raw: ReactNode;
-  /** A failure's full text; it replaces the preview. */
+  /** A failure's full text, also shown alongside any returned content. */
   error?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const follow = useFollowLink(onOpenAgent);
   const [showAll, setShowAll] = useState(false);
+  const [showFull, setShowFull] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const fields = semantics.fields ?? [];
   const items = semantics.items ?? [];
@@ -209,10 +211,25 @@ export function SemanticBody({
           {semantics.itemsMore === true ? <li className="px-2 text-[12px] text-ink-faint">{t('tc.sem.more')}</li> : null}
         </ul>
       ) : null}
-      {error === undefined && semantics.preview !== undefined ? (
-        <pre data-tool-semantic-preview className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
-          {semantics.preview}
-        </pre>
+      {semantics.previewNotice !== undefined ? (
+        <p data-tool-preview-notice className="text-[12px] whitespace-pre-wrap text-ink-faint">{semantics.previewNotice}</p>
+      ) : null}
+      {(error === undefined || semantics.previewFull !== undefined) && semantics.preview !== undefined ? (
+        <div>
+          <pre data-tool-semantic-preview className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+            {showFull ? semantics.previewFull ?? semantics.preview : semantics.preview}
+          </pre>
+          {semantics.previewFull !== undefined && semantics.previewFull !== semantics.preview ? (
+            <div className="text-[12px] text-ink-faint">
+              {!showFull ? <span>{toolRecordCopy('displayOmitted', locale)} · </span> : null}
+              <button type="button" data-tool-preview-full aria-expanded={showFull}
+                onClick={() => { setShowFull((value) => !value); }}
+                className="min-h-7 rounded-md px-2 underline-offset-2 transition-colors hover:text-ink hover:underline">
+                {toolRecordCopy(showFull ? 'collapse' : 'showFull', locale)}
+              </button>
+            </div>
+          ) : null}
+        </div>
       ) : null}
       <div>
         <button

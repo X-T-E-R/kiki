@@ -25,6 +25,8 @@ import { useOptionalConnection } from '../state/connection';
 import { DisclosureChevron, Icon } from './icons';
 import { useGuardedNavigate } from './dirtyGuard';
 import { useMediaPreview } from './mediaPreviewContext';
+import { LoadedToolText, recordText } from './timeline/LoadedToolText';
+import { toolRecordCopy } from './toolRecordCopy';
 
 // The tool-name predicate lives with the grouping rule that exempts these
 // tools from step folding, so the two can never disagree.
@@ -82,6 +84,7 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
   const connection = useOptionalConnection();
   const sessionId = useMediaPreview()?.sessionId;
   const [expanded, setExpanded] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
   const [undone, setUndone] = useState(false);
   const [undoing, setUndoing] = useState(false);
 
@@ -234,13 +237,28 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
           {typeof args['body'] === 'string' ? (
             <p className="text-ink-soft">{args['body']}</p>
           ) : null}
-          {block.name !== 'MemoryWrite' && typeof block.output === 'string' && block.output !== '' ? (
-            <pre className="max-h-40 overflow-auto rounded-md bg-panel px-3 py-1.5 font-mono text-[12px] whitespace-pre-wrap text-ink-soft">
-              {block.output.slice(0, 2_000)}
-            </pre>
+          {!failed && block.name !== 'MemoryWrite' && typeof block.output === 'string' && block.output !== '' ? (
+            <LoadedToolText text={block.output} limit={2000}
+              className="max-h-40 overflow-auto rounded-md bg-panel px-3 py-1.5 font-mono text-[12px] whitespace-pre-wrap text-ink-soft" />
           ) : null}
           {failed && typeof block.output === 'string' ? (
             <p className="text-danger">{block.output}</p>
+          ) : null}
+          <button type="button" data-tool-raw-toggle aria-expanded={rawOpen}
+            onClick={() => { setRawOpen((value) => !value); }}
+            className="flex min-h-7 items-center gap-1.5 rounded-md px-2 -ml-2 text-[12px] text-ink-faint transition-colors hover:text-ink">
+            <DisclosureChevron open={rawOpen} className="text-ink-faint" />{t('tc.sem.raw')}
+          </button>
+          {rawOpen ? (
+            <div data-tool-raw className="space-y-2 pt-1.5">
+              <div><p className="text-ink-faint">{t('tc.input')}</p>
+                <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
+              </div>
+              <div><p className="text-ink-faint">{t('tc.output')}</p>
+                {block.output === undefined ? <p className="text-ink-faint">{toolRecordCopy('notLoaded', locale)}</p>
+                  : <LoadedToolText text={recordText(block.output)} />}
+              </div>
+            </div>
           ) : null}
         </div>
       ) : null}
