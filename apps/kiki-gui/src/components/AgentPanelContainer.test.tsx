@@ -106,9 +106,9 @@ afterEach(async () => {
   element.remove();
 });
 
-async function render(agentId: string, options: { routed?: SessionViewState; forest?: AgentForest; visible?: boolean } = {}) {
+async function render(agentId: string, options: { routed?: SessionViewState; forest?: AgentForest; visible?: boolean; part?: 'all' | 'work' | 'usage' | 'overview' | 'profile' } = {}) {
   await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider>
-    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} />
+    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} part={options.part} />
   </I18nProvider></MemoryRouter></QueryClientProvider>));
   for (let i = 0; i < 5; i++) await act(async () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
@@ -463,4 +463,52 @@ it('renders cache hit rate percentage on single agent and aggregated on agent tr
   const treeMetrics = element.querySelector('[data-tree-metrics]');
   expect(treeMetrics).not.toBeNull();
   expect(treeMetrics?.textContent).toContain('整树缓存率56%');
+});
+
+const notesMeta = { rev: 4, hash: 'h', writtenTurn: 12, writtenStep: 't12.3', coveredMessageId: 'msg-9', windowEpoch: 2 };
+
+it('shows each agent its own working notes in the work part, never the routed agent\'s', async () => {
+  harness.agents['main'] = viewState({ todoNotes: { goal: 'Main goal', next: 'Main next' }, todoNotesMeta: notesMeta });
+  harness.agents['child'] = viewState({ todoNotes: { goal: 'Child goal' }, todoNotesMeta: { ...notesMeta, rev: 1 } });
+  const routed = routedState({ todoNotes: { goal: 'Routed goal' }, todoNotesMeta: notesMeta });
+
+  await render('main', { part: 'work', routed });
+  expect(element.textContent).toContain('Main goal');
+  expect(element.textContent).not.toContain('Routed goal');
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('written');
+
+  await render('child', { part: 'work', routed });
+  expect(element.textContent).toContain('Child goal');
+  expect(element.textContent).not.toContain('Main goal');
+  expect(element.textContent).not.toContain('Routed goal');
+});
+
+it('tells a still-loading agent from one that has no notes', async () => {
+  harness.agents['child'] = viewState({ loaded: false, todos: [] });
+  await render('child', { part: 'work' });
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('loading');
+  expect(element.textContent).toContain('正在读取工作笔记…');
+  expect(element.textContent).not.toContain('还没有工作笔记');
+
+  harness.agents['child'] = viewState({ todos: [] });
+  await render('child', { part: 'work' });
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('empty');
+  expect(element.textContent).toContain('还没有工作笔记。');
+  expect(element.textContent).not.toContain('正在读取工作笔记');
+});
+
+it('settles to the empty state when the agent clears its notes', async () => {
+  harness.agents['child'] = viewState({ todoNotes: { goal: 'Temporary goal' }, todoNotesMeta: notesMeta });
+  await render('child', { part: 'work' });
+  expect(element.textContent).toContain('Temporary goal');
+  harness.agents['child'] = viewState({ todos: [] });
+  await act(async () => { harness.emit(); });
+  expect(element.textContent).not.toContain('Temporary goal');
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('empty');
+});
+
+it('keeps the notes section out when no live controller owns the session', async () => {
+  harness.holder.value = null;
+  await render('main', { part: 'work' });
+  expect(element.querySelector('[data-agent-notes-section]')).toBeNull();
 });
