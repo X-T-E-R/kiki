@@ -34,6 +34,8 @@ export interface SearchableSelectOptionBadge {
 export interface SearchableSelectOption {
   readonly value: string;
   readonly label: string;
+  /** Visible for diagnosis, but skipped by selection and keyboard navigation. */
+  readonly disabled?: boolean;
   /** Secondary line (e.g. a workspace root), rendered mono and truncated. */
   readonly hint?: string;
   /** Prose line under the label (a profile description), clamped to two lines. */
@@ -203,6 +205,19 @@ export function SearchableSelect({
     ? customValue
     : undefined;
   const rowCount = visible.length + (customRow === undefined ? 0 : 1);
+  const rowEnabled = (index: number) => index >= 0 && (visible[index] !== undefined
+    ? visible[index].disabled !== true : customRow !== undefined && index === visible.length);
+  const nextEnabledIndex = (index: number, direction: 1 | -1) => {
+    for (let step = 1; step <= rowCount; step++) {
+      const next = (index + direction * step + rowCount) % rowCount;
+      if (rowEnabled(next)) return next;
+    }
+    return -1;
+  };
+  useEffect(() => {
+    if (!open) return;
+    setActiveIndex((index) => rowEnabled(index) ? index : nextEnabledIndex(-1, 1));
+  }, [open, visible, customRow]);
   // Group headers earn their row only when the set actually spans groups.
   const showGroups = useMemo(
     () => new Set(options.map((option) => option.group)).size > 1,
@@ -235,7 +250,7 @@ export function SearchableSelect({
   }, [open, activeIndex]);
 
   const commit = (option: SearchableSelectOption | undefined) => {
-    if (option === undefined) return;
+    if (option === undefined || option.disabled === true) return;
     onChange(option.value);
     close();
   };
@@ -255,12 +270,10 @@ export function SearchableSelect({
   const onSearchKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setActiveIndex((index) => (rowCount === 0 ? 0 : (index + 1) % rowCount));
+      setActiveIndex((index) => nextEnabledIndex(index, 1));
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      setActiveIndex((index) =>
-        rowCount === 0 ? 0 : (index - 1 + rowCount) % rowCount,
-      );
+      setActiveIndex((index) => nextEnabledIndex(index, -1));
     } else if (event.key === 'Enter') {
       event.preventDefault();
       commitRow(activeIndex);
@@ -356,7 +369,7 @@ export function SearchableSelect({
               aria-expanded="true"
               aria-controls={listId}
               aria-activedescendant={
-                rowCount > 0 ? `${listId}-option-${activeIndex}` : undefined
+                rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
               }
               className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
             />
@@ -403,7 +416,7 @@ export function SearchableSelect({
                           active={active}
                           selected={isSelected}
                           onCommit={() => { commit(option); }}
-                          onHover={() => { if (!active) setActiveIndex(index); }}
+                          onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
                         />
                       ) : (
                       <button
@@ -413,10 +426,12 @@ export function SearchableSelect({
                         role="option"
                         data-option-value={option.value}
                         aria-selected={isSelected}
+                        aria-disabled={option.disabled ? true : undefined}
+                        disabled={option.disabled}
                         title={option.title ?? option.label}
                         onClick={() => { commit(option); }}
-                        onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                        className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                        onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+                        className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
                           isSelected
                             ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
                             : active ? 'bg-ink/[0.04]' : ''
@@ -424,7 +439,7 @@ export function SearchableSelect({
                       >
                         <span className="flex items-center gap-2">
                           <span
-                            className={`min-w-0 truncate text-[13px] text-ink ${
+                            className={`min-w-0 truncate text-[13px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
                               isSelected ? 'font-medium' : ''
                             }`}
                           >
@@ -535,17 +550,19 @@ function CompactOptionRow({
       data-option-value={option.value}
       role="option"
       aria-selected={selected}
+      aria-disabled={option.disabled ? true : undefined}
+      disabled={option.disabled}
       title={tooltip}
       onClick={onCommit}
       onMouseMove={onHover}
-      className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+      className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
         hasSecondLine ? 'min-h-10 py-1 pointer-coarse:min-h-12' : 'h-8 pointer-coarse:h-10'
       } ${selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''}`}
     >
       <span className="flex w-full min-w-0 items-center gap-2">
         <span
           data-option-label
-          className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] text-ink ${selected ? 'font-medium' : ''}`}
+          className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${selected ? 'font-medium' : ''}`}
         >
           {option.label}
         </span>

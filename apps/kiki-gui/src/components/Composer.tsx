@@ -64,6 +64,8 @@ import {
 import { errorText, issueText, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import {
   composerEnterAction,
+  projectedProfileModelState,
+  projectedProfileModelRuleSource,
   resolveCatalogModel,
   resolveSelectedEffort,
   settingsServerSnapshot,
@@ -275,6 +277,7 @@ export function Composer({
   sessionUsageError,
   busyPlaceholder,
   sessionId,
+  agentId = 'main',
   workspaceId,
   agentProfileCatalogMode,
   fsSearch,
@@ -390,6 +393,8 @@ export function Composer({
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
   sessionId?: string;
+  /** Agent whose frozen model domain applies; defaults to the main agent. */
+  agentId?: string;
   /** Registered workspace id for the /new draft's skill catalog. */
   workspaceId?: string;
   /** Named agent profile catalog visibility and workspace scope. */
@@ -702,7 +707,7 @@ export function Composer({
   // resolves its target against the catalog so an ambiguous bare alias still
   // shows who will serve it; its provider rides the second line.
   const providerGroupLabel = useProviderGroupLabel();
-  const modelOptions: readonly SearchableSelectOption[] = useMemo(
+  const catalogModelOptions: readonly SearchableSelectOption[] = useMemo(
     () => {
       const inheritTargetId = defaultModel ?? serverDefaultModel;
       const inheritResolved =
@@ -749,8 +754,37 @@ export function Composer({
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
     [agentProfilesQuery.data, t],
   );
+  const frozenMenuQuery = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+    queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
+    enabled: sessionId !== undefined,
+    staleTime: 30_000,
+    retry: retryCatalog,
+    retryDelay: catalogRetryDelay,
+  });
+  const frozenProfile = frozenMenuQuery.data?.profile;
+  const selectedProfileName = agentProfile ?? frozenProfile?.name ?? DEFAULT_AGENT_PROFILE;
+  const catalogProfile = agentProfilesQuery.data?.items.find((item) => item.name === selectedProfileName);
+  // A matching live profile uses its frozen domain. A pending profile change
+  // uses the selected declaration, not the previous agent's frozen menu.
+  const modelProjection = sessionId === undefined ? catalogProfile
+    : frozenProfile?.name === selectedProfileName ? frozenProfile
+      : frozenProfile !== undefined ? catalogProfile : { restrict_models_to_menu: true };
+  const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
+    const target = option.value === '' ? defaultModel ?? serverDefaultModel : option.value;
+    const state = projectedProfileModelState(modelProjection, models, target);
+    const source = projectedProfileModelRuleSource(modelProjection, models, target, selectedProfileName);
+    const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable') : t('selection.modelMenuBlocked', { source });
+    return state === 'allowed' ? option : {
+      ...option, disabled: true, hint: state === 'unknown' ? reason : source,
+      description: reason, title: [option.title ?? option.label, reason].join('\n'),
+    };
+  }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, t]);
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
+  const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
+  const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel);
+  const invalidModelDomain = modelDomainState !== 'allowed';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
@@ -772,7 +806,7 @@ export function Composer({
   const invalidModel = engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
   const invalidEffort = engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !selectedModel.support_efforts?.includes(effort);
-  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort;
+  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -1943,7 +1977,10 @@ export function Composer({
         shortLabel={modelShortLabel}
         modelSource={modelSource}
         disabled={variant === 'subagent' && disabled}
-        onChangeModel={onChangeModel}
+        onChangeModel={(next) => {
+          if (projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel) !== 'allowed') return;
+          return onChangeModel(next);
+        }}
         efforts={efforts}
         effort={effort}
         onChangeEffort={onChangeEffort}
@@ -1994,6 +2031,10 @@ export function Composer({
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
           {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
           {invalidModel ? <p>{t('selection.modelInvalid', { value: validatingModel! })}</p> : null}
+          {invalidModelDomain ? <p data-model-menu-blocked>{modelDomainState === 'unknown'
+            ? t(frozenMenuQuery.isPending ? 'selection.modelMenuPending' : 'selection.modelMenuError')
+            : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
+          {modelDomainState === 'unknown' && frozenMenuQuery.isError ? <button type="button" className="min-h-9 underline" onClick={() => { void frozenMenuQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}

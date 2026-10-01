@@ -15,7 +15,8 @@ const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), cl
   listNamedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
   patchConfig: vi.fn(), updateNamedAgentProfile: vi.fn(), getAgentCapabilities: vi.fn(),
   readHostFile: vi.fn(), meta: vi.fn(),
-  listShippedAgentProfiles: vi.fn(), restoreShippedAgentProfile: vi.fn(),
+  listShippedAgentProfiles: vi.fn(), restoreShippedAgentProfile: vi.fn(), listModels: vi.fn(),
+  klient: { rest: { agents: { previewModelMenu: vi.fn() } } },
 } }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -62,6 +63,7 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   client.listNamedAgentProfiles.mockResolvedValue({ items: [profile] });
+  client.listModels.mockResolvedValue({ items: [] });
   client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture', last_opened_at: '2026-09-01T00:00:00Z' }] });
   client.getConfig.mockResolvedValue({});
   client.meta.mockResolvedValue({ experimental_flags: { 'agent-profile-routes': true } });
@@ -906,4 +908,30 @@ describe('dispatch policy defaults card', () => {
     expect(client.getAgentCapabilities).toHaveBeenCalledTimes(2);
     expect(badge()?.getAttribute('data-recommendation-status')).toBe('blocked');
   });
+});
+
+
+it('previews menu permission changes in the legacy profile dialog before saving', async () => {
+  client.listModels.mockResolvedValue({ items: [
+    { id: 'fixture/model-a', provider_id: 'fixture', remote_id: 'model-a' },
+    { id: 'fixture/model-b', provider_id: 'fixture', remote_id: 'model-b' },
+  ] });
+  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
+    declared_model_menu: { aliases: ['fixture/model-b'], identities: ['fixture/model-b'], default_alias: 'fixture/model-b' },
+    effective_model_aliases: ['fixture/model-b'], added_model_identities: ['fixture/model-b'], removed_model_identities: ['fixture/model-a'],
+  });
+  client.updateNamedAgentProfile.mockResolvedValue({ ...profile, restrict_models_to_menu: true, pinned_model_alias: 'fixture/model-b' });
+  await render();
+  const row = container.querySelector('[data-default-agent="true"]')!;
+  await act(async () => [...row.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Edit')!.click());
+  const dialog = document.body.querySelector('[role="dialog"]')!;
+  await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
+  await act(async () => dialog.querySelector<HTMLInputElement>('[data-profile-field="restrictModelsToMenu"] input')!.click());
+  await settle();
+  expect(dialog.querySelector('[data-menu-removed]')?.textContent).toContain('fixture/model-a');
+  expect(dialog.querySelector('[data-menu-save-warning]')?.textContent).toContain('fixture/model-a');
+  expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
+  await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!.click());
+  await settle();
+  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ restrict_models_to_menu: true, pinned_model_alias: 'fixture/model-b' }));
 });

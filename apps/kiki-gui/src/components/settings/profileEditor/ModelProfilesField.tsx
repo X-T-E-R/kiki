@@ -23,19 +23,21 @@ export function ModelProfilesField({ values, onChange, models, disabled }: {
   return <div className="space-y-2" data-model-profiles-field>
     {values.length > 0 ? <ul className="divide-y divide-hairline rounded-lg border border-hairline">
       {values.map((entry, index) => <li key={index} data-model-profile-row={entry.alias || index} className="space-y-2 px-3 py-2">
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
-          <Field label={t('st.profiles.candidateModel')} htmlFor={`mp-model-${index}`}>
-            <ModelPicker id={`mp-model-${index}`} value={entry.alias} models={models} allowInherit={false} disabled={disabled}
-              missing={entry.alias !== '' && models.length > 0 && !models.some((model) => model.id === entry.alias)}
-              onChange={(alias) => update(index, { alias })} />
-          </Field>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:grid-cols-[minmax(0,1fr)_6rem_auto] sm:items-end">
+          <div className="col-span-2 sm:col-span-1">
+            <Field label={t('st.profiles.candidateModel')} htmlFor={`mp-model-${index}`}>
+              <ModelPicker id={`mp-model-${index}`} value={entry.alias} models={models} allowInherit={false} disabled={disabled}
+                missing={entry.alias !== '' && models.length > 0 && !models.some((model) => model.id === entry.alias)}
+                onChange={(alias) => update(index, { alias })} />
+            </Field>
+          </div>
           <Field label={t('st.profiles.effort')} htmlFor={`mp-effort-${index}`}>
             <EffortPicker id={`mp-effort-${index}`} value={entry.effort} supported={effortsFor(entry.alias)} disabled={disabled}
               onChange={(effort) => update(index, { effort })} />
           </Field>
           <button type="button" disabled={disabled} aria-label={t('st.profiles.removeItem', { item: entry.alias || t('st.profiles.candidateModel') })}
             onClick={() => onChange(values.filter((_, at) => at !== index))}
-            className="flex h-9 w-9 items-center justify-center self-end rounded-md text-ink-faint hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
+            className="flex h-11 w-11 items-center justify-center self-end rounded-md text-ink-faint hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 sm:h-9 sm:w-9">
             <Icon name="close" size={12} />
           </button>
         </div>

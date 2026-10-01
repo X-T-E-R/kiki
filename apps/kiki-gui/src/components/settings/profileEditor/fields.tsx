@@ -83,13 +83,14 @@ export function EffortPicker({ id, value, onChange, supported, disabled, allowUn
  * An ordered set of model aliases as removable chips plus an add picker.
  * Aliases the catalog does not list are marked, not refused.
  */
-export function AliasChips({ id, values, onChange, models, disabled, addLabel }: {
+export function AliasChips({ id, values, onChange, models, disabled, addLabel, choices }: {
   id: string; values: readonly string[]; onChange: (next: string[]) => void; models: readonly ModelCatalogItem[];
-  disabled?: boolean; addLabel: string;
+  disabled?: boolean; addLabel: string; choices?: readonly SearchableSelectOption[];
 }) {
   const { t } = useI18n();
   const known = new Set(models.map((model) => model.id));
-  const options = buildCatalogModelOptions(models.filter((model) => !values.includes(model.id)), t);
+  const options = choices?.filter((choice) => !values.includes(choice.value))
+    ?? buildCatalogModelOptions(models.filter((model) => !values.includes(model.id)), t);
   return <div className="flex flex-wrap items-center gap-1.5" data-alias-chips={id}>
     {values.map((alias) => {
       const missing = models.length > 0 && !known.has(alias) && alias !== '*';
@@ -106,7 +107,7 @@ export function AliasChips({ id, values, onChange, models, disabled, addLabel }:
       </span>;
     })}
     <SearchableSelect id={`${id}-add`} value="" options={options} allowCustomValue disabled={disabled}
-      ariaLabel={addLabel} searchPlaceholder="provider/model" hideChevron
+      ariaLabel={addLabel} searchPlaceholder={choices === undefined ? 'provider/model' : addLabel} hideChevron
       triggerLabel={<span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{addLabel}</span>}
       buttonClassName="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50"
       onChange={(next) => { const alias = next.trim(); if (alias !== '' && !values.includes(alias)) onChange([...values, alias]); }} />

@@ -36,7 +36,9 @@ import {
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
   composerDefaultsForProfile,
+  projectedProfileModelState,
   readSettings,
+  resolveCatalogModel,
   resolveEffectiveModel,
   resolveModelSource,
   resolveSelectedEffort,
@@ -337,7 +339,9 @@ export function useNewSessionDraft({
     liveSettings.defaultModel,
     serverDefaultModel,
   );
-  const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel);
+  const selectedProfile = agentProfilesQuery.data?.items.find((item) => item.name === agentProfile);
+  const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel);
+  const catalogItem = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   const effectiveEffort = effortOverride ?? resolveSelectedEffort(
     supportedEfforts,
@@ -415,6 +419,7 @@ export function useNewSessionDraft({
     || agentProfilesQuery.isError
     || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)
     || !modelsQuery.isSuccess
+    || modelProjectionState !== 'allowed'
     || (effectiveModel !== undefined && catalogItem === undefined)
     || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride));
 

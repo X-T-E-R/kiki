@@ -549,3 +549,39 @@ export function composerDefaultsForProfile(
     thinking: thinking === undefined || thinking === '' ? undefined : thinking,
   };
 }
+
+
+export interface ProfileModelProjection {
+  readonly restrict_models_to_menu?: boolean;
+  readonly effective_model_aliases?: readonly string[];
+  readonly declared_model_menu?: { readonly identities: readonly string[] };
+}
+
+/** Validate an existing selection against the server projection; never choose a replacement. */
+export function projectedProfileModelState(
+  projection: ProfileModelProjection | undefined,
+  models: readonly { readonly id: string; readonly remote_id: string; readonly provider_id: string }[],
+  selected: string | undefined,
+): 'allowed' | 'blocked' | 'unknown' {
+  if (projection?.effective_model_aliases === undefined) {
+    return projection?.restrict_models_to_menu === true ? 'unknown' : 'allowed';
+  }
+  if (selected === undefined) return 'blocked';
+  const identity = resolveCatalogModel(models, selected)?.id ?? selected;
+  return projection.effective_model_aliases.some((alias) => (resolveCatalogModel(models, alias)?.id ?? alias) === identity)
+    ? 'allowed' : 'blocked';
+}
+
+
+/** Attribute only exclusions the declaration projection proves, not an inferred deny rule. */
+export function projectedProfileModelRuleSource(
+  projection: ProfileModelProjection | undefined,
+  models: readonly { readonly id: string; readonly remote_id: string; readonly provider_id: string }[],
+  selected: string | undefined,
+  profileName: string,
+): string {
+  const identity = selected === undefined ? undefined : resolveCatalogModel(models, selected)?.id ?? selected;
+  const outsideMenu = projection?.restrict_models_to_menu === true && projection.declared_model_menu !== undefined
+    && identity !== undefined && !projection.declared_model_menu.identities.includes(identity);
+  return `profile:${profileName}${outsideMenu ? '.restrict_models_to_menu' : ''}`;
+}

@@ -31,6 +31,7 @@ export function DiagnosticsList({ diagnostics, onOpenWinner }: {
       case 'shadows': return tp('st.profiles.diag.shadowsList', item.hidden.length);
       case 'builtinModified': return t(item.status === 'update-available' ? 'st.profiles.diag.builtinUpdate' : 'st.profiles.diag.builtinModified');
       case 'overridesBuiltin': return t('st.namedAgents.overridesBuiltin');
+      case 'modelMenuEmpty': return t('st.profiles.menuNoCandidates');
       case 'executorIgnored': return t('st.profiles.diag.executorIgnored', { fields: item.fields.join(', ') });
     }
   };

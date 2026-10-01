@@ -14,6 +14,11 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { formatCompactTokens } from '../../lib/autoCompact';
 import { CompactPointField } from './CompactPointField';
+import { AliasChips, Field, Section } from './profileEditor/fields';
+import { ModelMenuField } from './profileEditor/ModelMenuField';
+import { ModelProfilesField } from './profileEditor/ModelProfilesField';
+import { changedFields, draftFromProfile, draftProblems, EFFORTS, patchBody } from './profileEditor/profileDraft';
+import { modelMenuDraftPatch, useModelMenuPreview } from './profileEditor/useModelMenuPreview';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { SUBAGENT_POLICY_CHOICES, subagentPolicyBody, subagentPolicyChoice, subagentPolicyLabelKey, type SubagentPolicyChoice } from './subagentPolicy';
 
@@ -128,9 +133,9 @@ function ToolListField({
  * saves them in one shot, replacing the old
  * scattered inline fieldset. Only the fields the user actually touched ride
  * the PATCH: an untouched `tools: []` must stay an empty list (deny every
- * tool) instead of being re-serialized as "no such field". Read-only
- * projections (budgets, spawn constraints, model profiles) stay on the row's
- * technical-details fold; the raw-file editor remains a separate entry.
+ * tool) instead of being re-serialized as "no such field". Model menus and
+ * soft advice use the shared profile-editor fields; budgets and spawn
+ * constraints stay read-only on the row's technical-details fold.
  */
 export function AgentProfileEditorDialog({
   profile,
@@ -170,6 +175,10 @@ export function AgentProfileEditorDialog({
   const [disallowedTools, setDisallowedTools] = useState(baseline.disallowedTools);
   const [routeAliases, setRouteAliases] = useState(baseline.routeAliases);
   const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicyChoice>(baseline.subagentPolicy);
+  const [menuBaseline] = useState(() => draftFromProfile(profile));
+  const [menuDraft, setMenuDraft] = useState(menuBaseline);
+  const menuPatch = patchBody(profile, menuBaseline, { ...menuDraft, modelAlias });
+  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(menuPatch), menuDraft.restrictModelsToMenu);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -191,7 +200,8 @@ export function AgentProfileEditorDialog({
     || !toolFieldsEqual(disallowedTools, baseline.disallowedTools)
     || changedRoutes.length > 0
     || autoCompact !== baseline.autoCompact
-    || subagentPolicy !== baseline.subagentPolicy;
+    || subagentPolicy !== baseline.subagentPolicy
+    || changedFields(menuBaseline, menuDraft).length > 0;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
   const mainCannotFollowCaller = profile.main === true && modelAlias.trim() === 'inherit';
@@ -200,6 +210,8 @@ export function AgentProfileEditorDialog({
     && !mainCannotFollowCaller
     && !toolFieldUnnamed(tools)
     && !toolFieldUnnamed(disallowedTools)
+    && menuPreview.ready
+    && !draftProblems(menuDraft).includes('modelProfiles')
     && profile.workspace_id !== undefined;
 
   const save = async () => {
@@ -211,6 +223,11 @@ export function AgentProfileEditorDialog({
         scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
         source_file: profile.source_file,
+        restrict_models_to_menu: menuPatch.restrict_models_to_menu,
+        model_profiles: menuPatch.model_profiles,
+        preferred_models: menuPatch.preferred_models,
+        discouraged_models: menuPatch.discouraged_models,
+        preferred_efforts: menuPatch.preferred_efforts,
         description: description !== baseline.description ? description.trim() : undefined,
         when_to_use: whenToUse !== baseline.whenToUse
           ? (whenToUse.trim() === '' ? null : whenToUse.trim())
@@ -330,6 +347,30 @@ export function AgentProfileEditorDialog({
               choices={[{ value: '', label: t('st.namedAgents.inherit') }, ...['auto', 'default', 'flex', 'priority'].map((value) => ({ value, label: value }))]} /></div>
           </div>
         </div>
+        <Section title={t('st.profiles.modelProfiles')} dataSection="model-profiles" defaultOpen={menuDraft.restrictModelsToMenu}>
+          <ModelMenuField checked={menuDraft.restrictModelsToMenu} baselineChecked={menuBaseline.restrictModelsToMenu} disabled={saving}
+            onChange={(restrictModelsToMenu) => setMenuDraft((current) => ({ ...current, restrictModelsToMenu }))}
+            preview={menuPreview.value} pending={menuPreview.pending} error={menuPreview.error} onRetry={menuPreview.retry} />
+          <p className="text-[11.5px] text-ink-soft">{t('st.profiles.modelProfilesHint')}</p>
+          <ModelProfilesField values={menuDraft.modelProfiles} models={modelsQuery.data?.items ?? []} disabled={saving}
+            onChange={(modelProfiles) => setMenuDraft((current) => ({ ...current, modelProfiles }))} />
+        </Section>
+        <Section title={t('st.profiles.softAdvice')} dataSection="soft-advice"
+          defaultOpen={menuDraft.preferredModels.length + menuDraft.discouragedModels.length + menuDraft.preferredEfforts.length > 0}>
+          <p className="text-[11.5px] text-ink-soft">{t('st.profiles.softAdviceHint')}</p>
+          <Field label={t('st.profiles.preferredModels')}>
+            <AliasChips id="legacy-preferred-models" values={menuDraft.preferredModels} models={modelsQuery.data?.items ?? []} disabled={saving}
+              addLabel={t('st.profiles.addModel')} onChange={(preferredModels) => setMenuDraft((current) => ({ ...current, preferredModels }))} />
+          </Field>
+          <Field label={t('st.profiles.discouragedModels')}>
+            <AliasChips id="legacy-discouraged-models" values={menuDraft.discouragedModels} models={modelsQuery.data?.items ?? []} disabled={saving}
+              addLabel={t('st.profiles.addModel')} onChange={(discouragedModels) => setMenuDraft((current) => ({ ...current, discouragedModels }))} />
+          </Field>
+          <Field label={t('st.profiles.preferredEfforts')}>
+            <AliasChips id="legacy-preferred-efforts" values={menuDraft.preferredEfforts} models={[]} disabled={saving} choices={EFFORTS.map((value) => ({ value, label: value }))}
+              addLabel={t('st.profiles.addEffort')} onChange={(preferredEfforts) => setMenuDraft((current) => ({ ...current, preferredEfforts }))} />
+          </Field>
+        </Section>
         <div data-profile-field="subagentPolicy" className="space-y-1">
           <p id="agent-subagent-policy-label" className={FORM_LABEL}>{t('st.profiles.policy')}</p>
           <SettingsSegmented<SubagentPolicyChoice> ariaLabelledBy="agent-subagent-policy-label" dataAttr="data-policy-choice"
@@ -376,6 +417,7 @@ export function AgentProfileEditorDialog({
           </label>
         ))}
       </fieldset>
+      {(menuPreview.value?.removed?.length ?? 0) > 0 ? <p data-menu-save-warning role="status" className="mt-3 break-words text-[12px] font-medium text-amber-ink">{t('st.profiles.menuRemoved', { models: menuPreview.value!.removed!.join(', ') })}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={!canSave || saving} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}

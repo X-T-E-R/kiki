@@ -64,6 +64,10 @@ export interface ProfileDraft {
   readonly kikiContext: readonly KikiContextGroup[] | undefined;
   readonly modelAlias: string;
   readonly effort: string;
+  readonly restrictModelsToMenu: boolean;
+  readonly preferredModels: readonly string[];
+  readonly discouragedModels: readonly string[];
+  readonly preferredEfforts: readonly string[];
   readonly allowedModels: readonly string[];
   readonly denyModels: readonly string[];
   readonly allowedEfforts: readonly string[];
@@ -164,6 +168,10 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     kikiContext: normalizeKikiContext(profile.kiki_context),
     modelAlias: profile.pinned_model_alias ?? '',
     effort: profile.thinking_effort ?? '',
+    restrictModelsToMenu: profile.restrict_models_to_menu === true,
+    preferredModels: profile.preferred_models ?? [],
+    discouragedModels: profile.discouraged_models ?? [],
+    preferredEfforts: profile.preferred_efforts ?? [],
     allowedModels: profile.allowed_models ?? [],
     denyModels: profile.deny_models ?? [],
     allowedEfforts: profile.allowed_efforts ?? [],
@@ -241,6 +249,10 @@ export function patchBody(
   }
   if (changed.has('modelAlias')) body.pinned_model_alias = textOrNull(draft.modelAlias);
   if (changed.has('effort')) body.thinking_effort = textOrNull(draft.effort);
+  if (changed.has('restrictModelsToMenu')) body.restrict_models_to_menu = draft.restrictModelsToMenu;
+  if (changed.has('preferredModels')) body.preferred_models = listOrNull(draft.preferredModels);
+  if (changed.has('discouragedModels')) body.discouraged_models = listOrNull(draft.discouragedModels);
+  if (changed.has('preferredEfforts')) body.preferred_efforts = listOrNull(draft.preferredEfforts);
   if (changed.has('allowedModels')) body.allowed_models = listOrNull(draft.allowedModels);
   if (changed.has('denyModels')) body.deny_models = listOrNull(draft.denyModels);
   if (changed.has('allowedEfforts')) body.allowed_efforts = listOrNull(draft.allowedEfforts);

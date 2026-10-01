@@ -23,6 +23,8 @@ import { KikiContextField } from './KikiContextField';
 import type { ExecutorPromptDraft } from './executorPromptDraft';
 import { AliasChips, EffortPicker, Field, ModelPicker, Section } from './fields';
 import { ModelProfilesField } from './ModelProfilesField';
+import { ModelMenuField } from './ModelMenuField';
+import { modelMenuDraftPatch, useModelMenuPreview } from './useModelMenuPreview';
 import {
   changedFields, draftFromProfile, draftProblems, EFFORTS, EMPTY_SPAWN_CONSTRAINTS, isExternalExecutor, kikiSubagentsApplicable, patchBody, spawnConstraintsSet,
   type ProfileDraft, type SpawnConstraintsDraft, type ToolFieldMode, type ToolFieldValue,
@@ -105,6 +107,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const changed = changedFields(baseline, draft);
   const dirty = changed.length > 0;
   const problems = draftProblems(draft);
+  const menuPreview = useModelMenuPreview(profile, modelMenuDraftPatch(patchBody(profile, baseline, draft)), draft.restrictModelsToMenu);
   useEffect(() => {
     if (dirty) return;
     const next = draftFromProfile(profile);
@@ -132,7 +135,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     onSaved(updated);
   };
   const save = async () => {
-    if (!writable || !dirty || problems.length > 0 || profile.workspace_id === undefined) return;
+    if (!writable || !dirty || problems.length > 0 || !menuPreview.ready || profile.workspace_id === undefined) return;
     setSaving(true); setFeedback(null);
     try {
       const updated = await client.updateNamedAgentProfile(profile.name, patchBody(profile, baseline, draft));
@@ -254,12 +257,32 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         {fieldState('subagents')?.state === 'ignored' ? <p className="text-[11.5px] text-ink-faint">{fieldState('subagents')?.reason ?? t('st.profiles.fieldIgnored', { engine })}</p> : null}
       </Section>
       <Section title={t('st.profiles.modelProfiles')} dataSection="model-profiles" count={draft.modelProfiles.length + draft.allowedModels.length}
-        defaultOpen={draft.modelProfiles.length > 0 || draft.allowedModels.length > 0}>
+        defaultOpen={draft.restrictModelsToMenu || draft.modelProfiles.length > 0 || draft.allowedModels.length > 0}>
         <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.modelProfilesHint')}</p>
+        <ModelMenuField checked={draft.restrictModelsToMenu} baselineChecked={baseline.restrictModelsToMenu} disabled={disabled}
+          onChange={(value) => set('restrictModelsToMenu', value)} preview={menuPreview.value}
+          pending={menuPreview.pending} error={menuPreview.error} onRetry={menuPreview.retry} />
         <ModelProfilesField values={draft.modelProfiles} models={models} disabled={disabled} onChange={(next) => set('modelProfiles', next)} />
         <Field label={t('st.profiles.allowedModels')} hint={t('st.profiles.allowedModelsHint')} dataField="allowedModels">
           <AliasChips id="allowed-models" values={draft.allowedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('allowedModels', next)} />
+        </Field>
+      </Section>
+      <Section title={t('st.profiles.softAdvice')} dataSection="soft-advice"
+        count={draft.preferredModels.length + draft.discouragedModels.length + draft.preferredEfforts.length}
+        defaultOpen={draft.preferredModels.length + draft.discouragedModels.length + draft.preferredEfforts.length > 0}>
+        <p className="text-[11.5px] leading-snug text-ink-soft">{t('st.profiles.softAdviceHint')}</p>
+        <Field label={t('st.profiles.preferredModels')} dataField="preferredModels">
+          <AliasChips id="preferred-models" values={draft.preferredModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+            onChange={(next) => set('preferredModels', next)} />
+        </Field>
+        <Field label={t('st.profiles.discouragedModels')} dataField="discouragedModels">
+          <AliasChips id="discouraged-models" values={draft.discouragedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+            onChange={(next) => set('discouragedModels', next)} />
+        </Field>
+        <Field label={t('st.profiles.preferredEfforts')} dataField="preferredEfforts">
+          <AliasChips id="preferred-efforts" values={draft.preferredEfforts} models={[]} disabled={disabled} addLabel={t('st.profiles.addEffort')}
+            choices={EFFORTS.map((level) => ({ value: level, label: level }))} onChange={(next) => set('preferredEfforts', next)} />
         </Field>
       </Section>
       <Section title={t('st.profiles.tools')} dataSection="tools"
@@ -389,9 +412,10 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     </div> : <RawPanel profile={profile} writable={writable} reloadToken={rawReload} onSaved={accept} />}
     {writable && mode === 'form' ? <div className="sticky bottom-0 -mx-1 bg-canvas/95 px-1 backdrop-blur-sm">
       <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
-        saveDisabled={problems.length > 0} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
+        saveDisabled={problems.length > 0 || !menuPreview.ready} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>
-          : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />
+          : dirty && (menuPreview.value?.removed?.length ?? 0) > 0 ? <span data-menu-save-warning role="status" className="max-w-[36rem] break-words text-[12px] font-medium text-amber-ink">{t('st.profiles.menuRemoved', { models: menuPreview.value!.removed!.join(', ') })}</span>
+            : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />
     </div> : null}
     <FeedbackLine feedback={feedback} />
   </div>;

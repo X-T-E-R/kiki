@@ -787,7 +787,7 @@ function ChildAgentWorkspace({
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
           contextAutoCompact={contextAutoCompact}
-          sessionUsage={composerUsage} sessionId={sessionId} agentProfileCatalogMode={{ mode: 'disabled' }}
+          sessionUsage={composerUsage} sessionId={sessionId} agentId={agentId} agentProfileCatalogMode={{ mode: 'disabled' }}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
           onChangePlanMode={() => {}}

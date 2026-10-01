@@ -30,6 +30,7 @@ const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
+const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
 
 vi.mock('../state/connection', () => ({
@@ -39,6 +40,7 @@ vi.mock('../state/connection', () => ({
       listSessionSkills,
       listWorkspaceSkills,
       listNamedAgentProfiles,
+      getAgentCapabilities,
       uploadFile,
     },
   }),
@@ -75,6 +77,8 @@ beforeEach(() => {
   listModels.mockReset().mockResolvedValue({
     items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }],
   });
+  getAgentCapabilities.mockReset().mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true,
+    profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
@@ -2485,5 +2489,53 @@ describe('Composer queue edit mode', () => {
     });
     await settle();
     expect(sendButton.disabled).toBe(false);
+  });
+});
+
+
+describe('Composer projected profile model menu', () => {
+  const menuProfile: NamedAgentProfile = {
+    name: 'agent', source: 'user', main: true, disabled: false, routes: [],
+    restrict_models_to_menu: true, pinned_model_alias: 'fixture/kiki-pro',
+    declared_model_menu: { aliases: ['fixture/kiki-pro'], default_alias: 'fixture/kiki-pro', identities: ['fixture/kiki-pro'] },
+    effective_model_aliases: ['fixture/kiki-pro'],
+  };
+  beforeEach(() => {
+    listModels.mockResolvedValue({ items: [
+      { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro' },
+      { id: 'fixture/outside', provider_id: 'fixture', remote_id: 'outside' },
+    ] });
+    listNamedAgentProfiles.mockResolvedValue({ items: [menuProfile,
+      { ...menuProfile, name: 'outside-profile', pinned_model_alias: 'fixture/outside', effective_model_aliases: ['fixture/outside'] },
+    ] });
+  });
+  it('disables menu-excluded rows with their source and never hides main profiles by model', async () => {
+    const onChangeModel = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onChangeModel, onSend,
+      onChangeAgentProfile: vi.fn() });
+    expect(container.querySelector('[data-model-menu-blocked]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
+    await act(async () => container.querySelector<HTMLButtonElement>('#composer-model-select')!.click());
+    const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
+    expect(outside.getAttribute('aria-disabled')).toBe('true');
+    expect(outside.textContent).toContain('profile:agent.restrict_models_to_menu');
+    await act(async () => outside.click());
+    expect(onChangeModel).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSend).not.toHaveBeenCalled();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await act(async () => container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!.click());
+    expect([...document.body.querySelectorAll('[role="option"]')].some((node) => node.textContent?.includes('outside-profile'))).toBe(true);
+  });
+  it('uses the frozen session domain instead of a newer disk declaration', async () => {
+    getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true, targets: [],
+      profile: { name: 'agent', restrict_models_to_menu: true, effective_model_aliases: ['fixture/outside'] },
+    });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
+    expect(getAgentCapabilities).toHaveBeenCalledWith({ session_id: 'saved-session', agent_id: 'main' });
+    expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
+    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSend).toHaveBeenCalledWith('hello', []);
   });
 });

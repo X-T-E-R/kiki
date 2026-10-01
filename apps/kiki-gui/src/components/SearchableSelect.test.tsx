@@ -197,3 +197,42 @@ describe('SearchableSelect', () => {
     expect(container.querySelector('[role="listbox"]')).toBeNull();
   });
 });
+
+
+describe('SearchableSelect disabled options', () => {
+  it.each(['comfortable', 'compact'] as const)('shows disabled rows but skips clicks and arrow navigation (%s)', async (density) => {
+    const { container, onChange } = await renderSelect({ density, options: [
+      { value: 'a', label: 'Alpha', disabled: true, hint: 'profile:example.restrict_models_to_menu' },
+      { value: 'b', label: 'Beta' },
+      { value: 'c', label: 'Gamma', disabled: true },
+      { value: 'd', label: 'Delta' },
+    ] });
+    await act(async () => trigger(container).click());
+    const rows = options(container);
+    expect(rows[0]!.getAttribute('aria-disabled')).toBe('true');
+    expect((rows[0] as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => rows[0]!.click());
+    expect(onChange).not.toHaveBeenCalled();
+    const input = searchInput(container);
+    expect(input.getAttribute('aria-activedescendant')).toBe('test-select-list-option-1');
+    await press(input, 'ArrowDown');
+    expect(input.getAttribute('aria-activedescendant')).toBe('test-select-list-option-3');
+    await press(input, 'ArrowDown');
+    expect(input.getAttribute('aria-activedescendant')).toBe('test-select-list-option-1');
+    await press(input, 'ArrowUp');
+    expect(input.getAttribute('aria-activedescendant')).toBe('test-select-list-option-3');
+    await press(input, 'Enter');
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('d');
+  });
+  it('does not commit when filtering leaves only disabled rows', async () => {
+    const { container, onChange } = await renderSelect({ options: [{ value: 'a', label: 'Alpha', disabled: true }, { value: 'b', label: 'Beta' }] });
+    await act(async () => trigger(container).click());
+    await typeIn(searchInput(container), 'Alpha');
+    const input = searchInput(container);
+    expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+    await press(input, 'ArrowDown');
+    await press(input, 'Enter');
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+  });
+});

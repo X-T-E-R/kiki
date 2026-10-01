@@ -108,3 +108,31 @@ describe('profile draft kiki_context', () => {
     expect(body.kiki_context).toEqual(['threads']);
   });
 });
+
+
+describe('profile draft model menu and advice', () => {
+  it('defaults the menu restriction to off, preserves untouched fields, and writes booleans on change', () => {
+    const baseline = draftFromProfile(base);
+    expect(baseline.restrictModelsToMenu).toBe(false);
+    expect(patchBody(base, baseline, baseline)).not.toHaveProperty('restrict_models_to_menu');
+    expect(patchBody(base, baseline, { ...baseline, restrictModelsToMenu: true }).restrict_models_to_menu).toBe(true);
+    const restricted = { ...base, restrict_models_to_menu: true };
+    const enabled = draftFromProfile(restricted);
+    expect(patchBody(restricted, enabled, { ...enabled, restrictModelsToMenu: false }).restrict_models_to_menu).toBe(false);
+  });
+
+  it('round-trips soft advice separately from hard constraints and removes only edited advice', () => {
+    const profile = { ...base, preferred_models: ['fixture/fast'], discouraged_models: ['fixture/costly'],
+      preferred_efforts: ['low'], allowed_models: ['fixture/fast'], deny_models: ['fixture/blocked'] };
+    const baseline = draftFromProfile(profile);
+    expect(baseline.preferredModels).toEqual(['fixture/fast']);
+    expect(baseline.discouragedModels).toEqual(['fixture/costly']);
+    expect(baseline.preferredEfforts).toEqual(['low']);
+    const patch = patchBody(profile, baseline, { ...baseline, preferredModels: [], preferredEfforts: ['high'] });
+    expect(patch.preferred_models).toBeNull();
+    expect(patch.preferred_efforts).toEqual(['high']);
+    expect(patch).not.toHaveProperty('allowed_models');
+    expect(patch).not.toHaveProperty('deny_models');
+    expect(patch).not.toHaveProperty('discouraged_models');
+  });
+});

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
@@ -11,6 +11,9 @@ import { ListEmpty, ListToolbar, useListView, type ListSortSpec } from '../list'
 import { diagnosticTone, type ProfileDiagnostic } from './diagnostics';
 import { EFFORTS, effortLabel, isExternalExecutor } from './profileDraft';
 import { TeamRoster } from './TeamRoster';
+import { ModelMenuPreview } from './ModelMenuPreview';
+import { useModelMenuPreview } from './useModelMenuPreview';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 
 export type TeamFilter = 'all' | 'main' | 'subagent';
 type TeamLayout = 'list' | 'teams';
@@ -76,6 +79,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
 }) {
   const { t, tp, locale } = useI18n();
   const [layout, setLayout] = useState<TeamLayout>('list');
+  const [pendingModel, setPendingModel] = useState<{ key: string; alias: string }>();
   const modelIds = useMemo(() => new Set(models.map((model) => model.id)), [models]);
   // The parent's segmented picks the population (it also drives the tombstone
   // list); the list toolbar searches and sorts within it. Main agents lead.
@@ -192,7 +196,7 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
             const saving = savingKey === row.key;
             const quickEditable = row.writable && !saving && !shadowed;
             const cellPad = compact ? 'py-1' : 'py-2';
-            return <tr key={row.key} data-team-row={profile.name} data-team-source={profile.source}
+            return <Fragment key={row.key}><tr data-team-row={profile.name} data-team-source={profile.source}
               className={`align-top max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:border-b max-sm:border-hairline max-sm:py-2 ${shadowed || profile.disabled ? 'text-ink-faint' : ''}`}>
               <td className={`border-b border-hairline ${cellPad} pr-3 max-sm:w-full max-sm:border-0 max-sm:p-0`}>
                 <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name}
@@ -220,7 +224,11 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
                   triggerLabel={alias === '' ? <span className="font-sans text-ink-soft">{t('st.profiles.modelUnset')}</span>
                     : <span className="min-w-0 truncate font-mono">{alias}</span>}
                   buttonClassName={`${SETTINGS_SELECT_TRIGGER} w-full max-w-[12rem] text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}
-                  onChange={(next) => { if (next !== alias) onQuickSave(row, { pinned_model_alias: next === '' ? null : next }); }} />
+                  onChange={(next) => {
+                    if (next === alias) { setPendingModel(undefined); return; }
+                    if (profile.restrict_models_to_menu === true) setPendingModel({ key: row.key, alias: next });
+                    else onQuickSave(row, { pinned_model_alias: next === '' ? null : next });
+                  }} />
                   : <span className={`inline-flex h-8 items-center gap-1 font-mono text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}>
                     {aliasMissing ? <Icon name="warning" size={12} /> : null}{alias === '' ? <span className="font-sans text-ink-soft">{t('st.profiles.modelUnset')}</span> : alias}
                   </span>}
@@ -248,6 +256,30 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
                   </span> : null}
                 </span>
               </td>
-            </tr>;
+            </tr>
+            {pendingModel?.key === row.key ? <tr data-team-menu-review={profile.name} className="max-sm:block">
+              <td colSpan={4} className="border-b border-hairline py-3 max-sm:block">
+                <QuickModelMenuReview profile={profile} alias={pendingModel.alias} disabled={saving}
+                  onCancel={() => setPendingModel(undefined)} onSave={() => {
+                    onQuickSave(row, { pinned_model_alias: pendingModel.alias === '' ? null : pendingModel.alias });
+                    setPendingModel(undefined);
+                  }} />
+              </td>
+            </tr> : null}</Fragment>;
   }
+}
+
+function QuickModelMenuReview({ profile, alias, disabled, onSave, onCancel }: {
+  profile: NamedAgentProfile; alias: string; disabled: boolean; onSave: () => void; onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const preview = useModelMenuPreview(profile, { pinned_model_alias: alias === '' ? null : alias }, true);
+  return <div className="max-w-[40rem] space-y-2" data-team-pending-model={alias}>
+    <p className="text-[12px] font-medium text-ink">{t('st.profiles.modelFor', { name: profile.name })}: <span className="break-all font-mono">{alias || t('st.profiles.modelUnset')}</span></p>
+    <ModelMenuPreview value={preview.value} pending={preview.pending} error={preview.error} onRetry={preview.retry} />
+    <div className="flex flex-wrap items-center gap-2">
+      <button type="button" data-team-menu-save className={PRIMARY_BUTTON} disabled={disabled || !preview.ready} onClick={onSave}>{t('common.save')}</button>
+      <button type="button" className={SECONDARY_BUTTON} disabled={disabled} onClick={onCancel}>{t('common.cancel')}</button>
+    </div>
+  </div>;
 }

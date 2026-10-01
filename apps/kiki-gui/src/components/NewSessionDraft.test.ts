@@ -1200,3 +1200,33 @@ describe('buildAgentProfileOptions', () => {
     expect(options.map((option) => option.value)).toEqual(['agent']);
   });
 });
+
+
+describe('new-session projected model permission', () => {
+  const profile: NamedAgentProfile = { name: 'agent', source: 'user', main: true, disabled: false, routes: [],
+    pinned_model_alias: 'fixture/outside', restrict_models_to_menu: true, effective_model_aliases: ['fixture/inside'] };
+  beforeEach(() => {
+    client.listModels.mockResolvedValue({ items: [
+      { id: 'fixture/inside', provider_id: 'fixture', remote_id: 'inside' },
+      { id: 'fixture/outside', provider_id: 'fixture', remote_id: 'outside' },
+    ] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile] });
+  });
+  it('keeps an illegal proposed default visible and blocks creation instead of choosing a menu fallback', async () => {
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/outside');
+    await act(async () => { await state.send('hello', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+    await act(async () => state.setModelOverride('inside'));
+    state = await settleDraft((value) => value.modelOverride === 'inside');
+    await act(async () => { await state.send('hello', []); });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ model: 'inside' }) }));
+  });
+  it.each([[], undefined])('fails closed for an empty or missing effective set (%s)', async (effective_model_aliases) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, pinned_model_alias: 'fixture/inside', effective_model_aliases }] });
+    await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/inside');
+    await act(async () => { await state.send('hello', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+  });
+});

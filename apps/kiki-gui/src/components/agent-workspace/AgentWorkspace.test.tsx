@@ -47,6 +47,7 @@ vi.mock('../../state/connection', () => ({
     scopeId: harness.scopeId,
     client: {
       listModels: harness.listModels,
+      getAgentCapabilities: harness.readCapabilities,
       listSessionSkills: harness.listSessionSkills,
       sendAgentMessage: harness.sendAgentMessage,
       isNativeAgent: harness.isNativeAgent,
@@ -209,7 +210,7 @@ it('keeps dispatch policy out of the workspace header and mounts the shared comp
   ));
   await settle();
 
-  expect(harness.readCapabilities).not.toHaveBeenCalled();
+  expect(harness.readCapabilities).toHaveBeenCalledExactlyOnceWith({ session_id: 'session', agent_id: 'child' });
   expect(header.querySelector('[data-dispatch-policy]')).toBeNull();
   expect(header.querySelector('[data-recommendation-status]')).toBeNull();
   expect(dock.querySelector('[data-composer-variant="subagent"]')).not.toBeNull();

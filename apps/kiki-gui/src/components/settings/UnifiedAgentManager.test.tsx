@@ -14,6 +14,7 @@ const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
     previewExecutorPrompt: vi.fn(),
+    klient: { rest: { agents: { previewModelMenu: vi.fn() } } },
   },
 }));
 vi.mock('../../state/connection', () => ({
@@ -80,6 +81,10 @@ beforeEach(() => {
   client.getConfig.mockResolvedValue({});
   client.listExecutors.mockResolvedValue({ items: [] });
   client.previewExecutorPrompt.mockRejectedValue(new Error('preview unavailable'));
+  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
+    declared_model_menu: { aliases: ['fixture/opus'], identities: ['fixture/opus'], default_alias: 'fixture/opus' },
+    effective_model_aliases: ['fixture/opus'], added_model_identities: [], removed_model_identities: [],
+  });
   client.patchConfig.mockResolvedValue({});
   client.readHostFile.mockResolvedValue('---\nname: reviewer\ndescription: Review work\n---\n\nCheck changes\n');
   client.listModels.mockResolvedValue({ items: [
@@ -477,4 +482,100 @@ describe('new profile', () => {
     await settle();
     expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('plan');
   });
+});
+
+
+describe('profile menu restriction and advice editor', () => {
+  it('starts off by default and saves the menu switch without changing the menu', async () => {
+    client.updateNamedAgentProfile.mockResolvedValue({ ...main, restrict_models_to_menu: true });
+    await render();
+    await open('agent');
+    const toggle = sheet().querySelector<HTMLButtonElement>('[data-profile-field="restrictModelsToMenu"] [role="switch"]')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    await settle();
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
+      scope: 'user', workspace_id: 'ws-one', source_file: main.source_file, restrict_models_to_menu: true,
+    });
+  });
+
+  it('edits preferred models and efforts as soft advice without writing hard rules', async () => {
+    client.updateNamedAgentProfile.mockResolvedValue({ ...main, preferred_models: ['fixture/lite'], preferred_efforts: ['low'] });
+    await render();
+    await open('agent');
+    expect(sheet().querySelector('[data-profile-section="soft-advice"]')?.textContent).toContain('Soft advice');
+    await choose(sheet().querySelector<HTMLElement>('#preferred-models-add')!, 'fixture/lite');
+    await choose(sheet().querySelector<HTMLElement>('#preferred-efforts-add')!, 'low');
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
+      scope: 'user', workspace_id: 'ws-one', source_file: main.source_file,
+      preferred_models: ['fixture/lite'], preferred_efforts: ['low'],
+    });
+  });
+});
+
+
+it('previews default-model removal before saving and keeps the full catalog editable', async () => {
+  const restricted = { ...main, restrict_models_to_menu: true, model_profiles: [],
+    declared_model_menu: { aliases: ['fixture/opus'], default_alias: 'fixture/opus', identities: ['fixture/opus'] },
+    effective_model_aliases: ['fixture/opus'] };
+  client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });
+  let resolvePreview!: (value: unknown) => void;
+  client.klient.rest.agents.previewModelMenu.mockReturnValue(new Promise((resolve) => { resolvePreview = resolve; }));
+  client.updateNamedAgentProfile.mockResolvedValue({ ...restricted, pinned_model_alias: 'fixture/lite' });
+  await render();
+  await open('agent');
+  expect(sheet().querySelector('[data-menu-declared]')?.textContent).toContain('fixture/opusDefault');
+  await choose(sheet().querySelector<HTMLElement>('#profile-model')!, 'fixture/lite');
+  expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+  expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
+  await act(async () => resolvePreview({ restrict_models_to_menu: true,
+    declared_model_menu: { aliases: ['fixture/lite'], default_alias: 'fixture/lite', identities: ['fixture/lite'] },
+    effective_model_aliases: ['fixture/lite'], added_model_identities: ['fixture/lite'], removed_model_identities: ['fixture/opus'],
+  }));
+  await settle();
+  expect(sheet().querySelector('[data-menu-added]')?.textContent).toContain('fixture/lite');
+  expect(sheet().querySelector('[data-menu-removed]')?.textContent).toContain('fixture/opus');
+  await save();
+  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
+});
+
+it('requires an explicit save after a restricted TeamView default change', async () => {
+  const restricted = { ...main, restrict_models_to_menu: true };
+  client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });
+  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
+    declared_model_menu: { aliases: ['fixture/lite'], default_alias: 'fixture/lite', identities: ['fixture/lite'] },
+    effective_model_aliases: ['fixture/lite'], added_model_identities: ['fixture/lite'], removed_model_identities: ['fixture/opus'],
+  });
+  client.updateNamedAgentProfile.mockResolvedValue({ ...restricted, pinned_model_alias: 'fixture/lite' });
+  await render();
+  await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
+  await settle();
+  expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
+  const review = container.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
+  expect(review.querySelector('[data-menu-removed]')?.textContent).toContain('fixture/opus');
+  await act(async () => review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!.click());
+  await settle();
+  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
+});
+
+it('keeps failed previews unsavable and shows an empty effective set after retry', async () => {
+  client.klient.rest.agents.previewModelMenu.mockRejectedValueOnce(new Error('preview unavailable'));
+  await render();
+  await open('agent');
+  await act(async () => sheet().querySelector<HTMLInputElement>('[data-profile-field="restrictModelsToMenu"] input')!.click());
+  await settle();
+  expect(buttonIn(sheet(), 'Save').disabled).toBe(true);
+  expect(sheet().querySelector('[data-model-menu-preview]')?.textContent).toContain('Could not calculate');
+  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
+    declared_model_menu: { aliases: ['fixture/opus'], default_alias: 'fixture/opus', identities: ['fixture/opus'] },
+    effective_model_aliases: [], added_model_identities: [], removed_model_identities: [],
+  });
+  await act(async () => buttonIn(sheet(), 'Retry').click());
+  await settle();
+  expect(sheet().querySelector('[data-menu-empty]')?.textContent).toContain('No model can bind');
+  expect(sheet().querySelector('[data-menu-declared]')?.textContent).toContain('fixture/opus');
+  expect(buttonIn(sheet(), 'Save').disabled).toBe(false);
 });

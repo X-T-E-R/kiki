@@ -13,6 +13,8 @@ import {
   namedAgentOverrideRelations,
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
+  projectedProfileModelState,
+  projectedProfileModelRuleSource,
   resolveCatalogModel,
   shippedEntryForProfile,
   subagentDefaultTargetFromConfig,
@@ -625,4 +627,44 @@ describe('agentProfileSourceLabelKey', () => {
     expect(agentProfileSourceLabelKey('C:/fixture/agent.md')).toBeUndefined();
     expect(agentProfileSourceLabelKey(undefined)).toBeUndefined();
   });
+});
+
+
+describe('projected profile model permission', () => {
+  const models = [
+    { id: 'fixture/fast', provider_id: 'fixture', remote_id: 'fast' },
+    { id: 'fixture/slow', provider_id: 'fixture', remote_id: 'slow' },
+  ];
+  it('uses the effective server set, including canonical aliases, without choosing a fallback', () => {
+    const projection = { restrict_models_to_menu: true, effective_model_aliases: ['fixture/fast'] };
+    expect(projectedProfileModelState(projection, models, 'fast')).toBe('allowed');
+    expect(projectedProfileModelState(projection, models, 'fixture/slow')).toBe('blocked');
+    expect(projectedProfileModelState(projection, models, undefined)).toBe('blocked');
+    expect(projectedProfileModelState({ ...projection, effective_model_aliases: [] }, models, 'fast')).toBe('blocked');
+  });
+  it('fails closed when an enabled restriction has no projection and preserves the disabled legacy case', () => {
+    expect(projectedProfileModelState({ restrict_models_to_menu: true }, models, 'fast')).toBe('unknown');
+    expect(projectedProfileModelState({ restrict_models_to_menu: false }, models, 'slow')).toBe('allowed');
+    expect(projectedProfileModelState(undefined, models, 'slow')).toBe('allowed');
+  });
+  it('keeps other projected hard domains active while the menu switch is off', () => {
+    const projection = { restrict_models_to_menu: false, effective_model_aliases: ['fast'] };
+    expect(projectedProfileModelState(projection, models, 'fixture/slow')).toBe('blocked');
+    expect(projectedProfileModelState(projection, models, 'fixture/fast')).toBe('allowed');
+  });
+  it('does not rewrite profile defaults to the first allowed candidate', () => {
+    const profile: NamedAgentProfile = { name: 'main', main: true, disabled: false, source: 'user', routes: [],
+      pinned_model_alias: 'fixture/slow', restrict_models_to_menu: true, effective_model_aliases: ['fixture/fast'] };
+    expect(composerDefaultsForProfile([profile], 'main')).toEqual({ model: 'fixture/slow', thinking: undefined });
+    expect(projectedProfileModelState(profile, models, 'fixture/slow')).toBe('blocked');
+  });
+});
+
+
+it('attributes only proven menu exclusions and does not mislabel another hard-domain rejection', () => {
+  const models = [{ id: 'fixture/inside', provider_id: 'fixture', remote_id: 'inside' }];
+  const projection = { restrict_models_to_menu: true, declared_model_menu: { identities: ['fixture/inside'] }, effective_model_aliases: [] };
+  expect(projectedProfileModelRuleSource(projection, models, 'outside', 'example')).toBe('profile:example.restrict_models_to_menu');
+  expect(projectedProfileModelRuleSource(projection, models, 'inside', 'example')).toBe('profile:example');
+  expect(projectedProfileModelRuleSource({ restrict_models_to_menu: true }, models, 'outside', 'example')).toBe('profile:example');
 });

@@ -18,6 +18,7 @@ export type ProfileDiagnostic =
   /** The managed copy of a shipped profile was edited. */
   | { readonly kind: 'builtinModified'; readonly status: ShippedAgentProfile['status'] }
   | { readonly kind: 'overridesBuiltin' }
+  | { readonly kind: 'modelMenuEmpty' }
   /** The executor ignores fields this profile sets. */
   | { readonly kind: 'executorIgnored'; readonly fields: readonly string[] };
 
@@ -58,6 +59,7 @@ export function ignoredSetFields(profile: NamedAgentProfile): string[] {
 
 export function profileDiagnostics(profile: NamedAgentProfile, context: DiagnosticContext): ProfileDiagnostic[] {
   const out: ProfileDiagnostic[] = [];
+  if (profile.restrict_models_to_menu === true && profile.effective_model_aliases?.length === 0) out.push({ kind: 'modelMenuEmpty' });
   const { modelIds } = context;
   if (modelIds !== undefined && modelIds.size > 0 && !isExternalExecutor(profile.executor)) {
     const missing = (alias: string | null | undefined): alias is string =>
