@@ -347,4 +347,16 @@ describe('parent generic gate recall before 7339a820b7', () => {
     expect(classifyDirectives(text)[0]).toMatchObject({ subject: 'agent.behavior', scope: 'agent', lifetime: 'persistent' });
     expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [user(text)] })?.disclosure.triggers).toEqual(['E1']);
   });
+  const reviewedPositiveCorpus = [
+    { text: '测试最多执行三次，至于性能优化，下次再讨论', parentAccepted: true },
+    { text: '以后检查退出码，至于性能优化，下次再讨论', parentAccepted: false },
+    { text: '目前的规则是默认用 vitest', parentAccepted: false },
+    { text: '现在你默认用 vitest 跑测试，直到我另行通知', parentAccepted: false },
+    { text: '目前这个页面默认使用浅色主题，你默认用 vitest 跑测试', parentAccepted: false },
+  ];
+  it.each(reviewedPositiveCorpus)('keeps exclusions local without losing the reviewed rule: $text', ({ text, parentAccepted }) => {
+    expect(parentGate.test(text)).toBe(parentAccepted);
+    expect(classifyDirectives(text)[0]).toMatchObject({ subject: 'agent.behavior', scope: 'agent', lifetime: 'persistent' });
+    expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [user(text)] })?.disclosure.triggers).toEqual(['E1']);
+  });
 });
