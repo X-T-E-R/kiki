@@ -498,10 +498,10 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       data,
       'reviewer',
     )).toMatchObject({
-      policyMode: 'strict',
+      policyMode: 'advisory',
       policySource: 'default',
-      recommendationStatus: 'blocked',
-      allowed: false,
+      recommendationStatus: 'allowed_nonpreferred',
+      allowed: true,
     });
     replay.ix.dispose();
   });
