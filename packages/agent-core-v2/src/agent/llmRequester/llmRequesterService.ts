@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isRequestGovernanceError } from '#/app/requestGovernance/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -212,6 +213,7 @@ export const llmRequesterEmittedThinkingEffortWarningsKey = defineState<Set<stri
 export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
+  private retryAttribution: { key: string; value: import('#/kosong/model/requestAdmission').RequestAttribution } | undefined;
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
   private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
   private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
@@ -398,6 +400,15 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     onRequestTrace: (traceId: string | undefined) => void,
     onAttemptRetry: (() => void) | undefined,
   ): Promise<AgentLLMRequestFinish> {
+    const source = request.source;
+    const purpose = source?.type === 'operation' ? source.requestKind ?? 'operation' : source?.type ?? 'system';
+    const retryKey = source === undefined ? randomUUID() : JSON.stringify([source.type, source.turnId, source.type === 'turn' ? source.step : purpose]);
+    const attribution = this.retryAttribution?.key === retryKey ? this.retryAttribution.value : {
+      logicalRequestId: randomUUID(), sessionId: this.sessionContext.sessionId,
+      agentId: this.agentContext.agentId, parentAgentId: request.identity.parentAgentId,
+      purpose, waitBudget: { waitedMs: 0 },
+    };
+    this.retryAttribution = { key: retryKey, value: attribution };
     this.toolCallIdNormalizer.seedFrom(this.context.get());
     const shaped = this.toolSelect.shapeHistory(request.messages);
     const recoveredStrip = this.mediaStripSnapshotForTurn(request.source);
@@ -469,6 +480,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
             isUnchangedModelHistory(this.context.get(), request.messages) &&
             isUnchangedModelHistory(request.messages, input.messages),
           onTraceId: setTraceId,
+          attribution,
         })) {
           switch (event.type) {
             case 'part':
@@ -555,7 +567,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     };
     for (;;) {
       try {
-        return await run(policy, params);
+        const result = await run(policy, params);
+        if (this.retryAttribution?.value === attribution) this.retryAttribution = undefined;
+        return result;
       } catch (error) {
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -573,6 +587,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         const raw = unwrapErrorCause(error);
         if (
           !this.infiniteRetryEnabled ||
+          isRequestGovernanceError(error) ||
           isAbortError(error) ||
           signal?.aborted === true ||
           raw instanceof APIContextOverflowError

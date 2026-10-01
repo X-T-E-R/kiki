@@ -1,5 +1,6 @@
 import { assertProviderCredential, assertProviderHeaders, openaiCodexAccountId, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
 
+import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -98,6 +99,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     @IProtocolAdapterRegistry
     private readonly protocolRegistry: IProtocolAdapterRegistry,
     @IHostRequestHeaders private readonly hostRequestHeaders: IHostRequestHeaders,
+    @IRequestAdmission private readonly admission: RequestAdmissionPort,
   ) {
     super();
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
@@ -134,7 +136,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const entry: CatalogEntry = {
       model: built.model,
       credentials: built.credentials,
-      requester: new ModelRequesterImpl(built.model, this.protocolRegistry),
+      requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission),
       trace,
     };
     this.cache.set(canonicalId, entry);
@@ -168,7 +170,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
             return auth;
           },
         },
-      }, this.protocolRegistry);
+      }, this.protocolRegistry, this.admission);
       let text = '';
       let usage: TokenUsage | undefined;
       let finishReason: string | undefined;

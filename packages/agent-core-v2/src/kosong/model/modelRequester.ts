@@ -13,6 +13,7 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import type { Model } from './catalog';
+import type { RequestAttribution } from './requestAdmission';
 
 export interface ModelRequestInput {
   readonly systemPrompt: string;
@@ -58,6 +59,7 @@ export interface ModelRequestParams {
   readonly maxContextTokens?: number;
   readonly onTraceId?: (traceId: string | null) => void;
   readonly requestIdentity?: RequestIdentityWireOptions;
+  readonly attribution?: RequestAttribution;
 }
 
 /** The `ModelRequester` contract: per-turn input, the streamed `ModelRequestEvent` output, and the

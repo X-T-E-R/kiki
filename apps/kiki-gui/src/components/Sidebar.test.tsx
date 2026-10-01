@@ -58,6 +58,7 @@ vi.mock('../state/connection', () => ({
   useOptionalConnection: () => ({ client: { getSession } }),
   useConnection: () => ({
     client: {
+      getRequestGovernance: async () => ({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] }),
       searchMessages,
       retrySearchIndexer,
       setWorkspacePinned,
@@ -721,10 +722,12 @@ describe('Sidebar entry distribution', () => {
     const { container } = await mount();
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
-    const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.textContent);
+    const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.children[1]?.textContent);
     expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities']);
     expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
+    await settle();
+    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
     expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
     // Memory is permanent, on or off: switched off the page is the turn-on guide.

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import type { RequestAdmissionPort, RequestAttribution } from './requestAdmission';
 import { AsyncEventQueue } from '#/_base/asyncEventQueue';
 import { Error2 } from '#/_base/errors/errors';
 import {
@@ -43,6 +45,7 @@ export class ModelRequesterImpl implements ModelRequester {
   constructor(
     readonly model: Model,
     private readonly protocolRegistry: IProtocolAdapterRegistry,
+    private readonly admission?: RequestAdmissionPort,
   ) {}
 
   private resolveChatProvider(): ChatProvider {
@@ -66,11 +69,26 @@ export class ModelRequesterImpl implements ModelRequester {
     params?: ModelRequestParams,
   ): AsyncIterable<ModelRequestEvent> {
     const queue = new AsyncEventQueue<ModelRequestEvent>();
-    void this.runRequest(input, signal, queue, params).then(
+    const controller = new AbortController();
+    const requestSignal = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
+    const completion = this.runRequest(input, requestSignal, queue, params).then(
       () => queue.end(),
       (error) => queue.fail(error),
     );
-    return queue;
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<ModelRequestEvent> {
+        let returned = false;
+        return {
+          next: () => returned ? Promise.resolve({ done: true, value: undefined }) : queue.next(),
+          return: async () => {
+            returned = true;
+            controller.abort();
+            await completion;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
   }
 
   async uploadVideo(
@@ -153,24 +171,35 @@ export class ModelRequesterImpl implements ModelRequester {
       responseFormat: input.responseFormat,
     };
 
+    const attribution: RequestAttribution = params?.attribution ?? {
+      logicalRequestId: randomUUID(), purpose: 'system', waitBudget: { waitedMs: 0 },
+    };
     let result: GenerateResult;
     try {
       result = await this.runWithAuthRefresh(
-        (auth, requestSignal) => {
-          requestStartedAt = Date.now();
-          return generate(
-            provider,
-            input.systemPrompt,
-            [...input.tools],
-            [...input.messages],
-            {
-              onMessagePart: (part) => {
-                firstChunkAt ??= Date.now();
-                queue.push({ type: 'part', part });
+        async (auth, requestSignal) => {
+          const permit = await this.admission?.acquire({
+            ...attribution, attemptId: randomUUID(), modelId: this.model.id, providerId: this.model.providerName,
+          }, requestSignal);
+          try {
+            requestSignal?.throwIfAborted();
+            requestStartedAt = Date.now();
+            return await generate(
+              provider,
+              input.systemPrompt,
+              [...input.tools],
+              [...input.messages],
+              {
+                onMessagePart: (part) => {
+                  firstChunkAt ??= Date.now();
+                  queue.push({ type: 'part', part });
+                },
               },
-            },
-            { ...options, signal: requestSignal, auth },
-          );
+              { ...options, signal: requestSignal, auth },
+            );
+          } finally {
+            permit?.release();
+          }
         },
         signal,
       );

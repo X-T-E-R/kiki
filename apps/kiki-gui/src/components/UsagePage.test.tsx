@@ -32,10 +32,11 @@ afterAll(() => {
 const getUsage = vi.fn();
 const getSession = vi.fn();
 const listWorkspaces = vi.fn();
+const getRequestGovernance = vi.fn().mockResolvedValue({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] });
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
-  useConnection: () => ({ client: { getUsage, getSession, listWorkspaces } }),
+  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getSession, listWorkspaces, getRequestGovernance } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -164,7 +165,7 @@ function LocationProbe() {
   return <span data-location-probe>{`${location.pathname}${location.search}`}</span>;
 }
 
-async function renderPage(entry = '/usage', options: { flush?: boolean } = {}) {
+async function renderPage(entry = '/usage?panel=history', options: { flush?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
   document.body.append(container);
@@ -211,7 +212,20 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
-  it('defaults to local today without an all-history notice', async () => {
+  it('opens live requests by default and switches between live, read-only limits and historical usage', async () => {
+    const { container, root } = await renderPage('/usage');
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
+    expect(mainCalls()).toHaveLength(0);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="limits"]')!.click(); });
+    expect(container.textContent).toContain('Rules are read-only');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-usage-reliability]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('defaults historical usage to local today without an all-history notice', async () => {
     const { container } = await renderPage();
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);

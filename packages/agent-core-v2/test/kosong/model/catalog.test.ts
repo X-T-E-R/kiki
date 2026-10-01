@@ -1,3 +1,4 @@
+import '#/app/requestGovernance/requestGovernanceService';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
@@ -1159,6 +1160,7 @@ describe('ModelCatalog ping', () => {
         stubModelOAuthTokens(),
         registry,
         { headers: {}, thirdPartyHeaders: {} },
+        { acquire: async () => ({ release() {} }) },
       );
       const result = await catalog.ping('k1');
       expect(result).toMatchObject({ ok: true, text: 'pong', finishReason: 'completed' });

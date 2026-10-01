@@ -99,6 +99,7 @@ import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './ro
 import { WorktreeArchiveDialog } from './WorktreeArchiveDialog';
 import { WorktreeMark } from './WorktreeMark';
 import { ThreadTitle } from './ThreadTitle';
+import { RequestGovernanceBadge } from './RequestGovernanceView';
 
 // Re-exported for callers and tests that paged the old in-component search.
 export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
@@ -302,6 +303,7 @@ function PrimaryNav({
               >
                 <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
                 <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`)}</span>
+                {item.key === 'usage' ? <RequestGovernanceBadge /> : null}
                 {badge !== undefined && badge.count > 0 ? (
                   <span
                     data-nav-badge={item.key}
@@ -364,7 +366,7 @@ function CollapsedSidebarRail({
               onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
               className={RAIL_ICON}
             >
-              <ItemIcon />
+              <span className="relative"><ItemIcon />{item.key === 'usage' ? <RequestGovernanceBadge compact /> : null}</span>
             </button>
           );
         })}

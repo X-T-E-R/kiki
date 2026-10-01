@@ -33,6 +33,8 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { readLastSessionId } from '@kiki/session-core/settings';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { RequestGovernanceView } from './RequestGovernanceView';
+import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { ThreadTitle } from './ThreadTitle';
 import {
@@ -764,6 +766,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const { t } = useI18n();
   const location = useLocation();
   const [, setSearchParams] = useSearchParams();
+  const panel = usagePanelFromSearch(location.search);
+  const selectPanel = (next: UsagePanel) => {
+    const params = new URLSearchParams(location.search);
+    params.set('panel', next);
+    setSearchParams(params);
+  };
   const [usageNowMs, setUsageNowMs] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => { setUsageNowMs(Date.now()); }, 60_000);
@@ -813,6 +821,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   const usageQuery = useInfiniteQuery({
     queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
+    enabled: panel === 'history',
     queryFn: ({ pageParam }) =>
       client.getUsage(
         buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
@@ -912,6 +921,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       ) : null}
       <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
+          <UsageNavigation panel={panel} onChange={selectPanel} />
+          {panel !== 'history' ? <RequestGovernanceView view={panel} /> : <>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
           {usageQuery.isPending ? (
@@ -1056,6 +1067,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               {reliability !== undefined ? <ReliabilityCard reliability={reliability} /> : null}
             </>
           ) : null}
+          </>}
         </div>
       </main>
     </div>

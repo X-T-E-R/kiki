@@ -1,3 +1,4 @@
+import { IRequestAdmission, type RequestAdmissionPort } from '#/kosong/model/requestAdmission';
 import { EventEmitter } from 'node:events';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { Readable, type Writable } from 'node:stream';
@@ -1005,8 +1006,9 @@ class ConfigBackedModelCatalog extends ModelCatalog {
     @IModelOAuthTokens oauthTokens: IModelOAuthTokens,
     @IProtocolAdapterRegistry protocolRegistry: IProtocolAdapterRegistry,
     @IHostRequestHeaders hostRequestHeaders: IHostRequestHeaders,
+    @IRequestAdmission admission: RequestAdmissionPort,
   ) {
-    super(providerRegistry, modelRegistry, oauthTokens, protocolRegistry, hostRequestHeaders);
+    super(providerRegistry, modelRegistry, oauthTokens, protocolRegistry, hostRequestHeaders, admission);
   }
 
   private syncRegistriesFromConfig(): void {

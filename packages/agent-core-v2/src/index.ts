@@ -1,3 +1,7 @@
+export * from '#/app/requestGovernance/requestGovernance';
+export * from '#/app/requestGovernance/configSection';
+export * from '#/app/requestGovernance/requestGovernanceService';
+export * from '#/kosong/model/requestAdmission';
 export * from '#/_base/di/descriptors';
 export * from '#/_base/di/errors';
 export * from '#/_base/di/graph';

@@ -1,5 +1,5 @@
-import type { Scope } from '@kiki/agent-core-v2';
-import { usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema } from '@kiki/protocol';
+import { IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
+import { requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema } from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { z } from 'zod';
@@ -34,6 +34,13 @@ interface V2UsageRouteHost {
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
 export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void {
+  const realtime = defineRoute({
+    method: 'GET', path: '/usage/realtime', success: { data: requestGovernanceSnapshotSchema },
+    operationId: 'getRequestGovernance', tags: ['usage'],
+  }, (req, reply) => {
+    reply.send(okEnvelope(core.accessor.get(IRequestGovernance).snapshot(), req.id));
+  });
+  app.get(realtime.path, realtime.options, realtime.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const service = new UsageAggregationService(core);
   const route = defineRoute(
     {

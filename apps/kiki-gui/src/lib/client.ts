@@ -1101,6 +1101,10 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.endEphemeral(sessionId, { worktree }));
   }
 
+  getRequestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot> {
+    return this.run(() => this.rest.requestGovernance());
+  }
+
   /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
     query: Record<string, string | number | boolean | undefined>,

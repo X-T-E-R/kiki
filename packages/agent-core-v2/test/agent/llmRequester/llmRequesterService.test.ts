@@ -2088,3 +2088,40 @@ describe('AgentLLMRequesterService tool call id normalization', () => {
     expect(result.message.toolCalls[0]!.id).toBe('Bash_0__2');
   });
 });
+
+
+describe('AgentLLMRequesterService governance attribution', () => {
+  it('attributes compaction to the same session tree and child without provider request-param leakage', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-example', agentId: 'worker-example', agentMeta: { type: 'sub', parentAgentId: 'main' },
+    });
+    await service.request({ source: { type: 'operation', turnId: 1, requestKind: 'full_compaction' } });
+    expect(captured[0]?.attribution).toMatchObject({ sessionId: 'session-example', agentId: 'worker-example', parentAgentId: 'main', purpose: 'full_compaction', waitBudget: { waitedMs: 0 } });
+    expect(captured[0]?.requestParams ?? {}).not.toHaveProperty('attribution');
+  });
+
+  it('keeps logical identity and accumulated queue time on step retries, then resets after success', async () => {
+    const requester = createRequester({ value: 0 }, new APIConnectionError('temporary'));
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined);
+    const source = { type: 'turn' as const, turnId: 1, step: 1 };
+    await expect(service.request({ source })).rejects.toBeDefined();
+    captured[0]!.attribution!.waitBudget.waitedMs = 60;
+    await service.request({ source });
+    expect(captured[1]?.attribution?.logicalRequestId).toBe(captured[0]?.attribution?.logicalRequestId);
+    expect(captured[1]?.attribution?.waitBudget.waitedMs).toBe(60);
+    await service.request({ source });
+    expect(captured[2]?.attribution?.logicalRequestId).not.toBe(captured[1]?.attribution?.logicalRequestId);
+    expect(captured[2]?.attribution?.waitBudget.waitedMs).toBe(0);
+  });
+
+  it.each([ErrorCodes.REQUEST_LIMIT_REJECTED, ErrorCodes.REQUEST_QUEUE_TIMEOUT, ErrorCodes.REQUEST_QUEUE_FULL])('does not infinitely retry local governance failure %s', async (code) => {
+    const calls = { value: 0 };
+    const requester = createRequester(calls, new Error2(code, 'Local admission failed.'));
+    const { service } = createService(requester, undefined, { env: { KIKI_INFINITE_RETRY: 'true' } });
+    await expect(service.request()).rejects.toMatchObject({ code });
+    expect(calls.value).toBe(1);
+  });
+});

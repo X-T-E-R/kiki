@@ -891,6 +891,44 @@ The old `[prompt] shared` and `[prompt.tools]` keys have been removed and now fa
 
 In the desktop GUI, open **Settings → Agents → Prompt** to edit this section. The card is collapsed by default — expand it before editing.
 
+## `[request_governance]`
+
+Native model requests are observed by default, with no concurrency limit until you add a rule. In the GUI, **Usage → Live** shows in-flight requests and waiting requests for this service instance, and **Limits** shows the effective rules read-only. **History** retains token and estimated-cost reporting; existing filtered usage links still open History. If the connection fails, the last live counts remain visible and are marked stale. External ACP/Codex executors are **unmanaged**, not zero requests.
+
+```toml
+[request_governance]
+schema_version = 1
+max_wait_ms = 300000
+max_queue_size = 1024
+
+[[request_governance.rules]]
+id = "shared-provider"
+resource = "model_request"
+scope = "global"
+providers = ["example-provider"]
+max_concurrent = 2
+overflow = "queue"
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `schema_version` | `1` | Configuration version |
+| `max_wait_ms` | `300000` | Cumulative local queue time per logical request, including retries, in milliseconds |
+| `max_queue_size` | `1024` | Maximum waiting requests in this service |
+| Rule `id` | Required | Unique rule identifier |
+| Rule `resource` | `model_request` | Native generation attempts, including compaction and OAuth replay |
+| Rule `scope` | `global` | `global` shares capacity across this service; `each_session` gives each root session and all its subagents a separate bucket |
+| Rule `models` | All | Configured canonical model IDs; multiple IDs share one combined cap |
+| Rule `providers` | All | Provider configuration IDs; each selection covers all models under those providers, sharing one combined cap |
+| Rule `subagents_only` | `false` | Match only requests made by subagents |
+| Rule `max_concurrent` | Unlimited | Positive integer; omit for no cap. Zero is not unlimited |
+| Rule `overflow` | `queue` | `queue` waits for capacity; `reject` fails immediately when that rule is full |
+| Rule `max_wait_ms` | Section limit | Optional stricter queue-time budget for matching requests |
+
+All matching rules apply together. Different selectors in one rule are AND; IDs within one selector are OR. To limit a single model instead of a provider group, use `models = ["example-model"]` and omit `providers`. Rules only govern requests in this App instance, not other independent CLI processes or the provider account elsewhere. They do not impose a token or money budget, and do not change the existing default of 16 direct subagents per parent.
+
+Rule edits re-evaluate queued requests immediately; already active streams are not killed. Tools and local queue waits do not hold model-request slots. Cancelling a queued turn removes it without sending to the provider. Queue full, queue timeout, and local rejection are distinct non-retryable failures. Use the existing Stop action to cancel a waiting turn, or edit the matching configuration rule before retrying.
+
 ## `tui.toml`
 
 Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a companion `tui.toml` in the same directory (`~/.kiki/tui.toml`, or `$KIKI_HOME/tui.toml` when overridden). It is created with defaults on first run, and the interactive commands `/config`, `/theme`, and `/editor` write to it for you — so you rarely need to edit it by hand. If the file is malformed, the CLI falls back to defaults and shows a notice instead of failing to start.
