@@ -383,7 +383,7 @@ describe('SessionController pipeline', () => {
     expect(controller.getState().loaded).toBe(false);
   });
 
-  it('refreshes a waking child on creation and removes it on disposal without unrelated events', async () => {
+  it('refreshes a waking child on creation, drops it on disposal, and reads a new agent row', async () => {
     const previous = {
       id: 'child', session_id: 'session_test', kind: 'subagent' as const,
       parent_agent_id: 'main', description: 'Child', status: 'completed' as const,
@@ -392,13 +392,21 @@ describe('SessionController pipeline', () => {
       started_at: '2026-01-01T00:00:01.000Z',
       completed_at: '2026-01-01T00:00:02.000Z',
     };
+    const newChild = {
+      id: 'new-child', agent_id: 'new-child', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'readme_kiki_worker', status: 'running' as const,
+      subagent_phase: 'working' as const, live: true, profile: 'worker', model: 'axon/gpt-5.6-luna',
+      created_at: '2026-01-01T00:00:03.000Z',
+      started_at: '2026-01-01T00:00:03.000Z',
+    };
     const refreshingUntil = new Date(Date.now() + 120_000).toISOString();
     const reads = vi.fn()
       .mockResolvedValueOnce(snapshot({ subagents: [previous] }))
       .mockResolvedValueOnce(snapshot({ as_of_seq: 11, subagents: [{
         ...previous, live: undefined, refreshing: true, refreshing_until: refreshingUntil,
       }] }))
-      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: [previous] }));
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: [previous] }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 13, subagents: [previous, newChild] }));
     const controller = new SessionController(
       {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
     );
@@ -423,11 +431,120 @@ describe('SessionController pipeline', () => {
     });
     await waitFor(() => controller.getForest()?.byId['child'] === undefined);
     expect(reads).toHaveBeenCalledTimes(3);
+    // An agent the roster has no row for is one this event just created: its
+    // role profile and model live only in the session snapshot, so the viewer
+    // reads the row instead of waiting for a later snapshot or a resync.
     controller.handleSignal({
       type: 'sessionCursorAdvanced', rosterAgentId: 'new-child', generation: 0,
       cursor: { seq: 13, epoch: 'epoch-1' },
     });
-    expect(reads).toHaveBeenCalledTimes(3);
+    await waitFor(() => controller.getState().snapshotSubagents.length === 2);
+    expect(reads).toHaveBeenCalledTimes(4);
+    expect(controller.getState().snapshotSubagents[1]).toMatchObject({
+      id: 'new-child', agent_id: 'new-child', profile: 'worker', model: 'axon/gpt-5.6-luna',
+    });
+    expect(controller.getForest()?.byId['new-child']?.model).toBe('axon/gpt-5.6-luna');
+    controller.close();
+  });
+
+  it('reads a spawned agent row from the op stream and resolves its injected sender', async () => {
+    const spawned = {
+      id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'readme_kiki_worker', status: 'running' as const,
+      subagent_phase: 'working' as const, live: true, profile: 'worker', model: 'axon/gpt-5.6-luna',
+      created_at: '2026-01-01T00:00:01.000Z',
+      started_at: '2026-01-01T00:00:01.000Z',
+    };
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: [spawned] }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.flushFrames();
+    expect(controller.getState().snapshotSubagents).toEqual([]);
+
+    controller.handleTranscript(opsEvent('main', [
+      {
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker',
+          markerId: 'message-delivery:m1',
+          marker: 'message.delivery',
+          at: '2026-01-01T00:00:02.000Z',
+          payload: {
+            messageId: 'm1',
+            text: 'start the slice',
+            origin: { kind: 'agent_message', senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+          },
+        },
+      },
+    ], 2));
+    controller.flushFrames();
+    // An injected message on its own asks for nothing: the roster is only read
+    // when an op stream actually names an agent it has no row for.
+    expect(reads).toHaveBeenCalledTimes(1);
+
+    controller.handleTranscript(opsEvent('main', [
+      {
+        op: 'task.upsert',
+        task: {
+          taskId: 'agent-244', kind: 'subagent', state: 'running', detached: false,
+          name: 'readme_kiki_worker', subagentName: 'worker', agentId: 'agent-244',
+          outputTail: '', startedAt: '2026-01-01T00:00:01.000Z',
+        },
+      },
+    ], 3));
+    controller.flushFrames();
+    // The viewer's own op stream carried the spawn, so the row is read without
+    // any fresh snapshot load or resync.
+    await waitFor(() => controller.getState().snapshotSubagents.length === 1);
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(controller.getState().snapshotSubagents[0]).toMatchObject({
+      id: 'agent-244', profile: 'worker', model: 'axon/gpt-5.6-luna',
+    });
+    // The injected message names the same id the roster row is keyed by, which
+    // is what the timeline label resolves the sender's role and model through.
+    const injected = controller.getState().blocks.find(
+      (block): block is UserBlock => block.kind === 'user' && block.agentMessage !== undefined,
+    );
+    expect(injected?.agentMessage).toEqual({
+      senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker',
+    });
+    controller.close();
+  });
+
+  it('stops reading the roster for an agent the session never gives a row', async () => {
+    const reads = vi.fn(async () => snapshot({ as_of_seq: 20 }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.flushFrames();
+    expect(reads).toHaveBeenCalledTimes(1);
+
+    const spawn = (seq: number) => opsEvent('main', [{
+      op: 'task.upsert',
+      task: {
+        taskId: 'agent-x', kind: 'subagent', state: 'running', detached: false,
+        agentId: 'agent-x', outputTail: `tick ${seq}`,
+      },
+    }], seq);
+    for (const seq of [2, 3, 4, 5, 6]) {
+      controller.handleTranscript(spawn(seq));
+      controller.flushFrames();
+      // Each read has to settle before the next batch, or the in-flight read
+      // coalesces them and the budget never gets spent.
+      await waitFor(() => reads.mock.calls.length >= Math.min(seq, 4));
+    }
+    // An agent whose row never arrives costs a bounded number of reads, not one
+    // per op batch: a delegation the roster does not model cannot keep the
+    // viewer snapshotting the whole session.
+    expect(reads).toHaveBeenCalledTimes(4);
+    expect(controller.getState().snapshotSubagents).toEqual([]);
     controller.close();
   });
 

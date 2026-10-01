@@ -57,6 +57,7 @@ import {
   setResyncFailed,
   setResyncing,
   setSessionRecord,
+  snapshotSubagentAgentId,
   transcriptDetailKey,
   type SessionViewState,
   type TranscriptDetailKind,
@@ -79,6 +80,13 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
+/**
+ * Roster reads one agent id may cost before its row is given up on: one
+ * speculative read when the agent appears, plus up to two more when later
+ * spawn evidence says the row must exist by now. A row the session never emits
+ * (an external delegation, say) then stops costing whole-session snapshots.
+ */
+const MAX_ROSTER_ROW_READS = 3;
 
 export interface PublicationScheduler {
   schedule(callback: () => void): unknown;
@@ -212,6 +220,8 @@ export class SessionController {
   private resyncInFlight = false;
   private rosterRefreshInFlight = false;
   private rosterRefreshQueuedCursor: SessionCursor | undefined;
+  /** Agent id → roster reads spent chasing its row (see `requestRosterRows`). */
+  private readonly requestedRosterAgents = new Map<string, number>();
   private rosterLeaseTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private rewriteHold: RewriteHold | undefined;
@@ -793,9 +803,15 @@ export class SessionController {
         return;
       case 'sessionCursorAdvanced':
         this.advanceSessionCursor(signal.cursor);
-        if (signal.rosterAgentId !== undefined && this.state.snapshotSubagents.some((row) =>
-          (row.agent_id ?? row.id) === signal.rosterAgentId
-        )) void this.refreshRoster(signal.cursor);
+        // A roster row this view already holds is re-read for the waking /
+        // disposal flags the server stamps on it. An agent it has no row for
+        // is one this event just created: the row (role profile and model)
+        // only exists in the session snapshot, so ask for it — the spawn's
+        // transcript op asks again if this read raced the row's creation.
+        if (signal.rosterAgentId !== undefined) {
+          if (this.hasRosterRow(signal.rosterAgentId)) void this.refreshRoster(signal.cursor);
+          else this.requestRosterRows([signal.rosterAgentId], signal.cursor);
+        }
         return;
       case 'historyRewritten':
         this.advanceSessionCursor(signal.cursor);
@@ -854,6 +870,7 @@ export class SessionController {
         version: this.state.version + 1,
         snapshotSubagents: snapshot.subagents,
       }, false);
+      this.retireRequestedRosterAgents();
       this.publishForest();
       this.notifyMain();
     } catch {
@@ -864,6 +881,47 @@ export class SessionController {
       this.rosterRefreshQueuedCursor = undefined;
       if (queued !== undefined && !this.closed && !this.resyncInFlight) void this.refreshRoster(queued);
     }
+  }
+
+  /** True when the roster already carries a row for this agent. */
+  private hasRosterRow(agentId: string): boolean {
+    return this.state.snapshotSubagents.some((row) => snapshotSubagentAgentId(row) === agentId);
+  }
+
+  /** Forget ids the read answered, so they stop counting against the read budget. */
+  private retireRequestedRosterAgents(): void {
+    for (const agentId of this.requestedRosterAgents.keys()) {
+      if (this.hasRosterRow(agentId)) this.requestedRosterAgents.delete(agentId);
+    }
+  }
+
+  /**
+   * Ask for the session's roster rows behind these agent ids. The roster is
+   * the one place the client reads an agent's role profile and model, and a
+   * view only picks up rows the session's own snapshot carried — an agent
+   * spawned mid-session has to be asked for by id. `fresh` marks evidence the
+   * server has already materialised the row (a spawn op the viewer's own
+   * transcript stream carried): worth a read even when an earlier request for
+   * the same id raced ahead of the row's creation. `MAX_ROSTER_ROW_READS` caps
+   * what a row-less agent (an external delegation, say) can cost in reads.
+   */
+  private requestRosterRows(
+    agentIds: Iterable<string>,
+    cursor?: SessionCursor,
+    fresh = false,
+  ): void {
+    if (this.closed || this.isSuspended) return;
+    let wanted = false;
+    for (const agentId of agentIds) {
+      if (agentId === '' || agentId === MAIN_AGENT_ID) continue;
+      if (this.hasRosterRow(agentId)) continue;
+      const attempts = this.requestedRosterAgents.get(agentId) ?? 0;
+      if (attempts >= MAX_ROSTER_ROW_READS) continue;
+      if (!fresh && attempts > 0) continue;
+      this.requestedRosterAgents.set(agentId, attempts + 1);
+      wanted = true;
+    }
+    if (wanted) void this.refreshRoster(cursor ?? this.state.cursor);
   }
 
   handleSubscribeRejected(generation?: number): void {
@@ -1265,6 +1323,9 @@ export class SessionController {
     const adoptedCount = this.adoptToolCountObservation(agentId);
     if (result.accepted.length > 0 || adoptedCount) {
       if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
+      // A spawn names an agent the viewer has no roster row for; the row (role
+      // profile and model) rides the session snapshot, not this op stream.
+      this.requestRosterRows(subagentAgentsInOps(result.accepted), undefined, true);
       this.pendingTranscriptAgents.add(agentId);
     }
     return true;
@@ -2022,4 +2083,28 @@ function opsAffectForest(ops: readonly TranscriptOperation[]): boolean {
         return false;
     }
   });
+}
+
+/**
+ * Agent ids a batch of transcript ops introduces as subagents: the spawned
+ * agent's task row and the dispatch tool frame's `agentRef`s. Ids may repeat
+ * across batches, so callers dedupe.
+ */
+function subagentAgentsInOps(ops: readonly TranscriptOperation[]): readonly string[] {
+  const agentIds: string[] = [];
+  for (const op of ops) {
+    if (op.op === 'task.upsert') {
+      if (op.task.kind === 'subagent' && op.task.agentId !== undefined && op.task.agentId !== '') {
+        agentIds.push(op.task.agentId);
+      }
+      continue;
+    }
+    if (op.op === 'frame.upsert') {
+      if (op.frame.kind !== 'tool') continue;
+      for (const ref of op.frame.agentRefs ?? []) {
+        if (ref.agentId !== '') agentIds.push(ref.agentId);
+      }
+    }
+  }
+  return agentIds;
 }
