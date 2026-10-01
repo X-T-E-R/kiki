@@ -75,6 +75,14 @@ describe('readLayoutPreferences', () => {
     expect(readLayoutPreferences().groupBy).toBe('time');
     expect(readLayoutPreferences().sortBy).toBe('updated-desc');
   });
+
+  it('reads and writes sidebarCollapsed preference', () => {
+    expect(readLayoutPreferences().sidebarCollapsed).toBeUndefined();
+    writeLayoutPreferences({ sidebarCollapsed: true });
+    expect(readLayoutPreferences().sidebarCollapsed).toBe(true);
+    writeLayoutPreferences({ sidebarCollapsed: false });
+    expect(readLayoutPreferences().sidebarCollapsed).toBe(false);
+  });
 });
 
 describe('subscribeLayoutPreferences', () => {

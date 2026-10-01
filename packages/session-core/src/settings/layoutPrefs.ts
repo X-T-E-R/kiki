@@ -45,6 +45,12 @@ export interface LayoutPreferences extends SessionListPreferences {
   sidebarWidth: number;
   /** Right rail width in px (the conversation /s/:id right panel). */
   railWidth: number;
+  /**
+   * Manual collapsed override for desktop left sidebar.
+   * `undefined`: follow automatic responsive breakpoint (>=1280 expanded, 768-1279 collapsed).
+   * `boolean`: user explicit toggle choice overriding automatic breakpoint.
+   */
+  sidebarCollapsed?: boolean;
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 264;
@@ -115,6 +121,7 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sortBy = stored['sortBy'];
   const sidebarWidth = stored['sidebarWidth'];
   const railWidth = stored['railWidth'];
+  const sidebarCollapsed = stored['sidebarCollapsed'];
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
@@ -129,6 +136,7 @@ export function readLayoutPreferences(): LayoutPreferences {
       RAIL_MIN_WIDTH,
       RAIL_MAX_WIDTH,
     ),
+    sidebarCollapsed: typeof sidebarCollapsed === 'boolean' ? sidebarCollapsed : undefined,
   };
 }
 
@@ -190,6 +198,7 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
     ...patch,
     sidebarWidth: clamp(patch.sidebarWidth ?? current.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
     railWidth: clamp(patch.railWidth ?? current.railWidth, RAIL_MIN_WIDTH, RAIL_MAX_WIDTH),
+    sidebarCollapsed: patch.sidebarCollapsed !== undefined ? patch.sidebarCollapsed : current.sidebarCollapsed,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));

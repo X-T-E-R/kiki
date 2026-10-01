@@ -20,6 +20,7 @@ import { subscribeComposerInserts } from '@kiki/session-core/composer';
 import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
+  readLayoutPreferences,
   resetSessionSeen,
 } from '@kiki/session-core/settings';
 import { HostProvider, browserHost, type HostAdapter } from '../host';
@@ -1679,5 +1680,86 @@ describe('Sidebar room rows', () => {
       sessionGroups: [{ key: 'today', label: 'Today', items: [session('one')] }],
     });
     expect(container.querySelector('[data-rooms-error]')?.textContent).toContain('Could not load rooms');
+  });
+});
+
+describe('collapsed icon rail', () => {
+  // The two breakpoints the sidebar reads: desktop starts at 768px, the
+  // automatic collapse runs until 1280px. A stored sidebarCollapsed override
+  // wins over both.
+  function stubViewportWidth(width: number): void {
+    vi.stubGlobal('matchMedia', (query: string) => {
+      const minWidth = /\(min-width:\s*(\d+)px\)/.exec(query);
+      const maxWidth = /\(max-width:\s*(\d+)px\)/.exec(query);
+      return {
+        matches: minWidth !== null
+          ? width >= Number(minWidth[1])
+          : maxWidth !== null
+            ? width <= Number(maxWidth[1])
+            : false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      };
+    });
+  }
+
+  it('collapses to the icon rail by default between 768px and 1279px', async () => {
+    stubViewportWidth(1100);
+    const { container } = await mount();
+    const aside = container.querySelector<HTMLElement>('[data-session-sidebar]');
+    expect(aside?.getAttribute('data-sidebar-collapsed')).toBe('true');
+    expect(aside?.style.getPropertyValue('--kiki-sidebar-width')).toBe('56px');
+    // No resizer, no session list, no search: the rail is destinations only.
+    expect(container.querySelector('[data-sidebar-resizer]')).toBeNull();
+    expect(container.querySelector('[data-session-list]')).toBeNull();
+    expect(container.querySelector('[data-search-toggle]')).toBeNull();
+    expect(container.querySelector('[data-new-session]')).not.toBeNull();
+    for (const hook of ['board', 'cron', 'memory', 'personas', 'usage', 'capabilities']) {
+      const button = container.querySelector(`[data-nav-${hook}]`);
+      expect(button).not.toBeNull();
+      expect(button?.getAttribute('title')).not.toBe('');
+    }
+    expect(container.querySelector('[data-nav-settings]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-toggle="expand"]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-toggle="collapse"]')).toBeNull();
+  });
+
+  it('stays expanded by default at 1280px and wider', async () => {
+    stubViewportWidth(1440);
+    const { container } = await mount();
+    expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBeNull();
+    expect(container.querySelector('[data-sidebar-resizer]')).not.toBeNull();
+    expect(container.querySelector('[data-session-list]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-toggle="collapse"]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-toggle="expand"]')).toBeNull();
+  });
+
+  // Last in the file on purpose: the override is a persisted module-level
+  // snapshot with no "back to automatic" write, so this test owns the tail.
+  it('toggle writes the sidebarCollapsed override and switches the layout', async () => {
+    stubViewportWidth(1100);
+    const { container } = await mount();
+    expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBe('true');
+
+    const expand = container.querySelector<HTMLButtonElement>('[data-sidebar-toggle="expand"]');
+    if (expand === null) throw new Error('expand toggle not rendered');
+    await act(async () => { expand.click(); });
+    expect(readLayoutPreferences().sidebarCollapsed).toBe(false);
+    expect(JSON.parse(localStorage.getItem('kiki.layout') ?? '{}').sidebarCollapsed).toBe(false);
+    expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBeNull();
+    expect(container.querySelector('[data-session-list]')).not.toBeNull();
+
+    const collapse = container.querySelector<HTMLButtonElement>('[data-sidebar-toggle="collapse"]');
+    if (collapse === null) throw new Error('collapse toggle not rendered');
+    await act(async () => { collapse.click(); });
+    expect(readLayoutPreferences().sidebarCollapsed).toBe(true);
+    expect(JSON.parse(localStorage.getItem('kiki.layout') ?? '{}').sidebarCollapsed).toBe(true);
+    expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBe('true');
+    expect(container.querySelector('[data-session-list]')).toBeNull();
   });
 });

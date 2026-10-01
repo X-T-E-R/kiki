@@ -73,7 +73,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery, usePaneResize } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
@@ -109,6 +109,10 @@ const ICON = 'h-4 w-4 shrink-0';
 /** Quiet square control for the wordmark row (search, activity). */
 const HEADER_ICON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+/** The collapsed rail's one button: the header's quiet square a step larger,
+ * so the 56px column stays a comfortable target. Flat — never a pill. */
+const RAIL_ICON =
+  'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 const BoardIcon = () => <Icon name="board" size={16} />;
 const ClockIcon = () => <Icon name="clock" size={16} />;
@@ -315,6 +319,81 @@ function PrimaryNav({
   );
 }
 
+/** The narrow-desktop rail: the whole sidebar reduced to its destinations —
+ * new session, the primary pages, settings — one quiet icon per stop, labels
+ * carried by tooltips. The expand toggle at its foot is the twin of the
+ * expanded footer's collapse toggle; both write the same persisted override. */
+function CollapsedSidebarRail({
+  activeWorkspaceId,
+  onNewSession,
+}: {
+  activeWorkspaceId: string | undefined;
+  onNewSession: () => void;
+}) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const location = useLocation();
+  return (
+    <>
+      <nav aria-label={t('nav.aria')} data-sidebar-rail className="flex flex-col items-center gap-1 px-2 pt-3">
+        <button
+          type="button"
+          data-new-session
+          aria-label={t('sidebar.newSession')}
+          title={t('sidebar.newSession')}
+          onClick={onNewSession}
+          className={RAIL_ICON}
+        >
+          <span className="text-accent"><Icon name="plus" size={16} /></span>
+        </button>
+        {NAV_ITEMS.map((item) => {
+          const current = location.pathname === item.route
+            || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
+          const label = item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`);
+          const ItemIcon = item.icon;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              {...item.hook}
+              aria-current={current ? 'page' : undefined}
+              aria-label={label}
+              title={label}
+              onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+              className={RAIL_ICON}
+            >
+              <ItemIcon />
+            </button>
+          );
+        })}
+      </nav>
+      <div className="mt-auto flex flex-col items-center gap-1 px-2 pb-3">
+        <button
+          type="button"
+          data-nav-settings
+          aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
+          aria-label={t('sidebar.settings')}
+          title={t('sidebar.settings')}
+          onClick={() => { navigate('/settings'); }}
+          className={RAIL_ICON}
+        >
+          <Icon name="settings" size={16} />
+        </button>
+        <button
+          type="button"
+          data-sidebar-toggle="expand"
+          aria-label={t('sidebar.expandSidebar')}
+          title={t('sidebar.expandSidebar')}
+          onClick={() => { writeLayoutPreferences({ sidebarCollapsed: false }); }}
+          className={RAIL_ICON}
+        >
+          <Icon name="expand" size={16} />
+        </button>
+      </div>
+    </>
+  );
+}
+
 export function Sidebar({
   activeSessionId,
   sessions,
@@ -460,6 +539,13 @@ export function Sidebar({
       writeLayoutPreferences({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH });
     },
   });
+
+  // Desktop collapse: below md the sidebar stays App's drawer (sidebarOpen);
+  // from md up it follows the window width until the user picks a side — the
+  // persisted override wins over the breakpoint.
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const isNarrowDesktop = useMediaQuery('(max-width: 1279px)');
+  const isCollapsed = isDesktop && (layoutPrefs.sidebarCollapsed ?? isNarrowDesktop);
 
   const refreshSessions = useCallback(
     () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
@@ -847,6 +933,24 @@ export function Sidebar({
   // Bound once per render so the kind narrowing survives into the menu's
   // callbacks (property-access narrowing does not reach into closures).
   const menuItem = menu?.item ?? null;
+
+  if (isCollapsed) {
+    // The rail owns no session list: picking a thread stays one click away
+    // (expand the sidebar, or open any session from a scoped page), so the
+    // column keeps only the destinations. The resizer goes too — 56px is not
+    // draggable.
+    return (
+      <aside
+        className={className ?? 'app-sidebar'}
+        style={{ '--kiki-sidebar-width': '56px' } as React.CSSProperties}
+        data-session-sidebar
+        data-sidebar-collapsed="true"
+        aria-label={t('sidebar.navAria')}
+      >
+        <CollapsedSidebarRail activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} />
+      </aside>
+    );
+  }
 
   return (
     <aside
@@ -1355,7 +1459,7 @@ export function Sidebar({
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => navigate('/settings')}
-          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-10 pl-2 text-left text-[13px] ${
+          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-20 pl-2 text-left text-[13px] ${
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
@@ -1364,6 +1468,16 @@ export function Sidebar({
         </button>
         {/* "Waiting on you" lives in the header's activity entry now; a second
             footer copy of the same count was three readings of one fact. */}
+        <button
+          type="button"
+          data-sidebar-toggle="collapse"
+          aria-label={t('sidebar.collapseSidebar')}
+          title={t('sidebar.collapseSidebar')}
+          onClick={() => { writeLayoutPreferences({ sidebarCollapsed: true }); }}
+          className="absolute top-1/2 right-11 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink max-md:hidden"
+        >
+          <Icon name="collapse" size={16} />
+        </button>
         <button
           type="button"
           data-connection-status
