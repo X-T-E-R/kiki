@@ -280,3 +280,48 @@ describe('general behavior scope gates', () => {
     expect(classifyDirectives(text)).toEqual([]);
   });
 });
+
+describe('standing-rule review boundaries', () => {
+  it.each([
+    '以后不要擅自删除文件', '你以后都不要擅自删除文件',
+    '测试默认用 vitest', 'By default, use Chinese for all answers',
+    '以后不要擅自更换模型', '你以后都不要擅自更换模型',
+    '你不要擅自删除文件', '以后禁止删除文件',
+    '以后检查退出码', '每次完成任务检查退出码',
+    '测试默认不要跳过失败用例', '测试默认把日志保存到 docs/',
+  ])('recognizes persistent future prohibitions and default execution bindings: %s', (text) => {
+    expect(classifyDirectives(text).length).toBeGreaterThan(0);
+    expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [user(text)] })?.disclosure.triggers).toEqual(['E1']);
+  });
+  it('describes whole-list writes without injecting or reciting the list', () => {
+    const result = new TodoListReminderTracker().evaluate({ ...base, history: [work], clock: clock() });
+    expect(result?.disclosure.triggers).toEqual(['T0']);
+    expect(result?.content).toContain('a todos write replaces the list');
+    expect(result?.content).toContain('include every item you still need');
+    expect(result?.content).toContain('Omit todos when unchanged');
+    expect(result?.content).not.toContain('ongoing work');
+  });
+  it('does not cool unrelated unclassified references across human inputs', () => {
+    const testing = '还记得我之前说的测试规矩吗';
+    const documents = '查一下我之前定的文档目录规则';
+    const state = clock({ humanTurnOrdinal: 1, latestInput: { id: 'testing', text: testing } });
+    const first = new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: state })!;
+    expect(first.disclosure.triggers).toEqual(['E2']);
+    const restored = advanceContinuityClock(state, new ContextAppendMessage({ message: { role: 'user', toolCalls: [], content: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: first.disclosure } } }));
+    expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: restored })).toBeUndefined();
+    const next = { ...restored, humanTurnOrdinal: 2, latestInput: { id: 'documents', text: documents } };
+    const second = new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: next });
+    expect(second?.disclosure.triggers).toEqual(['E2']);
+    expect(second?.content).toContain('earlier rule, decision, or document');
+    expect(second?.content).toContain('if the reference is still missing');
+    expect(second?.content).not.toContain('that is not visible here');
+  });
+  it('still cools an identified artifact across inputs', () => {
+    const text = '之前的 example-plan.md，查一下';
+    const state = clock({ humanTurnOrdinal: 1, latestInput: { id: 'artifact-a', text } });
+    const first = new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: state })!;
+    expect(first.disclosure.historyTopic).toBe('artifact:example-plan.md');
+    const restored = advanceContinuityClock(state, new ContextAppendMessage({ message: { role: 'user', toolCalls: [], content: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: first.disclosure } } }));
+    expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: { ...restored, humanTurnOrdinal: 2, latestInput: { id: 'artifact-b', text } } })).toBeUndefined();
+  });
+});
