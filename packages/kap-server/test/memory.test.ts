@@ -75,6 +75,57 @@ describe('memory REST', () => {
     expect((await api.request('delete', '/memory/:scope/:id', { params: { ...scope, id: 'm_test' }, query: { expected_revision: 'rev' } })).data.operation_id).toBe('receipt-id');
   });
 
+  it('filters every type with and without search and inactive entries through Fastify', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-filters-'));
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}/api/memory/global`;
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${base}${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; data: any };
+    };
+    const types = ['user', 'feedback', 'project', 'reference'] as const;
+    const entries: { id: string; type: string; matches: boolean; inactive: boolean }[] = [];
+    try {
+      for (const type of types) {
+        for (const variant of ['match', 'other', 'archived'] as const) {
+          const body = { type, title: `${type} ${variant}`, body: variant === 'other' ? 'Unrelated content.' : 'Needle content.', reason: 'Test memory filters' };
+          const saved = await request('PUT', '/new', body);
+          expect(saved.code).toBe(0);
+          const entry = saved.data.entry as { id: string; revision: string };
+          if (variant === 'archived') {
+            expect((await request('PUT', `/${entry.id}`, { ...body, action: 'archive', expected_revision: entry.revision })).code).toBe(0);
+          }
+          entries.push({ id: entry.id, type, matches: variant !== 'other', inactive: variant === 'archived' });
+        }
+      }
+      for (const search of ['', 'needle']) {
+        for (const includeInactive of [false, true]) {
+          for (const type of [undefined, ...types]) {
+            const query = new URLSearchParams({ include_inactive: String(includeInactive) });
+            if (search) query.set('query', search);
+            if (type !== undefined) query.set('type', type);
+            const result = await request('GET', `?${query}`);
+            expect(result.code).toBe(0);
+            const expected = entries.filter((entry) =>
+              (type === undefined || entry.type === type)
+              && (includeInactive || !entry.inactive)
+              && (search === '' || entry.matches));
+            expect(result.data.items.map((entry: { id: string }) => entry.id).sort(), query.toString()).toEqual(expected.map((entry) => entry.id).sort());
+          }
+        }
+      }
+      const unfiltered = await request('GET', '');
+      expect(unfiltered.data.items.map((entry: { id: string }) => entry.id).sort()).toEqual(entries.filter((entry) => !entry.inactive).map((entry) => entry.id).sort());
+      expect((await request('GET', '?type=reference&query=absent&include_inactive=true')).data.items).toEqual([]);
+      expect((await request('GET', '?type=invalid')).code).toBe(40001);
+    } finally {
+      await server.close();
+      await rm(home, { force: true, recursive: true });
+    }
+  });
+
   it('serves an authenticated write/read/undo round trip through Fastify', async () => {
     await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
     const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-rest-'));
@@ -104,6 +155,8 @@ describe('memory REST', () => {
         expect(saved.envelope.code).toBe(0);
         expect((await request('GET', `/${scope}/${saved.envelope.data.entry.id}?${query}`)).envelope.data.body).toBe('Role-owned memory.');
         expect((await request('GET', `/${scope}?${query}`)).envelope.data.items).toHaveLength(1);
+        expect((await request('GET', `/${scope}?${query}&type=user`)).envelope.data.items).toHaveLength(1);
+        expect((await request('GET', `/${scope}?${query}&type=reference`)).envelope.data.items).toEqual([]);
         expect((await request('GET', `/${scope}?${query.replace('example-role', 'other-role')}`)).envelope.data.items).toEqual([]);
         expect((await request('GET', `/${scope}?workspace_id=${workspace.id}`)).envelope.code).toBe(40001);
       }

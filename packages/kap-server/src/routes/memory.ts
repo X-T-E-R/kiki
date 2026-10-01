@@ -89,7 +89,9 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}', params: scopeParams, querystring: scopeQuery.extend({ query: z.string().optional(), type: z.enum(['user', 'feedback', 'project', 'reference']).optional(), include_inactive: z.enum(['true', 'false']).transform((value) => value === 'true').optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
       const target = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
-      return { items: req.query.query ? await store().search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) : await store().list(target, req.query.include_inactive) };
+      if (req.query.query) return { items: await store().search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) };
+      const items = await store().list(target, req.query.include_inactive);
+      return { items: req.query.type === undefined ? items : items.filter((entry) => entry.type === req.query.type) };
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
