@@ -1177,6 +1177,49 @@ describe('live and event chrome', () => {
     );
   });
 
+  it('renders the injected sender profile and model in Chinese', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    try {
+      const container = await renderTranscript(
+        [
+          {
+            kind: 'user',
+            id: 'user-agent-message-5',
+            text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+          },
+        ],
+        undefined,
+        {
+          snapshotSubagents: [
+            {
+              id: 'agent-244',
+              agent_id: 'agent-244',
+              session_id: 'session_test',
+              kind: 'subagent',
+              description: 'readme_kiki_worker',
+              status: 'completed',
+              created_at: '2026-01-01T00:00:00.000Z',
+              profile: 'worker',
+              model: 'axon/gpt-5.6-luna',
+            },
+          ],
+        },
+      );
+      expect(container.querySelector('[data-agent-message-sender="agent-244"]')?.textContent).toBe(
+        'readme_kiki_worker 注入',
+      );
+      const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
+      expect(meta?.textContent).toBe('角色 worker · 模型 axon/gpt-5.6-luna');
+      expect(meta?.getAttribute('title')).toBe(
+        '发送方智能体：agent-244\n角色：worker\n模型：axon/gpt-5.6-luna\n任务：readme_kiki_worker',
+      );
+    } finally {
+      localStorage.removeItem('kiki.locale');
+    }
+  });
+
   it('names only the roster facts it has for an injected sender', async () => {
     const container = await renderTranscript(
       [
