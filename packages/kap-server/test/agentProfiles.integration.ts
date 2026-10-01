@@ -30,6 +30,7 @@ import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
 import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema, listShippedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createKlient } from '@kiki/klient/http';
 import { type RunningServer, startServer } from '../src/start';
 import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
 import { authedFetch } from './helpers/auth';
@@ -148,7 +149,16 @@ describe('GET /api/agents', () => {
       const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
       const body = await response.json() as Envelope<unknown>;
       expect(body.code).toBe(0);
-      return agentCapabilitiesResponseSchema.parse(body.data);
+      const data = agentCapabilitiesResponseSchema.parse(body.data);
+      const klient = createKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+      try {
+        const typed = await klient.global.agentPanel.read({ session_id: created.data.id, agent_id: 'main' });
+        expect(typed.profile).toEqual(data.profile);
+        expect(typed.live).toBe(data.live);
+      } finally {
+        await klient.close();
+      }
+      return data;
     };
     expect((await frozen()).profile).toMatchObject({
       restrict_models_to_menu: true,
