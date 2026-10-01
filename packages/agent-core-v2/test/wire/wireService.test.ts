@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -17,7 +19,7 @@ import { wireJournalBackupKey } from '#/wire/repair';
 import { WireError, WireErrors } from '#/wire/errors';
 import { IWireService } from '#/wire/wire';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
-import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 
 import { recordingWireLog, registerTestAgentWire, testWireScope, noopLogger } from './stubs';
 
@@ -75,6 +77,40 @@ function wireOverLog(
   const stubIx = disposables.add(new TestInstantiationService());
   return registerTestAgentWire(stubIx, testWireScope(SCOPE, key), { log: stubLog, ...dependencies });
 }
+
+describe('wire transcript digest', () => {
+  it.each([
+    { text: '', lines: 0, endsWithNewline: false },
+    { text: '\n\n\n', lines: 3, endsWithNewline: true },
+    { text: 'first\r\n中文\nlast', lines: 2, endsWithNewline: false },
+    { text: `${'x'.repeat(65_536)}\n`, lines: 1, endsWithNewline: true },
+  ])('preserves the digest and line counts across chunk boundaries: $lines lines', async ({ text, lines, endsWithNewline }) => {
+    const bytes = Buffer.from(text);
+    async function* chunks(): AsyncIterable<Uint8Array> {
+      yield new Uint8Array();
+      for (let offset = 0; offset < bytes.length; offset += 7) {
+        const chunk = bytes.subarray(offset, offset + 7);
+        yield offset % 2 === 0 ? chunk : new Uint8Array(chunk);
+        yield new Uint8Array();
+      }
+    }
+    expect(await digestWireBytes(chunks())).toEqual({
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      lines,
+      endsWithNewline,
+    });
+  });
+
+  it('propagates a stream failure without returning a partial proof', async () => {
+    const failure = new Error('stream failed');
+    async function* chunks(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('first\n');
+      throw failure;
+    }
+    await expect(digestWireBytes(chunks())).rejects.toBe(failure);
+  });
+});
 
 describe('WireService seal', () => {
   it('writes the metadata envelope once and ignores repeated calls', async () => {

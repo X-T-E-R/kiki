@@ -2603,6 +2603,52 @@ describe('TranscriptService live integration', () => {
       }
     });
 
+    it('does not reconstruct or rewrite an unchanged verified projection checkpoint', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) =>
+        JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const put = vi.spyOn(core.accessor.get(IQueryStore), 'put');
+      const adapterCheckpoint = vi.spyOn(TranscriptWireAdapter.prototype, 'checkpoint');
+      const starts: (number | undefined)[] = [];
+      const services: TranscriptService[] = [];
+      const read = async () => {
+        const service = new TranscriptService({
+          homeDir: home, core,
+          wireRecordReader: async (path, options) => {
+            starts.push(options.startByteOffset);
+            return streamWireRecords(path, options);
+          },
+        });
+        services.push(service);
+        try { return await service.readColdSnapshot('s1', 'main'); }
+        finally { service.dispose(); }
+      };
+      try {
+        const expected = await read();
+        const offset = (await fsPromises.stat(wirePath)).size;
+        expect(await read()).toEqual(expected);
+        expect(starts).toEqual([undefined, offset]);
+        expect(put.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(1);
+        expect(adapterCheckpoint).toHaveBeenCalledTimes(1);
+        await appendFile(wirePath, `${JSON.stringify({ type: 'turn.prompt', turnId: 1,
+          input: [{ type: 'text', text: 'appended fact' }], origin: { kind: 'user' }, time: 10 })}\n`);
+        expect((await read())?.items.some((item) => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+        expect(put.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(2);
+        expect(adapterCheckpoint).toHaveBeenCalledTimes(2);
+        await appendFile(wirePath, '\n\n');
+        const afterAppend = await read();
+        expect(await read()).toEqual(afterAppend);
+        expect(starts.at(-1)).toBe((await fsPromises.stat(wirePath)).size);
+        expect(put.mock.calls.filter(([collection]) => collection === '__transcript_projection_checkpoint__')).toHaveLength(3);
+      } finally {
+        for (const service of services) service.dispose();
+        put.mockRestore(); adapterCheckpoint.mockRestore();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
     it.each([1, 2])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');

@@ -1810,6 +1810,7 @@ export class TranscriptService {
         checkpointEligible &&
         complete &&
         readResult !== undefined &&
+        (checkpoint === undefined || readResult.nextByteOffset !== checkpoint.nextByteOffset) &&
         readResult.nextByteOffset <= TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES &&
         (checkpoint?.recordCount ?? 0) + readResult.recordCount >= TRANSCRIPT_CHECKPOINT_MIN_RECORDS
       ) {
