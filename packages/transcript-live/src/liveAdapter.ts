@@ -373,9 +373,9 @@ export class AgentTranscriptLiveAdapter {
       case 'hook.result':
         return [this.markerOp('hook', restOf(event))];
       case 'skill.activated':
-        return [this.markerOp('skill', restOf(event))];
       case 'plugin_command.activated':
-        return [this.markerOp('skill', { ...restOf(event), variant: 'plugin_command' })];
+        // The delivered message owns the skill's position and content.
+        return [];
       case 'cron.fired':
         return [this.markerOp('cron.fired', restOf(event))];
       case 'compaction.started':

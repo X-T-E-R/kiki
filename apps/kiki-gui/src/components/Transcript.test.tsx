@@ -1455,6 +1455,45 @@ describe('live and event chrome', () => {
     expect(container.textContent).toContain('Long implementation notes');
   });
 
+  it.each([{ names: ['review'] }, { names: ['review', 'check'] }])(
+    'renders delivered skills at their in-turn position, not as empty trailing dividers: $names',
+    async ({ names }) => {
+      const blocks = agentTranscriptToBlocks({ agent_id: 'example-agent', items: [
+        {
+          kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+          steps: [{ kind: 'step', turnId: 't0', stepId: 'step', ordinal: 1, state: 'completed', frames: [
+            { kind: 'text', frameId: 'before', role: 'assistant', text: 'Before activation' },
+            ...names.map(name => ({
+              kind: 'text' as const, frameId: `skill-${name}`, role: 'user' as const,
+              text: `<skill-loaded name="${name}">Instructions for ${name}</skill-loaded>`,
+              origin: { kind: 'skill_activation', activationId: `activation-${name}`, skillName: name, trigger: 'model-tool' },
+            })),
+            { kind: 'text', frameId: 'after', role: 'assistant', text: 'After activation' },
+          ] }],
+        },
+        ...names.map(name => ({
+          kind: 'marker' as const, markerId: `live-${name}`, marker: 'skill',
+          payload: { activationId: `activation-${name}`, skillName: name, trigger: 'model-tool' },
+        })),
+      ] });
+      const container = await renderTranscript(blocks);
+      expect(container.querySelector('[data-block-id^="agent-marker-"]')).toBeNull();
+      const fold = container.querySelector('[data-history-fold]');
+      if (fold !== null) await act(async () => { click(fold.querySelector('button')!); });
+      const skills = [...container.querySelectorAll('[data-skill]')];
+      expect(skills).toHaveLength(names.length);
+      const before = container.querySelector('[data-block-id="agent-frame-before"]')!;
+      const after = container.querySelector('[data-block-id="agent-frame-after"]')!;
+      for (const [index, skill] of skills.entries()) {
+        expect(skill.textContent).toContain(names[index]);
+        expect(before.compareDocumentPosition(skill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(skill.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        await act(async () => { click(skill.querySelector('button')!); });
+        expect(skill.textContent).toContain(`Instructions for ${names[index]}`);
+      }
+    },
+  );
+
   it('keeps shell cards collapsed by default and expands them on click', async () => {
     const container = await renderTranscript([
       {

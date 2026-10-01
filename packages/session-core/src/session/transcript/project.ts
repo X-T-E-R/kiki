@@ -601,6 +601,11 @@ function markerToBlock(item: {
     turnId: normalizeTurnId(payloadRecord?.['turnId']),
   };
 
+  // Older live snapshots append activation receipts outside the turn. The
+  // delivered skill frame already owns their content and in-turn position.
+  if (item.marker === 'skill' && typeof payloadRecord?.['activationId'] === 'string'
+    && payloadRecord?.['text'] === undefined) return undefined;
+
   // Skill activation payloads may contain the complete loaded skill document.
   // The marker is timeline chrome, not a second copy of that document.
   if (item.marker === 'skill' && summaryKey !== undefined) {

@@ -1650,7 +1650,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     ).toHaveLength(2);
   });
 
-  it('projects skill / plugin-command / cron / compaction / hook / undo markers', () => {
+  it('projects runtime boundaries without duplicating skill activation receipts', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
     const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
@@ -1684,8 +1684,6 @@ describe('AgentTranscriptLiveAdapter', () => {
       .getItems()
       .filter((item): item is Extract<typeof item, { kind: 'marker' }> => item.kind === 'marker');
     expect(markers.map((m) => m.marker)).toEqual([
-      'skill',
-      'skill',
       'cron.fired',
       'compaction',
       'compaction',
@@ -1693,17 +1691,16 @@ describe('AgentTranscriptLiveAdapter', () => {
       'hook',
       'undo',
     ]);
-    expect(markers[1]!.payload).toMatchObject({ variant: 'plugin_command' });
-    expect(markers[3]!.payload).toMatchObject({ phase: 'started' });
-    expect(markers[4]!.payload).toMatchObject({ phase: 'completed' });
-    expect(markers[5]!.payload).toEqual({ hookEvent: 'SessionStart', content: 'hook says hi' });
-    expect(markers[6]!.payload).toEqual({
+    expect(markers[1]!.payload).toMatchObject({ phase: 'started' });
+    expect(markers[2]!.payload).toMatchObject({ phase: 'completed' });
+    expect(markers[3]!.payload).toEqual({ hookEvent: 'SessionStart', content: 'hook says hi' });
+    expect(markers[4]!.payload).toEqual({
       turnId: 3,
       hookEvent: 'UserPromptSubmit',
       content: 'blocked by hook',
       blocked: true,
     });
-    expect(markers[7]!.payload).toMatchObject({ start: 1, deleteCount: 2 });
+    expect(markers[5]!.payload).toMatchObject({ start: 1, deleteCount: 2 });
   });
 
   it('projects error / warning events as notice markers outside any step', () => {
