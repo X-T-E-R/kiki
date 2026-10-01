@@ -15,10 +15,9 @@ function spawn(subagentId: string, extra: Record<string, unknown> = {}): Event {
     subagentId,
     subagentName: 'kimi-subagent',
     parentAgentId: 'main',
-    parentToolCallId: 'tc_swarm_1',
+    parentToolCallId: 'tc_child_1',
     description: `task ${subagentId}`,
     userLabel: `task ${subagentId}`,
-    swarmIndex: 0,
     runInBackground: false,
     ...extra,
   });
@@ -56,9 +55,9 @@ describe('SubagentRosterTracker', () => {
     expect(tracker.get(SID)[0]).toMatchObject({ status: 'completed', output_preview: 'new complete' });
   });
 
-  it('seeds a roster entry from subagent.spawned with the swarm identity metadata', () => {
+  it('seeds a roster entry from subagent.spawned with its identity metadata', () => {
     const t = new SubagentRosterTracker();
-    t.apply(SID, spawn('agent-1', { swarmIndex: 2, model: 'provider/secondary', thinkingEffort: 'low' }));
+    t.apply(SID, spawn('agent-1', { model: 'provider/secondary', thinkingEffort: 'low' }));
 
     expect(t.get(SID)).toEqual([
       expect.objectContaining({
@@ -71,9 +70,8 @@ describe('SubagentRosterTracker', () => {
         subagent_phase: 'queued',
         profile: 'kimi-subagent',
         parent_agent_id: 'main',
-        parent_tool_call_id: 'tc_swarm_1',
+        parent_tool_call_id: 'tc_child_1',
         tool_call_count: 0,
-        swarm_index: 2,
         run_in_background: false,
         model: 'provider/secondary',
         thinking_effort: 'low',

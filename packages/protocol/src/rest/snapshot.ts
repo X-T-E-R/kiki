@@ -87,7 +87,6 @@ export const snapshotSubagentSchema = taskSchema.extend({
   label: z.string().optional(),
   tool_call_count: z.number().int().nonnegative().optional(),
   suspended_reason: z.string().optional(),
-  swarm_index: z.number().int().nonnegative().optional(),
   run_in_background: z.boolean().optional(),
 });
 export type SnapshotSubagent = z.infer<typeof snapshotSubagentSchema>;
@@ -106,7 +105,7 @@ export const sessionSnapshotResponseSchema = z.object({
   in_flight_turn: inFlightTurnSchema.nullable(),
   /**
    * Roster of live subagent tasks at the watermark, so a reconnecting client
-   * can rebuild swarm cards before the swarm's tool result lands. Optional
+   * can rebuild child rows before the spawn's tool result lands. Optional
    * for cross-version tolerance: older servers do not send it.
    */
   subagents: z.array(snapshotSubagentSchema).optional(),

@@ -550,9 +550,6 @@ const MARKER_SUMMARY_KEYS = {
   'plan.revision': 'transcript.marker.plan',
   'plan.enter': 'transcript.marker.plan',
   'plan.exit': 'transcript.marker.plan',
-  swarm: 'transcript.marker.swarm',
-  'swarm.enter': 'transcript.marker.swarm',
-  'swarm.exit': 'transcript.marker.swarm',
   interruption: 'transcript.marker.interruption',
 } as const satisfies Record<string, I18nKey>;
 
@@ -906,7 +903,7 @@ function resumeTargetsFromToolArgs(args: unknown): readonly string[] {
   if (typeof args !== 'object' || args === null) return [];
   const record = args as Record<string, unknown>;
   const targets: string[] = [];
-  // Plain AgentRun carries a single `resume` ref; AgentSwarm carries a
+  // A single resume carries one `resume` ref; a batch resume carries a
   // `resume_agent_ids` map keyed by agent id.
   const single = record['resume'];
   if (typeof single === 'string' && single.trim() !== '') targets.push(single.trim());
@@ -1065,7 +1062,7 @@ function subagentBlocksFromSnapshot(
         if (frame.kind !== 'tool') continue;
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
         const resumedTargets = new Set<string>();
-        const resumeTargets = frame.name === 'AgentRun' || frame.name === 'AgentSwarm' || frame.name === 'Agent'
+        const resumeTargets = frame.name === 'AgentRun' || frame.name === 'Agent'
           ? resumeTargetsFromToolArgs(frame.input)
           : [];
         for (const raw of resumeTargets) {
@@ -2784,7 +2781,6 @@ export function projectAgentTranscriptView(
     usage: projectUsageStatus(meta?.usage),
     permissionMode: mapTranscriptPermission(meta?.permission) ?? previous.permissionMode,
     planMode: snapshot.meta.modes?.plan !== undefined,
-    swarmMode: snapshot.meta.modes?.swarm !== undefined,
     queuedPromptIds,
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
@@ -2844,7 +2840,6 @@ export function applyTranscriptShell(
     profile: snapshot.session.agent_config.profile ?? base.profile,
     permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,
     planMode: snapshot.session.agent_config.plan_mode ?? base.planMode,
-    swarmMode: snapshot.session.agent_config.swarm_mode ?? base.swarmMode,
     contextTokens: snapshot.context_tokens ?? base.contextTokens,
     maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
     snapshotSubagents: snapshot.subagents ?? base.snapshotSubagents,

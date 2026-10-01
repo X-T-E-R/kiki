@@ -18,7 +18,7 @@ const terminalControls = {
   terminal_resize: terminalWire.terminalResizeMessageSchema,
 };
 
-const GOAL_SWARM_AGENT_PANEL = {
+const GOAL_AGENT_PANEL = {
   context: 'live',
   owner: { profile: 'agent', agent_id: 'main' },
   available: true,
@@ -240,7 +240,7 @@ export class FixtureKlient {
         if (query.session_id !== undefined && session === undefined) throw invalid('session not found', 40401);
         const seeded = server.scenario?.data.agentPanel;
         if (seeded !== undefined) return seeded;
-        if (server.scenario?.name === 'goal-swarm') return GOAL_SWARM_AGENT_PANEL;
+        if (server.scenario?.name === 'goal') return GOAL_AGENT_PANEL;
         return {
           context: session === undefined ? 'draft' : 'live',
           owner: { profile: query.profile, agent_id: query.agent_id },

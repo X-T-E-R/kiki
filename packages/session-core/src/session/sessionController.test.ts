@@ -346,7 +346,7 @@ describe('assertSessionWritable', () => {
 
 
 describe('SessionController prompt runtime projection', () => {
-  it.each([true, false, undefined])('preserves GUI plan selections and never sends retired swarm mode: %s', async (enabled) => {
+  it.each([true, false, undefined])('preserves GUI plan selections: %s', async (enabled) => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({
       prompt_id: 'runtime-projection', user_message_id: 'runtime-message', status: 'queued',
@@ -357,7 +357,6 @@ describe('SessionController prompt runtime projection', () => {
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({
       plan_mode: enabled, goal_objective: 'same objective',
     }));
-    expect(client.submitPrompt.mock.lastCall?.[1]).not.toHaveProperty('swarm_mode');
     controller.close();
   });
 });
@@ -1950,7 +1949,7 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('clears plan/swarm/queue/active/pending while preserving permission through sparse AgentState updates', async () => {
+  it('clears plan mode, queue, active, and pending state while preserving permission through sparse AgentState updates', async () => {
     const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
@@ -1969,12 +1968,11 @@ describe('SessionController transcript authority', () => {
           { promptId: 'p-run', status: 'running', createdAt: '2026-01-01T00:00:00.000Z' },
           { promptId: 'p-q', status: 'queued', createdAt: '2026-01-01T00:00:01.000Z' },
         ],
-        meta: { modes: { plan: {}, swarm: {} }, agent: { permission: 'yolo' } },
+        meta: { modes: { plan: {} }, agent: { permission: 'yolo' } },
       },
     }));
     expect(controller.getState()).toMatchObject({
       planMode: true,
-      swarmMode: true,
       queuedPromptIds: ['p-q'],
       activePromptId: 'p-run',
       pendingInteraction: 'approval',
@@ -1999,7 +1997,6 @@ describe('SessionController transcript authority', () => {
     }));
     expect(controller.getState()).toMatchObject({
       planMode: false,
-      swarmMode: false,
       queuedPromptIds: [],
       activePromptId: undefined,
       pendingInteraction: 'none',

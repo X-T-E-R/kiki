@@ -506,20 +506,18 @@ describe('server-v2 /api/sessions', () => {
     expect(updatedStatus.body.data).toMatchObject({ model: 'stub', thinking_level: 'low' });
   });
 
-  it('applies create controls but accepts and ignores retired swarm_mode', async () => {
+  it('applies create controls from the request', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
       metadata: { cwd: home as string },
-      agent_config: { permission_mode: 'yolo', plan_mode: true, swarm_mode: true },
+      agent_config: { permission_mode: 'yolo', plan_mode: true },
     });
     expect(created.body.code, JSON.stringify(created.body)).toBe(0);
 
     const status = await getJson<{
       permission: string;
       plan_mode: boolean;
-      swarm_mode?: boolean;
     }>(`/api/sessions/${created.body.data.id}/status`);
     expect(status.body.data).toMatchObject({ permission: 'yolo', plan_mode: true });
-    expect(status.body.data.swarm_mode).toBeUndefined();
 
     const snapshot = await getJson<{ session: SessionWire }>(
       `/api/sessions/${created.body.data.id}/snapshot`,
@@ -528,7 +526,6 @@ describe('server-v2 /api/sessions', () => {
       permission_mode: 'yolo',
       plan_mode: true,
     });
-    expect(snapshot.body.data.session.agent_config).not.toHaveProperty('swarm_mode');
   });
 
   it.each([
@@ -1452,30 +1449,26 @@ describe('server-v2 /api/sessions', () => {
     expect(body.data.context_breakdown).toBeUndefined();
   });
 
-  it('reflects plan/permission controls but ignores retired swarm_mode in GET /status', async () => {
+  it('reflects plan and permission controls in GET /status', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
 
     const before = await getJson<{
       plan_mode: boolean;
-      swarm_mode?: boolean;
       permission: string;
     }>(`/api/sessions/${id}/status`);
     expect(before.body.data.plan_mode).toBe(false);
-    expect(before.body.data.swarm_mode).toBeUndefined();
 
     await postJson(`/api/sessions/${id}/profile`, {
-      agent_config: { plan_mode: true, swarm_mode: true, permission_mode: 'yolo' },
+      agent_config: { plan_mode: true, permission_mode: 'yolo' },
     });
 
     const after = await getJson<{
       plan_mode: boolean;
-      swarm_mode?: boolean;
       permission: string;
     }>(`/api/sessions/${id}/status`);
     expect(after.body.data.plan_mode).toBe(true);
-    expect(after.body.data.swarm_mode).toBeUndefined();
     expect(after.body.data.permission).toBe('yolo');
   });
 

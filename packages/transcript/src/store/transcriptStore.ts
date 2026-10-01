@@ -7,7 +7,7 @@ import {
 
 export interface AgentDescriptor {
   readonly agentId: AgentId;
-  /** Engine metadata, mirrored for display (e.g. 'main' | 'sub' | swarm member). */
+  /** Engine metadata, mirrored for display (e.g. 'main' | 'sub' | independent). */
   readonly type?: 'main' | 'sub' | 'independent';
   readonly parentAgentId?: AgentId;
   readonly delegator?:
@@ -48,7 +48,7 @@ export class TranscriptStore {
     return this.#agents.get(agentId);
   }
 
-  /** Drop an agent entirely (disposed sub-agent, swarm member cleaned up). */
+  /** Drop an agent entirely (disposed sub-agent cleaned up). */
   removeAgent(agentId: AgentId): boolean {
     const removed = this.#agents.delete(agentId);
     if (this.#descriptors.delete(agentId) || removed) this.#emitRoster();

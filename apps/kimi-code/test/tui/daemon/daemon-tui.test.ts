@@ -117,7 +117,6 @@ function driver(
       setProfile: ReturnType<typeof vi.fn>;
       setThinking: ReturnType<typeof vi.fn>;
       setPlanMode: ReturnType<typeof vi.fn>;
-      setSwarmMode: ReturnType<typeof vi.fn>;
       setTitle: ReturnType<typeof vi.fn>;
       updateSessionProfile: ReturnType<typeof vi.fn>;
       renewServerLease: ReturnType<typeof vi.fn>;
@@ -266,7 +265,6 @@ function driver(
   }));
   internal.client.setThinking = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setPlanMode = vi.fn(async () => ({ id: 'session-1' }));
-  internal.client.setSwarmMode = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setTitle = vi.fn(async (_sessionId, title) => ({ id: 'session-1', title }));
   internal.client.updateSessionProfile = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.renewServerLease = vi.fn(async () => ({
@@ -1163,7 +1161,6 @@ describe('DaemonTUI commands', () => {
       profile: undefined,
       permissionMode: 'manual',
       planMode: false,
-      swarmMode: false,
       thinkingEffort: 'off',
       contextTokens: 10,
       maxContextTokens: 100,

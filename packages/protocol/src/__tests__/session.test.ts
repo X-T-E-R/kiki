@@ -185,7 +185,6 @@ describe('agent_config read and write shapes', () => {
       'persona',
       'plan_mode',
       'profile',
-      'swarm_mode',
     ]);
   });
 

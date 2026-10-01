@@ -28,7 +28,6 @@ export const agentMetaSchema = z.object({
   ]).optional(),
   forkedFrom: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
-  swarmItem: z.string().optional(),
   displayName: z.string().optional(),
   userLabel: z.string().optional(),
   model: z.string().optional(),

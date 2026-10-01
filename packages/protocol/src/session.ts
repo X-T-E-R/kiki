@@ -67,7 +67,6 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
  * one the server actually projects: `model`/`profile` on any read, and the
  * permission/plan flags on the single-session snapshot, which materializes the
  * main agent. List placeholders carry only `model`/`profile`, so the flags stay
- * optional. The retired swarm field parses old responses but is not emitted.
  * Write-only controls (thinking, goals) belong to the patch schemas.
  */
 export const sessionAgentConfigSchema = z.object({
@@ -76,17 +75,14 @@ export const sessionAgentConfigSchema = z.object({
   persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
-  /** @deprecated Read-only compatibility with older servers; no longer projected. */
-  swarm_mode: z.boolean().optional(),
 });
 
 export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
 
 /**
  * Accepted on `POST /sessions/{id}/profile`. Strict on purpose: every key here
- * is applied by the server except retired `swarm_mode`, accepted and ignored for
- * older clients. Other unknown keys (`system_prompt`, `tools`, `mcp_servers`)
- * remain validation errors.
+ * is applied by the server. Unknown keys (`system_prompt`, `tools`,
+ * `mcp_servers`) are validation errors.
  */
 export const sessionAgentConfigPartialSchema = z.strictObject({
   model: z.string().optional(),
@@ -94,8 +90,6 @@ export const sessionAgentConfigPartialSchema = z.strictObject({
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
-  /** @deprecated Accepted for older clients, ignored by the server. */
-  swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
 });

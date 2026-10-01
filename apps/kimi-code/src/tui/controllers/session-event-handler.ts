@@ -194,18 +194,6 @@ export class SessionEventHandler {
     this.stopAllMcpServerStatusSpinners();
   }
 
-  clearAgentSwarmProgress(): void {
-    this.subAgentEventHandler.clearAgentSwarmProgress();
-  }
-
-  hasActiveAgentSwarmToolCall(): boolean {
-    return this.subAgentEventHandler.hasActiveAgentSwarmToolCall();
-  }
-
-  syncAgentSwarmActivitySpinner(spinner: MoonLoader | undefined): void {
-    this.subAgentEventHandler.syncAgentSwarmActivitySpinner(spinner);
-  }
-
   startSubscription(): void {
     const { host } = this;
     const session = host.requireSession();
@@ -340,7 +328,6 @@ export class SessionEventHandler {
         userSourceLabel,
       });
     }
-    this.clearAgentSwarmProgress();
     this.host.streamingUI.resetToolUi();
     this.host.streamingUI.setStep(0);
     this.host.patchLivePane({
@@ -376,9 +363,6 @@ export class SessionEventHandler {
     this.host.handleTurnEnded?.(event);
     this.host.streamingUI.flushNow();
     this.clearStepRetry();
-    if (event.reason === 'cancelled') {
-      this.markActiveAgentSwarmsCancelled();
-    }
     // Aborted foreground subagents emit no completed/failed lifecycle event
     // (v2 suppresses it for aborts), so their activity records would linger
     // until the session reset — prune them when the owning turn ends.
@@ -520,10 +504,6 @@ export class SessionEventHandler {
     });
   }
 
-  private markActiveAgentSwarmsCancelled(): void {
-    this.subAgentEventHandler.markActiveAgentSwarmsCancelled();
-  }
-
   private isAnthropicSessionActive(): boolean {
     const { state } = this.host;
     const model = state.appState.availableModels[state.appState.model];
@@ -540,7 +520,6 @@ export class SessionEventHandler {
     const reason = event.reason;
     if (reason === 'error') return;
     if (reason === 'aborted' || reason === undefined || reason === '') {
-      this.markActiveAgentSwarmsCancelled();
       if (event.message === undefined || event.message === '') {
         this.host.showStatus('Interrupted by user', 'error');
       } else {
@@ -636,9 +615,6 @@ export class SessionEventHandler {
       turnId,
     };
     streamingUI.registerToolCall(toolCall);
-    if (event.name === 'AgentSwarm') {
-      this.subAgentEventHandler.handleAgentSwarmToolCallStarted(event.toolCallId, toolCall.args);
-    }
     this.host.patchLivePane({
       mode: 'tool',
       pendingApproval: null,
@@ -650,16 +626,6 @@ export class SessionEventHandler {
     if (event.toolCallId.length === 0) return;
     const { state, streamingUI } = this.host;
     streamingUI.accumulateToolCallDelta(event.toolCallId, event.name, event.argumentsPart);
-    const preview = streamingUI.getStreamingToolCallPreview(event.toolCallId);
-    if (
-      preview !== undefined &&
-      (preview.name === 'AgentSwarm' || this.subAgentEventHandler.hasAgentSwarmProgress(event.toolCallId))
-    ) {
-      this.subAgentEventHandler.handleAgentSwarmToolCallDelta(event.toolCallId, preview.args, {
-        streamingArguments: preview.argumentsText,
-      });
-    }
-
     this.host.patchLivePane({
       mode: 'tool',
       pendingApproval: null,
@@ -701,11 +667,6 @@ export class SessionEventHandler {
       // whole turn's output has ended (see handleTurnEnd).
       this.pluginMcpToolsUsedInTurn.add(matchedCall.name);
     }
-    this.subAgentEventHandler.handleAgentSwarmToolResult(
-      event.toolCallId,
-      resultData,
-      event.isError === true,
-    );
     if (matchedCall !== undefined && matchedCall.name === 'TodoList' && !event.isError) {
       const rawTodos = (matchedCall.args as { todos?: unknown }).todos;
       if (Array.isArray(rawTodos)) {

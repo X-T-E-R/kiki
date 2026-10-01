@@ -752,7 +752,6 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
     meta.modes !== undefined
       ? {
           plan: meta.modes.plan === null ? undefined : (meta.modes.plan ?? state.meta.modes?.plan),
-          swarm: meta.modes.swarm === null ? undefined : (meta.modes.swarm ?? state.meta.modes?.swarm),
         }
       : state.meta.modes;
   const agent =
@@ -760,7 +759,7 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
   const next: TranscriptMeta = {
     goal: meta.goal === null ? undefined : (meta.goal ?? state.meta.goal),
     activity: meta.activity ?? state.meta.activity,
-    modes: modes !== undefined && modes.plan === undefined && modes.swarm === undefined ? undefined : modes,
+    modes: modes !== undefined && modes.plan === undefined ? undefined : modes,
     agent,
     promptQueueHold:
       meta.promptQueueHold === null

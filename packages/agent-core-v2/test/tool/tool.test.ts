@@ -1732,7 +1732,7 @@ describe('AgentRun tool execution contract', () => {
 
   it('merges terminal subagent outcomes into metadata without inventing tool counts', async () => {
     const agents: Record<string, AgentMeta> = {
-      'agent-child': { type: 'sub', model: 'provider/example', labels: { swarmItem: 'example' } },
+      'agent-child': { type: 'sub', model: 'provider/example', labels: { workItem: 'example' } },
     };
     const registerAgent = vi.fn(async (agentId: string, meta: AgentMeta) => { agents[agentId] = meta; });
     const dispatch = vi.fn(async (_event: Event2) => {});
@@ -1756,7 +1756,7 @@ describe('AgentRun tool execution contract', () => {
     const usage = { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 };
     await run(Promise.resolve({ summary: 'Done', usage }));
     expect(agents['agent-child']).toMatchObject({
-      type: 'sub', model: 'provider/example', labels: { swarmItem: 'example' },
+      type: 'sub', model: 'provider/example', labels: { workItem: 'example' },
       status: 'completed', resultSummary: 'Done', usage, contextTokens: 23,
       completedAt: expect.any(Number),
     });

@@ -322,7 +322,7 @@ export type AgentTranscriptFrame =
       startedAt?: string;
       endedAt?: string;
       progress?: { text?: string };
-      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' | 'member' }[];
+      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' }[];
     }
   | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };
 
@@ -443,7 +443,6 @@ export interface AgentTranscriptMeta {
   };
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
-    readonly swarm?: { readonly trigger?: string };
   };
   readonly activity?: 'idle' | 'turn' | 'disposing' | 'unknown';
   readonly promptQueueHold?: {

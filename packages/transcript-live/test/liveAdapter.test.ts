@@ -1057,7 +1057,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(liveAdapter.map(ev({ type: 'task.notified', taskId: 't' }))).toEqual([]);
   });
 
-  it('links spawned subagents to the spawning tool frame (member for swarm)', () => {
+  it('links spawned subagents to the spawning tool frame', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
     const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
@@ -1068,8 +1068,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       ev({
         type: 'tool.call.started',
         turnId: 1,
-        toolCallId: 'call_swarm',
-        name: 'AgentSwarm',
+        toolCallId: 'call_run',
+        name: 'AgentRun',
         args: {},
       }),
     );
@@ -1079,9 +1079,8 @@ describe('AgentTranscriptLiveAdapter', () => {
         time: 1_700_000_000_000,
         subagentId: 'agent-0',
         subagentName: 'worker',
-        parentToolCallId: 'call_swarm',
+        parentToolCallId: 'call_run',
         description: 'scan the repo',
-        swarmIndex: 0,
         runInBackground: false,
       }),
     );
@@ -1089,7 +1088,7 @@ describe('AgentTranscriptLiveAdapter', () => {
 
     const tool = turnOps('t1', tx.getItems()).steps[0]!.frames.find((f) => f.kind === 'tool');
     expect(tool).toMatchObject({
-      agentRefs: [{ agentId: 'agent-0', role: 'member' }],
+      agentRefs: [{ agentId: 'agent-0', role: 'child' }],
     });
     const task = tx.getTask('agent-0');
     expect(task).toMatchObject({
@@ -1476,17 +1475,14 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getMeta().goal).toBeUndefined();
   });
 
-  it('mirrors plan / swarm mode slices into meta.modes (only when provided)', () => {
+  it('mirrors plan mode slices into meta.modes (only when provided)', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
 
     tx.apply(liveAdapter.map(ev({ type: 'agent.status.updated', planMode: true })));
-    tx.apply(liveAdapter.map(ev({ type: 'agent.status.updated', swarmMode: true })));
-    expect(tx.getMeta().modes).toEqual({ plan: {}, swarm: {} });
+    expect(tx.getMeta().modes).toEqual({ plan: {} });
 
     tx.apply(liveAdapter.map(ev({ type: 'agent.status.updated', planMode: false })));
-    expect(tx.getMeta().modes).toEqual({ swarm: {} });
-    tx.apply(liveAdapter.map(ev({ type: 'agent.status.updated', swarmMode: false })));
     expect(tx.getMeta().modes).toBeUndefined();
   });
 

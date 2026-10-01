@@ -30,7 +30,6 @@ export interface AgentListEntry {
   readonly name?: string;
   readonly profile?: string;
   readonly status: AgentListStatus;
-  readonly swarm_item?: string;
 }
 
 export interface AgentListOutput {

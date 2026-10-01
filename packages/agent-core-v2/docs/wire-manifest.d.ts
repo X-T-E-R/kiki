@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (79 record types)
+// Index (77 record types)
 //   auto_compact.override_changed      autoCompactOverride                                                                         src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                                                     src/agent/profile/profileOps.ts
 //   context_strategy.override_changed  contextStrategyOverride                                                                     src/agent/fullCompaction/contextStrategyOps.ts
@@ -79,9 +79,7 @@
 //   subagent.failed                    (none)                                                                                      src/session/subagent/mirrorAgentRun.ts
 //   subagent.spawned                   (none)                                                                                      src/session/subagent/mirrorAgentRun.ts
 //   subagent.started                   (none)                                                                                      src/session/subagent/mirrorAgentRun.ts
-//   subagent.suspended                 (none)                                                                                      src/features/swarm/session/sessionSwarmService.ts
-//   swarm_mode.enter                   (none)                                                                                      src/features/swarm/swarmOps.ts
-//   swarm_mode.exit                    contextMemory                                                                               src/features/swarm/swarmOps.ts
+//   subagent.suspended                 (none)                                                                                      src/session/subagent/subagentSuspended.ts
 //   task.notified                      (none)                                                                                      src/agent/task/taskOps.ts
 //   task.started                       task                                                                                        src/agent/task/taskOps.ts
 //   task.terminated                    task                                                                                        src/agent/task/taskOps.ts
@@ -994,7 +992,6 @@ interface SubagentSpawnedPayload {
   callerAgentId?: string;
   description?: string;
   userLabel?: string;
-  swarmIndex?: number;
   runInBackground: boolean;
   model?: string;
   thinkingEffort?: string;
@@ -1013,29 +1010,12 @@ interface SubagentStartedPayload {
 
 /**
  * states: (none)
- * owner: src/features/swarm/session/sessionSwarmService.ts
+ * owner: src/session/subagent/subagentSuspended.ts
  */
 interface SubagentSuspendedPayload {
   _name: 'subagent.suspended';
   subagentId: string;
   reason: string;
-}
-
-/**
- * states: (none)
- * owner: src/features/swarm/swarmOps.ts
- */
-interface SwarmModeEnterPayload {
-  _name: 'swarm_mode.enter';
-  trigger: 'manual' | 'task' | 'tool';
-}
-
-/**
- * states: contextMemory · blobs: contextMemory
- * owner: src/features/swarm/swarmOps.ts
- */
-interface SwarmModeExitPayload {
-  _name: 'swarm_mode.exit';
 }
 
 /**
@@ -1414,8 +1394,6 @@ interface WirePayloadMap {
   "subagent.spawned": SubagentSpawnedPayload;
   "subagent.started": SubagentStartedPayload;
   "subagent.suspended": SubagentSuspendedPayload;
-  "swarm_mode.enter": SwarmModeEnterPayload;
-  "swarm_mode.exit": SwarmModeExitPayload;
   "task.notified": TaskNotifiedPayload;
   "task.started": TaskStartedPayload;
   "task.terminated": TaskTerminatedPayload;

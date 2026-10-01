@@ -148,7 +148,7 @@ export const thinkingFrameSchema = z.object({
 
 export const agentRefSchema = z.object({
   agentId: agentIdSchema,
-  role: z.enum(['child', 'member']).optional(),
+  role: z.enum(['child']).optional(),
 });
 
 export const toolFrameProgressSchema = z.object({
@@ -319,7 +319,6 @@ export const goalMetaSchema = z.object({
 
 export const modesMetaSchema = z.object({
   plan: z.object({ reviewPath: z.string().optional(), version: z.number().optional() }).optional(),
-  swarm: z.object({ trigger: z.string().optional() }).optional(),
 });
 
 /** `meta.merge` contract shape: a mode key set to `null` clears that badge. */
@@ -328,7 +327,6 @@ export const modesMetaMergeSchema = z.object({
     .object({ reviewPath: z.string().optional(), version: z.number().optional() })
     .nullable()
     .optional(),
-  swarm: z.object({ trigger: z.string().optional() }).nullable().optional(),
 });
 
 /** Same shape as the wire `agentPhaseSchema`, re-declared (this package must not import the server). */

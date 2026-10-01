@@ -43,7 +43,6 @@ export interface DispatchLaunchInput {
   readonly signal: AbortSignal;
   readonly labels?: Readonly<Record<string, string>>;
   readonly userLabel?: string;
-  readonly swarmItem?: string;
   readonly parentTurnId?: number;
   readonly executorPolicy?: 'any' | 'native';
   readonly onReady?: () => void;

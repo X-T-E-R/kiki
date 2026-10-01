@@ -113,11 +113,6 @@ export interface AgentRecordEvents {
     id?: string;
   };
 
-  'swarm_mode.enter': {
-    trigger: 'manual' | 'task' | 'tool';
-  };
-  'swarm_mode.exit': {};
-
   'tools.register_user_tool': UserToolRegistration;
   'tools.unregister_user_tool': {
     name: string;

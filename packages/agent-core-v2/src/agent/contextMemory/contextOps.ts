@@ -107,12 +107,6 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
     return resetFold([...result.messages]) as ContextMessage[];
   });
 
-export function popSwarmModeReminder(state: ContextMessage[]): ContextMessage[] {
-  const last = state.at(-1);
-  if (last?.origin?.kind !== 'injection' || last.origin.variant !== 'swarm_mode') return state;
-  return resetFold(state.slice(0, -1)) as ContextMessage[];
-}
-
 interface UnknownRecord {
   readonly [key: string]: unknown;
 }

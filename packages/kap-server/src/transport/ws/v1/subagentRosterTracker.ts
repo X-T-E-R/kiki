@@ -172,7 +172,6 @@ export class SubagentRosterTracker {
               ? 0
               : (existing?.tool_call_count ?? 0)
             : existing!.tool_call_count,
-          swarm_index: event.swarmIndex ?? existing?.swarm_index,
           run_in_background: acceptedRun
             ? restarted
               ? event.runInBackground

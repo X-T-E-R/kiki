@@ -719,10 +719,10 @@ describe('SessionMetadata', () => {
 
     await Promise.all([
       meta.registerAgent('agent-0', {
-        labels: { swarmItem: 'src/a.ts' },
+        labels: { workItem: 'src/a.ts' },
       }),
       meta.registerAgent('agent-1', {
-        labels: { swarmItem: 'src/b.ts' },
+        labels: { workItem: 'src/b.ts' },
       }),
     ]);
 
@@ -734,7 +734,7 @@ describe('SessionMetadata', () => {
 
   it('persists terminal agent fields across restart and keeps legacy agent records readable', async () => {
     const meta = ix.get(ISessionMetadata);
-    const legacyAgent = { type: 'sub' as const, displayName: 'explore', labels: { swarmItem: 'example' } };
+    const legacyAgent = { type: 'sub' as const, displayName: 'explore', labels: { workItem: 'example' } };
     await meta.registerAgent('legacy', legacyAgent);
     const before = (await meta.read()).updatedAt;
     await meta.registerAgent('terminal', {
@@ -852,11 +852,11 @@ describe('SessionMetadata', () => {
     await meta.registerAgent('main', {
       homedir: '/tmp/sessions/wd_test/s1/agents/main',
       type: 'main',
-      labels: { swarmItem: 'src/a.ts' },
+      labels: { workItem: 'src/a.ts' },
     });
 
     const next = await meta.read();
-    expect(next.agents?.['main']?.labels).toEqual({ swarmItem: 'src/a.ts' });
+    expect(next.agents?.['main']?.labels).toEqual({ workItem: 'src/a.ts' });
     expect(next.updatedAt).toBe(before);
   });
 

@@ -27,7 +27,7 @@ import { RelativeTime } from './RelativeTime';
 import { Icon, type IconName } from './icons';
 import { ActivityRow, type ActivityTone } from './timeline/ActivityRow';
 
-/** Marker notices (goal/plan/swarm/interruption …) are the neutral, transcript-owned ones. */
+/** Marker notices (goal/plan/interruption …) are the neutral, transcript-owned ones. */
 export function isMarkerNotice(block: NoticeBlock): boolean {
   return block.tone === 'neutral' && block.id.startsWith('agent-marker-');
 }

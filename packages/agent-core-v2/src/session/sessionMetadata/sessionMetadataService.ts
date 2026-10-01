@@ -261,7 +261,6 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     (a.parentAgentId ?? null) === (b.parentAgentId ?? null) &&
     delegatorEquals(a.delegator, b.delegator) &&
     a.forkedFrom === b.forkedFrom &&
-    a.swarmItem === b.swarmItem &&
     a.displayName === b.displayName &&
     a.userLabel === b.userLabel &&
     a.model === b.model &&

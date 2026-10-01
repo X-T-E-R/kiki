@@ -220,7 +220,6 @@ interface RawAgentMeta {
   readonly parentAgentId?: string | null;
   readonly delegator?: { readonly kind?: unknown; readonly agentId?: unknown };
   readonly labels?: Readonly<Record<string, string>>;
-  readonly swarmItem?: string;
   readonly displayName?: string;
   readonly userLabel?: string;
   readonly model?: string;
@@ -594,8 +593,6 @@ async function discoverAgents(
     const displayName = stringValue(meta?.displayName);
     const userLabel = firstNonEmpty(
       meta?.userLabel,
-      meta?.labels?.['swarmItem'],
-      meta?.swarmItem,
       meta?.labels?.['collaborationTaskName'],
     );
     const name = userLabel ?? displayName ?? id;
@@ -1100,7 +1097,6 @@ function agentMetadata(value: unknown): Readonly<Record<string, RawAgentMeta>> {
         : undefined,
       delegator,
       labels,
-      swarmItem: stringValue(raw['swarmItem']),
       displayName: stringValue(raw['displayName']),
       userLabel: stringValue(raw['userLabel']),
       model: stringValue(raw['model']),

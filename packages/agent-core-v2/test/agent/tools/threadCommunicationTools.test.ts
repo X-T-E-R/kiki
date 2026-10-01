@@ -398,7 +398,7 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ effort: '   ' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ permission_mode: 'unsafe' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ plan_mode: 'true' }).success).toBe(false);
-    expect(ThreadCreateToolInputSchema.safeParse({ swarm_mode: true }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ unsupported: true }).success).toBe(false);
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
       'title', 'cwd', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
     ]);

@@ -5,8 +5,8 @@
  *     assistant prose, a four-call tool run (group; one failing Bash so the
  *     group auto-expands on error), and an AgentRun call carrying two
  *     agentRefs (canonical child ids) for the detail-jump proof.
- *   - a pile of consecutive agent markers (goal / plan.enter / plan.exit /
- *     swarm) between turns: the compact-history grouping target.
+ *   - a pile of consecutive agent markers (goal / plan.enter / plan.exit)
+ *     between turns: the compact-history grouping target.
  *   - taskrefs for four child agents in a row: one completed, one failed
  *     (error visible), two still running (detached → background cards) — the
  *     dual-form subagent card matrix, plus a completed parent
@@ -164,7 +164,6 @@ export default {
             { kind: 'marker', markerId: 'm-goal-1', marker: 'goal', at: ts(44) },
             { kind: 'marker', markerId: 'm-plan-enter-1', marker: 'plan.enter', at: ts(44) },
             { kind: 'marker', markerId: 'm-plan-exit-1', marker: 'plan.exit', at: ts(43) },
-            { kind: 'marker', markerId: 'm-swarm-1', marker: 'swarm', at: ts(43) },
             // Subagent taskrefs in a row: compact bars (failed stays visible).
             taskref('agent-research', 42),
             taskref('agent-writer', 41),

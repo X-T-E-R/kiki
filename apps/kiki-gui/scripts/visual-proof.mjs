@@ -49,7 +49,7 @@ import { zh as ZH_DICTIONARY } from '../../../packages/session-core/src/i18n/zh.
  */
 const TIMELINE_GATED = new Set([
   'long-transcript', 'subagents', 'subagents-burst', 'subagent-approval', 'subagent-invocations',
-  'goal-swarm', 'tool-pipeline', 'rewrite-flow', 'error-abort', 'steer',
+  'tool-pipeline', 'rewrite-flow', 'error-abort', 'steer',
 ]);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -366,7 +366,6 @@ const LITERALS = {
   // Kept for walkers not yet written; these screens were retired.
   shimCapabilities: { en: 'The capabilities panel was split into dedicated settings pages', zh: '能力面板已拆分为独立的设置页面' },
   modelProfileLabel: { en: 'model profile', zh: '模型设置' },
-  swarmTitlePrefix: { en: 'Swarm mode', zh: '集群模式' },
   goalActive: { en: 'goal · active', zh: '目标 · 进行中' },
 };
 
@@ -880,8 +879,8 @@ async function scenarioSubagents() {
   await shot('cron-page');
 }
 
-async function scenarioGoalSwarm() {
-  await selectSession('Fixture: goal + swarm');
+async function scenarioGoal() {
+  await selectSession('Fixture: goal');
   // Goal state is the composer card's top row whose detail expands in the
   // card; the right rail no longer carries the objective as resident prose.
   const goalTab = page.locator('[data-composer-header] [data-header-toggle="goal"]');
@@ -914,12 +913,12 @@ async function scenarioGoalSwarm() {
   if (modeChip !== 'goal') throw new Error(`goal mode must show the mode chip, saw ${modeChip}`);
   await page.locator('[data-goal-armed]').waitFor({ timeout: 5000 });
   await sendPrompt('Ship the fixture release');
-  await waitForText('Swarm mode is on and the goal state is live.');
-  const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
+  await waitForText('Goal mode is on and the goal state is live.');
+  const inspected = await control({ action: 'session', session_id: 'session_fixture_goal' });
   const submission = inspected.data?.last_prompt_submission;
-  console.log(`[check] goal/swarm submission ${JSON.stringify(submission)}`);
-  if (submission?.goal_objective !== 'Ship the fixture release' || submission?.swarm_mode !== undefined) {
-    throw new Error('PromptSubmission must carry goal_objective and no retired swarm_mode');
+  console.log(`[check] goal submission ${JSON.stringify(submission)}`);
+  if (submission?.goal_objective !== 'Ship the fixture release') {
+    throw new Error('PromptSubmission must carry goal_objective');
   }
   // The card tracks the goal as it evolves — the updated objective and the
   // follow-up timing stay visible without reopening anything.
@@ -934,7 +933,7 @@ async function scenarioGoalSwarm() {
     throw new Error(`goal card must trace the follow-up timing, got "${goalCardText}"`);
   }
   await page.waitForTimeout(400);
-  await shot('goal-swarm');
+  await shot('goal');
 }
 
 async function scenarioGoalQueue() {
@@ -5254,7 +5253,7 @@ const BODIES = [
   ['subagent-invocations', scenarioSubagentInvocations],
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
-  ['goal-swarm', scenarioGoalSwarm],
+  ['goal', scenarioGoal],
   ['goal-queue', scenarioGoalQueue],
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],

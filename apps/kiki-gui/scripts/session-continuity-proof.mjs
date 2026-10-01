@@ -25,7 +25,7 @@ const evidence = { requests: [], payloads: [], states: [], checks: [] };
 const fixture = await startFixtureServer({ port: 0, scenario: 'session-continuity' });
 fixture.sessions.get(SID).transcript.commit('main', [{ op: 'meta.merge', meta: {
   agent: { model: 'fixture/model-b', thinkingEffort: 'high' },
-  modes: { plan: { enteredAt: '2026-09-06T00:00:00Z' }, swarm: { enteredAt: '2026-09-06T00:00:00Z' } },
+  modes: { plan: { enteredAt: '2026-09-06T00:00:00Z' } },
 } }]);
 const fixtureUrl = `http://127.0.0.1:${fixture.http.address().port}`;
 process.env.KIKI_SERVER_URL = fixtureUrl;
@@ -444,7 +444,7 @@ try {
   const question = { interactionId: 'question-history-fixture', interactionKind: 'question', origin: { agentId: 'main' }, state: 'pending', request: {
     questions: [{ id: 'choice', question: '是否继续这项验证？', options: [{ id: 'yes', label: '继续' }, { id: 'no', label: '停止' }] }], createdAt: '2026-09-06T00:00:00Z',
   } };
-  await emit([{ op: 'interaction.upsert', interaction: question }, { op: 'marker.upsert', item: { kind: 'marker', markerId: 'swarm-history-fixture', marker: 'swarm.exit', at: '2026-09-06T00:00:00Z' } }]);
+  await emit([{ op: 'interaction.upsert', interaction: question }]);
   await page.getByText('是否继续这项验证？', { exact: true }).waitFor();
   await emit([{ op: 'interaction.upsert', interaction: { ...question, state: 'dismissed', response: { dismissed_at: '2026-09-06T00:01:00Z' } } }]);
   const history = page.locator('[data-history-run]').first();
@@ -464,8 +464,7 @@ try {
   await shot('08-terminal-activity-history-zh');
   const modeChip = await page.locator('[data-run-mode-chip]').innerText();
   assert.match(modeChip, /计划/);
-  assert.doesNotMatch(modeChip, /并行|集群/);
-  evidence.checks.push('pending question exits activity on terminal status; dismissed fact and swarm marker remain in expandable history; a historical swarm mode is not shown as an active composer mode');
+  evidence.checks.push('pending question exits activity on terminal status; a dismissed fact remains in expandable history; the composer mode chip reflects only the live plan mode');
   const task = { taskId: 'task-history-fixture', kind: 'shell', state: 'running', detached: true, description: '任务状态转换验证', outputTail: '', startedAt: '2026-09-06T00:00:00Z' };
   await emit([{ op: 'task.upsert', task }]);
   // Background tasks live in the inspector, which starts collapsed.

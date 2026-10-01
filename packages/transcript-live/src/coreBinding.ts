@@ -252,8 +252,6 @@ export function bindSessionTranscript(
       event.type === 'plan_mode.exit' ||
       event.type === 'plan_mode.cancel' ||
       event.type === 'plan.revision' ||
-      event.type === 'swarm_mode.enter' ||
-      event.type === 'swarm_mode.exit' ||
       event.type === 'interaction.request' ||
       event.type === 'interaction.resolved' ||
       event.type === 'turn.cancel'

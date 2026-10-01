@@ -904,7 +904,7 @@ describe('AgentLifecycleService', () => {
       type: 'sub' as const,
       parentAgentId: 'main',
       delegator: { kind: 'agent' as const, agentId: 'main' },
-      labels: { parentAgentId: 'main', profileName: 'old-profile', swarmItem: 'example' },
+      labels: { parentAgentId: 'main', profileName: 'old-profile', workItem: 'example' },
       model: 'provider/old-model',
       thinkingEffort: 'low',
       status,
@@ -964,7 +964,7 @@ describe('AgentLifecycleService', () => {
       toolCallCount: prior.toolCallCount,
       model: 'provider/child-model',
       thinkingEffort: 'high',
-      labels: { parentAgentId: 'main', profileName: 'explore', swarmItem: 'example' },
+      labels: { parentAgentId: 'main', profileName: 'explore', workItem: 'example' },
     };
     expect(register).toHaveBeenCalledWith('child', expect.objectContaining(expected));
     expect((await metadata.read()).agents?.['child']).toMatchObject(expected);
@@ -1019,7 +1019,7 @@ describe('AgentLifecycleService', () => {
       toolCallCount: prior.toolCallCount,
       model: 'provider/child-model',
       thinkingEffort: 'high',
-      labels: { parentAgentId: 'main', profileName: 'explore', swarmItem: 'example' },
+      labels: { parentAgentId: 'main', profileName: 'explore', workItem: 'example' },
     };
     expect((await metadata.read()).agents?.['child']).toMatchObject(expected);
     expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: expected } });
@@ -1043,7 +1043,7 @@ describe('AgentLifecycleService', () => {
     const child = await svc.create({
       agentId: 'child',
       forkedFrom: 'main',
-      labels: { swarmItem: 'swarm-item-1' },
+      labels: { workItem: 'work-item-1' },
       userLabel: 'Review usage accounting',
     });
 
@@ -1054,7 +1054,7 @@ describe('AgentLifecycleService', () => {
       parentAgentId: 'main',
       delegator: undefined,
       forkedFrom: 'main',
-      labels: { swarmItem: 'swarm-item-1', profileName: 'explore' },
+      labels: { workItem: 'work-item-1', profileName: 'explore' },
       displayName: 'explore',
       userLabel: 'Review usage accounting',
       model: 'provider/child-model',

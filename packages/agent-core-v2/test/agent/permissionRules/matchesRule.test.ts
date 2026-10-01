@@ -167,7 +167,6 @@ describe('permissionRules/matchPermissionRule', () => {
       matchesRule: () => false,
     })).toBe(false);
     expect(matches(rule('Read([invalid'), 'Read', noArgs)).toBe(false);
-    expect(matches(rule('AgentSwarm(swarm)'), 'AgentSwarm', noArgs)).toBe(false);
   });
 
   it('matches path rule subjects case-insensitively', () => {

@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe('MoonLoader', () => {
-  it('keeps the tip out of renderInline so it does not squeeze against the swarm progress bar', () => {
+  it('keeps the tip out of renderInline so it does not squeeze against a progress bar', () => {
     const loader = createLoader();
     loader.setTip(' · Tip: ctrl+s: steer mid-turn');
     loader.setAvailableWidth(80);

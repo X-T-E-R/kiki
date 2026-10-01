@@ -83,7 +83,6 @@ import {
   isSubagentMeta,
   requestIdentitySpawnContext,
   subagentParentAgentId,
-  subagentSwarmItem,
 } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -841,11 +840,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const identity: RequestIdentityAttemptContext = {
       policy: requestIdentity,
       parentAgentId: subagentParentAgentId(agentMeta),
-      subagentKind: isSubagentMeta(agentMeta)
-        ? subagentSwarmItem(agentMeta) === undefined
-          ? 'agent'
-          : 'swarm'
-        : undefined,
+      subagentKind: isSubagentMeta(agentMeta) ? 'agent' : undefined,
       ...requestIdentitySpawnContext(agentMeta),
       isKimiProvider,
       hostRequestHeaders: isKimiProvider

@@ -26,7 +26,7 @@ export default {
   agentProfiles: profiles,
   sessions: [sessionRecord(SID, {
     title: '连续性验证会话', workspace_id: 'wd_fixture_alpha_00000000000a', metadata: { cwd: 'C:/fixture/alpha' },
-    agent_config: { profile: 'workspace-main', model: 'fixture/model-b', thinking: 'high', plan_mode: true, swarm_mode: true },
+    agent_config: { profile: 'workspace-main', model: 'fixture/model-b', thinking: 'high', plan_mode: true },
   })],
   snapshots: { [SID]: { messages: [userMsg(SID, '保留此历史记录'), assistantMsg(SID, ['历史记录保持不变。'])] } },
   onPrompt: [

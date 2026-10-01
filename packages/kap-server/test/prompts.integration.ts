@@ -382,7 +382,7 @@ describe('server-v2 /api prompts', () => {
     expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
   });
 
-  it.each([false, true])('applies prompt-bound plan controls with skills=%s while ignoring retired swarm mode', async (skills) => {
+  it.each([false, true])('applies prompt-bound plan controls with skills=%s', async (skills) => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
     const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
@@ -390,14 +390,14 @@ describe('server-v2 /api prompts', () => {
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'plan this work' }],
       skills: skills ? [{ name: 'kiki-ops' }] : undefined,
-      plan_mode: true, swarm_mode: true,
+      plan_mode: true, 
     });
     expect(submitted.body.code, submitted.body.msg).toBe(0);
     expect(submitted.body.data.status).toBe('running');
     expect(await plan.status()).not.toBeNull();
     const prompt = main.accessor.get(IAgentPromptService);
     const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'execute later' }], plan_mode: false, swarm_mode: false,
+      content: [{ type: 'text', text: 'execute later' }], plan_mode: false, 
     });
     expect(queued.body.data.status).toBe('queued');
     expect(await plan.status()).not.toBeNull();
@@ -417,12 +417,12 @@ describe('server-v2 /api prompts', () => {
     await goal.createGoal({ objective: 'same objective' });
     await goal.pauseGoal({});
     const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'active mode' }], plan_mode: enabled, swarm_mode: enabled,
+      content: [{ type: 'text', text: 'active mode' }], plan_mode: enabled, 
     });
     expect(active.body.code, active.body.msg).toBe(0);
     const followUp = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'ordinary follow-up' }], permission_mode: 'manual',
-      plan_mode: enabled, swarm_mode: enabled, goal_objective: 'same objective',
+      plan_mode: enabled, goal_objective: 'same objective',
     });
     expect(followUp.body.code, followUp.body.msg).toBe(0);
     expect(followUp.body.data.status).toBe('queued');
@@ -493,12 +493,12 @@ describe('server-v2 /api prompts', () => {
     expect(active.body.code).toBe(0);
     const duplicate = await call('POST', `/api/sessions/${id}/prompts`, {
       prompt_id: 'stable-active', content: [{ type: 'text', text: 'duplicate' }],
-      plan_mode: true, swarm_mode: true, goal_control: 'cancel',
+      plan_mode: true, goal_control: 'cancel',
     });
     expect(duplicate.body.code).toBe(40938);
     const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'cancel me' }],
-      plan_mode: true, swarm_mode: true, goal_control: 'cancel',
+      plan_mode: true, goal_control: 'cancel',
     });
     expect(queued.body.code).toBe(0);
     expect(queued.body.data.status).toBe('queued');
@@ -515,7 +515,7 @@ describe('server-v2 /api prompts', () => {
     for (const invalid of [{ goal_objective: '   ' }, { goal_objective: 'a'.repeat(4001) }, { goal_control: 'resume' }]) {
       const result = await call('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'text', text: 'invalid' }], ...invalid,
-        permission_mode: 'yolo', plan_mode: true, swarm_mode: true,
+        permission_mode: 'yolo', plan_mode: true, 
       });
       expect(result.body.code, result.body.msg).toBe(40001);
     }
@@ -545,7 +545,7 @@ describe('server-v2 /api prompts', () => {
       ctx.block = true; await next();
     });
     const submitted = await call<{ status: string }>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'blocked' }], plan_mode: true, swarm_mode: true, goal_objective: 'blocked goal',
+      content: [{ type: 'text', text: 'blocked' }], plan_mode: true, goal_objective: 'blocked goal',
       skills: skills ? [{ name: 'kiki-ops' }] : undefined,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(0);
@@ -562,7 +562,7 @@ describe('server-v2 /api prompts', () => {
     const bind = vi.spyOn(main.accessor.get(IAgentProfileService), 'setModel').mockRejectedValueOnce(new Error('model unavailable'));
     const submitted = await call('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'failed' }], model: 'stub-alt',
-      plan_mode: true, swarm_mode: true, goal_objective: 'failed goal',
+      plan_mode: true, goal_objective: 'failed goal',
       skills: skills ? [{ name: 'kiki-ops' }] : undefined,
     });
     expect(submitted.body.code, submitted.body.msg).toBe(50001);

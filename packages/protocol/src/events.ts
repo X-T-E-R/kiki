@@ -578,7 +578,6 @@ export interface AgentStatusUpdatedEvent {
   readonly reservedContextTokens?: number;
   readonly contextUsage?: number;
   readonly planMode?: boolean;
-  readonly swarmMode?: boolean;
   readonly permission?: PermissionMode;
   readonly usage?: UsageStatus;
   readonly phase?: AgentPhase;
@@ -912,7 +911,6 @@ export interface SubagentSpawnedEvent {
   readonly parentAgentId?: string;
   readonly callerAgentId?: string;
   readonly description?: string;
-  readonly swarmIndex?: number;
   readonly runInBackground: boolean;
   /** Model alias the child is bound to: the profile pin or the dispatch's
    *  explicit choice. Optional so older producers/consumers stay
@@ -1723,7 +1721,6 @@ export const agentStatusUpdatedEventSchema = z.object({
   contextStrategySource: z.enum(['session', 'profile', 'global', 'default', 'subagent', 'executor']).optional(),
   contextUsage: z.number().optional(),
   planMode: z.boolean().optional(),
-  swarmMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),
   usage: usageStatusSchema.optional(),
   phase: agentPhaseSchema.optional(),
@@ -2013,7 +2010,6 @@ export const subagentSpawnedEventSchema = z.object({
   parentAgentId: z.string().optional(),
   callerAgentId: z.string().optional(),
   description: z.string().optional(),
-  swarmIndex: z.number().optional(),
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),

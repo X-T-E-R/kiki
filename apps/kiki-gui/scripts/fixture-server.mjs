@@ -2720,7 +2720,6 @@ class FixtureServer {
           thinking_level: 'high',
           permission: 'manual',
           plan_mode: false,
-          swarm_mode: false,
           context_tokens: 0,
           context_usage: 0,
         },

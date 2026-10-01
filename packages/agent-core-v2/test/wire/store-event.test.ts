@@ -18,7 +18,7 @@ import {
   SubagentSpawned,
   SubagentStarted,
 } from '#/session/subagent/mirrorAgentRun';
-import { SubagentSuspended } from '#/features/swarm/session/sessionSwarmService';
+import { SubagentSuspended } from '#/session/subagent/subagentSuspended';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -141,7 +141,6 @@ describe('durable observable events', () => {
       callerAgentId: 'main',
       description: 'Inspect files',
       userLabel: 'scanner',
-      swarmIndex: 0,
       runInBackground: true,
       model: 'k3',
       thinkingEffort: 'high',

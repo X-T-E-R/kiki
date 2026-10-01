@@ -1128,10 +1128,11 @@ describe('AgentTranscript', () => {
 
   it('meta.merge clears a mode badge on null and keeps absent keys', () => {
     const tx = new AgentTranscript('main');
-    tx.apply([{ op: 'meta.merge', meta: { modes: { plan: {}, swarm: {} } } }]);
+    tx.apply([{ op: 'meta.merge', meta: { modes: { plan: {} } } }]);
+    expect(tx.getMeta().modes).toEqual({ plan: {} });
+    tx.apply([{ op: 'meta.merge', meta: { modes: {} } }]);
+    expect(tx.getMeta().modes).toEqual({ plan: {} });
     tx.apply([{ op: 'meta.merge', meta: { modes: { plan: null } } }]);
-    expect(tx.getMeta().modes).toEqual({ swarm: {} });
-    tx.apply([{ op: 'meta.merge', meta: { modes: { swarm: null } } }]);
     expect(tx.getMeta().modes).toBeUndefined();
   });
 

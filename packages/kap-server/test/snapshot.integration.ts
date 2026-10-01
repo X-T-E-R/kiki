@@ -93,7 +93,8 @@ describe('server-v2 snapshot route enrichment', () => {
     const persistedAgent = {
       type: 'sub',
       parentAgentId: 'main',
-      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      labels: { parentAgentId: 'main' },
+      userLabel: 'Research API limits',
       displayName: 'explore',
       model: 'provider/metadata-model',
       thinkingEffort: 'high',
@@ -211,9 +212,8 @@ describe('server-v2 snapshot route enrichment', () => {
           description: 'task agent-1',
           status: 'running',
           subagent_phase: 'working',
-          parent_tool_call_id: 'tc_swarm_1',
+          parent_tool_call_id: 'tc_child_1',
           tool_call_count: 5,
-          swarm_index: 0,
           run_in_background: false,
           created_at: new Date(now).toISOString(),
         },
@@ -290,7 +290,6 @@ describe('server-v2 snapshot route enrichment', () => {
       permission_mode: 'yolo',
       plan_mode: true,
     });
-    expect(compact.session.agent_config.swarm_mode).toBeUndefined();
     expect(compact.context_tokens).toBe(12);
     expect(compact.max_context_tokens).toBe(128);
     expect(compact.pending_approvals).toEqual([
@@ -337,10 +336,9 @@ describe('server-v2 snapshot route enrichment', () => {
         kind: 'subagent',
         subagent_phase: 'working',
         parent_agent_id: 'main',
-        parent_tool_call_id: 'tc_swarm_1',
+        parent_tool_call_id: 'tc_child_1',
         label: 'Research API limits',
         tool_call_count: undefined,
-        swarm_index: 0,
         run_in_background: false,
       }),
     ]);
@@ -483,7 +481,6 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
       parentToolCallId: 'tc-snapshot-r3',
       description: `task ${childId}`,
       userLabel: `task ${childId}`,
-      swarmIndex: 0,
       runInBackground: false,
     } as unknown as Event2<any>);
 
@@ -1043,7 +1040,7 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const sub = await session.accessor.get(IAgentLifecycleService).create({
       agentId: 'agent-1',
       delegator: { kind: 'agent', agentId: 'main' },
-      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      labels: { parentAgentId: 'main' },
       userLabel: 'Research API limits',
     });
     sub.accessor.get(IAgentContextMemoryService).append(
@@ -1076,7 +1073,7 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
       type: 'sub',
       parentAgentId: 'main',
       delegator: { kind: 'agent', agentId: 'main' },
-      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      labels: { parentAgentId: 'main' },
       displayName: 'explore',
       userLabel: 'Research API limits',
       model: 'provider/subagent-model',

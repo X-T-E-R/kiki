@@ -204,7 +204,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       const requesterMeta = (await this.metadata.read()).agents?.[input.requesterAgentId];
       const relationshipLabels =
         input.delegator.kind === 'agent'
-          ? subagentLabels(input.delegator.agentId, { swarmItem: input.swarmItem })
+          ? subagentLabels(input.delegator.agentId)
           : {};
       const identityLabels =
         input.parentTurnId === undefined

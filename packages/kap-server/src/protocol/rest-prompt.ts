@@ -40,7 +40,6 @@ export const promptSubmissionSchema = z.object({
   permission_mode: promptPermissionModeSchema.optional(),
   plan_gate: promptPlanGateSchema.optional(),
   plan_mode: z.boolean().optional(),
-  swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
   goal_follow_up_timing: goalFollowUpTimingSchema.optional(),
@@ -60,7 +59,6 @@ export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   permission_mode: true,
   plan_gate: true,
   plan_mode: true,
-  swarm_mode: true,
   persona_greeting_reply: true,
   disabled_tools: true,
 });

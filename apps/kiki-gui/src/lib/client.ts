@@ -769,8 +769,8 @@ export type AgentTranscriptFrame =
       startedAt?: string;
       endedAt?: string;
       progress?: { text?: string };
-      /** Agents spawned by this call (AgentRun / AgentSwarm). */
-      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' | 'member' }[];
+      /** Agents spawned by this call. */
+      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' }[];
     }
   | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };
 
@@ -906,7 +906,6 @@ export interface AgentTranscriptMeta {
   };
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
-    readonly swarm?: { readonly trigger?: string };
   };
   readonly activity?: 'idle' | 'turn' | 'disposing' | 'unknown';
   readonly agent?: {

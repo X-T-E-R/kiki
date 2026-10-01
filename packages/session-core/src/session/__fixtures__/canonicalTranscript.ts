@@ -253,13 +253,6 @@ export function capabilityMatrixSnapshot(): AgentTranscriptSnapshot {
         at: FIXED_AT,
       },
       {
-        kind: 'marker',
-        markerId: 'swarm-1',
-        marker: 'swarm',
-        payload: { trigger: 'release' },
-        at: FIXED_AT,
-      },
-      {
         kind: 'turn',
         turnId: 't1',
         ordinal: 1,
@@ -370,7 +363,7 @@ export function capabilityMatrixSnapshot(): AgentTranscriptSnapshot {
       },
     ],
     meta: {
-      modes: { plan: { version: 2, reviewPath: 'agents/main/plan/p1/v2.md' }, swarm: { trigger: 'release' } },
+      modes: { plan: { version: 2, reviewPath: 'agents/main/plan/p1/v2.md' } },
       agent: { model: 'fixture/kiki-pro', thinkingEffort: 'high', phase: { kind: 'idle' } },
     },
   });

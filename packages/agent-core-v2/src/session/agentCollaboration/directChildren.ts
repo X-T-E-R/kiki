@@ -1,8 +1,5 @@
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
-import {
-  subagentParentAgentId,
-  subagentSwarmItem,
-} from '#/session/agentLifecycle/subagentMetadata';
+import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 
 import {
   COLLABORATION_AGENT_TYPE_LABEL,
@@ -16,7 +13,6 @@ export interface DirectChildAgent {
   readonly agentId: string;
   readonly name?: string;
   readonly profileName?: string;
-  readonly swarmItem?: string;
   readonly meta: AgentMeta;
 }
 
@@ -29,8 +25,8 @@ export function agentNameIssue(value: string): string | undefined {
 }
 
 /** The caller's direct child agents, read from the persisted relationship and name labels so every
- *  dispatch surface resolves the same working set: a caller owns the children it delegated to —
- *  started one at a time or as a swarm batch — and never reaches a grandchild. */
+ *  dispatch surface resolves the same working set: a caller owns the children it delegated to,
+ *  and never reaches a grandchild. */
 export function directChildAgents(
   agents: Readonly<Record<string, AgentMeta>> | undefined,
   callerAgentId: string,
@@ -43,7 +39,6 @@ export function directChildAgents(
           agentId,
           name: meta.labels?.[COLLABORATION_TASK_NAME_LABEL],
           profileName: meta.labels?.[COLLABORATION_AGENT_TYPE_LABEL] ?? meta.displayName,
-          swarmItem: subagentSwarmItem(meta),
           meta,
         },
       ];

@@ -27,7 +27,6 @@ export interface SubagentSpawnedPayload {
   readonly callerAgentId?: string;
   readonly description?: string;
   readonly userLabel?: string;
-  readonly swarmIndex?: number;
   readonly runInBackground: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
@@ -44,7 +43,6 @@ const subagentSpawnedSchema: z.ZodType<SubagentSpawnedPayload> = z.object({
   callerAgentId: z.string().optional(),
   description: z.string().optional(),
   userLabel: z.string().optional(),
-  swarmIndex: z.number().optional(),
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
@@ -140,7 +138,6 @@ export interface AgentRunSpawnedMeta {
   readonly parentToolCallUuid?: string;
   readonly description?: string;
   readonly userLabel?: string;
-  readonly swarmIndex?: number;
   readonly runInBackground?: boolean;
   readonly model?: string;
   readonly taskId?: string;
@@ -177,7 +174,6 @@ export function emitAgentRunSpawned(
       callerAgentId: requester.id,
       description: meta.description,
       userLabel: meta.userLabel ?? meta.description,
-      swarmIndex: meta.swarmIndex,
       runInBackground: meta.runInBackground ?? false,
       model: meta.model,
       thinkingEffort: childProfile?.getEffectiveThinkingLevel(),

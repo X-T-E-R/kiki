@@ -43,7 +43,7 @@ export interface TranscriptTask {
   readonly subagentName?: string;
   /** Human-readable one-liner (command line, agent description, …). */
   readonly description?: string;
-  /** For kind 'subagent' / swarm members: the spawned agent's transcript to subscribe. */
+  /** For kind 'subagent': the spawned agent's transcript to subscribe. */
   readonly agentId?: AgentId;
   /** Tail of captured output; appended via `append { target: 'task' }`. */
   readonly outputTail: string;

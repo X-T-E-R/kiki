@@ -317,7 +317,7 @@ export class StreamingUIController {
       existingComponent.updateToolCall(toolCall);
     } else if (existing === undefined) {
       this.finalizeLiveTextBuffers('tool');
-      if (!isAgentRunTool(toolCall.name) && toolCall.name !== 'AgentSwarm') {
+      if (!isAgentRunTool(toolCall.name)) {
         this.onToolCallStart(toolCall);
       }
     }
@@ -787,7 +787,7 @@ export class StreamingUIController {
     const existingComponent = this._pendingToolComponents.get(id);
     if (existingComponent !== undefined) {
       existingComponent.updateToolCall(toolCall);
-    } else if (!isAgentRunTool(toolCall.name) && toolCall.name !== 'AgentSwarm') {
+    } else if (!isAgentRunTool(toolCall.name)) {
       this.onToolCallStart(toolCall);
     }
   }

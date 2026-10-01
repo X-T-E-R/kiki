@@ -26,14 +26,12 @@ function childMeta(options: {
   readonly parent?: string;
   readonly name?: string;
   readonly profile?: string;
-  readonly swarmItem?: string;
 }): AgentMeta {
   const labels: Record<string, string> = {
     parentAgentId: options.parent ?? 'main',
   };
   if (options.name !== undefined) labels[COLLABORATION_TASK_NAME_LABEL] = options.name;
   if (options.profile !== undefined) labels[COLLABORATION_AGENT_TYPE_LABEL] = options.profile;
-  if (options.swarmItem !== undefined) labels['swarmItem'] = options.swarmItem;
   return { type: 'sub', labels };
 }
 
@@ -116,11 +114,11 @@ describe('AgentListTool', () => {
     'reports an untracked %s execution as running',
     async (state) => {
       const tool = makeTool({
-        agents: { worker: childMeta({ swarmItem: 'src/a.ts' }) },
+        agents: { worker: childMeta({}) },
         execution: { worker: state },
       });
       expect((await listAgents(tool)).agents[0]).toMatchObject({
-        agent_id: 'worker', status: 'running', swarm_item: 'src/a.ts',
+        agent_id: 'worker', status: 'running',
       });
     },
   );
@@ -146,20 +144,19 @@ describe('AgentListTool', () => {
     expect((await listAgents(tool)).agents).toEqual([]);
     expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('errored');
   });
-  it('lists a swarm child that has no background task', async () => {
+  it('lists a child that has no background task', async () => {
     const tool = makeTool({
       agents: {
-        'swarm-1': childMeta({ swarmItem: 'src/a.ts', profile: 'coder' }),
+        'untracked-1': childMeta({ profile: 'coder' }),
       },
     });
 
     expect(await listAgents(tool)).toEqual({
       agents: [
         {
-          agent_id: 'swarm-1',
+          agent_id: 'untracked-1',
           profile: 'coder',
           status: 'untracked',
-          swarm_item: 'src/a.ts',
         },
       ],
     });

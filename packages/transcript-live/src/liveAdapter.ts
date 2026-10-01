@@ -51,7 +51,7 @@ import type {
 } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import type { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
 import type { PlanRevision } from '@kiki/agent-core-v2/features/plan/planOps';
-import type { SubagentSuspended } from '@kiki/agent-core-v2/features/swarm/session/sessionSwarmService';
+import type { SubagentSuspended } from '@kiki/agent-core-v2/session/subagent/subagentSuspended';
 import type { CronFired } from '@kiki/agent-core-v2/session/cron/cronOps';
 import type {
   SubagentCompleted,
@@ -1249,7 +1249,6 @@ export class AgentTranscriptLiveAdapter {
     name?: string;
     parentToolCallId: string;
     description?: string;
-    swarmIndex?: number;
     runInBackground: boolean;
     taskId?: string;
   }): TranscriptOperation[] {
@@ -1292,7 +1291,7 @@ export class AgentTranscriptLiveAdapter {
     if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
       const ref: AgentRef = {
         agentId: event.subagentId,
-        role: event.swarmIndex !== undefined ? 'member' : 'child',
+        role: 'child',
       };
       const frame: ToolCallFrame = {
         ...hit.frame,
@@ -1410,7 +1409,6 @@ export class AgentTranscriptLiveAdapter {
 
   private onAgentStatusUpdated(event: {
     planMode?: boolean;
-    swarmMode?: boolean;
     model?: string;
     thinkingEffort?: string;
     usage?: AgentUsageMeta;
@@ -1420,7 +1418,7 @@ export class AgentTranscriptLiveAdapter {
     permission?: 'manual' | 'auto' | 'review' | 'yolo';
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
-    const modes: { plan?: Record<string, never> | null; swarm?: Record<string, never> | null } = {};
+    const modes: { plan?: Record<string, never> | null } = {};
     if (event.planMode === true) {
       modes.plan = {};
       this.planModeActive = true;
@@ -1428,9 +1426,7 @@ export class AgentTranscriptLiveAdapter {
       modes.plan = null;
       this.planModeActive = false;
     }
-    if (event.swarmMode === true) modes.swarm = {};
-    else if (event.swarmMode === false) modes.swarm = null;
-    if (modes.plan !== undefined || modes.swarm !== undefined) {
+    if (modes.plan !== undefined) {
       ops.push({ op: 'meta.merge', meta: { modes } });
     }
     const agent: {

@@ -189,7 +189,7 @@ describe('AgentToolExecutorService', () => {
     executor.onBeforeExecuteTool(approval);
     const rejected = [
       ['Bash', 'builtin'], ['Write', 'builtin'], ['Edit', 'builtin'], ['Skill', 'builtin'],
-      ['AgentRun', 'builtin'], ['AgentSwarm', 'builtin'], ['AgentSend', 'builtin'],
+      ['AgentRun', 'builtin'], ['AgentSend', 'builtin'],
       ['Read', 'user'], ['Read', 'mcp'], ['mcp__example__Read', 'mcp'],
       ['UnknownFutureTool', 'builtin'], ['SelectTools', 'builtin'],
     ] as const;

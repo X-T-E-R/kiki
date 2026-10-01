@@ -622,18 +622,6 @@ export class TranscriptWireAdapter {
         this.marker(record, ordinal, 'plan.revision'),
       ];
     }
-    if (record.type === 'swarm_mode.enter') {
-      return [
-        { op: 'meta.merge', meta: { modes: { swarm: {} } } },
-        this.marker(record, ordinal, 'swarm.enter'),
-      ];
-    }
-    if (record.type === 'swarm_mode.exit') {
-      return [
-        { op: 'meta.merge', meta: { modes: { swarm: null } } },
-        this.marker(record, ordinal, 'swarm.exit'),
-      ];
-    }
     if (record.type === 'task.started' || record.type === 'task.terminated') {
       const info = objectOf(record['info']);
       const taskId = stringOf(info?.['taskId']);
@@ -774,7 +762,7 @@ export class TranscriptWireAdapter {
             ...(hit.frame.agentRefs ?? []),
             {
               agentId: subagentId,
-              role: numberOf(record['swarmIndex']) === undefined ? 'child' : 'member',
+              role: 'child',
             },
           ],
         };

@@ -437,14 +437,13 @@ export class AgentTranscriptDraft {
     const modes = meta.modes !== undefined
       ? {
           plan: meta.modes.plan === null ? undefined : (meta.modes.plan ?? this.#meta.modes?.plan),
-          swarm: meta.modes.swarm === null ? undefined : (meta.modes.swarm ?? this.#meta.modes?.swarm),
         }
       : this.#meta.modes;
     const agent = meta.agent !== undefined ? { ...this.#meta.agent, ...meta.agent } : this.#meta.agent;
     const next: TranscriptMeta = {
       goal: meta.goal === null ? undefined : (meta.goal ?? this.#meta.goal),
       activity: meta.activity ?? this.#meta.activity,
-      modes: modes !== undefined && modes.plan === undefined && modes.swarm === undefined ? undefined : modes,
+      modes: modes !== undefined && modes.plan === undefined ? undefined : modes,
       agent,
     };
     if (transcriptValueEquals(next, this.#meta)) return { changed: false, toolCallCountDelta: 0 };

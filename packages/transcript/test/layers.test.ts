@@ -247,7 +247,7 @@ describe('ViewRegistry', () => {
   it('dispatches on view ?? name, origin.kind and marker keys', () => {
     const registry = new ViewRegistry<string>({ fallbackTool: 'generic' });
     registry.registerTool('read', 'readRenderer');
-    registry.registerTool('swarm', 'swarmRenderer');
+    registry.registerTool('custom', 'customRenderer');
     registry.registerInput('cron', 'cronInput');
     registry.registerMarker('goal', 'goalMarker');
 
@@ -255,8 +255,8 @@ describe('ViewRegistry', () => {
       registry.resolveTool({ kind: 'tool', frameId: 'f', toolCallId: 'c1', name: 'Read', state: 'done' }),
     ).toBe('readRenderer');
     expect(
-      registry.resolveTool({ kind: 'tool', frameId: 'f', toolCallId: 'c2', name: 'AgentSwarm', view: 'swarm', state: 'running' }),
-    ).toBe('swarmRenderer');
+      registry.resolveTool({ kind: 'tool', frameId: 'f', toolCallId: 'c2', name: 'Custom', view: 'custom', state: 'running' }),
+    ).toBe('customRenderer');
     expect(
       registry.resolveTool({ kind: 'tool', frameId: 'f', toolCallId: 'c3', name: 'Bash', state: 'running' }),
     ).toBe('generic');
@@ -1342,7 +1342,7 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTodo('todo')?.notesMeta).toBeUndefined();
   });
 
-  it('folds todo, goal, plan, swarm, task, and interruption facts through the shared reducer', () => {
+  it('folds todo, goal, plan, task, and interruption facts through the shared reducer', () => {
     const transcript = replay([
       { type: 'tools.update_store', key: 'todo', value: [{ title: 'old', status: 'pending' }], time: 1 },
       {
@@ -1359,8 +1359,6 @@ describe('TranscriptWireAdapter', () => {
       { type: 'goal.update', status: 'blocked', tokensUsed: 120, budgetLimits: { tokenBudget: 500 }, time: 4 },
       { type: 'plan_mode.enter', id: 'plan-1', time: 5 },
       { type: 'plan.revision', id: 'plan-1', path: 'agents/main/plan/v2.md', version: 2, time: 6 },
-      { type: 'swarm_mode.enter', time: 7 },
-      { type: 'swarm_mode.exit', time: 8 },
       {
         type: 'task.started',
         info: { taskId: 'shell-1', kind: 'process', status: 'running', description: 'test', startedAt: 9 },
@@ -1407,7 +1405,7 @@ describe('TranscriptWireAdapter', () => {
     ).toEqual(['shell-1', 'agent-1']);
     expect(
       transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.marker),
-    ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'swarm.enter', 'swarm.exit', 'interruption']);
+    ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'interruption']);
   });
 
   it('projects reviewer provenance from an approval resolution', () => {
@@ -2381,7 +2379,6 @@ describe('TranscriptWireAdapter', () => {
         name: 'smoke_explore',
         parentToolCallId: 'agent-call',
         description: 'scan files',
-        swarmIndex: 0,
         runInBackground: true,
         taskId: 'agent-task',
         time: 4_100,
@@ -2426,7 +2423,6 @@ describe('TranscriptWireAdapter', () => {
         name: 'smoke_explore',
         parentToolCallId: 'agent-call',
         description: 'scan files',
-        swarmIndex: 0,
         runInBackground: true,
         taskId: 'agent-task',
         time: 4_100,
@@ -2470,7 +2466,7 @@ describe('TranscriptWireAdapter', () => {
     ]);
     expect(frames.find((frame) => frame.kind === 'tool')).toMatchObject({
       agentRefs: [
-        { agentId: 'child-1', role: 'member' },
+        { agentId: 'child-1', role: 'child' },
         { agentId: 'child-2', role: 'child' },
       ],
     });

@@ -48,10 +48,6 @@ describe('built-in slash command registry', () => {
     expect(resolveSlashCommandAvailability(plan!, 'clear')).toBe('idle-only');
   });
 
-  it('does not expose the retired swarm command', () => {
-    expect(findBuiltInSlashCommand('swarm')).toBeUndefined();
-  });
-
   it('offers add-dir list and directory argument completions', () => {
     const values = (prefix: string): string[] | null => {
       const items = addDirArgumentCompletions(prefix);

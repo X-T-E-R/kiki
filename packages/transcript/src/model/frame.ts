@@ -86,8 +86,7 @@ export interface ToolFrameProgress {
 
 export interface AgentRef {
   readonly agentId: AgentId;
-  /** 'member' marks one child of an agent group (swarm); default is 'child'. */
-  readonly role?: 'child' | 'member';
+  readonly role?: 'child';
 }
 
 export interface ToolCallFrame {
@@ -95,11 +94,11 @@ export interface ToolCallFrame {
   readonly frameId: FrameId;
   readonly part?: TranscriptPartIdentity;
   readonly toolCallId: string;
-  /** Engine tool name, e.g. 'Read' / 'Bash' / 'Agent' / 'AgentSwarm'. */
+  /** Engine tool name, e.g. 'Read' / 'Bash' / 'Agent'. */
   readonly name: string;
   /**
    * Optional view hint. Dispatch key at the view layer is `view ?? name`, so
-   * the server can suggest a renderer (e.g. 'swarm') without a new frame kind.
+   * the server can suggest a renderer without a new frame kind.
    */
   readonly view?: string;
   readonly state: ToolFrameState;
@@ -128,7 +127,7 @@ export interface ToolCallFrame {
   readonly approvalId?: InteractionId;
   /** Todo entity this call mutates (TodoList writes). */
   readonly todoId?: TodoId;
-  /** Agents spawned by this call (Agent tool / AgentSwarm members). */
+  /** Agents spawned by this call. */
   readonly agentRefs?: readonly AgentRef[];
 }
 

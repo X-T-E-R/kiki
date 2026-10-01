@@ -92,7 +92,6 @@ function toEntry(child: DirectChildAgent, status: AgentListStatus): AgentListEnt
     name: child.name,
     profile: child.profileName,
     status,
-    swarm_item: child.swarmItem,
   };
 }
 

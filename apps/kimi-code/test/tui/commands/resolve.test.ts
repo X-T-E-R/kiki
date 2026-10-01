@@ -226,13 +226,6 @@ describe('resolveSlashCommandInput', () => {
       input: '/does-not-exist arg',
     });
   });
-
-  it('treats retired /swarm as unknown slash input', () => {
-    expect(resolve('/swarm Ship feature X')).toEqual({
-      kind: 'message',
-      input: '/swarm Ship feature X',
-    });
-  });
 });
 
 describe('goal command resolution', () => {

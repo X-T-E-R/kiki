@@ -272,8 +272,6 @@ function applyOp(snapshot, op) {
         const modes = { ...(next.modes ?? {}) };
         if (op.meta.modes.plan === null) delete modes.plan;
         else if (op.meta.modes.plan !== undefined) modes.plan = op.meta.modes.plan;
-        if (op.meta.modes.swarm === null) delete modes.swarm;
-        else if (op.meta.modes.swarm !== undefined) modes.swarm = op.meta.modes.swarm;
         next.modes = modes;
       }
       if (op.meta.activity !== undefined) next.activity = op.meta.activity;
@@ -1341,7 +1339,6 @@ export class TranscriptProjector {
                 },
                 modes: {
                   plan: payload.planMode === true ? {} : payload.planMode === false ? null : undefined,
-                  swarm: payload.swarmMode === true ? {} : payload.swarmMode === false ? null : undefined,
                 },
               },
             },

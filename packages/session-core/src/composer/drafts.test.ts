@@ -241,7 +241,6 @@ describe('persisted /new draft scalars', () => {
     permissionMode: 'yolo',
     planMode: true,
     planGate: 'gated',
-    swarmMode: true,
     goalObjective: 'Do not restore this objective',
     base64: 'aW1hZ2U=',
     attachments: [{

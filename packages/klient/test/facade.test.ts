@@ -675,7 +675,7 @@ describe('agent mcp / compaction routing', () => {
 });
 
 describe('agent domain routing', () => {
-  it('routes context, undo, plugin, swarm, task, MCP, and status reads through contracts', async () => {
+  it('routes context, undo, plugin, task, MCP, and status reads through contracts', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
     const agent = klient.session('s1').agent('child');

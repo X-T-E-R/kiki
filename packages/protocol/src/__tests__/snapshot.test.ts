@@ -149,7 +149,6 @@ describe('rest/snapshot — session snapshot', () => {
           subagent_phase: 'working',
           profile: 'explore',
           parent_tool_call_id: 'call_1',
-          swarm_index: 0,
           run_in_background: false,
         },
         {
@@ -164,7 +163,6 @@ describe('rest/snapshot — session snapshot', () => {
           refreshing_until: '2026-06-11T10:32:00.000Z',
           output_preview: 'done',
           subagent_phase: 'completed',
-          swarm_index: 1,
         },
         {
           id: 'agent_3',

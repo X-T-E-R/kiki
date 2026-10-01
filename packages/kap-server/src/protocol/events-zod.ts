@@ -77,7 +77,7 @@ import type {
   SubagentSpawnedPayload,
   SubagentStartedPayload,
 } from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
-import type { SubagentSuspendedPayload } from '@kiki/agent-core-v2/features/swarm/session/sessionSwarmService';
+import type { SubagentSuspendedPayload } from '@kiki/agent-core-v2/session/subagent/subagentSuspended';
 import type { ToolUpdate } from '@kiki/agent-core-v2/tool/toolContract';
 
 import { contextBreakdownSchema } from './context-usage';
@@ -574,7 +574,6 @@ export const agentStatusUpdatedEventSchema = z.object({
   contextUsage: z.number().optional(),
   contextBreakdown: contextBreakdownSchema.optional(),
   planMode: z.boolean().optional(),
-  swarmMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),
   usage: usageStatusSchema.optional(),
   phase: agentPhaseSchema.optional(),
@@ -933,7 +932,6 @@ export const subagentSpawnedEventSchema = z.object({
   callerAgentId: z.string().optional(),
   description: z.string().optional(),
   userLabel: z.string().optional(),
-  swarmIndex: z.number().optional(),
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),

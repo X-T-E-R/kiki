@@ -650,7 +650,7 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
-  it('anchors Agent/AgentSwarm entries on the real tool frame agentRefs', () => {
+  it('anchors Agent entries on the real tool frame agentRefs', () => {
     const snapshots = new Map([
       [
         'main',
@@ -1840,7 +1840,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
-  it('projects attachments, steer, shell, turn tail, origin agent, and plan/swarm/taskref markers', () => {
+  it('projects attachments, steer, shell, turn tail, origin agent, and plan/taskref markers', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -1860,13 +1860,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
     expect(kinds).toContain('notice');
     expect(projected.blocks.some((block) => block.id.includes('plan-1'))).toBe(true);
-    expect(projected.blocks.some((block) => block.id.includes('swarm-1'))).toBe(true);
     expect(projected.blocks.some((block) => block.kind === 'subagent' && block.subagentId === CHILD_AGENT_ID)).toBe(
       true,
     );
     expect(projected.blocks.some((block) => block.id.includes(`ref-${CHILD_AGENT_ID}`))).toBe(false);
     expect(projected.planMode).toBe(true);
-    expect(projected.swarmMode).toBe(true);
   });
 
   it('does not render a second user bubble for a prompt echo with the same message id', () => {

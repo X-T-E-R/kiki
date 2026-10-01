@@ -15,8 +15,6 @@ export function resolveSubagentDisplayName(
 export function subagentUserLabel(meta: AgentMeta | undefined): string | undefined {
   return firstNonEmpty(
     meta?.userLabel,
-    meta?.labels?.['swarmItem'],
-    meta?.swarmItem,
     meta?.labels?.['collaborationTaskName'],
   );
 }

@@ -134,7 +134,6 @@ describe('createSessionRequestSchema', () => {
         thinking: 'high',
         permission_mode: 'yolo',
         plan_mode: true,
-        swarm_mode: false,
       },
     });
     expect(parsed.agent_config).toEqual({
@@ -143,7 +142,6 @@ describe('createSessionRequestSchema', () => {
       thinking: 'high',
       permission_mode: 'yolo',
       plan_mode: true,
-      swarm_mode: false,
     });
   });
 });
@@ -452,7 +450,6 @@ describe('sessionStatusResponseSchema', () => {
       thinking_level: 'on',
       permission: 'ask',
       plan_mode: true,
-      swarm_mode: false,
       context_tokens: 1024,
       max_context_tokens: 128000,
       context_usage: 0.008,
@@ -469,7 +466,6 @@ describe('sessionStatusResponseSchema', () => {
       thinking_level: 'off',
       permission: 'auto',
       plan_mode: false,
-      swarm_mode: false,
       context_tokens: 0,
       max_context_tokens: 0,
       context_usage: 0,
@@ -484,7 +480,6 @@ describe('sessionStatusResponseSchema', () => {
       thinking_level: 'off',
       permission: 'auto',
       plan_mode: false,
-      swarm_mode: false,
       context_tokens: 0,
       context_usage: 0,
     });
@@ -497,7 +492,6 @@ describe('sessionStatusResponseSchema', () => {
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
-        swarm_mode: false,
         context_tokens: 0,
         max_context_tokens: 0,
         context_usage: 0,
@@ -512,7 +506,6 @@ describe('sessionStatusResponseSchema', () => {
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
-        swarm_mode: false,
         context_tokens: 0,
         max_context_tokens: 0,
         context_usage: 0,
@@ -527,7 +520,6 @@ describe('sessionStatusResponseSchema', () => {
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
-        swarm_mode: false,
         context_tokens: -1,
         max_context_tokens: 0,
         context_usage: 0,
@@ -542,7 +534,6 @@ describe('sessionStatusResponseSchema', () => {
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
-        swarm_mode: false,
         context_tokens: 10,
         max_context_tokens: 5,
         context_usage: 2,
@@ -616,7 +607,6 @@ describe('undoSessionResponseSchema', () => {
         thinking_level: 'auto',
         permission: 'manual',
         plan_mode: false,
-        swarm_mode: false,
         context_tokens: 10,
         max_context_tokens: 100,
         context_usage: 0.1,

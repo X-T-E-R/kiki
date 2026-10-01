@@ -12,10 +12,9 @@ export interface GoalMeta {
   readonly budgetLimit?: number;
 }
 
-/** Mode badges (plan mode, swarm mode) mirrored at session level. */
+/** Mode badges (plan mode) mirrored at session level. */
 export interface ModesMeta {
   readonly plan?: { readonly reviewPath?: string; readonly version?: number };
-  readonly swarm?: { readonly trigger?: string };
 }
 
 /**
@@ -25,7 +24,6 @@ export interface ModesMeta {
  */
 export interface ModesMetaMerge {
   readonly plan?: { readonly reviewPath?: string; readonly version?: number } | null;
-  readonly swarm?: { readonly trigger?: string } | null;
 }
 
 export type ActivityMeta = 'idle' | 'turn' | 'disposing' | 'unknown';

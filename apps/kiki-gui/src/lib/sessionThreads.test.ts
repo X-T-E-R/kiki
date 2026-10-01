@@ -38,7 +38,7 @@ describe('sessionRelationOf', () => {
     expect(sessionRelationOf(session('b', { parent_session_id: 'a', child_session_kind: 'child' })))
       .toEqual({ kind: 'branch', parentId: 'a' });
     expect(sessionRelationOf(session('b', { parent_session_id: 'a' }))).toBeUndefined();
-    expect(sessionRelationOf(session('b', { parent_session_id: 'a', child_session_kind: 'swarm' }))).toBeUndefined();
+    expect(sessionRelationOf(session('b', { parent_session_id: 'a', child_session_kind: 'thread' }))).toBeUndefined();
   });
 
   it('ignores missing, empty, and self-referential parents', () => {

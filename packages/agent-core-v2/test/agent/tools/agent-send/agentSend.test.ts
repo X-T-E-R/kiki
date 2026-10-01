@@ -17,7 +17,7 @@ const CALLER_ID = 'main';
 const ANON_ID = 'agt_anon1';
 const NAMED_ID = 'agt_named';
 const NAMED_NAME = 'researcher';
-const SWARM_ID = 'agt_swarm1';
+const LABELED_ID = 'agt_labeled1';
 const GRANDCHILD_ID = 'agt_grand1';
 const DIRECT_CHILD_ID = 'agt_child1';
 const TOOL_CALL_ID = 'toolu_send_1';
@@ -112,16 +112,16 @@ describe('AgentSend', () => {
     );
   });
 
-  it('queues a message to an AgentSwarm child addressed by agent id', async () => {
+  it('queues a message to a direct child addressed by agent id when it carries an extra label', async () => {
     const { tool, send } = createTool({
       agents: {
-        [SWARM_ID]: child(CALLER_ID, { swarmItem: 'src/a.ts' }),
+        [LABELED_ID]: child(CALLER_ID, { workItem: 'src/a.ts' }),
       },
     });
 
     const result = await executeTool(
       tool,
-      context({ target: SWARM_ID, message: 'skip generated fixtures' }),
+      context({ target: LABELED_ID, message: 'skip generated fixtures' }),
     );
 
     expect(result.isError).toBeFalsy();
@@ -129,12 +129,12 @@ describe('AgentSend', () => {
       message_id: 'msg-1',
       status: 'queued',
       deduplicated: false,
-      target: { task_name: SWARM_ID, agent_id: SWARM_ID },
+      target: { task_name: LABELED_ID, agent_id: LABELED_ID },
     });
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
-        targetAgentId: SWARM_ID,
-        targetTaskName: SWARM_ID,
+        targetAgentId: LABELED_ID,
+        targetTaskName: LABELED_ID,
       }),
     );
   });
@@ -259,11 +259,11 @@ describe('AgentSend', () => {
 
 function child(
   parentAgentId: string,
-  options: { readonly name?: string; readonly swarmItem?: string } = {},
+  options: { readonly name?: string; readonly workItem?: string } = {},
 ): AgentMeta {
   const labels: Record<string, string> = { parentAgentId };
   if (options.name !== undefined) labels[COLLABORATION_TASK_NAME_LABEL] = options.name;
-  if (options.swarmItem !== undefined) labels['swarmItem'] = options.swarmItem;
+  if (options.workItem !== undefined) labels['workItem'] = options.workItem;
   return {
     type: 'sub',
     delegator: { kind: 'agent', agentId: parentAgentId },

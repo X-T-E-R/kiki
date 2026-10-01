@@ -161,7 +161,7 @@ export type ToolStatus = 'running' | 'done' | 'error' | 'stopped';
 
 export interface ToolAgentRef {
   readonly agentId: string;
-  readonly role?: 'child' | 'member';
+  readonly role?: 'child';
 }
 
 export interface ToolBlock {
@@ -534,7 +534,6 @@ export interface SessionViewState {
   readonly thinkingEffort: string | undefined;
   readonly permissionMode: PermissionMode | undefined;
   readonly planMode: boolean;
-  readonly swarmMode: boolean;
   readonly goal: GoalSnapshot | null | undefined;
   readonly goalUpdatedAt: string | undefined;
   readonly contextTokens: number | undefined;
@@ -611,7 +610,6 @@ export function createViewState(sessionId: string): SessionViewState {
     thinkingEffort: undefined,
     permissionMode: undefined,
     planMode: false,
-    swarmMode: false,
     goal: undefined,
     goalUpdatedAt: undefined,
     contextTokens: undefined,

@@ -12,7 +12,6 @@ export interface AgentMeta {
   readonly delegator?: DelegatorRef;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
-  readonly swarmItem?: string;
   readonly displayName?: string;
   readonly userLabel?: string;
   readonly model?: string;

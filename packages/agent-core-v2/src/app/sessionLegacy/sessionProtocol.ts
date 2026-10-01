@@ -39,19 +39,16 @@ export const sessionAgentConfigSchema = z.object({
   persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
-  swarm_mode: z.boolean().optional(),
 });
 export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
 
-/** Strict except for the retired `swarm_mode` key, accepted and ignored for
- *  old clients. Other unapplied keys are validation errors. */
+/** Strict: unapplied keys are validation errors. */
 export const sessionAgentConfigPartialSchema = z.strictObject({
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
-  swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
 });

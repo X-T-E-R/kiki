@@ -1213,7 +1213,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     const agentMeta = Object.freeze({
       type: 'sub' as const,
       parentAgentId: 'main',
-      labels: Object.freeze({ parentAgentId: 'main', swarmItem: 'review' }),
+      labels: Object.freeze({ parentAgentId: 'main', workItem: 'review' }),
     });
     const source = Object.freeze({ type: 'turn' as const, turnId: 7, step: 2 });
     const requester = createRequester({ value: 0 }, null, [], undefined, { providerType: 'kimi' });
@@ -1230,7 +1230,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     expect(agentMeta).toEqual({
       type: 'sub',
       parentAgentId: 'main',
-      labels: { parentAgentId: 'main', swarmItem: 'review' },
+      labels: { parentAgentId: 'main', workItem: 'review' },
     });
     expect(captured[0]?.cacheKey).toBe('canonical-session');
     expect(captured[0]?.headers?.['X-Msh-Device-Id']).not.toBe('canonical-session');

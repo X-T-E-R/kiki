@@ -1,10 +1,10 @@
 import { commitAssistant, sessionRecord, streamSteps, turnEnd, workChanged } from './helpers.mjs';
 
-const SID = 'session_fixture_goal_swarm';
-const ANSWER = 'Swarm mode is on and the goal state is live.';
+const SID = 'session_fixture_goal';
+const ANSWER = 'Goal mode is on and the goal state is live.';
 
 export default {
-  sessions: [sessionRecord(SID, { title: 'Fixture: goal + swarm' })],
+  sessions: [sessionRecord(SID, { title: 'Fixture: goal' })],
   snapshots: {
     [SID]: {
       messages: [],
@@ -57,12 +57,6 @@ export default {
   onPrompt: [
     { frame: { type: 'turn.started', payload: { turnId: 3, origin: { kind: 'user' } } } },
     workChanged(true),
-    {
-      frame: {
-        type: 'agent.status.updated',
-        payload: { swarmMode: true },
-      },
-    },
     {
       frame: {
         type: 'goal.updated',
