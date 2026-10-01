@@ -1,0 +1,13 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`agent message delivery receipt > validates the durable sender marker schema 1`] = `
+{
+  "agentId": "main",
+  "deliveredAt": "2026-01-01T00:00:02.000Z",
+  "messageId": "message-1",
+  "sessionId": "session-1",
+  "status": "delivered",
+  "targetAgentId": "agent-child",
+  "type": "agent_message.delivered",
+}
+`;
