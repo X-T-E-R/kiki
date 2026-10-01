@@ -43,6 +43,7 @@ import {
   buildAgentForest,
   createViewState,
   projectAgentTranscriptView,
+  sessionAgentForestFromAgentSnapshots,
   type AgentForest,
   type Block,
   type DisplayNode,
@@ -58,6 +59,10 @@ import {
   appendOps,
   childAppendOps,
   childResetSnapshot,
+  childFailureWireRecords,
+  childCancellationWireRecords,
+  childRetryWireRecords,
+  replayAgentWire,
   completeTurnOps,
   olderTurnSnapshot,
   opsEvent,
@@ -3450,12 +3455,13 @@ describe('subagent timeline dual form (G-4)', () => {
     blocks: Block[],
     opened: string[],
     forest?: AgentForest,
+    state?: SessionViewState,
   ): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
     await renderSettled(
       root,
       <Transcript
-        state={transcriptState(blocks)}
+        state={state ?? transcriptState(blocks)}
         onLoadOlder={() => Promise.resolve(false)}
         onResolveApproval={() => noopActions()}
         onAnswerQuestion={() => noopActions()}
@@ -3484,6 +3490,46 @@ describe('subagent timeline dual form (G-4)', () => {
       flushSync(() => { click(rows[0]!.querySelector('button')!); });
     });
     expect(opened).toEqual(['agent-1']);
+  });
+
+  it('keeps the subagent turn failure on its card after switching away and reopening cold state', async () => {
+    const { root, container } = makeRoot();
+    const props = {
+      onLoadOlder: () => Promise.resolve(false),
+      onResolveApproval: () => noopActions(),
+      onAnswerQuestion: () => noopActions(),
+      onDismissQuestion: () => noopActions(),
+    };
+    const block = lifecycleSubagentBlock(CHILD_AGENT_ID, { status: 'running', name: 'Researcher' });
+    for (const cold of [false, true]) {
+      const child = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords, cold);
+      const forest = sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, child]]));
+      await renderSettled(root, <Transcript key={cold ? 'reopened' : 'live'}
+        state={transcriptState([block])} forest={forest} {...props} />);
+      const card = container.querySelector(`[data-subagent-id="${CHILD_AGENT_ID}"]`);
+      expect(card?.querySelector('[data-agent-turn-outcome="failed"]')?.textContent)
+        .toContain('Last turn failed · Connection closed');
+      await renderSettled(root, <Transcript key="other-session" state={transcriptState([])} {...props} />);
+      expect(container.querySelector('[data-agent-turn-outcome]')).toBeNull();
+    }
+  });
+
+  it('renders both the earlier failure and later cancellation from a fresh child transcript', async () => {
+    const snapshot = replayAgentWire(CHILD_AGENT_ID, childCancellationWireRecords, true);
+    const state = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, snapshot);
+    const container = await renderWithAgents([...state.blocks], [], undefined, state);
+    expect(container.textContent).toContain('Turn failed: Connection closed');
+    expect(container.textContent).toContain('Turn cancelled');
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+  });
+
+  it('shows only the last failed attempt when an unfinished retry is recovered cold', async () => {
+    const snapshot = replayAgentWire(CHILD_AGENT_ID, childRetryWireRecords, true);
+    const state = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, snapshot);
+    const container = await renderWithAgents([...state.blocks], [], undefined, state);
+    expect(container.textContent).toContain('Last attempt failed (APIConnectionError, 2/5): Connection closed');
+    expect(container.textContent).not.toContain('retry 2/5 in');
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
   });
 
   it('renders one subagent as one line: the card absorbs its lifecycle rows and dispatch call', async () => {

@@ -2603,9 +2603,15 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it('rebuilds pre-delivery projection checkpoints instead of reviving their phantom turns', async () => {
+    it.each([1, 2])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${[
+        { type: 'turn.prompt', turnId: 1, origin: { kind: 'other' }, time: 10_000 },
+        { type: 'turn.step.retrying', turnId: 1, step: 1, failedAttempt: 2, nextAttempt: 3,
+          maxAttempts: 5, delayMs: 100, errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: 11_000 },
+        { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: 12_000 },
+      ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
       const starts: (number | undefined)[] = [];
@@ -2624,9 +2630,14 @@ describe('TranscriptService live integration', () => {
         const query = core.accessor.get(IQueryStore);
         const key = 'ws\0s1\0main';
         const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot }>('__transcript_projection_checkpoint__', key);
-        expect(checkpoint?.format).toBe(2);
+        const recoveredTurn = expected.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+        expect(recoveredTurn).toMatchObject({ state: 'cancelled' });
+        expect(recoveredTurn?.kind === 'turn' && recoveredTurn.steps.find((step) => step.retry !== undefined)?.retry)
+          .toMatchObject({ failedAttempt: 2, nextAttempt: 3, maxAttempts: 5, delayMs: 100,
+            errorName: 'APIConnectionError', errorMessage: 'Connection closed' });
+        expect(checkpoint?.format).toBe(3);
         await query.put('__transcript_projection_checkpoint__', key, {
-          ...checkpoint, format: 1,
+          ...checkpoint, format,
           snapshot: { ...checkpoint!.snapshot, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },
         });
         second = createService();

@@ -1490,7 +1490,24 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
-  it('restores durable step interruption reasons and ignores retry progress', () => {
+  it('rebuilds the latest retry and retains it as a past failure after cold recovery', () => {
+    const transcript = new AgentTranscript('child');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('child');
+    reducer.apply(adapter.add({ type: 'turn.prompt', turnId: 0, origin: { kind: 'other' }, time: 1_000 }));
+    for (const failedAttempt of [1, 2]) {
+      reducer.apply(adapter.add({ type: 'turn.step.retrying', turnId: 0, step: 1,
+        failedAttempt, nextAttempt: failedAttempt + 1, maxAttempts: 5, delayMs: 100,
+        errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: 2_000 + failedAttempt }));
+    }
+    expect(transcript.getTurn('t0')?.steps[0]).toMatchObject({ state: 'running', retry: { failedAttempt: 2 } });
+    reducer.apply(adapter.finish());
+    expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });
+    expect(transcript.getTurn('t0')?.steps[0]).toMatchObject({ state: 'interrupted', retry: { failedAttempt: 2 } });
+    expect(agentTranscriptSnapshotSchema.safeParse(transcript.snapshot()).success).toBe(true);
+  });
+
+  it('restores durable step interruption reasons and clears superseded retry progress', () => {
     const records: TranscriptWireRecord[] = [
       {
         type: 'turn.prompt',

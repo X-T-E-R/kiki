@@ -131,6 +131,19 @@ export interface AgentTaskItem {
   readonly detached?: boolean;
 }
 
+export interface AgentTurnOutcome {
+  readonly turnId: string;
+  readonly state: 'failed' | 'cancelled';
+  readonly endedAt?: string;
+  readonly error?: string;
+  readonly lastRetry?: {
+    readonly failedAttempt: number;
+    readonly maxAttempts: number;
+    readonly errorName: string;
+    readonly errorMessage: string;
+  };
+}
+
 export interface AgentTreeNode {
   readonly agentId: string;
   readonly parentAgentId?: string;
@@ -153,6 +166,7 @@ export interface AgentTreeNode {
   readonly description?: string;
   readonly summary?: string;
   readonly error?: string;
+  readonly turnOutcome?: AgentTurnOutcome;
   readonly childIds: readonly string[];
 }
 
@@ -345,6 +359,14 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.description === b.description &&
     a.summary === b.summary &&
     a.error === b.error &&
+    a.turnOutcome?.turnId === b.turnOutcome?.turnId &&
+    a.turnOutcome?.state === b.turnOutcome?.state &&
+    a.turnOutcome?.error === b.turnOutcome?.error &&
+    a.turnOutcome?.endedAt === b.turnOutcome?.endedAt &&
+    a.turnOutcome?.lastRetry?.failedAttempt === b.turnOutcome?.lastRetry?.failedAttempt &&
+    a.turnOutcome?.lastRetry?.maxAttempts === b.turnOutcome?.lastRetry?.maxAttempts &&
+    a.turnOutcome?.lastRetry?.errorName === b.turnOutcome?.lastRetry?.errorName &&
+    a.turnOutcome?.lastRetry?.errorMessage === b.turnOutcome?.lastRetry?.errorMessage &&
     a.childIds.length === b.childIds.length &&
     a.childIds.every((id, index) => id === b.childIds[index])
   );

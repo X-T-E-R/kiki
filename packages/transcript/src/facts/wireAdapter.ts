@@ -929,7 +929,36 @@ export class TranscriptWireAdapter {
       this.storeStep(stepId, step);
       return [this.ensureTurn(turnId), { op: 'step.upsert', turnId, step }];
     }
-    if (record.type === 'turn.step.retrying') return [];
+    if (record.type === 'turn.step.retrying') {
+      const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
+      const stepOrdinal = numberOf(record['step']);
+      const failedAttempt = numberOf(record['failedAttempt']);
+      const nextAttempt = numberOf(record['nextAttempt']);
+      const maxAttempts = numberOf(record['maxAttempts']);
+      const delayMs = numberOf(record['delayMs']);
+      const errorName = stringOf(record['errorName']);
+      const errorMessage = stringOf(record['errorMessage']);
+      if (turnId === undefined || stepOrdinal === undefined || failedAttempt === undefined ||
+        nextAttempt === undefined || maxAttempts === undefined || delayMs === undefined ||
+        errorName === undefined || errorMessage === undefined) return [];
+      const recordStepId = stringOf(record['stepId']);
+      const existing = (recordStepId === undefined ? undefined : this.#stepHeaders.get(recordStepId)) ??
+        this.stepForOrdinal(turnId, stepOrdinal);
+      const stepId = recordStepId ?? existing?.stepId ?? `${turnId}.${stepOrdinal}`;
+      const step: StepHeader = {
+        ...existing,
+        kind: 'step',
+        stepId,
+        turnId,
+        ordinal: stepOrdinal,
+        state: 'running',
+        startedAt: existing?.startedAt ?? isoOf(record.time),
+        retry: { failedAttempt, nextAttempt, maxAttempts, delayMs, errorName, errorMessage,
+          statusCode: numberOf(record['statusCode']) },
+      };
+      this.storeStep(stepId, step);
+      return [this.ensureTurn(turnId), { op: 'step.upsert', turnId, step }];
+    }
     if (record.type === 'turn.cancel' && record['target'] !== 'queued') {
       const cancelTurnId = turnIdOf(record['turnId'], this.#currentTurnId);
       const userCancelled = record['reason'] === 'user_cancelled';

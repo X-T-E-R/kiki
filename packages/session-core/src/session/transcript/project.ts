@@ -32,7 +32,7 @@ import type {
 } from '../../transport';
 import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
-import { MAIN_AGENT_ID } from '../agentTree';
+import { MAIN_AGENT_ID, type AgentTurnOutcome } from '../agentTree';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
@@ -2112,6 +2112,28 @@ function turnRetryFromItem(
   };
 }
 
+export function turnOutcomeFromItem(item: {
+  readonly turnId: string;
+  readonly state?: string;
+  readonly endedAt?: string;
+  readonly error?: string;
+  readonly steps: readonly { readonly stepId: string; readonly retry?: AgentTurnOutcome['lastRetry'] }[];
+}): AgentTurnOutcome | undefined {
+  if (item.state !== 'failed' && item.state !== 'cancelled') return undefined;
+  const lastRetry = item.steps.findLast((step) => step.retry !== undefined)?.retry;
+  return { turnId: item.turnId, state: item.state, endedAt: item.endedAt, error: item.error, lastRetry };
+}
+
+export function latestTurnOutcome(source: AgentTranscriptProjectionSource | AgentTranscriptResponse): AgentTurnOutcome | undefined {
+  const turn = source.items.findLast((item) => item.kind === 'turn');
+  if (turn?.kind !== 'turn') return undefined;
+  const phase = source.meta?.agent?.phase;
+  const phaseTurnId = phase !== undefined && 'turnId' in phase ? phase['turnId'] : undefined;
+  const ordinal = 'ordinal' in turn && typeof turn.ordinal === 'number' ? turn.ordinal : Number(turn.turnId.replace(/^t/, ''));
+  if (typeof phaseTurnId === 'number' && phaseTurnId > ordinal) return undefined;
+  return turnOutcomeFromItem(turn);
+}
+
 const terminalTurnProjectionCache = new WeakMap<object, Map<string, readonly Block[]>>();
 
 function isTerminalTurn(item: object): boolean {
@@ -2482,6 +2504,34 @@ export function agentTranscriptToBlocks(
             });
             break;
         }
+      }
+    }
+    const outcome = subagentPromptAsUser ? turnOutcomeFromItem(item) : undefined;
+    if (outcome !== undefined) {
+      blocks.push({
+        kind: 'notice',
+        id: `agent-turn-outcome-${item.turnId}`,
+        turnId: item.turnId,
+        createdAt: item.endedAt,
+        text: outcome.error ?? '',
+        tone: outcome.state === 'failed' ? 'danger' : 'neutral',
+        i18n: { key: outcome.state === 'failed' ? 'notice.turnFailedDetail' : 'notice.turnCancelledDetail',
+          params: { detail: outcome.error === undefined ? '' : `: ${outcome.error}` } },
+      });
+      if (outcome.lastRetry !== undefined && outcome.error === undefined) {
+        const retry = outcome.lastRetry;
+        blocks.push({
+          kind: 'notice',
+          id: `agent-turn-last-retry-${item.turnId}`,
+          turnId: item.turnId,
+          createdAt: item.endedAt,
+          text: retry.errorMessage,
+          tone: 'neutral',
+          i18n: { key: 'transcript.lastRetryFailed', params: {
+            cause: retry.errorName, error: retry.errorMessage,
+            attempt: String(retry.failedAttempt), max: String(retry.maxAttempts),
+          } },
+        });
       }
     }
     if (cacheableTerminal) {
@@ -2918,6 +2968,7 @@ export function agentBusyFromMeta(
   response: AgentTranscriptProjectionSource | AgentTranscriptResponse | undefined,
 ): boolean | undefined {
   if (response === undefined) return undefined;
+  if (latestTurnOutcome(response) !== undefined) return false;
   const kind = response.meta?.agent?.phase?.kind;
   if (
     kind === 'running' ||

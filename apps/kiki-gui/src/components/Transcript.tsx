@@ -156,6 +156,7 @@ import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
+import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -1264,7 +1265,7 @@ const SubagentCard = memo(function SubagentCard({
         onOpenAgent={onOpenAgent}
         folded={nested}
         invocationButton={invocation.button}
-        invocationBody={invocation.body}
+        invocationBody={<><AgentTurnOutcomeLine outcome={node?.turnOutcome} />{invocation.body}</>}
         onExpand={
           nested
             ? nestedFold.open
@@ -1322,6 +1323,7 @@ const SubagentCard = memo(function SubagentCard({
               className="min-w-0 flex-1 text-left"
             >
               {body}
+              <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
             </button>
             <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
               {invocation.button}

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { buildAgentForest, type AgentRosterDescriptor } from '@kiki/session-core/session';
+import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentRosterDescriptor } from '@kiki/session-core/session';
+import { CHILD_AGENT_ID, childFailureWireRecords, childRetryWireRecords, replayAgentWire } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
 import { AgentTreeView } from './AgentTreeView';
 
@@ -65,6 +66,36 @@ describe('AgentTreeView tool-count display', () => {
     expect(html).toContain('Completed');
     expect(html).not.toContain('Refreshing');
     expect(html).not.toContain('bg-amber-rule');
+  });
+
+  it('shows the same turn failure summary from live facts and a reopened cold transcript', () => {
+    for (const cold of [false, true]) {
+      const snapshot = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords, cold);
+      const html = renderToStaticMarkup(<I18nProvider><AgentTreeView
+        forest={sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, snapshot]]))}
+        onOpen={() => {}}
+      /></I18nProvider>);
+      expect(html).toContain('data-agent-turn-outcome="failed"');
+      expect(html).toContain('Last turn failed');
+      expect(html).toContain('Connection closed');
+      expect(html).not.toContain('retry 2/5 in');
+    }
+  });
+
+  it('names the last failed attempt after recovery rather than claiming the provider is still retrying', () => {
+    const snapshot = replayAgentWire(CHILD_AGENT_ID, childRetryWireRecords, true);
+    const html = renderToStaticMarkup(<I18nProvider><AgentTreeView
+      forest={sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, snapshot]]))}
+      onOpen={() => {}}
+    /></I18nProvider>);
+    expect(html).toContain('Last turn cancelled');
+    expect(html).toContain('Last attempt failed (APIConnectionError, 2/5): Connection closed');
+    expect(html).not.toContain('retry 2/5 in');
+  });
+
+  it('renders a persisted terminal roster error as visible text, not just a tooltip', () => {
+    const html = renderRow({ agentId: 'child', name: 'Child', status: 'failed', error: 'Connection closed' });
+    expect(html).toContain('>Connection closed</span>');
   });
 
   it('renders an unknown tree node instead of dropping the row', () => {

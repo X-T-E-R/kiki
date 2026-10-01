@@ -15,6 +15,7 @@ import {
 } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
+import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
@@ -161,6 +162,10 @@ const AgentTreeRow = memo(function AgentTreeRow({
                     : ''}
                   {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
                 </span>
+                <AgentTurnOutcomeLine outcome={node.turnOutcome} />
+                {node.turnOutcome === undefined && node.error !== undefined && (node.status === 'failed' || node.status === 'cancelled') ? (
+                  <span className="mt-0.5 block truncate text-[12px] text-amber-ink" title={node.error}>{node.error}</span>
+                ) : null}
               </span>
               {node.status === 'failed' && node.error !== undefined ? (
                 <span aria-hidden title={node.error} className="flex shrink-0 text-danger">

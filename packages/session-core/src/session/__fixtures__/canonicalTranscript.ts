@@ -1,4 +1,5 @@
-import type { AgentTranscriptSnapshot, TranscriptEvent, TranscriptOperation } from '@kiki/transcript';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter,
+  type AgentTranscriptSnapshot, type TranscriptEvent, type TranscriptOperation, type TranscriptWireRecord } from '@kiki/transcript';
 
 export const FIXED_AT = '2026-01-01T00:00:00.000Z';
 export const FIXED_AT_1 = '2026-01-01T00:00:01.000Z';
@@ -439,4 +440,33 @@ export function childAppendOps(): readonly TranscriptOperation[] {
       text: ' more',
     },
   ];
+}
+
+const wireStart = Date.parse(FIXED_AT);
+
+export const childRetryWireRecords: readonly TranscriptWireRecord[] = [
+  { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'Inspect the example' }], origin: { kind: 'other' }, time: wireStart + 1_000 },
+  { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-example' }, time: wireStart + 2_000 },
+  { type: 'turn.step.retrying', turnId: 0, step: 1, stepId: 'step-example', failedAttempt: 2,
+    nextAttempt: 3, maxAttempts: 5, delayMs: 4_000, errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: wireStart + 3_000 },
+];
+
+export const childFailureWireRecords: readonly TranscriptWireRecord[] = [
+  ...childRetryWireRecords,
+  { type: 'turn.ended', turnId: 0, reason: 'failed', error: { code: 'provider.connection_error', message: 'Connection closed' }, time: wireStart + 4_000 },
+];
+
+export const childCancellationWireRecords: readonly TranscriptWireRecord[] = [
+  ...childFailureWireRecords,
+  { type: 'turn.prompt', turnId: 1, input: [{ type: 'text', text: 'Continue the example' }], origin: { kind: 'other' }, time: wireStart + 5_000 },
+  { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: wireStart + 6_000 },
+];
+
+export function replayAgentWire(agentId: string, records: readonly TranscriptWireRecord[], cold = false): AgentTranscriptSnapshot {
+  const transcript = new AgentTranscript(agentId);
+  const reducer = new TranscriptFactReducer(transcript);
+  const adapter = new TranscriptWireAdapter(agentId);
+  for (const record of records) reducer.apply(adapter.add(record));
+  if (cold) reducer.apply(adapter.finish());
+  return transcript.snapshot();
 }

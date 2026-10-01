@@ -12,6 +12,10 @@ import {
   TOOL_CALL_ID,
   USER_MESSAGE_ID,
   capabilityMatrixSnapshot,
+  childRetryWireRecords,
+  childFailureWireRecords,
+  childCancellationWireRecords,
+  replayAgentWire,
   emptySnapshot,
   spawnChildOps,
   userTurnSnapshot,
@@ -5168,5 +5172,72 @@ describe('AgentSend delivery receipts', () => {
     const items = [sendTurn(true), receipt('message-one')];
     const restored = project(JSON.parse(JSON.stringify(items)) as AgentTranscriptSnapshot['items']);
     expect(sent(restored).map((block) => block.delivery)).toEqual(['delivered', 'queued']);
+  });
+});
+
+describe('durable subagent turn outcomes', () => {
+  const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+  const forestFor = (child: AgentTranscriptSnapshot) => sessionAgentForestFromAgentSnapshots(
+    new Map([['main', parent], [CHILD_AGENT_ID, child]]),
+  );
+
+  it('keeps a failed turn and its error after replacing live state with a cold wire rebuild', () => {
+    const live = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords);
+    const cold = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords, true);
+    const expected = { turnId: 't0', state: 'failed', error: 'Connection closed' };
+    expect(forestFor(live).byId[CHILD_AGENT_ID]?.turnOutcome).toMatchObject(expected);
+    expect(forestFor(cold).byId[CHILD_AGENT_ID]?.turnOutcome).toMatchObject(expected);
+    const fresh = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, cold);
+    expect(fresh.blocks).toContainEqual(expect.objectContaining({
+      id: 'agent-turn-outcome-t0', kind: 'notice', text: 'Connection closed',
+      i18n: { key: 'notice.turnFailedDetail', params: { detail: ': Connection closed' } },
+    }));
+    expect(fresh.turnRetry).toBeUndefined();
+  });
+
+  it('retains an earlier failure when a later turn was cancelled', () => {
+    const cold = replayAgentWire(CHILD_AGENT_ID, childCancellationWireRecords, true);
+    const fresh = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, cold);
+    expect(forestFor(cold).byId[CHILD_AGENT_ID]?.turnOutcome).toMatchObject({ turnId: 't1', state: 'cancelled' });
+    expect(fresh.blocks.filter((block) => block.id.startsWith('agent-turn-outcome-')).map((block) => block.id))
+      .toEqual(['agent-turn-outcome-t0', 'agent-turn-outcome-t1']);
+    expect(fresh.blocks.find((block) => block.id === 'agent-turn-outcome-t0')).toMatchObject({ text: 'Connection closed' });
+  });
+
+  it('recovers a running retry from wire without claiming it still runs after a cold interruption', () => {
+    const active = replayAgentWire(CHILD_AGENT_ID, childRetryWireRecords);
+    const live = projectAgentTranscriptView(createViewState('session_test'), CHILD_AGENT_ID, active);
+    expect(live.turnRetry).toMatchObject({ failedAttempt: 2, maxAttempts: 5, errorName: 'APIConnectionError' });
+    const reset = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, active);
+    expect(reset.turnRetry).toEqual(live.turnRetry);
+    const interrupted = replayAgentWire(CHILD_AGENT_ID, childRetryWireRecords, true);
+    const cold = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, interrupted);
+    expect(cold.turnRetry).toBeUndefined();
+    expect(cold.busy).toBe(false);
+    expect(sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, interrupted]])).byId[CHILD_AGENT_ID])
+      .toMatchObject({ status: 'cancelled', busy: false });
+    expect(forestFor(interrupted).byId[CHILD_AGENT_ID]?.turnOutcome).toMatchObject({
+      state: 'cancelled', lastRetry: { failedAttempt: 2, maxAttempts: 5, errorMessage: 'Connection closed' },
+    });
+    expect(cold.blocks.find((block) => block.id === 'agent-turn-last-retry-t0')).toMatchObject({
+      i18n: { key: 'transcript.lastRetryFailed' },
+    });
+  });
+
+  it('keeps failed and cancelled roster facts before their child transcript loads', () => {
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', emptySnapshot()]]), [
+      compactSnapshotSubagent({ id: 'failed-child', status: 'failed', live: false, output_preview: 'Connection closed' }),
+      compactSnapshotSubagent({ id: 'cancelled-child', status: 'cancelled', live: false }),
+    ]);
+    expect(forest.byId['failed-child']).toMatchObject({ status: 'failed', error: 'Connection closed' });
+    expect(forest.byId['cancelled-child']).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('clears the last turn outcome when the child starts a newer turn', () => {
+    const resumed = replayAgentWire(CHILD_AGENT_ID, [
+      ...childFailureWireRecords,
+      { type: 'turn.prompt', turnId: 1, input: [{ type: 'text', text: 'Continue' }], origin: { kind: 'other' }, time: Date.parse(FIXED_AT) + 5_000 },
+    ]);
+    expect(forestFor(resumed).byId[CHILD_AGENT_ID]?.turnOutcome).toBeUndefined();
   });
 });

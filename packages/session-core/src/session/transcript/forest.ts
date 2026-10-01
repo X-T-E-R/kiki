@@ -10,7 +10,7 @@ import {
   type AgentRosterDescriptor,
   type AgentTaskItem,
 } from '../agentTree';
-import { agentBusyFromMeta, runningTurnAfterPhase, snapshotSubagentAgentId } from './project';
+import { agentBusyFromMeta, latestTurnOutcome, runningTurnAfterPhase, snapshotSubagentAgentId, turnOutcomeFromItem } from './project';
 import { subagentBlocksFromState } from './selectors';
 import type { SessionViewState, SubagentBlock } from './types';
 
@@ -34,6 +34,8 @@ export function rosterFromTranscriptAgents(
 
 export function agentStatusFromMeta(response: AgentTranscriptResponse | undefined): AgentRosterDescriptor['status'] {
   const phase = response?.meta?.agent?.phase;
+  const outcome = response === undefined ? undefined : latestTurnOutcome(response);
+  if (outcome !== undefined) return outcome.state;
   // Same rule as agentBusyFromMeta: a newer running turn outranks a stale terminal phase.
   if (
     response !== undefined &&
@@ -195,7 +197,8 @@ export function rosterFromSnapshotSubagents(
         endedAt: subagent.completed_at,
         description,
         summary: presentSnapshotText(subagent.output_preview),
-        error: presentSnapshotText(subagent.stop_reason),
+        error: presentSnapshotText(subagent.stop_reason) ??
+          (subagent.status === 'failed' ? presentSnapshotText(subagent.output_preview) : undefined),
       } satisfies AgentRosterDescriptor,
     ];
   });
@@ -481,13 +484,26 @@ export function sessionAgentForestFromAgentSnapshots(
     tasks.push(...taskItemsFromTranscriptTasks(taskList));
   }
   roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
-  return overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
+  const forest = overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
+  const byId = { ...forest.byId };
+  for (const [agentId, snapshot] of snapshots) {
+    const node = byId[agentId];
+    if (node === undefined) continue;
+    const turn = snapshot.items.findLast((item) => item.kind === 'turn');
+    if (turn?.kind !== 'turn') continue;
+    const outcome = turnOutcomeFromItem(turn);
+    if (outcome === undefined) continue;
+    const nodeStartedAt = Date.parse(node.startedAt ?? '');
+    const endedAt = Date.parse(outcome.endedAt ?? '');
+    if (Number.isFinite(nodeStartedAt) && Number.isFinite(endedAt) && nodeStartedAt > endedAt) continue;
+    byId[agentId] = { ...node, turnOutcome: outcome };
+  }
+  return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };
 }
 
 /**
- * Keep active, unknown and waking roster rows visible before their new
- * transcript snapshot arrives, while excluding terminal rows without live
- * evidence. Disposed agents remain ghosts even if retained for resume.
+ * Retain failed and cancelled rows as historical facts even before their
+ * transcript arrives. Completed ghosts still need current evidence.
  */
 function filterRosterToLiveOrPresent(
   roster: readonly AgentRosterDescriptor[],
@@ -495,7 +511,8 @@ function filterRosterToLiveOrPresent(
 ): readonly AgentRosterDescriptor[] {
   if (snapshots.size === 0) return roster;
   const presentIds = new Set<string>(snapshots.keys());
-  return roster.filter((entry) => presentIds.has(entry.agentId) || (
+  return roster.filter((entry) => presentIds.has(entry.agentId) ||
+    entry.status === 'failed' || entry.status === 'cancelled' || (
     entry.disposedAt === undefined &&
     ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||
       entry.status === 'running' || entry.status === 'suspended' || entry.status === 'unknown')
