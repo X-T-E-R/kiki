@@ -208,6 +208,8 @@ function formatExplanation(report: PromptFieldInspection, field: PromptFieldValu
     'Source chain:',
     ...field.sources.map((source) => `  ${source.status}\t${formatSource(source)}`),
   ];
+  const deprecation = field.diagnostic ?? field.deprecated;
+  if (deprecation !== undefined) lines.push(`Replacement: ${deprecation.replacement}`, `Deprecated: ${deprecation.message}`);
   if (field.value === undefined) {
     lines.push('Effective value: (none)');
   } else {

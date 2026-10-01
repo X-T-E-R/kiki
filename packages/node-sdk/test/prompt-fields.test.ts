@@ -47,6 +47,25 @@ describe('prompt field inspection', () => {
     });
   });
 
+  it('preserves migration metadata for conflicting legacy overrides without activating or merging them', async () => {
+    await writeFile(join(homeDir, 'config.toml'), '[prompt.overrides.fields]\n"tool.cron-create.description" = "Create-only instructions"\n"tool.cron-list.description" = "Conflicting list instructions"\n', 'utf8');
+    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir });
+    for (const id of ['tool.cron-create.description', 'tool.cron-list.description']) {
+      const field = report.fields.find((item) => item.id === id)!;
+      expect(field.status).toBe('unsupported');
+      expect(field.value).toBeUndefined();
+      expect(field.deprecated?.replacement).toBe('tool.cron.description');
+      expect(field.diagnostic).toMatchObject({ code: 'deprecated', replacement: 'tool.cron.description', message: expect.stringContaining('manual reconciliation, not concatenation') });
+      expect(field.sources).toContainEqual(expect.objectContaining({ surface: 'global', kind: 'inline' }));
+    }
+    const defaultLegacy = report.fields.find((item) => item.id === 'tool.cron-delete.description')!;
+    expect(defaultLegacy.status).toBe('unsupported');
+    expect(defaultLegacy.deprecated?.replacement).toBe('tool.cron.description');
+    expect(defaultLegacy.diagnostic).toBeUndefined();
+    expect(listPromptFieldDefinitions().find((item) => item.id === defaultLegacy.id)?.deprecated).toEqual(defaultLegacy.deprecated);
+    expect(report.fields.find((item) => item.id === 'tool.cron.description')).toMatchObject({ status: 'effective', value: 'agent/tools/cron/cron.md' });
+  });
+
   it('validates all surfaces and explains the complete precedence chain', async () => {
     await writeFile(
       join(homeDir, 'base.toml'),

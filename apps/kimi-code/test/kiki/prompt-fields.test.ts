@@ -1,10 +1,14 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import type {
-  PromptFieldDefinitionInfo,
-  PromptFieldInspection,
+import {
+  inspectPromptFields,
+  type PromptFieldDefinitionInfo,
+  type PromptFieldInspection,
 } from '@kiki/node-sdk';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   registerPromptFieldsCommand,
@@ -167,6 +171,41 @@ describe('kiki prompt-fields', () => {
     expect(text).toContain('shadowed\tglobal:file[0] base.toml:3');
     expect(text).toContain('effective\tprofile:inline /home/example/.kiki/SYSTEM.md');
     expect(text).toContain('Effective value:\nConfigured language');
+  });
+
+  it('explains both conflicting legacy overrides with SDK migration diagnostics and leaves the config unchanged', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kiki-prompt-fields-conflict-'));
+    const homeDir = join(dir, 'home');
+    const workDir = join(dir, 'workspace');
+    const osHomeDir = join(dir, 'os-home');
+    const config = '[prompt.overrides.fields]\n"tool.cron-create.description" = "Create-only instructions"\n"tool.cron-list.description" = "Conflicting list instructions"\n';
+    try {
+      await Promise.all([homeDir, workDir, osHomeDir].map((path) => mkdir(path, { recursive: true })));
+      await writeFile(join(homeDir, 'config.toml'), config, 'utf8');
+      const { deps, stdout, stderr } = makeDeps();
+      const realDeps = { ...deps, cwd: () => workDir, resolveHome: () => homeDir,
+        inspect: (options: Parameters<typeof inspectPromptFields>[0]) => inspectPromptFields({ ...options, osHomeDir }) };
+      for (const id of ['tool.cron-create.description', 'tool.cron-list.description']) {
+        stdout.length = 0;
+        await parse(['prompt-fields', 'explain', id], realDeps);
+        const text = stdout.join('');
+        expect(text).toContain(`ID: ${id}`);
+        expect(text).toContain('Status: unsupported');
+        expect(text).toContain('Replacement: tool.cron.description');
+        expect(text).toContain('This override is retained but not consumed.');
+        expect(text).toContain('multiple legacy action overrides require manual reconciliation, not concatenation.');
+        expect(text).toContain('global:inline');
+        expect(text).toContain('Effective value: (none)');
+        expect(text).not.toContain('Create-only instructions');
+        expect(text).not.toContain('Conflicting list instructions');
+      }
+      stdout.length = 0;
+      await parse(['prompt-fields', 'explain', 'tool.cron-delete.description'], realDeps);
+      expect(stdout.join('')).toContain('Status: unsupported');
+      expect(stdout.join('')).toContain('Replacement: tool.cron.description');
+      expect(stderr).toEqual([]);
+      expect(await readFile(join(homeDir, 'config.toml'), 'utf8')).toBe(config);
+    } finally { await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
   it('reports inactive fields without an effective value', async () => {

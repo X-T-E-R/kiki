@@ -20,6 +20,7 @@ import {
   type PromptFieldDefinition,
   type PromptFieldResolutionStatus,
   type PromptOverrides,
+  type ResolvedPromptFieldOverride,
 } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
@@ -56,6 +57,7 @@ export interface PromptFieldDefinitionInfo {
   readonly requiredPlaceholders: readonly string[];
   readonly defaultKind: 'inline' | 'resource';
   readonly defaultValue: string;
+  readonly deprecated?: PromptFieldDefinition['deprecated'];
 }
 
 interface PromptOverrideSourceLike {
@@ -79,6 +81,7 @@ export interface PromptFieldValueInfo extends PromptFieldDefinitionInfo {
   readonly status: PromptFieldResolutionStatus;
   readonly value?: string;
   readonly sources: readonly PromptFieldSourceInfo[];
+  readonly diagnostic?: ResolvedPromptFieldOverride['diagnostic'];
 }
 
 export interface PromptFieldValidationSummary {
@@ -192,7 +195,7 @@ export async function inspectPromptFields(
     const intentOverride = resolved.fields.find((field) => field.id === 'system.intent_tool_use');
     const fields = promptFields.list().map((definition) => {
       const configured = resolved.fields.find((field) => field.id === definition.id);
-      let status = configured?.status ?? (applies(definition, {
+      let status = configured?.status ?? (definition.deprecated !== undefined ? 'unsupported' : applies(definition, {
         profileName,
         modelAlias: canonicalModel,
         executor,
@@ -214,7 +217,7 @@ export async function inspectPromptFields(
       ) {
         status = 'shadowed';
       }
-      return valueInfo(definition, configured?.value, status, configured?.sources ?? []);
+      return valueInfo(definition, configured?.value, status, configured?.sources ?? [], configured?.diagnostic);
     }).toSorted((a, b) => a.id.localeCompare(b.id));
 
     return {
@@ -565,6 +568,7 @@ function definitionInfo(definition: PromptFieldDefinition): PromptFieldDefinitio
     requiredPlaceholders: definition.requiredPlaceholders,
     defaultKind: definition.defaultTemplate.kind,
     defaultValue: definition.defaultTemplate.value,
+    deprecated: definition.deprecated,
   };
 }
 
@@ -573,6 +577,7 @@ function valueInfo(
   configuredValue: string | undefined,
   status: PromptFieldResolutionStatus,
   overrideSources: readonly PromptOverrideSourceLike[],
+  diagnostic: ResolvedPromptFieldOverride['diagnostic'],
 ): PromptFieldValueInfo {
   const sourceCount = overrideSources.length;
   const sources: PromptFieldSourceInfo[] = [
@@ -593,6 +598,7 @@ function valueInfo(
       ? configuredValue ?? definition.defaultTemplate.value
       : undefined,
     sources,
+    diagnostic,
   };
 }
 
