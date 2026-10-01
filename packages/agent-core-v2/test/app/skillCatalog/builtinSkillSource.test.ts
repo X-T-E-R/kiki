@@ -75,6 +75,46 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.content).toContain('by default the body is the complete system prompt');
   });
 
+  it('teaches literal hard model rules and separately named soft preferences', () => {
+    const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')?.content ?? '';
+    for (const needle of [
+      '| `allowed_models` / `deny_models` | **Hard**',
+      '| `allowed_efforts` | **Hard**',
+      '| `preferred_models` / `discouraged_models` | **Soft**',
+      '| `preferred_efforts` | **Soft**',
+      'model_not_preferred',
+      'model_discouraged',
+      'effort_not_preferred',
+      'profile, caller lease, `spawn_constraints`, and matching `model_profiles` entries',
+      'Allowsets intersect; denials accumulate',
+      'profile.constraint_violation',
+      'explicit pins, manual selections, and resume cannot bypass hard rules',
+      'including when a lease replaces their defaults',
+      'There is no legacy-soft mode',
+    ]) {
+      expect(content).toContain(needle);
+    }
+    for (const stale of [
+      'Advisory recommendations matched by canonical identity',
+      'Effort pin and its recommended set',
+      'Advisory limits for this role',
+      '`allowed_models` only recommends',
+    ]) {
+      expect(content).not.toContain(stale);
+    }
+  });
+
+  it('defaults profile authoring to soft preferences and asks consent for hard rules', () => {
+    const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')?.content ?? '';
+    expect(content).toContain('Users usually need soft preferences, especially for main-agent profiles');
+    expect(content).toContain('Use hard fields only when the user explicitly requests enforcement');
+    expect(content).toContain('explain the reason and consequences and obtain the user\'s consent before adding it');
+    expect(content).toContain('never silently write a hard constraint');
+    expect(content).toContain('preferred_models: [fast-model]');
+    expect(content).toContain('Lists never select a model');
+    expect(content).not.toContain('An `allowed_models` list without `model_alias` loads with a warning');
+  });
+
   it('keeps kiki-appearance narrow and grounded in the pack contract', () => {
     const appearance = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-appearance');
     expect(appearance?.metadata.isSubSkill).not.toBe(true);

@@ -5,7 +5,7 @@ description: Create, modify, or repair Kiki agent profile files and SYSTEM.md. U
 
 # Kiki profile authoring (kiki-profile)
 
-Author and repair Kiki agent profile files. An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. This skill gives the loading rules, the file format, and the prompt-replacement semantics you must get right; the complete field-by-field reference lives in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
+An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. Choose the loading scope, frontmatter fields, and prompt mode deliberately; consult the complete field-by-field reference in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
 
 ## Where profiles live
 
@@ -35,8 +35,9 @@ name: code-reviewer
 description: Strict read-only reviewer that reports severity-ranked findings
 whenToUse: Code reviews and PR checks before merge
 model_alias: fast-model
-allowed_models: [fast-model]
+preferred_models: [fast-model]
 thinking_effort: high
+preferred_efforts: [high]
 tools: [Read, Grep, Glob]
 disallowedTools: [Bash]
 subagents: [explore]
@@ -45,7 +46,7 @@ subagents: [explore]
 You are a strict code reviewer. Read the diff, then report findings grouped by severity…
 ```
 
-- Frontmatter is a YAML mapping between `---` fences. `description` is required; `name` defaults to the file name and must be kebab-case (`my-reviewer`, not `MyReviewer`).
+- Frontmatter is a YAML mapping between `---` fences. `description` is required; `name` defaults to the file name and uses lowercase letters and digits separated by single hyphens or underscores (`my-reviewer` or `my_reviewer`, not `MyReviewer`).
 - The key set is **closed**: an unknown frontmatter key fails the whole file. Common typos therefore look like "the profile does not exist". Removed keys also error — `model_preference` was removed; set `model_alias` instead.
 - The body is required and non-empty unless `system_prompt_mode` is `inherit`.
 
@@ -75,19 +76,26 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `main` | `true` marks a main-agent candidate (GUI selector); hidden from the `AgentRun` default role list |
 | `private` | Hidden from dispatch and selection lists; running agents keep working, new dispatches fail |
 | `model_alias` | Exact alias from `[models]` for a fixed model, or `inherit` to follow the dispatch caller's model (subagents only) |
-| `allowed_models` / `deny_models` | Advisory recommendations matched by canonical identity; other executable models still run with an advisory. Machine `[subagent].deny_models` is the hard block |
-| `thinking_effort` / `allowed_efforts` | Effort pin and its recommended set |
-| `spawn_constraints` | Advisory limits for this role's children: `allowed_models`, `deny_models`, `allowed_efforts`, `disallowed_tools` |
-| `model_profiles` | Per-alias recipes: `alias` + optional `when`, `thinking_effort`, `prompt_mode` (`prepend`/`append`/`wrap`), `prompt`, `prompt_overrides`, budgets. `when` is shown to the dispatcher |
-| `tools` / `disallowedTools` | Omit or `*` = all tools; `[]` = none; `mcp__server__*` globs for MCP; deny applies after allow |
-| `disabled-tool-groups` | Withhold built-in groups such as `shell` or `web`; a tool named in `tools` survives |
-| `subagents` / `subagent_policy` | Allowlist of dispatchable roles (omit or `*` = all; `[]` = leaf); `strict` enforces it, `advisory` only records deviations |
-| `executor` / `executor_options` | Omit for the native engine; external ids come from `agent-executors.toml`; options are a scalar map and need `executor`; main profiles are native-only |
+| `allowed_models` / `deny_models` | **Hard** model allow/deny lists: out-of-list or denied bindings are rejected. Native aliases match canonical identity; external executors use the effective model ID. Machine `[subagent].deny_models` is an additional hard boundary |
+| `thinking_effort` | Default effort pin; explicit choices may override it only within hard rules and provider/executor capabilities |
+| `allowed_efforts` | **Hard** allowlist of effective efforts; explicit pins and forced host values cannot bypass it |
+| `preferred_models` / `discouraged_models` | **Soft** recommendations / models to avoid; hard-permitted executable choices continue with `model_not_preferred` / `model_discouraged` advisories |
+| `preferred_efforts` | **Soft** effort recommendations; deviations continue with `effort_not_preferred`, without lowering effort |
+| `spawn_constraints` | Descendant rules: hard `allowed_models`, `deny_models`, `allowed_efforts`, `disallowed_tools`; soft `preferred_models`, `discouraged_models`, `preferred_efforts`. No model/effort pins |
+| `model_profiles` | Per-alias recipes: required `alias`; optional `when`, `thinking_effort`, all six hard/soft list fields, `prompt_mode` (`prepend`/`append`/`wrap`), `prompt`, `prompt_overrides`, request fields and budgets. `when` guides dispatch, not automatic selection; defaults use the first match, hard lists from all matching entries apply, including when a lease replaces their defaults |
+| `tools` / `disallowedTools` | Omit `tools` or use a lone `*` for no added allowlist; `tools: []` disables all tools. Other policy limits still apply; `mcp__server__*` globs match MCP; deny applies after allow |
+| `disabled-tool-groups` | Withhold built-in groups such as `shell` or `web`; a tool named in `tools` survives unless explicitly denied |
+| `subagents` / `subagent_policy` | Recommended child roles; global strict enforces a declared list (`[]` = no new children), advisory records deviations. Omit or `*` for no named restriction. Legacy `strict` can tighten advisory; legacy `advisory` cannot lower global strict |
+| `executor` | Omit for the native engine; external ids come from `agent-executors.toml`. For an external main agent, `allow_kiki_subagents: true` enables Kiki delegation over local stdio MCP |
 | `service_tier` | `auto`, `default`, `flex`, or `priority` |
 | `request_params` | Scalar map (string/number/boolean) sent with every request |
 | `context_budget` / `max_completion_tokens` | Caps only; the smallest declared layer wins |
 | `prompt_overrides` | Field-level prompt overrides; see below |
-| `delegation_notice` | `auto` (default) injects a handoff notice when running as a sub-agent; `off` skips it |
+| `delegation_notice` | `auto` (default) injects a position-based handoff notice for subagents or independent host agents; main binds never inject it; `off` skips it |
+
+Apply model/effort lists consistently across profile, caller lease, `spawn_constraints`, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. Advisory role dispatch, explicit pins, manual selections, and resume cannot bypass hard rules. Global role policies (`[subagent].main_dispatch_policy = "advisory"`, `subagent_dispatch_policy = "strict"` by default) are independent of model enforcement; prefer those global controls for new configuration.
+
+Hard allowlists accept YAML lists or comma-separated strings: omitted / `null` or a lone `"*"` adds no restriction; `[]` permits nothing. Never mix `*` with names, and never use wildcards in deny/discouraged lists. Empty deny lists forbid nothing. Soft lists do not select models or grant provider capabilities; even an empty intersection of preferences only advises. Hard violations return `profile.constraint_violation` without silently switching model or lowering effort: select a permitted value, or ask the user to revise the hard rule, then retry. A rejected resume keeps the saved binding unchanged.
 
 ## prompt_overrides
 
@@ -108,7 +116,9 @@ prompt_overrides:
 - **Default replace is the trap.** If the role should keep the default environment, skills, or plugin scaffolding, use `prepend` / `append` / `inherit`, or place `${base_prompt}` deliberately — don't assume anything is merged for you.
 - **Field-only tweak? Don't fork the prompt.** To change a built-in role's model, tools, or a few prompt fields, use `system_prompt_mode: inherit` with an empty body instead of copying the stock prompt text.
 - **Write `description` and `whenToUse` for the dispatcher.** State the task shapes this role owns and what it returns; the main agent chooses roles from that text alone.
-- **Pin deliberately.** `model_alias` selects the default model; `allowed_models` only recommends, so pair them and add `model_profiles[].when` lines so alternate models stay a conscious dispatch choice. An `allowed_models` list without `model_alias` loads with a warning and makes unnamed dispatch fail closed. Use machine `[subagent].deny_models` when a model must never run.
+- **Prefer soft fields by default.** Users usually need soft preferences, especially for main-agent profiles. Use `preferred_models`, `preferred_efforts`, and `discouraged_models` for guidance while keeping executable alternatives available. Use hard fields only when the user explicitly requests enforcement. If a safety or cost red line seems to need a hard limit, explain the reason and consequences and obtain the user's consent before adding it; never silently write a hard constraint.
+- **Pin deliberately.** `model_alias` selects the default model; pair it with `preferred_models` and add `model_profiles[].when` hints for conscious alternate choices. Lists never select a model. For a new subagent without a pin, supply a concrete dispatch model or configure `[subagent].default_model`; with none of these, dispatch fails with `model.not_configured`. A pin is a soft default, not permission to bypass a hard list.
+- **Migrate advice by intent.** There is no legacy-soft mode for `allowed_models`, `deny_models`, or `allowed_efforts`. Rename advice-only lists to `preferred_models`, `discouraged_models`, or `preferred_efforts` in every affected scope. Keep genuine hard boundaries, `model_profiles` recipes, and default pins; confirm any widening of a hard list with the user.
 - **Keep sub-agent prompts self-contained.** A sub-agent sees neither the caller's history nor your `AGENTS.md` unless the template includes it.
 - **Prefer the smallest tool surface that can do the job.** `tools` + `disallowedTools` are both a model-facing declaration and an execution-time gate.
 - **Editing surfaces share one parser.** Settings → Agents in the GUI and direct file edits validate with the same rules, and files hot-reload; pick whichever surface is convenient.
@@ -134,7 +144,7 @@ A written file is not a loaded profile. After creating or editing:
 
 1. Save and let the watcher reload (~200 ms).
 2. Confirm the role actually appears: Settings → Agents / Dispatch capabilities in the GUI, or ask the agent to list its dispatchable profiles. A file that failed validation was skipped with a warning — check for skip diagnostics naming your path.
-3. If you changed dispatch-relevant fields (`description`, `model_alias`, `allowed_models`, `tools`), do one real dispatch against the profile before calling the work done.
+3. If you changed dispatch-relevant fields (`description`, `model_alias`, hard/soft lists, `tools`), exercise the intended binding: use a real dispatch for a subagent or start a main-agent session. Check the accepted model/effort and any expected advisory. For a user-approved hard limit, also confirm an out-of-domain choice is rejected without changing the binding.
 
 Never claim a profile "works" from file existence alone.
 
