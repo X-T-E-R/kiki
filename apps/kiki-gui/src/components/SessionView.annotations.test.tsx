@@ -17,7 +17,7 @@ const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; input?: { model?: string; thinking?: string; permissionMode?: string }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; input?: { model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
     steered: [] as string[],
   },
   queueStub: {
@@ -92,7 +92,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     }
 
     setFocusedAgent() {}
-    sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string }) {
+    sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }) {
       return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve, reject }); });
     }
     // Send now goes through the controller's steer ledger, never a queue-then-steer pair.
@@ -167,7 +167,11 @@ function ActiveSession() {
 type ComposerProps = {
   value: string;
   annotations: readonly SelectionAnnotation[];
-  onSend: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+  onSend: (
+    text: string,
+    attachments: readonly never[],
+    options?: { readonly goalObjective?: string; readonly appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' },
+  ) => Promise<unknown> | undefined;
   onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
@@ -227,6 +231,33 @@ describe('session selection annotations', () => {
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'second' }); await sent; });
     } finally {
       fixture.external = false;
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+  it('rides the send-timing pick as appendTiming, else the configured default', async () => {
+    resetComposerMemoryForTests();
+    clearComposerState('session-a');
+    submit.calls.length = 0;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider><MemoryRouter initialEntries={['/s/session-a']}><RoutesWithNavigation /></MemoryRouter></I18nProvider>
+        </QueryClientProvider>);
+      });
+      let sent: Promise<unknown> | undefined;
+      // The menu's one-shot pick overrides the configured default once.
+      await act(async () => { sent = composerProps().onSend('timed', [], { appendTiming: 'subagents_done' }); });
+      expect(submit.calls.at(-1)?.input?.appendTiming).toBe('subagents_done');
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'queued', prompt_id: 'p-timed' }); await sent; });
+      // A plain send keeps the settings default ('agent_idle').
+      await act(async () => { sent = composerProps().onSend('plain', []); });
+      expect(submit.calls.at(-1)?.input?.appendTiming).toBe('agent_idle');
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'p-plain' }); await sent; });
+    } finally {
       await act(async () => { root.unmount(); });
       container.remove();
     }

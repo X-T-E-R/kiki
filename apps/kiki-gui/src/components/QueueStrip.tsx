@@ -45,13 +45,13 @@ const QUEUE_DRAG_MIME = 'application/x-kiki-queue-prompt';
 
 const QUEUE_TIMINGS: readonly DeferredAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
 
-const TIMING_SHORT_KEY = {
+export const TIMING_SHORT_KEY = {
   agent_idle: 'timing.short.agentIdle',
   subagents_done: 'timing.short.subagentsDone',
   tasks_done: 'timing.short.tasksDone',
 } as const;
 
-const TIMING_HINT_KEY = {
+export const TIMING_HINT_KEY = {
   agent_idle: 'timing.hint.agentIdle',
   subagents_done: 'timing.hint.subagentsDone',
   tasks_done: 'timing.hint.tasksDone',

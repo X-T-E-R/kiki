@@ -1954,7 +1954,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -2057,7 +2057,9 @@ export function SessionView({
             planMode,
             planGate,
             goalObjective: promptGoalObjective(options),
-            appendTiming: liveSettings.defaultAppendTiming,
+            // The send-timing menu's one-shot pick beats the configured
+            // default for this prompt only.
+            appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
             ...(options?.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
           })
           .then((result) => {
@@ -3253,6 +3255,7 @@ export function SessionView({
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
             onSendNow={handleComposerSendNow}
+            sendTimingDefault={liveSettings.defaultAppendTiming}
             working={composerWorkingInfo}
             onAbort={handleComposerAbort}
             queueEditing={queueEdit !== null}
@@ -3327,6 +3330,7 @@ export function SessionView({
     handleAgentProfileChange,
     handleContextRebuild,
     composerEngine,
+    liveSettings.defaultAppendTiming,
     t,
   ]);
   useRegisterSeat(seat);

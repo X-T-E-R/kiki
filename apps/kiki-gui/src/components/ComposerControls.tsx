@@ -54,7 +54,7 @@ export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-medium text-ink shadow-[va
 /** Popover section label: sentence-case 12px, no caps tracking. */
 export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
 
-const MENU_ROW_CLASS =
+export const MENU_ROW_CLASS =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export type RunMode = 'normal' | 'plan' | 'goal';
@@ -215,7 +215,7 @@ export function usePopoverDismiss(
 }
 
 /** Shared popover plumbing: dismissal (usePopoverDismiss) plus ↑/↓ row walking. */
-function usePopover(
+export function usePopover(
   open: boolean,
   close: (refocus?: boolean) => void,
   rootRef: RefObject<HTMLDivElement | null>,

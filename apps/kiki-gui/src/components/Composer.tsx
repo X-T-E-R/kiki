@@ -25,11 +25,11 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { DeferredAppendTiming, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -106,14 +106,18 @@ import {
   COMPOSER_PANEL_START,
   ComposerCardContext,
   ComposerPanelOrigin,
+  MENU_ROW_CLASS,
   PermissionSelect,
+  POPOVER_LABEL_CLASS,
   RunModeChip,
   STATUS_SEGMENT_CLASS,
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
+  usePopover,
   type RunMode,
   type RunModeControls,
 } from './ComposerControls';
+import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
@@ -135,6 +139,9 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
+
+/** The deferred queue timings the send-timing menu offers as one-shot picks. */
+const SEND_TIMING_PICKS = ['subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
 
 const isTransientCatalogError = (error: unknown): boolean =>
   error instanceof ApiError && (error.code === API_CODES.TIMEOUT || error.code === -1);
@@ -320,6 +327,7 @@ export function Composer({
   needsYou,
   statusNotice,
   engine,
+  sendTimingDefault,
 }: {
   busy: boolean;
   /**
@@ -461,12 +469,14 @@ export function Composer({
    * second click/Enter during the in-flight gap cannot double-send; a
    * rejection restores the button for retry. `options.goalObjective` rides
    * the submission as `goal_objective` (a `/goal …` prefix or an armed goal
-   * mode), creating the session goal with the message.
+   * mode), creating the session goal with the message. `options.appendTiming`
+   * is the send-timing menu's one-shot pick: it overrides the session's
+   * configured queue timing for this prompt only.
    */
   onSend: (
     text: string,
     attachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string },
+    options?: { readonly goalObjective?: string; readonly appendTiming?: DeferredAppendTiming },
   ) => void | Promise<unknown>;
   /**
    * Send into the running turn instead of queueing behind it (⌘/Ctrl+Enter
@@ -474,6 +484,14 @@ export function Composer({
    * to join; the key then falls back to a normal send.
    */
   onSendNow?: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  /**
+   * The session's configured default queue timing. When set, hovering the
+   * send button of a BUSY composer floats a menu that sends once with the
+   * picked timing (plain / now / after subagents / after tasks) without
+   * changing the default; the plain row names this value as what a normal
+   * send does. Omit to drop the menu (e.g. where busy sends steer anyway).
+   */
+  sendTimingDefault?: DeferredAppendTiming;
   /**
    * While busy, the plain send joins the running turn too (a conversation
    * with no queue surface of its own): the button reads as "send into this
@@ -636,6 +654,9 @@ export function Composer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const turnInFlightRef = useRef(false);
   const sendNowRef = useRef(false);
+  // One-shot queue-timing pick from the send-timing menu, consumed by the next
+  // sendPrompt call (same latch shape as sendNowRef).
+  const sendTimingRef = useRef<DeferredAppendTiming | undefined>(undefined);
   const [turnInFlight, setTurnInFlight] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [contextRebuildConfirm, setContextRebuildConfirm] = useState(false);
@@ -1524,9 +1545,10 @@ export function Composer({
   };
 
   /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
-  const send = (now = false) => {
+  const send = (now = false, timing?: DeferredAppendTiming) => {
     if (!canSend || slashCatalogPendingRef.current) return;
     sendNowRef.current = now && onSendNow !== undefined;
+    sendTimingRef.current = timing;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
     // it to the queue round-trip (in-place replace at the original slot) —
     // never to command classification, skill activation, or a fresh send.
@@ -1597,6 +1619,8 @@ export function Composer({
     // test spies assert on exactly (text, attachments).
     const now = sendNowRef.current;
     sendNowRef.current = false;
+    const timing = sendTimingRef.current;
+    sendTimingRef.current = undefined;
     // The caret the send leaves behind is not the user's choice to keep
     // typing: a decision arriving after this send may take the card over.
     setInputFocused(false);
@@ -1605,9 +1629,15 @@ export function Composer({
     const withContext = (prepared: string) => appendThreadRefContext(prepared, threadRefDirectory.info);
     const deliver = (raw: string) => {
       const prepared = withContext(raw);
-      return now && options === undefined && onSendNow !== undefined
-        ? onSendNow(prepared, attachments)
-        : options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
+      if (now && options === undefined && onSendNow !== undefined) {
+        return onSendNow(prepared, attachments);
+      }
+      // The timing menu's one-shot pick rides the same options object as a
+      // goal objective; a plain send keeps the exact (text, attachments) call.
+      const merged = timing === undefined ? options : { ...options, appendTiming: timing };
+      return merged === undefined
+        ? onSend(prepared, attachments)
+        : onSend(prepared, attachments, merged);
     };
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
@@ -1645,6 +1675,98 @@ export function Composer({
     setMenu(null);
     sendPrompt(text.trim());
   };
+
+  // ---- send-timing menu (busy only) ----
+  // While the agent is working, hovering the send button floats a small menu
+  // above it: the plain send (its hint names the session's configured default
+  // timing), send-now into the running turn, and the two deferred queue
+  // timings. A pick fires ONCE — it never rewrites the configured default.
+  // The menu stays closed while idle (every timing starts immediately, so the
+  // choice would be noise), in queue-edit mode (the button is the edit's
+  // confirm), and where a busy plain send already steers (busySendsNow).
+  const sendTimingRootRef = useRef<HTMLDivElement | null>(null);
+  const sendButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sendTimingMenuId = useId();
+  const [sendTimingOpen, setSendTimingOpen] = useState(false);
+  const sendTimingOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendTimingCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Where keyboard-opened focus lands once the menu renders. */
+  const sendTimingFocusRef = useRef<'first' | 'last' | null>(null);
+  const sendTimingAvailable =
+    sendTimingDefault !== undefined && busy && !busySendsNow && !queueEditing && canSend && !takenOver;
+
+  const clearSendTimingTimers = () => {
+    if (sendTimingOpenTimerRef.current !== null) {
+      clearTimeout(sendTimingOpenTimerRef.current);
+      sendTimingOpenTimerRef.current = null;
+    }
+    if (sendTimingCloseTimerRef.current !== null) {
+      clearTimeout(sendTimingCloseTimerRef.current);
+      sendTimingCloseTimerRef.current = null;
+    }
+  };
+  const closeSendTiming = (refocus = false) => {
+    clearSendTimingTimers();
+    setSendTimingOpen(false);
+    if (refocus) sendButtonRef.current?.focus();
+  };
+  // Hover intent: a short delay keeps a sweep across the button from flashing
+  // the menu; a slightly longer leave grace bridges the gap into the panel.
+  const openSendTimingOnHover = () => {
+    if (!sendTimingAvailable || sendTimingOpen) return;
+    if (sendTimingCloseTimerRef.current !== null) {
+      clearTimeout(sendTimingCloseTimerRef.current);
+      sendTimingCloseTimerRef.current = null;
+    }
+    sendTimingOpenTimerRef.current ??= setTimeout(() => {
+      sendTimingOpenTimerRef.current = null;
+      setSendTimingOpen(true);
+    }, 180);
+  };
+  const closeSendTimingOnLeave = () => {
+    if (sendTimingOpenTimerRef.current !== null) {
+      clearTimeout(sendTimingOpenTimerRef.current);
+      sendTimingOpenTimerRef.current = null;
+    }
+    if (!sendTimingOpen) return;
+    // Focus inside the root means a keyboard user owns the menu; the pointer
+    // leaving must not strand that focus by closing under it.
+    if (sendTimingRootRef.current?.contains(document.activeElement) === true) return;
+    sendTimingCloseTimerRef.current = setTimeout(() => {
+      sendTimingCloseTimerRef.current = null;
+      setSendTimingOpen(false);
+    }, 250);
+  };
+  const onSendTimingBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!sendTimingOpen) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && sendTimingRootRef.current?.contains(next) === true) return;
+    setSendTimingOpen(false);
+  };
+  // The menu-button key contract: ↑/↓ on the resting send button opens the
+  // menu and lands on the first/last row; once open, usePopover's handler on
+  // the root walks rows and Escape refocuses the button.
+  const onSendTimingButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!sendTimingAvailable || sendTimingOpen) return;
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    sendTimingFocusRef.current = event.key === 'ArrowUp' ? 'last' : 'first';
+    setSendTimingOpen(true);
+  };
+  const sendTimingKeys = usePopover(sendTimingOpen, closeSendTiming, sendTimingRootRef, 'composer-send-timing');
+  useEffect(() => {
+    if (sendTimingAvailable || !sendTimingOpen) return;
+    clearSendTimingTimers();
+    setSendTimingOpen(false);
+  }, [sendTimingAvailable, sendTimingOpen]);
+  useEffect(() => {
+    if (!sendTimingOpen || sendTimingFocusRef.current === null) return;
+    const rows = [...(sendTimingRootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+    const target = sendTimingFocusRef.current === 'last' ? rows.at(-1) : rows[0];
+    sendTimingFocusRef.current = null;
+    target?.focus();
+  }, [sendTimingOpen]);
+  useEffect(() => clearSendTimingTimers, []);
 
   /** Recompute the trigger-driven menu after any text/caret change. */
   const refreshMenu = (nextText: string, cursor: number) => {
@@ -2594,54 +2716,130 @@ export function Composer({
                 </button>
               ) : null}
               {/* While busy, Send stays mounted beside Stop so a queued prompt
-                  has a mouse path too (Enter works as before). */}
-              <button
-                type="button"
-                onClick={() => { send(); }}
-                disabled={!canSend}
-                title={
-                  queueEditing
-                    ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
-                    : sendDisabled && !disabled && sendDisabledTitle !== undefined
-                      ? sendDisabledTitle
-                      : busy && busySendsNow
-                        ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowTitleCmdEnter' : 'composer.sendNowTitle')
-                      : busy
-                        ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
-                        : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
-                }
-                aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
-                data-send-ready={canSend ? '' : undefined}
-                // Filled accent only once there is something to send; at rest
-                // the button is a quiet ink glyph on paper.
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
-                  canSend
-                    ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
-                    : 'bg-paper text-ink-faint'
-                }`}
+                  has a mouse path too (Enter works as before). The wrapper is
+                  the send-timing menu's hover/focus zone and its positioning
+                  context; the menu floats above the button. */}
+              <div
+                ref={sendTimingRootRef}
+                data-send-timing-root
+                className="relative flex"
+                onMouseEnter={openSendTimingOnHover}
+                onMouseLeave={closeSendTimingOnLeave}
+                onBlur={onSendTimingBlur}
+                onKeyDown={sendTimingKeys}
               >
-                {queueEditing ? (
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                    <path
-                      d="M3 8.5 6.5 12 13 4.5"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                    <path
-                      d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
-              </button>
+                <button
+                  ref={sendButtonRef}
+                  type="button"
+                  onClick={() => { closeSendTiming(); send(); }}
+                  onKeyDown={onSendTimingButtonKeyDown}
+                  disabled={!canSend}
+                  aria-haspopup={sendTimingAvailable ? 'menu' : undefined}
+                  aria-expanded={sendTimingAvailable ? sendTimingOpen : undefined}
+                  aria-controls={sendTimingOpen ? sendTimingMenuId : undefined}
+                  title={
+                    queueEditing
+                      ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
+                      : sendDisabled && !disabled && sendDisabledTitle !== undefined
+                        ? sendDisabledTitle
+                        : busy && busySendsNow
+                          ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowTitleCmdEnter' : 'composer.sendNowTitle')
+                        : busy
+                          ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
+                          : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
+                  }
+                  aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
+                  data-send-ready={canSend ? '' : undefined}
+                  // Filled accent only once there is something to send; at rest
+                  // the button is a quiet ink glyph on paper.
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
+                    canSend
+                      ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
+                      : 'bg-paper text-ink-faint'
+                  }`}
+                >
+                  {queueEditing ? (
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                      <path
+                        d="M3 8.5 6.5 12 13 4.5"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                      <path
+                        d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+                {sendTimingOpen && sendTimingDefault !== undefined ? (
+                  <div
+                    role="menu"
+                    id={sendTimingMenuId}
+                    aria-label={t('composer.sendTimingAria')}
+                    data-send-timing-menu
+                    className={`anim-enter absolute right-0 bottom-full z-40 mb-1.5 w-60 p-1 ${POPOVER_SURFACE_CLASS}`}
+                  >
+                    <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-menu-row
+                      data-send-timing="default"
+                      onClick={() => { closeSendTiming(); send(); }}
+                      className={`${MENU_ROW_CLASS} items-start`}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
+                        <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
+                          {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[sendTimingDefault]) })}
+                        </span>
+                      </span>
+                    </button>
+                    {onSendNow !== undefined ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        data-menu-row
+                        data-send-timing="now"
+                        onClick={() => { closeSendTiming(); send(true); }}
+                        className={`${MENU_ROW_CLASS} items-start`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium text-ink">{t('composer.sendTiming.now')}</span>
+                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('composer.sendTiming.nowHint')}</span>
+                        </span>
+                      </button>
+                    ) : null}
+                    {SEND_TIMING_PICKS.map((timing) => (
+                      <button
+                        key={timing}
+                        type="button"
+                        role="menuitem"
+                        data-menu-row
+                        data-send-timing={timing}
+                        onClick={() => { closeSendTiming(); send(false, timing); }}
+                        className={`${MENU_ROW_CLASS} items-start`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium text-ink">
+                            {t('composer.sendTiming.timed', { timing: t(TIMING_SHORT_KEY[timing]) })}
+                          </span>
+                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(TIMING_HINT_KEY[timing])}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
           </div>
