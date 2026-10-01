@@ -111,8 +111,23 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(content).toContain('explain the reason and consequences and obtain the user\'s consent before adding it');
     expect(content).toContain('never silently write a hard constraint');
     expect(content).toContain('preferred_models: [fast-model]');
+    expect(content).toContain('To use a configured default model instead');
+    expect(content).toContain('optionally set an effort and preference list');
+    expect(content).toContain('preferred_models: [your-configured-model]');
+    expect(content).not.toContain('allowed_models: [your-configured-model]');
     expect(content).toContain('Lists never select a model');
     expect(content).not.toContain('An `allowed_models` list without `model_alias` loads with a warning');
+  });
+
+  it('grounds executor configuration and delegation notices in their execution paths', () => {
+    const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')?.content ?? '';
+    expect(content).toContain('External IDs are built in or configured under `[agent_executors.<id>]` in `config.toml`');
+    expect(content).not.toContain('agent-executors.toml');
+    expect(content).toContain('`allow_kiki_subagents: true` enables Kiki delegation over local stdio MCP');
+    expect(content).toContain('For native execution, `auto` (default)');
+    expect(content).toContain('unless `[agents.delegation] sub = false` / `independent = false`');
+    expect(content).toContain('External prompt composition uses `executor_prompt`');
+    expect(content).toContain('its default `include: []` adds no delegation notice automatically');
   });
 
   it('keeps kiki-appearance narrow and grounded in the pack contract', () => {

@@ -86,12 +86,12 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `tools` / `disallowedTools` | Omit `tools` or use a lone `*` for no added allowlist; `tools: []` disables all tools. Other policy limits still apply; `mcp__server__*` globs match MCP; deny applies after allow |
 | `disabled-tool-groups` | Withhold built-in groups such as `shell` or `web`; a tool named in `tools` survives unless explicitly denied |
 | `subagents` / `subagent_policy` | Recommended child roles; global strict enforces a declared list (`[]` = no new children), advisory records deviations. Omit or `*` for no named restriction. Legacy `strict` can tighten advisory; legacy `advisory` cannot lower global strict |
-| `executor` | Omit for the native engine; external ids come from `agent-executors.toml`. For an external main agent, `allow_kiki_subagents: true` enables Kiki delegation over local stdio MCP |
+| `executor` | Omit for the native engine. External IDs are built in or configured under `[agent_executors.<id>]` in `config.toml`. For an external main agent, `allow_kiki_subagents: true` enables Kiki delegation over local stdio MCP |
 | `service_tier` | `auto`, `default`, `flex`, or `priority` |
 | `request_params` | Scalar map (string/number/boolean) sent with every request |
 | `context_budget` / `max_completion_tokens` | Caps only; the smallest declared layer wins |
 | `prompt_overrides` | Field-level prompt overrides; see below |
-| `delegation_notice` | `auto` (default) injects a position-based handoff notice for subagents or independent host agents; main binds never inject it; `off` skips it |
+| `delegation_notice` | For native execution, `auto` (default) injects a position-based handoff notice for subagents or independent host agents unless `[agents.delegation] sub = false` / `independent = false`; main binds never inject it; `off` skips it. External prompt composition uses `executor_prompt`; its default `include: []` adds no delegation notice automatically |
 
 Apply model/effort lists consistently across profile, caller lease, `spawn_constraints`, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. Advisory role dispatch, explicit pins, manual selections, and resume cannot bypass hard rules. Global role policies (`[subagent].main_dispatch_policy = "advisory"`, `subagent_dispatch_policy = "strict"` by default) are independent of model enforcement; prefer those global controls for new configuration.
 
@@ -128,12 +128,12 @@ prompt_overrides:
 
 This installed skill includes the complete, version-matched `implementer.md` and `reviewer.md` example files below. They are **examples, not installed roles**. `implementer` owns a bounded engineering objective through verification and handoff; `reviewer` independently judges a candidate or decision as a read-only leaf. On first-run setup, offer each separately. After the user opts in to a specific role, resolve the real Kiki data home on the server host and check whether that role's destination exists; never overwrite without explicit consent. Use the embedded Markdown template as the source, not a repository path or a paraphrase.
 
-Both templates set `model_alias: inherit` and leave `thinking_effort` unset. Copy the approved template unchanged: `inherit` follows the parent agent's model at dispatch time rather than fixing a provider in the example. Tell the user this model choice follows the caller and can later be changed to a fixed model in Settings. Check that the written file loads. To fix a role to one configured model instead, replace `inherit` with its alias and optionally set an effort and allowlist, for example:
+Both templates set `model_alias: inherit` and leave `thinking_effort` unset. Copy the approved template unchanged: `inherit` follows the parent agent's model at dispatch time rather than fixing a provider in the example. Tell the user this model choice follows the caller and can later be changed to a fixed model in Settings. Check that the written file loads. To use a configured default model instead, replace `inherit` with its alias and optionally set an effort and preference list, for example:
 
 ```yaml
 model_alias: your-configured-model
 thinking_effort: high
-allowed_models: [your-configured-model]
+preferred_models: [your-configured-model]
 ```
 
 The following complete example files are embedded by the built-in skill from the versioned templates shipped in the application. They are available even when the source repository is absent.
