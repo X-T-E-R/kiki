@@ -42,6 +42,47 @@ A session is driven by one **main agent**, which can dispatch **subagents** for 
 
 To permanently replace the default main agent's configuration, there is one special file: `$KIKI_HOME/SYSTEM.md` (default `~/.kiki/SYSTEM.md`). A body-only `SYSTEM.md` replaces just the default main agent's system prompt; an upgraded file starting with `---` frontmatter can also change profile fields such as `tools`, `subagents`, and the model binding. Precedence details are in [Overriding the main agent's system prompt with SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md).
 
+## Model menus and hard boundaries
+
+`model_profiles` provides per-model parameters and prompts; by default, it is a candidate menu, not an exhaustive list of permitted models. The top-level frontmatter field `restrict_models_to_menu` accepts only a boolean and defaults to `false`. Set it to `true` to make the menu the profile's model-binding contract: only the author's declared default `model_alias` and `model_profiles[].alias` are permitted, subject to other hard rules and executor capabilities. It applies to main agents, subagents, registered profiles, and explicit profile files, not to routes, caller leases (caller-supplied child configuration overrides), `spawn_constraints`, or menu entries. Enabling it on a parent profile does not enable it on child profiles.
+
+For a complete permitted menu, maintain one positive list rather than copying it into `allowed_models`:
+
+```yaml
+model_alias: fast-model
+restrict_models_to_menu: true
+model_profiles:
+  - alias: review-model
+    when: A more thorough review is needed.
+    thinking_effort: high
+```
+
+This menu contains `fast-model` and `review-model`; the default needs no duplicate empty entry. Models are compared using the executor's canonical identities, not alias suffix matching. An unresolvable or unexecutable declaration does not gain execution capability. Changing the default also changes the menu: if the old default is not separately listed in `model_profiles`, replacing the default removes the old model and adds the new one.
+
+The switch adds one **hard allow domain**. It does not change model-selection priority or automatically select the first menu entry. After directory and scope resolution selects the profile, Kiki captures its original default and menu before route or lease rewrites and freezes them with the binding. Explicit dispatch parameters, route / lease pins (default model selections), a saved effective model, and lease replacements of `model_profiles` cannot expand that domain. Replacing entries with a subset or an empty list neither erases nor narrows the original menu; use `allowed_models` for an additional hard restriction. Hard rules from the original menu entries remain in force.
+
+These rules apply equally in the GUI, CLI, `AgentRun`, and API:
+
+- **Reject outside the menu; do not downgrade.** When enabled, an explicit out-of-menu selection returns `profile.constraint_violation`, without falling back to the default. Omitting the model still selects it through the existing default rules, then validates the menu. A default or configured fallback outside the menu is rejected; Kiki does not scan the menu for a replacement. Failure to select any model still reports an unbound model.
+- **Every hard domain applies.** The menu intersects with all applicable `allowed_models` lists, and a `deny_models` match always rejects. `"*"` cannot widen the menu. Machine denials and model / effort capability limits retain their existing scope. Turning the switch off does not remove those hard rules or hard rules inside menu entries. An equivalent menu and `allowed_models` list are redundant, not a loading error; different lists still intersect, with neither layer ignored.
+- **Hints are not gates.** `when` is text for the caller, not an evaluated condition. An omitted hint, an apparently unmet condition, or several apparently matching conditions do not change permission. `preferred_*` and `discouraged_models` remain soft advice when the menu is enabled. Menu order is not a downgrade chain.
+- **An empty domain does not permit execution.** An empty menu with a default restricts binding to that one model. With neither menu nor default, no effective candidates, or an empty intersection with other hard domains, binding is rejected rather than treating an empty set as unrestricted (fail closed).
+- **Resume does not expand permission.** `resume` validates the frozen menu and saved hard rules, plus applicable current caller / machine hard domains; rejection leaves the saved binding unchanged. Model changes still require `allow_model_change: true`, which does not authorize going outside the menu. Editing the switch or menu on disk never silently rewrites existing snapshots. New bindings use the new definition; existing sessions require an explicit rebind or a new session.
+
+To recover from a hard rejection, select an effective menu item that also satisfies other hard rules, or edit the profile declaration. Explicit pins, manual selections, and model-change confirmation are not ways to bypass the menu.
+
+### When to enable it
+
+Prefer enabling the switch for profiles whose `model_profiles` is **already maintained as a complete permitted menu**. Leave it off for general-purpose profiles or menus that only list a few examples. Kiki does not bulk-enable or automatically migrate existing profiles. Choose by intent:
+
+| Scenario | Recommended configuration |
+| --- | --- |
+| The default and menu entries are the complete permitted candidates, with per-model parameters / prompts and one shared candidate source for the GUI and callers | Enable `restrict_models_to_menu` and maintain the default plus `model_profiles`; usually do not duplicate an equivalent `allowed_models` list |
+| Cost, speed, or experience-based advice only, while users or callers should still be able to try models outside the menu | Leave it off and use soft `preferred_models`, `preferred_efforts` / `discouraged_models` |
+| A real budget, compliance, deployment, or descendant-tree boundary that is independent of the profile menu | Use hard `allowed_models` / `deny_models`, without inventing menu entries; combine with the switch if needed, taking the effective intersection |
+
+See [Agent file format](./agents.md#agent-file-format) for the field reference and more examples.
+
 ## Customization mechanism map
 
 Kiki separates customization mechanisms by concern. Decide what you want to change first, then pick the mechanism:

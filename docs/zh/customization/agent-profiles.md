@@ -42,6 +42,47 @@ Kiki 按作用域发现 profile 文件，作用域越具体，优先级越高：
 
 想让默认 main agent 永久换成自己的配置，还有一种特例文件：`$KIKI_HOME/SYSTEM.md`（默认 `~/.kiki/SYSTEM.md`）。纯正文的 `SYSTEM.md` 只替换默认 main agent 的系统提示词；以 `---` Frontmatter 开头的升级版还能同时改 `tools`、`subagents`、模型绑定等 profile 字段。优先级交互见 [用 SYSTEM.md 覆盖 main agent 的系统提示词](./agents.md#用-system-md-覆盖-main-agent-的系统提示词)。
 
+## 模型菜单与硬边界
+
+`model_profiles` 可以为不同模型提供参数与提示词；默认情况下，它只是候选菜单，不是全部获准模型的穷举。顶层 Frontmatter 字段 `restrict_models_to_menu` 只接受布尔值，默认 `false`。设为 `true` 后，菜单成为该 profile 的模型绑定契约：只允许作者声明的默认 `model_alias` 与 `model_profiles[].alias`，并继续受其他硬规则和执行器能力限制。它适用于 main agent、subagent、注册 profile 与显式 profile 文件，不放在 route、caller lease（调用方给子 Agent 的配置覆写）、`spawn_constraints` 或菜单条目里；父 profile 开启也不会自动替子 profile 开启。
+
+例如，完整获准菜单可以只维护一份正向名单，不必再复制到 `allowed_models`：
+
+```yaml
+model_alias: fast-model
+restrict_models_to_menu: true
+model_profiles:
+  - alias: review-model
+    when: 需要更深入的评审。
+    thinking_effort: high
+```
+
+这里的菜单包含 `fast-model` 和 `review-model`；默认模型不必重复写成一个空条目。模型按执行器使用的规范身份比较，不靠 alias 的字符串尾段匹配；无法解析或执行的声明不会因此获得运行能力。修改默认模型也会改变菜单：若旧默认没有单独列在 `model_profiles` 中，换默认就会移除旧模型并加入新模型。
+
+开关只增加一层**硬允许域**，不改变选模优先级，也不自动选菜单第一项。Kiki 在按目录与作用域选定 profile 后、route 与 lease 改写前捕获原始默认和菜单，并随绑定冻结。显式派发参数、route / lease pin（默认模型指定）、已保存的实际模型，或 lease 替换的 `model_profiles` 都不能扩充它；lease 把条目替换为子集或空列表也不会抹除或收窄原菜单，另加硬限制应使用 `allowed_models`。原菜单条目的硬规则仍保留。
+
+以下规则在 GUI、CLI、`AgentRun` 与 API 中一致：
+
+- **菜单外拒绝，不降级。** 开启后，显式选菜单外模型返回 `profile.constraint_violation`，不回落到默认。省略模型参数仍先按既有默认规则选模，再校验菜单；若默认或配置回退在菜单外则拒绝，不扫描菜单找替代。没有选出模型仍报未绑定。
+- **所有硬域同时生效。** 菜单与各层 `allowed_models` 求交，`deny_models` 命中始终拒绝；`"*"` 不能放宽菜单。机器级禁止与模型 / effort 能力限制仍按原有范围生效。关闭开关也不会撤销这些硬规则或菜单条目内部的硬规则。菜单与 `allowed_models` 完全等价时只是冗余，不是加载错误；两者不同时仍求交，不忽略任何一层。
+- **提示不是门禁。** `when` 是供调用方阅读的提示，不执行条件判断；缺省、条件看似未满足或多个条件同时满足都不影响许可。`preferred_*` 与 `discouraged_models` 仍是软建议，不因开启菜单而变成硬规则；菜单顺序也不是降级链。
+- **空域不放行。** 菜单为空但有默认时形成单模型限制；菜单与默认都没有、无法形成有效候选，或与其他硬域的有效交集为空时，拒绝绑定，而不是把空集当不限（fail closed）。
+- **恢复不扩权。** `resume` 校验冻结的菜单与保存的硬规则，以及适用的当前调用方 / 机器硬域；违规时保留已保存绑定。换模仍须满足 `allow_model_change: true`，该确认不授权越过菜单。磁盘上改开关或菜单不会悄悄改写已有快照；新绑定使用新定义，已有会话需明确重新绑定或新建。
+
+遇到硬拒绝时，选择仍满足其他硬规则的有效菜单项，或修改 profile 声明；显式 pin、人工选择与换模确认都不是绕过菜单的方法。
+
+### 何时开启
+
+优先为**已经把 `model_profiles` 维护成完整获准菜单**的 profile 开启；普通通用 profile 或只列几个示例的菜单继续关闭。Kiki 不会批量替现有 profile 开启或自动迁移它们。按意图选择：
+
+| 场景 | 推荐写法 |
+| --- | --- |
+| 默认模型与菜单条目就是全部获准候选，需要逐模型参数 / 提示，并让 GUI 与调用方共用一份候选事实 | 开启 `restrict_models_to_menu`，维护默认与 `model_profiles`；通常不再手抄等价的 `allowed_models` |
+| 只是成本、速度或经验推荐，仍希望人工或调用方尝试菜单外模型 | 保持关闭，使用软字段 `preferred_models`、`preferred_efforts` / `discouraged_models` |
+| 真正边界来自预算、合规、部署或下级树策略，并不等于 profile 菜单 | 使用硬字段 `allowed_models` / `deny_models`，不必为此编造菜单条目；可与开关叠加，取有效交集 |
+
+字段参考与更多示例见 [Agent 文件格式](./agents.md#agent-文件格式)。
+
 ## 定制机制地图
 
 Kiki 的定制机制各管一件事。先想清楚要改什么，再选机制：

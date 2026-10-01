@@ -31,6 +31,8 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 `AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（省略时，显式配置的 `[subagent].default_profile` 会选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。字面标明的 `preferred_models`、`discouraged_models`、`preferred_efforts` 与 route / caller lease pin 属于软建议：满足硬规则且可执行的覆盖会继续并产生结构化 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬规则，违规即拒绝。机器级 `[subagent].deny_models`、缺失或不受支持的模型能力、route 身份、换模确认，以及 executor / thread 限制仍是硬错误。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项按此顺序选模型：具体 `model_alias` 参数 → 生效 profile / route / caller lease pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。传入 `background: true` 可让任务在后台运行，否则父 Agent 会等待结果。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
 
+`AgentRun` 选模时，`restrict_models_to_menu` 关闭（默认）意味着 profile 菜单不是穷举；开启后，仅作者原始默认 `model_alias` 与 `model_profiles` 菜单条目可选，且仍须满足所有其他硬规则与执行能力。Route / caller lease pin 和显式 `model_alias` 参数不能增加候选。菜单外选择被拒绝，不回落；`resume` 和 `allow_model_change: true` 也不扩充冻结菜单。详见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界)。
+
 `profile_file` 按绝对路径或工作区相对路径解析，解析链接后的真实路径仍须位于允许的目录内。
 
 `AgentList` 返回这些直属子 Agent。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
@@ -206,6 +208,7 @@ disallowedTools:
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
 | `permission_mode` | 否 | 该 profile 的权限模式：`manual`、`auto`、`review` 或 `yolo`。profile 启动新 Agent 时会覆盖 `default_permission_mode`；显式 CLI 参数 `--permission-mode` 优先级更高。 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或在配置中写 `inherit`，让 subagent 绑定调用方模型。无 pin 时使用具体派发参数或显式 `[subagent].default_model`；省略从不继承调用方。Pin 是软默认值，不能绕过硬列表。main agent 没有调用方，不可使用 `inherit` |
+| `restrict_models_to_menu` | 否 | 布尔值，默认 `false`，仅放 profile 顶层。`true` 从作者原始默认 `model_alias` 与 `model_profiles[].alias` 派生一道**硬**模型上限，在 route / lease 改写前捕获并随绑定冻结。其他硬允许域继续求交，禁止项仍生效；显式 pin 与恢复不能绕过。见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界) |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
 | `allow_kiki_subagents` | 否 | 默认 `false`。该 profile 绑定到外部 main agent 时附加 Kiki 的同会话委派工具；需要本机 stdio MCP。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
@@ -271,6 +274,20 @@ discouraged_models: [review-model]
 ```
 
 这里 `review-model` 仍可执行，但携带 advisory；`heavy-model` 被拒绝。列表本身不选择模型：使用 `model_alias` pin、派发参数或显式配置的 `[subagent].default_model`。
+
+若默认模型与逐模型跑法已经组成完整获准菜单，优先让菜单成为契约，而不是维护重复的正向硬列表：
+
+```yaml
+model_alias: fast-model
+restrict_models_to_menu: true
+model_profiles:
+  - alias: review-model
+    when: 需要更深入的评审。
+    thinking_effort: high
+preferred_models: [fast-model]
+```
+
+这份配置允许原始默认 `fast-model` 与菜单条目 `review-model`，不允许任意显式覆盖；其他硬规则还可进一步收紧。只做推荐的菜单继续关闭开关，使用 `preferred_*` / `discouraged_models`；独立预算、合规、部署或下级树边界使用 `allowed_models` / `deny_models`。开关默认关闭，不会自动迁移已有 profile。三场景选择规则见 [何时开启](./agent-profiles.md#何时开启)。
 
 **迁移：**既有 `allowed_models`、`deny_models`、`allowed_efforts` 立即按字面硬语义执行，没有旧字段软模式。只用于建议的列表，应在各受影响作用域分别改名为 `preferred_models`、`discouraged_models`、`preferred_efforts`。真正的硬边界保持不变，仅为明确允许的备选绑定放宽列表。保留 `model_profiles` 候选与默认 pin；只迁移其中确属建议的字段，不替换该机制。已保存绑定超出硬规则时恢复会被拒绝：先选择许可值或修正规则，再重试。
 
