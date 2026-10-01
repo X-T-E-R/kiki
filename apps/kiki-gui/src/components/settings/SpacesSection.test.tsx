@@ -201,10 +201,12 @@ describe('SpacesSection in the main space', () => {
 
   it('creates a desktop shortcut on Windows and reports success', async () => {
     await render(<SpacesSection />);
-    const shortcutBtn = document.querySelector<HTMLButtonElement>('[data-space-shortcut="main"]')!;
-    expect(shortcutBtn).not.toBeNull();
-    expect(shortcutBtn.disabled).toBe(false);
-    await click('[data-space-shortcut="main"]');
+    expect(document.querySelector('[data-space-shortcut]')).toBeNull();
+    await click('[data-space-menu="main"]');
+    const shortcutItem = document.querySelector<HTMLButtonElement>('[data-space-menu-item="shortcut"]')!;
+    expect(shortcutItem).not.toBeNull();
+    expect(shortcutItem.disabled).toBe(false);
+    await click('[data-space-menu-item="shortcut"]');
     expect(host.createSpaceShortcut).toHaveBeenCalledWith('main');
     expect(document.body.textContent).toContain('C:\\Users\\me\\Desktop\\Kiki - Main space.lnk');
   });
@@ -212,7 +214,8 @@ describe('SpacesSection in the main space', () => {
   it('handles shortcut_exists by showing an informative note', async () => {
     host.createSpaceShortcut.mockRejectedValueOnce({ code: 'shortcut_exists', message: 'Already exists' });
     await render(<SpacesSection />);
-    await click('[data-space-shortcut="h-acme"]');
+    await click('[data-space-menu="h-acme"]');
+    await click('[data-space-menu-item="shortcut"]');
     expect(host.createSpaceShortcut).toHaveBeenCalledWith('h-acme');
     expect(document.body.textContent).toContain('A desktop shortcut already exists for this space.');
   });
@@ -220,7 +223,8 @@ describe('SpacesSection in the main space', () => {
   it('handles shortcut_failed with detail message', async () => {
     host.createSpaceShortcut.mockRejectedValueOnce({ code: 'shortcut_failed', message: 'Access denied' });
     await render(<SpacesSection />);
-    await click('[data-space-shortcut="h-paper"]');
+    await click('[data-space-menu="h-paper"]');
+    await click('[data-space-menu-item="shortcut"]');
     expect(host.createSpaceShortcut).toHaveBeenCalledWith('h-paper');
     expect(document.body.textContent).toContain('Access denied');
   });
@@ -268,11 +272,12 @@ describe('non-Windows platform', () => {
     vi.stubGlobal('navigator', { language: 'en-US', platform: 'MacIntel', userAgent: 'Macintosh' });
   });
 
-  it('disables create shortcut button and shows explanation', async () => {
+  it('disables create shortcut menu item and shows explanation', async () => {
     await render(<SpacesSection />);
-    const shortcutBtn = document.querySelector<HTMLButtonElement>('[data-space-shortcut="main"]')!;
-    expect(shortcutBtn).not.toBeNull();
-    expect(shortcutBtn.disabled).toBe(true);
-    expect(shortcutBtn.title).toBe('Desktop shortcuts are currently supported only on Windows.');
+    await click('[data-space-menu="main"]');
+    const shortcutItem = document.querySelector<HTMLButtonElement>('[data-space-menu-item="shortcut"]')!;
+    expect(shortcutItem).not.toBeNull();
+    expect(shortcutItem.disabled).toBe(true);
+    expect(shortcutItem.textContent).toContain('Desktop shortcuts are currently supported only on Windows.');
   });
 });

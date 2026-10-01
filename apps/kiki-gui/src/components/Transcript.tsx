@@ -389,20 +389,9 @@ const UserMessage = memo(function UserMessage({
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       {/* Meta line: the sender shows only when it is not the user (agent or
-          peer-thread messages); the time and row actions stay quiet until
-          hover/focus so the bubble reads as the user's own voice. */}
+          peer-thread messages); the time stays quiet until hover/focus so the
+          bubble reads as the user's own voice. */}
       <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
-        {(rowActions !== undefined || messageLink !== undefined) && !editing ? (
-          <MessageRowActions
-            copyText={typedText}
-            linkHref={messageLink?.(block.id)}
-            canEdit={canMutate}
-            canFork={canMutate && rowActions?.canFork !== false}
-            disabled={rowActions?.disabled}
-            onEdit={() => { setEditing(true); }}
-            onFork={() => { rowActions?.onFork(block); }}
-          />
-        ) : null}
         {senderLabel !== undefined ? (
           <span
             data-agent-message-sender={block.agentMessage?.senderAgentId}
@@ -476,6 +465,21 @@ const UserMessage = memo(function UserMessage({
           </div>
         </div>
       )}
+      {/* Row actions hang under the bubble they belong to, flush right: the row
+          keeps their height whether or not they are revealed, and they never
+          sit over the bubble's own inline links. */}
+      {(rowActions !== undefined || messageLink !== undefined) && !editing ? (
+        <MessageRowActions
+          align="right"
+          copyText={typedText}
+          linkHref={messageLink?.(block.id)}
+          canEdit={canMutate}
+          canFork={canMutate && rowActions?.canFork !== false}
+          disabled={rowActions?.disabled}
+          onEdit={() => { setEditing(true); }}
+          onFork={() => { rowActions?.onFork(block); }}
+        />
+      ) : null}
       {!editing && isOverflowing ? (
         <button
           type="button"
@@ -608,7 +612,7 @@ const AssistantMessage = memo(function AssistantMessage({
       </div>
       {showActions ? (
         <MessageRowActions
-          framed
+          align="left"
           copyText={block.text}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
@@ -1305,19 +1309,21 @@ const SubagentCard = memo(function SubagentCard({
             >
               {body}
             </button>
-            {invocation.button}
-            {onToggleForm !== undefined && !nested ? (
-              <button
-                type="button"
-                data-card-collapse={block.subagentId}
-                aria-label={t('subagent.collapseCard')}
-                title={t('subagent.collapseCard')}
-                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
-                className="-mt-1 -mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
-              >
-                <DisclosureChevron open className="text-current" />
-              </button>
-            ) : null}
+            <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
+              {invocation.button}
+              {onToggleForm !== undefined && !nested ? (
+                <button
+                  type="button"
+                  data-card-collapse={block.subagentId}
+                  aria-label={t('subagent.collapseCard')}
+                  title={t('subagent.collapseCard')}
+                  onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
+                >
+                  <DisclosureChevron open className="text-current" />
+                </button>
+              ) : null}
+            </div>
           </div>
           {invocation.body}
           {block.orphaned === true ? (

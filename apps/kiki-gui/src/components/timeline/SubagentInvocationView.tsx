@@ -52,6 +52,43 @@ function CopyButton({ text }: { text: string }) {
 const WELL = 'max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink select-text';
 const asText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? String(value);
 
+function AdvisoriesRow({
+  advisories,
+  countHeader,
+  hasAdvisoriesHeader,
+}: {
+  advisories: readonly JsonObject[];
+  countHeader?: string;
+  hasAdvisoriesHeader: boolean;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const label = !hasAdvisoriesHeader
+    ? t('subagent.call.advisoriesLegacy', { count: countHeader ?? '?' })
+    : `${t('subagent.call.advisories')} (${advisories.length})`;
+
+  return (
+    <div className="mb-2" data-binding-advisories>
+      <button
+        type="button"
+        onClick={() => { setOpen((value) => !value); }}
+        className="inline-flex items-center gap-1 text-[12px] text-ink-faint transition-colors hover:text-ink"
+      >
+        <DisclosureChevron open={open} className="text-current" />
+        <span>{label}</span>
+      </button>
+      {open ? (
+        <div className="mt-1 space-y-1">
+          {advisories.map((advisory, index) => <pre key={index} className={WELL}>{asText(advisory)}</pre>)}
+        </div>
+      ) : null}
+      <div className="sr-only">
+        {advisories.map((advisory, index) => <pre key={index}>{asText(advisory)}</pre>)}
+      </div>
+    </div>
+  );
+}
+
 export const SubagentInvocationView = memo(function SubagentInvocationView({ toolBlock }: { toolBlock: ToolBlock }) {
   const { t } = useI18n();
   const args = isObject(toolBlock.args) ? toolBlock.args : undefined;
@@ -87,12 +124,11 @@ export const SubagentInvocationView = memo(function SubagentInvocationView({ too
           </div>
         )}
         {advisories.length === 0 ? null : (
-          <div className="mb-2 space-y-1" data-binding-advisories>
-            <p className="text-[12px] text-amber-ink">{receipt?.advisories === undefined
-              ? t('subagent.call.advisoriesLegacy', { count: receipt?.headers['binding_advisory_count'] ?? '?' })
-              : `${t('subagent.call.advisories')} (${advisories.length})`}</p>
-            {advisories.map((advisory, index) => <pre key={index} className={`${WELL} border-l-2 border-amber-rule`}>{asText(advisory)}</pre>)}
-          </div>
+          <AdvisoriesRow
+            advisories={advisories}
+            countHeader={receipt?.headers['binding_advisory_count']}
+            hasAdvisoriesHeader={receipt?.advisories !== undefined}
+          />
         )}
         <pre data-invocation-output className={`${WELL} ${toolBlock.isError === true ? 'text-danger' : ''}`}>
           {toolBlock.output === undefined ? t(toolBlock.status === 'running' ? 'subagent.call.noOutputYet' : 'subagent.call.noOutput') : asText(toolBlock.output)}
@@ -124,9 +160,11 @@ export function useInvocationDetails(toolCallId: string | undefined, callerAgent
       aria-label={t(open ? 'subagent.call.collapseDetails' : 'subagent.call.expandDetails')}
       title={t('subagent.call.details')}
       onClick={() => { setOpen((value) => !value); }}
-      className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-ink-faint hover:bg-panel hover:text-ink">
+      className={compact
+        ? 'inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-ink-faint hover:bg-panel hover:text-ink'
+        : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink'}>
       {compact ? <Icon name="file" size={12} /> : null}
-      <span className={compact ? 'sr-only @[480px]:not-sr-only' : undefined}>{t('subagent.call.details')}</span>
+      {compact ? <span className="sr-only @[480px]:not-sr-only">{t('subagent.call.details')}</span> : null}
       {compact ? null : <DisclosureChevron open={open} className="text-current" />}
     </button>
   );

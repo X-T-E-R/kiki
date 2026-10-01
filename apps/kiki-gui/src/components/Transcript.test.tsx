@@ -695,14 +695,39 @@ function assistantBlock(id: string, text: string): Extract<Block, { kind: 'assis
   return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z' };
 }
 
+/**
+ * The row actions split in two surfaces: the flat icons the row shows on hover
+ * (`data-row-action`) and the trailing `⋯` popover (`data-row-action-menu` for
+ * the breakpoint copies of those icons, plain `data-row-action` for the
+ * menu-only link/fork). Each action keeps exactly one `data-row-action` node.
+ */
 function rowActionButtons(row: Element): string[] {
   return [...row.querySelectorAll('[data-row-action]')].map(
     (el) => el.getAttribute('data-row-action') ?? '',
   );
 }
 
+function rowMenuItems(row: Element): string[] {
+  return [...row.querySelectorAll('[data-row-action-menu]')].map(
+    (el) => el.getAttribute('data-row-action-menu') ?? '',
+  );
+}
+
 function click(element: Element): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
+/**
+ * Let one deferred frame land before a test opens a transient menu. The
+ * transcript's own scroll (`scrollTo` is stubbed one frame late for smooth
+ * jumps) fires a real scroll event, and the row-actions `⋯` closes on scroll by
+ * design — so a frame that happens to land after the click would close a menu
+ * the test just opened. In a browser the reader's scroll has long settled.
+ */
+async function drainDeferredFrames(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => { setTimeout(resolve, 40); });
+  });
 }
 
 describe('user message token projection', () => {
@@ -1732,11 +1757,12 @@ describe('message row actions', () => {
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rows).toHaveLength(4);
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link', 'edit', 'fork']);
+    // Tiled first (copy / edit / regenerate), then what the `⋯` holds.
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'link', 'fork']);
     // An older assistant row copies but never regenerates.
     expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'link']);
-    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'link', 'edit', 'fork']);
-    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'link', 'regenerate', 'fork']);
+    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'link', 'fork']);
+    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'link', 'fork']);
   });
 
   it('hides edit/fork on a user row without a wire identity', async () => {
@@ -1830,7 +1856,7 @@ describe('message row actions', () => {
     const settledRow = delivered.querySelector('[data-block-id="user-p-now"]')!;
     expect(settledRow.querySelector('[data-steer-line]')).toBeNull();
     expect(settledRow.querySelector('.steer-bubble')?.className).toContain('bg-bubble-user');
-    expect(rowActionButtons(settledRow)).toEqual(['copy', 'link', 'edit', 'fork']);
+    expect(rowActionButtons(settledRow)).toEqual(['copy', 'edit', 'link', 'fork']);
   });
 
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
@@ -1853,7 +1879,7 @@ describe('message row actions', () => {
       rowActions,
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link', 'edit', 'fork']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'link', 'fork']);
   });
 
   it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
@@ -1946,27 +1972,178 @@ describe('message row actions', () => {
     expect(copy?.disabled).toBe(false);
   });
 
-  it('toggles the framed more-actions dropdown menu on click and closes on escape', async () => {
+  it('toggles the row actions ⋯ menu on click and closes on escape', async () => {
     const container = await renderTranscript([
       assistantBlock('assistant-m2-0', 'assistant message text'),
     ]);
-    const moreBtn = container.querySelector<HTMLButtonElement>('[data-row-more]')!;
-    expect(moreBtn).not.toBeNull();
-    expect(moreBtn.getAttribute('aria-expanded')).toBe('false');
-    const menu = container.querySelector('[role="menu"]')!;
-    expect(menu.className).toContain('hidden');
+    await drainDeferredFrames();
+    const trigger = () => container.querySelector<HTMLButtonElement>('[data-row-more]');
+    const menu = () => container.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(trigger()).not.toBeNull();
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('false');
+    expect(menu().className).toContain('hidden');
 
     await act(async () => {
-      flushSync(() => { click(moreBtn); });
+      flushSync(() => { click(trigger()!); });
     });
-    expect(moreBtn.getAttribute('aria-expanded')).toBe('true');
-    expect(menu.className).toContain('flex');
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true');
+    expect(menu().className).toContain('flex');
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    expect(moreBtn.getAttribute('aria-expanded')).toBe('false');
-    expect(menu.className).toContain('hidden');
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('false');
+    expect(menu().className).toContain('hidden');
+  });
+
+  it('flips the ⋯ menu upward when the row sits near the bottom of the window', async () => {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      // The trigger hugs the bottom edge (jsdom's window is 768px tall) and has
+      // more room above than below, which is the flip condition.
+      if (this.hasAttribute('data-row-more')) {
+        return { x: 0, y: 720, top: 720, bottom: 748, left: 0, right: 28, width: 28, height: 28, toJSON: () => undefined } as DOMRect;
+      }
+      return original.call(this);
+    });
+    try {
+      const container = await renderTranscript([
+        assistantBlock('assistant-m2-0', 'assistant message text'),
+      ]);
+      await act(async () => {
+        flushSync(() => { click(container.querySelector('[data-row-more]')!); });
+      });
+      const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+      expect(menu.className).toContain('bottom-full');
+      expect(menu.className).not.toContain('top-full');
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it('hangs the strip under the message it belongs to, on the message’s own side', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
+        assistantBlock('assistant-m2-0', 'answer'),
+      ],
+      rowActions,
+    );
+    const userRow = container.querySelector('[data-block-id="user-m1"]')!;
+    const assistantRow = container.querySelector('[data-block-id="assistant-m2-0"]')!;
+    const userStrip = userRow.querySelector('[data-row-actions]')!;
+    const assistantStrip = assistantRow.querySelector('[data-row-actions]')!;
+    // The strip follows the bubble / the prose as a sibling — it is not floating
+    // in the row's top-right corner, over whatever the text happens to paint.
+    expect(userStrip.previousElementSibling?.querySelector('[data-collapsible-content]')).not.toBeNull();
+    expect(assistantStrip.previousElementSibling?.hasAttribute('data-assistant-prose')).toBe(true);
+    expect(userStrip.getAttribute('data-row-actions-align')).toBe('right');
+    expect(assistantStrip.getAttribute('data-row-actions-align')).toBe('left');
+    for (const strip of [userStrip, assistantStrip]) {
+      expect(strip.className).not.toContain('absolute');
+      // Height is reserved whether or not the icons are revealed (no jitter)…
+      expect(strip.className).toContain('min-h-7');
+      // …and the strip's box reaches 4px up over the gap, while staying out of
+      // the pointer's way so the message keeps its clicks and its selection.
+      expect(strip.className).toContain('-mt-1');
+      expect(strip.className).toContain('pt-1');
+      expect(strip.className).toContain('pointer-events-none');
+      // The open `⋯` must sit above the row's other chrome (a rotated chevron on
+      // a collapsed message paints like a positioned box).
+      expect(strip.className).toContain('z-20');
+      expect(strip.className).toContain('opacity-0');
+      expect(strip.className).toContain('group-hover/msg:opacity-100');
+      expect(strip.className).toContain('group-focus-within/msg:opacity-100');
+    }
+    // A 14px glyph in a flat 28px box: no border, no pill, and the one element in
+    // the strip that takes the pointer.
+    const copyTile = userStrip.querySelector('[data-row-action="copy"]')!;
+    expect(copyTile.className).toContain('h-7');
+    expect(copyTile.className).toContain('w-7');
+    expect(copyTile.className).toContain('pointer-events-auto');
+    expect(copyTile.className).toContain('hover:bg-ink/[0.04]');
+    expect(copyTile.className).not.toContain('border');
+    expect(copyTile.querySelector('svg')?.getAttribute('class')).toContain('h-3.5');
+  });
+
+  it('folds the tiled icons into the ⋯ menu below sm', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    const tiles = row.querySelector('[data-row-action-tiles]')!;
+    expect(tiles.className).toContain('hidden');
+    expect(tiles.className).toContain('sm:flex');
+    // Every action is one control on the flat surface…
+    expect(rowActionButtons(row)).toEqual(['copy', 'edit', 'link', 'fork']);
+    // …and a narrow lane gets its own copies of the tiled three inside the menu.
+    expect(rowMenuItems(row)).toEqual(['copy', 'edit']);
+    for (const item of row.querySelectorAll('[data-row-action-menu]')) {
+      expect(item.className).toContain('sm:hidden');
+    }
+    const more = row.querySelector('[data-row-more]')!;
+    expect(more.getAttribute('aria-haspopup')).toBe('menu');
+    expect(more.className).toContain('h-7');
+    // The trigger itself stays at every width while the menu-only actions exist.
+    expect(more.className).not.toContain('sm:hidden');
+  });
+
+  it('keeps Esc and the arrow keys working inside a user row’s ⋯ menu', async () => {
+    const onFork = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
+      rowActions,
+    );
+    // Re-query on every step: a virtualized row can be re-rendered between reads,
+    // and a captured node would then be a detached copy of the control.
+    const trigger = () => container.querySelector<HTMLButtonElement>('[data-block-id="user-m1"] [data-row-more]')!;
+    const menu = () => container.querySelector<HTMLElement>('[data-block-id="user-m1"] [role="menu"]')!;
+    const items = () => [...menu().querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+
+    await drainDeferredFrames();
+    await act(async () => { flushSync(() => { click(trigger()); }); });
+    expect(trigger().getAttribute('aria-expanded')).toBe('true');
+    expect(menu().className).toContain('flex');
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items()[0]);
+    // ArrowUp wraps to the last item — the fork the menu exists for.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items()[items().length - 1]);
+    await act(async () => { click(document.activeElement as Element); });
+    expect(onFork).toHaveBeenCalledTimes(1);
+    expect(menu().className).toContain('hidden');
+
+    // Escape closes and hands focus back to the trigger.
+    await act(async () => { flushSync(() => { click(trigger()); }); });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(menu().className).toContain('hidden');
+    expect(document.activeElement).toBe(trigger());
   });
 });
 

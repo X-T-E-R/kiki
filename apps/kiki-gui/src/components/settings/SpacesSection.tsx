@@ -134,7 +134,6 @@ function SpaceListCard({ sub }: { sub: boolean }) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [restartNote, setRestartNote] = useState<{ id: string; text: string } | null>(null);
   const [entering, setEntering] = useState<string | null>(null);
-  const [creatingShortcut, setCreatingShortcut] = useState<string | null>(null);
   const desktop = host.kind === 'tauri';
   const isWindows = detectShortcutPlatform() === 'windows';
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
@@ -191,7 +190,6 @@ function SpaceListCard({ sub }: { sub: boolean }) {
       setFeedback({ tone: 'error', text: t('st.spaces.shortcutWindowsOnly') });
       return;
     }
-    setCreatingShortcut(space.id);
     setFeedback(null);
     void host.createSpaceShortcut(space.id)
       .then((result) => {
@@ -219,8 +217,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
         } else {
           setFeedback({ tone: 'error', text: errorText(locale, error) });
         }
-      })
-      .finally(() => { setCreatingShortcut(null); });
+      });
   };
 
   const deleteBlock = (space: SpaceListItem): string | undefined => {
@@ -231,24 +228,29 @@ function SpaceListCard({ sub }: { sub: boolean }) {
     return undefined;
   };
 
-  const menuItems = (space: SpaceListItem): SpaceMenuItem[] => [
-    ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
-    { key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } },
-    ...(desktop && host.createSpaceShortcut !== undefined ? [{
-      key: 'shortcut',
-      label: t('st.spaces.createShortcut'),
-      blockedReason: !isWindows ? t('st.spaces.shortcutWindowsOnly') : undefined,
-      run: () => { createShortcut(space); },
-    }] : []),
-    ...(desktop && host.restartSpace !== undefined ? [{ key: 'restart', label: t('st.spaces.restartSpace'), run: () => {
-      setFeedback(null);
-      void host.restartSpace?.(space.id)
-        .then(() => { setRestartNote(null); refresh(); })
-        .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
-    } }] : []),
-    { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { setDialog({ kind: 'remove', space }); } },
-    { key: 'delete', label: t('st.spaces.delete'), danger: true, blockedReason: deleteBlock(space), run: () => { setDialog({ kind: 'delete', space }); } },
-  ];
+  const menuItems = (space: SpaceListItem): SpaceMenuItem[] => {
+    const isMain = space.id === MAIN_SPACE_ID;
+    return [
+      ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
+      ...(!isMain ? [{ key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } }] : []),
+      ...(desktop && host.createSpaceShortcut !== undefined ? [{
+        key: 'shortcut',
+        label: t('st.spaces.createShortcut'),
+        blockedReason: !isWindows ? t('st.spaces.shortcutWindowsOnly') : undefined,
+        run: () => { createShortcut(space); },
+      }] : []),
+      ...(desktop && !isMain && host.restartSpace !== undefined ? [{ key: 'restart', label: t('st.spaces.restartSpace'), run: () => {
+        setFeedback(null);
+        void host.restartSpace?.(space.id)
+          .then(() => { setRestartNote(null); refresh(); })
+          .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
+      } }] : []),
+      ...(!isMain ? [
+        { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { setDialog({ kind: 'remove', space }); } },
+        { key: 'delete', label: t('st.spaces.delete'), danger: true, blockedReason: deleteBlock(space), run: () => { setDialog({ kind: 'delete', space }); } },
+      ] : []),
+    ];
+  };
 
   const onCredentialsDone = (space: SpaceListItem, result: UpdateSpaceResponse) => {
     setDialog(null);
@@ -318,19 +320,7 @@ function SpaceListCard({ sub }: { sub: boolean }) {
               ) : null}
             </>
           )}
-          {desktop && host.createSpaceShortcut !== undefined ? (
-            <button
-              type="button"
-              data-space-shortcut={space.id}
-              disabled={creatingShortcut !== null || !isWindows}
-              title={!isWindows ? t('st.spaces.shortcutWindowsOnly') : undefined}
-              className={SECONDARY_BUTTON}
-              onClick={() => { void createShortcut(space); }}
-            >
-              {creatingShortcut === space.id ? t('st.spaces.creatingShortcut') : t('st.spaces.createShortcut')}
-            </button>
-          ) : null}
-          {!sub && !isMain ? (
+          {!sub ? (
             <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
               className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={(event) => {

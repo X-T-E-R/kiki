@@ -5,6 +5,14 @@
  * reply, fork on either anchor. Buttons hide until the row is hovered or
  * focused-within; touch layouts (`hover: none`) always show them.
  *
+ * The strip is part of the row, not a chip floating over the text: it hangs
+ * under the answer (flush left) or under the user bubble (flush right), keeps
+ * its height whether or not it is revealed, and covers the gap above its icons
+ * with its own hit area. Copy / edit / regenerate — the three that are used on
+ * a normal pass through a conversation — are flat 28px tiles; copy-link and
+ * fork sit behind the trailing `⋯`. Below `sm` the tiles fold into that same
+ * `⋯` menu so the strip never crowds a narrow lane.
+ *
  * The inline user-message editor also lives here: it replaces the bubble in
  * place (anything-llm's EditMessageForm shape), prefills the original text,
  * and warns that attachments are not carried over by a full-replacement edit.
@@ -47,42 +55,43 @@ export interface MessageRowActionsProps {
   canFork?: boolean;
   /** Turn running / resync in flight — mutating actions disable with a hint. */
   disabled?: boolean;
-  /** Bordered floating chip (assistant rows, absolute top-right). */
-  framed?: boolean;
+  /**
+   * Which side of the lane the strip hangs on: an assistant answer is prose, so
+   * its icons sit under the text flush left; a user bubble carries them flush
+   * right. The `⋯` popover opens from the same edge.
+   */
+  align?: 'left' | 'right';
   onEdit?: () => void;
   onRegenerate?: () => void;
   onFork?: () => void;
 }
 
-function ActionButton({
-  label,
-  title,
-  action,
-  disabled,
-  disabledTitle,
-  onClick,
-}: {
-  label: string;
-  title: string;
-  action: string;
-  disabled?: boolean;
-  disabledTitle?: string;
-  onClick: () => void;
-}) {
-  const { t } = useI18n();
-  const gated = disabled === true;
+/** A row-action target: 14px glyph in a 28px box — no border, no pill. */
+const TILE =
+  'pointer-events-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
+const MENU_ITEM =
+  'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40';
+
+/**
+ * `regenerate`: the two chasing arcs the Capabilities panel draws for a reload.
+ * `icons.tsx` is outside this change's file set, so the glyph is mirrored at the
+ * row-action size here instead of being added as another `IconName`.
+ */
+function RegenerateIcon() {
   return (
-    <button
-      type="button"
-      data-row-action={action}
-      title={gated ? (disabledTitle ?? t('transcript.actionsBusyTitle')) : title}
-      aria-label={title}
-      disabled={gated}
-      onClick={onClick}
-      className="rounded px-1 py-px text-[10.5px] font-medium text-ink-faint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.35}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5 shrink-0"
     >
-      {label}
-    </button>
+      <path d="M12.8 6.6A5 5 0 0 0 3.6 5.4M3.2 9.4a5 5 0 0 0 9.2 1.2" />
+      <path d="M3.4 2.8v2.8h2.8M12.6 13.2v-2.8H9.8" />
+    </svg>
   );
 }
 
@@ -93,7 +102,7 @@ export function MessageRowActions({
   canRegenerate = false,
   canFork = false,
   disabled = false,
-  framed = false,
+  align = 'left',
   onEdit,
   onRegenerate,
   onFork,
@@ -108,7 +117,10 @@ export function MessageRowActions({
 
   const showCopy = copyText !== undefined && copyText !== '';
   const showLink = linkHref !== undefined && linkHref !== '';
-  if (!showCopy && !showLink && !canEdit && !canRegenerate && !canFork) return null;
+  const showEdit = canEdit && onEdit !== undefined;
+  const showRegenerate = canRegenerate && onRegenerate !== undefined;
+  const showFork = canFork && onFork !== undefined;
+  if (!showCopy && !showLink && !showEdit && !showRegenerate && !showFork) return null;
 
   const copy = (what: 'text' | 'link', text: string) => {
     void copyTextToClipboard(text)
@@ -135,7 +147,7 @@ export function MessageRowActions({
   };
 
   useEffect(() => {
-    if (!framed || !menuOpen) return;
+    if (!menuOpen) return;
     const unregister = registerOverlay('row-actions-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -178,193 +190,185 @@ export function MessageRowActions({
       window.removeEventListener('scroll', onScrollOrResize, true);
       window.removeEventListener('resize', onScrollOrResize);
     };
-  }, [framed, menuOpen]);
+  }, [menuOpen]);
 
   const visibility =
-    'opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+    'opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
 
-  if (framed) {
-    return (
-      <span
-        ref={menuContainerRef}
-        data-row-actions
-        className={`${visibility} absolute top-0 right-0 z-20 inline-flex flex-col items-end`}
-      >
-        <button
-          ref={triggerRef}
-          type="button"
-          data-row-more
-          aria-label={t('transcript.moreActions')}
-          title={t('transcript.moreActions')}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={toggleMenu}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-hairline bg-panel text-ink-faint shadow-xs transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-        >
-          <Icon name="more" size={14} />
-        </button>
+  // Only copy-link and fork are menu-only, so the `⋯` trigger is needed at every
+  // width while one of them exists; a strip of tiled actions alone folds it away
+  // above `sm`, where those tiles are already on screen.
+  const menuOnly = showLink || showFork;
 
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label={t('transcript.moreActions')}
-          className={`${
-            menuOpen ? 'flex anim-enter' : 'hidden'
-          } absolute right-0 ${
-            openUp ? 'bottom-full mb-1' : 'top-full mt-1'
-          } min-w-[124px] max-w-[calc(100vw-1rem)] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
-        >
-          {showCopy ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-row-action="copy"
-              title={t('transcript.copyTitle')}
-              aria-label={t('transcript.copyTitle')}
-              onClick={() => {
-                copy('text', copyText);
-                setMenuOpen(false);
-              }}
-              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <span>{t('transcript.copy')}</span>
-              {copied === 'text' ? <Icon name="check" size={12} className="text-success" /> : null}
-            </button>
-          ) : null}
-          {showLink ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-row-action="link"
-              title={t('transcript.copyLinkTitle')}
-              aria-label={t('transcript.copyLinkTitle')}
-              onClick={() => {
-                copy('link', linkHref);
-                setMenuOpen(false);
-              }}
-              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <span>{t('transcript.copyLink')}</span>
-              {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
-            </button>
-          ) : null}
-          {canEdit && onEdit !== undefined ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-row-action="edit"
-              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
-              aria-label={t('transcript.editTitle')}
-              disabled={disabled}
-              onClick={() => {
-                setMenuOpen(false);
-                onEdit();
-              }}
-              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t('transcript.edit')}
-            </button>
-          ) : null}
-          {canRegenerate && onRegenerate !== undefined ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-row-action="regenerate"
-              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
-              aria-label={t('transcript.regenerateTitle')}
-              disabled={disabled}
-              onClick={() => {
-                setMenuOpen(false);
-                onRegenerate();
-              }}
-              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t('transcript.regenerate')}
-            </button>
-          ) : null}
-          {canFork && onFork !== undefined ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-row-action="fork"
-              title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
-              aria-label={t('transcript.forkTitle')}
-              disabled={disabled}
-              onClick={() => {
-                setMenuOpen(false);
-                onFork();
-              }}
-              className="w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t('transcript.fork')}
-            </button>
-          ) : null}
-        </div>
-      </span>
-    );
-  }
-
-  const copyClass = (what: 'text' | 'link') =>
-    `rounded px-1 py-px font-mono text-[10px] transition-colors ${
-      copied === what ? 'text-success' : 'text-ink-faint hover:text-ink'
-    }`;
-
+  // `-mt-1 pt-1`: the strip keeps its 28px of reserved row height while its own
+  // box reaches 4px up into the gap over it, and `pointer-events-none` keeps that
+  // overlap from stealing clicks or text selection from the message — only the
+  // controls take the pointer. The row's hover box covers the whole path, so the
+  // icons never flicker on the way in. `z-20` keeps the open `⋯` above the row's
+  // own chrome (a rotated chevron on a collapsed message paints like a positioned
+  // box and would otherwise show through the panel).
   return (
     <span
+      ref={menuContainerRef}
       data-row-actions
-      className={`${visibility} inline-flex items-center gap-0.5`}
+      data-row-actions-align={align}
+      className={`${visibility} pointer-events-none relative z-20 -mt-1 flex min-h-7 max-w-full items-center gap-0.5 pt-1 ${
+        align === 'right' ? 'justify-end' : 'justify-start'
+      }`}
     >
-      {showCopy ? (
-        <button
-          type="button"
-          data-row-action="copy"
-          title={t('transcript.copyTitle')}
-          aria-label={t('transcript.copyTitle')}
-          onClick={() => { copy('text', copyText); }}
-          className={copyClass('text')}
-        >
-          {copied === 'text' ? <Icon name="check" size={12} /> : t('transcript.copy')}
-        </button>
-      ) : null}
-      {showLink ? (
-        <button
-          type="button"
-          data-row-action="link"
-          title={t('transcript.copyLinkTitle')}
-          aria-label={t('transcript.copyLinkTitle')}
-          onClick={() => { copy('link', linkHref); }}
-          className={copyClass('link')}
-        >
-          {copied === 'link' ? <Icon name="check" size={12} /> : t('transcript.copyLink')}
-        </button>
-      ) : null}
-      {canEdit && onEdit !== undefined ? (
-        <ActionButton
-          label={t('transcript.edit')}
-          title={t('transcript.editTitle')}
-          action="edit"
-          disabled={disabled}
-          onClick={onEdit}
-        />
-      ) : null}
-      {canRegenerate && onRegenerate !== undefined ? (
-        <ActionButton
-          label={t('transcript.regenerate')}
-          title={t('transcript.regenerateTitle')}
-          action="regenerate"
-          disabled={disabled}
-          onClick={onRegenerate}
-        />
-      ) : null}
-      {canFork && onFork !== undefined ? (
-        <ActionButton
-          label={t('transcript.fork')}
-          title={t('transcript.forkTitle')}
-          action="fork"
-          disabled={disabled}
-          onClick={onFork}
-        />
-      ) : null}
+      <span data-row-action-tiles className="hidden items-center gap-0.5 sm:flex">
+        {showCopy ? (
+          <button
+            type="button"
+            data-row-action="copy"
+            title={t('transcript.copyTitle')}
+            aria-label={t('transcript.copyTitle')}
+            onClick={() => { copy('text', copyText); }}
+            className={TILE}
+          >
+            {copied === 'text'
+              ? <Icon name="check" size={14} className="text-success" />
+              : <Icon name="copy" size={14} />}
+          </button>
+        ) : null}
+        {showEdit ? (
+          <button
+            type="button"
+            data-row-action="edit"
+            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
+            aria-label={t('transcript.editTitle')}
+            disabled={disabled}
+            onClick={onEdit}
+            className={TILE}
+          >
+            <Icon name="edit" size={14} />
+          </button>
+        ) : null}
+        {showRegenerate ? (
+          <button
+            type="button"
+            data-row-action="regenerate"
+            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
+            aria-label={t('transcript.regenerateTitle')}
+            disabled={disabled}
+            onClick={onRegenerate}
+            className={TILE}
+          >
+            <RegenerateIcon />
+          </button>
+        ) : null}
+      </span>
+      <button
+        ref={triggerRef}
+        type="button"
+        data-row-more
+        aria-label={t('transcript.moreActions')}
+        title={t('transcript.moreActions')}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        onClick={toggleMenu}
+        className={`${TILE} ${menuOnly ? '' : 'sm:hidden'}`}
+      >
+        <Icon name="more" size={14} />
+      </button>
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={t('transcript.moreActions')}
+        className={`${
+          menuOpen ? 'flex anim-enter' : 'hidden'
+        } pointer-events-auto absolute ${align === 'right' ? 'right-0' : 'left-0'} ${
+          openUp ? 'bottom-full mb-1' : 'top-full mt-1'
+        } min-w-[124px] max-w-[calc(100vw-1rem)] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
+      >
+        {/* Below `sm` the tiles fold in here (`sm:hidden`): a narrow lane keeps
+            the one `⋯` and every action stays a tap away. */}
+        {showCopy ? (
+          <button
+            type="button"
+            role="menuitem"
+            data-row-action-menu="copy"
+            title={t('transcript.copyTitle')}
+            aria-label={t('transcript.copyTitle')}
+            onClick={() => {
+              copy('text', copyText);
+              setMenuOpen(false);
+            }}
+            className={`${MENU_ITEM} sm:hidden`}
+          >
+            <span>{t('transcript.copy')}</span>
+            {copied === 'text' ? <Icon name="check" size={12} className="text-success" /> : null}
+          </button>
+        ) : null}
+        {showEdit ? (
+          <button
+            type="button"
+            role="menuitem"
+            data-row-action-menu="edit"
+            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
+            aria-label={t('transcript.editTitle')}
+            disabled={disabled}
+            onClick={() => {
+              setMenuOpen(false);
+              onEdit();
+            }}
+            className={`${MENU_ITEM} sm:hidden`}
+          >
+            {t('transcript.edit')}
+          </button>
+        ) : null}
+        {showRegenerate ? (
+          <button
+            type="button"
+            role="menuitem"
+            data-row-action-menu="regenerate"
+            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
+            aria-label={t('transcript.regenerateTitle')}
+            disabled={disabled}
+            onClick={() => {
+              setMenuOpen(false);
+              onRegenerate();
+            }}
+            className={`${MENU_ITEM} sm:hidden`}
+          >
+            {t('transcript.regenerate')}
+          </button>
+        ) : null}
+        {showLink ? (
+          <button
+            type="button"
+            role="menuitem"
+            data-row-action="link"
+            title={t('transcript.copyLinkTitle')}
+            aria-label={t('transcript.copyLinkTitle')}
+            onClick={() => {
+              copy('link', linkHref);
+              setMenuOpen(false);
+            }}
+            className={MENU_ITEM}
+          >
+            <span>{t('transcript.copyLink')}</span>
+            {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
+          </button>
+        ) : null}
+        {showFork ? (
+          <button
+            type="button"
+            role="menuitem"
+            data-row-action="fork"
+            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
+            aria-label={t('transcript.forkTitle')}
+            disabled={disabled}
+            onClick={() => {
+              setMenuOpen(false);
+              onFork();
+            }}
+            className={MENU_ITEM}
+          >
+            {t('transcript.fork')}
+          </button>
+        ) : null}
+      </div>
     </span>
   );
 }
