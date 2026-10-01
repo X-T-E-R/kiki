@@ -2630,7 +2630,7 @@ describe('TranscriptService live integration', () => {
         const query = core.accessor.get(IQueryStore);
         const key = 'ws\0s1\0main';
         const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot }>('__transcript_projection_checkpoint__', key);
-        const recoveredTurn = expected.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+        const recoveredTurn = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
         expect(recoveredTurn).toMatchObject({ state: 'cancelled' });
         expect(recoveredTurn?.kind === 'turn' && recoveredTurn.steps.find((step) => step.retry !== undefined)?.retry)
           .toMatchObject({ failedAttempt: 2, nextAttempt: 3, maxAttempts: 5, delayMs: 100,
