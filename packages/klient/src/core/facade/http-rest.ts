@@ -482,6 +482,7 @@ export interface HttpRestFacade {
   readonly agents: {
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
     previewExecutorPrompt(name: string, body?: import('@kiki/protocol').ExecutorPromptPreviewRequest): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse>;
+    previewModelMenu(name: string, body: import('@kiki/protocol').AgentModelMenuPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').AgentModelMenuPreviewResponse>;
     create(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     update(name: string, body: UpdateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     /** Shipped (built-in) profile templates: management status and restore-original. */

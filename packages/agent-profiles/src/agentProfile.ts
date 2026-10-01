@@ -102,15 +102,17 @@ export interface ProfileModelMenuConstraint {
   readonly source: string;
   readonly defaultAlias?: string;
   readonly aliases: readonly string[];
+  readonly profileAliases?: readonly string[];
   readonly identities: readonly string[];
 }
 
 export function captureProfileModelMenu<T extends Pick<AgentProfile,
   'name' | 'modelAlias' | 'modelProfiles' | 'restrictModelsToMenu' | 'modelMenuConstraint' | 'allowedModels' | 'denyModels' | 'modelMenuDiagnostics'
 >>(profile: T, resolveId: (alias: string) => string | undefined = (alias) => alias): T {
-  if (profile.restrictModelsToMenu !== true || profile.modelMenuConstraint !== undefined) return profile;
+  if (profile.modelMenuConstraint !== undefined) return profile;
+  const profileAliases = (profile.modelProfiles ?? []).map((entry) => entry.alias);
   const aliases = [...new Set([
-    ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
+    ...profileAliases,
     ...(profile.modelAlias === undefined ? [] : [profile.modelAlias]),
   ])];
   const resolve = (entries: readonly string[]) => [...new Set(entries.flatMap((alias) => {
@@ -126,16 +128,18 @@ export function captureProfileModelMenu<T extends Pick<AgentProfile,
   const denied = new Set(resolve(profile.denyModels ?? []));
   const source = `profile:${profile.name}.restrict_models_to_menu`;
   const diagnostics = [...(profile.modelMenuDiagnostics ?? [])];
-  if (allowed !== undefined && allowed.length === identities.length && allowed.every((id) => identities.includes(id))) {
-    diagnostics.push(`${source} and allowed_models declare equivalent hard domains; remove the redundant allowed_models declaration.`);
-  }
-  if (!identities.some((id) => !denied.has(id) && (allowed === undefined || allowed.includes(id)))) {
-    diagnostics.push(`${source} has no effective model candidates after profile hard allow/deny constraints; binding is unavailable.`);
+  if (profile.restrictModelsToMenu === true) {
+    if (allowed !== undefined && allowed.length === identities.length && allowed.every((id) => identities.includes(id))) {
+      diagnostics.push(`${source} and allowed_models declare equivalent hard domains; remove the redundant allowed_models declaration.`);
+    }
+    if (!identities.some((id) => !denied.has(id) && (allowed === undefined || allowed.includes(id)))) {
+      diagnostics.push(`${source} has no effective model candidates after profile hard allow/deny constraints; binding is unavailable.`);
+    }
   }
   return {
     ...profile,
-    modelMenuConstraint: { source, defaultAlias: profile.modelAlias, aliases, identities },
-    modelMenuDiagnostics: diagnostics,
+    modelMenuConstraint: { source, defaultAlias: profile.modelAlias, aliases, profileAliases, identities },
+    modelMenuDiagnostics: diagnostics.length === 0 ? profile.modelMenuDiagnostics : diagnostics,
   };
 }
 

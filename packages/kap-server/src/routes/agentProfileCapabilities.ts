@@ -32,6 +32,7 @@ import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycl
 import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPanelMetrics } from '@kiki/protocol';
 import {
   livePanelCapabilities,
+  frozenPanelModelProfile,
   panelSkills,
   projectBindingAdvisories,
   READ_ONLY_DISPLAY_TOOL_NAMES,
@@ -40,6 +41,7 @@ import {
 } from './agentPanelCapabilities';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
+import { projectAgentModelMenu } from './agentModelMenu';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
@@ -198,12 +200,18 @@ export async function agentCapabilities(
       },
     );
     if (agent === undefined) {
-      if (session === undefined || workspaceId === undefined) return {
-        context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
-        unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable',
-        unavailable_reason_code: 'session_or_agent_not_live', targets: [],
-        metrics: persisted,
-      };
+      if (session === undefined || workspaceId === undefined) {
+        const snapshot = workspaceId === undefined ? undefined : await readPersistedAgentProfileSnapshot(
+          core, workspaceId, query.session_id, query.agent_id, undefined, signal,
+        );
+        return {
+          context: 'live', live: false, owner: { profile: snapshot?.profileName, agent_id: query.agent_id }, available: false,
+          unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable',
+          unavailable_reason_code: 'session_or_agent_not_live', targets: [],
+          profile: snapshot === undefined ? undefined : frozenPanelModelProfile(core, snapshot, query.agent_id === 'main' ? 'main' : 'sub'),
+          metrics: persisted,
+        };
+      }
       const metadata = (await session.accessor.get(ISessionMetadata).read()).agents?.[query.agent_id];
       const snapshot = await readPersistedAgentProfileSnapshot(
         core,
@@ -350,6 +358,7 @@ export async function agentCapabilities(
         launch_unavailable_reason_code: target.launch_unavailable_reason_code
           ?? unavailable_reason_code })),
       profile: {
+        ...projectAgentModelMenu(core, profile, position),
         name: profile.name, description: profile.description,
         source: workspace.catalog.inspect(profile.name)?.sourceId ?? profile.fileDefinition?.source,
         source_file: profile.sourcePath, definition_id: profile.definitionId,

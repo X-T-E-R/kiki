@@ -491,6 +491,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       previewExecutorPrompt: (name, body = {}) => transport.json(
         `/agents/${encodeURIComponent(name)}/executor-prompt:preview`, { method: 'POST', body },
       ),
+      previewModelMenu: (name, body, options) => transport.json(
+        `/agents/${encodeURIComponent(name)}/model-menu:preview`, { ...options, method: 'POST', body },
+      ),
       create: (body: CreateNamedAgentProfileRequest) => transport.json<NamedAgentProfile>(
         '/agent-profiles', { method: 'POST', body },
       ),

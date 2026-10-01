@@ -97,6 +97,20 @@ export const namedAgentExecutorFieldSchema = z.object({
 });
 export type NamedAgentExecutorField = z.infer<typeof namedAgentExecutorFieldSchema>;
 
+export const declaredAgentModelMenuSchema = z.object({
+  aliases: z.array(z.string()),
+  default_alias: z.string().optional(),
+  identities: z.array(z.string()),
+});
+export type DeclaredAgentModelMenu = z.infer<typeof declaredAgentModelMenuSchema>;
+
+export const agentModelMenuProjectionSchema = z.object({
+  restrict_models_to_menu: z.boolean(),
+  declared_model_menu: declaredAgentModelMenuSchema,
+  effective_model_aliases: z.array(z.string()),
+});
+export type AgentModelMenuProjection = z.infer<typeof agentModelMenuProjectionSchema>;
+
 export const namedAgentProfileSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -116,6 +130,8 @@ export const namedAgentProfileSchema = z.object({
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).optional(),
   pinned_model_alias: z.string().optional(),
   restrict_models_to_menu: z.boolean().optional(),
+  declared_model_menu: declaredAgentModelMenuSchema.optional(),
+  effective_model_aliases: z.array(z.string()).optional(),
   thinking_effort: z.string().optional(),
   /** Hard role model allowlist (`["*"]` normalizes to absent; `[]` permits none). */
   allowed_models: z.array(z.string()).optional(),
@@ -333,6 +349,9 @@ export const agentPanelProfileSchema = z.object({
   definition_id: z.string().optional(),
   route: z.string().optional(),
   model: z.string().optional(),
+  restrict_models_to_menu: z.boolean().optional(),
+  declared_model_menu: declaredAgentModelMenuSchema.optional(),
+  effective_model_aliases: z.array(z.string()).optional(),
   model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
   effort_source: agentCapabilityEffortSourceSchema.optional(),
@@ -472,6 +491,35 @@ export const updateNamedAgentModelProfileEntrySchema = z.object({
   thinking_effort: optionalProfileStringSchema,
 }).strict();
 export type UpdateNamedAgentModelProfileEntry = z.infer<typeof updateNamedAgentModelProfileEntrySchema>;
+
+export const agentModelMenuDraftSchema = z.object({
+  pinned_model_alias: modelAliasSchema.nullable().optional(),
+  restrict_models_to_menu: z.boolean().optional(),
+  model_profiles: z.array(updateNamedAgentModelProfileEntrySchema).nullable().optional(),
+  allowed_models: profileStringListSchema,
+  deny_models: profileStringListSchema,
+  executor: optionalProfileStringSchema,
+  main: z.boolean().nullable().optional(),
+}).strict().superRefine((value, context) => {
+  const aliases = value.model_profiles?.map((entry) => entry.alias) ?? [];
+  if (new Set(aliases).size !== aliases.length) {
+    context.addIssue({ code: 'custom', path: ['model_profiles'], message: 'duplicate model profile alias' });
+  }
+});
+export type AgentModelMenuDraft = z.infer<typeof agentModelMenuDraftSchema>;
+
+export const agentModelMenuPreviewRequestSchema = z.object({
+  workspace_id: z.string().trim().min(1),
+  source_file: z.string().trim().min(1).optional(),
+  draft: agentModelMenuDraftSchema,
+}).strict();
+export type AgentModelMenuPreviewRequest = z.infer<typeof agentModelMenuPreviewRequestSchema>;
+
+export const agentModelMenuPreviewResponseSchema = agentModelMenuProjectionSchema.extend({
+  added_model_identities: z.array(z.string()),
+  removed_model_identities: z.array(z.string()),
+});
+export type AgentModelMenuPreviewResponse = z.infer<typeof agentModelMenuPreviewResponseSchema>;
 
 export const updateNamedAgentProfileRequestSchema = z.object({
   scope: z.enum(['user', 'project', 'extra']),

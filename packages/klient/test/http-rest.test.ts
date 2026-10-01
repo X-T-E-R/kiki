@@ -13,6 +13,23 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('previews unsaved model menus through the typed authenticated agent REST facade', async () => {
+    const request = { workspace_id: 'workspace', draft: { pinned_model_alias: 'fast', model_profiles: [{ alias: 'premium' }], restrict_models_to_menu: true } };
+    const projected = { restrict_models_to_menu: true,
+      declared_model_menu: { aliases: ['premium'], default_alias: 'fast', identities: ['provider/premium', 'provider/fast'] },
+      effective_model_aliases: ['fast'], added_model_identities: ['provider/fast'], removed_model_identities: ['provider/old'] };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/agents/example%2Fhelper/model-menu:preview');
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      expect(JSON.parse(String(init?.body))).toEqual(request);
+      return envelope(projected);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.agents.previewModelMenu('example/helper', request)).resolves.toEqual(projected);
+    } finally { await channel.close(); }
+  });
   it('lists presets and creates a derived space through the authenticated homes facade', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

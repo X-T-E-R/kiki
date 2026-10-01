@@ -38,6 +38,8 @@ import {
 import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  agentModelMenuPreviewRequestSchema,
+  agentModelMenuPreviewResponseSchema,
   createNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
@@ -63,6 +65,7 @@ import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
+import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
 import { registerAntigravityRoutes } from './antigravity';
 
@@ -361,6 +364,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const workspaceId = req.query.workspace_id;
       if (workspaceId === undefined && req.query.cwd === undefined) {
         const items = projectNamedAgentProfiles(
+          core,
           registry.entries(),
           disabledNamed,
           req.query.expand === true,
@@ -392,7 +396,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
                 (inspection === undefined || entry.sourceId === inspection.sourceId && entry.priority === inspection.priority)
                 && entry.contribution.profiles.some((candidate) => sameProfileDefinition(candidate, profile))
               );
-              const item = toNamedAgentProfile(registration ?? {
+              const item = toNamedAgentProfile(core, registration ?? {
                 sourceId: inspection?.sourceId ?? BUILTIN_AGENT_PROFILE_SOURCE_ID,
                 priority: inspection?.priority ?? 0,
                 workspaceKey: resolvedWorkspaceId,
@@ -401,7 +405,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
               { catalog, snapshot: catalog.snapshot() }, executors);
               return profile === defaultProfile && profile.main === true ? { ...item, disabled: false } : item;
             }).toSorted(compareNamedAgentProfiles)
-          : projectNamedAgentProfiles(entries, disabledNamed,
+          : projectNamedAgentProfiles(core, entries, disabledNamed,
               req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
       } finally {
@@ -470,6 +474,53 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   app.post(executorPromptPreviewRoute.path, executorPromptPreviewRoute.options,
     executorPromptPreviewRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
+  const modelMenuPreviewRoute = defineRoute({
+    method: 'POST',
+    path: '/agents/{name}/model-menu:preview',
+    params: namedAgentProfileNameParamsSchema.extend({ preview: z.literal(':preview') }),
+    body: agentModelMenuPreviewRequestSchema,
+    success: { data: agentModelMenuPreviewResponseSchema },
+    errors: {
+      [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+      [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {},
+    },
+    description: 'Preview unsaved model-menu edits and canonical declaration changes without writing or binding',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const workspace = await acquireWorkspaceProfileCatalog(core, { workspace_id: req.body.workspace_id });
+    if (workspace === undefined) {
+      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
+      return;
+    }
+    try {
+      const profile = req.body.source_file === undefined ? workspace.catalog.get(req.params.name)
+        : core.accessor.get(IAgentProfileRegistry).entries()
+          .filter((entry) => entry.workspaceKey === undefined || entry.workspaceKey === workspace.workspaceId)
+          .flatMap((entry) => entry.contribution.profiles)
+          .find((candidate) => candidate.name === req.params.name && candidate.sourcePath === req.body.source_file);
+      if (profile === undefined) {
+        reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Agent profile not found', req.id));
+        return;
+      }
+      const original = profileWithDefaultMain(profile);
+      const before = projectAgentModelMenu(core, original, original.main === true ? 'main' : 'sub');
+      const draft = profileWithDefaultMain(applyAgentModelMenuDraft(original, req.body.draft));
+      const after = projectAgentModelMenu(core, draft, draft.main === true ? 'main' : 'sub');
+      const oldIds = new Set(before.declared_model_menu.identities);
+      const newIds = new Set(after.declared_model_menu.identities);
+      reply.send(okEnvelope({
+        ...after,
+        added_model_identities: [...newIds].filter((id) => !oldIds.has(id)),
+        removed_model_identities: [...oldIds].filter((id) => !newIds.has(id)),
+      }, req.id));
+    } finally {
+      workspace.dispose();
+    }
+  });
+  app.post(modelMenuPreviewRoute.path, modelMenuPreviewRoute.options,
+    modelMenuPreviewRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
   const createRoute = defineRoute({
     method: 'POST',
     path: '/agent-profiles',
@@ -504,7 +555,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         tools: req.body.tools,
         prompt: req.body.prompt,
       });
-      reply.send(okEnvelope(toNamedAgentProfile({
+      reply.send(okEnvelope(toNamedAgentProfile(core, {
         sourceId: created.sourceId,
         priority: 0,
         workspaceKey: created.workspaceKey,
@@ -619,6 +670,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           rawText: req.body.raw_text,
         });
         reply.send(okEnvelope(toNamedAgentProfile(
+          core,
           {
             sourceId: updated.sourceId,
             priority: 0,
@@ -683,6 +735,7 @@ async function sessionAgentProfileCatalogs(
 }
 
 function projectNamedAgentProfiles(
+  core: Scope,
   entries: readonly AgentProfileRegistration[],
   disabledNamed: ReadonlySet<string>,
   expand: boolean,
@@ -704,6 +757,7 @@ function projectNamedAgentProfiles(
       .flatMap((registration) =>
         registration.contribution.profiles.map((profile) =>
           toNamedAgentProfile(
+            core,
             registration,
             profile,
             disabledNamed,
@@ -750,6 +804,7 @@ function projectNamedAgentProfiles(
   return [...merged.values()]
     .map(({ registration, profile, workspaceIds }) =>
       toNamedAgentProfile(
+        core,
         registration,
         profile,
         disabledNamed,
@@ -800,6 +855,7 @@ function compareNamedAgentProfiles(a: NamedAgentProfile, b: NamedAgentProfile): 
 }
 
 function toNamedAgentProfile(
+  core: Scope,
   registration: AgentProfileRegistration,
   profile: AgentProfile,
   disabledNamed: ReadonlySet<string> = new Set(),
@@ -831,7 +887,7 @@ function toNamedAgentProfile(
     allow_kiki_subagents: profile.allowKikiSubagents,
     kiki_context: profile.kikiContext === undefined ? undefined : [...profile.kikiContext],
     pinned_model_alias: profile.modelAlias,
-    restrict_models_to_menu: profile.restrictModelsToMenu ?? false,
+    ...projectAgentModelMenu(core, profile, profile.main === true ? 'main' : 'sub'),
     thinking_effort: profile.thinkingEffort,
     preferred_models: profile.preferredModels === undefined ? undefined : [...profile.preferredModels],
     discouraged_models: profile.discouragedModels === undefined ? undefined : [...profile.discouragedModels],

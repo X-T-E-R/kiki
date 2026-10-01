@@ -38,6 +38,7 @@ import {
 } from './agentPanelProfileResolution';
 import type { PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { projectPersistedAgentThinking } from './agentProfileThinking';
+import { projectAgentModelMenu } from './agentModelMenu';
 
 type BindingAdvisory = NonNullable<ProfileData['bindingAdvisories']>[number];
 
@@ -247,6 +248,26 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   };
 }
 
+export function frozenPanelModelProfile(
+  scope: Pick<Scope, 'accessor'>,
+  data: PanelBindingData,
+  position: 'main' | 'sub',
+): AgentPanelProfile {
+  const profile = data.boundProfile ?? {
+    name: data.profileName ?? 'unknown',
+    modelAlias: data.modelAlias,
+    executor: data.executorId,
+    restrictModelsToMenu: false,
+  };
+  return {
+    name: data.profileName ?? profile.name,
+    model: data.modelAlias,
+    executor: data.executorId ?? profile.executor,
+    definition_id: data.profileDefinitionId,
+    ...projectAgentModelMenu(scope, profile, position, true),
+  };
+}
+
 function panelProfile(
   scope: Pick<Scope, 'accessor'>,
   data: PanelBindingData,
@@ -262,13 +283,13 @@ function panelProfile(
   const routeDetached = data.routeDetached === true || inferRouteDetached(scope, data) ? true : undefined;
   const thinkingEffort = data.effectiveThinkingLevel ?? data.thinkingLevel;
   return {
+    ...frozenPanelModelProfile(scope, data, position),
     name: data.profileName ?? definition?.name ?? 'unknown',
     description: definition?.description,
     source: resolution.sourceId,
     source_file: definition?.sourcePath,
     definition_id: data.profileDefinitionId ?? definition?.definitionId,
     route: data.routeId,
-    model: data.modelAlias,
     model_source: data.modelAlias === undefined ? undefined
       : data.appliedLease?.modelAlias !== undefined ? 'caller-lease'
         : data.lockedModelAlias !== undefined && routeDetached !== true ? 'route' : 'profile',

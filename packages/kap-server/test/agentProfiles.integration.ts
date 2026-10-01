@@ -81,6 +81,87 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('previews unsaved canonical menu changes and keeps live and cold model domains frozen', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "fixture/a"', '[providers.stub]', 'type = "openai"',
+      'base_url = "http://127.0.0.1:9999"', 'api_key = "YOUR_API_KEY"',
+      ...['a', 'b', 'c'].flatMap((alias) => [`[models."fixture/${alias}"]`, 'provider = "stub"', `model = "${alias}"`, 'max_context_size = 1000']),
+      '[subagent]', 'deny_models = ["fixture/a"]',
+    ].join('\n'));
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    const path = join(home!, 'agents', 'menu-main.md');
+    const text = [
+      '---', 'name: menu-main', 'description: Menu main', 'main: true',
+      'model_alias: a', 'restrict_models_to_menu: true',
+      'model_profiles:', '  - alias: b', '    when: advisory only', '    deny_models: [b]', '---', 'Prompt.', '',
+    ].join('\n');
+    await writeFile(path, text);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const list = async () => {
+      const response = await authedFetch(server!, base, `/api/agents?cwd=${encodeURIComponent(home!)}&effective=true`);
+      const body = await response.json() as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return listNamedAgentProfilesResponseSchema.parse(body.data).items.find((item) => item.name === 'menu-main')!;
+    };
+    const initial = await list();
+    expect(initial).toMatchObject({
+      restrict_models_to_menu: true,
+      declared_model_menu: { aliases: ['b'], default_alias: 'a', identities: ['fixture/b', 'fixture/a'] },
+      effective_model_aliases: ['fixture/a', 'a'],
+    });
+    const preview = async (draft: import('@kiki/protocol').AgentModelMenuDraft) => {
+      const response = await authedFetch(server!, base, '/api/agents/menu-main/model-menu:preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspace_id: initial.workspace_id, source_file: initial.source_file, draft }),
+      });
+      const body = await response.json() as Envelope<import('@kiki/protocol').AgentModelMenuPreviewResponse>;
+      expect(body.code).toBe(0);
+      return body.data;
+    };
+    expect(await preview({ pinned_model_alias: 'fixture/a' })).toMatchObject({ added_model_identities: [], removed_model_identities: [] });
+    const draft = { pinned_model_alias: 'c', model_profiles: [{ alias: 'b' }] };
+    expect(await preview(draft)).toEqual({
+      restrict_models_to_menu: true,
+      declared_model_menu: { aliases: ['b'], default_alias: 'c', identities: ['fixture/b', 'fixture/c'] },
+      effective_model_aliases: ['fixture/c', 'c'],
+      added_model_identities: ['fixture/c'], removed_model_identities: ['fixture/a'],
+    });
+    expect((await preview({ main: false })).effective_model_aliases).toEqual([]);
+    expect(await preview({ pinned_model_alias: null, model_profiles: [] })).toMatchObject({
+      effective_model_aliases: [], added_model_identities: [], removed_model_identities: ['fixture/b', 'fixture/a'],
+    });
+    expect(await readFile(path, 'utf8')).toBe(text);
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'menu-main', model: 'fixture/a' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const manager = server.core.accessor.get(ISessionManager);
+    const update = await authedFetch(server, base, '/api/agents/menu-main', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace_id: initial.workspace_id, scope: 'user', source_file: initial.source_file, ...draft }),
+    });
+    expect((await update.json() as Envelope<unknown>).code).toBe(0);
+    expect((await list()).effective_model_aliases).toEqual(['fixture/c', 'c']);
+    const frozen = async () => {
+      const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+      const body = await response.json() as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return agentCapabilitiesResponseSchema.parse(body.data);
+    };
+    expect((await frozen()).profile).toMatchObject({
+      restrict_models_to_menu: true,
+      declared_model_menu: initial.declared_model_menu,
+      effective_model_aliases: initial.effective_model_aliases,
+    });
+    await manager.close(created.data.id);
+    const cold = await frozen();
+    expect(cold.live).toBe(false);
+    expect(cold.profile).toMatchObject({ declared_model_menu: initial.declared_model_menu, effective_model_aliases: initial.effective_model_aliases });
+    expect(manager.get(created.data.id)).toBeUndefined();
+  });
+
   it('persists explicit context groups and removes the opt-in through REST', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     const path = join(home!, 'agents', 'context-main.md');
@@ -972,6 +1053,8 @@ describe('GET /api/agents', () => {
       executor_protocol: 'native',
       pinned_model_alias: 'provider/pinned',
       restrict_models_to_menu: false,
+      declared_model_menu: { aliases: ['provider/fast'], default_alias: 'provider/pinned', identities: [] },
+      effective_model_aliases: ['stub'],
       thinking_effort: 'high',
       service_tier: 'priority',
       request_params: { temperature: 0.4 },

@@ -10,7 +10,8 @@ import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
-import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
+import { projectProfileModelMenu, projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
+import { applyLease } from '@kiki/agent-profiles/applySubagentLease';
 
 describe('subagent capability final bindings', () => {
   let ix: TestInstantiationService;
@@ -64,6 +65,21 @@ describe('subagent capability final bindings', () => {
   function helper(fields: Partial<AgentProfile> = {}): AgentProfile {
     return normalizeAgentProfile({ name: 'helper', modelAlias: 'example', systemPrompt: () => '', ...fields });
   }
+
+  it('shares effective-domain calculation while preserving frozen declarations and main model policy', () => {
+    services.models.list = () => ({ example: {}, cheap: {}, outside: {} });
+    vi.spyOn(services.models, 'resolveId').mockImplementation((alias) => alias === 'fast' ? 'example' : alias);
+    vi.spyOn(services.config, 'get').mockReturnValue({ denyModels: ['example'] });
+    const profile = helper({ modelAlias: 'fast', restrictModelsToMenu: true,
+      modelProfiles: [{ alias: 'cheap', when: 'Ignored advice', denyModels: ['cheap'] }] });
+    const frozen = applyLease(profile, { name: 'helper', modelAlias: 'outside', modelProfiles: [{ alias: 'outside' }] }, (alias) => services.models.resolveId(alias));
+    const main = projectProfileModelMenu(frozen, services.models, services.config, 'main', { frozen: true });
+    expect(main.declaredModelMenu).toEqual({ aliases: ['cheap'], defaultAlias: 'fast', identities: ['cheap', 'example'] });
+    expect(main.effectiveModelAliases).toEqual(['example', 'fast']);
+    expect(projectProfileModelMenu(frozen, services.models, services.config, 'sub', { frozen: true }).effectiveModelAliases).toEqual([]);
+    expect(projectProfileModelMenu({ name: 'legacy', restrictModelsToMenu: false }, services.models, services.config, 'main', { frozen: true }).effectiveModelAliases).toEqual(['example', 'cheap', 'outside']);
+    expect(projectProfileModelMenu(helper({ restrictModelsToMenu: true, modelAlias: undefined }), services.models, services.config, 'main').effectiveModelAliases).toEqual([]);
+  });
 
   it('keeps the original menu distinct from effective candidates under lease and route replacement', () => {
     services.models.list = () => ({ example: {}, cheap: {}, outside: {} });

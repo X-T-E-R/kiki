@@ -1,4 +1,5 @@
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import { resolveProfileThinkingDefault } from '#/app/agentProfileCatalog/modelProfileOverlay';
 
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -11,6 +12,54 @@ import type { IModelService } from '#/kosong/model/model';
 
 import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
 import { roleConstraintsFromProfile, roleModelAllowed } from './modelConstraints';
+
+export type ProfileModelMenuInput = Pick<AgentProfile,
+  'name' | 'executor' | 'modelAlias' | 'modelProfiles' | 'modelConstraintProfiles' | 'restrictModelsToMenu' |
+  'modelMenuConstraint' | 'allowedModels' | 'denyModels' | 'allowedEfforts' | 'modelMenuDiagnostics'>;
+
+export function projectProfileModelMenu(
+  input: ProfileModelMenuInput,
+  models: IModelService,
+  config: IConfigService,
+  position: 'main' | 'sub',
+  options: { readonly frozen?: boolean; readonly modelAlias?: string } = {},
+) {
+  const native = (input.executor ?? 'native') === 'native';
+  const resolver = modelAliasResolverForExecutor(input.executor, models);
+  const profile = options.frozen === true ? input : captureProfileModelMenu(input, (alias) => resolver.resolveId(alias));
+  const menu = profile.modelMenuConstraint;
+  const declared = menu ?? captureProfileModelMenu({ ...profile, restrictModelsToMenu: false }, (alias) => resolver.resolveId(alias)).modelMenuConstraint!;
+  const nativeModels = native ? models.list() : undefined;
+  const candidates = [...new Set([
+    ...(nativeModels === undefined ? [...(profile.allowedModels ?? []), ...declared.identities] : Object.keys(nativeModels)),
+    ...declared.aliases,
+    ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
+    ...(options.modelAlias === undefined ? [] : [options.modelAlias]),
+  ])];
+  const constraints = roleConstraintsFromProfile(profile);
+  const effectiveModelAliases = candidates.filter((alias) => {
+    try {
+      if (alias === INHERIT_MODEL_ALIAS || alias.trim() === '') return false;
+      const identity = resolver.resolveId(alias);
+      if (nativeModels !== undefined && (identity === undefined || !Object.hasOwn(nativeModels, identity))) return false;
+      if (!roleModelAllowed(alias, constraints, native ? models : undefined)) return false;
+      if (position === 'sub') assertSubagentModelNotDenied(config, alias, native ? models : undefined);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  return {
+    restrictModelsToMenu: profile.restrictModelsToMenu ?? false,
+    declaredModelMenu: {
+      aliases: [...(declared.profileAliases ?? declared.aliases)],
+      defaultAlias: declared.defaultAlias,
+      identities: [...declared.identities],
+    },
+    effectiveModelAliases,
+    configuredModelAliases: nativeModels === undefined ? effectiveModelAliases : effectiveModelAliases.filter((alias) => Object.hasOwn(nativeModels, alias)),
+  };
+}
 
 export function projectSubagentModelCatalog(
   catalog: SubagentDispatchCatalog,
@@ -78,7 +127,6 @@ export function projectSubagentModelCatalog(
     const target = resolveSubagentTarget(catalog, caller, { profileName, routeId, snapshot: input.snapshot }, models);
     const profile = target.effectiveProfile;
     const route = target.selection.route;
-    const native = (profile.executor ?? 'native') === 'native';
     const resolver = modelAliasResolverForExecutor(profile.executor, models);
     const pins = fillLeasePins<{ modelAlias?: string; thinkingEffort?: string }>({}, target.lease, route);
     const modelAlias = pins.modelAlias ?? route?.lockedModelAlias ?? profile.modelAlias;
@@ -91,22 +139,10 @@ export function projectSubagentModelCatalog(
         modelAlias: profile.modelAlias === INHERIT_MODEL_ALIAS ? resolvedAlias : profile.modelAlias,
       }, resolvedAlias, (id) => resolver.resolveId(id))) ??
       (modelAlias === INHERIT_MODEL_ALIAS ? caller.effectiveThinkingLevel ?? caller.thinkingLevel : undefined);
-    const candidates = native ? Object.keys(models.list()) : [
-      resolvedAlias,
-      ...(profile.allowedModels ?? []),
-      ...(profile.modelMenuConstraint?.identities ?? []),
-      ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
-    ].filter((alias): alias is string => alias !== undefined);
-    const constraints = roleConstraintsFromProfile(profile);
-    const allowedModels = [...new Set(candidates)].filter((alias) => {
-      if (!roleModelAllowed(alias, constraints, native ? models : undefined)) return false;
-      try {
-        assertSubagentModelNotDenied(config, alias, native ? models : undefined);
-        return true;
-      } catch {
-        return false;
-      }
-    });
+    const allowedModels = projectProfileModelMenu(profile, models, config, 'sub', {
+      frozen: true,
+      modelAlias: resolvedAlias,
+    }).configuredModelAliases;
     for (const alias of allowedModels) aliases.add(alias);
     return { profile, modelAlias, thinkingEffort, allowedModels };
   }

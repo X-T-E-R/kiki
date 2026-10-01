@@ -32,6 +32,14 @@ function child(overrides: Partial<AgentProfile> = {}): AgentProfile {
 }
 
 describe('applyLease', () => {
+  it('preserves the original menu declaration before overlays even with restriction disabled', () => {
+    const base = child({ restrictModelsToMenu: false, modelAlias: 'fast', modelProfiles: [{ alias: 'premium' }], allowedModels: undefined });
+    const leased = applyLease(base, { name: 'explore', modelAlias: 'other', modelProfiles: [{ alias: 'other' }] });
+    expect(leased.modelMenuConstraint).toMatchObject({ defaultAlias: 'fast', profileAliases: ['premium'], aliases: ['premium', 'fast'] });
+    expect(leased.restrictModelsToMenu).toBe(false);
+    expect(leased.modelMenuDiagnostics).toBeUndefined();
+    expect(isDispatchBlocked(leased)).toBe(false);
+  });
   it('diagnoses redundant hard tables and empty intersections without discarding declarations', () => {
     const resolveId = (id: string) => id === 'fast' ? 'provider/fast' : id === 'missing' ? undefined : id;
     const base = child({ restrictModelsToMenu: true, modelAlias: 'fast', modelProfiles: [{ alias: 'missing' }], allowedModels: ['provider/fast'] });
@@ -50,7 +58,7 @@ describe('applyLease', () => {
     const route = { id: 'explore.outside', profile: 'explore', description: '', promptMode: 'inherit' as const,
       prompt: '', modelAlias: 'outside', overriddenFields: ['model_alias'], path: '/agents/route.md' };
     const routed = resolveAgentProfileRoute(route, base, resolveId).effectiveProfile;
-    expect(routed.modelMenuConstraint).toEqual({ source: 'profile:explore.restrict_models_to_menu', defaultAlias: 'fast', aliases: ['provider/fast', 'other', 'fast'], identities: ['provider/fast', 'other'] });
+    expect(routed.modelMenuConstraint).toEqual({ source: 'profile:explore.restrict_models_to_menu', defaultAlias: 'fast', aliases: ['provider/fast', 'other', 'fast'], profileAliases: ['provider/fast', 'other'], identities: ['provider/fast', 'other'] });
     for (const entries of [[], [{ alias: 'provider/fast' }], [{ alias: 'outside' }]]) {
       const leased = applyLease(routed, { name: 'explore', modelAlias: 'outside', modelProfiles: entries }, resolveId);
       expect(leased.modelMenuConstraint).toEqual(routed.modelMenuConstraint);

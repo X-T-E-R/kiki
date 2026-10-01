@@ -5,6 +5,9 @@ import {
   agentCapabilitiesProducerResponseSchema,
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  agentModelMenuPreviewRequestSchema,
+  agentModelMenuPreviewResponseSchema,
+  agentPanelProfileSchema,
   agentProfileSourceDiagnosticCodeSchema,
   executorCheckResponseSchema,
   executorDetailResponseSchema,
@@ -19,6 +22,19 @@ import {
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('retains separate declarations and effective domains on named, panel and draft preview responses', () => {
+    const menu = { restrict_models_to_menu: true,
+      declared_model_menu: { aliases: ['fast'], default_alias: 'premium', identities: ['provider/fast', 'provider/premium'] },
+      effective_model_aliases: [] };
+    expect(namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [], ...menu })).toMatchObject(menu);
+    expect(agentPanelProfileSchema.parse({ name: 'helper', ...menu })).toMatchObject(menu);
+    const result = { ...menu, added_model_identities: ['provider/premium'], removed_model_identities: [] };
+    expect(agentModelMenuPreviewResponseSchema.parse(result)).toEqual(result);
+    const request = { workspace_id: 'workspace', draft: { pinned_model_alias: null, model_profiles: [{ alias: 'fast', thinking_effort: null }], restrict_models_to_menu: false } };
+    expect(agentModelMenuPreviewRequestSchema.parse(request)).toEqual(request);
+    expect(agentModelMenuPreviewRequestSchema.safeParse({ ...request, draft: { model_profiles: [{ alias: 'fast' }, { alias: 'fast' }] } }).success).toBe(false);
+    expect(agentModelMenuPreviewRequestSchema.safeParse({ ...request, draft: { effective_model_aliases: ['fast'] } }).success).toBe(false);
+  });
   it('retains the top-level menu switch on profile, create and update while accepting only booleans', () => {
     for (const flag of [true, false]) {
       expect(namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [], restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
