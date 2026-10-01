@@ -3518,7 +3518,7 @@ describe('FullCompaction', () => {
           setCompactionDirectives: () => {},
         });
       }),
-      agentService(IAgentMemorySnapshot, { _serviceBrand: undefined, get: async () => 'frozen memory', getSessionEntries: async () => [],
+      agentService(IAgentMemorySnapshot, { _serviceBrand: undefined, get: async () => 'frozen memory', refreshIfDirty: async () => undefined, getSessionEntries: async () => [],
         liveSessionEntries: async () => [], resolveReferences: references, getPersona: () => undefined, configurePersona: () => {}, invalidate: () => {} }),
     );
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES, tools: ['HistoryRead', 'HistorySearch', 'TodoList'] });

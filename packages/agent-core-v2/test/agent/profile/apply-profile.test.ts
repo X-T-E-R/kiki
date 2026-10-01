@@ -28,6 +28,7 @@ import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IMemoryScopes } from '#/app/memory/memoryScopes';
 import type { PromptConfig } from '#/app/prompt/configSection';
 import {
   ISessionAgentProfileCatalog,
@@ -42,6 +43,7 @@ import {
   createTestAgent,
   execEnvServices,
   hostEnvironmentServices,
+  homeDirServices,
   sessionService,
   type TestAgentContext,
   type TestAgentOptions,
@@ -159,6 +161,118 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.refreshSystemPrompt();
     expect(states.get(dynamicPromptKey)?.context.cwdListing).toContain('new-cwd.txt');
     expect(states.get(dynamicPromptKey)?.context.cwdListing).not.toContain('changed.txt');
+  });
+
+  it('coalesces committed memory changes into a complete section replacement without touching system, tools or old messages', async () => {
+    const { ctx: host, profile: svc } = buildContext({ initialConfig: { memory: { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } } },
+      homeDirServices(homeDir),
+      appService(IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope) => scope.kind === 'global' ? 'memory/global' : scope.kind === 'workspace' ? 'memory/workspace' : `memory/personas/${scope.personaId}/${scope.kind}` }));
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { profileKey } = await import('#/agent/profile/profileOps');
+    const { dynamicPromptKey, IDynamicPromptInjection } = await import('#/agent/profile/dynamicPrompt');
+    const { IAgentContextInjectorService } = await import('#/agent/contextInjector/contextInjector');
+    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
+    const { IMemoryStore } = await import('#/app/memory/memoryStore');
+    const { IAgentMemorySnapshot } = await import('#/app/memory/memorySnapshot');
+    const states = host.get(IAgentStateService);
+    states.set(profileKey, { ...states.get(profileKey), renderGeneration: 0 });
+    const native = normalizeAgentProfile({ name: 'memory-runtime', tools: ['Read'], renderSystemPrompt: (context) =>
+      renderPromptTemplateResult('BASE ${now}|${cwd}|${memory}', context, { skillActive: false }) });
+    await svc.applyProfile(native);
+    host.get(IDynamicPromptInjection);
+    const injector = host.get(IAgentContextInjectorService);
+    const context = host.get(IAgentContextMemoryService);
+    const store = host.get(IMemoryStore);
+    const mutation = { action: 'create' as const, scope: { kind: 'global' as const }, type: 'feedback' as const, title: 'Saved build rule', body: 'Use the package manager.', reason: 'user instruction', source: { writer: 'user' as const } };
+    await injector.reconcileAllAtSafeBoundary();
+    const system = svc.getSystemPrompt();
+    const tools = svc.getActiveToolNames();
+    const original = JSON.parse(JSON.stringify(context.get()));
+    const oldContext = states.get(dynamicPromptKey)!.context;
+    const created = await store.put(mutation);
+    const edited = await store.put({ ...mutation, action: 'update', id: created.entry.id, expectedRevision: created.entry.revision, body: 'Use the checked-in lockfile.' });
+    expect(context.get()).toEqual(original);
+    const scans = vi.spyOn(store, 'list');
+    await injector.reconcileAllAtSafeBoundary();
+    expect(scans).toHaveBeenCalledTimes(2);
+    expect(states.get(dynamicPromptKey)?.context.memory).toContain(edited.entry.body);
+    const snapshots = () => context.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot');
+    const textOf = (message: ReturnType<typeof snapshots>[number]) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+    expect(snapshots()).toHaveLength(2);
+    const delta = textOf(snapshots()[1]!);
+    expect(delta).toContain('Only the sections below replace earlier values');
+    expect(delta).toContain('## Scoped memory');
+    expect(delta).toContain(edited.entry.body);
+    expect(delta).not.toContain(created.entry.body);
+    expect(delta).not.toContain('## Runtime/workspace');
+    expect(delta).not.toContain('## Available skills');
+    expect(delta).not.toContain('MemorySearch');
+    expect(delta).not.toContain('MemoryRead');
+    expect({ ...states.get(dynamicPromptKey)!.context, memory: oldContext.memory }).toEqual(oldContext);
+    expect(svc.getSystemPrompt()).toBe(system);
+    expect(svc.getActiveToolNames()).toEqual(tools);
+    expect(context.get().slice(0, original.length)).toEqual(original);
+    await injector.reconcileAllAtSafeBoundary();
+    expect(snapshots()).toHaveLength(2);
+    expect(scans).toHaveBeenCalledTimes(2);
+    scans.mockRestore();
+    const transient = await store.put({ ...mutation, title: 'Transient rule' });
+    await store.delete(mutation.scope, transient.entry.id, transient.entry.revision);
+    await injector.reconcileAllAtSafeBoundary();
+    expect(snapshots()).toHaveLength(2);
+    await store.put({ ...mutation, scope: { kind: 'persona', personaId: 'other' } });
+    await injector.reconcileAllAtSafeBoundary();
+    expect(snapshots()).toHaveLength(2);
+    await store.undo(mutation.scope, edited.operationId);
+    await injector.reconcileAllAtSafeBoundary();
+    expect(textOf(snapshots().at(-1)!)).toContain(created.entry.body);
+    const current = (await store.get(mutation.scope, created.entry.id))!;
+    await store.put({ ...mutation, action: 'archive', id: current.id, expectedRevision: current.revision });
+    await injector.reconcileAllAtSafeBoundary();
+    expect(textOf(snapshots().at(-1)!)).not.toContain(created.entry.body);
+    expect(textOf(snapshots().at(-1)!)).toContain('status=empty');
+    const retainedDelta = context.get().at(-1)!;
+    context.clear();
+    context.append(retainedDelta);
+    await injector.reconcileAllAtSafeBoundary();
+    expect(textOf(snapshots().at(-1)!)).toContain('Full snapshot; all sections replace earlier values.');
+    expect(textOf(snapshots().at(-1)!)).toContain('## Runtime/workspace');
+    context.applyCompaction({ summary: 'handoff', compactedCount: context.get().length, tokensBefore: 100 });
+    await injector.reconcileAllAtSafeBoundary();
+    expect(textOf(snapshots().at(-1)!)).toContain('Full snapshot; all sections replace earlier values.');
+    const last = await host.get(IAgentMemorySnapshot).get();
+    await store.put({ ...mutation, title: 'Post-compaction rule' });
+    vi.spyOn(store, 'list').mockRejectedValue(new Error('render unavailable'));
+    await injector.reconcileAllAtSafeBoundary();
+    expect(textOf(snapshots().at(-1)!)).toContain('status=stale/degraded');
+    expect(last).toContain('status=empty');
+    expect(svc.getSystemPrompt()).toBe(system);
+  });
+
+  it('leaves legacy memory frozen on commits and explicit memory refresh until its migration boundary', async () => {
+    const { ctx: host, profile: svc } = buildContext({ initialConfig: { memory: { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } } },
+      homeDirServices(homeDir),
+      appService(IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope) => scope.kind === 'global' ? 'memory/global' : scope.kind === 'workspace' ? 'memory/workspace' : `memory/personas/${scope.personaId}/${scope.kind}` }));
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { dynamicPromptKey, IDynamicPromptInjection } = await import('#/agent/profile/dynamicPrompt');
+    const { IAgentContextInjectorService } = await import('#/agent/contextInjector/contextInjector');
+    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
+    const { IMemoryStore } = await import('#/app/memory/memoryStore');
+    const native = normalizeAgentProfile({ name: 'legacy-memory', tools: [], renderSystemPrompt: (context) =>
+      renderPromptTemplateResult('BASE ${memory}', context, { skillActive: false }) });
+    await svc.applyProfile(native);
+    expect(host.get(IAgentStateService).get(dynamicPromptKey)?.enabled).toBe(false);
+    host.get(IDynamicPromptInjection);
+    const before = svc.getSystemPrompt();
+    const store = host.get(IMemoryStore);
+    await store.put({ action: 'create', scope: { kind: 'global' }, type: 'feedback', title: 'Legacy new rule', body: 'New saved rule.', reason: 'user instruction', source: { writer: 'user' } });
+    const scans = vi.spyOn(store, 'list');
+    await svc.refreshMemorySnapshot();
+    await host.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
+    await svc.refreshSystemPrompt();
+    expect(scans).not.toHaveBeenCalled();
+    expect(svc.getSystemPrompt()).toBe(before);
+    expect(host.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot')).toEqual([]);
   });
 
   it('discloses skill catalog changes only in snapshot deltas, not body edits', async () => {

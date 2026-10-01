@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { load } from 'js-yaml';
 import { tokenize } from '@kiki/minidb';
 import { createDecorator } from '#/_base/di/instantiation';
+import { Disposable } from '#/_base/di/lifecycle';
+import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -72,8 +74,16 @@ export interface MemoryPersonaDeleteResult {
   readonly namespaceCount: number;
   readonly entryCount: number;
 }
+export interface MemoryStoreChange {
+  readonly scope: MemoryScope;
+  readonly id: string;
+  readonly operationId: string;
+  readonly beforeStatus?: MemoryStatus;
+  readonly afterStatus?: MemoryStatus;
+}
 export interface IMemoryStore {
   readonly _serviceBrand: undefined;
+  readonly onDidChange: Event<MemoryStoreChange>;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;
   put(input: MemoryMutation): Promise<{ entry: MemoryEntry; operationId: string }>;
@@ -123,13 +133,15 @@ function decode(raw: string): MemoryEntry {
   };
 }
 
-export class MemoryStore implements IMemoryStore {
+export class MemoryStore extends Disposable implements IMemoryStore {
   declare readonly _serviceBrand: undefined;
+  private readonly changeEmitter = this._register(new Emitter<MemoryStoreChange>());
+  readonly onDidChange = this.changeEmitter.event;
   private readonly writeQueues = new Map<string, Promise<void>>();
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IMemoryScopes private readonly scopes: IMemoryScopes,
-  ) {}
+  ) { super(); }
 
   private async serializedWrite<T>(base: string, action: () => Promise<T>): Promise<T> {
     const previous = this.writeQueues.get(base) ?? Promise.resolve();
@@ -196,7 +208,8 @@ export class MemoryStore implements IMemoryStore {
   }
 
   async put(input: MemoryMutation): Promise<{ entry: MemoryEntry; operationId: string }> {
-    const base = await this.scopes.resolve(input.scope);
+    const scope = input.scope;
+    const base = await this.scopes.resolve(scope);
     return this.serializedWrite(base, async () => {
       if (!input.reason.trim()) throw new Error('Memory reason is required');
       if (!TYPES.includes(input.type)) throw new Error('Invalid memory type');
@@ -234,15 +247,15 @@ export class MemoryStore implements IMemoryStore {
       if (superseded !== undefined && !input.pending) {
         const previous = decode(superseded.text);
         const oldEntry = { ...previous, revision: undefined, status: 'superseded' as const, superseded_by: id, updated: now };
-        await this.commit(base, superseded.key, superseded, encode(oldEntry), 'supersede_previous', previous.id, input.source.writer, op);
+        await this.commit(scope, base, superseded.key, superseded, encode(oldEntry), 'supersede_previous', previous.id, input.source.writer, op);
       }
       try {
-        await this.commit(base, key, isCreate ? undefined : target, encoded, input.action, id, input.source.writer, op);
+        await this.commit(scope, base, key, isCreate ? undefined : target, encoded, input.action, id, input.source.writer, op);
       } catch (error) {
         if (superseded !== undefined && !input.pending && (await this.raw(base, id))?.text !== encoded) {
           const current = await this.raw(base, superseded.key.slice(superseded.key.lastIndexOf('/') + 1, -3));
           if (current !== undefined && decode(current.text).superseded_by === id) {
-            await this.commit(base, superseded.key, current, superseded.text, 'supersede_rollback', decode(superseded.text).id, input.source.writer);
+            await this.commit(scope, base, superseded.key, current, superseded.text, 'supersede_rollback', decode(superseded.text).id, input.source.writer);
           }
         }
         throw error;
@@ -257,7 +270,7 @@ export class MemoryStore implements IMemoryStore {
     return this.serializedWrite(base, async () => {
       const target = await this.raw(base, id);
       if (target === undefined || revision(target.text) !== expectedRevision) throw new Error('Memory revision conflict');
-      return this.commit(base, target.key, target, undefined, 'delete', id, writer);
+      return this.commit(scope, base, target.key, target, undefined, 'delete', id, writer);
     });
   }
 
@@ -292,7 +305,7 @@ export class MemoryStore implements IMemoryStore {
         if (currentRevisions[index] === event.beforeRevision) continue;
         const target = targets[index];
         const key = event.before === null ? target?.key ?? entryKey(event.id, false) : entryKey(event.id, decode(event.before).status === 'pending');
-        await this.commit(base, key, target, event.before ?? undefined, 'undo', event.id, 'user');
+        await this.commit(scope, base, key, target, event.before ?? undefined, 'undo', event.id, 'user');
         if (target !== undefined && target.key !== key) await this.storage.delete(base, target.key);
       }
       const primary = events.find((event) => event.action !== 'supersede_previous') ?? events[0]!;
@@ -338,7 +351,12 @@ export class MemoryStore implements IMemoryStore {
         for (const folder of ['entries', 'inbox'] as const) {
           for (const name of await this.storage.list(`${base}/${folder}`)) {
             if (!/^m_[a-zA-Z0-9_]+\.md$/.test(name)) continue;
+            const bytes = await this.storage.read(base, `${folder}/${name}`, { recoverMissing: false });
+            let beforeStatus: MemoryStatus | undefined;
+            try { beforeStatus = bytes === undefined ? undefined : decode(decoder.decode(bytes)).status; }
+            catch { beforeStatus = folder === 'inbox' ? 'pending' : 'active'; }
             await this.storage.delete(base, `${folder}/${name}`);
+            this.changeEmitter.fire({ scope, id: name.slice(0, -3), operationId: randomUUID(), beforeStatus });
             entryCount++;
             changed = true;
           }
@@ -393,12 +411,15 @@ export class MemoryStore implements IMemoryStore {
     ];
   }
 
-  private async commit(base: string, key: string, before: { key: string; text: string } | undefined, after: string | undefined, action: string, id: string, writer: MemoryWriter, operationId: string = randomUUID()): Promise<string> {
+  private async commit(scope: MemoryScope, base: string, key: string, before: { key: string; text: string } | undefined, after: string | undefined, action: string, id: string, writer: MemoryWriter, operationId: string = randomUUID()): Promise<string> {
     const safeBefore = before === undefined ? null : redactMemorySecrets(before.text);
+    const beforeStatus = before === undefined ? undefined : decode(before.text).status;
+    const afterStatus = after === undefined ? undefined : decode(after).status;
     const record: MemoryJournalRecord = { operationId, action, id, writer, at: new Date().toISOString(), before: safeBefore, beforeRevision: before === undefined ? null : revision(before.text), afterRevision: after === undefined ? null : revision(after) };
     await this.storage.append(base, 'journal.jsonl', encoder.encode(`${JSON.stringify(record)}\n`));
     if (after === undefined) await this.storage.delete(base, key);
     else await this.storage.write(base, key, encoder.encode(after), { atomic: true });
+    this.changeEmitter.fire({ scope, id, operationId, beforeStatus, afterStatus });
     return operationId;
   }
 

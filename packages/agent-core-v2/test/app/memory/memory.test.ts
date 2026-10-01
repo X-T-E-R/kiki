@@ -440,7 +440,7 @@ describe('memory persistence and snapshot', () => {
       [IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: 'sessions/disabled/main' })],
     ] });
     const snapshot = agent.accessor.get(IAgentMemorySnapshot);
-    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.get()).toContain('status=disabled');
     expect(await snapshot.resolveReferences('[m_test]')).toEqual([]);
     settings = MemoryConfigSchema.parse({ enabled: true });
     expect(await snapshot.resolveReferences('no references')).toEqual([]);
@@ -454,22 +454,22 @@ describe('memory persistence and snapshot', () => {
   it('freezes a disabled or enabled memory view until explicit invalidation', async () => {
     const { store, snapshot } = start();
     settings = MemoryConfigSchema.parse({ enabled: false });
-    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.get()).toContain('status=disabled');
     const saved = await create(store);
     settings = MemoryConfigSchema.parse({ enabled: true });
-    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.get()).toContain('status=disabled');
     snapshot.invalidate();
     expect(await snapshot.get()).toContain(saved.entry.id);
     settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.get()).toContain(saved.entry.id);
     snapshot.invalidate();
-    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.get()).toContain('status=disabled');
   });
 
   it('refuses disabled memory operations and leaves the rendered prompt unchanged', async () => {
     const { snapshot, writeTool, readTool, searchTool } = start();
     settings = MemoryConfigSchema.parse({ enabled: false });
-    expect(await snapshot.get()).toBe('');
+    expect(await snapshot.get()).toContain('status=disabled');
     expect(memoryEnabled(settings, workspaceId)).toBe(false);
     const context = { turnId: 3, toolCallId: 'disabled', signal: new AbortController().signal };
     for (const execution of [
@@ -586,5 +586,228 @@ describe('memory recall and live references', () => {
     settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.resolveReferences(text)).toEqual([]);
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('memory projection fidelity and committed refresh', () => {
+  it('distinguishes empty, disabled, pending review, unavailable and budget suppression', async () => {
+    const { store, snapshot } = start({ approval: 'review' });
+    expect(await snapshot.get()).toContain('status=empty');
+    const pending = await store.put({ action: 'create', scope: workspace, title: 'Unapproved title', body: 'Unapproved body', type: 'feedback', reason: 'review', source, pending: true });
+    const review = await snapshot.refreshIfDirty();
+    expect(review).toContain('approval=review');
+    expect(review).toContain('status=pending');
+    expect(review).toContain('pending=1 selected=0');
+    expect(review).not.toContain(pending.entry.title);
+    expect(review).not.toContain(pending.entry.body);
+    await store.put({ action: 'update', scope: workspace, id: pending.entry.id, expectedRevision: pending.entry.revision, title: pending.entry.title, body: 'Edited pending body.', type: 'feedback', reason: 'pending edit', source, pending: true });
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    expect(await snapshot.get()).toBe(review);
+    settings = MemoryConfigSchema.parse({ enabled: false });
+    snapshot.invalidate();
+    expect(await snapshot.get()).toContain('status=disabled');
+    settings = MemoryConfigSchema.parse({ approval: 'off' });
+    snapshot.invalidate();
+    expect(await snapshot.get()).toContain('approval=off');
+    settings = MemoryConfigSchema.parse({ budget: 30 });
+    await create(store);
+    snapshot.invalidate();
+    expect(await snapshot.get()).toBe('budget-suppressed');
+    settings = MemoryConfigSchema.parse({ budget: 0 });
+    snapshot.invalidate();
+    expect(await snapshot.get()).toBe('');
+    settings = MemoryConfigSchema.parse({});
+    snapshot.invalidate();
+    vi.spyOn(store, 'list').mockRejectedValue(new Error('unavailable'));
+    expect(await snapshot.get()).toContain('status=unavailable');
+  });
+
+  it('reclaims an empty workspace share and never sentence-splits URLs, versions or decimals', async () => {
+    const { store, snapshot } = start();
+    const body = `See https://example.test/path for v1.2.3 and ratio 0.75. ${'Long first sentence '.repeat(55)}`;
+    const saved = await create(store, global, body);
+    const text = await snapshot.get();
+    expect(text).toContain(saved.entry.id);
+    expect(text).toContain(body);
+    expect(text).toContain('[full]');
+    expect(text).toContain('active=1 pending=0 selected=1 suppressed=0');
+    expect(text.length).toBeLessThanOrEqual(2_000);
+  });
+
+  it('retains identifiers and bounded previews within the complete framing budget', async () => {
+    const { store, snapshot } = start({ budget: 700 });
+    const saved = await create(store, global, 'x'.repeat(1_500));
+    const text = await snapshot.get();
+    expect(text).toContain(saved.entry.id);
+    expect(text).toContain('Build preferences');
+    expect(text).toContain('[preview]');
+    expect(text).not.toContain('[full]');
+    expect(text.length).toBeLessThanOrEqual(settings.budget);
+    for (const budget of [0, 1, 10, 30, 100, 300, 400, 500, 650, 2_000, 4_000]) {
+      settings = MemoryConfigSchema.parse({ budget });
+      snapshot.invalidate();
+      expect((await snapshot.get()).length).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('protects persona capacity under public pressure and excludes unshared namespaces from status and refresh', async () => {
+    const { store, snapshot } = start({ budget: 1_000 });
+    await create(store, global, 'g'.repeat(1_500));
+    await create(store, workspace, 'w'.repeat(1_500));
+    const own = await create(store, personaWorkspace, 'Persona-only rule.');
+    snapshot.configurePersona({ id: 'alpha' });
+    expect(await snapshot.get()).toContain(own.entry.id);
+    snapshot.configurePersona({ id: 'alpha', shared: [] });
+    const privateView = await snapshot.get();
+    expect(privateView).toContain('scopes=persona:alpha,persona_workspace:alpha');
+    expect(privateView).toContain('active=1');
+    await store.importLorebook(global, [{ title: 'Public import', content: 'Not visible.' }]);
+    await create(store, otherPersona);
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    expect(await snapshot.get()).toBe(privateView);
+    await store.deletePersonaNamespaces('alpha');
+    expect(await snapshot.refreshIfDirty()).toContain('status=empty');
+  });
+
+  it('refreshes committed create, edit, supersede, archive, approval, undo, import and delete only at the caller boundary', async () => {
+    const { store, snapshot } = start();
+    const initial = await snapshot.get();
+    const first = await create(store);
+    expect(await snapshot.get()).toBe(initial);
+    expect(await snapshot.refreshIfDirty()).toContain(first.entry.body);
+    const edited = await store.put({ action: 'update', scope: workspace, id: first.entry.id, expectedRevision: first.entry.revision, title: first.entry.title, body: 'New build rule.', type: 'project', reason: 'edit', source });
+    expect(await snapshot.refreshIfDirty()).toContain(edited.entry.body);
+    await store.undo(workspace, edited.operationId);
+    expect(await snapshot.refreshIfDirty()).toContain(first.entry.body);
+    const restored = (await store.get(workspace, first.entry.id))!;
+    const candidate = await store.put({ action: 'supersede', scope: workspace, id: restored.id, expectedRevision: restored.revision, title: 'Candidate title', body: 'Candidate body.', type: 'project', reason: 'review', source, pending: true });
+    const pendingView = await snapshot.refreshIfDirty();
+    expect(pendingView).toContain(first.entry.body);
+    expect(pendingView).not.toContain(candidate.entry.body);
+    const approved = await store.put({ action: 'update', scope: workspace, id: candidate.entry.id, expectedRevision: candidate.entry.revision, title: candidate.entry.title, body: candidate.entry.body, type: candidate.entry.type, reason: 'approved', source });
+    const activeView = await snapshot.refreshIfDirty();
+    expect(activeView).toContain(approved.entry.body);
+    expect(activeView).not.toContain(first.entry.body);
+    await store.undo(workspace, approved.operationId);
+    expect(await snapshot.refreshIfDirty()).toContain(first.entry.body);
+    const current = (await store.get(workspace, first.entry.id))!;
+    const successor = await store.put({ action: 'supersede', scope: workspace, id: current.id, expectedRevision: current.revision, title: 'Successor', body: 'Replacement rule.', type: 'project', reason: 'supersede', source });
+    expect(await snapshot.refreshIfDirty()).toContain(successor.entry.body);
+    const archived = await store.put({ action: 'archive', scope: workspace, id: successor.entry.id, expectedRevision: successor.entry.revision, title: successor.entry.title, body: successor.entry.body, type: 'project', reason: 'withdrawn', source });
+    expect(await snapshot.refreshIfDirty()).not.toContain(successor.entry.body);
+    await store.delete(workspace, archived.entry.id, archived.entry.revision);
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    const imported = await store.importLorebook(global, [{ title: 'Imported rule', content: 'Keep the imported rule.' }]);
+    expect(await snapshot.refreshIfDirty()).toContain('Keep the imported rule.');
+    await store.delete(global, imported[0]!.entry.id, imported[0]!.entry.revision);
+    expect(await snapshot.refreshIfDirty()).not.toContain('Keep the imported rule.');
+  });
+
+  it('coalesces visible commits, does not poll unchanged or unrelated scopes, and shares an in-flight projection', async () => {
+    const { store, snapshot } = start();
+    await snapshot.get();
+    await create(store, { kind: 'workspace', workspaceId: 'wd_other_0123456789ab' });
+    await create(store, otherPersona);
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    await create(store, global);
+    await create(store, workspace);
+    const list = vi.spyOn(store, 'list');
+    const [one, two] = await Promise.all([snapshot.refreshIfDirty(), snapshot.refreshIfDirty()]);
+    expect(one).toBe(two);
+    expect(one).toContain('active=2');
+    expect(list).toHaveBeenCalledTimes(2);
+    for (let step = 0; step < 10; step++) expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('emits metadata only after successful durable entry commits, not failed writes or revision conflicts', async () => {
+    const { store, storage, snapshot } = start();
+    await snapshot.get();
+    const changes: unknown[] = [];
+    const committedReads: Promise<unknown>[] = [];
+    const subscription = store.onDidChange((change) => {
+      changes.push(change);
+      committedReads.push(store.get(change.scope, change.id));
+    });
+    const write = storage.write.bind(storage);
+    vi.spyOn(storage, 'write').mockImplementation(async (scope, key, data, options) => {
+      if (key.startsWith('entries/')) throw new Error('failed entry write');
+      return write(scope, key, data, options);
+    });
+    await expect(create(store)).rejects.toThrow('failed entry write');
+    expect(changes).toEqual([]);
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    vi.restoreAllMocks();
+    const saved = await create(store);
+    expect(changes).toEqual([{ scope: workspace, id: saved.entry.id, operationId: saved.operationId, beforeStatus: undefined, afterStatus: 'active' }]);
+    expect((await Promise.all(committedReads))[0]).toMatchObject({ body: saved.entry.body });
+    await expect(store.delete(workspace, saved.entry.id, 'stale')).rejects.toThrow('revision conflict');
+    expect(changes).toHaveLength(1);
+    subscription.dispose();
+  });
+
+  it('retains last-known content as stale/degraded after a refresh failure without repeated disk scans', async () => {
+    const { store, snapshot } = start();
+    await create(store);
+    const last = await snapshot.get();
+    await create(store, global, 'New rule.');
+    const list = vi.spyOn(store, 'list').mockRejectedValue(new Error('render failed'));
+    const degraded = await snapshot.refreshIfDirty();
+    expect(degraded).toContain('status=stale/degraded');
+    expect(degraded).toContain('Use pnpm');
+    expect(degraded).not.toContain('status=empty');
+    expect(degraded!.length).toBeLessThanOrEqual(settings.budget);
+    expect(last).toContain('status=ready');
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    expect(list).toHaveBeenCalledTimes(2);
+    list.mockRestore();
+    snapshot.invalidate();
+    expect(await snapshot.get()).toContain('New rule.');
+  });
+
+  it('uses the restored scoped baseline on a cold failure and keeps it across another failed refresh', async () => {
+    const first = start();
+    await create(first.store);
+    const baseline = await first.snapshot.get();
+    app?.dispose();
+    app = undefined;
+    const restored = start();
+    const list = vi.spyOn(restored.store, 'list').mockRejectedValue(new Error('offline'));
+    expect(await restored.snapshot.get(baseline)).toContain('status=stale/degraded');
+    expect(await restored.snapshot.get()).toContain('Use pnpm');
+    restored.snapshot.invalidate();
+    expect(await restored.snapshot.get(baseline.replace('status=ready\n', ''))).toContain('status=stale/degraded');
+    expect(await restored.snapshot.get()).toContain('Use pnpm');
+    list.mockRestore();
+    await create(restored.store, global);
+    vi.spyOn(restored.store, 'list').mockRejectedValue(new Error('offline again'));
+    expect(await restored.snapshot.refreshIfDirty()).toContain('Use pnpm');
+    expect(await restored.snapshot.get()).toContain('status=stale/degraded');
+  });
+
+  it('retains a dirty commit arriving while a projection is in flight for the next boundary', async () => {
+    const { store, snapshot } = start();
+    const saved = await create(store, global);
+    await snapshot.get();
+    const changed = await store.put({ action: 'update', scope: global, id: saved.entry.id, expectedRevision: saved.entry.revision, title: saved.entry.title, body: 'First edit.', type: 'project', reason: 'edit', source });
+    let entered!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const originalList = store.list.bind(store);
+    const list = vi.spyOn(store, 'list').mockImplementation(async (scope, inactive) => {
+      const entries = await originalList(scope, inactive);
+      if (scope.kind === 'global') { entered(); await blocked; }
+      return entries;
+    });
+    const refresh = snapshot.refreshIfDirty();
+    await reading;
+    await store.put({ action: 'update', scope: global, id: changed.entry.id, expectedRevision: changed.entry.revision, title: changed.entry.title, body: 'Second edit.', type: 'project', reason: 'edit', source });
+    release();
+    expect(await refresh).toContain('First edit.');
+    list.mockRestore();
+    expect(await snapshot.refreshIfDirty()).toContain('Second edit.');
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
   });
 });

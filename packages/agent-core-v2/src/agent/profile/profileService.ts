@@ -1236,10 +1236,27 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
-  refreshMemorySnapshot(): Promise<void> {
+  async refreshMemorySnapshot(): Promise<void> {
+    if (this.states.get(dynamicPromptKey)?.enabled !== true) return;
     this.syncRestoredPersona();
     this.memorySnapshot.invalidate();
-    return this.refreshSystemPrompt();
+    await this.publishMemoryProjection(await this.memorySnapshot.get(this.states.get(dynamicPromptKey)?.context.memory));
+  }
+
+  async reconcileMemorySnapshot(): Promise<void> {
+    if (this.states.get(dynamicPromptKey)?.enabled !== true) return;
+    const memory = await this.memorySnapshot.refreshIfDirty();
+    if (memory !== undefined) await this.publishMemoryProjection(memory);
+  }
+
+  private async publishMemoryProjection(memory: string): Promise<void> {
+    const previous = this.states.get(dynamicPromptKey);
+    if (previous?.enabled !== true || previous.context.memory === memory) return;
+    const context = { ...previous.context, memory };
+    const content = dynamicPromptContent(context);
+    const hash = promptSectionHash(content);
+    if (hash === previous.hash) return;
+    await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: true, revision: previous.revision + 1, context, content, hash }));
   }
 
   refreshSystemPrompt(): Promise<void> {

@@ -10,7 +10,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import type { SystemPromptContext } from './profile';
+import { IAgentProfileService, type SystemPromptContext } from './profile';
 
 const snapshotSchema = z.object({ enabled: z.boolean(), revision: z.number().int().positive(),
   context: z.custom<SystemPromptContext>(), content: z.string(), hash: z.string() });
@@ -28,7 +28,7 @@ export function dynamicPromptSections(context: SystemPromptContext): Record<stri
   return {
     workspace: `## Runtime/workspace\nLocal date: ${new Intl.DateTimeFormat('en-CA', { timeZone: context.timeZone ?? 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(context.now ?? 0))} (${context.timeZone ?? 'UTC'})\nWorking directory: ${context.cwd ?? ''}\n${context.cwdListing ?? ''}\n${context.additionalDirsInfo ?? ''}`,
     instructions: `## Applicable workspace instructions\n${context.agentsMd || '(none)'}`,
-    memory: `## Scoped memory\n${context.memory || '(none)'}`,
+    memory: `## Scoped memory — Saved memory / as-of projection\n${context.memory || '(not projected)'}`,
     skills: `## Available skills\n${context.skillActive ? context.skills || '(none)' : '(unavailable)'}`,
     plugins: `## Plugin guidance\n${context.pluginSections || '(none)'}`,
   };
@@ -56,9 +56,10 @@ export const IDynamicPromptInjection = createDecorator<IDynamicPromptInjection>(
 export class DynamicPromptInjection extends Service implements IDynamicPromptInjection {
   declare readonly _serviceBrand: undefined;
   constructor(@IAgentStateService states: IAgentStateService, @IAgentContextInjectorService injector: IAgentContextInjectorService,
-    @IAgentContextMemoryService context: IAgentContextMemoryService) {
+    @IAgentContextMemoryService context: IAgentContextMemoryService, @IAgentProfileService profile: IAgentProfileService) {
     super();
-    this._register(injector.register('runtime_snapshot', ({ lastDisclosure, injectedPositions }) => {
+    this._register(injector.register('runtime_snapshot', async ({ lastDisclosure, injectedPositions }) => {
+      await profile.reconcileMemorySnapshot();
       const snapshot = states.get(dynamicPromptKey);
       if (snapshot?.enabled !== true) return undefined;
       const disclosed = lastDisclosure as { revision?: number; sectionHashes?: Record<string, string> } | undefined;

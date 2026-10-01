@@ -253,6 +253,7 @@ export interface IAgentProfileService {
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;
   refreshSystemPrompt(): Promise<void>;
   refreshMemorySnapshot(): Promise<void>;
+  reconcileMemorySnapshot(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;
   getAgentsMdWarning(): string | undefined;
