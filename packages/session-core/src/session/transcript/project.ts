@@ -14,6 +14,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@kiki/protocol';
+import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
 import { transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
@@ -538,7 +539,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
   return undefined;
 }
 
-const HIDDEN_MARKERS = new Set(['undo', 'clear', 'cron.fired']);
+const HIDDEN_MARKERS = new Set(['undo', 'clear', 'cron.fired', 'agent_message.delivered']);
 const MARKER_SUMMARY_KEYS = {
   compaction: 'transcript.marker.compaction',
   hook: 'transcript.marker.hook',
@@ -895,6 +896,7 @@ type RawSubagentEvent = {
   readonly turnId?: string;
   readonly error?: string;
   readonly message?: string;
+  readonly messageId?: string;
   readonly delivery?: 'queued' | 'delivered';
   readonly anchorToolCallId?: string;
 };
@@ -937,18 +939,30 @@ function sendMessageFromToolArgs(args: unknown): string | undefined {
   return typeof message === 'string' && message.trim() !== '' ? message : undefined;
 }
 
-function sendDeliveryFromToolOutput(output: unknown): 'queued' | 'delivered' | undefined {
+function sendReceiptFromToolOutput(output: unknown): {
+  messageId?: string;
+  targetAgentId?: string;
+  delivery?: 'queued' | 'delivered';
+} {
   let value = output;
   if (typeof value === 'string') {
     try {
       value = JSON.parse(value) as unknown;
     } catch {
-      return undefined;
+      return {};
     }
   }
-  if (typeof value !== 'object' || value === null) return undefined;
-  const status = (value as Record<string, unknown>)['status'];
-  return status === 'queued' || status === 'delivered' ? status : undefined;
+  if (typeof value !== 'object' || value === null) return {};
+  const record = value as Record<string, unknown>;
+  const status = record['status'];
+  const target = record['target'];
+  const targetAgentId = typeof target === 'object' && target !== null
+    ? (target as Record<string, unknown>)['agent_id'] : undefined;
+  return {
+    messageId: typeof record['message_id'] === 'string' ? record['message_id'] : undefined,
+    targetAgentId: typeof targetAgentId === 'string' ? targetAgentId : undefined,
+    delivery: status === 'queued' || status === 'delivered' ? status : undefined,
+  };
 }
 
 function terminalEventForStatus(
@@ -1079,11 +1093,12 @@ function subagentBlocksFromSnapshot(
           });
         }
         if (frame.name === 'AgentSend') {
+          const receipt = sendReceiptFromToolOutput(frame.output);
           const target = sendTargetFromToolArgs(frame.input);
-          const targetId =
+          const targetId = receipt.targetAgentId ?? (
             target === undefined
               ? undefined
-              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId);
+              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId));
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
@@ -1092,7 +1107,8 @@ function subagentBlocksFromSnapshot(
               at: frameAt,
               turnId: item.turnId,
               message: sendMessageFromToolArgs(frame.input),
-              delivery: sendDeliveryFromToolOutput(frame.output),
+              messageId: receipt.messageId,
+              delivery: receipt.delivery,
               anchorToolCallId: frame.toolCallId,
             });
           }
@@ -1168,8 +1184,24 @@ function subagentBlocksFromSnapshot(
       error: block.error,
     });
   }
+  const receipts = new Map<string, Map<string, string>>();
+  for (const item of response.items) {
+    if (item.kind !== 'marker' || item.marker !== 'agent_message.delivered') continue;
+    const parsed = agentMessageDeliveredEventSchema.safeParse(item.payload);
+    if (!parsed.success) continue;
+    const { targetAgentId, messageId, deliveredAt } = parsed.data;
+    let targetReceipts = receipts.get(targetAgentId);
+    if (targetReceipts === undefined) {
+      targetReceipts = new Map();
+      receipts.set(targetAgentId, targetReceipts);
+    }
+    const previous = targetReceipts.get(messageId);
+    if (previous === undefined || deliveredAt < previous) targetReceipts.set(messageId, deliveredAt);
+  }
   const events: SubagentEventBlock[] = rawEvents.map((raw) => {
     const owner = byAgent.get(raw.subagentId);
+    const deliveredAt = raw.messageId === undefined
+      ? undefined : receipts.get(raw.subagentId)?.get(raw.messageId);
     return {
       kind: 'subagent-event',
       id: raw.id,
@@ -1182,7 +1214,9 @@ function subagentBlocksFromSnapshot(
       turnId: raw.turnId,
       error: raw.error,
       message: raw.message,
-      delivery: raw.delivery,
+      messageId: raw.messageId,
+      delivery: deliveredAt === undefined ? raw.delivery : 'delivered',
+      deliveredAt,
       anchorToolCallId: raw.anchorToolCallId,
     };
   });

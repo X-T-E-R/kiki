@@ -334,7 +334,9 @@ export interface SubagentEventBlock {
   readonly turnId?: string;
   readonly error?: string;
   readonly message?: string;
+  readonly messageId?: string;
   readonly delivery?: 'queued' | 'delivered';
+  readonly deliveredAt?: string;
   /**
    * Tool call that triggered this entry (sent/resumed). When the triggering
    * ToolBlock is on the page, the entry anchors right after it instead of

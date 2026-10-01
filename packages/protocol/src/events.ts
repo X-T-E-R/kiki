@@ -962,6 +962,15 @@ export interface SubagentFailedEvent {
   readonly taskId?: string;
 }
 
+/** Sender-scoped delivery fact, persisted after recipient context flush and mailbox acknowledgement. */
+export interface AgentMessageDeliveredEvent {
+  readonly type: 'agent_message.delivered';
+  readonly messageId: string;
+  readonly targetAgentId: string;
+  readonly status: 'delivered';
+  readonly deliveredAt: string;
+}
+
 export interface CompactionStartedEvent {
   readonly type: 'compaction.started';
   readonly trigger: 'manual' | 'auto';
@@ -1194,6 +1203,7 @@ export type AgentEvent =
   | SubagentSuspendedEvent
   | SubagentCompletedEvent
   | SubagentFailedEvent
+  | AgentMessageDeliveredEvent
   | CompactionStartedEvent
   | CompactionBlockedEvent
   | CompactionCancelledEvent
@@ -2044,6 +2054,14 @@ export const subagentFailedEventSchema = z.object({
   taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentFailedEvent>;
 
+export const agentMessageDeliveredEventSchema = z.object({
+  type: z.literal('agent_message.delivered'),
+  messageId: z.string().min(1),
+  targetAgentId: z.string().min(1),
+  status: z.literal('delivered'),
+  deliveredAt: isoDateTimeSchema,
+}) satisfies z.ZodType<AgentMessageDeliveredEvent>;
+
 export const compactionStartedEventSchema = z.object({
   type: z.literal('compaction.started'),
   trigger: z.enum(['manual', 'auto']),
@@ -2260,6 +2278,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   subagentSuspendedEventSchema,
   subagentCompletedEventSchema,
   subagentFailedEventSchema,
+  agentMessageDeliveredEventSchema,
   compactionStartedEventSchema,
   compactionBlockedEventSchema,
   compactionCancelledEventSchema,

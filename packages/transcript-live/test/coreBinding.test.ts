@@ -588,6 +588,39 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('projects sender delivery receipts with the child unsubscribed and restores them through cold replay and reconnect', () => {
+    const record = {
+      type: 'agent_message.delivered', messageId: 'message-one', targetAgentId: 'agent-child',
+      status: 'delivered', deliveredAt: '2026-01-01T00:00:02.000Z', time: 2_000,
+    } as const;
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    main.bus.emit(record as unknown as Event2<any>);
+    const live = store.getAgent('main')!;
+    expect(live.getItems()).toEqual([expect.objectContaining({
+      kind: 'marker', marker: 'agent_message.delivered', payload: record,
+    })]);
+    expect(store.getAgent('agent-child')?.getItems() ?? []).toEqual([]);
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add(JSON.parse(JSON.stringify(record)) as TranscriptWireRecord));
+    expect(cold.snapshot()).toEqual(live.snapshot());
+    const restored = new AgentTranscript('main');
+    restored.apply([{ op: 'reset', agentId: 'main', snapshot: JSON.parse(JSON.stringify(cold.snapshot())) as AgentTranscriptSnapshot }]);
+    expect(restored.snapshot()).toEqual(live.snapshot());
+    binding.dispose();
+    const reconnected = bindSessionTranscript(store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    main.bus.emit(record as unknown as Event2<any>);
+    expect(live.getItems()).toHaveLength(1);
+    expect(live.getItems()[0]).toMatchObject({ payload: { status: 'delivered', messageId: 'message-one' } });
+    reconnected.dispose();
+  });
+
   it('keeps cold and live mailbox facts identical with time fields preserved', () => {
     const message = {
       id: 'agent-message-2',

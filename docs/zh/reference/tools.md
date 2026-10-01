@@ -216,6 +216,8 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn，尽早送达；空闲且可恢复的子 Agent 会以该消息启动一次新的运行，该次运行完成时父 Agent 照常收到完成通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已接收，但消息尚未加入收件方上下文。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效；它只确认送达，不代表子 Agent 已按消息采取行动。
+
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
 **`Skill`** 按已注册的 `skill` 名称或显式 Markdown `path` 加载指令，两者互斥，可附带 `args`。路径可以是绝对路径或工作区相对路径，遵循文件读取权限和运行时隔离。路径加载不会覆盖已注册 Skill、安装插件或执行脚本。相对资源仍以文件所在目录为根；加载块记录来源路径与参数，可区分同名文件。省略类型以及 `prompt`、`inline` 类型均受支持；模型不能调用 `flow` 类型或 `disableModelInvocation: true` 的 Skill，路径入口也不例外。嵌套调用深度上限 3 层。Skill 体系细节见 [Agent Skills](../customization/skills.md)。

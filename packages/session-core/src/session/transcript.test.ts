@@ -5116,3 +5116,57 @@ describe('queued prompt scheduling projection', () => {
     expect(projected.goal?.controlRevision).toBe(9);
   });
 });
+
+describe('AgentSend delivery receipts', () => {
+  const sendTurn = (output: boolean) => ({
+    kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,
+    origin: { kind: 'user' as const },
+    steps: [{
+      kind: 'step' as const, stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' as const,
+      frames: ['message-one', 'message-two'].map((messageId) => ({
+        kind: 'tool' as const, frameId: messageId, toolCallId: messageId,
+        name: 'AgentSend', state: output ? 'done' as const : 'running' as const,
+        input: { target: 'worker', message: messageId },
+        output: output ? JSON.stringify({ message_id: messageId, status: 'queued', target: { agent_id: 'agent-child' } }) : undefined,
+      })),
+    }],
+  });
+  const receipt = (messageId: string, targetAgentId = 'agent-child', status = 'delivered') => ({
+    kind: 'marker' as const, markerId: `receipt-${messageId}-${targetAgentId}-${status}`,
+    marker: 'agent_message.delivered',
+    payload: { type: 'agent_message.delivered', messageId, targetAgentId, status, deliveredAt: FIXED_AT_2 },
+  });
+  const project = (items: AgentTranscriptSnapshot['items'], previous = createViewState('session_test')) =>
+    projectAgentTranscriptView(previous, 'main', emptySnapshot({ items, tasks: [{
+      taskId: 'task-child', kind: 'subagent', state: 'running', detached: true,
+      agentId: 'agent-child', name: 'worker', outputTail: '',
+    }] }));
+  const sent = (state: ReturnType<typeof project>) => state.blocks.flatMap((block) =>
+    block.kind === 'subagent-event' && block.event === 'sent' ? [block] : []);
+
+  it('updates queued to delivered by exact identity independently for the same target', () => {
+    const queued = project([sendTurn(true)]);
+    expect(sent(queued).map((block) => block.delivery)).toEqual(['queued', 'queued']);
+    const delivered = project([sendTurn(true), receipt('message-one'), receipt('message-two', 'other-agent')], queued);
+    expect(sent(delivered).map((block) => [block.messageId, block.delivery])).toEqual([
+      ['message-one', 'delivered'], ['message-two', 'queued'],
+    ]);
+    expect(sent(delivered)[0]).toMatchObject({ deliveredAt: FIXED_AT_2 });
+    expect(delivered.blocks.some((block) => block.id.startsWith('agent-marker-receipt'))).toBe(false);
+  });
+
+  it('retains a receipt that arrives before the tool result, including duplicate and invalid receipts', () => {
+    const early = project([receipt('message-one'), sendTurn(false)]);
+    expect(sent(early)[0]?.delivery).toBeUndefined();
+    const result = project([receipt('message-one'), sendTurn(true), receipt('message-one'), receipt('message-one', 'agent-child', 'queued')], early);
+    expect(sent(result).map((block) => block.delivery)).toEqual(['delivered', 'queued']);
+    const lateQueued = project([receipt('message-one'), sendTurn(true)], result);
+    expect(sent(lateQueued)[0]?.delivery).toBe('delivered');
+  });
+
+  it('restores delivered from a serialized sender snapshot after reload without child transcript state', () => {
+    const items = [sendTurn(true), receipt('message-one')];
+    const restored = project(JSON.parse(JSON.stringify(items)) as AgentTranscriptSnapshot['items']);
+    expect(sent(restored).map((block) => block.delivery)).toEqual(['delivered', 'queued']);
+  });
+});

@@ -612,6 +612,9 @@ export class TranscriptWireAdapter {
         this.marker(record, ordinal, 'plan.exit'),
       ];
     }
+    if (record.type === 'agent_message.delivered') {
+      return [this.marker(record, ordinal, 'agent_message.delivered')];
+    }
     if (record.type === 'plan.revision') {
       this.#plan = {
         reviewPath: stringOf(record['path']),

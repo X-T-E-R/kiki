@@ -10,7 +10,9 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IWireService } from '#/wire/wire';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { delegatorRef, labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import {
   ISessionDispatchService,
@@ -26,6 +28,7 @@ import {
   type AgentMessageAcceptance,
   type QueuedAgentMessage,
 } from './messageMailbox';
+import { AgentMessageDelivered } from './messageEvents';
 
 const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
 const MISSING_TARGET_REASON = 'target agent is not registered in the session';
@@ -355,8 +358,33 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       await handle.accessor.get(IWireService).flush();
       pending.flushed = true;
     }
-    await this.store.markDelivered(pending.queued.claim);
+    if (await this.store.markDelivered(pending.queued.claim)) {
+      await this.recordDeliveryReceipt(pending.queued.message);
+    }
     if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+  }
+
+  private async recordDeliveryReceipt(message: AgentMessageAcceptance['message']): Promise<void> {
+    if (message.senderKind === 'user') return;
+    let sender = this.lifecycle.get(message.sourceAgentId);
+    if (sender === undefined) {
+      const meta = (await this.metadata.read()).agents?.[message.sourceAgentId];
+      if (meta === undefined) return;
+      sender = await this.lifecycle.create({
+        agentId: message.sourceAgentId,
+        forkedFrom: meta.forkedFrom,
+        labels: labelsFromAgentMeta(meta),
+        delegator: delegatorRef(meta),
+        restoreBinding: {},
+      });
+    }
+    await sender.accessor.get(IEventDispatcher).dispatch(new AgentMessageDelivered({
+      messageId: message.messageId,
+      targetAgentId: message.targetAgentId,
+      status: 'delivered',
+      deliveredAt: new Date().toISOString(),
+    }));
+    await sender.accessor.get(IWireService).flush();
   }
 
   private async prepareExternalDelivery(

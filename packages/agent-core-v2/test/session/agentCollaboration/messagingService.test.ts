@@ -925,6 +925,128 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('persists sender receipts only after next-step materialization, recipient flush and mailbox acknowledgement', async () => {
+    const sender = createTestAgent();
+    const source: IAgentScopeHandle = {
+      id: 'main', kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) },
+      dispose: () => {},
+    };
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const adapter = mailboxStore(tempDir());
+    const acknowledged: string[] = [];
+    const store = wrapStore(adapter, {
+      markDelivered: async (claim) => {
+        expect(target.operations.at(-1)).toBe('flush');
+        const changed = await adapter.markDelivered(claim);
+        acknowledged.push(claim.message.messageId);
+        return changed;
+      },
+    });
+    const service = messagingService(store, lifecycleHarness([source, target.handle]).service,
+      sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+    const receipts = async () => {
+      const records = [];
+      for await (const record of sender.wire.readJournal()) {
+        if (record.type === 'agent_message.delivered') records.push(record);
+      }
+      return records;
+    };
+    try {
+      const accepted = await service.send({ ...sendInput('one', 'receipt-one'), waitForRunningDelivery: false });
+      await waitUntil(() => target.pendingSteers() === 1);
+      expect(accepted.delivery).toBe('queued');
+      expect(await receipts()).toEqual([]);
+      await target.beginStepBoundary(1);
+      await vi.waitFor(async () => { expect(await receipts()).toHaveLength(1); });
+      expect(acknowledged).toEqual([accepted.message.messageId]);
+      expect(await receipts()).toEqual([expect.objectContaining({
+        messageId: accepted.message.messageId, targetAgentId: 'agent-target', status: 'delivered',
+        deliveredAt: expect.any(String),
+      })]);
+      const duplicate = await service.send({ ...sendInput('one', 'receipt-one'), waitForRunningDelivery: false });
+      expect(duplicate).toMatchObject({ deduplicated: true, delivery: 'delivered' });
+      expect(await receipts()).toHaveLength(1);
+      const raced = await service.send({ ...sendInput('race', 'receipt-race'), waitForRunningDelivery: false });
+      await waitUntil(() => target.pendingSteers() === 1);
+      target.setRunning(false);
+      await drain();
+      expect((await adapter.accept(messageInput('race', 'receipt-race'))).delivery).toBe('queued');
+      expect(await receipts()).toHaveLength(1);
+      expect(acknowledged).not.toContain(raced.message.messageId);
+      await target.execution.hooks.onWillRun.run({ signal });
+      expect(await receipts()).toHaveLength(2);
+    } finally {
+      service.dispose();
+      await sender.dispose();
+    }
+  });
+
+  it.each(['recipient-flush', 'mailbox-ack', 'stale-claim'] as const)(
+    'does not emit a sender receipt when %s fails', async (failure) => {
+      const sender = createTestAgent();
+      const source: IAgentScopeHandle = {
+        id: 'main', kind: LifecycleScope.Agent,
+        accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) }, dispose: () => {},
+      };
+      const target = agentHandle('agent-target');
+      const adapter = mailboxStore(tempDir());
+      const markDelivered = vi.fn(async (_claim: ThreadDeliveryClaim) => {
+        if (failure === 'mailbox-ack') throw new Error('ack failed');
+        return false;
+      });
+      if (failure === 'recipient-flush') {
+        vi.spyOn(target.handle.accessor.get(IWireService), 'flush').mockRejectedValue(new Error('flush failed'));
+      }
+      const service = messagingService(wrapStore(adapter, { markDelivered }),
+        lifecycleHarness([source, target.handle]).service, sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+      try {
+        await adapter.accept(messageInput('pending', `failure-${failure}`));
+        const run = target.execution.hooks.onWillRun.run({ signal });
+        if (failure === 'stale-claim') await run;
+        else await expect(run).rejects.toThrow(failure === 'recipient-flush' ? 'flush failed' : 'ack failed');
+        if (failure === 'recipient-flush') expect(markDelivered).not.toHaveBeenCalled();
+        const records = [];
+        for await (const record of sender.wire.readJournal()) records.push(record);
+        expect(records.some((record) => record.type === 'agent_message.delivered')).toBe(false);
+        expect((await adapter.accept(messageInput('pending', `failure-${failure}`))).delivery).toBe('queued');
+      } finally {
+        service.dispose();
+        await sender.dispose();
+      }
+    },
+  );
+
+  it('restores an unloaded registered sender to persist its receipt without running it', async () => {
+    const sender = createTestAgent();
+    const source: IAgentScopeHandle = {
+      id: 'agent-sender', kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) }, dispose: () => {},
+    };
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([target.handle]);
+    lifecycle.service.create.mockReturnValue(Promise.resolve(source));
+    const service = messagingService(mailboxStore(tempDir()), lifecycle.service, sessionContext(),
+      metadataHarness({ 'agent-sender': { type: 'sub', parentAgentId: 'agent-parent', forkedFrom: 'agent-original' }, 'agent-target': {} }));
+    try {
+      const accepted = await service.send({ ...sendInput('restore', 'restore-receipt'), sourceAgentId: 'agent-sender' });
+      expect(accepted.delivery).toBe('queued');
+      await target.execution.hooks.onWillRun.run({ signal });
+      expect(lifecycle.service.create).toHaveBeenCalledWith({
+        agentId: 'agent-sender', forkedFrom: 'agent-original', labels: { parentAgentId: 'agent-parent' },
+        delegator: { kind: 'agent', agentId: 'agent-parent' }, restoreBinding: {},
+      });
+      const records = [];
+      for await (const record of sender.wire.readJournal()) records.push(record);
+      expect(records).toContainEqual(expect.objectContaining({ type: 'agent_message.delivered', messageId: accepted.message.messageId }));
+      expect(sender.llmCalls).toEqual([]);
+    } finally {
+      service.dispose();
+      await sender.dispose();
+    }
+  });
+
   it('injects AgentSend into a running target at its next step boundary before acknowledging delivery', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');

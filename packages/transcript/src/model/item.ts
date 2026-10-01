@@ -16,6 +16,7 @@ export const KNOWN_MARKERS = [
   'plan.enter',
   'plan.exit',
   'plan.revision',
+  'agent_message.delivered',
   'skill',
   'cron.fired',
   'notice',

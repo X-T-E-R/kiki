@@ -24,7 +24,8 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (77 record types)
+// Index (78 record types)
+//   agent_message.delivered            (none)                                                                                      src/session/agentCollaboration/messageEvents.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                         src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                                                     src/agent/profile/profileOps.ts
 //   context_strategy.override_changed  contextStrategyOverride                                                                     src/agent/fullCompaction/contextStrategyOps.ts
@@ -102,6 +103,18 @@
 //   turn.step.interrupted              (none)                                                                                      src/agent/loop/turnEvents.ts
 //   turn.step.retrying                 (none)                                                                                      src/agent/stepRetry/stepRetryService.ts
 //   usage.record                       usage, usage.panelAccounting                                                                src/agent/usage/usageOps.ts
+
+/**
+ * states: (none)
+ * owner: src/session/agentCollaboration/messageEvents.ts
+ */
+interface AgentMessageDeliveredPayload {
+  _name: 'agent_message.delivered';
+  messageId: string;
+  targetAgentId: string;
+  status: 'delivered';
+  deliveredAt: string;
+}
 
 /**
  * states: autoCompactOverride
@@ -1339,6 +1352,7 @@ interface UsageRecordPayload {
 
 /** Record type → payload sketch. */
 interface WirePayloadMap {
+  "agent_message.delivered": AgentMessageDeliveredPayload;
   "auto_compact.override_changed": AutoCompactOverrideChangedPayload;
   "config.update": ConfigUpdatePayload;
   "context_strategy.override_changed": ContextStrategyOverrideChangedPayload;

@@ -523,3 +523,19 @@ describe('events / display re-exports', () => {
     ).toBe(false);
   });
 });
+
+describe('agent message delivery receipt', () => {
+  it('validates the durable sender marker schema', () => {
+    const receipt = {
+      type: 'agent_message.delivered', agentId: 'main', sessionId: 'session-1',
+      messageId: 'message-1', targetAgentId: 'agent-child', status: 'delivered',
+      deliveredAt: '2026-01-01T00:00:02.000Z',
+    };
+    expect(eventSchema.parse(receipt)).toEqual(receipt);
+    expect(eventSchema.safeParse({ ...receipt, messageId: '' }).success).toBe(false);
+    expect(eventSchema.safeParse({ ...receipt, targetAgentId: '' }).success).toBe(false);
+    expect(eventSchema.safeParse({ ...receipt, status: 'queued' }).success).toBe(false);
+    expect(eventSchema.safeParse({ ...receipt, deliveredAt: 'not-a-time' }).success).toBe(false);
+    expect(eventSchema.parse(receipt)).toMatchSnapshot();
+  });
+});

@@ -469,7 +469,7 @@ export interface AgentTranscriptResponse {
   readonly agent_id: string;
   readonly items: readonly (
     | AgentTranscriptTurn
-    | { kind: 'marker'; markerId: string; marker: string; at?: string }
+    | { kind: 'marker'; markerId: string; marker: string; at?: string; payload?: unknown }
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
