@@ -59,9 +59,12 @@ export function classifyDirectives(text: string, cues: DirectiveCues = {}): read
     if (!correction && !change && !configuration) {
       if (subject === 'agent.behavior') {
         if (/为什么|吗|呢|\?$/.test(clause)) continue;
-        const futureAction = /(?:从现在开始|(?:^|[，,:：])\s*(?:你们?|请|然后)?(?:以后|每次|下次)|以后(?:都|不要|禁止|必须)|一律|始终|只能|最多)\s*\S/i.test(clause);
+        const establishedFutureAction = /(?:从现在开始|(?:^|[，,:：])\s*以后|以后(?:都|不要|默认)|每次|一律|始终|下次)[^，,:：]{0,80}(?:用|写|放|设|遵守|保留|记录)/i.test(clause);
+        const postponement = /(?:^|[，,:：])\s*(?:你们?|请|然后)?(?:以后|下次)(?:再说|再议|再讨论|再决定)(?:吧|了)?\s*$/.test(clause);
+        const futureAction = establishedFutureAction || !postponement && /(?:从现在开始|(?:^|[，,:：])\s*(?:你们?|请|然后)?(?:以后|每次|下次)|以后(?:都|不要|禁止|必须)|一律|始终|只能|最多)\s*\S/i.test(clause);
         const prohibition = /^(?:你们?|请)?(?:别|不要|禁止)\s*\S|\b(?:always|never|must|don't|do not|from now on|every time|at most|no more than|use only|keep using)\s+\S/i.test(clause);
-        const defaultBinding = /默认(?:都)?\s*(?:用|使用|采用|执行|遵守|按照|把|将|只|不要|不用|禁止)\s*\S|\b(?:by\s+default|default)\b\s*[,，:：]?\s*(?:use|run|write|put|keep|avoid|answer|respond|don't|do not)\s+\S/i.test(clause);
+        const currentDefault = /(?:目前|当前|现在)[^，,:：]*默认/.test(clause);
+        const defaultBinding = !currentDefault && /默认(?:都)?\s*(?:用|使用|采用|执行|遵守|按照|把|将|只|不要|不用|禁止)\s*\S|\b(?:by\s+default|default)\b\s*[,，:：]?\s*(?:use|run|write|put|keep|avoid|answer|respond|don't|do not)\s+\S/i.test(clause);
         if (!futureAction && !prohibition && !defaultBinding) continue;
       } else {
         if (!/以后|每次|一律|默认|始终|只能|最多|上限|不超过|并发|定了|拍板|always|never|default|from now on|at most|no more than|use only|keep using|must/i.test(clause)) continue;

@@ -260,6 +260,8 @@ describe('general behavior scope gates', () => {
   });
   it.each([
     '默认白色主题会视觉疲劳没有重点、注意颜色的运用',
+    '目前这个页面默认使用浅色主题',
+    '以后再说',
     '工作区记忆也让用户选择开关，默认是放在某个地方',
     '好的，我确定了',
     '顶多减少压缩失败的默认重试次数',
@@ -323,5 +325,26 @@ describe('standing-rule review boundaries', () => {
     expect(first.disclosure.historyTopic).toBe('artifact:example-plan.md');
     const restored = advanceContinuityClock(state, new ContextAppendMessage({ message: { role: 'user', toolCalls: [], content: [], origin: { kind: 'injection', variant: 'todo_list_reminder', disclosure: first.disclosure } } }));
     expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [], clock: { ...restored, humanTurnOrdinal: 2, latestInput: { id: 'artifact-b', text } } })).toBeUndefined();
+  });
+});
+
+describe('parent generic gate recall before 7339a820b7', () => {
+  const parentGate = /(?:从现在开始|(?:^|[，,:：])\s*以后|以后(?:都|不要|默认)|每次|一律|始终|下次)[^，,:：]{0,80}(?:用|写|放|设|遵守|保留|记录)|(?:只能|最多).+|^(?:别|不要|禁止)\s*\S|\b(?:always|never|must|don't|do not|from now on|every time|at most|no more than|use only|keep using)\s+\S/i;
+  const parentPositiveCorpus = [
+    ...['每次', '下次'].flatMap((marker) => ['', '文档', '请你', '请你们', '这个任务'].flatMap((prefix) =>
+      ['用 vitest', '写清检查结果', '放 docs/', '设置退出码检查', '遵守工作区约束', '保留失败日志', '记录测试结果'].map((action) => `${prefix}${marker}都${action}`))),
+    '文档每次都放 docs/', '请你每次先用 Read 检查文件',
+    '从现在开始用 vitest', '以后用 vitest', '我确认了，以后用 vitest',
+    '你以后都用 vitest', '以后默认用 vitest', '文档以后默认写清检查结果',
+    '文档一律放 docs/', '检查始终记录结果', '测试只能执行三次', '测试最多执行三次',
+    '别删除文件', '不要删除文件', '禁止删除文件',
+    'always inspect files', 'never push to main', 'must check tests', "don't delete files", 'do not delete files',
+    'from now on check tests', 'every time inspect files', 'at most three retries', 'no more than three retries',
+    'use only vitest', 'keep using vitest',
+  ];
+  it.each([...new Set(parentPositiveCorpus)])('retains a parent-positive directive and E1 delivery: %s', (text) => {
+    expect(parentGate.test(text)).toBe(true);
+    expect(classifyDirectives(text)[0]).toMatchObject({ subject: 'agent.behavior', scope: 'agent', lifetime: 'persistent' });
+    expect(new TodoListReminderTracker().evaluate({ ...base, todos: [], history: [user(text)] })?.disclosure.triggers).toEqual(['E1']);
   });
 });
