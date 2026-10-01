@@ -2,7 +2,7 @@
  * The right rail: one page per agent, the same component for the main agent
  * and every subagent. Top to bottom:
  *
- *   head       who this page is about, close                      fixed
+ *   head       who this page is about, the 标准 / 驾驶舱 switch, close  fixed
  *   现在        profile head, what the agent is doing, its actions  fixed
  *   待办        checklist, notes, plan                             fixed
  *   等你处理    decision stack, from any depth                     fixed
@@ -11,8 +11,9 @@
  *   概览        standard figures | cockpit instruments             switches
  *   能力 · 动态 · 会话信息, folded                                  fixed
  *
- * Only 概览 follows the 标准 / 驾驶舱 preference (`kiki.railMode`), and its
- * switch sits in that block's own head. What differs between the main
+ * Only 概览 follows the 标准 / 驾驶舱 preference (`kiki.railMode`). The switch
+ * sits in the rail head so it is visible without scrolling, but it still
+ * changes nothing outside the overview block. What differs between the main
  * agent's page and a subagent's is decided in one place, `railVisibility`.
  */
 
@@ -49,7 +50,7 @@ import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
-import { FOCUS_RING, ModeSwitch, useRailMode } from './shell';
+import { FOCUS_RING, ModeSwitch, useRailMode, type RailMode } from './shell';
 import type { RailProps } from './types';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
 
@@ -358,6 +359,22 @@ export function Rail({
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const busy = show.isMain ? state.busy : (focusedNode?.busy === true || state.busy);
   const taskOwner = taskOwnerAgentId ?? show.taskOwner;
+  // The mode switch lives in the rail head and changes only the overview
+  // block. Choosing the cockpit lifts that block into view when it sits
+  // outside the rail's scroll viewport; the standard mode never scrolls.
+  const chooseOverviewMode = (next: RailMode) => {
+    chooseMode(next);
+    if (next !== 'cockpit') return;
+    const slot = panelSlot.slotRef.current;
+    if (slot === null || typeof slot.scrollIntoView !== 'function') return;
+    const view = slot.closest('[data-agent-panel-scroll]')?.getBoundingClientRect();
+    const rect = slot.getBoundingClientRect();
+    const viewTop = view?.top ?? 0;
+    const viewBottom = view?.bottom ?? window.innerHeight;
+    if (rect.top < viewTop || rect.bottom > viewBottom) {
+      slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
   // Turning a tab. Inside the session view the document-level focus tracker
   // pins on click (inspectorFocus.ts); main is also handed back explicitly,
   // and the routed agent page (no onInspectMain) navigates instead.
@@ -494,12 +511,19 @@ export function Rail({
         forest={forest}
         focusedAgentId={focusedAgentId}
         onSelect={selectAgent}
-        close={onClose === undefined ? null : (
-          <button type="button" onClick={onClose} data-rail-close
-            title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
-            className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
-            <Icon name="close" size={16} />
-          </button>
+        close={(
+          <span className="flex shrink-0 items-center gap-1.5">
+            {/* The 标准 / 驾驶舱 switch heads the rail; it still changes only
+                the overview block. */}
+            <ModeSwitch mode={mode} onChoose={chooseOverviewMode} controls="rail-overview-body" />
+            {onClose === undefined ? null : (
+              <button type="button" onClick={onClose} data-rail-close
+                title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
+                className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
+                <Icon name="close" size={16} />
+              </button>
+            )}
+          </span>
         )}
       />
       <div key={focusedAgentId} data-rail-now-block className="rail-page space-y-3 pt-1">
@@ -612,9 +636,10 @@ export function Rail({
       ) : null}
 
       {/* 5 · 概览, the one block that follows the 标准 / 驾驶舱 preference.
-          The switch lives in this block's own head, so it plainly changes
-          only what is under it. The body mounts once the slot scrolls into
-          view (it starts the capability and compaction-point reads). */}
+          The switch lives in the rail head (always visible); this head keeps
+          only the title and the usage link. The body mounts once the slot
+          scrolls into view (it starts the capability and compaction-point
+          reads). */}
       <section
         ref={panelSlot.slotRef}
         data-rail-agent-panel-slot
@@ -635,8 +660,6 @@ export function Rail({
             >
               <Icon name="arrowUpRight" size={12} />
             </button>
-            <span className="flex-1" />
-            <ModeSwitch mode={mode} onChoose={chooseMode} controls="rail-overview-body" />
           </header>
           <div id="rail-overview-body" data-rail-switchable-body>
             {panelSlot.mounted ? (

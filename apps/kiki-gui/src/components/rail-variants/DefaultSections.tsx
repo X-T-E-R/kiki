@@ -11,13 +11,13 @@ import { useQuery } from '@tanstack/react-query';
 import { MAIN_AGENT_ID, type AgentForest, type Block, type SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
-import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
+import { AgentCapabilitiesSection, capabilityCounts, extensionOwner } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
-import { mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
+import { isCapabilityUnsupportedError, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
-import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
+import type { AgentIdentity, AgentSkillCapability, AgentSubagentTarget, AgentToolCapability, CapabilityState, DetailDrawerTarget } from '../agent-panel/types';
 import { Icon } from '../icons';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
@@ -414,10 +414,59 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
   );
 });
 
+/** The folded 能力 block previews this many names, then "+N". */
+const CAP_PREVIEW_NAMES = 4;
+
+/**
+ * The folded 能力 line's names: what the agent can use, most telling first —
+ * its enabled skills (the workspace's own, then global; they are what makes
+ * this role different here), then the subagents it may dispatch, then the
+ * extensions that answer. Disabled entries stay out: the line promises what
+ * the agent can use right now. With none of those, it falls back to the
+ * usable built-in tools.
+ */
+function capabilityPreviewNames(
+  tools: readonly AgentToolCapability[],
+  skills: readonly AgentSkillCapability[],
+  targets: readonly AgentSubagentTarget[],
+): string[] {
+  const usable = (state: CapabilityState) => state === 'enabled' || state === 'approval-required';
+  const byName = (left: string, right: string) => left.localeCompare(right);
+  const enabled = skills.filter((skill) => skill.state === 'enabled');
+  const skillNames = [
+    ...enabled.filter((skill) => skill.scope === 'workspace').map((skill) => skill.name).sort(byName),
+    ...enabled.filter((skill) => skill.scope !== 'workspace').map((skill) => skill.name).sort(byName),
+  ];
+  const targetNames = targets
+    .filter((target) => target.launchAllowed !== false && target.defaultsAvailable)
+    .map((target) => (target.route === undefined || target.route === '' ? target.profile : `${target.profile}/${target.route}`));
+  const extensionTools = new Map<string, { owner: string; list: AgentToolCapability[] }>();
+  for (const tool of tools) {
+    const ext = extensionOwner(tool);
+    if (ext === undefined) continue;
+    const key = `${ext.kind}:${ext.owner}`;
+    const entry = extensionTools.get(key) ?? { owner: ext.owner, list: [] };
+    entry.list.push(tool);
+    extensionTools.set(key, entry);
+  }
+  const extensionNames = [...extensionTools.values()]
+    .filter((entry) => entry.list.some((tool) => usable(tool.state)))
+    .map((entry) => entry.owner);
+  const names = [...skillNames, ...targetNames, ...extensionNames];
+  if (names.length > 0) return names;
+  return tools.filter((tool) => extensionOwner(tool) === undefined && usable(tool.state)).map((tool) => tool.name);
+}
+
 /**
  * 能力: the focused agent's tools, skills, subagent targets and extensions,
  * as its own folded block. Reads the same agent-panel answer the profile
  * card reads (same query key), so opening it starts no extra request.
+ *
+ * Folded is two lines, not one: the head carries the per-kind counts, and a
+ * quiet line under it names the first few usable entries, so the role reads
+ * without opening the block. A read that fails — or answers without the
+ * capability fields — keeps the block as a plain title plus one grey status
+ * line with a text retry ("can't be read right now", never an alert).
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
@@ -433,15 +482,48 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
-  if (read.data?.tools === undefined || read.data.skills === undefined) return null;
+  const data = read.data;
+  const missing = data !== undefined && (data.tools === undefined || data.skills === undefined);
+  // An unsupported scope stays a silent gap, the same as the profile card;
+  // stale data keeps rendering through a failed background refetch.
+  const failed = data === undefined && read.isError && !isCapabilityUnsupportedError(read.error);
+  if (failed || missing) {
+    return (
+      <section data-rail-capabilities="">
+        <h3 className="flex h-8 items-center gap-1.5">
+          <span className={INSPECTOR_HEAD}>{t('rail.capabilities.title')}</span>
+        </h3>
+        <p role="status" data-rail-capabilities-unavailable className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
+          {t('rail.capabilities.unavailable')}
+          <button
+            type="button"
+            data-rail-capabilities-retry
+            onClick={() => { void read.refetch(); }}
+            className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('common.retry')}
+          </button>
+        </p>
+      </section>
+    );
+  }
+  if (data === undefined) return null;
   const counts = capabilityCounts(tools, skills, targets);
   const summary = t('rail.capabilities.summary', { tools: counts.toolsOn, skills: counts.skills, subagents: counts.subagents, extensions: counts.extensions });
+  const names = capabilityPreviewNames(tools, skills, targets);
+  const shown = names.slice(0, CAP_PREVIEW_NAMES);
   return (
     <section data-rail-capabilities="">
       <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
+      {!open && shown.length > 0 ? (
+        <p data-rail-capabilities-preview title={names.join(' · ')} className="mt-0.5 flex items-baseline text-[12px] leading-5 text-ink-faint">
+          <span className="min-w-0 truncate">{shown.join(' · ')}</span>
+          {names.length > shown.length ? <span className="shrink-0">· +{names.length - shown.length}</span> : null}
+        </p>
+      ) : null}
       {open ? (
         <div className="pt-1">
-          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={read.data.profile?.name} />
+          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} />
         </div>
       ) : null}
     </section>

@@ -167,11 +167,15 @@ describe('RightRail fixed and switchable parts', () => {
     expect([...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML)).toEqual(standardHtml);
   });
 
-  it('switches only the overview block, from a switch in that block', async () => {
+  it('switches only the overview block, from a switch in the rail head', async () => {
     const rail = await renderRail();
     const switcher = rail.querySelector('[data-rail-mode-switch]')!;
-    expect(switcher.closest('[data-rail-switchable-head]')).not.toBeNull();
-    expect(rail.querySelector('[data-rail-pinned] [data-rail-mode-switch]')).toBeNull();
+    // The switch heads the rail (always visible); the overview head carries
+    // no switch of its own, and the block below is still the only thing that
+    // follows the mode.
+    expect(switcher.closest('[data-rail-pinned]')).not.toBeNull();
+    expect(switcher.closest('[data-rail-owner]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-switchable-head] [data-rail-mode-switch]')).toBeNull();
     const zone = () => rail.querySelector('[data-rail-switchable]')!;
     const outside = () => [...rail.querySelectorAll('[data-agent-panel-scroll] > .rail-page > *')]
       .filter((node) => !node.hasAttribute('data-rail-switchable'))
@@ -184,6 +188,32 @@ describe('RightRail fixed and switchable parts', () => {
     expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('cockpit');
     expect(outside()).toEqual(before);
     expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
+  });
+
+  it('lifts the overview into view only when cockpit is chosen with the block outside the viewport', async () => {
+    const rail = await renderRail();
+    const slot = rail.querySelector<HTMLElement>('[data-rail-agent-panel-slot]')!;
+    const scroller = rail.querySelector<HTMLElement>('[data-agent-panel-scroll]')!;
+    // jsdom has no scrollIntoView; the rail guards for that and calls it only
+    // when the block actually sits outside the rail's scroll viewport.
+    const scrollIntoView = vi.fn();
+    Object.assign(slot, { scrollIntoView });
+    // Zero rects in jsdom read as fully visible: choosing cockpit does not scroll.
+    await choose(rail, 'cockpit');
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    const rect = (top: number, bottom: number) =>
+      ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    const slotRect = vi.spyOn(slot, 'getBoundingClientRect').mockReturnValue(rect(1200, 1500));
+    const scrollerRect = vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(rect(0, 900));
+    // Choosing the standard mode never scrolls…
+    await choose(rail, 'default');
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    // …but with the block below the fold, choosing cockpit lifts it into view.
+    await choose(rail, 'cockpit');
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
+    slotRect.mockRestore();
+    scrollerRect.mockRestore();
   });
 
   it('renders the main agent and a subagent with the same rail, each from its own agent', async () => {

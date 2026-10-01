@@ -48,8 +48,8 @@ export const FOCUS_RING = 'focus-visible:outline-2 focus-visible:outline-offset-
 const MODE_LABEL = { default: 'rail.mode.default', cockpit: 'rail.mode.cockpit' } as const;
 
 /**
- * Two-segment switch in the overview block's own head. `controls` names the
- * block it changes, so assistive tech reads the scope too.
+ * Two-segment switch in the rail head. `controls` names the block it changes
+ * (the overview), so assistive tech reads the scope too.
  */
 export function ModeSwitch({ mode, onChoose, controls }: { mode: RailMode; onChoose: (next: RailMode) => void; controls?: string }) {
   const { t } = useI18n();
