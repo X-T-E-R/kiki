@@ -210,6 +210,16 @@ export class FixtureKlient {
         session.sideAgents.push(agentId);
         return agentId;
       }
+      // App-scope session lifecycle, as far as the client's transport needs it:
+      // every runtime action (prompt submit, edit, regenerate, steer, approval)
+      // resumes the session first. A fixture session is already live, so a known
+      // id answers its own handle — the engine's `{ id, kind }` — and an unknown
+      // id answers the contract's empty case, which the caller reads as "this
+      // session does not exist" instead of a failed fixture procedure.
+      case 'sessionManager.resume': {
+        const [sessionId] = args;
+        return server.sessions.has(sessionId) ? { id: sessionId, kind: 'session' } : null;
+      }
       case 'sessionMetadata.read': {
         const session = server.sessions.get(procedure.sessionId);
         if (session === undefined) throw invalid('session not found', 40401);

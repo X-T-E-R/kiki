@@ -692,6 +692,9 @@ async function scenarioRewriteFlow() {
   // A1 fork: from the first user message — navigates to the truncated copy.
   const forkRow = page.locator('[data-block-id^="user-"]', { hasText: 'First fixture question' }).first();
   await forkRow.hover();
+  // Fork is a low-frequency action and lives behind the row's `⋯`; the flat strip
+  // under the message carries copy / edit / regenerate only.
+  await forkRow.locator('[data-row-more]').click();
   await forkRow.locator('[data-row-action="fork"]').click();
   await page.waitForURL(/\/s\/session_/, { timeout: 10_000 });
   await page.waitForFunction(
