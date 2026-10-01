@@ -202,6 +202,57 @@ To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url
 
 In the GUI **Connections** tab, **Sign in with an account** offers Kimi Code, GitHub Copilot, and ChatGPT (Codex). Choose the account, open the verification URL, enter its device code, and wait for the connected status. An account needs access to the corresponding subscription or service; available models depend on that account. Sign out from the same row to remove its managed connection and models. These are sign-in methods, not new protocol `type` values: Kimi Code and Copilot use `openai`-compatible requests; ChatGPT Codex uses `openai_responses` against the Codex endpoint. OAuth tokens live in JSON files under `credentials/` (see [Data locations](./data-locations.md)); API keys live in `credentials/credentials.toml`. The CLI `/login` and `/logout` commands continue to manage Kimi Code only.
 
+## Request identity
+
+The sections above decide which endpoint Kiki connects to and with which key; **request identity** decides which client each request presents itself as. It writes the `User-Agent` and extra headers sent to the provider endpoint, so the server treats that traffic as Codex CLI, Claude Code, Grok Build, OpenCode, or Kiki's own client. It is a different setting from [`[identity]`](./config-files.md#identity), the runtime display name and slug.
+
+Identity only supplies those client-identity fields: `base_url`, the API key, and the authentication method still come from your provider configuration and `credentials.toml`, and identity never carries or rewrites them. Credential and transport headers such as `Authorization`, `x-api-key`, `Cookie`, and `Content-Type` are not accepted as identity fields.
+
+### Built-in identities
+
+Kiki ships six identities. Built-in identities are read-only; **Duplicate and edit** produces a custom identity whose User-Agent, headers, and body fields you edit in plain text, with values accepting placeholders such as `{version}`, `{model}`, and `{os_type}`:
+
+| Identity | preset / identity ID | What it sends |
+| --- | --- | --- |
+| Kimi Code | `kimi_code` / `kimi_code` | Kiki's native client: adds `X-Msh-*` device headers on a Kimi provider |
+| Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent and `originator`, OpenAI Responses only |
+| Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent, `x-app`, and `X-Stainless-*`, Anthropic Messages only |
+| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent and `x-grok-*` session and turn headers, on Responses or Messages |
+| OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent, `x-opencode-client: cli`, and the dynamic `x-opencode-session` and `x-opencode-request` |
+| None | `none` / `none` | Sends no identity fields |
+
+### OpenCode
+
+With the `OpenCode` identity, upstream sees an OpenCode command-line client:
+
+- `User-Agent: opencode/{version}`, defaulting to the OpenCode CLI version shipped with Kiki (npm package `opencode-ai`, currently 1.18.21)
+- `x-opencode-client: cli`, a fixed value
+- `x-opencode-session`: one value per agent session, stable within that session, so upstream attributes the session's requests to a single OpenCode session
+- `x-opencode-request`: regenerated every turn, identifying a single request
+
+The identity works over OpenAI Responses, Anthropic Messages, and OpenAI Chat Completions, unlike Codex (Responses only) and Claude Code (Messages only).
+
+### Where to configure it
+
+GUI **Settings → Request identity** is the central page: the left column lists built-in (read-only) and custom identities, the right side previews the headers and body fields that identity actually sends, and three further cards cover client versions, per-layer usage, and recent requests. An identity applies in three layers; the **Default request identity** card on that page sets the global layer, and the provider and model layers are set in **Settings → Models & providers**:
+
+| Layer | GUI | `config.toml` |
+| --- | --- | --- |
+| Global default | Settings → Request identity | `[request_identity]` |
+| Provider | Settings → Models & providers → provider editor → Request identity | `[providers.<name>.request_identity]` |
+| Model | Settings → Models & providers → model editor → Request identity | `[models."<alias>".request_identity]` |
+
+Later layers override earlier ones (global → provider → model); with no layer set, the built-in Kimi Code identity stays in effect. Choosing a compatible preset resets the lower layers first and then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
+
+```toml
+[providers.my-gateway.request_identity]
+preset = "opencode_compatible"
+```
+
+### Client versions
+
+The client version a built-in identity carries follows the value shipped with Kiki, and the **Client versions** card can check upstream through the npm registry, the locally installed CLI (`opencode --version`), or a manifest URL. A check only stages a candidate version: requests keep using the current one until you apply it. You can also pin the version, or roll back to a previous one.
+
 ## Next steps
 
 - [Configuration files](./config-files.md) — full field reference for the `providers` and `models` tables

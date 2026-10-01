@@ -202,6 +202,57 @@ kiki
 
 GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/` 的 JSON 文件中（见[数据路径](./data-locations.md)）；API 密钥存放在 `credentials/credentials.toml`。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
 
+## 请求身份
+
+上面的小节决定 Kiki 连到哪个端点、用哪把密钥；**请求身份**（request identity）决定每个请求以哪个客户端的身份发出——它写入发往 provider 端点的 `User-Agent` 和额外请求头，服务端据此把这段流量认成 Codex CLI、Claude Code、Grok Build、OpenCode 或 Kiki 自己的客户端。它与 [`[identity]`](./config-files.md#identity)（运行时显示名称和 slug）是两件不同的事。
+
+身份只提供这批客户端标识字段：`base_url`、API 密钥和认证方式仍然由你在供应商配置和 `credentials.toml` 里决定，身份既不附带也不改写它们；`Authorization`、`x-api-key`、`Cookie`、`Content-Type` 这类鉴权与传输头也不接受身份声明。
+
+### 内置身份
+
+Kiki 内置六种身份。内置身份只读，用「复制并编辑」得到的自定义身份可以明文修改 User-Agent、请求头和请求体字段，值里支持 `{version}`、`{model}`、`{os_type}` 等占位符：
+
+| 身份 | preset / 身份 ID | 请求特征 |
+| --- | --- | --- |
+| Kimi Code | `kimi_code` / `kimi_code` | Kiki 原生客户端：在 Kimi 提供商上附带 `X-Msh-*` 设备头 |
+| Codex CLI | `codex_compatible` / `codex` | `codex_cli_rs/{version}` User-Agent 与 `originator`，仅 OpenAI Responses |
+| Claude Code | `claude_code_compatible` / `claude_code` | `claude-cli/{version} (external, cli)` User-Agent、`x-app` 及 `X-Stainless-*`，仅 Anthropic Messages |
+| Grok Build | `grok_build_compatible` / `grok_build` | `grok-shell/{version}` User-Agent 与 `x-grok-*` 会话、轮次请求头，可用于 Responses 或 Messages |
+| OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent、`x-opencode-client: cli`，以及动态的 `x-opencode-session`、`x-opencode-request` |
+| 无 | `none` / `none` | 不发送任何身份字段 |
+
+### OpenCode
+
+选 `OpenCode` 身份后，上游看到的是一个 OpenCode 命令行客户端：
+
+- `User-Agent: opencode/{version}`，版本默认取 Kiki 内置的 OpenCode CLI 版本（npm 包 `opencode-ai`，当前内置 1.18.21）
+- `x-opencode-client: cli`，值固定
+- `x-opencode-session`：每个 Agent 会话一个，会话内保持不变，让上游把该会话的请求归到同一个 OpenCode 会话
+- `x-opencode-request`：每个轮次重新生成，标识单次请求
+
+该身份在 OpenAI Responses、Anthropic Messages 和 OpenAI Chat Completions 上都能用，不像 Codex 身份仅限 Responses、Claude Code 身份仅限 Messages。
+
+### 在哪里配置
+
+GUI 的 **设置 → 请求身份** 是集中页面：左列列出内置（只读）与自定义身份，右侧预览该身份实际发送的请求头与请求体字段，另有客户端版本、各层使用情况和最近请求三张卡片。身份分三层生效，全局层由该页的「默认请求身份」卡片设置，供应商层和模型层在 **设置 → 模型与提供商** 里设置：
+
+| 层 | GUI 位置 | `config.toml` |
+| --- | --- | --- |
+| 全局默认 | 设置 → 请求身份 | `[request_identity]` |
+| 供应商 | 设置 → 模型与提供商 → 供应商编辑器 → 「请求身份」 | `[providers.<name>.request_identity]` |
+| 模型 | 设置 → 模型与提供商 → 模型编辑器 → 「请求身份」 | `[models."<alias>".request_identity]` |
+
+后面的层覆盖前面的层（全局 → 供应商 → 模型）；一层都不设置时沿用内置的 Kimi Code 身份。选某个兼容 preset 会先重置更低层身份，再应用该层可选的 `overrides` 稀疏调整（如 `lineage.format`、`client.user_agent`、`request.logical_id`）。让一家供应商的流量以 OpenCode 身份发出只需：
+
+```toml
+[providers.my-gateway.request_identity]
+preset = "opencode_compatible"
+```
+
+### 客户端版本
+
+内置身份携带的客户端版本跟随 Kiki 内置值，也可以在「请求身份」页的「客户端版本」卡片里从 npm 仓库、本机 CLI（如 `opencode --version`）或清单 URL 检查上游最新版。检查只暂存候选版本，请求仍使用当前版本，直到你手动应用；也可以钉住版本，或回滚到历史版本。
+
 ## 下一步
 
 - [配置文件](./config-files.md) — `providers` 和 `models` 表的完整字段参考
