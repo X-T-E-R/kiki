@@ -534,6 +534,12 @@ describe('media preview wiring', () => {
     // The lightbox portals to document.body.
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AA');
+    // Close the lightbox dialog so it does not leak modal state or escape handlers.
+    await act(async () => {
+      flushSync(() => {
+        probe.root.unmount();
+      });
+    });
   });
 
   it('places user message media above the message text', async () => {
@@ -589,6 +595,11 @@ describe('media preview wiring', () => {
     const preview = document.body.querySelector('[data-attachment-preview]');
     expect(preview).not.toBeNull();
     expect(preview?.closest('[role="dialog"]')?.getAttribute('aria-label')).toContain('report.pdf');
+    await act(async () => {
+      flushSync(() => {
+        probe.root.unmount();
+      });
+    });
   });
 
   it('opens the file preview pane from a workspace-relative markdown link', async () => {
@@ -608,6 +619,11 @@ describe('media preview wiring', () => {
     // the failure notice, but the header still names the file.
     expect(document.body.textContent).toContain('app.toml');
     expect(document.body.textContent).toContain('/work/app/config/app.toml');
+    await act(async () => {
+      flushSync(() => {
+        probe.root.unmount();
+      });
+    });
   });
 
   it('keeps app routes as router links even inside the preview provider', async () => {
@@ -621,6 +637,11 @@ describe('media preview wiring', () => {
     const link = probe.container.querySelector('a');
     expect(link?.getAttribute('href')).toBe('/usage');
     expect(link?.getAttribute('title')).toBeNull();
+    await act(async () => {
+      flushSync(() => {
+        probe.root.unmount();
+      });
+    });
   });
 });
 
