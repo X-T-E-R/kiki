@@ -151,6 +151,8 @@ interface HostCapabilities {
   switchSpace?: (homeId: string) => Promise<void>;
   /** Windows mode: open (or focus) the space's own window (`open_space`). */
   openSpace?: (homeId: string) => Promise<void>;
+  /** Windows-only. Rejects with `{ code, message }`; never overwrites an existing shortcut. */
+  createSpaceShortcut?: (homeId: string) => Promise<{ readonly homeId: string; readonly path: string }>;
   restartSpace?: (homeId: string) => Promise<void>;
   restartServer?: () => Promise<void>;
   /** Desktop backend log location and level (`desktop_log_info`). */

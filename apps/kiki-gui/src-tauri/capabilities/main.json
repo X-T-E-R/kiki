@@ -25,6 +25,7 @@
     "allow-switch-space",
     "allow-restart-space",
     "allow-open-space",
+    "allow-create-space-shortcut",
     "allow-list-ssh-profiles",
     "allow-save-ssh-profile",
     "allow-remove-ssh-profile",

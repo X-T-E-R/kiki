@@ -12,6 +12,7 @@ export function leafOrigins(
   validated: unknown,
   memory: unknown,
   envFields: ReadonlySet<string>,
+  preset?: unknown,
 ): Record<string, ConfigOrigin> {
   const result: Record<string, ConfigOrigin> = {};
   const at = (root: unknown, path: readonly string[]): unknown => path.reduce<unknown>((current, part) => isPlainObject(current) ? current[part] : undefined, root);
@@ -23,7 +24,7 @@ export function leafOrigins(
     const key = path.join('.');
     const hasMemory = at(memory, path) !== undefined;
     const fromEnv = envFields.has(key) || (at(validated, path) !== undefined && at(validated, path) !== entry && !hasMemory);
-    result[key] = hasMemory ? 'memory' : fromEnv ? 'env' : at(home, path) !== undefined ? 'home' : at(base, path) !== undefined ? 'base' : 'default';
+    result[key] = hasMemory ? 'memory' : fromEnv ? 'env' : at(home, path) !== undefined ? 'home' : at(base, path) !== undefined ? 'base' : at(preset, path) !== undefined ? 'preset' : 'default';
   };
   visit(value, []);
   return result;

@@ -163,7 +163,7 @@ export interface ConfigDiagnostic {
 }
 
 export type ResolvedConfig = Record<string, unknown>;
-export type ConfigOrigin = 'default' | 'base' | 'home' | 'env' | 'memory';
+export type ConfigOrigin = 'default' | 'preset' | 'base' | 'home' | 'env' | 'memory';
 
 export enum ConfigScope {
   Core = 'core',

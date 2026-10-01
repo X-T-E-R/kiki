@@ -86,6 +86,8 @@ export const ErrorCode = {
   PERSONA_NOT_FOUND: 40425,
   /** request identity profile or release track does not exist */
   REQUEST_IDENTITY_NOT_FOUND: 40426,
+  /** requested space preset is not bundled with this server */
+  SPACE_PRESET_NOT_FOUND: 40427,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -276,6 +278,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.SSH_HOST_NOT_FOUND]: 'ssh.host_not_found',
   [ErrorCode.PERSONA_NOT_FOUND]: 'persona.not_found',
   [ErrorCode.REQUEST_IDENTITY_NOT_FOUND]: 'request_identity.not_found',
+  [ErrorCode.SPACE_PRESET_NOT_FOUND]: 'space.preset_not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',

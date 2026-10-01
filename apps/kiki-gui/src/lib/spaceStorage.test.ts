@@ -52,12 +52,14 @@ describe('active-space payload', () => {
       homeId: 'acme',
       name: 'ACME',
       color: '#f00',
+      preset: undefined,
       isPrimary: undefined,
     });
     expect(parseActiveSpacePayload('{"homeId":"acme"}')).toEqual({
       homeId: 'acme',
       name: undefined,
       color: undefined,
+      preset: undefined,
       isPrimary: undefined,
     });
   });

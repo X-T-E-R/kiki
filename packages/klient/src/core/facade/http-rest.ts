@@ -393,6 +393,7 @@ export interface HttpRestFacade {
   };
 
   readonly homes: {
+    presets(): Promise<import('@kiki/protocol').SpacePresetsResponse>;
     list(): Promise<import('@kiki/protocol').ListSpacesResponse>;
     create(body: import('@kiki/protocol').CreateSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
     attach(body: import('@kiki/protocol').AttachSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;

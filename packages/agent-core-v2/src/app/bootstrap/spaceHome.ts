@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join, normalize } from 'pathe';
 import { parse } from 'smol-toml';
 
-import { spaceColorSchema, spaceIdSchema, spaceNameSchema } from '@kiki/protocol';
+import { spaceColorSchema, spaceIdSchema, spaceNameSchema, spacePresetIdSchema } from '@kiki/protocol';
+
+import { findSpacePreset } from './spacePresets';
 
 import { isPlainObject } from '#/app/config/configPure';
 
@@ -10,6 +12,7 @@ export interface SpaceHome {
   readonly id: string;
   readonly name: string;
   readonly color?: string;
+  readonly preset?: string;
   readonly baseHomeDir?: string;
   readonly inherit: {
     readonly config: boolean;
@@ -36,12 +39,14 @@ export function readSpaceHome(homeDir: string): { readonly space?: SpaceHome; re
     const raw: unknown = parse(text);
     if (
       !isPlainObject(raw) || raw['schema'] !== 1 ||
-      typeof raw['id'] !== 'string' || !spaceIdSchema.safeParse(raw['id']).success ||
-      typeof raw['name'] !== 'string' || !spaceNameSchema.safeParse(raw['name']).success
+      typeof raw['id'] !== 'string' || !spaceIdSchema.safeParse(raw['id']).success
     ) {
-      throw new Error('schema = 1, a stable h- id, and a non-empty name are required');
+      throw new Error('schema = 1 and a stable h- id are required');
     }
-    if (raw['color'] !== undefined && !spaceColorSchema.safeParse(raw['color']).success) throw new Error('color must be #RRGGBB');
+    const preset = raw['preset'] === undefined ? undefined : spacePresetIdSchema.parse(raw['preset']);
+    const defaults = findSpacePreset(preset ?? 'kiki') ?? findSpacePreset('kiki')!;
+    const name = spaceNameSchema.parse(raw['name'] ?? defaults.name);
+    const color = raw['color'] === undefined ? defaults.color : spaceColorSchema.parse(raw['color']);
     const inherit = raw['inherit'] ?? {};
     if (!isPlainObject(inherit)) throw new Error('inherit must be a table');
     const flag = (key: string, fallback: boolean): boolean => {
@@ -66,7 +71,7 @@ export function readSpaceHome(homeDir: string): { readonly space?: SpaceHome; re
       }
     }
     return { space: {
-      id: raw['id'], name: raw['name'], color: raw['color'] as string | undefined, baseHomeDir,
+      id: raw['id'], name, color, preset, baseHomeDir,
       inherit: {
         config: flag('config', true), credentials,
         agents: flag('agents', true), instructions, skills: flag('skills', true),

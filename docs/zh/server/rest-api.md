@@ -91,6 +91,22 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/meta` | 服务版本、能力集、`server_id`、实验开关等 |
 | `POST /api/shutdown` | 优雅退出（先回 200 再关闭）；仅 loopback 绑定时挂载 |
 
+### 空间预设
+
+`GET /api/homes/presets` 返回 `{ items: [{ id, name, color?, description }] }`。目前只随包提供 `kiki` 基线预设。从主空间服务调用 `POST /api/homes` 派生空间：
+
+```json
+{ "path": "C:/example/space", "preset": "kiki" }
+```
+
+路径必须是绝对路径，且目录尚不存在。可选 `name` 和 `color` 覆盖预设的显示默认值。创建返回 `{ id, name, color?, preset?, path }`；`GET /api/homes` 列出有效值。格式合法但未注册的预设返回 `40427`（`space.preset_not_found`）；格式错误、已存在的目录，以及从子空间发起的创建请求返回 `40001`。
+
+空间的 `home.toml` 仍使用 `schema = 1`，新增可选 `preset` 键，不会重写已有 home。省略 `preset` 使用 Kiki 默认值；磁盘上已有的未知预设保留其标识及用户值，回退到 Kiki 默认值，并报告配置诊断。默认配置随包只读，不复制到 `config.toml`：schema 默认值 < 预设 < 继承的 base 配置 < 本 home 配置 < 环境变量（内存覆盖仍最高）。凭据和模型沿用现有 home 继承规则。基线提供显示名 `Kiki` 与 UI 默认值，不改变 Bot 设置，也不安装另一个应用。
+
+`GET /api/config` 提供 `space_ui: { defaultSkin, landingPage, plugins }`。`POST /api/config` 的局部补丁使用 `space_ui: { default_skin?, landing_page?, plugins? }`，落地页限于 `/new` 或 `/bots`。插件清单目前为空，不会安装插件。这些 UI 默认值是客户端契约：客户端应仅在没有用户偏好时应用它们。配置来源新增 `preset`；移除本 home 的覆盖值后，会重新显示较低层的值。
+
+桌面集成可调用原生命令 `create_space_shortcut`，参数为 `{ homeId: "main" }` 或已注册的 `h-…` id；对应适配器方法为 `host.createSpaceShortcut(homeId)`。Windows 返回 `{ homeId, path }`，桌面的 `.lnk` 指向当前可执行文件，并携带 `--home "<空间绝对路径>"`。现有首启及二次启动逻辑会选中该空间，无需安装第二份二进制。命令不会覆盖已有快捷方式。失败携带 `{ code, message }`，错误码包括 `unsupported_platform`、`invalid_space`、`desktop_unavailable`、`executable_unavailable`、`shortcut_exists`、`shortcut_failed`。macOS 和 Linux 暂不支持创建。快捷方式依赖可执行文件与 home 保持原路径；移动其中任一项后，应删除旧快捷方式并重新创建。
+
 ### 登录与用量
 
 | 方法与路径 | 说明 |

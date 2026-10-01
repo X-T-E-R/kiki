@@ -13,6 +13,7 @@ mod ssh_remote;
 mod ssh_tunnel;
 mod desktop_log;
 mod space_badge;
+mod space_shortcut;
 use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
 
@@ -965,7 +966,7 @@ impl SpaceBackendManager {
     fn new(startup: &Path, mode: WindowMode) -> Result<Self, String> {
         let main = main_home_for(startup)?;
         let main_space = DesktopSpace {
-            home_id: "main".to_string(), name: "Main space".to_string(), color: None,
+            home_id: "main".to_string(), name: "Main space".to_string(), color: None, preset: None,
             path: main.to_string_lossy().into_owned(), base_home: None, credentials_shared: true,
         };
         let mut slots = HashMap::new();
@@ -1256,6 +1257,7 @@ struct DesktopSpace {
     home_id: String,
     name: String,
     color: Option<String>,
+    preset: Option<String>,
     path: String,
     base_home: Option<String>,
     credentials_shared: bool,
@@ -1276,8 +1278,18 @@ fn read_desktop_space(home: &Path) -> Result<Option<DesktopSpace>, String> {
     if !id.starts_with("h-") || id.len() <= 2 || !id.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-') {
         return Err("Invalid space id".to_string());
     }
-    let name = value.get("name").and_then(toml::Value::as_str).filter(|name| !name.trim().is_empty()).ok_or("Space is missing a name")?;
-    let color = value.get("color").and_then(toml::Value::as_str).map(str::to_string);
+    let preset = value.get("preset").map(|value| value.as_str().ok_or("Invalid space preset")).transpose()?;
+    if preset.is_some_and(|id| id.is_empty() || id.len() > 64 || !id.as_bytes()[0].is_ascii_lowercase() || !id.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-')) {
+        return Err("Invalid space preset".to_string());
+    }
+    let defaults = space_shortcut::preset_metadata(preset.unwrap_or("kiki"))?;
+    let name_value = value.get("name").or_else(|| defaults.get("name"));
+    let name = name_value.and_then(toml::Value::as_str).filter(|name| !name.trim().is_empty()).ok_or("Space is missing a name")?;
+    let color = value.get("color").or_else(|| defaults.get("color")).map(|value| {
+        let color = value.as_str().ok_or("Invalid space color")?;
+        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit) { return Err("Invalid space color"); }
+        Ok(color.to_string())
+    }).transpose()?;
     let base = value.get("base").and_then(toml::Value::as_str).map(PathBuf::from);
     if base.as_ref().is_some_and(|base| !base.is_absolute() || base == home) {
         return Err("Space base must be another absolute home".to_string());
@@ -1286,8 +1298,9 @@ fn read_desktop_space(home: &Path) -> Result<Option<DesktopSpace>, String> {
         .and_then(toml::Value::as_str) != Some("isolated");
     Ok(Some(DesktopSpace {
         home_id: id.to_string(),
-        name: name.to_string(),
+        name: name.trim().to_string(),
         color,
+        preset: preset.map(str::to_string),
         path: home.to_string_lossy().into_owned(),
         base_home: base.map(|path| path.to_string_lossy().into_owned()),
         credentials_shared,
@@ -1724,6 +1737,16 @@ async fn restart_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, 
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || manager.restart_space(&app, &home_id))
         .await.map_err(|error| format!("Space restart task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn create_space_shortcut(manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<space_shortcut::SpaceShortcut, space_shortcut::ShortcutFailure> {
+    if !cfg!(windows) {
+        return Err(space_shortcut::ShortcutFailure::new("unsupported_platform", "Desktop space shortcuts are currently supported only on Windows"));
+    }
+    let space = manager.find_space(&home_id).map_err(|error| space_shortcut::ShortcutFailure::new("invalid_space", error))?;
+    tauri::async_runtime::spawn_blocking(move || space_shortcut::create(&space.home_id, &space.name, Path::new(&space.path)))
+        .await.map_err(|error| space_shortcut::ShortcutFailure::new("shortcut_failed", error.to_string()))?
 }
 
 #[tauri::command]
@@ -3264,6 +3287,24 @@ mod tests {
         assert_eq!(read_desktop_prefs_for(&child).log_level, DesktopLogLevel::Trace);
         assert_eq!(read_desktop_prefs_for(&main).log_level, DesktopLogLevel::Info);
         assert!(serde_json::from_str::<DesktopPrefsPatch>(r#"{"logLevel":"verbose"}"#).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_space_resolves_preset_defaults_and_keeps_user_overrides() {
+        let root = env::temp_dir().join(format!("kiki-space-preset-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("home.toml"), "schema = 1\nid = \"h-example\"\npreset = \"kiki\"\n").unwrap();
+        let space = read_desktop_space(&root).unwrap().unwrap();
+        assert_eq!(space.name, "Kiki");
+        assert_eq!(space.color, None);
+        assert_eq!(space.preset.as_deref(), Some("kiki"));
+        fs::write(root.join("home.toml"), "schema = 1\nid = \"h-example\"\npreset = \"kiki\"\nname = \"Custom\"\ncolor = \"#be185d\"\n").unwrap();
+        let space = read_desktop_space(&root).unwrap().unwrap();
+        assert_eq!(space.name, "Custom");
+        assert_eq!(space.color.as_deref(), Some("#be185d"));
+        fs::write(root.join("home.toml"), "schema = 1\nid = \"h-example\"\npreset = \"../escape\"\n").unwrap();
+        assert!(read_desktop_space(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

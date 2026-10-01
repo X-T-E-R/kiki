@@ -13,6 +13,24 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('lists presets and creates a derived space through the authenticated homes facade', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return path.endsWith('/presets') ? envelope({ items: [{ id: 'kiki', name: 'Kiki', description: 'General-purpose space' }] }) : envelope({ id: 'h-example', name: 'Kiki', preset: 'kiki', path: 'C:/example/kiki' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      expect((await channel.rest.homes.presets()).items[0]?.id).toBe('kiki');
+      await expect(channel.rest.homes.create({ preset: 'kiki', path: 'C:/example/kiki' })).resolves.toMatchObject({ preset: 'kiki' });
+      expect(calls).toEqual([
+        { path: '/api/homes/presets', method: 'GET', body: undefined },
+        { path: '/api/homes', method: 'POST', body: { preset: 'kiki', path: 'C:/example/kiki' } },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('inspects a workspace path through the authenticated REST facade', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

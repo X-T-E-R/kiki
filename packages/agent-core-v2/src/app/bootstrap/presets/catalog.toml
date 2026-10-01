@@ -1,0 +1,9 @@
+[[presets]]
+id = "kiki"
+name = "Kiki"
+description = "A general-purpose space."
+
+[presets.defaults.space_ui]
+default_skin = "paper"
+landing_page = "/new"
+plugins = []

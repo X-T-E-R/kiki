@@ -33,6 +33,34 @@ describe('space registration REST', () => {
     return response.json() as Promise<Envelope<unknown>>;
   }
 
+  it('lists bundled templates and derives display and config values without copying defaults into user files', async () => {
+    root = await mkdtemp(join(tmpdir(), 'kiki-presets-'));
+    const main = await boot(root);
+    const catalog = await call(main, '/api/homes/presets');
+    expect(catalog).toEqual({ code: 0, msg: 'success', request_id: expect.any(String), data: { items: [
+      { id: 'kiki', name: 'Kiki', description: 'A general-purpose space.' },
+    ] } });
+    const invalidPath = join(root, 'invalid');
+    expect((await call(main, '/api/homes', 'POST', { path: invalidPath, preset: 'unknown' })).code).toBe(40427);
+    await expect(stat(invalidPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const path = join(root, 'derived');
+    expect(await call(main, '/api/homes', 'POST', { path, preset: 'kiki' })).toMatchObject({ code: 0, data: { name: 'Kiki', preset: 'kiki' } });
+    const home = await readFile(join(path, 'home.toml'), 'utf8');
+    expect(home).toContain('preset = "kiki"');
+    expect(home).not.toContain('name =');
+    expect(home).not.toContain('color =');
+    const child = await boot(path);
+    const config = await call(child, '/api/config');
+    expect(config, JSON.stringify(config)).toMatchObject({ code: 0, data: {
+      space_ui: { defaultSkin: 'paper', landingPage: '/new', plugins: [] },
+      origins: { space_ui: { defaultSkin: 'preset' } },
+    } });
+    expect(await call(child, '/api/config', 'POST', { space_ui: { default_skin: 'linen' } })).toMatchObject({ code: 0, data: { space_ui: { defaultSkin: 'linen' } } });
+    expect((await readFile(join(path, 'config.toml'), 'utf8'))).not.toContain('landing_page');
+    expect(await call(main, '/api/homes', 'POST', { path: join(root, 'custom'), preset: 'kiki', name: 'My desk', color: '#be185d' })).toMatchObject({ code: 0, data: { name: 'My desk', color: '#be185d', preset: 'kiki' } });
+    expect(await call(main, '/api/homes')).toMatchObject({ data: { items: [{ id: 'main' }, { name: 'Kiki', preset: 'kiki' }, { name: 'My desk', preset: 'kiki' }] } });
+  });
+
   it('creates, lists, removes from the launcher, and reattaches a space without deleting its files', async () => {
     root = await mkdtemp(join(tmpdir(), 'kiki-homes-'));
     const main = await boot(root);

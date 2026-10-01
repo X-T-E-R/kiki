@@ -8,6 +8,7 @@ macro_rules! app_commands {
             switch_space,
             restart_space,
             open_space,
+            create_space_shortcut,
             list_ssh_profiles,
             save_ssh_profile,
             remove_ssh_profile,

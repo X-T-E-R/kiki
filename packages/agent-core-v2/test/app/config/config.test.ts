@@ -3936,7 +3936,7 @@ describe('explicit model generation migration', () => {
 
 
 describe('space config layers', () => {
-  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}, credentials: 'shared' | 'isolated' = 'shared') {
+  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}, credentials: 'shared' | 'isolated' = 'shared', preset?: string) {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     const homeStorage = new InMemoryStorageService();
@@ -3951,7 +3951,7 @@ describe('space config layers', () => {
       baseHomeDir: '/tmp/kiki-base-test',
       credentialsHomeDir: credentials === 'shared' ? '/tmp/kiki-base-test' : '/tmp/kiki-space-test',
       spaceId: 'h-test',
-      space: { id: 'h-test', name: 'Test', baseHomeDir: '/tmp/kiki-base-test', inherit: { config: true, credentials, agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } },
+      space: { id: 'h-test', name: 'Test', preset, baseHomeDir: '/tmp/kiki-base-test', inherit: { config: true, credentials, agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } },
       baseConfigDocumentStore: baseStore,
     });
     ix.stub(IFileSystemStorageService, homeStorage);
@@ -3962,6 +3962,34 @@ describe('space config layers', () => {
     await config.ready;
     return { config, disposables, homeStore, baseStore };
   }
+
+  it('keeps bundled preset defaults read-only below base and home and restores them after local removal', async () => {
+    const f = await fixture('[space_ui]\ndefault_skin = "linen"\n', '[space_ui]\nlanding_page = "/bots"\n', {}, 'shared', 'kiki');
+    try {
+      expect(f.config.get('spaceUi')).toEqual({ defaultSkin: 'linen', landingPage: '/bots', plugins: [] });
+      expect(f.config.origins('spaceUi')).toMatchObject({ defaultSkin: 'base', landingPage: 'home', plugins: 'preset' });
+      await f.config.removeOverride('spaceUi', ['landingPage']);
+      expect(f.config.get('spaceUi')).toMatchObject({ landingPage: '/new' });
+      expect(f.config.origins('spaceUi')['landingPage']).toBe('preset');
+      await f.config.set('spaceUi', { landingPage: '/bots' });
+      expect(f.config.get('spaceUi')).toMatchObject({ defaultSkin: 'linen', landingPage: '/bots' });
+      expect(await f.homeStore.getText('', 'config.toml')).not.toContain('default_skin');
+      expect(await f.homeStore.getText('', 'config.toml')).not.toContain('plugins');
+      await f.baseStore.setText('', 'config.toml', '');
+      await f.config.reload();
+      expect(f.config.get('spaceUi')).toMatchObject({ defaultSkin: 'paper', landingPage: '/bots' });
+      expect(f.config.origins('spaceUi')['defaultSkin']).toBe('preset');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('loads unknown preset spaces safely with a diagnostic and baseline defaults', async () => {
+    const f = await fixture('', '[raw]\nlocal = true\n', {}, 'shared', 'future');
+    try {
+      expect(f.config.get('spaceUi')).toMatchObject({ defaultSkin: 'paper', landingPage: '/new' });
+      expect(f.config.get('raw')).toEqual({ local: true });
+      expect(f.config.diagnostics().some((item) => item.message.includes('Unknown space preset future'))).toBe(true);
+    } finally { f.disposables.dispose(); }
+  });
 
   it('merges scalar, table and named entries; replaces ordered arrays and keeps disabled entries', async () => {
     const f = await fixture('default_model = "base"\n[raw]\nhooks = ["base", "old"]\n[raw.flags]\na = 1\nb = 2\n[raw.items.alpha]\nenabled = true\nlabel = "base"\n[raw.items.beta]\nenabled = true\n', 'default_model = "home"\n[raw]\nhooks = ["home"]\n[raw.flags]\nb = 3\n[raw.items.alpha]\nenabled = false\n');

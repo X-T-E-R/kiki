@@ -2,6 +2,7 @@ export {
   removeSpaceConfigOverrideRequestSchema,
   spaceRecordSchema,
   spacesResponseSchema,
+  spacePresetsResponseSchema,
   createSpaceRequestSchema,
   attachSpaceRequestSchema,
   spaceIdParamsSchema,

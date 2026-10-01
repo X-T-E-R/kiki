@@ -5,6 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 import { BugIndicatingError, Error2, ErrorCodes, onUnexpectedError } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { findSpacePreset, spacePresetDefaults } from '#/app/bootstrap/spacePresets';
 import { ILogService } from '#/_base/log/log';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
@@ -300,6 +301,8 @@ export class ConfigService extends Disposable implements IConfigService {
   private homeSnake: ResolvedConfig = {};
   private baseRaw: ResolvedConfig = {};
   private homeRaw: ResolvedConfig = {};
+  private presetSnake: ResolvedConfig = {};
+  private presetRaw: ResolvedConfig = {};
   private validated: ResolvedConfig = {};
   private effective: ResolvedConfig = {};
   private memory: ResolvedConfig = {};
@@ -385,7 +388,7 @@ export class ConfigService extends Disposable implements IConfigService {
     };
     const sectionEnv = this.registry.getSection(domain)?.env;
     if (sectionEnv !== undefined) walk(sectionEnv, []);
-    return leafOrigins(this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], envFields);
+    return leafOrigins(this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], envFields, this.presetRaw[domain]);
   }
 
   private freshEffective(): ResolvedConfig {
@@ -605,8 +608,8 @@ export class ConfigService extends Disposable implements IConfigService {
   }
 
   private validateLayeredWrite(domain: string, value: unknown): unknown {
-    const candidate = this.bootstrap.baseConfigDocumentStore === undefined
-      ? value : this.mergeLayers({ [camelToSnake(domain)]: this.baseSnake[camelToSnake(domain)] }, { [camelToSnake(domain)]: value })[camelToSnake(domain)];
+    const lower = transformTomlData(this.mergeLayers(this.presetSnake, this.baseSnake), this.registry);
+    const candidate = this.registry.merge(domain, lower[domain], value);
     return this.registry.validate(domain, candidate);
   }
 
@@ -777,7 +780,13 @@ export class ConfigService extends Disposable implements IConfigService {
     this.homeSnake = cloneRecord(fileData);
     this.baseRaw = transformTomlData(this.baseSnake, this.registry);
     this.homeRaw = transformTomlData(this.homeSnake, this.registry);
-    const nextRawSnake = cloneRecord(baseStore === undefined ? fileData : this.mergeLayers(baseData, fileData));
+    const preset = this.bootstrap.space?.preset;
+    if (preset !== undefined && findSpacePreset(preset) === undefined) {
+      this.pushDiagnostic({ severity: 'warning', message: `Unknown space preset ${preset}; using Kiki defaults` });
+    }
+    this.presetSnake = this.bootstrap.space === undefined ? {} : spacePresetDefaults(preset);
+    this.presetRaw = transformTomlData(this.presetSnake, this.registry);
+    const nextRawSnake = cloneRecord(this.mergeLayers(this.mergeLayers(this.presetSnake, baseData), fileData));
     for (const section of this.registry.listSections()) {
       if (section.collectDiagnostics === undefined) continue;
       const rawSection = nextRawSnake[camelToSnake(section.domain)];
@@ -1124,12 +1133,10 @@ export class ConfigService extends Disposable implements IConfigService {
       throw error;
     }
     this.homeSnake = cloneRecord(stagedRawSnake);
-    this.homeRaw = this.bootstrap.baseConfigDocumentStore === undefined
-      ? stagedRaw : transformTomlData(this.homeSnake, this.registry);
-    this.rawSnake = this.bootstrap.baseConfigDocumentStore === undefined
-      ? stagedRawSnake : this.mergeLayers(this.baseSnake, stagedRawSnake);
-    this.raw = this.bootstrap.baseConfigDocumentStore === undefined
-      ? stagedRaw : transformTomlData(this.rawSnake, this.registry);
+    const layered = this.bootstrap.space !== undefined || this.bootstrap.baseConfigDocumentStore !== undefined;
+    this.homeRaw = layered ? transformTomlData(this.homeSnake, this.registry) : stagedRaw;
+    this.rawSnake = layered ? this.mergeLayers(this.mergeLayers(this.presetSnake, this.baseSnake), stagedRawSnake) : stagedRawSnake;
+    this.raw = layered ? transformTomlData(this.rawSnake, this.registry) : stagedRaw;
   }
 }
 

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, normalize, parse, resolve, sep } from 'node:
 
 import { IBootstrapService, ISshHostService, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
+import { findSpacePreset, listSpacePresets } from '@kiki/agent-core-v2/app/bootstrap/spacePresets';
 import { SshCredentialStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/sshCredentialStore';
 import { z } from 'zod';
 
@@ -13,7 +14,7 @@ import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   attachSpaceRequestSchema, createSpaceRequestSchema, spaceIdParamsSchema,
-  spaceRecordSchema, spacesResponseSchema, deleteSpaceParamsSchema, deleteSpaceRequestSchema,
+  spaceRecordSchema, spacesResponseSchema, spacePresetsResponseSchema, deleteSpaceParamsSchema, deleteSpaceRequestSchema,
   updateSpaceRequestSchema, updateSpaceResponseSchema, sshCopyCandidatesResponseSchema,
 } from '../protocol/rest-space';
 import { parseActionSuffix } from './action-suffix';
@@ -60,13 +61,13 @@ function childRecord(path: string, main: string): SpaceRecord {
   if (result.space.baseHomeDir === undefined || !samePath(result.space.baseHomeDir, main)) {
     throw new Error('The space must inherit from this main home');
   }
-  return { id: result.space.id, name: result.space.name, color: result.space.color, path };
+  return { id: result.space.id, name: result.space.name, color: result.space.color, preset: result.space.preset, path };
 }
 
 function spaceView(record: SpaceRecord): SpaceRecord & { credentials_shared?: boolean } {
   const space = readSpaceHome(record.path).space;
   return space?.id === record.id
-    ? { ...record, name: space.name, color: space.color, credentials_shared: space.inherit.credentials === 'shared' }
+    ? { ...record, name: space.name, color: space.color, preset: space.preset, credentials_shared: space.inherit.credentials === 'shared' }
     : record;
 }
 
@@ -191,11 +192,23 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
   });
   app.get(list.path, list.options, list.handler as Parameters<HomesRouteHost['get']>[2]);
 
+  const presets = defineRoute({
+    method: 'GET', path: '/homes/presets', success: { data: spacePresetsResponseSchema },
+    description: 'List the read-only space presets bundled with Kiki', tags: ['homes'],
+  }, async (req, reply) => {
+    reply.send(okEnvelope({ items: listSpacePresets() }, req.id));
+  });
+  app.get(presets.path, presets.options, presets.handler as Parameters<HomesRouteHost['get']>[2]);
+
   const create = defineRoute({
     method: 'POST', path: '/homes', body: createSpaceRequestSchema,
-    success: { data: spaceRecordSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    success: { data: spaceRecordSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SPACE_PRESET_NOT_FOUND]: {} },
     description: 'Create a new space and register it in the main home', tags: ['homes'],
   }, async (req, reply) => {
+    if (req.body.preset !== undefined && findSpacePreset(req.body.preset) === undefined) {
+      reply.send(errEnvelope(ErrorCode.SPACE_PRESET_NOT_FOUND, `Unknown space preset: ${req.body.preset}`, req.id));
+      return;
+    }
     try {
       const record = await serialized(async () => {
         const base = requireMainSpace(scope);
@@ -208,7 +221,9 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
         const id = `h-${randomBytes(8).toString('hex')}`;
         const inherit = req.body.inherit ?? {};
         const lines = [
-          'schema = 1', `id = ${JSON.stringify(id)}`, `name = ${JSON.stringify(req.body.name)}`,
+          'schema = 1', `id = ${JSON.stringify(id)}`,
+          ...(req.body.name === undefined ? [] : [`name = ${JSON.stringify(req.body.name)}`]),
+          ...(req.body.preset === undefined ? [] : [`preset = ${JSON.stringify(req.body.preset)}`]),
           ...(req.body.color === undefined ? [] : [`color = ${JSON.stringify(req.body.color)}`]),
           `base = ${JSON.stringify(base)}`, '', '[inherit]',
           ...Object.entries(inherit).map(([key, value]) => `${key} = ${JSON.stringify(value)}`), '',

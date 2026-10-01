@@ -81,6 +81,7 @@ export function parseActiveSpacePayload(raw: unknown): ActiveSpace | null {
     homeId,
     name: stringField(record, 'name'),
     color: stringField(record, 'color'),
+    preset: stringField(record, 'preset'),
     isPrimary: record['isPrimary'] === true || homeId === MAIN_SPACE_HOME_ID ? true : undefined,
   };
 }

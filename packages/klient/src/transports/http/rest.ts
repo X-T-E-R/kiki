@@ -367,6 +367,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     homes: {
+      presets: () => transport.json<import('@kiki/protocol').SpacePresetsResponse>('/homes/presets'),
       list: () => transport.json<import('@kiki/protocol').ListSpacesResponse>('/homes'),
       create: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes', { method: 'POST', body }),
       attach: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes:attach', { method: 'POST', body }),

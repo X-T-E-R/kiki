@@ -161,7 +161,7 @@ export function isAbsolutePath(path: string): boolean {
 
 // ---- config origins (§4.3, §9.3) ----
 
-export type ConfigOrigin = 'default' | 'base' | 'home' | 'env' | 'memory';
+export type ConfigOrigin = 'default' | 'preset' | 'base' | 'home' | 'env' | 'memory';
 
 /** `origins[domain][leafPath]`, as `GET /config` returns it (independent spaces only). */
 export type ConfigOrigins = Readonly<Record<string, Readonly<Record<string, ConfigOrigin>>>>;
@@ -185,7 +185,7 @@ export function originOf(origins: ConfigOrigins | undefined, domain: string, key
   const prefix = key === '' ? '' : `${key}.`;
   const leaves = Object.entries(entries).filter(([leaf]) => prefix === '' || leaf.startsWith(prefix)).map(([, origin]) => origin);
   if (leaves.length === 0) return undefined;
-  for (const origin of ['env', 'memory', 'home', 'base'] as const) if (leaves.includes(origin)) return origin;
+  for (const origin of ['env', 'memory', 'home', 'base', 'preset'] as const) if (leaves.includes(origin)) return origin;
   return 'default';
 }
 

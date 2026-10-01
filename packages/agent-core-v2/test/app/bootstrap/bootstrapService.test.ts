@@ -259,6 +259,20 @@ describe('space home bootstrap', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('inherits preset display values but preserves authored values and unknown preset identities', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-space-preset-'));
+    try {
+      await writeFile(join(home, 'home.toml'), 'schema = 1\nid = "h-preset"\npreset = "kiki"\n');
+      expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).space).toMatchObject({ name: 'Kiki', color: undefined, preset: 'kiki' });
+      await writeFile(join(home, 'home.toml'), 'schema = 1\nid = "h-preset"\npreset = "kiki"\nname = "Custom"\ncolor = "#be185d"\n');
+      expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).space).toMatchObject({ name: 'Custom', color: '#be185d', preset: 'kiki' });
+      await writeFile(join(home, 'home.toml'), 'schema = 1\nid = "h-preset"\npreset = "future"\nname = "Retained"\n');
+      expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).space).toMatchObject({ name: 'Retained', preset: 'future' });
+      await writeFile(join(home, 'home.toml'), 'schema = 1\nid = "h-preset"\npreset = "../escape"\n');
+      expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).homeDiagnostic).toContain('Invalid home.toml');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('validates space identity with the same schemas the REST record uses', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-space-identity-'));
     const home = join(root, 'space');

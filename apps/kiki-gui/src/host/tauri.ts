@@ -278,6 +278,7 @@ export const tauriHost: TauriHostAdapter = {
   async openSpace(homeId) {
     await invoke('open_space', { homeId });
   },
+  createSpaceShortcut: (homeId) => invoke('create_space_shortcut', { homeId }),
   async restartSpace(homeId) {
     await invoke('restart_space', { homeId });
   },

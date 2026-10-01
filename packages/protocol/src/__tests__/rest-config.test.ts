@@ -8,6 +8,12 @@ import {
 } from '../rest/nbSearch';
 
 describe('config REST protocol', () => {
+  it('preserves space UI defaults and validates partial user patches', () => {
+    expect(configResponseSchema.parse({ space_ui: { defaultSkin: 'linen', landingPage: '/bots', plugins: [] } }).space_ui)
+      .toEqual({ defaultSkin: 'linen', landingPage: '/bots', plugins: [] });
+    expect(patchConfigRequestSchema.parse({ space_ui: { landing_page: '/new' } })).toEqual({ space_ui: { landing_page: '/new' } });
+    expect(patchConfigRequestSchema.safeParse({ space_ui: { landing_page: 'https://example.com' } }).success).toBe(false);
+  });
   it('preserves subagent tool opt-ins and an explicit reset on the wire', () => {
     for (const allowedTools of [['BoardRead'], []]) {
       expect(patchConfigRequestSchema.parse({ subagent: { allowed_tools: allowedTools } }))

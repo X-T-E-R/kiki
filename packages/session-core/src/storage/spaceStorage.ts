@@ -21,6 +21,7 @@ export interface ActiveSpace {
   /** Display name, carried so callers can label the space without a second lookup. */
   readonly name?: string;
   readonly color?: string;
+  readonly preset?: string;
   /** The main space keeps the original key names. */
   readonly isPrimary?: boolean;
 }

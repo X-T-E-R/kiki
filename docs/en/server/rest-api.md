@@ -91,6 +91,22 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 | `GET /api/meta` | Server version, capability map, `server_id`, experimental flags |
 | `POST /api/shutdown` | Graceful shutdown (replies 200 first); mounted only on loopback binds |
 
+### Space presets
+
+`GET /api/homes/presets` returns `{ items: [{ id, name, color?, description }] }`. Only the `kiki` baseline preset is currently bundled. Create a space from the main space's server with `POST /api/homes`:
+
+```json
+{ "path": "C:/example/space", "preset": "kiki" }
+```
+
+The path must be an absolute, new directory. Optional `name` and `color` override the preset's display defaults. Creation returns `{ id, name, color?, preset?, path }`; `GET /api/homes` lists the effective values. A well-formed but unregistered preset returns code `40427` (`space.preset_not_found`); malformed input, existing directories, and child-origin creation requests return `40001`.
+
+A space's `home.toml` stays at `schema = 1` and gains an optional `preset` key. Existing homes are not rewritten. Omitting `preset` uses Kiki defaults; an unknown preset already on disk retains its identity and user values, falls back to Kiki defaults, and reports a configuration diagnostic. Defaults are bundled read-only, not copied into `config.toml`: schema defaults < preset < inherited base config < this home's config < environment (memory overrides remain highest). Credentials and models retain the existing home inheritance rules. The baseline supplies the display name `Kiki` and UI defaults; it does not change bot settings or install another application.
+
+`GET /api/config` exposes `space_ui: { defaultSkin, landingPage, plugins }`. A partial `POST /api/config` patch uses `space_ui: { default_skin?, landing_page?, plugins? }`; landing pages are `/new` or `/bots`. The plugin lists are currently empty and do not install plugins. These UI defaults are a client contract: clients should apply them only when no user preference exists. Configuration origins include `preset`, and removing a home override reveals the lower layer again.
+
+Desktop integrations can call the native `create_space_shortcut` command with `{ homeId: "main" }` or a registered `h-…` id, exposed as `host.createSpaceShortcut(homeId)`. Windows returns `{ homeId, path }` for a desktop `.lnk` pointing to the current executable with `--home "<absolute space path>"`. The existing startup and second-launch handling select that space; no second binary is installed. The command never replaces an existing shortcut. Rejections carry `{ code, message }`: `unsupported_platform`, `invalid_space`, `desktop_unavailable`, `executable_unavailable`, `shortcut_exists`, or `shortcut_failed`. macOS and Linux creation is not supported. Shortcuts depend on the executable and home staying at those paths; remove the old shortcut and recreate it after moving either.
+
 ### Login and usage
 
 | Method and path | Description |

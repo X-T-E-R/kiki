@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { requestIdentityPolicySchema } from '../modelCatalog';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
+import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 
 export const taskBoardStorageConfigSchema = z.object({
   storage: z.discriminatedUnion('mode', [
@@ -166,6 +167,7 @@ export const interactionConfigPatchSchema = z.object({
 }).strict();
 
 export const configResponseSchema = z.object({
+  space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
@@ -205,6 +207,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),

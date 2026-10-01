@@ -21,7 +21,7 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from '@kiki/protocol';
+import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -193,6 +193,7 @@ export const interactionConfigPatchSchema = z.object({
 }).strict();
 
 export const configResponseSchema = z.object({
+  space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
@@ -236,11 +237,12 @@ export const configResponseSchema = z.object({
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
-  origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'base', 'home', 'env', 'memory']))).optional(),
+  origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']))).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
