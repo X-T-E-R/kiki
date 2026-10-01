@@ -3598,8 +3598,17 @@ describe('subagent timeline dual form (G-4)', () => {
     );
     const card = () => container.querySelector('[data-subagent-id="agent-live"]');
     expect(card()?.getAttribute('data-card-form')).toBe('full');
+    // The card-form control leads the card (its own diagonal-arrows mark);
+    // the invocation-details chevron trails — never two chevrons side by side.
+    const collapseButton = card()!.querySelector('[data-card-collapse]')!;
+    const openButton = card()!.querySelector('[data-agent-open]')!;
+    const detailsButton = card()!.querySelector('[data-invocation-toggle]')!;
+    expect(collapseButton.querySelector('[data-icon="collapse"]')).not.toBeNull();
+    expect(detailsButton.querySelector('[data-icon="chevron"]')).not.toBeNull();
+    const headerOrder = [...card()!.querySelectorAll('[data-card-collapse], [data-agent-open], [data-invocation-toggle]')];
+    expect(headerOrder).toEqual([collapseButton, openButton, detailsButton]);
     await act(async () => {
-      flushSync(() => { click(card()!.querySelector('[data-card-collapse]')!); });
+      flushSync(() => { click(collapseButton); });
     });
     expect(card()?.getAttribute('data-card-form')).toBe('compact');
     // Manual override wins over the auto rule: still compact after republish.
@@ -3616,8 +3625,16 @@ describe('subagent timeline dual form (G-4)', () => {
     );
     const card = () => container.querySelector('[data-subagent-id="agent-done"]');
     expect(card()?.getAttribute('data-card-form')).toBe('compact');
+    // Same reading order as the full card: the form control (expand mark)
+    // comes before the invocation-details toggle.
+    const expandButton = card()!.querySelector('[data-card-expand]')!;
+    const detailsButton = card()!.querySelector('[data-invocation-toggle]')!;
+    expect(expandButton.querySelector('[data-icon="expand"]')).not.toBeNull();
+    expect(detailsButton.querySelector('[data-icon="file"]')).not.toBeNull();
+    const asideOrder = [...card()!.querySelectorAll('[data-card-expand], [data-invocation-toggle]')];
+    expect(asideOrder).toEqual([expandButton, detailsButton]);
     await act(async () => {
-      flushSync(() => { click(card()!.querySelector('[data-card-expand]')!); });
+      flushSync(() => { click(expandButton); });
     });
     expect(card()?.getAttribute('data-card-form')).toBe('full');
     expect(card()?.textContent).toContain('the task brief');

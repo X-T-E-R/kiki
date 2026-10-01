@@ -1111,7 +1111,9 @@ function subagentActivity(block: SubagentBlock): string | undefined {
  * Compact collapsed form of a subagent card (terminal runs land here by
  * default): one row with status dot, name, terminal status, result summary,
  * duration and tool count. Click jumps to the agent page; the trailing
- * chevron expands back to the full card (manual override).
+ * expand-arrows control grows it back to the full card (manual override).
+ * The card-form control is never a chevron — chevrons belong to disclosure
+ * (invocation details) — so the two toggles can never read as the same icon.
  */
 function SubagentCompactCard({
   block,
@@ -1180,7 +1182,7 @@ function SubagentCompactCard({
       meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
       metaWidth="wide"
       aside={
-        <>{invocationButton}{onExpand === undefined ? null : (
+        <>{onExpand === undefined ? null : (
           <button
             type="button"
             data-card-expand={block.subagentId}
@@ -1189,9 +1191,9 @@ function SubagentCompactCard({
             onClick={onExpand}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel hover:text-ink"
           >
-            <DisclosureChevron open={false} className="text-current" />
+            <Icon name="expand" size={12} className="text-current" />
           </button>
-        )}</>
+        )}{invocationButton}</>
       }
     >{invocationBody}</ActivityRow>
   );
@@ -1301,6 +1303,18 @@ const SubagentCard = memo(function SubagentCard({
         {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
         <div className="min-w-0 flex-1">
           <div className={cardClass}>
+            {onToggleForm !== undefined && !nested ? (
+              <button
+                type="button"
+                data-card-collapse={block.subagentId}
+                aria-label={t('subagent.collapseCard')}
+                title={t('subagent.collapseCard')}
+                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
+                className="-mt-1 -ml-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
+              >
+                <Icon name="collapse" size={12} className="text-current" />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => { onOpenAgent?.(block.subagentId); }}
@@ -1311,18 +1325,6 @@ const SubagentCard = memo(function SubagentCard({
             </button>
             <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
               {invocation.button}
-              {onToggleForm !== undefined && !nested ? (
-                <button
-                  type="button"
-                  data-card-collapse={block.subagentId}
-                  aria-label={t('subagent.collapseCard')}
-                  title={t('subagent.collapseCard')}
-                  onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
-                >
-                  <DisclosureChevron open className="text-current" />
-                </button>
-              ) : null}
             </div>
           </div>
           {invocation.body}
