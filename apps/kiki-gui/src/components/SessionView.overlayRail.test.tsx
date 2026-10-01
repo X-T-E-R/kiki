@@ -6,15 +6,20 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import type { Session } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import type { MediaPreviewApi } from './mediaPreviewContext';
+import { readTimelineView, writeTimelineView } from './message/messageViewMode';
 import { SessionRouteView, SessionTitle } from './SessionView';
 
 // SessionView with its surroundings stubbed down to what an agent open from
 // the rail touches: the rail (which calls onOpenSubagent), the preview
 // provider (which opens a tab and renders it), and the viewport width.
 
-const { opened } = vi.hoisted(() => ({ opened: [] as string[] }));
+const { opened, fixture } = vi.hoisted(() => ({
+  opened: [] as string[],
+  fixture: { session: undefined as Session | undefined },
+}));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
@@ -33,6 +38,7 @@ vi.mock('../state/connection', () => {
   };
   return {
     useConnection: () => ({ client, meta: { capabilities: {} }, socket: null, wsStatus: 'closed' }),
+    useOptionalConnection: () => null,
     useControllerRegistry: () => registry,
   };
 });
@@ -51,7 +57,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     readonly getAgentState: () => ReturnType<typeof actual.createViewState>;
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
-      const state = actual.createViewState(sessionId);
+      const state = { ...actual.createViewState(sessionId), session: fixture.session };
       this.getState = () => state;
       this.getAgentState = () => state;
     }
@@ -123,7 +129,7 @@ beforeAll(() => {
   vi.stubGlobal('matchMedia', (query: string) => {
     const isNarrowQuery = query.includes('max-width: 1023px');
     return {
-      matches: isNarrowQuery ? narrow : false,
+      matches: isNarrowQuery || query.includes('max-width: 639px') ? narrow : false,
       media: query,
       addEventListener: (event: string, listener: MediaChangeListener) => {
         if (isNarrowQuery && event === 'change') narrowListeners.add(listener);
@@ -212,6 +218,44 @@ async function mountTitleWithoutRail() {
     },
   };
 }
+
+describe('Bot-only session controls', () => {
+  const sessions = [
+    { label: 'ordinary reply', delivery: 'reply', agent_config: {}, metadata: {}, bot: false, home: false },
+    { label: 'ordinary message', delivery: 'message', agent_config: {}, metadata: {}, bot: false, home: false },
+    { label: 'invalid Bot metadata', delivery: 'reply', agent_config: {}, metadata: { bot_persona_id: 123 }, bot: false, home: false },
+    { label: 'persona in reply mode', delivery: 'reply', agent_config: { persona: { id: 'example-bot', name: 'Example Bot' } }, metadata: {}, bot: true, home: false },
+    { label: 'Bot home', delivery: 'message', agent_config: {}, metadata: { bot_persona_id: 'example-bot' }, bot: true, home: true },
+  ] as const;
+
+  describe.each(['narrow', 'wide'] as const)('%s header', (width) => {
+    it.each(sessions)('shows Bot controls only for $label when marked as Bot', async (session) => {
+      fixture.session = {
+        id: 'session-a', title: 'Example session',
+        agent_config: session.agent_config, metadata: session.metadata, delivery: session.delivery,
+      } as Session;
+      writeTimelineView('session-a', 'process');
+      const view = await mountAt(width);
+      try {
+        expect(view.host.querySelector('[data-timeline-view-switch]') !== null).toBe(session.bot);
+        await act(async () => { view.host.querySelector<HTMLButtonElement>('[data-session-actions] > button')!.click(); });
+        expect(view.host.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.bot && width === 'narrow' ? 2 : 0);
+        expect(view.host.querySelectorAll('[data-delivery-option]').length).toBe(session.bot ? 2 : 0);
+        expect(view.host.querySelector('[data-bot-settings-open]') !== null).toBe(session.home);
+        expect(view.host.querySelector('[data-session-rename]')).not.toBeNull();
+        expect(view.host.querySelector('[data-side-question]')).not.toBeNull();
+
+        const shortcut = new KeyboardEvent('keydown', { key: '.', code: 'Period', ctrlKey: true, shiftKey: true, cancelable: true });
+        await act(async () => { window.dispatchEvent(shortcut); });
+        expect(shortcut.defaultPrevented).toBe(session.bot);
+        expect(readTimelineView('session-a', fixture.session)).toBe(session.bot ? 'message' : 'process');
+      } finally {
+        await view.unmount();
+        fixture.session = undefined;
+      }
+    });
+  });
+});
 
 describe('right rail responsive layout', () => {
   it('does not render the rail or a header entry below the lg breakpoint', async () => {

@@ -224,12 +224,14 @@ function Header({
   onView,
   onDelivery,
   deliveryPending,
+  isBotSession,
   botPersonaId,
   onOpenBotSettings,
   harness,
 }: {
   /** External engine behind main: its mark beside the title, and no fork when it refused one. */
   harness?: SessionHarness;
+  isBotSession: boolean;
   botPersonaId?: string;
   onOpenBotSettings: () => void;
   controller: SessionController | null;
@@ -313,7 +315,7 @@ function Header({
             </span>
           ) : null}
           {/* 消息 | 过程: on the header from sm up; the ⋯ menu carries it below. */}
-          <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" />
+          {isBotSession ? <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" /> : null}
           <SessionActionsMenu
             terminalAvailable={terminalAvailable}
             terminalOpen={terminalOpen}
@@ -322,7 +324,7 @@ function Header({
             onAction={onSessionAction}
             canFork={!harnessDenies(harness, 'fork')}
             onSideQuestion={harnessDenies(harness, 'fork') ? undefined : onSideQuestion}
-            leading={(close) => (
+            leading={isBotSession ? (close) => (
               <>
                 {botPersonaId !== undefined ? (
                   <>
@@ -347,7 +349,7 @@ function Header({
                   showView={isNarrow}
                 />
               </>
-            )}
+            ) : undefined}
           />
         </>
       ) : (
@@ -1642,8 +1644,10 @@ export function SessionView({
   // per session; a `message` delivery opens in the message view) and the
   // delivery switch. Delivery freezes per turn on the server, so a change
   // made mid-turn is labelled "下一轮生效" until the turn ends.
+  const isBotSession = state.session?.agent_config.persona !== undefined || typeof state.session?.metadata['bot_persona_id'] === 'string';
   const [timelineView, setTimelineView] = useTimelineView(sessionId, state.session);
   useEffect(() => {
+    if (!isBotSession) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isTimelineViewShortcut(event)) return;
       event.preventDefault();
@@ -1651,7 +1655,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [timelineView, setTimelineView]);
+  }, [isBotSession, timelineView, setTimelineView]);
   const [deliveryChangedInTurn, setDeliveryChangedInTurn] = useState(false);
   useEffect(() => { if (!state.busy) setDeliveryChangedInTurn(false); }, [state.busy]);
   const changeDelivery = useCallback((delivery: 'reply' | 'message') => {
@@ -3437,7 +3441,7 @@ export function SessionView({
             onSideQuestion={() => { startSideQuestion(); }}
             view={timelineView} onView={setTimelineView}
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
-            botPersonaId={botPersonaId}
+            isBotSession={isBotSession} botPersonaId={botPersonaId}
             onOpenBotSettings={openBotSettings}
             harness={harness}
           />,
