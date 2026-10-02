@@ -5,6 +5,10 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
+import { type IAgentScopeHandle } from '#/_base/di/scope';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { type ApprovalRequest, ISessionApprovalService } from '#/session/approval/approval';
 import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionInteractionService, type InteractionResolution } from '#/session/interaction/interaction';
@@ -40,12 +44,94 @@ describe('SessionApprovalService', () => {
   });
   afterEach(() => disposables.dispose());
 
+  function useModes(modes: Record<string, PermissionMode>): void {
+    ix.stub(IAgentLifecycleService, {
+      get: (agentId: string) => modes[agentId] === undefined ? undefined : {
+        id: agentId,
+        accessor: { get: (token: unknown) => {
+          if (token !== IAgentPermissionModeService) throw new Error('unexpected service');
+          return { mode: modes[agentId] };
+        } },
+      } as unknown as IAgentScopeHandle,
+    });
+  }
+
+  describe.each(['manual', 'auto', 'yolo'] as const)('approval broker in %s mode', (mode) => {
+    it.each([
+      { kind: 'command', command: 'echo ok' },
+      { kind: 'file_io', operation: 'read', path: '/workspace/.git/hooks/pre-commit' },
+      { kind: 'plan_enter' },
+      { kind: 'plan_review', plan: 'Execute the approved work' },
+      { kind: 'goal_start', objective: 'Complete work', mode: 'yolo' },
+      { kind: 'agent_call', agent_name: 'explore', prompt: 'Inspect code' },
+      { kind: 'url_fetch', url: 'https://example.test' },
+    ] satisfies ToolInputDisplay[])('handles $kind approval', async (display) => {
+      useModes({ main: 'manual', child: mode });
+      const svc = ix.get(ISessionApprovalService);
+      const pending = svc.request({ ...makeRequest('mode-test'), agentId: 'child', display });
+      expect(svc.listPending()).toHaveLength(mode === 'yolo' ? 0 : 1);
+      if (mode !== 'yolo') svc.decide('mode-test', { decision: 'approved' });
+      await expect(pending).resolves.toEqual({ decision: 'approved' });
+    });
+  });
+
+  it('auto-approves YOLO without a consumer and never enqueues a prompt', async () => {
+    useModes({ main: 'yolo' });
+    const svc = ix.get(ISessionApprovalService);
+    ix.get(ISessionInteractionService).releaseConsumer('test-consumer');
+    await expect(svc.request(makeRequest('yolo'))).resolves.toEqual({ decision: 'approved' });
+    svc.enqueue(makeRequest('queued-yolo'));
+    expect(svc.listPending()).toEqual([]);
+  });
+
+  it('chooses the provider allow-once option in YOLO rather than a rejection or persistent grant', async () => {
+    useModes({ main: 'yolo' });
+    const svc = ix.get(ISessionApprovalService);
+    const request = { ...makeRequest('external-yolo'), display: {
+      kind: 'external_permission', summary: 'Provider approval', options: [
+        { id: 'deny', label: 'Reject', kind: 'reject_once' },
+        { id: 'always', label: 'Always allow', kind: 'allow_always' },
+        { id: 'once', label: 'Allow once', kind: 'allow_once' },
+      ],
+    } } satisfies ApprovalRequest;
+    await expect(svc.request(request)).resolves.toEqual({ decision: 'approved', selectedOptionId: 'once' });
+    await expect(svc.request({ ...request, display: { ...request.display, options: [request.display.options[1]!] } }))
+      .resolves.toEqual({ decision: 'approved', selectedOptionId: 'always' });
+    await expect(svc.request({ ...request, display: { ...request.display, options: [request.display.options[0]!] } }))
+      .resolves.toEqual({ decision: 'cancelled', feedback: 'The external provider supplied no approval option.' });
+    expect(svc.listPending()).toEqual([]);
+  });
+
+  it('auto-approves SSH trust and login gates in YOLO without fabricating credentials', async () => {
+    useModes({ main: 'yolo' });
+    const svc = ix.get(ISessionApprovalService);
+    for (const kind of ['host_key', 'login'] as const) {
+      await expect(svc.request({ ...makeRequest(`ssh-${kind}`), ssh: {
+        kind, hostname: 'example.test', user: 'tester', port: 22,
+      } })).resolves.toEqual({ decision: 'approved' });
+      expect(svc.takeSshCredential(`ssh-${kind}`)).toBeUndefined();
+    }
+    expect(svc.listPending()).toEqual([]);
+  });
+
+  it('normalizes system turn cancellation without attributing it to the user', async () => {
+    const svc = ix.get(ISessionApprovalService);
+    const interaction = ix.get(ISessionInteractionService);
+    const pending = svc.request({ ...makeRequest('child'), agentId: 'child', turnId: 0 });
+    interaction.cancelPendingForTurn(0, 'main');
+    interaction.cancelPendingForTurn(0, 'sibling');
+    expect(svc.listPending()).toHaveLength(1);
+    interaction.cancelPendingForTurn(0, 'child');
+    await expect(pending).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'turn_ended' });
+  });
+
   it('cancels immediately when no approval consumer is present', async () => {
     const interaction = ix.get(ISessionInteractionService);
     interaction.releaseConsumer('test-consumer');
 
     await expect(ix.get(ISessionApprovalService).request(makeRequest('no-consumer'))).resolves.toEqual({
       decision: 'cancelled',
+      cancellationReason: 'no_consumer',
     });
     expect(interaction.listPending()).toEqual([]);
   });
@@ -59,7 +145,7 @@ describe('SessionApprovalService', () => {
     expect(interaction.listPending('approval')).toHaveLength(1);
     interaction.releaseConsumer('backup-consumer');
 
-    await expect(pending).resolves.toEqual({ decision: 'cancelled' });
+    await expect(pending).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
     expect(interaction.listPending()).toEqual([]);
   });
 
@@ -76,9 +162,10 @@ describe('SessionApprovalService', () => {
     const covered = approvals.request({ ...makeRequest('covered'), agentId: 'child-a' });
     await expect(
       approvals.request({ ...makeRequest('other-child'), agentId: 'child-b' }),
-    ).resolves.toEqual({ decision: 'cancelled' });
+    ).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
     await expect(approvals.request(makeRequest('main'))).resolves.toEqual({
       decision: 'cancelled',
+      cancellationReason: 'no_consumer',
     });
     expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['covered']);
 

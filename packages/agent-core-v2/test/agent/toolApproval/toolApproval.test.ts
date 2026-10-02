@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { SessionApprovalService } from '#/session/approval/approvalService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ILogService } from '#/_base/log/log';
 import { createServices } from '#/_base/di/test';
 import type { TestInstantiationService } from '#/_base/di/test';
@@ -300,6 +306,48 @@ describe('AgentToolApprovalService', () => {
   });
 
   describe('requestToolApproval', () => {
+    it.each(['EnterPlanMode', 'ExitPlanMode', 'CreateGoal', 'Bash', 'Read'])(
+      'auto-approves %s in YOLO and applies its approval continuation without a prompt', async (toolName) => {
+        mode = 'yolo';
+        interactive = false;
+        const request = useBroker(async () => ({ decision: 'rejected' }));
+        const events = subscribeApprovalEvents();
+        const resolveApproval = vi.fn(() => ({ kind: 'approve' as const, executionMetadata: { approved: true } }));
+        await expect(make().requestToolApproval(makeContext(toolName), ask({ resolveApproval }), 'product-review'))
+          .resolves.toEqual({ executionMetadata: { approved: true } });
+        expect(resolveApproval).toHaveBeenCalledWith({ decision: 'approved' });
+        expect(request).not.toHaveBeenCalled();
+        expect(events.requested).not.toHaveBeenCalled();
+        expect(recorded[0]?.result).toEqual({ decision: 'approved' });
+      },
+    );
+
+    it.each(['turn_ended', 'agent_closed', 'no_consumer'] as const)(
+      'reports a system cancellation (%s) accurately through the real approval broker', async (reason) => {
+        useSubagentScope();
+        ix.set(ISessionStateService, new SessionStateService());
+        ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+        ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+        const interaction = ix.get(ISessionInteractionService);
+        interaction.acquireConsumer('test');
+        const resolveApproval = vi.fn(() => ({ kind: 'approve' as const }));
+        const pending = make().requestToolApproval(makeContext('Read'), ask({ resolveApproval }), 'git-control-path-access-ask');
+        const approval = interaction.listPending('approval')[0]!;
+        expect(approval.origin).toEqual({ agentId: 'sub-1', turnId: 1 });
+        interaction.cancelPendingForTurn(1, 'main');
+        expect(interaction.listPending()).toHaveLength(1);
+        if (reason === 'turn_ended') interaction.cancelPendingForTurn(1, 'sub-1');
+        else if (reason === 'no_consumer') interaction.releaseConsumer('test');
+        else interaction.respond(approval.id, { cancelled: true, reason });
+        await expect(pending).resolves.toEqual({ veto: {
+          output: `Tool "Read" was not run because the system cancelled the approval request (${reason}).`,
+          isError: true,
+        } });
+        expect(resolveApproval).not.toHaveBeenCalled();
+        expect(recorded[0]?.result).toEqual({ decision: 'cancelled', cancellationReason: reason });
+        expect(records).toContainEqual({ event: 'permission_approval_result', properties: expect.objectContaining({ result: 'cancelled' }) });
+      },
+    );
     it('records a reviewer approval with provenance without asking the user or writing a session rule', async () => {
       const review = useReviewer(() => 'allow');
       const broker = useBroker(async () => ({ decision: 'rejected' }));
@@ -396,7 +444,7 @@ describe('AgentToolApprovalService', () => {
         svc.requestToolApproval(makeContext('Bash', { command: 'printf hi' }), ask(), 'fallback-ask'),
       ).resolves.toEqual({
         veto: {
-          output: 'Tool "Bash" was not run because the approval request was cancelled.',
+          output: 'Tool "Bash" was not run because the system cancelled the approval request (no_consumer).',
           isError: true,
         },
       });
@@ -431,11 +479,11 @@ describe('AgentToolApprovalService', () => {
           svc.requestToolApproval(makeContext('Bash'), ask(), 'fallback-ask'),
         ).resolves.toMatchObject({
           veto: {
-            output: expect.stringContaining('approval request was cancelled'),
+            output: expect.stringContaining('system cancelled the approval request (no_consumer)'),
             isError: true,
           },
         });
-        expect(recorded[0]?.result).toEqual({ decision: 'cancelled' });
+        expect(recorded[0]?.result).toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
       } finally {
         invoke.mockRestore();
       }

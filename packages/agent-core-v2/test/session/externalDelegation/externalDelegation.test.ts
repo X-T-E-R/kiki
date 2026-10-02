@@ -839,7 +839,7 @@ describe('SessionExternalDelegationService', () => {
       response: { decision: 'approved' },
     })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
     interaction.releaseConsumer('gui');
-    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+    await expect(approval).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
   });
 
   it('does not absorb an old main branch into a dedicated main dispatch', async () => {
@@ -865,7 +865,7 @@ describe('SessionExternalDelegationService', () => {
       response: { decision: 'approved' },
     })).rejects.toMatchObject({ code: EXTERNAL_INTERACTION_NOT_OWNED_CODE });
     interaction.releaseConsumer('gui');
-    await expect(approval).resolves.toEqual({ decision: 'cancelled' });
+    await expect(approval).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
     completions[0]!.resolve({ summary: 'done' });
     await vi.waitFor(async () => {
       expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
@@ -1195,7 +1195,7 @@ describe('SessionExternalDelegationService', () => {
     });
     expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['approval-main']);
     interaction.releaseConsumer('gui');
-    await expect(mainApproval).resolves.toEqual({ decision: 'cancelled' });
+    await expect(mainApproval).resolves.toEqual({ decision: 'cancelled', cancellationReason: 'no_consumer' });
   });
 
   it('runs an external-executor named child and round-trips its permission through the external root', async () => {

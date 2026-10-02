@@ -65,6 +65,13 @@ export class SessionInteractionService extends Service implements ISessionIntera
     this.states.contributeState(interactionNextIdKey);
   }
 
+  override dispose(): void {
+    for (const interaction of this.listPending()) {
+      this.respond(interaction.id, { cancelled: true, reason: 'agent_closed' });
+    }
+    super.dispose();
+  }
+
   private get pending(): Map<string, Pending> {
     return this.states.get(interactionPendingKey);
   }
@@ -81,10 +88,11 @@ export class SessionInteractionService extends Service implements ISessionIntera
     this.states.set(interactionNextIdKey, value);
   }
 
-  cancelPendingForTurn(turnId: number): void {
+  cancelPendingForTurn(turnId: number, agentId = MAIN_AGENT_ID): void {
     let changed = false;
     for (const [id, entry] of this.pending) {
-      if (entry.interaction.origin?.turnId !== turnId) continue;
+      if (entry.interaction.origin.turnId !== turnId ||
+          (entry.interaction.origin.agentId ?? MAIN_AGENT_ID) !== agentId) continue;
       this.pending.delete(id);
       this.rememberResolved(id);
       const response: InteractionCancellation = { cancelled: true, reason: 'turn_ended' };
@@ -117,12 +125,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
     for (const interaction of this.listPending()) {
       if (interaction.kind !== 'approval' && interaction.kind !== 'question') continue;
       if (this.hasConsumer(interaction.origin)) continue;
-      this.respond(
-        interaction.id,
-        interaction.kind === 'approval'
-          ? { decision: 'cancelled' }
-          : { cancelled: true, reason: 'no_consumer' },
-      );
+      this.respond(interaction.id, { cancelled: true, reason: 'no_consumer' });
     }
   }
 

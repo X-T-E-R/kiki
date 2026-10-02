@@ -487,6 +487,28 @@ describe('Plan service', () => {
       expect(toolResultText(llmInput.history)).toContain('# Plan');
     });
 
+    it('auto-approves a gated plan exit in YOLO without requesting user approval', async () => {
+      const { files, fakes } = createPlanFileFakes();
+      useFakes(fakes);
+      useTools(['ExitPlanMode']);
+      await ctx.rpc.setPermission({ mode: 'yolo' });
+      plan.setGate('gated');
+      await plan.enter('yolo-plan', false);
+      const planPath = await expectActivePlanPath();
+      files.set(planPath, '# Plan\n\n- Inspect\n- Change\n- Verify');
+      ctx.mockNextResponse({ type: 'text', text: 'I will execute the plan.' }, {
+        type: 'function', id: 'call_exit_yolo_plan', name: 'ExitPlanMode', arguments: '{}',
+      });
+      ctx.mockNextResponse({ type: 'text', text: 'The plan is approved.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Execute the plan' }] });
+      await ctx.untilTurnEnd();
+      expect(ctx.allEvents.some((event) => event.type === '[rpc]' && event.event === 'requestApproval')).toBe(false);
+      await expectPlanActive(false);
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(toolResultText(ctx.llmCalls[1]!.history)).toContain('Plan mode deactivated');
+      expect(toolResultText(ctx.llmCalls[1]!.history)).toContain('# Plan');
+    });
+
     it('stops the turn and stays in plan mode when the user rejects the plan', async () => {
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
@@ -528,7 +550,7 @@ describe('Plan service', () => {
       };
       useFakes(fakes);
       useTools(['ExitPlanMode', 'Bash']);
-      await ctx.rpc.setPermission({ mode: 'yolo' });
+      await ctx.rpc.setPermission({ mode: 'manual' });
       plan.setGate('gated');
       await plan.enter('reject-and-exit-plan', false);
 

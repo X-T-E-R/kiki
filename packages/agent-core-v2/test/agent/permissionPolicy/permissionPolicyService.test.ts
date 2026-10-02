@@ -366,11 +366,55 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  describe.each(['manual', 'auto', 'yolo'] as const)('protected reads in %s mode', (permissionMode) => {
+    it.each([
+      { path: '/workspace/.git/hooks/pre-commit', policyName: 'git-control-path-access-ask' },
+      { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
+      { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
+      { path: '/home/tester/.ssh/id_rsa', policyName: 'sensitive-file-access-ask' },
+      { path: '/outside/notes.txt', policyName: 'external-link-access-ask', implicitExternal: true },
+    ])('handles $path', async ({ path, policyName, implicitExternal }) => {
+      mode = permissionMode;
+      await expect(evaluate({ toolName: 'Read', args: { path },
+        accesses: ToolAccesses.readFile(path, implicitExternal) })).resolves.toMatchObject({
+        policyName: permissionMode === 'yolo' ? 'yolo-mode-approve' : policyName,
+        result: { kind: permissionMode === 'yolo' ? 'approve' : 'ask' },
+      });
+    });
+
+    it('handles configured ask and dangerous Bash gates', async () => {
+      mode = permissionMode;
+      rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
+      await expect(evaluate({ toolName: 'Bash', args: { command: 'echo ok' } })).resolves.toMatchObject({
+        policyName: permissionMode === 'yolo' ? 'yolo-mode-approve' : 'user-configured-ask',
+        result: { kind: permissionMode === 'yolo' ? 'approve' : 'ask' },
+      });
+      rules.length = 0;
+      dangerousBash = 'on';
+      await expect(evaluate({ toolName: 'Bash', args: { command: 'shutdown -h now' } })).resolves.toMatchObject({
+        policyName: permissionMode === 'yolo' ? 'yolo-mode-approve' : 'dangerous-bash',
+        result: { kind: permissionMode === 'yolo' ? 'approve' : 'ask' },
+      });
+    });
+
+    it('handles workspace-external writes and unknown tool fallback', async () => {
+      mode = permissionMode;
+      for (const input of [
+        { toolName: 'Write', args: { path: '/outside/notes.txt', content: 'x' }, accesses: ToolAccesses.writeFile('/outside/notes.txt') },
+        { toolName: 'UnknownTool', args: {} },
+      ]) {
+        await expect(evaluate(input)).resolves.toMatchObject({
+          result: { kind: permissionMode === 'manual' ? 'ask' : 'approve' },
+        });
+      }
+    });
+  });
+
   it('permits sensitive reads in yolo, but explicit deny still wins', async () => {
     mode = 'yolo';
     const input = { toolName: 'Read', args: { path: '/workspace/.env' } };
     await expect(evaluate(input)).resolves.toMatchObject({
-      policyName: 'sensitive-file-access-ask', result: { kind: 'approve' },
+      policyName: 'yolo-mode-approve', result: { kind: 'approve' },
     });
     rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
     await expect(evaluate(input)).resolves.toMatchObject({
@@ -480,7 +524,7 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('asks for dangerous bash in yolo when dangerous_bash is on', async () => {
+  it('skips dangerous bash approval in yolo even when dangerous_bash is on', async () => {
     mode = 'yolo';
     dangerousBash = 'on';
 
@@ -488,8 +532,8 @@ describe('AgentPermissionPolicyService chain', () => {
       toolName: 'Bash',
       args: { command: 'shutdown -h now', timeout: 60 },
     })).resolves.toMatchObject({
-      policyName: 'dangerous-bash',
-      result: { kind: 'ask', reason: { dangerous_command: 'shutdown' } },
+      policyName: 'yolo-mode-approve',
+      result: { kind: 'approve' },
     });
   });
 

@@ -1863,7 +1863,7 @@ describe('ACP external executor', () => {
         expect(run.turn.signal.aborted).toBe(true);
         expect(harness.turnCancel).toHaveBeenCalled();
         expect(harness.pendingTurns.has(run.turn.id)).toBe(false);
-        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id);
+        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'external-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
         expect(harness.execution.status()).toEqual({ state: 'idle' });

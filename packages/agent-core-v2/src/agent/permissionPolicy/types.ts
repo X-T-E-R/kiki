@@ -2,6 +2,7 @@ import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/tool
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 import type { PermissionRule } from '#/agent/permissionRules/permissionRules';
+import type { InteractionCancellationReason } from '#/session/interaction/interaction';
 
 export type PermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
@@ -16,6 +17,7 @@ export interface ApprovalRequest {
 
 export interface ApprovalResponse {
   decision: 'approved' | 'rejected' | 'cancelled';
+  cancellationReason?: InteractionCancellationReason;
   scope?: 'session';
   feedback?: string;
   selectedLabel?: string;

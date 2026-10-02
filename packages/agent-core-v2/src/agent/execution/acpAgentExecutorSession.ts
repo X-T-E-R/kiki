@@ -458,7 +458,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (active === undefined) return false;
     const cancelled = active.turn.cancel(reason);
     void active.handle.cancel(reason);
-    this.#interaction.cancelPendingForTurn(active.turn.id);
+    this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
     return cancelled;
   }
 
@@ -569,7 +569,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     } finally {
       cleanup();
       if (this.#permissionContext?.turn === turn) this.#permissionContext = undefined;
-      this.#interaction.cancelPendingForTurn(turn.id);
+      this.#interaction.cancelPendingForTurn(turn.id, this.context.agent.id);
     }
   }
 
@@ -724,7 +724,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       toolName: 'Exit plan mode', action: 'Review external plan', display: { kind: 'plan_review', plan: request.plan },
     }), signal);
     if (response === undefined || response.decision === 'cancelled') {
-      this.#interaction.cancelPendingForTurn(active.turn.id);
+      this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
       return { outcome: 'keep_planning', feedback: '' };
     }
     const feedback = response.feedback?.trim().slice(0, 16_384) ?? '';
@@ -759,7 +759,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
             { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
       }), signal);
       if (response === undefined || response.decision === 'cancelled') {
-        this.#interaction.cancelPendingForTurn(active.turn.id);
+        this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
         return { action: 'cancel' };
       }
       if (response.decision !== 'approved') return { action: 'decline' };
@@ -806,7 +806,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const response = await raceApproval(approval, context.signal);
     if (response === undefined || response.decision === 'cancelled') {
-      this.#interaction.cancelPendingForTurn(active.turn.id);
+      this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
       return { outcome: 'cancelled' };
     }
     const selectedOptionId = response.selectedOptionId;

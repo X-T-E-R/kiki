@@ -83,6 +83,9 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import '#/app/event/eventBusService';
+import { IEventBus } from '#/app/event/eventBus';
+import { TurnStepCompleted } from '#/agent/loop/turnEvents';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { ILogService } from '#/_base/log/log';
@@ -461,6 +464,7 @@ describe('AgentLifecycleService', () => {
     ix.stub(ISessionInteractionService, {
       _serviceBrand: undefined,
       cancelPendingForTurn: () => {},
+      listPending: () => [],
     } as unknown as ISessionInteractionService);
     ix.stub(IProtocolAdapterRegistry, {
       _serviceBrand: undefined,
@@ -673,6 +677,41 @@ describe('AgentLifecycleService', () => {
 
   it.each([0, -1, Infinity, NaN])('rejects invalid drain deadline %s', async (timeout) => {
     await expect(ix.get(IAgentLifecycleService).drainBackgroundTasks(timeout)).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+  });
+
+  it.each(['completed', 'cancelled', 'failed', 'blocked'] as const)(
+    'only cancels pending approvals when their own agent turn ends (%s)', async (reason) => {
+      ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+      const interaction = ix.get(ISessionInteractionService);
+      const svc = ix.get(IAgentLifecycleService);
+      const main = await svc.create({ agentId: 'main' });
+      const child = await svc.create({ agentId: 'child' });
+      const sibling = await svc.create({ agentId: 'sibling' });
+      const pending = interaction.request<unknown, unknown>({ id: 'child-approval', kind: 'approval', payload: {},
+        origin: { agentId: 'child', turnId: 0 } });
+      const childBus = child.accessor.get(IEventBus);
+      childBus.publish(new TurnStepCompleted({ turnId: 0, step: 1, finishReason: 'tool_use' }));
+      main.accessor.get(IEventBus).publish(new TurnEnded({ turnId: 0, reason }));
+      sibling.accessor.get(IEventBus).publish(new TurnEnded({ turnId: 0, reason }));
+      childBus.publish(new TurnEnded({ turnId: 1, reason }));
+      expect(interaction.listPending().map((entry) => entry.id)).toEqual(['child-approval']);
+      childBus.publish(new TurnEnded({ turnId: 0, reason }));
+      await expect(pending).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+      expect(interaction.listPending()).toEqual([]);
+    },
+  );
+
+  it('agent removal cancels only that agent pending interactions', async () => {
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    const interaction = ix.get(ISessionInteractionService);
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'child' });
+    const pending = interaction.request<unknown, unknown>({ id: 'child-approval', kind: 'approval', payload: {},
+      origin: { agentId: 'child', turnId: 0 } });
+    interaction.enqueue({ id: 'main-approval', kind: 'approval', payload: {}, origin: { agentId: 'main', turnId: 0 } });
+    await svc.remove('child');
+    await expect(pending).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
+    expect(interaction.listPending().map((entry) => entry.id)).toEqual(['main-approval']);
   });
 
   it('create / getHandle / list / remove', async () => {

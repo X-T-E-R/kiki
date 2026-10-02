@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
+import type { InteractionCancellationReason } from '#/session/interaction/interaction';
 
 export type {
   ExternalPermissionDisplay,
@@ -45,6 +46,7 @@ export type ApprovalDecision = 'approved' | 'rejected' | 'cancelled';
 
 export interface ApprovalResponse {
   readonly decision: ApprovalDecision;
+  readonly cancellationReason?: InteractionCancellationReason;
   readonly scope?: 'session';
   readonly feedback?: string;
   readonly selectedLabel?: string;
