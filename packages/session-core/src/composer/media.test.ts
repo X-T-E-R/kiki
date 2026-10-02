@@ -271,6 +271,9 @@ describe('previewKindOf / extOf', () => {
     expect(previewKindOf('/x/Makefile')).toBe('text');
     expect(previewKindOf('/x/archive.zip')).toBe('binary');
     expect(previewKindOf('/x/no-extension')).toBe('text');
+    expect(previewKindOf('/x/clip.mp4')).toBe('video');
+    expect(previewKindOf('/x/clip.WEBM')).toBe('video');
+    expect(previewKindOf('C:/x/take.mov')).toBe('video');
   });
 
   it('extracts the basename extension case-insensitively', () => {

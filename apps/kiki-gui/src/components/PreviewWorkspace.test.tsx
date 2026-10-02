@@ -52,10 +52,14 @@ vi.mock('../state/connection', async (importOriginal) => {
     previewHostFile: (path: string) =>
       path === '/work/docs/long.md' ? Promise.resolve({ text: '# Beginning\n', truncated: true })
         : path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
-    readHostFileBytes: (path: string) =>
-      path === '/work/shots/screen.png'
-        ? Promise.resolve({ bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' })
-        : Promise.reject(new Error('not found')),
+    readHostFileBytes: (path: string) => {
+      const file = {
+        '/work/shots/screen.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
+        '/work/clips/intro.mp4': { bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), mime: 'video/mp4' },
+        '/work/bundles/release.zip': { bytes: new Uint8Array([80, 75, 3, 4]), mime: 'application/zip' },
+      }[path];
+      return file === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(file);
+    },
   };
   connectionMock.activeClient = fakeClient;
   connectionMock.defaultClient = fakeClient;
@@ -917,6 +921,162 @@ describe('PreviewWorkspace image tabs', () => {
     expect(viewport().dataset['imageViewport']).toBe('fit');
     expect(image.style.width).toBe('');
     dpr.mockRestore();
+  });
+});
+
+describe('PreviewWorkspace media tabs', () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    hostMock.desktop = false;
+    hostMock.revealPath.mockClear();
+    hostMock.openPath.mockClear();
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('plays a video container in the HTML5 player; the opener pair stays hidden without a desktop host', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/clips/intro.mp4" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/clips/intro.mp4');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/clips/intro.mp4"]')!;
+    const video = panel.querySelector<HTMLVideoElement>('video[data-preview-video]')!;
+    expect(video.hasAttribute('controls')).toBe(true);
+    expect(video.getAttribute('src')).toBe('blob:mock');
+    // The download anchor renders; the desktop opener pair does not (browser host).
+    expect(panel.querySelector('[data-download-file]')).not.toBeNull();
+    expect(panel.querySelector('[data-open-default-app]')).toBeNull();
+    expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+  });
+
+  it.each([['local', true], ['ssh:remote-1', false]] as const)(
+    'gates the video tab opener pair by scope, beside the download anchor (%s)',
+    async (scopeId, expected) => {
+      hostMock.desktop = true;
+      connectionMock.scopeId = scopeId;
+      const probe = makeRoot();
+      await renderSettled(
+        probe.root,
+        <MediaPreviewProvider cwd="/work">
+          <OpenButton path="/work/clips/intro.mp4" />
+        </MediaPreviewProvider>,
+      );
+      await openFile(probe.container, '/work/clips/intro.mp4');
+      await act(async () => { await Promise.resolve(); });
+      const panel = workspace().querySelector('[data-preview-tabpanel="/work/clips/intro.mp4"]')!;
+      expect(panel.querySelector('[data-download-file]')).not.toBeNull();
+      expect(panel.querySelector('[data-open-default-app]') !== null).toBe(expected);
+      expect(panel.querySelector('[data-reveal-file]') !== null).toBe(expected);
+      if (expected) {
+        await act(async () => {
+          panel.querySelector('[data-open-default-app]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(hostMock.openPath).toHaveBeenCalledWith('/work/clips/intro.mp4');
+        await act(async () => {
+          panel.querySelector('[data-reveal-file]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(hostMock.revealPath).toHaveBeenCalledWith('/work/clips/intro.mp4');
+      }
+    },
+  );
+
+  it('places the opener pair beside the binary download, plus a caption reveal icon', async () => {
+    hostMock.desktop = true;
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/bundles/release.zip" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/bundles/release.zip');
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/bundles/release.zip"]')!;
+    expect(panel.textContent).toContain('No preview available for this file type.');
+    expect(panel.querySelector('[data-download-file]')?.textContent).toBe('Download');
+    // Two reveal affordances: the caption-strip icon (tooltip/aria label) and
+    // the text button beside the download.
+    const reveals = [...panel.querySelectorAll<HTMLElement>('[data-reveal-file]')];
+    expect(reveals).toHaveLength(2);
+    expect(reveals[0]!.getAttribute('aria-label')).toBe('Show in folder');
+    expect(reveals[1]!.textContent).toBe('Show in folder');
+    const openButton = panel.querySelector<HTMLElement>('[data-open-default-app]')!;
+    expect(openButton.textContent).toBe('Open');
+    expect(openButton.getAttribute('title')).toBe('Open with default app');
+    await act(async () => {
+      openButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(hostMock.openPath).toHaveBeenCalledWith('/work/bundles/release.zip');
+    await act(async () => {
+      reveals[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(hostMock.revealPath).toHaveBeenCalledWith('/work/bundles/release.zip');
+  });
+
+  it('adds the opener pair beside the text tab download and wires the clicks', async () => {
+    hostMock.desktop = true;
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/src/server.ts"]')!;
+    expect(panel.querySelector('[data-download-file]')).not.toBeNull();
+    const openButton = panel.querySelector<HTMLElement>('[data-open-default-app]')!;
+    expect(openButton.textContent).toBe('Open');
+    const revealButton = panel.querySelector<HTMLElement>('[data-reveal-file]')!;
+    expect(revealButton.getAttribute('aria-label')).toBe('Show in folder');
+    await act(async () => {
+      openButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(hostMock.openPath).toHaveBeenCalledWith('/work/src/server.ts');
+    await act(async () => {
+      revealButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(hostMock.revealPath).toHaveBeenCalledWith('/work/src/server.ts');
+  });
+
+  it('keeps image tabs free of the opener pair (no download anchor there)', async () => {
+    hostMock.desktop = true;
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/shots/screen.png" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/shots/screen.png');
+    await act(async () => { await Promise.resolve(); });
+    const image = workspace().querySelector<HTMLImageElement>('[data-image-viewport] img')!;
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1440 });
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 900 });
+    await act(async () => { image.dispatchEvent(new Event('load')); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/shots/screen.png"]')!;
+    expect(panel.querySelector('[data-download-file]')).toBeNull();
+    expect(panel.querySelector('[data-open-default-app]')).toBeNull();
+    expect(panel.querySelector('[data-reveal-file]')).toBeNull();
   });
 });
 

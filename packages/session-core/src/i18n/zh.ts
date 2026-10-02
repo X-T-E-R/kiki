@@ -629,6 +629,7 @@ export const zh = {
   'file.copyAbsolutePath': '复制绝对路径',
   'file.showInFolder': '在文件夹中显示',
   'file.openDefaultApp': '以默认程序打开',
+  'file.open': '打开',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': '输入操作',

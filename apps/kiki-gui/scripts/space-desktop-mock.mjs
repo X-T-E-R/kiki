@@ -78,6 +78,7 @@ export function spaceDesktopMock({ fixtureUrl, token, spaces, windowMode }) {
     restart_server: () => ({ url: fixtureUrl, token }),
     list_ssh_profiles: () => [],
     reveal_host_path: () => undefined,
+    open_host_path: () => undefined,
     open_external_url: () => undefined,
     cancel_desktop_startup: () => undefined,
     'plugin:event|listen': () => nextCallback++,

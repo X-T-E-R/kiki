@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FIXTURE_TOKEN } from './fixture-server.mjs';
+import { spaceDesktopMock } from './space-desktop-mock.mjs';
 import { assertTimelineIntegrity, drainTimeline } from './timeline-integrity.mjs';
 import { runProof } from '../proof/runner.mjs';
 import { createContextCompactWalker } from './visual-proof-context-compact.mjs';
@@ -311,6 +312,7 @@ const SOURCES = {
   queueDragHandleAria: { key: 'queue.dragHandleAria' },
   previewSource: { key: 'preview.source' },
   previewCollapse: { key: 'preview.collapse' },
+  previewUnsupported: { key: 'preview.unsupported' },
   editAction: { key: 'transcript.edit' },
   regenerateAction: { key: 'transcript.regenerate' },
   forkAction: { key: 'transcript.fork' },
@@ -362,7 +364,7 @@ const LITERALS = {
   bannerPattern: { en: /Connection lost|Disconnected from the server/, zh: /正在重连|已与服务器断开连接/, anchor: ['app.reconnecting', 'app.disconnected'] },
   ranForPattern: { en: /Ran for/, zh: /用时/, anchor: 'transcript.ranFor' },
   ttftPattern: { en: /TTFT/, zh: /首 token/, anchor: 'transcript.ttft' },
-  previewReadonlyPattern: { en: /Read-only here/, zh: /此处为只读/, anchor: 'preview.editUnsupported' },
+  previewReadonlyPattern: { en: /Open in the desktop app to edit/, zh: /在桌面应用中打开即可编辑/, anchor: 'preview.editUnsupported' },
   // Word list the delete confirmation must never use, and a fragment of the
   // fixture server's own agent name — neither is dictionary copy.
   memoryBannedInDelete: { en: ['permanent', 'cannot be undone', 'forever'], zh: ['永久', '不可恢复', '无法撤销'] },
@@ -4166,6 +4168,131 @@ async function scenarioPreviewWorkbench() {
 }
 
 /**
+ * preview-media — a video container plays in the preview tab's native player
+ * (paused frame, then mid-playback), a truncated copy of the same file
+ * degrades to the download fallback instead of a dead player, and a zip lands
+ * on the binary view directly. In the browser build the desktop opener pair
+ * stays hidden; under the mocked desktop shell it appears beside every
+ * download anchor (and on the fallback's caption strip), the clicks reaching
+ * the shell bridge as the desktop commands.
+ */
+async function scenarioPreviewMedia() {
+  const link = (path) =>
+    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+  const videoPanel = '[data-preview-tabpanel="C:/fixture/workshop/clips/drift-720.mp4"]';
+  const brokenPanel = '[data-preview-tabpanel="C:/fixture/workshop/clips/broken.mp4"]';
+  const zipPanel = '[data-preview-tabpanel="C:/fixture/workshop/bundles/release.zip"]';
+  const openMediaLink = async (name) => {
+    await page.locator('.conversation-body a', { hasText: name }).first().click();
+  };
+  const waitVideoFrame = async () => {
+    await page.waitForSelector(`${videoPanel} video[data-preview-video]`, { timeout: 10_000 });
+    await page.waitForFunction((selector) => {
+      const video = document.querySelector(selector);
+      return video !== null && video.readyState >= 2 && video.videoWidth > 0;
+    }, `${videoPanel} video[data-preview-video]`);
+  };
+
+  await selectSession('Fixture: preview media');
+  await page.waitForSelector('text=Media shelf', { timeout: 10_000 });
+
+  // Video tab: intrinsic size, native controls, no frame around the picture.
+  await openMediaLink('drift-720.mp4');
+  await page.waitForSelector('[data-preview-tab="C:/fixture/workshop/clips/drift-720.mp4"]');
+  await waitVideoFrame();
+  await shot('preview-media-video');
+  // Browser host: the download anchor renders; the opener pair never does.
+  if (await page.locator(`${videoPanel} [data-download-file]`).count() !== 1) {
+    throw new Error('video tab lost its download anchor');
+  }
+  if (await page.locator(`${videoPanel} [data-open-default-app], ${videoPanel} [data-reveal-file]`).count() !== 0) {
+    throw new Error('browser host must keep the opener pair hidden');
+  }
+  await page.evaluate((selector) => {
+    const video = document.querySelector(selector);
+    if (video !== null) void video.play().catch(() => undefined);
+  }, `${videoPanel} video[data-preview-video]`);
+  await page.waitForFunction((selector) => {
+    const video = document.querySelector(selector);
+    return video !== null && video.currentTime > 0.25;
+  }, `${videoPanel} video[data-preview-video]`);
+  await shot('preview-media-video-playing');
+
+  // Binary tab: the fallback body carries only the download in the browser.
+  await openMediaLink('release.zip');
+  await page.waitForSelector(`${zipPanel} [data-download-file]`, { timeout: 10_000 });
+  const zipText = await page.locator(zipPanel).innerText();
+  if (!zipText.includes(S.previewUnsupported)) throw new Error(`binary fallback text missing: ${zipText}`);
+  if (await page.locator(`${zipPanel} [data-reveal-file]`).count() !== 0) {
+    throw new Error('browser host must keep the opener pair hidden');
+  }
+  await shot('preview-media-binary');
+
+  // The truncated copy degrades to the same fallback rather than a dead player.
+  // The video tab's own header carries the same buttons, so wait for the
+  // player to actually leave the panel before reading the fallback.
+  await openMediaLink('broken.mp4');
+  await page.waitForFunction(([selector, text]) => {
+    const panel = document.querySelector(selector);
+    return panel !== null && panel.querySelector('video') === null && (panel.textContent ?? '').includes(text);
+  }, [brokenPanel, S.previewUnsupported]);
+
+  // Desktop shell (mocked): the opener pair appears beside every download
+  // anchor, and the fallback's caption strip gains the reveal icon.
+  await page.context().addInitScript(spaceDesktopMock, { fixtureUrl: fixtureUrl(), token: FIXTURE_TOKEN, spaces: [], windowMode: 'switch' });
+  await page.goto(link('/'), { waitUntil: 'domcontentloaded' });
+  await selectSession('Fixture: preview media');
+  await openMediaLink('drift-720.mp4');
+  await waitVideoFrame();
+  await page.waitForSelector(`${videoPanel} [data-open-default-app]`, { timeout: 10_000 });
+  await page.waitForSelector(`${videoPanel} [data-reveal-file]`);
+  await shot('preview-media-video-desktop');
+  await openMediaLink('broken.mp4');
+  await page.waitForFunction(([selector, text]) => {
+    const panel = document.querySelector(selector);
+    return panel !== null && panel.querySelector('video') === null && (panel.textContent ?? '').includes(text);
+  }, [brokenPanel, S.previewUnsupported]);
+  await page.waitForSelector(`${brokenPanel} [data-open-default-app]`, { timeout: 10_000 });
+  if (await page.locator(`${brokenPanel} [data-reveal-file]`).count() !== 2) {
+    throw new Error('fallback must offer reveal in the caption strip and beside the download');
+  }
+  await shot('preview-media-binary-desktop');
+
+  // The buttons reach the shell bridge as the desktop opener commands.
+  await page.evaluate(() => {
+    window.__proofHostCalls = [];
+    const internals = window.__TAURI_INTERNALS__;
+    const original = internals.invoke;
+    internals.invoke = (cmd, args) => {
+      window.__proofHostCalls.push(cmd);
+      return original(cmd, args);
+    };
+  });
+  await page.locator(`${brokenPanel} [data-open-default-app]`).click();
+  await page.locator(`${brokenPanel} [data-reveal-file]`).first().click();
+  await page.waitForFunction(() => {
+    const calls = window.__proofHostCalls ?? [];
+    return calls.includes('open_host_path') && calls.includes('reveal_host_path');
+  });
+
+  // A text tab carries the same trio in its busier (editable) header.
+  const textPanel = '[data-preview-tabpanel="C:/fixture/workshop/notes/readme.txt"]';
+  await openMediaLink('readme.txt');
+  await page.waitForSelector(`${textPanel} .cm-content`, { timeout: 10_000 });
+  await page.waitForSelector(`${textPanel} [data-open-default-app]`);
+  await page.waitForSelector(`${textPanel} [data-reveal-file]`);
+  if (await page.locator(`${textPanel} [data-reveal-file]`).count() !== 1) {
+    throw new Error('text tab header must carry exactly one reveal affordance');
+  }
+  await shot('preview-media-text-desktop');
+
+  // Narrow window: the trio stays intact while the path truncates.
+  await page.setViewportSize({ width: 500, height: 900 });
+  await page.waitForTimeout(300);
+  await shot('preview-media-text-desktop-narrow');
+}
+
+/**
  * The sidebar search field is collapsed behind the header's search icon
  * ([data-search-toggle]); open it (if closed) before typing into it.
  */
@@ -5482,6 +5609,7 @@ const BODIES = [
   ['attachments', scenarioAttachments],
   ['selection-annotate', scenarioSelectionAnnotate],
   ['preview-workbench', scenarioPreviewWorkbench],
+  ['preview-media', scenarioPreviewMedia],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
   ['memory-off', scenarioMemoryOff],
