@@ -1210,6 +1210,7 @@ export const en = {
   'transcript.marker.goal': 'Goal updated',
   'transcript.marker.plan': 'Plan updated',
   'transcript.marker.interruption': 'You stopped this turn',
+  'transcript.marker.modelSwitch': 'Model changed from {from} to {to}',
   'transcript.failed': 'failed',
   'transcript.shell': 'Shell',
   'transcript.steps': 'Steps · {count}',

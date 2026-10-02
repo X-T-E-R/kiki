@@ -740,7 +740,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (current === undefined) return;
     const binding = this.data();
     await this.metadata.registerAgent(this.agentScope.agentId, {
-      ...current, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
+      ...current, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
       negotiated: current.executor === binding.executorId ? current.negotiated : undefined,
       allowKikiSubagents: binding.allowKikiSubagents,
     });
@@ -944,7 +945,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return { ok: true, binding: { modelAlias, thinkingEffort } };
   }
 
-  async prepareResumeBinding(input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]): Promise<() => void> {
+  async prepareResumeBinding(input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]): Promise<() => void | Promise<void>> {
     const previous = this.data();
     const validated = this.requireValidBinding(this.validateBinding({
       modelAlias: input.modelAlias,
@@ -1049,6 +1050,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         });
       }
       this.publishBindingAdvisories();
+      if (changedModel || thinking !== previous.thinkingLevel) return this.syncBindingMetadata();
     };
   }
 
@@ -1067,6 +1069,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         { source: validated.modelAlias === alias ? 'runtime-explicit' : 'executor-normalized', requestedValue: alias },
         { source: 'resume-existing', requestedValue: this.thinkingLevel },
       );
+      await this.syncBindingMetadata();
       return { model: externalAlias };
     }
     const canonicalAlias = this.resolveModelId(alias);
@@ -1102,6 +1105,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? { source: 'model-default', requestedValue: this.thinkingLevel }
         : { source: 'resume-existing', requestedValue: this.thinkingLevel },
     );
+    await this.syncBindingMetadata();
     return {
       model: canonicalAlias,
       providerName: model.providerName,

@@ -552,6 +552,7 @@ const MARKER_SUMMARY_KEYS = {
   'plan.enter': 'transcript.marker.plan',
   'plan.exit': 'transcript.marker.plan',
   interruption: 'transcript.marker.interruption',
+  'model.switch': 'transcript.marker.modelSwitch',
 } as const satisfies Record<string, I18nKey>;
 
 /** Project durable external-engine marker payloads into timeline notes. */
@@ -600,6 +601,13 @@ function markerToBlock(item: {
     createdAt: item.at,
     turnId: normalizeTurnId(payloadRecord?.['turnId']),
   };
+
+  if (item.marker === 'model.switch') {
+    const from = payloadRecord?.['from'];
+    const to = payloadRecord?.['to'];
+    if (typeof from !== 'string' || typeof to !== 'string') return undefined;
+    return { ...base, text: item.marker, i18n: { key: 'transcript.marker.modelSwitch', params: { from, to } } };
+  }
 
   // Older live snapshots append activation receipts outside the turn. The
   // delivered skill frame already owns their content and in-turn position.

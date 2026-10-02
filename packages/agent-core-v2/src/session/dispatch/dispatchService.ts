@@ -492,7 +492,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       callerProfile?.getEffectiveThinkingLevel() !== (callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel))) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller model or thinking effort changed during resume admission. Retry against its current binding.');
     }
-    applyBinding();
+    await applyBinding();
     const request: AgentRunRequest =
       typeof requestInput === 'string'
         ? { kind: 'prompt', prompt: requestInput }

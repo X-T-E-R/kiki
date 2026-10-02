@@ -8,7 +8,7 @@ No comments — no file headers, no section banners, no statement-level narratio
 
 ## Cold rebuild
 
-The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `TranscriptFactReducer`, the same durable fact path used by live binding. Context, turns, tasks, interactions, todos, goal/plan meta, markers, and taskrefs converge through the canonical store; interactions left pending at shutdown become `cancelled` when the adapter finishes.
+The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `TranscriptFactReducer`, the same durable fact path used by live binding. Context, turns, tasks, interactions, todos, goal/plan meta, markers, and taskrefs converge through the canonical store; interactions left pending at shutdown become `cancelled` when the adapter finishes. `profile.bind` and `config.update` track the effective model alias per agent; only alias changes produce a `model.switch` marker with a compact `{from, to}` payload, never the full configuration. The adapter checkpoint retains the effective alias for appended tails. These markers appear after wire backfill, not through a new live configuration broadcast.
 
 ## Plan content
 

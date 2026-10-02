@@ -79,7 +79,7 @@ describe('profile file runtime isolation', () => {
         }),
       ]);
       const apply = await svc.prepareResumeBinding({});
-      apply();
+      await apply();
       expect(policy.isToolActive('Write')).toBe(false);
       expect(JSON.stringify(svc.data().boundProfile)).toContain('/workspace/role.md');
       await ctx.expectResumeMatches();

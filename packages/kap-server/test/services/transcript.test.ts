@@ -2649,7 +2649,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -2657,6 +2657,8 @@ describe('TranscriptService live integration', () => {
         { type: 'turn.step.retrying', turnId: 1, step: 1, failedAttempt: 2, nextAttempt: 3,
           maxAttempts: 5, delayMs: 100, errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: 11_000 },
         { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: 12_000 },
+        { type: 'profile.bind', modelAlias: 'example/old', time: 13_000 },
+        { type: 'config.update', modelAlias: 'example/new', time: 14_000 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -2681,7 +2683,10 @@ describe('TranscriptService live integration', () => {
         expect(recoveredTurn?.kind === 'turn' && recoveredTurn.steps.find((step) => step.retry !== undefined)?.retry)
           .toMatchObject({ failedAttempt: 2, nextAttempt: 3, maxAttempts: 5, delayMs: 100,
             errorName: 'APIConnectionError', errorMessage: 'Connection closed' });
-        expect(checkpoint?.format).toBe(3);
+        expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'model.switch')).toEqual([
+          expect.objectContaining({ payload: { from: 'example/old', to: 'example/new' } }),
+        ]);
+        expect(checkpoint?.format).toBe(4);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
           snapshot: { ...checkpoint!.snapshot, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },

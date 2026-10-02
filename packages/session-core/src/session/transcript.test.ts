@@ -1574,6 +1574,19 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queuedIndex).not.toBe(projected.blocks.length - 1);
   });
 
+  it('projects model changes to a neutral divider notice with ordered alias parameters', () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'profile.bind', modelAlias: 'example/old', time: 1000 },
+      { type: 'config.update', modelAlias: 'example/old', thinkingEffort: 'high', time: 2000 },
+      { type: 'config.update', modelAlias: 'example/new', time: 3000 },
+    ]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks).toEqual([expect.objectContaining({
+      kind: 'notice', tone: 'neutral', text: 'model.switch', createdAt: new Date(3000).toISOString(),
+      i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } },
+    })]);
+  });
+
   it('summarizes skill markers even when their payload contains the full loaded document', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),

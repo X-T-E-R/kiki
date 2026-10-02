@@ -1197,6 +1197,7 @@ export const zh = {
   'transcript.marker.goal': '目标已更新',
   'transcript.marker.plan': '计划已更新',
   'transcript.marker.interruption': '你已停止本轮',
+  'transcript.marker.modelSwitch': '模型从 {from} 换成 {to}',
   'transcript.failed': '失败',
   'transcript.shell': '终端',
   'transcript.steps': '步骤 · {count}',

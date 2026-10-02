@@ -41,6 +41,7 @@ export interface TranscriptTask {
   readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   readonly name?: string;
   readonly subagentName?: string;
+  readonly model?: string;
   /** Human-readable one-liner (command line, agent description, …). */
   readonly description?: string;
   /** For kind 'subagent': the spawned agent's transcript to subscribe. */
