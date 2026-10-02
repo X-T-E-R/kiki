@@ -50,6 +50,47 @@ describe('context usage thresholds', () => {
 });
 
 describe('ContextMeter interaction', () => {
+  it.each([
+    { used: 0, effectiveLimit: undefined, expected: '0% · 0' },
+    { used: 762, effectiveLimit: undefined, expected: '0% · 762' },
+    { used: 76_200, effectiveLimit: undefined, expected: '15% · 76.2k' },
+    { used: 76_200, effectiveLimit: 300_000, expected: '25% · 76.2k' },
+  ])('shows current used tokens next to the detail header percentage: $expected', async ({ used, effectiveLimit, expected }) => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const autoCompact = effectiveLimit === undefined ? undefined : {
+      status: { tokens: 250_000, source: 'legacy' as const, effectiveMaxContextTokens: effectiveLimit, reservedContextTokens: 50_000 },
+      running: false,
+      onCommit: vi.fn(),
+      onSave: vi.fn(),
+    };
+    const draw = async (currentUsed: number) => {
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <ContextMeter
+              used={currentUsed}
+              limit={500_000}
+              autoCompact={autoCompact}
+              usage={{ input_tokens: 900_000, output_tokens: 100_000, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: null }}
+            />
+          </I18nProvider>,
+        );
+      });
+    };
+    await draw(used);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+
+    const headerValue = () => container.querySelector('[data-context-details] > div:first-child > span')?.textContent;
+    expect(headerValue()).toBe(expected);
+    // Both values update from current context use, not the lifetime usage total.
+    await draw(150_000);
+    expect(headerValue()).toBe(effectiveLimit === undefined ? '30% · 150.0k' : '50% · 150.0k');
+    await act(async () => { root.unmount(); });
+  });
+
   it('opens details without compacting, then compacts only from the panel action', async () => {
     const onCompact = vi.fn();
     const container = document.createElement('div');

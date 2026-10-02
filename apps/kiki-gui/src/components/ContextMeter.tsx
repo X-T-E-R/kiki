@@ -278,7 +278,7 @@ export function ContextMeter({
         >
           <div className="flex items-baseline justify-between gap-3">
             <p className="font-display text-[15px] font-semibold text-ink">{t('context.detailsTitle')}</p>
-            <span className="text-[12px] text-ink-soft tabular-nums">{label}</span>
+            <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">{label} · {time.formatTokens(used)}</span>
           </div>
           {/* §9.5 split: the ring answers "how much context is left right now";
               the cumulative block below answers "what has this session spent". */}
