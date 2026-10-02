@@ -4177,9 +4177,9 @@ async function scenarioSearch() {
  */
 async function scenarioUsageDashboard() {
   const usageUrl = (query) =>
-    `${WEB_URL}/usage${query === '' ? '' : `?${query}&`}${query === '' ? '?' : ''}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+    `${WEB_URL}/usage?panel=history&${query === '' ? '' : `${query}&`}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
 
-  // 1. A plain visit starts today; all-history remains an explicit choice.
+  // 1. History starts today; all-history remains an explicit choice.
   //    The partially-unknown cost chip comes from the seeded `mystery-9` model.
   await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.usageEstimatedCost}`, { timeout: 15_000 });
@@ -5106,7 +5106,7 @@ async function scenarioSkins() {
     ['session', SESSION],
     ['new', '/new'],
     ['settings', '/settings/appearance'],
-    ['usage', '/usage'],
+    ['usage', '/usage?panel=history'],
   ];
   const SKINS = [
     ['builtin', 'paper', ['light', 'dark']],
