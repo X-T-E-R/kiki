@@ -1214,22 +1214,20 @@ describe('new-session projected model permission', () => {
     ] });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile] });
   });
-  it('keeps an illegal proposed default visible and blocks creation instead of choosing a menu fallback', async () => {
+  it('creates a main session with the user-selected model outside its hard menu without a fallback', async () => {
     await renderDraft();
     let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/outside');
+    await act(async () => state.setModelOverride('outside'));
+    state = await settleDraft((value) => value.modelOverride === 'outside');
     await act(async () => { await state.send('hello', []); });
-    expect(client.createSession).not.toHaveBeenCalled();
-    await act(async () => state.setModelOverride('inside'));
-    state = await settleDraft((value) => value.modelOverride === 'inside');
-    await act(async () => { await state.send('hello', []); });
-    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ model: 'inside' }) }));
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ model: 'outside' }) }));
   });
-  it.each([[], undefined])('fails closed for an empty or missing effective set (%s)', async (effective_model_aliases) => {
+  it.each([[], undefined])('permits main creation with an empty or missing effective set (%s)', async (effective_model_aliases) => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, pinned_model_alias: 'fixture/inside', effective_model_aliases }] });
     await renderDraft();
     const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/inside');
     await act(async () => { await state.send('hello', []); });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ model: 'fixture/inside' }) }));
   });
 });
 

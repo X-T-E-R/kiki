@@ -11,7 +11,7 @@ import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 
 import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
-import { roleConstraintsFromProfile, roleModelAllowed } from './modelConstraints';
+import { roleConstraintsFromProfile, roleHasModelConstraints, roleModelAllowed } from './modelConstraints';
 
 export type ProfileModelMenuInput = Pick<AgentProfile,
   'name' | 'executor' | 'modelAlias' | 'modelProfiles' | 'modelConstraintProfiles' | 'restrictModelsToMenu' |
@@ -57,6 +57,7 @@ export function projectProfileModelMenu(
       identities: [...declared.identities],
     },
     effectiveModelAliases,
+    modelConstraintsActive: roleHasModelConstraints(constraints),
     configuredModelAliases: nativeModels === undefined ? effectiveModelAliases : effectiveModelAliases.filter((alias) => Object.hasOwn(nativeModels, alias)),
   };
 }

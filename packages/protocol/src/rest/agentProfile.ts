@@ -108,6 +108,7 @@ export const agentModelMenuProjectionSchema = z.object({
   restrict_models_to_menu: z.boolean(),
   declared_model_menu: declaredAgentModelMenuSchema,
   effective_model_aliases: z.array(z.string()),
+  model_constraints_active: z.boolean().optional(),
 });
 export type AgentModelMenuProjection = z.infer<typeof agentModelMenuProjectionSchema>;
 
@@ -132,6 +133,7 @@ export const namedAgentProfileSchema = z.object({
   restrict_models_to_menu: z.boolean().optional(),
   declared_model_menu: declaredAgentModelMenuSchema.optional(),
   effective_model_aliases: z.array(z.string()).optional(),
+  model_constraints_active: z.boolean().optional(),
   thinking_effort: z.string().optional(),
   /** Hard role model allowlist (`["*"]` normalizes to absent; `[]` permits none). */
   allowed_models: z.array(z.string()).optional(),
@@ -356,6 +358,7 @@ export const agentPanelProfileSchema = z.object({
   restrict_models_to_menu: z.boolean().optional(),
   declared_model_menu: declaredAgentModelMenuSchema.optional(),
   effective_model_aliases: z.array(z.string()).optional(),
+  model_constraints_active: z.boolean().optional(),
   model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
   effort_source: agentCapabilityEffortSourceSchema.optional(),

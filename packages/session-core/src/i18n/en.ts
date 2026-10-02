@@ -3702,6 +3702,7 @@ export const en = {
   'st.profiles.preferredEfforts': 'Preferred efforts (soft advice)',
   'st.profiles.addEffort': 'Add effort',
   'selection.modelMenuBlocked': 'This model is outside the available set: {source}. Choose an available menu model or edit the profile declaration.',
+  'selection.modelMenuWarning': 'This model is outside the profile’s model constraints: {source}. Your selected model will be used; sending is still available.',
   'selection.modelMenuPending': 'Reading the profile’s available model set…',
   'selection.modelMenuError': 'Could not read the profile’s available model set. Try again.',
   'st.profiles.addModel': 'Add model',

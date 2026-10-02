@@ -30,6 +30,7 @@ import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentProfileService, type ProfileBindingSnapshot, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { RESEARCH_READONLY_TOOLS } from '#/agent/profile/executionRestriction';
 import { ProfileErrors } from '#/agent/profile/errors';
 import { IHostClock } from '#/os/interface/hostClock';
@@ -53,6 +54,7 @@ import { WarningIssued } from '#/agent/profile/profileOps';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
 
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IPersonaStore } from '#/app/persona/personaStore';
 
@@ -939,17 +941,18 @@ describe('AgentProfileService.bind', () => {
   });
 
   it('resolves a bare default_model through the canonical model entry', async () => {
-    const { profile: svc } = buildContext();
-    const canonicalId = `test-provider/${MOCK_MODEL}`;
-    await ctx.get(IModelService).replaceAll({
-      [canonicalId]: {
-        provider: 'test-provider',
-        model: MOCK_MODEL,
-        maxContextSize: 1_000_000,
-      },
-    });
-    await ctx.get(IConfigService).set('defaultModel', MOCK_MODEL, ConfigTarget.Memory);
-
+    const alias = 'canonical-model';
+    const canonicalId = `test-provider/${alias}`;
+    ctx = createTestAgent({ initialConfig: { defaultModel: alias, models: {
+      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000 },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(normalizeAgentProfile({
+        name: DEFAULT_AGENT_PROFILE_NAME, main: true, systemPrompt: () => 'main profile',
+      }))));
+    const svc = ctx.get(IAgentProfileService);
+    await ctx.get(IConfigService).set('defaultModel', alias, ConfigTarget.Memory);
+    expect(ctx.get(IConfigService).get('defaultModel')).toBe(alias);
+    expect(ctx.get(ISessionAgentProfileCatalog).getDefault().modelAlias).toBeUndefined();
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME });
 
     expect(svc.data().modelAlias).toBe(canonicalId);
@@ -1157,7 +1160,7 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('binds the routed snapshot and warns when a human overrides its pins', async () => {
+  it('binds the routed snapshot without warnings when a main user overrides its recommended pins', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     ctx = createTestAgent(
       { persistence },
@@ -1211,18 +1214,7 @@ describe('AgentProfileService.bind', () => {
     profile.setThinking('high');
     expect(profile.data().thinkingLevel).toBe('high');
     expect(profile.data().lockedThinkingEffort).toBe('off');
-    expect(warnings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: 'profile-binding-advisory',
-          message: expect.stringContaining('recommends model_alias'),
-        }),
-        expect.objectContaining({
-          code: 'profile-binding-advisory',
-          message: expect.stringContaining('recommends thinking_effort'),
-        }),
-      ]),
-    );
+    expect(warnings).toEqual([]);
     await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
       code: 'agent_profile_route.switch_forbidden',
     });
@@ -1291,7 +1283,7 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
   });
 
-  it.each(['main', 'sub'] as const)('enforces the frozen menu for %s binding, switches and resume without mutation', async (delegationPosition) => {
+  it.each(['sub'] as const)('enforces the frozen menu for %s binding, switches and resume without mutation', async (delegationPosition) => {
     const configured = resumeProfile({ restrictModelsToMenu: true });
     ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
@@ -1377,7 +1369,7 @@ describe('AgentProfileService.bind', () => {
     await ctx.expectResumeMatches();
   });
 
-  it.each(['main', 'sub'] as const)('enforces hard model and effort rules before %s binding or manual mutation', async (delegationPosition) => {
+  it.each(['sub'] as const)('enforces hard model and effort rules before %s binding or manual mutation', async (delegationPosition) => {
     const configured = resumeProfile({ allowedModels: [RESUME_OLD_MODEL], allowedEfforts: ['low'], preferredModels: [RESUME_NEW_MODEL] });
     ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
@@ -1390,6 +1382,90 @@ describe('AgentProfileService.bind', () => {
     const before = svc.data();
     await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
     expect(() => svc.setEffort('high')).toThrow(/allowed_efforts/);
+    expect(svc.data()).toEqual(before);
+  });
+
+  it('does not warn or reject main choices that depart from recommendations', async () => {
+    const configured = resumeProfile({ main: true, preferredModels: [RESUME_OLD_MODEL], discouragedModels: [RESUME_NEW_MODEL],
+      preferredEfforts: ['low'], modelProfiles: [{ alias: RESUME_OLD_MODEL, when: 'Recommended', thinkingEffort: 'low' }] });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const warnings: WarningIssued[] = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    await svc.bind({ profile: configured.name, model: RESUME_NEW_MODEL, thinking: 'high', delegationPosition: 'main' });
+    svc.publishBindingAdvisories();
+    await svc.setModel(RESUME_OLD_MODEL);
+    await svc.setModel(RESUME_NEW_MODEL);
+    expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
+    expect(svc.data().bindingAdvisories).toEqual([]);
+    expect(warnings.filter((event) => event.code === 'profile-binding-advisory')).toEqual([]);
+  });
+
+  it.each([
+    { restrictModelsToMenu: true },
+    { allowedModels: [RESUME_OLD_MODEL] },
+    { denyModels: [RESUME_NEW_MODEL] },
+    { modelProfiles: [{ alias: RESUME_NEW_MODEL, allowedModels: [RESUME_OLD_MODEL] }] },
+  ])('allows main binding and model changes outside hard constraints with warnings: %j', async (constraints) => {
+    const configured = resumeProfile({ main: true, ...constraints });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const warnings: WarningIssued[] = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    await svc.bind({ profile: configured.name, model: RESUME_NEW_MODEL, delegationPosition: 'main' });
+    svc.publishBindingAdvisories();
+    expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
+    expect(svc.data().bindingAdvisories).toEqual([expect.objectContaining({ dimension: 'model', effectiveValue: RESUME_NEW_MODEL })]);
+    expect(warnings).toContainEqual(expect.objectContaining({ code: 'profile-binding-advisory' }));
+    await svc.setModel(RESUME_OLD_MODEL);
+    expect(svc.data().bindingAdvisories).toEqual([]);
+    await svc.setModel(RESUME_NEW_MODEL);
+    expect(svc.data().modelAlias).toBe(RESUME_NEW_MODEL);
+    expect(svc.data().bindingAdvisories).toHaveLength(1);
+  });
+
+  it('warns without rejecting main effort choices outside profile hard rules', async () => {
+    const configured = resumeProfile({ main: true, allowedEfforts: ['low'] });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: configured.name, thinking: 'high', delegationPosition: 'main' });
+    expect(svc.data().bindingAdvisories).toEqual([expect.objectContaining({ code: 'effort_not_allowed' })]);
+    svc.setEffort('low');
+    expect(svc.data().bindingAdvisories).toEqual([]);
+    svc.setEffort('high');
+    expect(svc.data().thinkingLevel).toBe('high');
+    expect(svc.data().bindingAdvisories).toEqual([expect.objectContaining({ code: 'effort_not_allowed' })]);
+  });
+
+  it('keeps external main selections above profile rules and subagent-only host denials', async () => {
+    const configured = resumeProfile({ main: true, executor: 'grok-acp', modelAlias: 'external-default',
+      restrictModelsToMenu: true, allowedModels: ['external-default'], denyModels: ['external-outside'] });
+    ctx = createTestAgent({ initialConfig: { subagent: { denyModels: ['external-outside'] } } },
+      hostEnvironmentServices(homeDir, hostPathClass), appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: configured.name, model: 'external-outside', delegationPosition: 'main' });
+    expect(svc.data().modelAlias).toBe('external-outside');
+    expect(svc.data().bindingAdvisories?.map((entry) => entry.code)).toEqual(['model_not_allowed', 'model_denied', 'model_not_allowed']);
+    await svc.setModel('external-default');
+    expect(svc.data().bindingAdvisories).toEqual([]);
+    await svc.setModel('external-outside');
+    expect(svc.data().modelAlias).toBe('external-outside');
+  });
+
+  it('retains hard rules for a restored child even when its saved profile has main: true', async () => {
+    const configured = resumeProfile({ main: true, allowedModels: [RESUME_OLD_MODEL] });
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', parentAgentId: 'main', agentScope: 'test/child' })));
+    const svc = ctx.get(IAgentProfileService);
+    svc.applyBindingSnapshot({ profileName: configured.name, modelAlias: RESUME_OLD_MODEL, thinkingLevel: 'low',
+      systemPrompt: 'Saved child prompt', boundProfile: freezeBoundProfile(configured) });
+    const before = svc.data();
+    await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
     expect(svc.data()).toEqual(before);
   });
 
@@ -1731,17 +1807,14 @@ describe('AgentProfileService.bind', () => {
   });
 
   it('setModel persists the canonical id for a bare alias', async () => {
-    const { profile: svc } = buildContext();
-    const canonicalId = `test-provider/${MOCK_MODEL}`;
-    await ctx.get(IModelService).replaceAll({
-      [canonicalId]: {
-        provider: 'test-provider',
-        model: MOCK_MODEL,
-        maxContextSize: 1_000_000,
-      },
-    });
+    const alias = 'canonical-model';
+    const canonicalId = `test-provider/${alias}`;
+    ctx = createTestAgent({ initialConfig: { models: {
+      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000 },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass));
+    const svc = ctx.get(IAgentProfileService);
 
-    await svc.setModel(MOCK_MODEL);
+    await svc.setModel(alias);
 
     expect(svc.data().modelAlias).toBe(canonicalId);
   });
@@ -1775,14 +1848,11 @@ describe('AgentProfileService.bind', () => {
   });
 
   it('setModel changes only the model of a route-only binding and keeps its route lock', async () => {
-    const { profile: svc } = buildContext();
-    await ctx.get(IModelService).set('other-model', {
-      provider: 'test-provider',
-      model: 'other-model',
-      maxContextSize: 1_000_000,
-      capabilities: ['thinking'],
-      supportEfforts: ['low', 'high'],
-    });
+    ctx = createTestAgent({ initialConfig: { models: {
+      'other-model': { provider: 'test-provider', model: 'other-model', maxContextSize: 1_000_000,
+        capabilities: ['thinking'], supportEfforts: ['low', 'high'] },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass));
+    const svc = ctx.get(IAgentProfileService);
     const snapshot: ProfileBindingSnapshot = {
       routeId: 'route-only',
       modelAlias: MOCK_MODEL,
@@ -1815,7 +1885,8 @@ describe('AgentProfileService.bind', () => {
       .sort();
 
     expect(after.modelAlias).toBe('other-model');
-    expect(changedKeys).toEqual(['bindingAdvisories', 'modelAlias', 'modelCapabilities', 'routeDetached']);
+    expect(changedKeys).toEqual(['modelAlias', 'modelCapabilities', 'routeDetached']);
+    expect(after.bindingAdvisories).toEqual([]);
     expect(after).toMatchObject({
       profileName: undefined,
       routeId: 'route-only',

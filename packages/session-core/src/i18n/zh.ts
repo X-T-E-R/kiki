@@ -3667,6 +3667,7 @@ export const zh = {
   'st.profiles.preferredEfforts': '优先推荐思考强度（软建议）',
   'st.profiles.addEffort': '添加思考强度',
   'selection.modelMenuBlocked': '此模型不在有效可用集中：{source}。请选择有效菜单项，或修改 profile 声明。',
+  'selection.modelMenuWarning': '此模型超出 profile 的模型约束：{source}。将使用你选择的模型，不影响发送。',
   'selection.modelMenuPending': '正在读取 profile 的有效可用集…',
   'selection.modelMenuError': '未能读取 profile 的有效可用集，请重试。',
   'st.profiles.addModel': '添加模型',

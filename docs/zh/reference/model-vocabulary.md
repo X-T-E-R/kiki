@@ -31,7 +31,7 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 
 Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型；main agent 没有调用方，其 profile 不可使用 `inherit`。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据也会加载失败。请删除不支持的字段，不要依赖忽略行为。
 
-Route 声明的 `model_alias` 是软默认值。可执行且满足硬规则的覆盖仍保留 route 身份，同时标记为 detached 并携带 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在 profile、lease、`spawn_constraints` 与匹配的 `model_profiles` 中都是硬规则；违规会拒绝绑定、人工切换与恢复。只有 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议。机器级 `[subagent].deny_models` 增加另一道硬边界。原生模型列表比较规范身份，外部 executor 则比较实际生效模型 ID。
+Route 声明的 `model_alias` 是软默认值。Subagent 的覆盖可执行且满足硬规则时，仍保留 route 身份，同时标记为 detached 并携带 advisory。`allowed_models`、`deny_models`、`allowed_efforts` 在 profile、lease、`spawn_constraints` 与匹配的 `model_profiles` 中都是硬规则；违规会拒绝 subagent 绑定、人工切换与恢复。Main 会话以用户选择为准：profile 模型 / 档位硬规则违规只警示，推荐或 pin 的偏离不警告、不拒发。只有 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议。机器级 `[subagent].deny_models` 增加另一道硬边界。原生模型列表比较规范身份，外部 executor 则比较实际生效模型 ID。
 
 ## 模型 ID 解析
 

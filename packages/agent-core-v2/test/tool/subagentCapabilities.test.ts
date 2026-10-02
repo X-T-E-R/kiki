@@ -76,6 +76,13 @@ describe('subagent capability final bindings', () => {
     const main = projectProfileModelMenu(frozen, services.models, services.config, 'main', { frozen: true });
     expect(main.declaredModelMenu).toEqual({ aliases: ['cheap'], defaultAlias: 'fast', identities: ['cheap', 'example'] });
     expect(main.effectiveModelAliases).toEqual(['example', 'fast']);
+    expect(main.modelConstraintsActive).toBe(true);
+    const recommended = projectProfileModelMenu(helper({ preferredModels: ['example'],
+      modelProfiles: [{ alias: 'cheap', when: 'Recommended' }] }), services.models, services.config, 'main');
+    expect(recommended.modelConstraintsActive).toBe(false);
+    expect(recommended.effectiveModelAliases).toContain('outside');
+    expect(projectProfileModelMenu(helper({ modelProfiles: [{ alias: 'cheap', allowedModels: [] }] }),
+      services.models, services.config, 'main').modelConstraintsActive).toBe(true);
     expect(projectProfileModelMenu(frozen, services.models, services.config, 'sub', { frozen: true }).effectiveModelAliases).toEqual([]);
     expect(projectProfileModelMenu({ name: 'legacy', restrictModelsToMenu: false }, services.models, services.config, 'main', { frozen: true }).effectiveModelAliases).toEqual(['example', 'cheap', 'outside']);
     expect(projectProfileModelMenu(helper({ restrictModelsToMenu: true, modelAlias: undefined }), services.models, services.config, 'main').effectiveModelAliases).toEqual([]);

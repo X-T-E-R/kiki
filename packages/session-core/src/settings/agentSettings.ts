@@ -552,6 +552,9 @@ export function composerDefaultsForProfile(
 
 
 export interface ProfileModelProjection {
+  readonly model_constraints_active?: boolean;
+  readonly allowed_models?: readonly string[];
+  readonly deny_models?: readonly string[];
   readonly restrict_models_to_menu?: boolean;
   readonly effective_model_aliases?: readonly string[];
   readonly declared_model_menu?: { readonly identities: readonly string[] };
@@ -562,14 +565,20 @@ export function projectedProfileModelState(
   projection: ProfileModelProjection | undefined,
   models: readonly { readonly id: string; readonly remote_id: string; readonly provider_id: string }[],
   selected: string | undefined,
-): 'allowed' | 'blocked' | 'unknown' {
+  position: 'main' | 'sub' = 'sub',
+): 'allowed' | 'warning' | 'blocked' | 'unknown' {
+  if (position === 'main') {
+    const constrained = projection?.model_constraints_active ?? (projection?.restrict_models_to_menu === true
+      || projection?.allowed_models !== undefined || (projection?.deny_models?.length ?? 0) > 0);
+    if (!constrained || projection?.effective_model_aliases === undefined || selected === undefined) return 'allowed';
+  }
   if (projection?.effective_model_aliases === undefined) {
     return projection?.restrict_models_to_menu === true ? 'unknown' : 'allowed';
   }
   if (selected === undefined) return 'blocked';
   const identity = resolveCatalogModel(models, selected)?.id ?? selected;
   return projection.effective_model_aliases.some((alias) => (resolveCatalogModel(models, alias)?.id ?? alias) === identity)
-    ? 'allowed' : 'blocked';
+    ? 'allowed' : position === 'main' ? 'warning' : 'blocked';
 }
 
 

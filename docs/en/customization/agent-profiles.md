@@ -44,7 +44,7 @@ To permanently replace the default main agent's configuration, there is one spec
 
 ## Model menus and hard boundaries
 
-`model_profiles` provides per-model parameters and prompts; by default, it is a candidate menu, not an exhaustive list of permitted models. The top-level frontmatter field `restrict_models_to_menu` accepts only a boolean and defaults to `false`. Set it to `true` to make the menu the profile's model-binding contract: only the author's declared default `model_alias` and `model_profiles[].alias` are permitted, subject to other hard rules and executor capabilities. It applies to main agents, subagents, registered profiles, and explicit profile files, not to routes, caller leases (caller-supplied child configuration overrides), `spawn_constraints`, or menu entries. Enabling it on a parent profile does not enable it on child profiles.
+`model_profiles` provides per-model parameters and prompts; by default, it is a candidate menu, not an exhaustive list of permitted models. The top-level frontmatter field `restrict_models_to_menu` accepts only a boolean and defaults to `false`. For subagent bindings, set it to `true` to make the menu the profile's model-binding contract: only the author's declared default `model_alias` and `model_profiles[].alias` are permitted, subject to other hard rules and executor capabilities. It applies to main agents, subagents, registered profiles, and explicit profile files, not to routes, caller leases (caller-supplied child configuration overrides), `spawn_constraints`, or menu entries. Enabling it on a parent profile does not enable it on child profiles.
 
 For a complete permitted menu, maintain one positive list rather than copying it into `allowed_models`:
 
@@ -61,7 +61,9 @@ This menu contains `fast-model` and `review-model`; the default needs no duplica
 
 The switch adds one **hard allow domain**. It does not change model-selection priority or automatically select the first menu entry. After directory and scope resolution selects the profile, Kiki captures its original default and menu before route or lease rewrites and freezes them with the binding. Explicit dispatch parameters, route / lease pins (default model selections), a saved effective model, and lease replacements of `model_profiles` cannot expand that domain. Replacing entries with a subset or an empty list neither erases nor narrows the original menu; use `allowed_models` for an additional hard restriction. Hard rules from the original menu entries remain in force.
 
-These rules apply equally in the GUI, CLI, `AgentRun`, and API:
+For a session's **main agent**, the user's model choice takes priority over profile model constraints. Recommendations and default pins produce no warning; a model outside a hard profile domain produces only a non-blocking warning. The GUI keeps configured models selectable and does not block sending because of profile model rules, including when the constraint projection is still loading. Model availability and provider / executor capabilities are still checked. A `main: true` profile dispatched through `AgentRun` is a subagent, not a user-controlled main session.
+
+For **subagent bindings**, these rules apply equally in the GUI, CLI, `AgentRun`, and API:
 
 - **Reject outside the menu; do not downgrade.** When enabled, an explicit out-of-menu selection returns `profile.constraint_violation`, without falling back to the default. Omitting the model still selects it through the existing default rules, then validates the menu. A default or configured fallback outside the menu is rejected; Kiki does not scan the menu for a replacement. Failure to select any model still reports an unbound model.
 - **Every hard domain applies.** The menu intersects with all applicable `allowed_models` lists, and a `deny_models` match always rejects. `"*"` cannot widen the menu. Machine denials and model / effort capability limits retain their existing scope. Turning the switch off does not remove those hard rules or hard rules inside menu entries. An equivalent menu and `allowed_models` list are redundant, not a loading error; different lists still intersect, with neither layer ignored.
@@ -69,7 +71,7 @@ These rules apply equally in the GUI, CLI, `AgentRun`, and API:
 - **An empty domain does not permit execution.** An empty menu with a default restricts binding to that one model. With neither menu nor default, no effective candidates, or an empty intersection with other hard domains, binding is rejected rather than treating an empty set as unrestricted (fail closed).
 - **Resume does not expand permission.** `resume` validates the frozen menu and saved hard rules, plus applicable current caller / machine hard domains; rejection leaves the saved binding unchanged. Model changes still require `allow_model_change: true`, which does not authorize going outside the menu. Editing the switch or menu on disk never silently rewrites existing snapshots. New bindings use the new definition; existing sessions require an explicit rebind or a new session.
 
-To recover from a hard rejection, select an effective menu item that also satisfies other hard rules, or edit the profile declaration. Explicit pins, manual selections, and model-change confirmation are not ways to bypass the menu.
+To recover from a subagent hard rejection, select an effective menu item that also satisfies other hard rules, or edit the profile declaration. Explicit pins, manual selections, and model-change confirmation are not ways to bypass the menu.
 
 ### When to enable it
 

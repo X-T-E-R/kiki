@@ -127,6 +127,7 @@ describe('GET /api/agents', () => {
       restrict_models_to_menu: true,
       declared_model_menu: { aliases: ['b'], default_alias: 'c', identities: ['fixture/b', 'fixture/c'] },
       effective_model_aliases: ['fixture/c', 'c'],
+      model_constraints_active: true,
       added_model_identities: ['fixture/c'], removed_model_identities: ['fixture/a'],
     });
     expect((await preview({ main: false })).effective_model_aliases).toEqual([]);
@@ -136,10 +137,18 @@ describe('GET /api/agents', () => {
     expect(await readFile(path, 'utf8')).toBe(text);
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'menu-main', model: 'fixture/a' } }),
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'menu-main', model: 'fixture/c' } }),
     })).json() as Envelope<{ id: string }>;
     expect(created.code).toBe(0);
     const manager = server.core.accessor.get(ISessionManager);
+    const mainBinding = manager.get(created.data.id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService);
+    expect(mainBinding.data()).toMatchObject({ modelAlias: 'fixture/c', bindingAdvisories: [expect.objectContaining({
+      code: 'model_not_allowed', ruleSource: 'profile:menu-main.restrict_models_to_menu',
+    })] });
+    await mainBinding.setModel('fixture/b');
+    expect(mainBinding.data()).toMatchObject({ modelAlias: 'fixture/b', bindingAdvisories: [expect.objectContaining({ code: 'model_denied' })] });
+    await mainBinding.setModel('fixture/a');
+    expect(mainBinding.data().bindingAdvisories).toEqual([]);
     const update = await authedFetch(server, base, '/api/agents/menu-main', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspace_id: initial.workspace_id, scope: 'user', source_file: initial.source_file, ...draft }),
@@ -1149,6 +1158,7 @@ describe('GET /api/agents', () => {
       restrict_models_to_menu: false,
       declared_model_menu: { aliases: ['provider/fast'], default_alias: 'provider/pinned', identities: [] },
       effective_model_aliases: ['stub'],
+      model_constraints_active: false,
       thinking_effort: 'high',
       service_tier: 'priority',
       request_params: { temperature: 0.4 },
