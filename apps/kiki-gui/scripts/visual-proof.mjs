@@ -73,6 +73,7 @@ const MATRIX = {
   skins: ['theme'],
   steer: ['width'],
   'notes-rail': ['width'],
+  'annotation-bubbles': ['width'],
   worktrees: ['theme', 'width'],
 };
 
@@ -4079,6 +4080,15 @@ async function scenarioSelectionAnnotate() {
   await shot('selection-annotate-sent');
 }
 
+async function scenarioAnnotationBubbles() {
+  await selectSession('Fixture: annotation bubbles');
+  await page.waitForSelector('[data-annotation-bubble]', { timeout: 10_000 });
+  await shot('annotation-bubbles-overview');
+  await page.locator('[data-annotation-bubble]').last().click();
+  await page.waitForSelector('[data-annotation-bubble-panel]', { timeout: 5000 });
+  await shot('annotation-bubbles-popover');
+}
+
 async function scenarioPreviewWorkbench() {
   await selectSession('Fixture: preview workbench');
   await page.waitForSelector('text=Workbench notes', { timeout: 10_000 });
@@ -5481,6 +5491,7 @@ const BODIES = [
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['selection-annotate', scenarioSelectionAnnotate],
+  ['annotation-bubbles', scenarioAnnotationBubbles],
   ['preview-workbench', scenarioPreviewWorkbench],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
