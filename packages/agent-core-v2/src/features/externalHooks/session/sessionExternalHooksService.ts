@@ -1,4 +1,7 @@
 import { Service } from '#/_base/di/service';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IHookRulesSession } from './hookRules';
+import { matchesHook } from '../internal/rules';
 import { IntervalTimer } from '#/_base/utils/timer';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IModelService } from '#/kosong/model/model';
@@ -41,6 +44,7 @@ export class SessionExternalHooksService
     @ISessionAgentProfileCatalog private readonly profiles: ISessionAgentProfileCatalog,
     @IModelService private readonly models: IModelService,
     @IExternalHooksRunnerService private readonly runner: IExternalHooksRunnerService,
+    @ref(IHookRulesSession) private readonly hookRules: LiveRef<IHookRulesSession>,
   ) {
     super();
     void this.metadata
@@ -107,6 +111,24 @@ export class SessionExternalHooksService
   }
 
   private async triggerSessionStart(source: SessionStartHookSource): Promise<void> {
+    const rules = this.hookRules.current;
+    if (rules !== undefined) {
+      await rules.ready;
+      const snapshot = rules.snapshot();
+      const alias = this.models.getDefaultModel();
+      const event = {
+        schemaVersion: 2 as const, event: 'session.start' as const,
+        eventId: `${this.context.sessionId}/start/${source}`, occurredAt: new Date().toISOString(),
+        sessionId: this.context.sessionId, cwd: this.context.cwd, modelAlias: alias,
+        reason: source === 'resume' ? 'resume' : 'new',
+        modelId: alias === undefined ? undefined : this.models.resolveId(alias),
+        profileId: await this.defaultProfileName(), configRevision: snapshot.revision,
+        hookDepth: 0 as const, isReplay: false as const, allowedActions: ['observe'] as const,
+      };
+      for (const rule of snapshot.rules) {
+        if (rule.rule.action.type === 'observe' && matchesHook(rule, event)) rules.observe(event, rule.id);
+      }
+    }
     await this.runner.trigger('SessionStart', {
       matcherValue: source,
       cwd: this.context.cwd,

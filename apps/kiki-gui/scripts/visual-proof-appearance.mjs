@@ -494,8 +494,8 @@ async function scenarioOnboarding(page) {
   await stepOpen('light');
   await wizard.locator('[data-theme-choice="dark"]').click();
   check(await page.evaluate(() => document.documentElement.dataset.theme === 'dark'), 'onboarding: Dark switches the window to dark');
-  await wizard.locator('[data-onboarding-palette="nocturne"]').click();
-  check(await page.evaluate(() => JSON.parse(localStorage.getItem('kiki.skin') ?? '{}').selection?.id === 'nocturne'), 'onboarding: a swatch selects that palette');
+  await wizard.locator('[data-onboarding-palette="iris"]').click();
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('kiki.skin') ?? '{}').selection?.id === 'iris'), 'onboarding: a swatch selects that palette');
   await wizard.locator('[data-onboarding-bg-open]').click();
   await wizard.locator('[data-bg-file]').setInputFiles(join(MEDIA, 'loud-4k.jpg'));
   await page.waitForSelector('[data-kiki-backdrop-item]', { timeout: 15_000 });

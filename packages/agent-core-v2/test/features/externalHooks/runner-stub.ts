@@ -1,6 +1,6 @@
 import { Event } from '#/_base/event';
 import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
-import { HOOKS_SECTION } from '#/features/externalHooks/configSection';
+import { HOOKS_SECTION, type HooksV2Config } from '#/features/externalHooks/configSection';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -15,7 +15,7 @@ export function nodeCommand(source: string): string {
 }
 
 export function makeHookRunner(
-  hooks: readonly HookDef[],
+  hooks: readonly HookDef[] | HooksV2Config,
   options: {
     cwd?: string;
     loadError?: Error;

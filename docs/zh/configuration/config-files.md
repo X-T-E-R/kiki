@@ -879,6 +879,44 @@ prompt_overrides:
 
 桌面 GUI 中，请进入「设置 → 智能体 → 提示词」编辑本节；该卡片默认折叠，展开后再编辑。
 
+## `[request_governance]`
+
+原生模型请求默认开启观测；没有规则时不限制请求并发。GUI 的「用量 → 实时」显示本服务实例正在发送与排队的请求，「限制」只读展示有效规则。「历史」保留 Token 与估算费用统计，已有带筛选条件的用量链接仍打开历史页。连接失败时保留最后的实时数并标记状态过期。外部 ACP/Codex 执行器显示为「未纳管」，而不是零请求。
+
+```toml
+[request_governance]
+schema_version = 1
+max_wait_ms = 300000
+max_queue_size = 1024
+
+[[request_governance.rules]]
+id = "shared-provider"
+resource = "model_request"
+scope = "global"
+providers = ["example-provider"]
+max_concurrent = 2
+overflow = "queue"
+```
+
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `schema_version` | `1` | 配置版本 |
+| `max_wait_ms` | `300000` | 单个逻辑请求累计的本地排队时间，含重试，单位毫秒 |
+| `max_queue_size` | `1024` | 本服务最多等待多少条请求 |
+| 规则 `id` | 必填 | 唯一规则标识 |
+| 规则 `resource` | `model_request` | 原生生成尝试，包含压缩与 OAuth 重放 |
+| 规则 `scope` | `global` | `global` 在本服务内共享容量；`each_session` 按根会话分别分桶，包含它的所有子代理 |
+| 规则 `models` | 全部 | 已配置的规范模型 ID；多个 ID 合计共享一份上限 |
+| 规则 `providers` | 全部 | 提供商配置 ID；覆盖选中提供商下的所有模型，合计共享一份上限 |
+| 规则 `subagents_only` | `false` | 只匹配子代理发出的请求 |
+| 规则 `max_concurrent` | 不限 | 正整数；省略表示不限，零不表示不限 |
+| 规则 `overflow` | `queue` | `queue` 等待容量；`reject` 在该规则容量已满时立即拒绝 |
+| 规则 `max_wait_ms` | 本节上限 | 可选，为匹配请求设置更短的排队时间预算 |
+
+所有匹配规则共同生效。同一规则的不同筛选字段取 AND，同字段的 ID 列表取 OR。若只限制一个模型，使用 `models = ["example-model"]` 并省略 `providers`。规则只治理当前 App 实例的请求，不覆盖其他独立 CLI 进程或提供商账号在其他客户端的使用。它不是 Token 或金额预算，也不改变已有每父节点默认最多 16 个直接子代理的限制。
+
+修改规则立即重新判断排队请求；已在途的流不会被杀掉。工具执行与本地排队都不占模型请求槽位。取消排队中的轮次会移除请求，不向提供商发送。队满、排队超时和本地拒绝是三种不同的不可自动重试失败。可使用已有 Stop 操作停止等待中的轮次，或编辑对应配置规则后重试。
+
 ## `tui.toml`
 
 除了 `config.toml`，CLI 还在同一目录下用一份配套的 `tui.toml` 保存终端界面与客户端偏好（`~/.kiki/tui.toml`，或覆盖后的 `$KIKI_HOME/tui.toml`）。它在首次运行时以默认值创建，交互式命令 `/config`、`/theme`、`/editor` 会自动写入，通常无需手动编辑。文件格式有误时，CLI 会回退到默认值并给出提示，而不是启动失败。

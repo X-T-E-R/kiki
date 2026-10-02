@@ -278,6 +278,7 @@ export interface HttpRestFacade {
     readonly expires_at: number;
   } | undefined>;
   usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
+  requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   readonly usagePricing: {
     get(models?: readonly string[]): Promise<UsagePricingResponse>;
     set(update: UsagePricingUpdate): Promise<UsagePricingResponse>;

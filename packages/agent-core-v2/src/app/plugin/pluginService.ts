@@ -270,6 +270,10 @@ export class PluginService extends Service implements IPluginService {
     return this.runSecurityConsumptionRead(async () => this.manager.enabledHooks());
   }
 
+  enabledHookRules(): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
+    return this.runSecurityConsumptionRead(async () => this.manager.enabledHookRules());
+  }
+
   hasLoadedSnapshot(): boolean {
     return this.snapshotLoaded;
   }

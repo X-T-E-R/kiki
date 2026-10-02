@@ -72,6 +72,7 @@ const MATRIX = {
   'settings-ia': ['theme', 'width'],
   skins: ['theme'],
   steer: ['width'],
+  'notes-rail': ['width'],
   worktrees: ['theme', 'width'],
 };
 
@@ -235,6 +236,11 @@ const SOURCES = {
   foldSteps3: { key: 'transcript.fold.steps', count: 3 },
   foldSteps6: { key: 'transcript.fold.steps', count: 6 },
   foldNotes1: { key: 'transcript.fold.notes', count: 1 },
+  // The rail's working-notes section: title, empty line, and the humanized
+  // watermark for main's fixture notes (turn 12, revision 4).
+  notesTitle: { key: 'agentPanel.notes' },
+  notesEmpty: { key: 'agentPanel.notes.empty' },
+  notesMetaMain: { key: 'agentPanel.notes.meta', params: { turn: 12, rev: 4 } },
   // Appearance › the prose font select: its label (the trigger's aria name)
   // and the two presets the walk picks between.
   proseFontLabel: { key: 'st.appearance.prose' },
@@ -1158,6 +1164,87 @@ async function scenarioBusyRail() {
   await waitForText('fixture build (vite)');
   await page.waitForTimeout(500);
   await shot('busy-rail');
+}
+
+/**
+ * 工作笔记 in the rail: main's eight sections under the checklist (the goal
+ * previews the folded head, a long section clamps, the watermark names the
+ * turn and revision — never internal ids), then the subagent's own notes on
+ * its rail page and the empty state on an agent that never wrote notes.
+ * Below lg the session rail hides (same as the checklist); the routed agent
+ * page carries the same rail as an overlay drawer.
+ */
+async function scenarioNotesRail() {
+  const { width } = job().view;
+  if (width < 1024) {
+    // Below lg the right rail disappears by design (SessionView forces it
+    // closed) — the notes section goes with it, exactly like the checklist.
+    // Nothing notes-specific may leak into the narrow page.
+    await selectSession('Fixture: working notes');
+    if (await page.locator('[data-session-rail]').count() !== 0) throw new Error('the narrow session view still shows the rail');
+    if (await page.locator('[data-rail-toggle]').count() !== 0) throw new Error('the narrow session view still offers the rail toggle');
+    await shot('notes-rail-narrow-hidden');
+    return;
+  }
+  await selectSession('Fixture: working notes');
+  await openInspector();
+  const rail = page.locator('[data-session-rail]');
+  const notes = rail.locator('[data-agent-notes-section]');
+  await notes.waitFor({ timeout: 10_000 });
+  // Folded: the head previews the goal's first line only.
+  await notes.locator('[data-agent-notes-goal]').waitFor({ timeout: 10_000 });
+  const preview = await notes.locator('[data-agent-notes-goal]').innerText();
+  if (preview !== 'Prepare the 0.6 release checklist') throw new Error(`folded head must preview the goal's first line, saw: ${preview}`);
+  await notes.scrollIntoViewIfNeeded();
+  await shot('notes-rail-folded');
+  await notes.locator('button[aria-expanded]').first().click();
+  await notes.locator('[data-agent-notes-part="open"]').waitFor({ timeout: 5_000 });
+  if (await notes.locator('[data-agent-notes-part]').count() !== 8) throw new Error('main must show all eight note sections');
+  const meta = await notes.locator('[data-agent-notes-meta]').innerText();
+  if (meta !== S.notesMetaMain) throw new Error(`notes watermark mismatch: "${meta}" vs "${S.notesMetaMain}"`);
+  if (/fixture-notes-r4|t12\.3|msg-9|window|窗口/i.test(meta)) throw new Error(`notes watermark leaks internal fields: ${meta}`);
+  // The long evidence section clamps to four lines; its toggle expands it.
+  const evidence = notes.locator('[data-agent-notes-part="evidence"]');
+  const clamped = evidence.locator('p[class*="line-clamp"]');
+  await clamped.waitFor({ timeout: 5_000 });
+  const showMore = evidence.locator('button[aria-expanded]');
+  await showMore.waitFor({ timeout: 5_000 });
+  await showMore.click();
+  await page.waitForTimeout(200);
+  if (await evidence.locator('p[class*="line-clamp"]').count() !== 0) throw new Error('evidence stays clamped after show more');
+  await notes.scrollIntoViewIfNeeded();
+  await shot('notes-rail');
+  // The narrowest width that still carries the rail: same sections, narrower column.
+  await resizeViewport(1024);
+  await notes.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('notes-rail-1024');
+  await resizeViewport(1440);
+  // The subagent's rail page: its own notes, never main's.
+  await rail.locator('[data-agent-id="agent-scout"]').first().click();
+  await page.locator('[data-session-rail][data-inspector-agent="agent-scout"]').waitFor({ timeout: 10_000 });
+  const childNotes = rail.locator('[data-agent-notes-section]');
+  await childNotes.waitFor({ timeout: 10_000 });
+  await childNotes.locator('button[aria-expanded]').first().click();
+  await childNotes.locator('[data-agent-notes-part="goal"]').waitFor({ timeout: 10_000 });
+  const childText = await childNotes.innerText();
+  if (!childText.includes('Audit the notes surface at both rail widths')) throw new Error('child rail lost its own notes');
+  if (childText.includes('Prepare the 0.6 release checklist')) throw new Error('child rail shows the main agent notes');
+  await childNotes.scrollIntoViewIfNeeded();
+  await shot('notes-rail-child');
+  // An agent that never wrote notes gets the quiet empty line, not a gap.
+  // The child's page lists its own children, so go back to main's page first.
+  await rail.locator('[data-inspect-main]').first().click();
+  await page.locator('[data-session-rail][data-inspector-agent="main"]').waitFor({ timeout: 10_000 });
+  await rail.locator('[data-agent-id="agent-blank"]').first().click();
+  await page.locator('[data-session-rail][data-inspector-agent="agent-blank"]').waitFor({ timeout: 10_000 });
+  const blankNotes = rail.locator('[data-agent-notes-section][data-agent-notes-state="empty"]');
+  await blankNotes.waitFor({ timeout: 10_000 });
+  const blankText = await blankNotes.innerText();
+  if (!blankText.includes(S.notesTitle) || !blankText.includes(S.notesEmpty)) throw new Error(`empty state mismatch: ${blankText}`);
+  await blankNotes.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('notes-rail-empty');
 }
 
 async function scenarioRailScale() {
@@ -5023,9 +5110,11 @@ async function scenarioSkins() {
   ];
   const SKINS = [
     ['builtin', 'paper', ['light', 'dark']],
-    ['builtin', 'graphite', ['light', 'dark']],
+    ['builtin', 'porcelain', ['light', 'dark']],
+    ['builtin', 'celadon', ['light', 'dark']],
+    ['builtin', 'apricot', ['light', 'dark']],
+    ['builtin', 'iris', ['light', 'dark']],
     ['builtin', 'contrast', ['light', 'dark']],
-    ['builtin', 'nocturne', ['dark']],
     ['user', 'ocean', ['light', 'dark']],
     ['user', 'midnight', ['dark']],
   ];
@@ -5065,7 +5154,7 @@ async function scenarioSkins() {
 
   // Adjustments apply at once (the page has no draft): the accent repaints
   // the whole app and lands in storage in the same step.
-  await applySkin('builtin', 'graphite', 'light');
+  await applySkin('builtin', 'porcelain', 'light');
   await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-skin-settings]', { timeout: 15_000 });
 
@@ -5139,7 +5228,7 @@ async function scenarioSettingsAppearance() {
   const shots = [
     ['paper', 'light'],
     ['paper', 'dark'],
-    ['graphite', 'light'],
+    ['porcelain', 'light'],
   ];
   for (const [skin, theme] of shots) {
     await setLook(skin, theme);
@@ -5258,6 +5347,7 @@ const BODIES = [
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],
   ['busy-rail', scenarioBusyRail],
+  ['notes-rail', scenarioNotesRail],
   ['burst', scenarioBurst],
   ['long-transcript', scenarioLongTranscript],
   ['reminder', scenarioReminder],

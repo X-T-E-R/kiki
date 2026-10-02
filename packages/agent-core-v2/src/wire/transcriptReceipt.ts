@@ -40,7 +40,9 @@ export async function digestWireBytes(chunks: AsyncIterable<Uint8Array>): Promis
     size += chunk.byteLength;
     if (!Number.isSafeInteger(size)) throw new Error('wire transcript exceeds safe byte length');
     hash.update(chunk);
-    for (const byte of chunk) if (byte === 0x0a) lines += 1;
+    for (let offset = chunk.indexOf(0x0a); offset !== -1; offset = chunk.indexOf(0x0a, offset + 1)) {
+      lines += 1;
+    }
     if (chunk.byteLength > 0) endsWithNewline = chunk.at(-1) === 0x0a;
   }
   return { size, sha256: hash.digest('hex'), lines, endsWithNewline };

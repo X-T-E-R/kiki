@@ -45,6 +45,26 @@ describe('plugin manifest parser', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  it('parses v2 hook declarations and preserves the explicit legacy list', async () => {
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', hooks: {
+      schema_version: 2, rules: [{ id: 'focus', event: 'step.before', cadence: { every_completed_steps: 5 }, action: { type: 'inject', text: 'Check evidence' } }],
+      legacy: [{ event: 'Stop', command: 'echo stop', timeout: 7 }],
+    } }));
+    const result = await parseManifest(dir);
+    expect(result.manifest?.hookRules).toMatchObject({ schemaVersion: 2, rules: [{ id: 'focus', cadence: { everyCompletedSteps: 5 } }] });
+    expect(result.manifest?.hooks).toEqual([{ event: 'Stop', command: 'echo stop', timeout: 7 }]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('rejects v2 command actions with a load-time diagnostic', async () => {
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', hooks: {
+      schema_version: 2, rules: [{ id: 'command', event: 'tool.before', action: { type: 'command', program: 'example' } }],
+    } }));
+    const result = await parseManifest(dir);
+    expect(result.manifest?.hookRules).toBeUndefined();
+    expect(result.diagnostics).toEqual([expect.objectContaining({ severity: 'error', message: expect.stringContaining('slice A') })]);
+  });
+
   it('reports invalid hooks as errors and invalid command paths as warnings', async () => {
     await writeFile(
       join(dir, 'kimi.plugin.json'),

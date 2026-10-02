@@ -38,6 +38,7 @@ export function stubPluginService(options: StubPluginServiceOptions): IPluginSer
     enabledMcpServers: async () => ({}),
     mcpServerEntries: async () => [],
     enabledHooks: async () => [],
+    enabledHookRules: async () => [],
     hasLoadedSnapshot: () => true,
   };
 }

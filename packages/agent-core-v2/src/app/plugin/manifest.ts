@@ -1,7 +1,7 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
+import { HookDefSchema, HooksV2ConfigSchema, hooksFromToml, type HooksV2Config, type HookDefConfig } from '#/features/externalHooks/configSection';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 
 import { parsePluginExtension } from './contributions';
@@ -164,6 +164,7 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     sessionStart: readSessionStart(raw['sessionStart'], diagnostics),
     mcpServers: await readMcpServers(pluginRoot, raw['mcpServers'], diagnostics),
     hooks: readHooks(raw['hooks'], diagnostics),
+    hookRules: readHookRules(raw['hooks'], diagnostics),
     commands: await readCommands(pluginRoot, raw['commands'], diagnostics),
     interface: readInterface(raw['interface']),
     icon: await readIcon(pluginRoot, raw['icon'], diagnostics),
@@ -464,8 +465,8 @@ function readHooks(
 ): readonly HookDefConfig[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) {
-    diagnostics.push({ severity: 'warn', message: '"hooks" must be an array' });
-    return undefined;
+    const parsed = HooksV2ConfigSchema.safeParse(hooksFromToml(raw));
+    return parsed.success ? parsed.data.legacy : undefined;
   }
   const out: HookDefConfig[] = [];
   raw.forEach((entry, i) => {
@@ -480,6 +481,14 @@ function readHooks(
     }
   });
   return out.length === 0 ? undefined : out;
+}
+
+function readHookRules(raw: unknown, diagnostics: PluginDiagnostic[]): HooksV2Config | undefined {
+  if (raw === undefined || Array.isArray(raw)) return undefined;
+  const parsed = HooksV2ConfigSchema.safeParse(hooksFromToml(raw));
+  if (parsed.success) return parsed.data;
+  diagnostics.push({ severity: 'error', message: `Invalid v2 hooks: ${parsed.error.message}` });
+  return undefined;
 }
 
 async function readCommands(

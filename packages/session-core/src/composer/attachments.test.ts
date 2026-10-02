@@ -10,6 +10,7 @@ import {
   MAX_IMAGE_BYTES,
   mentionToken,
   parseMentionTrigger,
+  parseSshHostContext,
   reserveImageFiles,
   reserveUploadFiles,
   validateImageFile,
@@ -301,5 +302,21 @@ describe('buildSkillActivation with uploads', () => {
     const result = buildSkillActivation('go', [image('a.png', 10), upload('pending.pdf', 5)]);
     expect(result.attachments).toHaveLength(1);
     expect(result.attachments?.[0]?.type).toBe('image');
+  });
+});
+
+
+describe('SSH host display snapshots', () => {
+  const hosts: ComposerAttachment[] = [{ kind: 'ssh', id: 'example-host', name: 'Example <host>\nname' }];
+  it('roundtrips display-only id/name safely through prompt and skill text', () => {
+    const content = buildPromptContent('Inspect', hosts)!;
+    expect(content).toHaveLength(1);
+    const text = content[0]!.type === 'text' ? content[0]!.text : '';
+    expect(parseSshHostContext(text)).toEqual({ body: 'Inspect', hosts });
+    expect(parseSshHostContext(buildSkillActivation('Inspect', hosts).args)).toEqual({ body: 'Inspect', hosts });
+    expect(text).not.toContain('ssh_hosts_added');
+  });
+  it.each(['Plain text', '<ssh_host_refs>\nnot JSON\n</ssh_host_refs>', '<ssh_host_refs>\n[{"id":42}]\n</ssh_host_refs>'])('leaves non-snapshots verbatim: %s', (text) => {
+    expect(parseSshHostContext(text)).toEqual({ body: text, hosts: [] });
   });
 });

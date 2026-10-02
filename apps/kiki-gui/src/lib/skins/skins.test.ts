@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { translate } from '@kiki/session-core/i18n';
 import { writeSettings } from '@kiki/session-core/settings';
+import { configureSpaceStorage } from '@kiki/session-core/storage';
 
 import {
   BUILTIN_SKINS,
@@ -17,6 +18,7 @@ import {
   applySkinVariables,
   buildSkinExport,
   builtinSkinDescriptionKey,
+  builtinSkinNameKey,
   clearSelectedSkinCache,
   declaredVariants,
   findBuiltinSkin,
@@ -50,6 +52,7 @@ function contrast(a: string, b: string): number {
 }
 
 afterEach(() => {
+  configureSpaceStorage(null);
   setSkinPreview(null);
   setUserSkins([], null);
   clearSelectedSkinCache();
@@ -60,35 +63,40 @@ afterEach(() => {
 });
 
 describe('built-in skins', () => {
-  it('ships Paper as the default with no colors of its own', () => {
-    const paper = findBuiltinSkin(DEFAULT_SKIN_ID);
-    expect(paper?.variants.light).toEqual({});
-    expect(paper?.variants.dark).toEqual({});
-  });
-
-  it('ships at least three skins beyond the default, with unique ids', () => {
-    const ids = BUILTIN_SKINS.map((skin) => skin.id);
-    expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.filter((id) => id !== DEFAULT_SKIN_ID).length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('gives every built-in a localized description in both locales', () => {
+  it('ships exactly six paired families with complete palettes and Inkstone as the default dark', () => {
+    expect(BUILTIN_SKINS.map((skin) => skin.id)).toEqual(['paper', 'porcelain', 'celadon', 'apricot', 'iris', 'contrast']);
     for (const skin of BUILTIN_SKINS) {
-      const key = builtinSkinDescriptionKey(skin.id);
-      expect(key, skin.id).toBeDefined();
-      expect(translate('en', key!), skin.id).not.toBe(key);
-      expect(translate('zh', key!), skin.id).not.toBe(translate('en', key!));
+      expect(declaredVariants(skin)).toEqual(['light', 'dark']);
+      for (const mode of ['light', 'dark'] as const) {
+        expect(Object.keys(skin.variants[mode]!.colors!)).toHaveLength(36);
+      }
+    }
+    expect(findBuiltinSkin(DEFAULT_SKIN_ID)?.variants.dark?.colors?.paper).toBe('#1B2226');
+  });
+
+  it('gives every built-in a localized pair name and description in both locales', () => {
+    for (const skin of BUILTIN_SKINS) {
+      for (const key of [builtinSkinDescriptionKey(skin.id), builtinSkinNameKey(skin.id)]) {
+        expect(key, skin.id).toBeDefined();
+        expect(translate('en', key!), skin.id).not.toBe(key);
+        expect(translate('zh', key!), skin.id).not.toBe(translate('en', key!));
+      }
     }
     expect(builtinSkinDescriptionKey('ocean')).toBeUndefined();
     expect(builtinSkinDescriptionKey('toString')).toBeUndefined();
   });
 
-  it('declares the variants it actually carries', () => {
-    for (const id of ['linen', 'graphite', 'forest', 'claret', 'heather', 'contrast']) {
-      expect(declaredVariants(findBuiltinSkin(id)!), id).toEqual(['light', 'dark']);
+  it('keeps shell text at AA on normal and hover grounds in both modes', () => {
+    for (const skin of BUILTIN_SKINS) {
+      for (const mode of ['light', 'dark'] as const) {
+        const c = skin.variants[mode]!.colors!;
+        for (const text of ['shellInk', 'shellInkStrong', 'shellInkSoft', 'shellDanger'] as const) {
+          for (const ground of ['shell', 'shellHover'] as const) {
+            expect(contrast(c[text]!, c[ground]!), `${skin.id}/${mode}/${text}/${ground}`).toBeGreaterThanOrEqual(4.5);
+          }
+        }
+      }
     }
-    // Nocturne is dark-only on purpose, and says so.
-    expect(declaredVariants(findBuiltinSkin('nocturne')!)).toEqual(['dark']);
   });
 
   it('keeps text at WCAG AA on every surface of every variant', () => {
@@ -238,19 +246,18 @@ describe('applySkinVariables', () => {
 
 describe('skinVariablesFor', () => {
   it('follows the resolved theme for a dual-variant skin', () => {
-    const prefs = { selection: { source: 'builtin' as const, id: 'graphite' }, tweaks: {} };
+    const prefs = { selection: { source: 'builtin' as const, id: 'porcelain' }, tweaks: {} };
     const light = skinVariablesFor(prefs, 'light');
     const dark = skinVariablesFor(prefs, 'dark');
-    expect(light['--color-paper']).toBe('#f1f3f6');
-    expect(dark['--color-paper']).toBe('#14181d');
+    expect(light['--color-paper']).toBe('#F8FBFF');
+    expect(dark['--color-paper']).toBe('#152238');
   });
 
-  it('applies a dark-only skin in light mode rather than inventing a light variant', () => {
-    const prefs = { selection: { source: 'builtin' as const, id: 'nocturne' }, tweaks: {} };
-    // Its single variant is the only thing the author approved, so it is what
-    // both themes get; the settings UI says the skin is dark-only.
-    expect(skinVariablesFor(prefs, 'light')['--color-paper']).toBe('#0c1222');
-    expect(skinVariablesFor(prefs, 'dark')['--color-paper']).toBe('#0c1222');
+  it('applies a dark-only user skin in both modes without inventing a variant', () => {
+    setUserSkins([{ kind: 'kiki-skin', version: 1, id: 'midnight', name: 'Midnight', variants: { dark: { colors: { paper: '#001122' } } } }], '/themes');
+    const prefs = { selection: { source: 'user' as const, id: 'midnight' }, tweaks: {} };
+    expect(skinVariablesFor(prefs, 'light')['--color-paper']).toBe('#001122');
+    expect(skinVariablesFor(prefs, 'dark')['--color-paper']).toBe('#001122');
   });
 
   it('falls back to the base palette for a selection that cannot be resolved', () => {
@@ -292,8 +299,8 @@ describe('skin prefs storage', () => {
     expect(readSkinPrefs().selection.id).toBe(DEFAULT_SKIN_ID);
   });
 
-  it('moves a stored retired built-in (Sand, Slate) to Paper and keeps the tweaks', () => {
-    for (const id of ['sand', 'slate']) {
+  it('migrates all eight retired built-ins on boot, preserving tweaks and brightness', () => {
+    for (const id of ['linen', 'graphite', 'forest', 'claret', 'heather', 'nocturne', 'sand', 'slate']) {
       expect(findBuiltinSkin(id), id).toBeUndefined();
       localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: 'builtin', id }, tweaks: { accent: '#0b6e87', radius: 6 } }));
       clearSelectedSkinCache();
@@ -301,18 +308,23 @@ describe('skin prefs storage', () => {
         selection: { source: 'builtin', id: DEFAULT_SKIN_ID },
         tweaks: { accent: '#0b6e87', radius: 6 },
       });
+      expect(skinVariablesFor(readSkinPrefs(), 'light')['--color-paper']).toBe('#FBFAF6');
+      expect(skinVariablesFor(readSkinPrefs(), 'dark')['--color-paper']).toBe('#1B2226');
     }
   });
 
-  it('paints a migrated selection as Paper, with no leftover skin attribute', () => {
-    writeSettings({ theme: 'light' });
-    // A write goes through the same normalizer the boot read does.
-    writeSkinPrefs({ selection: { source: 'builtin', id: 'slate' }, tweaks: {} });
-    applyCurrentSkin();
-    expect(readSkinPrefs().selection.id).toBe(DEFAULT_SKIN_ID);
-    expect(document.documentElement.dataset['skin']).toBe(DEFAULT_SKIN_ID);
-    // Paper is the stylesheet palette: nothing is written inline.
-    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('');
+  it('paints retired choices as Paper or Inkstone in main and desktop space storage', () => {
+    for (const space of [null, { homeId: 'example-space' }]) {
+      configureSpaceStorage(space);
+      for (const mode of ['light', 'dark'] as const) {
+        writeSettings({ theme: mode });
+        writeSkinPrefs({ selection: { source: 'builtin', id: 'nocturne' }, tweaks: {} });
+        applyCurrentSkin();
+        expect(readSkinPrefs().selection.id).toBe(DEFAULT_SKIN_ID);
+        expect(document.documentElement.dataset['skin']).toBe(DEFAULT_SKIN_ID);
+        expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe(mode === 'light' ? '#FBFAF6' : '#1B2226');
+      }
+    }
   });
 
   it('only retires built-ins: a user or pack skin that happens to be named slate is kept', () => {
@@ -338,8 +350,8 @@ describe('user skin catalog', () => {
 
   it('never resolves a user id to a same-named built-in', () => {
     setUserSkins([], null);
-    expect(resolveSkin({ source: 'user', id: 'graphite' })).toBeNull();
-    expect(resolveSkin({ source: 'builtin', id: 'graphite' })?.name).toBe('Graphite');
+    expect(resolveSkin({ source: 'user', id: 'porcelain' })).toBeNull();
+    expect(resolveSkin({ source: 'builtin', id: 'porcelain' })?.name).toBe('瓷白 Porcelain × 深海 Deepwater');
   });
 
   it('writes the selected user skin to the paint cache', () => {
@@ -391,15 +403,15 @@ describe('user skin catalog', () => {
 describe('startSkinSync', () => {
   it('applies the stored skin and follows a theme flip', () => {
     writeSettings({ theme: 'light' });
-    writeSkinPrefs({ selection: { source: 'builtin', id: 'graphite' }, tweaks: {} });
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'porcelain' }, tweaks: {} });
 
     const stop = startSkinSync();
-    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#f1f3f6');
-    expect(document.documentElement.dataset['skin']).toBe('graphite');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#F8FBFF');
+    expect(document.documentElement.dataset['skin']).toBe('porcelain');
 
     writeSettings({ theme: 'dark' });
     applyTheme('dark');
-    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#14181d');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#152238');
     stop();
   });
 
@@ -413,16 +425,15 @@ describe('startSkinSync', () => {
     });
     expect(document.documentElement.style.getPropertyValue('--color-accent')).toBe('#ff0000');
 
-    // Dropping the preview falls back to the stored skin — here the default
-    // palette, which sets no inline accent at all.
+    // Dropping the preview restores the stored default palette exactly.
     setSkinPreview(null);
-    expect(document.documentElement.style.getPropertyValue('--color-accent')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('--color-accent')).toBe('#C8401A');
     stop();
   });
 
   it('never leaves a preview in storage', () => {
     setSkinPreview({
-      selection: { source: 'builtin', id: 'graphite' },
+      selection: { source: 'builtin', id: 'porcelain' },
       tweaks: { accent: '#ff0000' },
     });
     expect(readSkinPrefs().tweaks).toEqual({});
@@ -433,7 +444,7 @@ describe('startSkinSync', () => {
     const stop = startSkinSync();
     stop();
     applySkinVariables(document.documentElement, {});
-    writeSkinPrefs({ selection: { source: 'builtin', id: 'graphite' }, tweaks: {} });
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'porcelain' }, tweaks: {} });
     expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('');
   });
 
@@ -447,33 +458,35 @@ describe('startSkinSync', () => {
 describe('buildSkinExport', () => {
   it('writes a resolved file, not a diff against the built-in', () => {
     const exported = buildSkinExport(
-      { selection: { source: 'builtin', id: 'graphite' }, tweaks: { accent: '#ff0000', radius: 4 } },
-      'My Graphite',
+      { selection: { source: 'builtin', id: 'porcelain' }, tweaks: { accent: '#ff0000', radius: 4 } },
+      'My Porcelain',
     );
-    expect(exported.filename).toBe('my-graphite.json');
+    expect(exported.filename).toBe('my-porcelain.json');
     const file = JSON.parse(exported.json);
     expect(file.kind).toBe('kiki-skin');
-    expect(file.id).toBe('my-graphite');
-    expect(file.name).toBe('My Graphite');
-    // The tweak is baked in, and the rest of Graphite's tokens travel with it.
+    expect(file.id).toBe('my-porcelain');
+    expect(file.name).toBe('My Porcelain');
+    // The tweak is baked in, and the rest of Porcelain's tokens travel with it.
     expect(file.variants.light.colors.accent).toBe('#ff0000');
-    expect(file.variants.light.colors.paper).toBe('#f1f3f6');
+    expect(file.variants.light.colors.paper).toBe('#F8FBFF');
     expect(file.variants.dark.colors.accent).toBe('#ff0000');
     expect(file.variants.light.shape.radius).toBe(4);
   });
 
-  it('exports the tweaks alone when the base skin is the default palette', () => {
+  it('exports the complete default pair with tweaks baked in', () => {
     const file = JSON.parse(buildSkinExport(
       { selection: { source: 'builtin', id: DEFAULT_SKIN_ID }, tweaks: { accent: '#00ff00' } },
       'Mine',
     ).json);
-    expect(file.variants.light.colors).toEqual({ accent: '#00ff00' });
-    expect(file.variants.dark.colors).toEqual({ accent: '#00ff00' });
+    for (const mode of ['light', 'dark'] as const) {
+      expect(file.variants[mode].colors).toEqual({ ...findBuiltinSkin(DEFAULT_SKIN_ID)!.variants[mode]!.colors, accent: '#00ff00' });
+    }
   });
 
-  it('only exports the variants the source skin declares', () => {
+  it('only exports the variants a user skin declares', () => {
+    setUserSkins([{ kind: 'kiki-skin', version: 1, id: 'midnight', name: 'Midnight', variants: { dark: { colors: { paper: '#001122' } } } }], '/themes');
     const file = JSON.parse(buildSkinExport(
-      { selection: { source: 'builtin', id: 'nocturne' }, tweaks: {} },
+      { selection: { source: 'user', id: 'midnight' }, tweaks: {} },
       'Night',
     ).json);
     expect(Object.keys(file.variants)).toEqual(['dark']);

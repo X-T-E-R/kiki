@@ -16,6 +16,8 @@ import {
   DEFAULT_SKIN_ID,
   buildSkinExport,
   builtinSkinDescriptionKey,
+  builtinSkinNameKey,
+  findBuiltinSkin,
   declaredVariants,
   getUserSkinsDirectory,
   packSkinOf,
@@ -36,14 +38,10 @@ export function useSkinPrefs() {
   return useSyncExternalStore(subscribeSkinPrefs, skinPrefsSnapshot, skinPrefsServerSnapshot);
 }
 
-/**
- * Paper (the default skin) carries no colors: it is the stylesheet palette in
- * src/index.css. Its own values live here, because the live tokens belong to
- * whichever skin is selected and would make Paper's swatch mirror that one.
- */
-export const PAPER_SWATCH: Record<ResolvedTheme, { canvas: string; paper: string; panel: string; ink: string; accent: string }> = {
-  light: { canvas: '#f2efe8', paper: '#fbfaf6', panel: '#fffdfa', ink: '#1b1a17', accent: '#c8401a' },
-  dark: { canvas: '#13120f', paper: '#1a1915', panel: '#211f1b', ink: '#ece8e0', accent: '#f07a4c' },
+/** Empty user variants preview the default, not the currently selected skin. */
+export const PAPER_SWATCH = {
+  light: findBuiltinSkin(DEFAULT_SKIN_ID)!.variants.light!.colors!,
+  dark: findBuiltinSkin(DEFAULT_SKIN_ID)!.variants.dark!.colors!,
 };
 
 /** A swatch row rendered from the skin's own tokens, so it cannot lie. */
@@ -101,6 +99,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
           const variants = declaredVariants(skin);
           const only = variants.length === 1 ? t(variants[0] === 'dark' ? 'st.skin.darkOnly' : 'st.skin.lightOnly') : null;
           // Built-ins speak the UI language; a user skin shows its author's text.
+          const nameKey = source === 'builtin' ? builtinSkinNameKey(skin.id) : undefined;
           const descriptionKey = source === 'builtin' ? builtinSkinDescriptionKey(skin.id) : undefined;
           const description = descriptionKey !== undefined ? t(descriptionKey) : skin.description;
           return (
@@ -119,7 +118,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                 <SkinSwatch skin={skin} theme={theme} />
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-baseline gap-x-1.5">
-                    <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{skin.name}</span>
+                    <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{nameKey !== undefined ? t(nameKey) : skin.name}</span>
                     <span className="text-[12px] text-ink-faint">
                       {originLabel(source, skin.id)}
                       {only !== null ? ` · ${only}` : ''}

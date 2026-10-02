@@ -5,7 +5,7 @@ import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 
-import { HOOKS_SECTION, type HookDefConfig } from '../configSection';
+import { HOOKS_SECTION, legacyHooks, type HooksConfig } from '../configSection';
 import {
   IExternalHooksRunnerService,
   type ExternalHooksRunnerFailureMode,
@@ -124,9 +124,9 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
 
   private async load(): Promise<void> {
     await this.config.ready;
-    const configured = this.config.get(HOOKS_SECTION) as readonly HookDefConfig[] | undefined;
+    const configured = this.config.get<HooksConfig>(HOOKS_SECTION);
     const pluginHooks = await this.plugins.enabledHooks();
-    this.byEvent = indexHooks([...(configured ?? []), ...pluginHooks]);
+    this.byEvent = indexHooks([...legacyHooks(configured), ...pluginHooks]);
     this.hasSuccessfulSnapshot = true;
     this.loadFailure = undefined;
     this._onDidReload.fire();

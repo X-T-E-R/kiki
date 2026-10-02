@@ -32,6 +32,12 @@ const listWorkspaceSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
+const meta = vi.fn();
+const sshList = vi.fn();
+const sshSessionHosts = vi.fn();
+const sshAdd = vi.fn();
+const sshRemove = vi.fn();
+const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', hostname: 'example.test', agentAccess: 'offered' };
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
@@ -42,6 +48,8 @@ vi.mock('../state/connection', () => ({
       listNamedAgentProfiles,
       getAgentCapabilities,
       uploadFile,
+      meta,
+      klient: { rest: { ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } } },
     },
   }),
   // The persona chip's face; letter avatars need no connection.
@@ -82,6 +90,11 @@ beforeEach(() => {
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
+  meta.mockReset().mockResolvedValue({ experimental_flags: { native_ssh: false } });
+  sshList.mockReset().mockResolvedValue({ hosts: [sshHost] });
+  sshSessionHosts.mockReset().mockResolvedValue({ hosts: [] });
+  sshAdd.mockReset().mockResolvedValue({});
+  sshRemove.mockReset().mockResolvedValue({});
   selectFilesNative.mockReset();
   onFileDrop.mockReset().mockImplementation((_callback: (drop: HostFileDrop) => void) => () => {});
   desktopRuntime.value = false;
@@ -2700,5 +2713,53 @@ describe('Composer send-timing menu', () => {
     });
     expect(menu(container)).toBeNull();
     expect(sendButton(container).getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('SSH host scope and message snapshots', () => {
+  it('offers SSH preselection on /new without attempting a session join', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'Inspect the host', onSend });
+    await openAddMenu(container);
+    expect(container.querySelector('[data-add-menu-ssh]')).not.toBeNull();
+    await click(container.querySelector('[data-add-menu-ssh]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    expect(sshAdd).not.toHaveBeenCalled();
+    expect(sshSessionHosts).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-composer-ssh-scope]')?.textContent).toBe('Hosts to join');
+    await click(container.querySelector('[data-add-menu-trigger]')!);
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    expect(onSend).toHaveBeenCalledWith('Inspect the host', [{ kind: 'ssh', id: 'example-host', name: 'Example host' }]);
+  });
+
+  it('keeps persistent joined-host status after sending and snapshots it, while X leaves the session', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect the host', onSend });
+    expect(container.querySelector('[data-composer-ssh-scope]')?.textContent).toBe('Session hosts');
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('Inspect the host', [{ kind: 'ssh', id: 'example-host', name: 'Example host' }]);
+    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    expect(sshRemove).not.toHaveBeenCalled();
+    sshSessionHosts.mockResolvedValue({ hosts: [] });
+    await click(container.querySelector('[data-composer-ssh-chip-remove]')!);
+    await settle();
+    expect(sshRemove).toHaveBeenCalledWith('session-example', 'example-host');
+    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+  });
+
+  it('resets /new preselection on a session transition, without deleting persistent hosts', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    const { container, rerender } = await renderComposer();
+    await openAddMenu(container);
+    await click(container.querySelector('[data-add-menu-ssh]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    await rerender({ sessionId: 'session-example' });
+    await rerender({});
+    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+    expect(sshRemove).not.toHaveBeenCalled();
   });
 });

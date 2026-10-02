@@ -110,10 +110,14 @@ export class AgentContextInjectorService extends Service implements IAgentContex
 
   private async inject(isNewTurn: boolean): Promise<void> {
     const parts: CapabilityDeltaPart[] = [];
-    for (const entry of [...this.entries].toSorted((a, b) => Number(a.name === 'runtime_snapshot') - Number(b.name === 'runtime_snapshot'))) {
+    const entries = [...this.entries].toSorted((a, b) => Number(a.name === 'runtime_snapshot') - Number(b.name === 'runtime_snapshot'));
+    for (const entry of entries.filter((entry) => !entry.name.startsWith('hook_rule/'))) {
       await this.injectEntry(entry, isNewTurn, parts);
     }
     this.appendCapabilities(parts);
+    for (const entry of entries.filter((entry) => entry.name.startsWith('hook_rule/'))) {
+      await this.injectEntry(entry, isNewTurn, []);
+    }
   }
 
   private appendCapabilities(parts: readonly CapabilityDeltaPart[]): void {
@@ -136,7 +140,11 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       parts.push({ variant: entry.name, content: result.content, disclosure: result.disclosure });
       return;
     }
-    this.appendResult(entry, content);
+    try {
+      this.appendResult(entry, content);
+    } catch (error) {
+      this.log.error('context injection failed; skipping it', { name: entry.name, error });
+    }
   }
 
   private providerContext(

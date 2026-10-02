@@ -21,6 +21,13 @@ import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externa
 import '#/features/externalHooks/externalHooksFeature';
 import { ISessionExternalHooksService } from '#/features/externalHooks/session/sessionExternalHooks';
 import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
+import { IModelService } from '#/kosong/model/model';
+import { IAgentHookRules } from '#/features/externalHooks/agent/hookRules';
+import { IHookRulesSession } from '#/features/externalHooks/session/hookRules';
+import { IHookRulesRegistry } from '#/features/externalHooks/app/hookRules';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 
@@ -52,27 +59,36 @@ describe('ExternalHooksFeature — assembly (src/features/externalHooks)', () =>
       [IBootstrapService, stubBootstrap()],
       [
         IConfigService,
-        { _serviceBrand: undefined, ready: Promise.resolve(), get: () => undefined },
+        { _serviceBrand: undefined, ready: Promise.resolve(), get: () => undefined, diagnostics: () => [], onDidSectionChange: Event.None },
       ],
       [
         IPluginService,
-        { _serviceBrand: undefined, enabledHooks: async () => [], onDidReload: Event.None },
+        { _serviceBrand: undefined, enabledHooks: async () => [], enabledHookRules: async () => [], onDidReload: Event.None },
       ],
       [IHostProcessService, { _serviceBrand: undefined }],
+      [IModelService, { _serviceBrand: undefined, ready: Promise.resolve(), onDidChangeModels: Event.None, resolveId: () => undefined }],
+      [IHostEnvironment, { _serviceBrand: undefined, pathClass: 'posix' }],
+      [IHostFileSystem, { _serviceBrand: undefined }],
+      [IHostFsWatchService, { _serviceBrand: undefined }],
     ]);
     const manager = host.app.accessor.get(IFeatureManager);
     expect(manager.units().map((unit) => unit.name)).toContain('externalHooks');
 
     const runner = host.app.accessor.get(IExternalHooksRunnerService);
     expect(runner).toBeInstanceOf(ExternalHooksRunnerService);
+    const registry = host.app.accessor.get(IHookRulesRegistry);
+    await registry.ready;
+    expect(registry.snapshot().diagnostics).toEqual([]);
 
     const sessionUnits = collectionViewOf(host.app, ScopeUnits(LifecycleScope.Session));
     expect(sessionUnits.items.map((item) => item.name)).toEqual([
       `externalHooks:${String(ISessionExternalHooksService)}`,
+      `externalHooks:${String(IHookRulesSession)}`,
     ]);
     const agentUnits = collectionViewOf(host.app, ScopeUnits(LifecycleScope.Agent));
     expect(agentUnits.items.map((item) => item.name)).toEqual([
       `externalHooks:${String(IAgentExternalHooksService)}`,
+      `externalHooks:${String(IAgentHookRules)}`,
     ]);
 
     await manager.unprovideUnit('externalHooks');

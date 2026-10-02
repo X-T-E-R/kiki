@@ -1,3 +1,4 @@
+import { RequestGovernanceErrors } from '#/app/requestGovernance/errors';
 import { CoreErrors } from '#/_base/errors/codes';
 import { DispatchErrors } from '#/session/dispatch/errors';
 export { DispatchErrors } from '#/session/dispatch/errors';
@@ -80,8 +81,10 @@ export { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
 export { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 export { EventErrors } from '#/app/event/errors';
 export { StateErrors } from '#/state/errors';
+export { RequestGovernanceErrors } from '#/app/requestGovernance/errors';
 
 export const ErrorCodes = {
+  ...RequestGovernanceErrors.codes,
   ...CoreErrors.codes,
   ...DispatchErrors.codes,
   ...AgentLifecycleErrors.codes,

@@ -21,6 +21,7 @@ import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
   readLayoutPreferences,
+  writeLayoutPreferences,
   resetSessionSeen,
 } from '@kiki/session-core/settings';
 import { HostProvider, browserHost, type HostAdapter } from '../host';
@@ -58,6 +59,7 @@ vi.mock('../state/connection', () => ({
   useOptionalConnection: () => ({ client: { getSession } }),
   useConnection: () => ({
     client: {
+      getRequestGovernance: async () => ({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] }),
       searchMessages,
       retrySearchIndexer,
       setWorkspacePinned,
@@ -721,10 +723,12 @@ describe('Sidebar entry distribution', () => {
     const { container } = await mount();
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
-    const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.textContent);
+    const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.children[1]?.textContent);
     expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities']);
     expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
+    await settle();
+    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
     expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
     // Memory is permanent, on or off: switched off the page is the turn-on guide.
@@ -1838,4 +1842,21 @@ describe('collapsed icon rail', () => {
     expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBe('true');
     expect(container.querySelector('[data-session-list]')).toBeNull();
   });
+});
+
+it('keeps time-group headings in nonshrinking normal flow instead of overlaying long session titles', async () => {
+  writeLayoutPreferences({ sidebarCollapsed: false });
+  const one = { ...session('one'), title: 'A very long session title '.repeat(10) };
+  const two = { ...session('two'), title: 'Another long title '.repeat(10) };
+  const { container } = await mount({ sessions: [one, two], groupBy: 'time', sessionGroups: [
+    { key: 'today', label: 'Today', items: [one] },
+    { key: 'week', label: 'Last 7 days', items: [two] },
+  ] });
+  for (const heading of container.querySelectorAll<HTMLElement>('[data-session-group]')) {
+    expect(heading.classList.contains('sticky')).toBe(false);
+    expect(heading.classList.contains('shrink-0')).toBe(true);
+    expect(heading.classList.contains('min-h-7')).toBe(true);
+    expect(heading.querySelector('span')?.classList.contains('truncate')).toBe(true);
+  }
+  expect(container.querySelectorAll('[data-session-group]')).toHaveLength(2);
 });

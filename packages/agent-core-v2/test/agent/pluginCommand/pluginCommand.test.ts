@@ -46,6 +46,7 @@ function pluginServiceStub(commands: readonly PluginCommandDef[]): IPluginServic
     enabledMcpServers: async () => ({}),
     mcpServerEntries: async () => [],
     enabledHooks: async () => [],
+    enabledHookRules: async () => [],
     hasLoadedSnapshot: () => true,
   };
 }

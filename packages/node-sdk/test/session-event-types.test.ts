@@ -68,6 +68,7 @@ describe('Event public types', () => {
     function handle(event: Event): void {
       switch (event.type) {
         case 'agent.status.updated':
+        case 'agent_message.delivered':
         case 'session.meta.updated':
         case 'session.worktree.changed':
         case 'event.session.created':

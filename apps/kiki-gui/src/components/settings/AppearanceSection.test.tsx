@@ -123,10 +123,10 @@ describe('AppearanceSection', () => {
   });
 
   it('switches skin instantly and marks the selection without an accent fill', async () => {
-    await act(async () => { button('[data-skin-choice="graphite"]').click(); });
-    expect(readSkinPrefs().selection.id).toBe('graphite');
-    expect(document.documentElement.dataset['skin']).toBe('graphite');
-    const selected = button('[data-skin-choice="graphite"]');
+    await act(async () => { button('[data-skin-choice="porcelain"]').click(); });
+    expect(readSkinPrefs().selection.id).toBe('porcelain');
+    expect(document.documentElement.dataset['skin']).toBe('porcelain');
+    const selected = button('[data-skin-choice="porcelain"]');
     expect(selected.getAttribute('aria-pressed')).toBe('true');
     expect(selected.className).not.toContain('accent');
   });
@@ -139,14 +139,21 @@ describe('AppearanceSection', () => {
     expect(container.querySelector('[data-appearance-restore]')).not.toBeNull();
   });
 
-  it('shows built-in skin descriptions in the UI language', () => {
-    const paper = button('[data-skin-choice="paper"]').querySelector('[data-skin-description]');
-    expect(paper?.textContent).toBe(translate('en', 'st.skin.desc.paper'));
+  it('shows exactly six built-in families with localized pair names and descriptions', () => {
+    const families = ['paper', 'porcelain', 'celadon', 'apricot', 'iris', 'contrast'];
+    const choices = [...container.querySelectorAll<HTMLElement>('[data-skin-choice]')].map((node) => node.dataset['skinChoice']);
+    expect(choices.filter((id) => families.includes(id!))).toEqual(families);
+    for (const id of ['linen', 'graphite', 'forest', 'claret', 'heather', 'nocturne', 'sand', 'slate']) {
+      expect(choices).not.toContain(id);
+    }
+    const paper = button('[data-skin-choice="paper"]');
+    expect(paper.textContent).toContain(translate('en', 'st.skin.name.paper'));
+    expect(paper.querySelector('[data-skin-description]')?.textContent).toBe(translate('en', 'st.skin.desc.paperPair'));
   });
 
   it('restores every customization, keeps the theme choice, and can undo it', async () => {
     await act(async () => { button('[data-theme-choice="dark"]').click(); });
-    await act(async () => { button('[data-skin-choice="graphite"]').click(); });
+    await act(async () => { button('[data-skin-choice="porcelain"]').click(); });
     await act(async () => { button('[data-motion-choice="full"]').click(); });
 
     await act(async () => { button('[data-appearance-restore]').click(); });
@@ -159,7 +166,7 @@ describe('AppearanceSection', () => {
     await act(async () => { undo.click(); });
     expect(readSettings().theme).toBe('dark');
     expect(readSettings().motion).toBe('full');
-    expect(readSkinPrefs().selection.id).toBe('graphite');
+    expect(readSkinPrefs().selection.id).toBe('porcelain');
   });
 
   it('takes a typed family for each role, applies it as you type, and leaves it for a preset', async () => {

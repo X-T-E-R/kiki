@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { IConfigService } from '#/app/config/config';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
+import { RequestGovernanceService } from '#/app/requestGovernance/requestGovernanceService';
+import { StubConfigService } from '../stubs';
 import type OpenAI from 'openai';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 
@@ -295,7 +301,8 @@ describe('ModelRequesterImpl request execution', () => {
 
     expect(provider.calls).toHaveLength(1);
     const options = provider.calls[0]!.options;
-    expect(options?.signal).toBe(signal);
+    expect(options?.signal?.aborted).toBe(signal.aborted);
+    expect(options?.signal).toBeInstanceOf(AbortSignal);
     expect(options?.auth).toEqual({ apiKey: 'sk-1' });
     expect(options?.cacheKey).toBe('session-1');
     expect(options?.serviceTier).toBe('priority');
@@ -492,4 +499,126 @@ describe('buildStreamTiming', () => {
       clientConsumeMs: 60,
     });
   });
+});
+
+
+describe('ModelRequesterImpl attempt admission', () => {
+  it('releases each attempt once before tool work and reacquires OAuth replay with the same logical identity', async () => {
+    const provider = new FakeChatProvider();
+    provider.handler = async (index) => {
+      if (index === 0) throw new APIStatusError(401, 'expired');
+      return streamOf([{ type: 'text', text: 'ready for tools' }]);
+    };
+    const attempts: import('#/kosong/model/requestAdmission').RequestAttempt[] = [];
+    const release = vi.fn();
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth: async () => ({ apiKey: 'example-key' }) }), registryReturning(provider), {
+      acquire: async (attempt) => { attempts.push(attempt); return { release }; },
+    });
+    await collect(requester.request(INPUT));
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]!.logicalRequestId).toBe(attempts[1]!.logicalRequestId);
+    expect(attempts[0]!.attemptId).not.toBe(attempts[1]!.attemptId);
+    expect(release).toHaveBeenCalledTimes(2);
+    const tool = vi.fn(() => expect(release).toHaveBeenCalledTimes(2));
+    tool();
+  });
+
+  it.each(['end', 'error', 'abort', 'consumer-return'] as const)('holds the permit through controlled stream cleanup: %s', async (outcome) => {
+    const provider = new FakeChatProvider();
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    let started!: () => void;
+    const streaming = new Promise<void>((resolve) => { started = resolve; });
+    let cleaned = false;
+    provider.handler = async () => ({
+      ...streamOf([]),
+      async *[Symbol.asyncIterator]() {
+        try {
+          yield { type: 'text' as const, text: 'partial' };
+          started();
+          const signal = provider.calls[0]!.options!.signal!;
+          await new Promise<void>((resolve) => {
+            signal.addEventListener('abort', () => resolve(), { once: true });
+            void held.then(resolve);
+          });
+          if (outcome === 'error') throw new APIStatusError(500, 'failed');
+        } finally { cleaned = true; }
+      },
+    });
+    const release = vi.fn(() => expect(cleaned).toBe(true));
+    const acquire = vi.fn(async () => ({ release }));
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), { acquire });
+    const controller = new AbortController();
+    if (outcome === 'consumer-return') {
+      const iterator = requester.request(INPUT, controller.signal)[Symbol.asyncIterator]();
+      await iterator.next(); await streaming;
+      expect(release).not.toHaveBeenCalled();
+      await iterator.return!();
+      await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    } else {
+      const result = collect(requester.request(INPUT, controller.signal));
+      const expected = outcome === 'end' ? expect(result).resolves.toBeDefined() : expect(result).rejects.toBeDefined();
+      await streaming;
+      expect(release).not.toHaveBeenCalled();
+      if (outcome === 'abort') controller.abort(); else finish();
+      await expected;
+    }
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks cancellation after admission before invoking a provider', async () => {
+    const provider = new FakeChatProvider();
+    const controller = new AbortController();
+    const release = vi.fn();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), {
+      acquire: async () => { controller.abort(); return { release }; },
+    });
+    await expect(collect(requester.request(INPUT, controller.signal))).rejects.toBeDefined();
+    expect(provider.calls).toHaveLength(0);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+it('limits actual native provider streams from two sessions to two, and never sends cancelled queued requests', async () => {
+  const ix = new TestInstantiationService();
+  ix.set(IConfigService, new StubConfigService({ requestGovernance: { rules: [{ id: 'cap', maxConcurrent: 2 }] } }));
+  ix.set(IRequestGovernance, new SyncDescriptor(RequestGovernanceService));
+  const governor = ix.get(IRequestGovernance);
+  const provider = new FakeChatProvider();
+  let liveStreams = 0;
+  let peak = 0;
+  let finish!: () => void;
+  let held = new Promise<void>((resolve) => { finish = resolve; });
+  provider.handler = async () => {
+    liveStreams += 1;
+    peak = Math.max(peak, liveStreams);
+    return { ...streamOf([]), async *[Symbol.asyncIterator]() {
+      try {
+        await held;
+        yield { type: 'text' as const, text: 'complete' };
+      } finally { liveStreams -= 1; }
+    } };
+  };
+  const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), governor);
+  const attribution = (sessionId: string) => ({ logicalRequestId: `logical-${sessionId}`, sessionId, agentId: 'main', purpose: 'turn', waitBudget: { waitedMs: 0 } });
+  try {
+    const work = Array.from({ length: 40 }, (_, index) => collect(requester.request(INPUT, undefined, { attribution: attribution(index % 2 === 0 ? 'session-a' : 'session-b') })));
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(provider.calls).toHaveLength(2);
+    expect(governor.snapshot()).toMatchObject({ active: 2, queued: 38 });
+    const cancelled = new AbortController();
+    const result = collect(requester.request(INPUT, cancelled.signal, { attribution: attribution('session-c') }));
+    const rejection = expect(result).rejects.toBeDefined();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(governor.snapshot().queued).toBe(39);
+    cancelled.abort(); await rejection;
+    held = Promise.resolve(); finish();
+    await Promise.all(work);
+    expect(provider.calls).toHaveLength(40);
+    expect(peak).toBe(2);
+    expect(liveStreams).toBe(0);
+    expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
+  } finally { ix.dispose(); }
 });

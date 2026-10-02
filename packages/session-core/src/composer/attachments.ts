@@ -47,7 +47,35 @@ export interface RetainedAttachment {
   content: Extract<MessageContent, { type: 'image' | 'video' | 'file' }>;
 }
 
-export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment | RetainedAttachment;
+export interface SshHostAttachment {
+  kind: 'ssh';
+  id: string;
+  name: string;
+}
+
+export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment | RetainedAttachment | SshHostAttachment;
+
+/** Display snapshot only; joining a host still uses the session SSH API. */
+export function parseSshHostContext(text: string): { body: string; hosts: readonly SshHostAttachment[] } {
+  const match = /(?:\n\n|^)<ssh_host_refs>\n([^\n]+)\n<\/ssh_host_refs>$/.exec(text);
+  if (match === null) return { body: text, hosts: [] };
+  try {
+    const value: unknown = JSON.parse(match[1]!);
+    if (!Array.isArray(value) || !value.every((host: unknown) => {
+      if (typeof host !== 'object' || host === null) return false;
+      const entry = host as Record<string, unknown>;
+      return typeof entry['id'] === 'string' && typeof entry['name'] === 'string';
+    })) return { body: text, hosts: [] };
+    return { body: text.slice(0, match.index), hosts: value.map((host: { id: string; name: string }) => ({ kind: 'ssh', id: host.id, name: host.name })) };
+  } catch {
+    return { body: text, hosts: [] };
+  }
+}
+
+function sshHostContext(attachments: readonly ComposerAttachment[]): string {
+  const hosts = attachments.filter((item): item is SshHostAttachment => item.kind === 'ssh');
+  return hosts.length === 0 ? '' : `<ssh_host_refs>\n${JSON.stringify(hosts.map(({ id, name }) => ({ id, name })))}\n</ssh_host_refs>`;
+}
 
 /**
  * A dropped/pasted non-image file, uploaded to the server's file store at
@@ -270,6 +298,8 @@ export function buildPromptContent(
   if (mentions.length > 0) parts.push(mentions.map(mentionToken).join(' '));
   if (text.trim() !== '') parts.push(text.trim());
   const content: MessageContent[] = [];
+  const sshContext = sshHostContext(attachments);
+  if (sshContext !== '') parts.push(sshContext);
   if (parts.length > 0) content.push({ type: 'text', text: parts.join('\n\n') });
   for (const image of images) {
     const part: ImageContent = {
@@ -311,7 +341,8 @@ export function buildSkillActivation(
   const media = (buildPromptContent('', attachments) ?? []).filter(
     (part): part is ImageContent | VideoContent | FileContent => part.type === 'image' || part.type === 'video' || part.type === 'file',
   );
-  return { args: mergedArgs, attachments: media.length > 0 ? media : undefined };
+  const sshContext = sshHostContext(attachments);
+  return { args: [mergedArgs, sshContext].filter((part) => part !== '').join('\n\n'), attachments: media.length > 0 ? media : undefined };
 }
 
 /**
