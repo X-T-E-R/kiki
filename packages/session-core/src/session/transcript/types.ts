@@ -355,6 +355,7 @@ export interface NoticeBlock {
   readonly turnId?: string;
   readonly i18n?: { readonly key: I18nKey; readonly params?: I18nParams };
   readonly reasonCodes?: readonly string[];
+  readonly markerRepeatCount?: number;
   /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
   readonly executor?: ExecutorNote;
   /**

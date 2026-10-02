@@ -1587,6 +1587,77 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     })]);
   });
 
+  it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },
+      ...Array.from({ length: 12 }, (_, index) => ({ type: 'goal.update', tokensUsed: index + 1, time: 2000 + index })),
+    ];
+    const snapshot = replayAgentWire('main', records);
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(snapshot.items).toHaveLength(13);
+    const latest = snapshot.items.at(-1);
+    expect(first.blocks).toEqual([expect.objectContaining({
+      id: `agent-marker-${latest?.kind === 'marker' ? latest.markerId : ''}`,
+      kind: 'notice', text: 'goal', markerRepeatCount: 13, createdAt: new Date(2011).toISOString(),
+    })]);
+    expect(snapshot.meta.goal?.budgetUsed).toBe(12);
+    const reset = projectAgentTranscriptView(first, 'main', snapshot);
+    expect(reset.blocks).toEqual(first.blocks);
+    const appended = projectAgentTranscriptView(reset, 'main', replayAgentWire('main', [
+      ...records, { type: 'goal.update', tokensUsed: 13, time: 3000 },
+    ]));
+    expect(appended.blocks).toEqual([expect.objectContaining({ markerRepeatCount: 14, createdAt: new Date(3000).toISOString() })]);
+  });
+
+  it('folds live marker operations idempotently and recomputes counts when older history arrives', () => {
+    const store = new AgentTranscript('main');
+    const ops: TranscriptOperation[] = Array.from({ length: 12 }, (_, index) => ({
+      op: 'marker.upsert', item: { kind: 'marker', marker: 'goal', markerId: `live-${index}`, at: FIXED_AT },
+    }));
+    store.apply(ops);
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', store.snapshot());
+    store.apply(ops);
+    const duplicate = projectAgentTranscriptView(first, 'main', store.snapshot());
+    expect(duplicate.blocks).toEqual([expect.objectContaining({ id: 'agent-marker-live-11', markerRepeatCount: 12 })]);
+    const older = emptySnapshot({ items: [
+      { kind: 'marker', markerId: 'older-1', marker: 'goal' },
+      { kind: 'marker', markerId: 'older-2', marker: 'goal' },
+      ...store.snapshot().items,
+    ] });
+    const prepended = projectAgentTranscriptView(duplicate, 'main', older);
+    expect(prepended.blocks).toEqual([expect.objectContaining({ id: 'agent-marker-live-11', markerRepeatCount: 14 })]);
+  });
+
+  it.each(['goal', 'skill'])('folds consecutive %s dividers but not across messages, tools or other markers', (marker) => {
+    const item = (markerId: string, name = marker) => ({ kind: 'marker' as const, markerId, marker: name, at: FIXED_AT });
+    const turn = userTurnSnapshot();
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [
+      item('a'), item('b'), ...turn.items, item('c'), item('d'), item('boundary', marker === 'goal' ? 'skill' : 'goal'), item('e'), item('f'),
+    ] })).blocks;
+    expect(blocks.filter((block) => block.kind === 'notice')).toMatchObject([
+      { id: 'agent-marker-b', markerRepeatCount: 2 }, { id: 'agent-marker-d', markerRepeatCount: 2 },
+      { id: 'agent-marker-boundary' }, { id: 'agent-marker-f', markerRepeatCount: 2 },
+    ]);
+    expect(blocks.some((block) => block.kind === 'user')).toBe(true);
+    expect(blocks.some((block) => block.kind === 'assistant')).toBe(true);
+    const toolTurn = { kind: 'turn' as const, turnId: 't2', ordinal: 2, state: 'completed' as const, origin: { kind: 'user' as const },
+      steps: [{ kind: 'step' as const, stepId: 't2.1', turnId: 't2', ordinal: 1, state: 'completed' as const, frames: [{ kind: 'tool' as const, frameId: 'tool-example', toolCallId: 'tc-example', name: 'Read', state: 'done' as const }] }] };
+    const withTool = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [item('before'), toolTurn, item('after')] })).blocks;
+    expect(withTool.map((block) => block.kind)).toEqual(['notice', 'tool', 'notice']);
+    expect(withTool.filter((block) => block.kind === 'notice').every((block) => block.markerRepeatCount === undefined)).toBe(true);
+  });
+
+  it('retains distinct marker labels and the latest compaction details', () => {
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [
+      { kind: 'marker', markerId: 'm1', marker: 'model.switch', payload: { from: 'example/a', to: 'example/b' } },
+      { kind: 'marker', markerId: 'm2', marker: 'model.switch', payload: { from: 'example/b', to: 'example/c' } },
+      { kind: 'marker', markerId: 'c1', marker: 'compaction', payload: { reasonCodes: ['notes_missing'] } },
+      { kind: 'marker', markerId: 'c2', marker: 'compaction', at: FIXED_AT_2, payload: { reasonCodes: ['tool_error'] } },
+    ] })).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks.at(-1)).toMatchObject({ id: 'agent-marker-c2', createdAt: FIXED_AT_2, reasonCodes: ['tool_error'], markerRepeatCount: 2 });
+  });
+
   it('summarizes skill markers even when their payload contains the full loaded document', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
@@ -1648,12 +1719,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const keys = projected.blocks.map((block) => (block.kind === 'notice' ? block.i18n?.key : undefined));
     expect(keys).toEqual([
       'transcript.marker.compactionSummarize',
-      'transcript.marker.compactionSummarize',
       'transcript.marker.compactionFresh',
       'transcript.marker.compactionFallback',
       'transcript.marker.compactionRescue',
     ]);
-    expect(projected.blocks[3]).toMatchObject({ reasonCodes: ['notes_missing'] });
+    expect(projected.blocks[2]).toMatchObject({ reasonCodes: ['notes_missing'] });
+    expect(projected.blocks[0]).toMatchObject({ id: 'agent-marker-c-summarize', markerRepeatCount: 2 });
     expect(projected.blocks[0]).not.toHaveProperty('reasonCodes', expect.any(Array));
   });
 
@@ -1683,10 +1754,10 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       .filter((block) => block.kind === 'notice')
       .map((block) => [block.id, block.kind === 'notice' ? block.i18n?.key : undefined]);
     expect(notices).toEqual([
-      ['agent-marker-wire:v2:r10:compaction', 'transcript.marker.compactionFallback'],
       ['agent-marker-wire:v2:r603:compaction', 'transcript.marker.compactionFallback'],
       ['agent-marker-live-m4', 'notice.compacting'],
     ]);
+    expect(projected.blocks[0]).toMatchObject({ markerRepeatCount: 2 });
   });
 
   it('carries external-engine records as executor notes on their turn', () => {

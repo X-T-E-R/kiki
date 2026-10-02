@@ -2581,12 +2581,36 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return insertInteractionBlocks(
+  return foldConsecutiveMarkerDividers(insertInteractionBlocks(
     withSubagentEvents,
     response.interactions ?? [],
     response.agent_id,
     previous,
-  );
+  ));
+}
+
+function isMarkerDivider(block: Block | undefined): block is NoticeBlock {
+  return block?.kind === 'notice' && block.id.startsWith('agent-marker-') &&
+    block.i18n?.key.startsWith('transcript.marker.') === true;
+}
+
+function foldConsecutiveMarkerDividers(blocks: readonly Block[]): Block[] {
+  const folded: Block[] = [];
+  for (const block of blocks) {
+    const previous = folded.at(-1);
+    if (isMarkerDivider(block) && isMarkerDivider(previous) &&
+      block.text === previous.text && block.tone === previous.tone &&
+      block.turnId === previous.turnId && block.i18n?.key === previous.i18n?.key &&
+      JSON.stringify(block.i18n?.params) === JSON.stringify(previous.i18n?.params)) {
+      folded[folded.length - 1] = {
+        ...block,
+        markerRepeatCount: (previous.markerRepeatCount ?? 1) + (block.markerRepeatCount ?? 1),
+      };
+    } else {
+      folded.push(block);
+    }
+  }
+  return folded;
 }
 
 export function latestFinalAssistantBlockId(blocks: readonly Block[]): string | undefined {

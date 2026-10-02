@@ -1377,6 +1377,18 @@ describe('live and event chrome', () => {
     expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
   });
 
+  it('renders twelve consecutive goal updates as one divider with a repeat count', async () => {
+    const snapshot = replayAgentWire('main', Array.from({ length: 12 }, (_, index) => ({
+      type: 'goal.update', tokensUsed: index + 1, time: 1000 + index,
+    })));
+    const state = projectAgentTranscriptView(createViewState('marker-fold'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks]);
+    const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]');
+    expect(dividers).toHaveLength(1);
+    expect(dividers[0]?.textContent).toBe('Goal updated ×12');
+    expect(container.querySelector('[data-block-id]')?.getAttribute('data-block-id')).toBe(state.blocks[0]?.id);
+  });
+
   it('says why a compaction fell back and lists the reasons on request', async () => {
     const container = await renderTranscript([
       {

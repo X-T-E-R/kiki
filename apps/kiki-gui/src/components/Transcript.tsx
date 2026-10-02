@@ -1518,7 +1518,8 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
     return translated === key ? code : translated;
   });
   const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
-  const label = block.tone === 'danger' ? <span className="font-medium text-danger">{text}</span> : text;
+  const repeatedText = (block.markerRepeatCount ?? 1) > 1 ? `${text} ×${block.markerRepeatCount}` : text;
+  const label = block.tone === 'danger' ? <span className="font-medium text-danger">{repeatedText}</span> : repeatedText;
   return (
     <div data-notice-reasons={reasons.length > 0 ? reasons.length : undefined}>
       <TimelineDivider
