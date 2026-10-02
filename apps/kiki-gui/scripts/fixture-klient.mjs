@@ -246,6 +246,15 @@ export class FixtureKlient {
           owner: { profile: query.profile, agent_id: query.agent_id },
           available: false,
           unavailable_reason: 'This fixture does not seed agent capability policy.',
+          profile: {
+            name: query.profile ?? 'agent',
+            description: 'Fixture general-purpose agent.',
+            source: 'builtin',
+            model: 'fixture/kiki-pro',
+            thinking_effort: 'high',
+            profile_source: 'registered',
+            subagent_policy: 'advisory',
+          },
           targets: [],
         };
       }

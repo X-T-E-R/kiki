@@ -202,6 +202,25 @@ test('child approval seed validates and resolved wire facts retain origin, reque
   } finally { await client.close(); await fixture.stop(); }
 });
 
+test('unseeded agent panels expose a model domain without advertising capabilities; explicit seeds win', async () => {
+  for (const scenario of ['first-open', 'basic-stream']) {
+    const fixture = await startFixtureServer({ port: 0, scenario });
+    const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+    const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+    try {
+      const panel = await client.global.agentPanel.read({ session_id: [...fixture.sessions.keys()][0], agent_id: 'main' });
+      assert.equal(panel.profile.name, 'agent');
+      assert.equal(panel.profile.model, 'fixture/kiki-pro');
+      assert.equal(panel.profile.profile_source, 'registered');
+      assert.equal(panel.available, scenario === 'basic-stream');
+      if (scenario === 'first-open') {
+        assert.deepEqual(panel.targets, []);
+        assert.match(panel.unavailable_reason, /does not seed/);
+      }
+    } finally { await client.close(); await fixture.stop(); }
+  }
+});
+
 test('fixture fails closed for missing auth, unsupported methods and invalid ordered view input', async () => {
   const fixture = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
   const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
