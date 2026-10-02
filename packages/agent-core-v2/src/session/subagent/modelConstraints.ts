@@ -59,27 +59,40 @@ interface BindingConstraintCheck {
   readonly thinkingValueSource?: BindingValueSource;
   readonly checkModel?: boolean;
   readonly checkThinking?: boolean;
+  readonly position?: 'main' | 'sub';
 }
 
 export function assertRoleBindingConstraints(input: BindingConstraintCheck): void {
+  const violation = hardBindingViolations(input)[0];
+  if (violation === undefined) return;
+  throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, violation.message,
+    { details: { strength: 'hard', ruleSource: violation.ruleSource, ruleValues: violation.ruleValues,
+      effectiveValue: violation.effectiveValue, requestedValue: violation.requestedValue,
+      valueSource: violation.valueSource, dimension: violation.dimension, model: violation.model } });
+}
+
+function hardBindingViolations(input: BindingConstraintCheck): BindingAdvisory[] {
   const canonical = resolveModelIdentity(input.model, input.models);
+  const violations: BindingAdvisory[] = [];
+  const add = (code: BindingAdvisory['code'], ruleSource: string, values: readonly string[], value: string,
+    dimension: BindingAdvisoryDimension, message: string) => {
+    violations.push({ version: BINDING_ADVISORY_VERSION, code, ruleSource, ruleValues: [...values],
+      effectiveValue: value, requestedValue: dimension === 'model' ? input.requestedModel : input.requestedThinking,
+      valueSource: dimension === 'model' ? input.modelValueSource : input.thinkingValueSource ?? input.modelValueSource,
+      dimension, model: canonical, message });
+  };
   const menu = input.constraints?.modelMenuConstraint;
   if (input.checkModel !== false && !menuModelAllowed(canonical, input.constraints, input.models)) {
     const ruleSource = menu?.source ?? `${input.ruleSource}.restrict_models_to_menu`;
-    throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
-      `Hard constraint ${ruleSource} rejects model "${canonical}". Select an effective menu item or edit the profile declaration.`,
-      { details: { strength: 'hard', ruleSource, ruleValues: [...(menu?.identities ?? [])], effectiveValue: canonical,
-        requestedValue: input.requestedModel, valueSource: input.modelValueSource, dimension: 'model', model: canonical } });
+    add('model_not_allowed', ruleSource, menu?.identities ?? [], canonical, 'model',
+      `Hard constraint ${ruleSource} rejects model "${canonical}". Select an effective menu item or edit the profile declaration.`);
   }
   for (const layer of constraintLayers(input.constraints, input.model, input.models, input.ruleSource)) {
     const reject = (field: string, values: readonly string[], value: string, dimension: BindingAdvisoryDimension) => {
       const ruleSource = `${layer.source}.${field}`;
-      throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
-        `Hard constraint ${ruleSource} rejects ${dimension} "${value}". Select a permitted value or edit the constraint; pins and advisories cannot override it.`,
-        { details: { strength: 'hard', ruleSource, ruleValues: [...values], effectiveValue: value,
-          requestedValue: dimension === 'model' ? input.requestedModel : input.requestedThinking,
-          valueSource: dimension === 'model' ? input.modelValueSource : input.thinkingValueSource ?? input.modelValueSource,
-          dimension, model: canonical } });
+      add(dimension === 'thinking_effort' ? 'effort_not_allowed' : field === 'deny_models' ? 'model_denied' : 'model_not_allowed',
+        ruleSource, values, value, dimension,
+        `Hard constraint ${ruleSource} rejects ${dimension} "${value}". Select a permitted value or edit the constraint; pins and advisories cannot override it.`);
     };
     if (input.checkModel !== false) {
       if (canonical.trim() === '' && (layer.constraints.allowedModels !== undefined || (layer.constraints.denyModels?.length ?? 0) > 0)) {
@@ -97,9 +110,14 @@ export function assertRoleBindingConstraints(input: BindingConstraintCheck): voi
       reject('allowed_efforts', layer.constraints.allowedEfforts, input.thinking, 'thinking_effort');
     }
   }
+  return violations;
 }
 
 export function roleBindingAdvisories(input: BindingConstraintCheck): readonly BindingAdvisory[] {
+  if (input.position === 'main') {
+    return hardBindingViolations(input).map((violation) => ({ ...violation,
+      message: `Selected ${violation.dimension} "${violation.effectiveValue}" is outside ${violation.ruleSource}; continuing with the user's main-agent selection.` }));
+  }
   assertRoleBindingConstraints(input);
   const constraints = input.constraints;
   if (constraints === undefined) return [];
@@ -159,6 +177,12 @@ export function pinBindingAdvisory(input: {
     model: input.model,
     message: `${input.ruleSource} recommends ${field} "${input.pinnedValue}"; continuing with "${input.effectiveValue}" from ${bindingSelectionDescription(input.valueSource)}.`,
   };
+}
+
+export function roleHasModelConstraints(constraints: SubagentRoleModelConstraints): boolean {
+  return constraints.restrictModelsToMenu === true
+    || [constraints, ...(constraints.modelProfiles ?? []), ...(constraints.modelConstraintProfiles ?? [])]
+      .some((layer) => layer.allowedModels !== undefined || (layer.denyModels?.length ?? 0) > 0);
 }
 
 export function roleModelAllowed(model: string, constraints: SubagentRoleModelConstraints | undefined, models?: IModelService): boolean {

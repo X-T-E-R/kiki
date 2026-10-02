@@ -792,22 +792,24 @@ export function Composer({
   // uses the selected declaration, not the previous agent's frozen menu.
   const modelProjection = sessionId === undefined ? catalogProfile
     : frozenProfile?.name === selectedProfileName ? frozenProfile
-      : frozenProfile !== undefined ? catalogProfile : { restrict_models_to_menu: true };
+      : frozenProfile !== undefined ? catalogProfile : agentId === 'main' ? undefined : { restrict_models_to_menu: true };
+  const modelSelectionPosition = agentId === 'main' ? 'main' : 'sub';
   const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
     const target = option.value === '' ? defaultModel ?? serverDefaultModel : option.value;
-    const state = projectedProfileModelState(modelProjection, models, target);
+    const state = projectedProfileModelState(modelProjection, models, target, modelSelectionPosition);
     const source = projectedProfileModelRuleSource(modelProjection, models, target, selectedProfileName);
-    const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable') : t('selection.modelMenuBlocked', { source });
+    const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
+      : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
     return state === 'allowed' ? option : {
-      ...option, disabled: true, hint: state === 'unknown' ? reason : source,
+      ...option, disabled: state !== 'warning', hint: state === 'unknown' ? reason : source,
       description: reason, title: [option.title ?? option.label, reason].join('\n'),
     };
-  }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, t]);
+  }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, t]);
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
-  const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel);
-  const invalidModelDomain = modelDomainState !== 'allowed';
+  const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
@@ -2107,7 +2109,8 @@ export function Composer({
         modelSource={modelSource}
         disabled={variant === 'subagent' && disabled}
         onChangeModel={(next) => {
-          if (projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel) !== 'allowed') return;
+          const state = projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel, modelSelectionPosition);
+          if (state === 'blocked' || state === 'unknown') return;
           return onChangeModel(next);
         }}
         efforts={efforts}
@@ -2168,6 +2171,9 @@ export function Composer({
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
+        {modelDomainState === 'warning' ? <p data-model-menu-warning role="status" className="mb-2 px-1 text-[11.5px] text-ink-soft">
+          {t('selection.modelMenuWarning', { source: modelRuleSource })}
+        </p> : null}
         {/* A draft is in progress: the pending decision waits on a bar
             instead of taking the card; the bar hands the card over. */}
         {offerTakeover ? (

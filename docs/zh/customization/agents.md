@@ -200,6 +200,8 @@ disallowedTools:
 你是严格的代码审查者。阅读 diff 后，按严重度分级报告问题……
 ```
 
+下表中模型列表的拒绝与 advisory 行为针对 **subagent 绑定**。会话的 main agent 以用户选择为准：profile 模型与档位硬规则违规只警示，推荐与默认 pin 的偏离不警告、不拒发。通过 `AgentRun` 使用 `main: true` profile，仍按 subagent 规则执行。详见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界)。
+
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `name` | 否 | 由小写字母和数字组成，以单个连字符或下划线分隔的唯一标识（如 `code-reviewer`、`code_reviewer`）。缺省时取去掉扩展名的文件名（如 `review.md` → `review`）；无效文件会被跳过并告警，选择同名的跳过文件时会显示路径和原因 |
@@ -263,7 +265,7 @@ model_profiles:
 
 给单个模型补充提示词，仍用模型 cognition 通道（`[models."<alias>".cognition]`）：`model_profiles.prompt_mode` 与 `prompt` 扩的是 role 自身正文，alias cognition 扩的是模型的系统提示词——两者是不同位置，不要把 `prompt_mode` 当作模型认知开关的替代。
 
-`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬约束：profile、`spawn_constraints`、caller lease 与匹配的 `model_profiles` 条目。允许集合求交，禁止项累积。违规返回 `profile.constraint_violation`，包含规则来源、允许 / 禁止值、有效值与绑定值来源。Advisory 角色派遣、显式 pin、人工切换模型 / 档位与恢复都不能放宽它们。机器级 `[subagent].deny_models` 增加另一道硬边界；route sidecar 不能声明 role 列表字段。外部 executor 完成规范化后，还会按其实际生效模型 ID 再检查。
+Subagent 绑定中，`allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都是硬约束：profile、`spawn_constraints`、caller lease 与匹配的 `model_profiles` 条目。允许集合求交，禁止项累积。违规返回 `profile.constraint_violation`，包含规则来源、允许 / 禁止值、有效值与绑定值来源。Advisory 角色派遣、显式 pin、人工切换模型 / 档位与恢复都不能放宽它们。机器级 `[subagent].deny_models` 增加另一道硬边界；route sidecar 不能声明 role 列表字段。外部 executor 完成规范化后，还会按其实际生效模型 ID 再检查。
 
 ```yaml
 model_alias: fast-model
@@ -371,7 +373,7 @@ kiki --agent reviewer
 kiki -p --agent reviewer "审查这个分支上的改动"
 ```
 
-这些 CLI flag 选择启动会话的 profile，不用于修改恢复中的会话。GUI 可以在提交下一条消息时请求切换主档，但仍需通过当前绑定的约束校验。在同一 TUI 进程内后续新建的会话（例如通过 `/new`）使用默认 Agent。
+这些 CLI flag 选择启动会话的 profile，不用于修改恢复中的会话。GUI 可以在提交下一条消息时请求切换主档。Main agent 的选模以用户为准，优先于 profile 模型规则：偏离推荐不警告，硬规则违规只显示非阻断警示。在同一 TUI 进程内后续新建的会话（例如通过 `/new`）使用默认 Agent。
 
 定制 main agent 时，在正文中引用 `${parent_prompt}` 或 `${base_prompt}` 可保持有效默认提示词中已有的环境、工作区指令、Skill 和 plugin 注入生效。`${builtin_prompt}` 始终是出厂默认提示词，即使存在 `SYSTEM.md`。如果要替换默认提示词、但只保留 plugin 提供的指令，请改用 `${plugin_sections}`。正文同时不引用 `${parent_prompt}` / `${base_prompt}` 和 `${plugin_sections}` 时，会完全拥有自己的提示词并排除 plugin 指令，适合自包含的 subagent。
 

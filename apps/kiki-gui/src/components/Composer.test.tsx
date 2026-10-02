@@ -2579,23 +2579,57 @@ describe('Composer projected profile model menu', () => {
       { ...menuProfile, name: 'outside-profile', pinned_model_alias: 'fixture/outside', effective_model_aliases: ['fixture/outside'] },
     ] });
   });
-  it('disables menu-excluded rows with their source and never hides main profiles by model', async () => {
+  it('warns for hard-menu exclusions but lets main users select and send without hiding profiles', async () => {
     const onChangeModel = vi.fn();
     const onSend = vi.fn();
-    const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onChangeModel, onSend,
-      onChangeAgentProfile: vi.fn() });
-    expect(container.querySelector('[data-model-menu-blocked]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
+    const props = { agentProfile: 'agent', model: 'fixture/kiki-pro', value: 'hello', onChangeModel, onSend, onChangeAgentProfile: vi.fn() };
+    const { container, rerender } = await renderComposer(props);
+    expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
+    expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('#composer-model-select')!.click());
     const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
-    expect(outside.getAttribute('aria-disabled')).toBe('true');
+    expect(outside.getAttribute('aria-disabled')).not.toBe('true');
     expect(outside.textContent).toContain('profile:agent.restrict_models_to_menu');
     await act(async () => outside.click());
-    expect(onChangeModel).not.toHaveBeenCalled();
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/outside');
+    await rerender({ ...props, model: 'fixture/outside' });
+    expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
-    expect(onSend).not.toHaveBeenCalled();
-    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(onSend).toHaveBeenCalledWith('hello', []);
     await act(async () => container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!.click());
     expect([...document.body.querySelectorAll('[role="option"]')].some((node) => node.textContent?.includes('outside-profile'))).toBe(true);
+  });
+  it('does not warn or block main choices outside a recommended menu or stale projection', async () => {
+    listNamedAgentProfiles.mockResolvedValue({ items: [{ ...menuProfile, restrict_models_to_menu: false,
+      model_constraints_active: false, preferred_models: ['fixture/kiki-pro'] }] });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
+    expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
+    expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('#composer-model-select')!.click());
+    const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
+    expect(outside.getAttribute('aria-disabled')).not.toBe('true');
+    expect(outside.textContent).not.toContain('profile:agent');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSend).toHaveBeenCalledWith('hello', []);
+  });
+  it.each(['pending', 'failed'])('does not invent a main restriction when capabilities are %s', async (status) => {
+    getAgentCapabilities.mockImplementation(() => status === 'pending' ? new Promise(() => {}) : Promise.reject(new Error('Unavailable')));
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
+    expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
+    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSend).toHaveBeenCalledWith('hello', []);
+  });
+  it('warns without blocking a main hard allow/deny domain when menu restriction is off', async () => {
+    listNamedAgentProfiles.mockResolvedValue({ items: [{ ...menuProfile, restrict_models_to_menu: false, model_constraints_active: true,
+      deny_models: ['fixture/outside'] }] });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
+    expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent');
+    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSend).toHaveBeenCalledWith('hello', []);
   });
   it('uses the frozen session domain instead of a newer disk declaration', async () => {
     getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true, targets: [],

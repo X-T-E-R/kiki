@@ -341,7 +341,7 @@ export function useNewSessionDraft({
     serverDefaultModel,
   );
   const selectedProfile = agentProfilesQuery.data?.items.find((item) => item.name === agentProfile);
-  const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel);
+  const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel, 'main');
   const catalogItem = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   const effectiveEffort = effortOverride ?? resolveSelectedEffort(
@@ -420,7 +420,7 @@ export function useNewSessionDraft({
     || agentProfilesQuery.isError
     || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)
     || !modelsQuery.isSuccess
-    || modelProjectionState !== 'allowed'
+    || modelProjectionState === 'blocked' || modelProjectionState === 'unknown'
     || (effectiveModel !== undefined && catalogItem === undefined)
     || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride));
 

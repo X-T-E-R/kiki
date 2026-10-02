@@ -200,6 +200,8 @@ disallowedTools:
 You are a strict code reviewer. Read the diff, then report findings grouped by severity…
 ```
 
+The model-list rejection and advisory behavior below describes **subagent bindings**. For the session's main agent, user selections override profile model and effort rules: hard violations only warn, while recommendations and default pins do not warn or block sending. Using a `main: true` profile through `AgentRun` still follows subagent rules. See [Model menus and hard boundaries](./agent-profiles.md#model-menus-and-hard-boundaries).
+
 | Field | Required | Description |
 | --- | --- | --- |
 | `name` | no | Unique identifier with lowercase letters and digits separated by single hyphens or underscores (`code-reviewer`, `code_reviewer`). Defaults to the file name without its extension (`review.md` → `review`); invalid names are skipped with a warning, and selecting a matching skipped file reports its path and reason |
@@ -263,7 +265,7 @@ Match `model_profiles` by canonical model identity. Resolve the model alias conf
 
 The model cognition overlay (`[models."<alias>".cognition]`) is the supported way to add per-model prompt text — `model_profiles.prompt_mode` and `prompt` extend the role body itself, while the alias cognition extends the model's system prompt.
 
-`allowed_models`, `deny_models`, and `allowed_efforts` are hard constraints everywhere they occur: profile, `spawn_constraints`, caller lease, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. A violation returns `profile.constraint_violation` with the rule source, allowed/denied values, effective value, and binding-value source. Advisory dispatch, explicit pins, manual model/effort changes, and resume cannot widen these constraints. Machine `[subagent].deny_models` adds another hard boundary; route sidecars cannot declare role list fields. External executor normalization is checked again against its actual effective model ID.
+For subagent bindings, `allowed_models`, `deny_models`, and `allowed_efforts` are hard constraints everywhere they occur: profile, `spawn_constraints`, caller lease, and matching `model_profiles` entries. Allowsets intersect; denials accumulate. A violation returns `profile.constraint_violation` with the rule source, allowed/denied values, effective value, and binding-value source. Advisory dispatch, explicit pins, manual model/effort changes, and resume cannot widen these constraints. Machine `[subagent].deny_models` adds another hard boundary; route sidecars cannot declare role list fields. External executor normalization is checked again against its actual effective model ID.
 
 ```yaml
 model_alias: fast-model
@@ -371,7 +373,7 @@ kiki --agent reviewer
 kiki -p --agent reviewer "Review the changes on this branch"
 ```
 
-These CLI flags select the startup session's profile; they do not change a resumed session. The GUI can request a main-profile switch when submitting the next prompt, subject to the current binding's constraints. A session created later in the same TUI process (for example via `/new`) starts with the default agent.
+These CLI flags select the startup session's profile; they do not change a resumed session. The GUI can request a main-profile switch when submitting the next prompt. The user's main-agent model choice takes priority over profile model rules: recommendations do not warn, and hard violations only show non-blocking warnings. A session created later in the same TUI process (for example via `/new`) starts with the default agent.
 
 For main-agent customization, reference `${parent_prompt}` or `${base_prompt}` in the body so the environment, workspace-instruction, Skill, and plugin injections already present in the effective default prompt stay in effect. `${builtin_prompt}` is the stock default even when `SYSTEM.md` exists. When you want to replace the default prompt but keep only plugin-contributed instructions, use `${plugin_sections}` instead. A body without `${parent_prompt}` / `${base_prompt}` or `${plugin_sections}` owns the entire prompt and excludes plugin instructions, which fits self-contained sub-agents.
 

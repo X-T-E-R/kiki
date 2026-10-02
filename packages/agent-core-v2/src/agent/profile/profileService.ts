@@ -822,7 +822,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = await this.buildSystemPromptContext(profile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     const assembled = await this.assembleBoundSystemPrompt(profile, context, alias ?? '', undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt);
-    if (alias !== undefined) assertSubagentModelNotDenied(this.config, alias);
+    if (alias !== undefined && this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, alias);
     const profileModelThinking = resolveModelProfileEntry(profile.modelProfiles, alias ?? '', (id) => id)?.thinkingEffort;
     const baseModelSelection = input.bindingSelection?.model ?? {
       source: requested.source === 'input' ? 'dispatch-explicit'
@@ -1393,6 +1393,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ? entry
         : { constraints: entry, ruleSource: `caller-constraint:${String(index + 1)}` });
     }
+    const userMain = this.delegationPosition === 'main' && this.agentScope.agentId === MAIN_AGENT_ID;
     const advisories: BindingAdvisory[] = layers.flatMap((layer) =>
       roleBindingAdvisories({
         model: input.model,
@@ -1404,8 +1405,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         ruleSource: layer.ruleSource,
         modelValueSource: input.modelSelection.source,
         thinkingValueSource: input.thinkingSelection.source,
+        position: userMain ? 'main' : 'sub',
       }),
     );
+    if (userMain) return advisories;
     if (input.route?.lockedModelAlias !== undefined) {
       const advisory = pinBindingAdvisory({
         dimension: 'model',

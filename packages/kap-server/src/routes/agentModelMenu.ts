@@ -17,6 +17,7 @@ export function projectAgentModelMenu(
       identities: projected.declaredModelMenu.identities,
     },
     effective_model_aliases: projected.effectiveModelAliases,
+    model_constraints_active: projected.modelConstraintsActive,
   };
 }
 

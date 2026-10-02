@@ -652,6 +652,23 @@ describe('projected profile model permission', () => {
     expect(projectedProfileModelState(projection, models, 'fixture/slow')).toBe('blocked');
     expect(projectedProfileModelState(projection, models, 'fixture/fast')).toBe('allowed');
   });
+  it('does not warn for main recommendations or unproven projection exclusions', () => {
+    expect(projectedProfileModelState({ restrict_models_to_menu: false, effective_model_aliases: ['fast'] }, models, 'slow', 'main')).toBe('allowed');
+    expect(projectedProfileModelState({ model_constraints_active: false, effective_model_aliases: [] }, models, 'slow', 'main')).toBe('allowed');
+    expect(projectedProfileModelState({ restrict_models_to_menu: true }, models, 'slow', 'main')).toBe('allowed');
+    expect(projectedProfileModelState(undefined, models, 'slow', 'main')).toBe('allowed');
+  });
+  it.each([
+    { restrict_models_to_menu: true },
+    { restrict_models_to_menu: false, model_constraints_active: true },
+    { allowed_models: [] },
+    { deny_models: ['slow'] },
+  ])('only warns on main hard exclusions, and retains subagent blocking: %j', (domain) => {
+    const projection = { ...domain, effective_model_aliases: ['fast'] };
+    expect(projectedProfileModelState(projection, models, 'slow', 'main')).toBe('warning');
+    expect(projectedProfileModelState(projection, models, 'fast', 'main')).toBe('allowed');
+    expect(projectedProfileModelState(projection, models, 'slow', 'sub')).toBe('blocked');
+  });
   it('does not rewrite profile defaults to the first allowed candidate', () => {
     const profile: NamedAgentProfile = { name: 'main', main: true, disabled: false, source: 'user', routes: [],
       pinned_model_alias: 'fixture/slow', restrict_models_to_menu: true, effective_model_aliases: ['fixture/fast'] };
