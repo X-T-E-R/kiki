@@ -209,9 +209,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     planMode={planMode}
   /> : null;
   // The agent's own working notes sit under its checklist: the same writer
-  // (TodoList), read-only here, from this agent's state only.
-  const notesSection = agentState !== undefined && loaded
-    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} />
+  // (TodoList), read-only here, from this agent's state only. The section
+  // itself tells a still-loading agent from one that has no notes yet.
+  const notesSection = agentState !== undefined
+    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} loaded={loaded} />
     : null;
   if (part === 'work') {
     return <div data-agent-panel-container data-agent-panel-part="work" className="space-y-4 empty:hidden">
