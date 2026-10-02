@@ -6670,4 +6670,9 @@ export const zh = {
   'usage.governance.badge': '当前模型请求 {active}，等待 {queued}',
   'usage.governance.loading': '正在读取实时请求状态…',
   'usage.governance.unavailable': '实时请求状态不可用',
+  'composer.ssh.sessionHosts': '会话主机',
+  'composer.ssh.draftHosts': '待加入主机',
+  'composer.ssh.draftHint': '创建会话后，所选主机会在第一条消息发送前加入。加入不等于连接。',
+  'composer.ssh.sessionHint': '主机在消息发送后仍留在会话中，直到移除。加入不等于连接。',
+  'composer.ssh.snapshotAria': '发送此消息时已加入的 SSH 主机',
 };

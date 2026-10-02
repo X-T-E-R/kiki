@@ -37,6 +37,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   collectDraftAnnotationTargets,
   parseSelectionCarryovers,
+  parseSshHostContext,
   type SelectionAnnotation,
   type TimelineAnnotation,
   appendToDraft,
@@ -163,6 +164,7 @@ import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
+import { SSH_HOST_CHIP_CLASS } from './ssh/SshBits';
 import { Wordmark } from './Wordmark';
 import { useTranscriptDetail } from './transcriptDetail';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
@@ -374,7 +376,8 @@ const UserMessage = memo(function UserMessage({
         });
   // Linked threads ride the prompt as a trailing <thread_refs> block for the
   // model; the bubble (and copy / edit / retry) works on the text as typed.
-  const typedText = useMemo(() => stripThreadRefContext(block.text), [block.text]);
+  const sshContext = useMemo(() => parseSshHostContext(block.text), [block.text]);
+  const typedText = useMemo(() => stripThreadRefContext(sshContext.body), [sshContext.body]);
   const threadRefDirectory = useThreadRefDirectory(
     useMemo(() => findThreadRefs(typedText).map((ref) => ref.sessionId), [typedText]),
   );
@@ -431,6 +434,16 @@ const UserMessage = memo(function UserMessage({
           {carry.annotations.length > 0 ? (
             <SentAnnotationsBubble blockId={block.id} annotations={carry.annotations} />
           ) : null}
+        </div>
+      ) : null}
+      {sshContext.hosts.length > 0 && !editing ? (
+        <div data-user-ssh-hosts role="list" aria-label={t('composer.ssh.snapshotAria')} title={t('composer.ssh.snapshotAria')} className="mb-1.5 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {sshContext.hosts.map((host) => (
+            <span key={host.id} role="listitem" data-user-ssh-host={host.id} title={host.id} className={`${SSH_HOST_CHIP_CLASS} px-2`}>
+              <Icon name="terminal" size={12} className="text-ink-faint" />
+              <span className="min-w-0 truncate">{host.name}</span>
+            </span>
+          ))}
         </div>
       ) : null}
       {block.media !== undefined ? <div data-user-media className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}

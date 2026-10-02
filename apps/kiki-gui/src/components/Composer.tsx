@@ -938,6 +938,7 @@ export function Composer({
       !sendDisabled &&
       !selectionBlocked &&
       !pendingAttachments &&
+      !ssh.pending &&
       !turnInFlight &&
       !slashCatalogPending;
 
@@ -1603,11 +1604,12 @@ export function Composer({
     // Linked threads ride along as a trailing <thread_refs> context block the
     // model reads; the transcript strips it back off and shows chips.
     const withContext = (prepared: string) => appendThreadRefContext(prepared, threadRefDirectory.info);
+    const sentAttachments = ssh.snapshot.length === 0 ? attachments : [...attachments.filter((item) => item.kind !== 'ssh'), ...ssh.snapshot];
     const deliver = (raw: string) => {
       const prepared = withContext(raw);
       return now && options === undefined && onSendNow !== undefined
-        ? onSendNow(prepared, attachments)
-        : options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
+        ? onSendNow(prepared, sentAttachments)
+        : options === undefined ? onSend(prepared, sentAttachments) : onSend(prepared, sentAttachments, options);
     };
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
@@ -1625,9 +1627,10 @@ export function Composer({
 
   const activateSkill = (name: string, args: string) => {
     if (!vscodeRuntime) {
+      const sentAttachments = ssh.snapshot.length === 0 ? attachments : [...attachments.filter((item) => item.kind !== 'ssh'), ...ssh.snapshot];
       runAgentTurn(async () => {
         recordSubmission();
-        await onActivateSkill?.(name, args, attachments);
+        await onActivateSkill?.(name, args, sentAttachments);
       });
       return;
     }
@@ -2202,6 +2205,7 @@ export function Composer({
               {attachments.length > 0 ? (
                 <div data-attachment-chips className="contents">
                   {attachments.map((attachment, index) => {
+                    if (attachment.kind === 'ssh') return null;
                     const remove = () => { updateAttachments(attachments.filter((_, i) => i !== index)); };
                     if (attachment.kind === 'file') {
                       return (

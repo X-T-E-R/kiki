@@ -11,7 +11,8 @@
  * hosts, so every change refetches the session list (contract).
  */
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -31,15 +32,18 @@ import {
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { Icon } from '../icons';
-import { stateDotClass } from './SshBits';
+import { SSH_HOST_CHIP_CLASS, stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
 const PANEL_ROW =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 export interface ComposerSsh {
-  /** False hides every SSH affordance (flag off, no session, no REST). */
+  /** False hides every SSH affordance (flag off or no REST). */
   readonly available: boolean;
+  /** Display snapshot; actual host access is granted only by PUT join. */
+  readonly snapshot: readonly SshHostAttachment[];
+  readonly pending: boolean;
   /** Count shown on the ＋ menu row. */
   readonly joinedCount: number;
   /** The ＋ menu's SSH view; `close` closes the popover. */
@@ -60,13 +64,15 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const flag = useNativeSshEnabled(client);
-  const available = enabled && sessionId !== undefined && flag.enabled === true && client.klient.rest !== undefined;
+  const available = enabled && flag.enabled === true && client.klient.rest !== undefined;
   const hostsQuery = useSshHosts(client, available);
   const sessionQuery = useSessionSshHosts(client, sessionId, available);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  const [selected, setSelected] = useState<readonly SshHost[]>([]);
+  useEffect(() => { setSelected([]); }, [sessionId]);
 
-  const joined = sessionQuery.data ?? [];
+  const joined = sessionId === undefined ? selected.map((host) => ({ host, status: undefined })) : sessionQuery.data ?? [];
   const joinedIds = new Set(joined.map((entry) => entry.host.id));
 
   const setBusy = (id: string, busy: boolean) => {
@@ -84,7 +90,11 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   };
 
   const toggle = async (host: SshHost, join: boolean) => {
-    if (sessionId === undefined || pending.has(host.id)) return;
+    if (pending.has(host.id)) return;
+    if (sessionId === undefined) {
+      setSelected((current) => join ? [...current.filter((entry) => entry.id !== host.id), host] : current.filter((entry) => entry.id !== host.id));
+      return;
+    }
     setBusy(host.id, true);
     try {
       if (join) await sshApi(client).addSessionHost(sessionId, host.id);
@@ -174,12 +184,13 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
           <span className="flex-1">{t('composer.ssh.manage')}</span>
         </button>
       </div>
-      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.hint')}</p>
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')}</p>
     </div>
   );
 
   const chips = available && joined.length > 0 ? (
-    <div data-composer-ssh-chips role="list" aria-label={t('composer.ssh.chipsAria')} className="mx-3 mt-2 flex flex-wrap gap-1.5">
+    <div data-composer-ssh-chips role="list" aria-label={t('composer.ssh.chipsAria')} title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')} className="mx-3 mt-2 flex flex-wrap items-center gap-1.5">
+      <span data-composer-ssh-scope className="text-[11px] text-ink-faint">{t(sessionId === undefined ? 'composer.ssh.draftHosts' : 'composer.ssh.sessionHosts')}</span>
       {joined.map(({ host, status }) => {
         const state = visibleState(status);
         const target = sshTargetLabel(host);
@@ -189,7 +200,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
             role="listitem"
             data-composer-ssh-chip={host.id}
             title={target === undefined ? host.id : `${host.id} · ${target}`}
-            className="anim-enter inline-flex h-6 max-w-[14rem] items-center gap-1.5 rounded-md bg-ink/[0.05] pr-0.5 pl-2 text-[12px] text-ink-soft"
+            className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
           >
             <Icon name="terminal" size={12} className="text-ink-faint" />
             <span className="min-w-0 truncate">{host.name}</span>
@@ -213,21 +224,15 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     </div>
   ) : null;
 
-  const dialog = creating && sessionId !== undefined ? (
+  const dialog = creating ? (
     <SshHostFormDialog
       mode={{ kind: 'create' }}
       onClose={() => { setCreating(false); }}
       onSubmit={async (id, input) => {
-        await sshApi(client).upsert(id, input);
+        const { host } = await sshApi(client).upsert(id, input);
         await queryClient.invalidateQueries({ queryKey: sshKeys.hosts() });
         setCreating(false);
-        // Created from this session's menu: add it here too.
-        try {
-          await sshApi(client).addSessionHost(sessionId, id);
-        } catch (error) {
-          pushToast({ tone: 'error', text: t('composer.ssh.addFailed', { name: input.name, detail: errorText(locale, error) }) });
-        }
-        await refetchSession();
+        await toggle(host, true);
       }}
     />
   ) : null;
@@ -238,5 +243,6 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     if (host !== undefined) void toggle(host, !joinedIds.has(id));
   };
 
-  return { available, joinedCount: joined.length, renderPanel, chips, dialog, hosts: searchHosts, toggleHost };
+  const snapshot: readonly SshHostAttachment[] = available ? joined.map(({ host }) => ({ kind: 'ssh', id: host.id, name: host.name })) : [];
+  return { available, snapshot, pending: pending.size > 0 || (available && sessionId !== undefined && !sessionQuery.isSuccess), joinedCount: joined.length, renderPanel, chips, dialog, hosts: searchHosts, toggleHost };
 }

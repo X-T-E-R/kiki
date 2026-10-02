@@ -61,6 +61,7 @@ import { SearchableSelect, type SearchableSelectOption } from './SearchableSelec
 import { useI18n } from '../i18n';
 import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
+import { sshApi } from '../lib/ssh';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
@@ -457,6 +458,7 @@ export function useNewSessionDraft({
     persona,
   };
 
+  const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialAttachments?: readonly ComposerAttachment[];
@@ -498,9 +500,15 @@ export function useNewSessionDraft({
     // Returned so the composer's send latch rides the create round trip: a
     // second trigger while this is in flight is ignored, and a failed create
     // releases the latch for retry.
-    return client
-      .createSession(body)
-      .then((session) => {
+    const bodyKey = JSON.stringify([draftScopeId, body]);
+    const retry = createdForRetry.current;
+    const creation = retry?.body === bodyKey ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
+    return creation
+      .then(async (session) => {
+        createdForRetry.current = { body: bodyKey, sessionId: session.id };
+        const sshHosts = (handoff.initialAttachments ?? handoff.initialSkill?.attachments ?? []).filter((item) => item.kind === 'ssh');
+        for (const host of sshHosts) await sshApi(client).addSessionHost(session.id, host.id);
+        createdForRetry.current = undefined;
         writeDraft(draftKey, '');
         clearScopedNewSessionDraft(draftScopeId);
         // react-router's navigate returns a promise in data routers; the

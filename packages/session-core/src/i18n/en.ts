@@ -6733,4 +6733,9 @@ export const en = {
   'usage.governance.badge': 'Model requests {active}, waiting {queued}',
   'usage.governance.loading': 'Loading live request state…',
   'usage.governance.unavailable': 'Live request state unavailable',
+  'composer.ssh.sessionHosts': 'Session hosts',
+  'composer.ssh.draftHosts': 'Hosts to join',
+  'composer.ssh.draftHint': 'Selected hosts will join the session before its first message. Adding a host does not connect it.',
+  'composer.ssh.sessionHint': 'Hosts stay joined across messages until removed. Adding a host does not connect it.',
+  'composer.ssh.snapshotAria': 'SSH hosts joined when this message was sent',
 } as const;

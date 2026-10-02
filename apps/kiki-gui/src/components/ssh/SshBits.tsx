@@ -17,6 +17,8 @@ export function ComingSoonTag() {
   );
 }
 
+export const SSH_HOST_CHIP_CLASS = 'inline-flex h-6 max-w-[14rem] items-center gap-1.5 rounded-md bg-ink/[0.05] text-[12px] text-ink-soft';
+
 const STATE_KEY = {
   connecting: 'st.ssh.state.connecting',
   ready: 'st.ssh.state.ready',

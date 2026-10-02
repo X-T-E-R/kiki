@@ -5264,3 +5264,15 @@ describe('Kiki hook injections', () => {
     expect(container.querySelector('[data-system="hook_result"]')?.textContent).toContain('Hook result');
   });
 });
+
+
+it('renders SSH send-time snapshots as small host markers, not raw context or live connection state', async () => {
+  const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z',
+    text: 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>',
+  }]);
+  expect(container.querySelector('[data-user-ssh-host="example-host"]')?.textContent).toBe('Example host');
+  expect(container.querySelector('[data-user-ssh-hosts]')?.getAttribute('aria-label')).toBe('SSH hosts joined when this message was sent');
+  expect(container.querySelector('.bg-bubble-user')?.textContent).toBe('Inspect the host');
+  expect(container.textContent).not.toContain('ssh_host_refs');
+  expect(container.querySelector('[data-user-ssh-host] button')).toBeNull();
+});

@@ -22,7 +22,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', label: null as string | null },
   client: {
     listWorkspaces: vi.fn(),
-    klient: { rest: { workspaces: { inspect: vi.fn() } } },
+    klient: { rest: { workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
     listNamedAgentProfiles: vi.fn(),
@@ -1228,5 +1228,39 @@ describe('new-session projected model permission', () => {
     const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/inside');
     await act(async () => { await state.send('hello', []); });
     expect(client.createSession).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('new-session SSH creation handoff', () => {
+  beforeEach(() => {
+    client.listModels.mockResolvedValue({ items: [{ id: 'fixture/model', provider_id: 'fixture', remote_id: 'model' }] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [], pinned_model_alias: 'fixture/model' }] });
+    client.klient.rest.ssh.addSessionHost.mockReset().mockResolvedValue({});
+  });
+  const hosts = [{ kind: 'ssh' as const, id: 'example-host', name: 'Example host' }];
+  it.each(['prompt', 'skill'])('joins selected hosts after creation and before navigating the first %s', async (kind) => {
+    const join = deferred<object>();
+    client.klient.rest.ssh.addSessionHost.mockReturnValue(join.promise);
+    await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/model');
+    let sending: void | Promise<unknown>;
+    await act(async () => { sending = kind === 'prompt' ? state.send('Inspect', hosts) : state.activateSkill('inspect', '', hosts); });
+    expect(client.klient.rest.ssh.addSessionHost).toHaveBeenCalledWith('session-new', 'example-host');
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { join.resolve({}); await sending; });
+    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining(kind === 'prompt'
+      ? { initialAttachments: hosts } : { initialSkill: { name: 'inspect', args: '', attachments: hosts } }) }));
+  });
+  it('does not hand off a prompt after join failure and reuses the created session on retry', async () => {
+    client.klient.rest.ssh.addSessionHost.mockRejectedValueOnce(new Error('Join failed'));
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'fixture/model');
+    await act(async () => { await state.send('Inspect', hosts); });
+    expect(navigate).not.toHaveBeenCalled();
+    state = await settleDraft((value) => !value.busy && value.error === 'Join failed');
+    await act(async () => { await state.send('Inspect', hosts); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
