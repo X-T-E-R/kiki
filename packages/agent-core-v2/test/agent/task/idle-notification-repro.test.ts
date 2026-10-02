@@ -21,6 +21,7 @@ import { escapeXml } from '#/_base/utils/xml-escape';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import {
   agentService,
   sessionService,
@@ -346,6 +347,70 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatContext).toContain('busy-state repro completed.');
       expect(flatContext).toContain('<output-file');
       expect(flatContext).toContain('busy-state bg result');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it.each(['completed', 'cancelled'] as const)(
+      'delivers a child completion in the first queued prompt step after %s turn exit', async (outcome) => {
+      const firstFinished = createControlledPromise<void>();
+      const finishFirst = createControlledPromise<void>();
+      const launching = createControlledPromise<void>();
+      const launch = createControlledPromise<void>();
+      const childCompletion = createControlledPromise<{ result: string }>();
+      const prompts = ctx.get(IAgentPromptService);
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      const finishHook = loop.hooks.onDidFinishStep.register('test.queue-order', async (_step, next) => {
+        finishHook.dispose();
+        firstFinished.resolve();
+        await finishFirst;
+        if (outcome === 'cancelled') loop.cancel();
+        await next();
+      });
+      const launchHook = prompts.hooks.onBeforeSubmitPrompt.register('test.queue-order', async ({ promptMessage }, next) => {
+        if (promptMessage.id === 'queued-user') {
+          launching.resolve();
+          await launch;
+        }
+        await next();
+      });
+      try {
+        ctx.mockNextResponse({ type: 'text', text: 'first ack' });
+        ctx.mockNextResponse({ type: 'text', text: 'queued prompt ack' });
+        ctx.mockNextResponse({ type: 'text', text: 'late notification ack' });
+        const taskId = background.registerTask(agentTask(childCompletion, 'queued child report'));
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
+        await firstFinished;
+        const queued = await prompts.enqueue({
+          id: 'queued-user',
+          message: { role: 'user', content: [{ type: 'text', text: 'use the child result' }], toolCalls: [], origin: { kind: 'user' } },
+        });
+        expect(queued.state).toBe('pending');
+        finishFirst.resolve();
+        await launching;
+        childCompletion.resolve({ result: 'child completed before queued prompt launch' });
+        await vi.waitFor(() => {
+          expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true);
+        });
+        expect(notifiedCount(ctx)).toBe(0);
+        launch.resolve();
+        await queued.completion;
+        await loop.settled();
+        const queuedCall = ctx.llmCalls.find((call) => JSON.stringify(call.history).includes('use the child result'));
+        expect(queuedCall).toBeDefined();
+        expect(JSON.stringify(queuedCall!.history)).toContain(taskId);
+        expect(JSON.stringify(queuedCall!.history)).toContain('child completed before queued prompt launch');
+        const promptMessage = ctx.context.get().find((message) => message.id === queued.id)!;
+        const notifications = ctx.context.get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0]!.source).toEqual(promptMessage.source);
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.llmCalls).toHaveLength(2);
+      } finally {
+        finishFirst.resolve();
+        launch.resolve();
+        childCompletion.resolve({ result: 'cleanup' });
+        finishHook.dispose();
+        launchHook.dispose();
+      }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it.each(['completed', 'cancelled'] as const)(

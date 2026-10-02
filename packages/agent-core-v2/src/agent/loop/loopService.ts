@@ -201,17 +201,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private admit(request: StepRequest, options?: StepEnqueueOptions): void {
     const active = this.activeTurnJob;
+    const available = active ?? this.pendingTurns[0];
     switch (request.admission) {
       case 'newTurn':
         this.createAndQueueTurn(request);
         break;
       case 'activeOrNewTurn':
-        if (active === undefined) this.createAndQueueTurn(request);
-        else this.assignStep(active, request, options);
+        if (available === undefined) this.createAndQueueTurn(request);
+        else this.assignStep(available, request, options);
         break;
       case 'activeOrNextTurn':
-        if (active === undefined) this.standaloneStepQueue.enqueue(request, options?.at ?? 'tail');
-        else this.assignStep(active, request, options);
+        if (available === undefined) this.standaloneStepQueue.enqueue(request, options?.at ?? 'tail');
+        else this.assignStep(available, request, options);
         break;
       case 'activeTurnOnly':
         if (active === undefined) {
@@ -289,10 +290,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private releaseQuiescence(): void {
     if (this.quiescenceDepth === 0) return;
-    this.quiescenceDepth -= 1;
-    if (this.quiescenceDepth > 0) return;
-    if (this.disposing) { this.maybeSettle(); return; }
-    this.pumpTurns();
+    if (this.disposing) {
+      this.quiescenceDepth = 0;
+      this.maybeSettle();
+      return;
+    }
     for (const admission of this.heldAdmissions.splice(0)) {
       if (admission.request.aborted) continue;
       try {
@@ -302,6 +304,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         this.rejectAssignment(admission.request, error);
       }
     }
+    this.quiescenceDepth = 0;
     this.pumpTurns();
   }
 

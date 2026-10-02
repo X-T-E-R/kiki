@@ -149,6 +149,7 @@ export interface StepEnqueueOptions {
 export interface IAgentLoopService {
   readonly _serviceBrand: undefined;
 
+  /** Active-or-turn admissions join the active turn or the earliest queued turn before creating or awaiting another turn. */
   enqueue(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt;
 
   run(options: LoopRunOptions): Promise<LoopRunResult>;
@@ -159,7 +160,10 @@ export interface IAgentLoopService {
 
   cancelFromUser(turnId?: number): void;
 
-  /** A new turn may preserve standalone steps for its own admission; history mutations require the default empty queue. */
+  /**
+   * A new turn may preserve standalone steps for its own admission; history mutations require the default empty queue.
+   * Release admits all held requests before starting a turn, so mergeable events can enter its first step.
+   */
   tryAcquireQuiescence(options?: { readonly pendingSteps: 'preserve' }): IDisposable | undefined;
 
   settled(): Promise<void>;
