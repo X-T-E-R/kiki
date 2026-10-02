@@ -466,10 +466,11 @@ export class SessionController {
     const previous = this.viewHandle;
     this.viewHandle = undefined;
     previous?.close();
+    const qualifiedCursors = [...this.transcriptCursors].filter(([agentId]) => this.hasTranscriptBaseline(agentId));
     this.viewHandle = this.view.subscribe({
       sessionCursor,
       transcriptGrades: this.transcriptGrades,
-      transcriptSince: this.transcriptCursors.size === 0 ? undefined : Object.fromEntries(this.transcriptCursors),
+      transcriptSince: qualifiedCursors.length === 0 ? undefined : Object.fromEntries(qualifiedCursors),
     }, (signal) => {
       if (attachment === this.viewAttachment) this.handleSignal(signal);
     });
@@ -783,7 +784,15 @@ export class SessionController {
       }
     }
     this.transcriptGrades = nextGrades;
+    for (const [agentId, store] of this.agentTranscripts) {
+      if (gradeFor(previous, agentId) !== gradeFor(nextGrades, agentId)) this.publishProjectedAgent(agentId, store);
+    }
     this.viewHandle?.setTranscriptGrades(this.transcriptGrades);
+  }
+
+  private hasTranscriptBaseline(agentId: string): boolean {
+    const applied = this.appliedTranscriptGrades.get(agentId);
+    return applied !== undefined && GRADE_RANK[applied] >= GRADE_RANK[gradeFor(this.transcriptGrades, agentId)];
   }
 
   handleSignal(signal: SessionViewSignal): void {
@@ -1162,7 +1171,7 @@ export class SessionController {
     store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
     this.transcriptCursors.set(agentId, cursor);
     this.appliedTranscriptGrades.set(agentId, grade);
-    this.viewHandle?.updateTranscriptCursor(agentId, cursor);
+    if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
     this.globalCoverage.set(agentId, snapshot.globalCoverage);
     this.publishProjectedAgent(agentId, store, {
@@ -1319,7 +1328,7 @@ export class SessionController {
     }
     this.recordToolCountSpan(agentId, priorCursor, resumeCursor, result.toolCallCountDelta);
     this.transcriptCursors.set(agentId, resumeCursor);
-    this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
+    if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
     const adoptedCount = this.adoptToolCountObservation(agentId);
     if (result.accepted.length > 0 || adoptedCount) {
       if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
@@ -1351,6 +1360,11 @@ export class SessionController {
     const isCurrent = (): boolean => !this.closed &&
       (this.historyGeneration.get(agentId) ?? 0) === generation;
     try {
+      if (!this.hasTranscriptBaseline(agentId)) {
+        this.catchupReplay.delete(agentId);
+        await this.resync();
+        return;
+      }
       const last = this.transcriptCursors.get(agentId) ?? { seq: 0 };
       const grade = gradeFor(this.transcriptGrades, agentId);
       const result = await this.view.transcript.catchUp({
@@ -1516,7 +1530,7 @@ export class SessionController {
             historyCoverageKind: options.historyCoverageKind ?? next.historyCoverageKind,
           };
     const globalCoverage = this.globalCoverage.get(agentId);
-    const withCoverage = projected.globalCoverage === globalCoverage ? projected : { ...projected, globalCoverage };
+    const withCoverage = { ...projected, globalCoverage, transcriptReady: this.hasTranscriptBaseline(agentId) };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;

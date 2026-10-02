@@ -587,20 +587,13 @@ describe('server-v2 /api/ws resync', () => {
       (f) => f.type === 'ack' && f.id === 't-replay',
     );
     expect(ackPayload(replayTranscriptAck)).toMatchObject({ accepted: [sid], resync_required: [] });
-    const replayedTranscript = c2.frames.filter(
-      (frame) =>
-        frame.type === 'transcript.ops' &&
-        transcriptOpsPayload(frame).agent_id === 'main' &&
-        transcriptOpsPayload(frame).cursor.seq > transcriptCursor.seq,
+    const detailBaseline = await c2.next(
+      (frame) => frame.type === 'transcript.reset' && transcriptResetPayload(frame).agent_id === 'main',
     );
-    expect(c2.frames.some((frame) => frame.type === 'transcript.reset')).toBe(false);
-    const transcriptSeqs = replayedTranscript.map(
-      (frame) => transcriptOpsPayload(frame).cursor.seq,
-    );
-    expect(transcriptSeqs).toEqual(
-      integerRange(transcriptCursor.seq + 1, Math.max(...transcriptSeqs)),
-    );
-    for (const frame of replayedTranscript) applyTranscriptFrame(liveTranscript, frame);
+    expect(transcriptResetPayload(detailBaseline).grade).toBe('delta');
+    expect(transcriptResetPayload(detailBaseline).cursor.seq).toBeGreaterThan(transcriptCursor.seq);
+    expect(c2.frames.filter((frame) => frame.type === 'transcript.reset')).toHaveLength(0);
+    applyTranscriptFrame(liveTranscript, detailBaseline);
     c2.ws.close();
     await c2.closed;
 

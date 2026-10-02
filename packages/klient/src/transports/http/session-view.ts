@@ -1,7 +1,7 @@
 import type { SessionViewChannelSubscription } from '../../core/channel.js';
 import type { SessionViewSignal, SessionViewSubscribeInput } from '../../contract/session/view.js';
 import type { KlientFrame } from '../codec.js';
-import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
+import { confirmsTranscriptCoverage, gradeFor, GRADE_RANK, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { degradeUnconfirmedTranscriptSignal } from './transcript-coverage.js';
 
 interface ActiveView {
@@ -43,7 +43,11 @@ export class HttpSessionViews {
       updateSessionCursor: (cursor) => { view.input = { ...view.input, sessionCursor: cursor }; },
       setTranscriptGrades: (grades) => {
         if (!this.views.has(id)) return;
-        view.input = { ...view.input, transcriptGrades: grades };
+        const transcriptSince = view.input.transcriptSince === undefined ? undefined : Object.fromEntries(
+          Object.entries(view.input.transcriptSince).filter(([agentId]) =>
+            GRADE_RANK[gradeFor(grades, agentId)] <= GRADE_RANK[gradeFor(view.input.transcriptGrades, agentId)]),
+        );
+        view.input = { ...view.input, transcriptGrades: grades, transcriptSince };
         if (this.host.isOpen()) this.attach(view);
       },
       updateTranscriptCursor: (agentId, cursor) => {

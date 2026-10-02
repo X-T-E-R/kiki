@@ -62,10 +62,49 @@ function harness(read = vi.fn(async () => snapshot()), detail?: SessionViewFacad
   const deliver = (event: Parameters<SessionController['handleTranscript']>[0]) => {
     attachments.at(-1)!.signal({ type: 'transcript', event, generation: 1 });
   };
-  return { controller, attachments, read, deliver };
+  return { controller, attachments, read, deliver, catchUp: view.transcript.catchUp };
 }
 
 describe('SessionController suspend / resume', () => {
+  it('requests a baseline rather than catching up detail from an incomplete summary', async () => {
+    const { controller, attachments, deliver, read, catchUp } = harness();
+    await controller.open();
+    const full = userTurnSnapshot({ assistantText: 'restored detail' });
+    const summary = { ...full, items: full.items.map((item) => item.kind === 'turn' ? { ...item, steps: [] } : item) };
+    const reset = resetEvent('child-1', summary, 3);
+    if (reset.type !== 'transcript.reset') throw new Error('Expected reset fixture');
+    deliver({ ...reset, grade: 'turn' });
+    controller.setFocusedAgent('child-1');
+    deliver(opsEvent('child-1', appendOps(15, ' missing baseline'), 4));
+    await vi.waitFor(() => expect(attachments).toHaveLength(2));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(catchUp).not.toHaveBeenCalled();
+    expect(attachments[1]!.input.transcriptSince).toBeUndefined();
+    expect(controller.getAgentState('child-1').transcriptReady).toBe(false);
+    deliver(resetEvent('child-1', full, 4));
+    expect(controller.getAgentState('child-1').transcriptReady).toBe(true);
+    controller.close();
+  });
+
+  it('omits a summary cursor when a new attachment demands detail and waits for its baseline', async () => {
+    const { controller, attachments, deliver } = harness();
+    await controller.open();
+    const full = userTurnSnapshot({ assistantText: 'restored detail' });
+    const summary = { ...full, items: full.items.map((item) => item.kind === 'turn' ? { ...item, steps: [] } : item) };
+    const summaryReset = resetEvent('child-1', summary, 3);
+    if (summaryReset.type !== 'transcript.reset') throw new Error('Expected reset fixture');
+    deliver({ ...summaryReset, grade: 'turn' });
+    controller.suspend();
+    controller.setFocusedAgent('child-1');
+    controller.resume();
+    expect(attachments[1]!.input.transcriptSince?.['child-1']).toBeUndefined();
+    expect(controller.getAgentState('child-1').transcriptReady).toBe(false);
+    deliver(resetEvent('child-1', full, 3));
+    expect(controller.getAgentState('child-1').transcriptReady).toBe(true);
+    expect(JSON.stringify(controller.getAgentState('child-1').blocks)).toContain('restored detail');
+    controller.close();
+  });
+
   it('detaches the live view on suspend and keeps the rendered window', async () => {
     const { controller, attachments, deliver } = harness();
     await controller.open();
