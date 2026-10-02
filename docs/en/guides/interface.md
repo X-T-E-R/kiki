@@ -10,7 +10,11 @@ The conversation view shows the session timeline: assistant messages, tool calls
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. When it is empty, `↑` / `↓` browse the input history for the current working directory. Images and videos can be pasted from the clipboard, subject to the current model's multimodal capabilities — see [Interaction and input](/en/guides/interaction) for the full behavior, which the GUI input box shares.
 
-While the agent is busy, new messages join a queue above the input box instead of interrupting. Each queued message has its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). Change a message's timing, edit, reorder, or send it now from its row in the queue.
+Use the input box's **+** menu to add SSH hosts to the session. Hosts stay available in the session after sending; chips above the input box show the joined hosts, and **X** removes a host from the session. In a new session (`/new`), you can preselect hosts to join automatically once the session is created. Sent messages show small host markers recording which hosts were joined when each message was sent.
+
+While the agent is busy, new messages join a queue above the input box by default instead of interrupting. Each queued message has its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). Change a message's timing, edit, reorder, or send it now from its row in the queue.
+
+While the agent is busy, hover over the send button, or focus it and press `↓`, to open the send-timing menu. Alongside the default send action, you can choose to insert the message into the current turn immediately (the same behavior as `Ctrl-Enter`), start it after subagents finish, or start it after all background tasks finish. The choice applies only to this message and does not change the default timing. The menu does not appear while the agent is idle.
 
 Stopping the main agent before it has replied or called a tool restores the interrupted prompt and its attachments to the session draft, alongside any unsent edits. Already answered or steered prompts are not restored. Attachment recovery requires the complete prompt content to be available in the loaded transcript; recovered attachments stay in memory for the current app run.
 
