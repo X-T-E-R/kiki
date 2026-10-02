@@ -134,7 +134,12 @@ export function SubagentGroupRow({
   );
 }
 
-const ROW_ACTION = 'inline-flex min-h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11';
+/**
+ * The ended row's trailing actions: a 12px glyph in a quiet 28px tile — no
+ * border, no pill — growing to the 40px touch size on coarse pointers, the
+ * same tile the annotation rows give their icon buttons.
+ */
+const ICON_ACTION = 'inline-flex min-h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:w-10';
 
 /** The receipt a notification carries, without agent-core's envelope lines. */
 export function endingReceipt(ending: SubagentEnding, summary: string | undefined): string {
@@ -161,9 +166,9 @@ function EndedMark({ outcome }: { outcome: SubagentEnding['outcome'] }) {
 
 /**
  * A subagent that ended after its dispatching turn: one line with how it
- * ended, the receipt's first sentence and how long it ran. "Open" goes to
- * the agent (the same entry as its card and the rail), "Dispatch ↑" to the
- * card; the row opens the full receipt as markdown.
+ * ended, the receipt's first sentence and how long it ran. The trailing icon
+ * tiles open the agent (the same entry as its card and the rail) and jump
+ * back to its dispatch card; the row opens the full receipt as markdown.
  */
 export function SubagentEndedRow({
   ending,
@@ -215,22 +220,24 @@ export function SubagentEndedRow({
             <button
               type="button"
               data-subagent-ended-dispatch={ending.agentId}
-              className={ROW_ACTION}
+              className={ICON_ACTION}
               title={t('transcript.agentEnd.toDispatchTitle')}
+              aria-label={t('transcript.agentEnd.toDispatchTitle')}
               onClick={() => { onLocateDispatch(ending.agentId); }}
             >
-              {t('transcript.agentEnd.toDispatch')}
+              <Icon name="arrowUp" size={12} />
             </button>
           ) : null}
           {onOpenAgent === undefined ? null : (
             <button
               type="button"
               data-agent-open={ending.agentId}
-              className={ROW_ACTION}
+              className={ICON_ACTION}
               aria-label={t('transcript.agents.openAria', { name })}
+              title={t('transcript.agents.openAria', { name })}
               onClick={() => { onOpenAgent(ending.agentId); }}
             >
-              {t('transcript.agents.open')}
+              <Icon name="external" size={12} />
             </button>
           )}
         </span>
