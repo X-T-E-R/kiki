@@ -1,4 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { parse as parseToml } from 'smol-toml';
+import { parsePersonaFileText } from '@kiki/agent-profiles';
+
+import { HooksConfigSchema, HooksV2ConfigSchema, hooksFromToml } from '#/features/externalHooks/configSection';
+import { matchesHook, type EffectiveHookRule } from '#/features/externalHooks/internal/rules';
+import PERSONA_REFERENCE from '../../../src/app/skillCatalog/builtin/kiki-persona/references/authoring.md?raw';
+import HOOKS_REFERENCE from '../../../src/app/skillCatalog/builtin/kiki-hooks/references/authoring.md?raw';
 
 import { TestInstantiationService } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
@@ -13,7 +21,7 @@ import { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/inte
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-appearance', 'kiki-as-subagent', 'tool-workflows'];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'kiki-persona', 'kiki-hooks', 'kiki-appearance', 'kiki-as-subagent', 'tool-workflows'];
 const KIKI_OPS_TRIGGERS = [
   'first-run',
   'provider',
@@ -81,6 +89,91 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
     expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
     expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it.each([
+    ['kiki-persona', PERSONA_REFERENCE, 'Not for selecting an existing persona'],
+    ['kiki-hooks', HOOKS_REFERENCE, 'Not for ordinary tool calls'],
+  ])('bundles %s authoring references and keeps its exclusion visible', (name, reference, exclusion) => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === name)!;
+    expect(skill.path).toBe(`builtin://${name}`);
+    expect(skill.dir).toBe(`builtin://${name}`);
+    expect(skill.metadata.isSubSkill).not.toBe(true);
+    expect(skill.metadata.disableModelInvocation).not.toBe(true);
+    expect(skill.content).toContain(`## references/authoring.md\n\n${reference}`);
+    const catalog = new InMemorySkillCatalog();
+    catalog.registerBuiltinSkill(skill);
+    expect(catalog.getModelSkillListing()).toContain(exclusion);
+  });
+
+  it('routes persona identity and hook authoring out of the general operations skill', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    const profile = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')!.content;
+    expect(ops).toContain('belongs to `kiki-persona`');
+    expect(ops).toContain('belongs to `kiki-hooks`');
+    expect(profile).toContain('load `kiki-persona` instead');
+    const persona = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-persona')!.content;
+    expect(persona).toContain('转 `kiki-profile`');
+    expect(persona).toContain('保留现有模型、权限与共享记忆设置');
+    expect(persona).toContain('正在进行的会话保留自己的角色快照');
+    expect(persona).toContain('不手工制造角色状态、目录索引或运行时记忆');
+    expect(persona).not.toMatch(/kiki persona (create|validate)/);
+  });
+
+  it('ships a loadable minimal persona without changing models, tools or shared memory', () => {
+    const snippets = [...PERSONA_REFERENCE.matchAll(/```markdown\n([\s\S]*?)```/g)].map((match) => match[1]!);
+    const definitions = snippets.filter((text) => text.startsWith('---\n')).map((text) =>
+      parsePersonaFileText({ path: '/personas/writing-partner/persona.md', text }),
+    );
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]).toMatchObject({ id: 'writing-partner', name: '写作伙伴', profile: 'agent' });
+    expect(definitions[0]?.modelAlias).toBeUndefined();
+    expect(definitions[0]?.memory).toBeUndefined();
+    expect(definitions[0]?.skills).toBeUndefined();
+    expect(snippets[1]?.match(/用户：/g)).toHaveLength(2);
+    expect(() => parsePersonaFileText({
+      path: '/personas/writing-partner/persona.md',
+      text: snippets[0]!.replace('profile: agent', 'tools: [Read]'),
+    })).toThrow(/permissions belong to the referenced profile/);
+  });
+
+  it('ships current v2 and explicitly legacy hooks examples with correct near-miss behavior', () => {
+    const examples = [...HOOKS_REFERENCE.matchAll(/```toml\n([\s\S]*?)```/g)].map((match) =>
+      HooksV2ConfigSchema.parse(hooksFromToml(parseToml(match[1]!)['hooks'])),
+    );
+    expect(examples).toHaveLength(3);
+    const guidance = examples[0]!.rules[0]!;
+    expect(guidance).toMatchObject({
+      event: 'step.before', match: { agentRoles: ['root'], executors: ['native'] },
+      cadence: { everyCompletedSteps: 3, counterScope: 'agent', partitionBy: 'model' },
+      action: { type: 'inject' },
+    });
+    const observation = examples[1]!.rules[0]!;
+    expect(observation).toMatchObject({ event: 'tool.after', action: { type: 'observe' } });
+    const effective = (rule: typeof guidance): EffectiveHookRule => ({
+      rule, id: `user/${rule.id}`, namespace: 'user', path: '/example/hooks.toml',
+      mutable: true, contentHash: '', semanticHash: '', active: true,
+    });
+    expect(matchesHook(effective(guidance), { event: 'step.before', agentRole: 'root', executorId: 'native' })).toBe(true);
+    expect(matchesHook(effective(guidance), { event: 'step.before', agentRole: 'subagent', executorId: 'native' })).toBe(false);
+    expect(matchesHook(effective(observation), { event: 'tool.after', status: 'error' })).toBe(true);
+    expect(matchesHook(effective(observation), { event: 'tool.after', status: 'success' })).toBe(false);
+    expect(examples[2]!.legacy).toEqual([{
+      event: 'Notification', matcher: '^task\\.completed$', command: 'node .kiki/hooks/task-event.mjs', timeout: 5,
+    }]);
+    expect(HooksConfigSchema.safeParse({ ...examples[0], rules: [{ ...guidance, action: { type: 'command', command: 'check' } }] }).success).toBe(false);
+    expect(HooksConfigSchema.safeParse({ ...examples[0], rules: [{ ...guidance, event: 'prompt.submit' }] }).success).toBe(false);
+    expect(HooksConfigSchema.safeParse({ ...examples[0], rules: [{ ...guidance, event: 'tool.before', cadence: undefined }] }).success).toBe(false);
+  });
+
+  it('runs the bundled legacy script with its local positive and negative fixtures', () => {
+    const script = [...HOOKS_REFERENCE.matchAll(/```js\n([\s\S]*?)```/g)][0]![1]!;
+    const fixture = JSON.parse([...HOOKS_REFERENCE.matchAll(/```json\n([\s\S]*?)```/g)][0]![1]!);
+    const run = (input: unknown) => execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      input: JSON.stringify(input), encoding: 'utf8', timeout: 5000,
+    });
+    expect(JSON.parse(run(fixture))).toEqual({ message: '已收到任务完成事件。' });
+    expect(run({ ...fixture, hook_event_name: 'SessionStart' })).toBe('');
   });
 
   it('ships loadable inherit and model/tools-only profile examples', () => {

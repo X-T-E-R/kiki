@@ -121,6 +121,8 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 | --- | --- |
 | `/kiki-ops [<请求>]` | 配置、操作或排查 Kiki 本身：产品答疑、首次运行的供应商与模型配置、搜索与抓取、会话、subagent、任务、MCP、权限模式、定时任务、插件和主题 |
 | `/kiki-profile [<请求>]` | 创建或修改 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
+| `/kiki-persona [<请求>]` | 制作或修复角色的身份、语气、开场白、对话示例与头像。详见 [角色、Bot 与房间](../customization/personas.md) |
+| `/kiki-hooks [<请求>]` | 编写或修复指导、事件观察与旧版脚本 hooks，并检查实际生效。详见 [Hooks](../customization/hooks.md) |
 
 所有内置 Skill 命令仅在空闲状态下可用。
 

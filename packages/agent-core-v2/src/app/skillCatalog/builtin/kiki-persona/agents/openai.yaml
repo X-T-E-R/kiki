@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kiki Persona"
+  short_description: "Create and verify Kiki persona assets"
+  default_prompt: "Use $kiki-persona to create or repair a Kiki persona and verify it in a new session."

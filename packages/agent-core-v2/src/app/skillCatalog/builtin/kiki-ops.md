@@ -6,7 +6,7 @@ when_to_use: The user asks how Kiki works or how to change it - stop approval pr
 
 # Kiki operations (kiki-ops)
 
-Help the user use, configure, and troubleshoot the installed Kiki. Creating or editing an agent profile or `SYSTEM.md` belongs to `kiki-profile`; load it for that. Making a GUI skin file or an appearance pack (colors, background picture or video) belongs to `kiki-appearance`.
+Help the user use, configure, and troubleshoot the installed Kiki. Creating or editing an agent profile or `SYSTEM.md` belongs to `kiki-profile`; load it for that. Creating a persona's identity, voice, greetings or avatar belongs to `kiki-persona`. Writing or repairing event hooks belongs to `kiki-hooks`. Making a GUI skin file or an appearance pack (colors, background picture or video) belongs to `kiki-appearance`.
 
 ## Decision path
 

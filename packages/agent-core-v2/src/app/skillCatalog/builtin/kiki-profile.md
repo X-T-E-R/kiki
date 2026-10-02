@@ -7,6 +7,8 @@ description: Create, modify, or repair Kiki main/subagent profiles or SYSTEM.md 
 
 An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. Choose the loading scope, frontmatter fields, and prompt mode deliberately; consult the complete field-by-field reference in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
 
+For a character's identity, voice, greetings, dialogue examples or avatar, load `kiki-persona` instead. A persona can reference an existing execution profile; create a new profile here only when the task needs different execution behavior.
+
 ## Where profiles live
 
 Kiki discovers profile files by scope; more specific scopes win on a name collision: **Explicit (`--agent-file` / `profile_file`) > Project > Extra > User > Built-in copies > Plugin**.

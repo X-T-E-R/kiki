@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kiki Hooks"
+  short_description: "Write and verify Kiki automation hooks"
+  default_prompt: "Use $kiki-hooks to write or repair a hook and verify its effective rules and behavior."

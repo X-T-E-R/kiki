@@ -4,6 +4,8 @@ import type { SkillDefinition } from '#/app/skillCatalog/types';
 import { KIKI_APPEARANCE_SKILL } from './kiki-appearance';
 import { KIKI_AS_SUBAGENT_SKILL } from './kiki-as-subagent';
 import { KIKI_OPS_SKILL } from './kiki-ops';
+import { KIKI_PERSONA_SKILL } from './kiki-persona';
+import { KIKI_HOOKS_SKILL } from './kiki-hooks';
 import { KIKI_PROFILE_SKILL } from './kiki-profile';
 import { TOOL_WORKFLOWS_SKILL } from './tool-workflows';
 import { getBuiltinSkillContributions } from './registry';
@@ -11,6 +13,8 @@ import { getBuiltinSkillContributions } from './registry';
 export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
   KIKI_OPS_SKILL,
   KIKI_PROFILE_SKILL,
+  KIKI_PERSONA_SKILL,
+  KIKI_HOOKS_SKILL,
   KIKI_APPEARANCE_SKILL,
   KIKI_AS_SUBAGENT_SKILL,
   TOOL_WORKFLOWS_SKILL,
@@ -30,4 +34,4 @@ export function visibleBuiltinSkills(
   );
 }
 
-export { KIKI_APPEARANCE_SKILL, KIKI_OPS_SKILL, KIKI_PROFILE_SKILL, TOOL_WORKFLOWS_SKILL };
+export { KIKI_APPEARANCE_SKILL, KIKI_OPS_SKILL, KIKI_PROFILE_SKILL, KIKI_PERSONA_SKILL, KIKI_HOOKS_SKILL, TOOL_WORKFLOWS_SKILL };
