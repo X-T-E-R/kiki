@@ -214,6 +214,62 @@ const SCENARIOS = [
       return [await shot(page, 'hero-zh')];
     },
   },
+  {
+    name: 'capabilities-empty-zh',
+    fixture: 'hero-shell',
+    locale: 'zh',
+    tags: ['smoke', 'capabilities', 'i18n'],
+    async run(page, link) {
+      await page.route('**/api/workspaces', (route) => route.fulfill({
+        json: { code: 0, msg: 'ok', data: { items: [] }, request_id: 'fixture-cap-empty' },
+      }));
+      await page.goto(link('/capabilities?tab=skills'), { waitUntil: 'domcontentloaded' });
+      const empty = page.locator('[data-capability-empty]');
+      await empty.waitFor({ timeout: 20_000 });
+      if (!(await empty.textContent())?.includes('还没有可查看技能的工作区')) throw new Error('missing workspace empty state');
+      const action = empty.locator('a[href="/new"]');
+      await action.waitFor();
+      const shots = [await shot(page, 'capabilities-empty-zh')];
+      await action.click();
+      await page.waitForURL(/\/new$/, { timeout: 20_000 });
+      return shots;
+    },
+  },
+  {
+    name: 'capabilities-workspaces-zh',
+    fixture: 'hero-shell',
+    locale: 'zh',
+    tags: ['smoke', 'capabilities', 'i18n'],
+    async run(page, link) {
+      const items = ['Alpha', 'Beta'].map((name) => ({
+        id: `ws_${name.toLowerCase()}`, name, root: `C:/projects/${name}`,
+        created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', session_count: 1, pinned: false, isGit: false,
+      }));
+      await page.route('**/api/workspaces', (route) => route.fulfill({
+        json: { code: 0, msg: 'ok', data: { items }, request_id: 'fixture-cap-workspaces' },
+      }));
+      await page.route('**/api/workspaces/*/skills', (route) => {
+        const id = new URL(route.request().url()).pathname.split('/').at(-2);
+        return route.fulfill({ json: { code: 0, msg: 'ok', data: { skills: [{
+          name: `${id}-review`, description: 'Review project changes', source: 'project',
+          path: `C:/projects/${id}/.agents/skills/review/SKILL.md`,
+        }] }, request_id: 'fixture-cap-skills' } });
+      });
+      await page.goto(link('/capabilities?tab=skills&workspace=ws_beta'), { waitUntil: 'domcontentloaded' });
+      await page.locator('[data-skill-row="ws_beta-review"]').waitFor({ timeout: 20_000 });
+      await page.locator('#capabilities-workspace').click();
+      await page.getByRole('option').filter({ hasText: 'Alpha' }).click();
+      await page.waitForURL(/workspace=ws_alpha/, { timeout: 20_000 });
+      await page.locator('[data-skill-row="ws_alpha-review"]').waitFor({ timeout: 20_000 });
+      await page.locator('#capabilities-workspace').click();
+      const shots = [await shot(page, 'capabilities-workspaces-zh')];
+      await page.keyboard.press('Escape');
+      await page.goBack();
+      await page.waitForURL(/workspace=ws_beta/, { timeout: 20_000 });
+      await page.locator('[data-skill-row="ws_beta-review"]').waitFor({ timeout: 20_000 });
+      return shots;
+    },
+  },
 ];
 
 const MIME = {

@@ -4381,7 +4381,11 @@ export const zh = {
   'new.cwdInvalid': '请输入工作目录的绝对路径（例如 C:/work/project 或 /home/you/project）。',
 
   // ---- 技能目录与 MCP 状态（设置 技能/MCP 页）----
-  'cap.noWorkspace': '服务器上没有已注册的工作区，无法列出工作区技能。',
+  'cap.noWorkspace': '还没有可查看技能的工作区',
+  'cap.noWorkspaceBody': '新建会话时选择一个项目文件夹，即可在这里查看它的技能。',
+  'cap.openWorkspace': '新建会话',
+  'cap.loadingWorkspaces': '正在加载工作区…',
+  'cap.workspacesFailed': '工作区列表加载失败，请重试。',
   'cap.filterPlaceholder': '按名称、描述或路径过滤…',
   'cap.filterAria': '过滤能力',
   'cap.loadingSkills': '正在加载技能…',

@@ -9,11 +9,12 @@
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import type { SkillDescriptor } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
-import { SKILL_GROUP_ORDER, skillGroupId, type SkillGroupId } from '../../lib/capabilities';
+import { SKILL_GROUP_ORDER, skillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
 import { useMediaPreview } from '../mediaPreviewContext';
@@ -99,7 +100,8 @@ export function SkillsView({
       ) : null}
 
       {workspaceId === '' ? (
-        <EmptyNote title={t('cap.noWorkspace')} />
+        <EmptyNote title={t('cap.noWorkspace')} body={t('cap.noWorkspaceBody')}
+          action={<Link to="/new" className="inline-flex min-h-8 items-center rounded-md bg-ink/[0.06] px-3 text-[13px] text-ink hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-selected-ink">{t('cap.openWorkspace')}</Link>} />
       ) : skillsQuery.isPending ? (
         <p className="text-[13px] text-ink-faint" role="status">{t('cap.loadingSkills')}</p>
       ) : skillsQuery.isError ? (

@@ -4439,8 +4439,11 @@ export const en = {
     'Enter an absolute path for the working directory (for example C:/work/project or /home/you/project).',
 
   // ---- skill catalog & MCP status (settings skills/MCP leaves) ----
-  'cap.noWorkspace':
-    'No workspace is registered on this server, so workspace skills cannot be listed.',
+  'cap.noWorkspace': 'No workspace to show skills for yet',
+  'cap.noWorkspaceBody': 'Choose a project folder when starting a new session to see its skills here.',
+  'cap.openWorkspace': 'New session',
+  'cap.loadingWorkspaces': 'Loading workspaces…',
+  'cap.workspacesFailed': 'Could not load workspaces. Please retry.',
   'cap.filterPlaceholder': 'Filter by name, description, or path…',
   'cap.filterAria': 'Filter capabilities',
   'cap.loadingSkills': 'Loading skills…',
