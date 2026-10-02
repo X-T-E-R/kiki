@@ -64,6 +64,7 @@ import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
 import { PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
+import { UsageRescanControl } from './usage/UsageRescanControl';
 import { segmentClass } from './WorkspaceScopeControl';
 import { Icon } from './icons';
 import { DimensionBreakdown } from './usage/UsageBreakdown';
@@ -925,6 +926,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           {panel !== 'history' ? <RequestGovernanceView view={panel} /> : <>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
+          <UsageRescanControl />
           {usageQuery.isPending ? (
             <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />

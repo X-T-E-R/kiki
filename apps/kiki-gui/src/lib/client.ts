@@ -1105,6 +1105,14 @@ export class KikiClient {
     return this.run(() => this.rest.requestGovernance());
   }
 
+  getUsageRescan(): Promise<import('@kiki/protocol').UsageRescanStatus> {
+    return this.run(() => this.rest.usageRescan.status());
+  }
+
+  startUsageRescan(): Promise<import('@kiki/protocol').UsageRescanStatus> {
+    return this.run(() => this.rest.usageRescan.start());
+  }
+
   /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
     query: Record<string, string | number | boolean | undefined>,

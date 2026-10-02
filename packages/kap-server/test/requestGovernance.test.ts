@@ -10,6 +10,7 @@ it('reads realtime request state from the App authority without scanning histori
   const app = {
     get: (path: string, _options: unknown, handler: Handler) => { routes.set(path, handler); },
     put: () => undefined,
+    post: () => undefined,
   };
   const snapshot = requestGovernanceSnapshotSchema.parse({
     domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 4, asOf: '2026-01-01T00:00:00Z',

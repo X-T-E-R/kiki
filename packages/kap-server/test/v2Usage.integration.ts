@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
-import { usageResponseSchema, type UsageResponse } from '@kiki/protocol';
+import { usageResponseSchema, usageRescanStatusSchema, type UsageResponse } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
@@ -197,6 +197,29 @@ describe('server /api/usage', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as never);
       home = undefined;
     }
+  });
+
+  it('starts a full rescan through REST and exposes validated progress including archived sessions', async () => {
+    const readStatus = async () => {
+      const response = await authedFetch(server as RunningServer, base, '/api/usage/rescan');
+      const envelope = await response.json() as { code: number; data: unknown };
+      expect(envelope.code).toBe(0);
+      return usageRescanStatusSchema.parse(envelope.data);
+    };
+    expect((await readStatus()).state).toBe('idle');
+    const response = await authedFetch(server as RunningServer, base, '/api/usage/rescan', { method: 'POST' });
+    const envelope = await response.json() as { code: number; data: unknown };
+    expect(envelope.code).toBe(0);
+    const started = usageRescanStatusSchema.parse(envelope.data);
+    expect(started.state).toBe('running');
+    let status = await readStatus();
+    for (let attempt = 0; attempt < 100 && status.state === 'running'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      status = await readStatus();
+    }
+    expect(status).toMatchObject({ state: 'completed', total_sessions: 3, scanned_sessions: 3, scanned_records: 5, error: null });
+    expect(status.finished_at).not.toBeNull();
+    expect((await getData('?include_archived=true')).summary.session_count).toBe(3);
   });
 
   it('reads and writes user pricing through the validated public route and updates usage without wire changes', async () => {

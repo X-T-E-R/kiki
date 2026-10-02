@@ -279,6 +279,10 @@ export interface HttpRestFacade {
   } | undefined>;
   usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
+  readonly usageRescan: {
+    status(): Promise<import('@kiki/protocol').UsageRescanStatus>;
+    start(): Promise<import('@kiki/protocol').UsageRescanStatus>;
+  };
   readonly usagePricing: {
     get(models?: readonly string[]): Promise<UsagePricingResponse>;
     set(update: UsagePricingUpdate): Promise<UsagePricingResponse>;

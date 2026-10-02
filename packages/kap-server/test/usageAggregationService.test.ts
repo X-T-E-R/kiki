@@ -101,6 +101,7 @@ function fixture(
   },
   onCheckpointRead: (bytes: number) => void = () => {},
   ephemeral: readonly EphemeralUsageTotal[] = [],
+  beforeWireRead: () => Promise<void> = async () => {},
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
@@ -124,9 +125,12 @@ function fixture(
     status: () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
     listRecent: async (query) => {
       const allowed = query.workspaceIds === undefined ? undefined : new Set(query.workspaceIds);
+      const items = sessions.filter((session) => allowed === undefined || allowed.has(session.workspaceId));
+      const start = query.before === undefined ? 0 : items.findIndex((item) => item.id === query.before) + 1;
+      const page = items.slice(start, start + (query.limit ?? items.length));
       return {
-        items: sessions.filter((session) => allowed === undefined || allowed.has(session.workspaceId)),
-        nextCursor: undefined,
+        items: page,
+        nextCursor: start + page.length < items.length ? page.at(-1)?.id : undefined,
       };
     },
     get: async (id) => sessions.find((session) => session.id === id),
@@ -153,6 +157,7 @@ function fixture(
     readStream: (wireScope: string, _key: string, range?: { start: number; end: number }) => {
       reads.set(wireScope, (reads.get(wireScope) ?? 0) + 1);
       return (async function* () {
+        await beforeWireRead();
         const bytes = wires.get(wireScope) ?? Buffer.alloc(0);
         const start = range?.start ?? 0;
         const end = Math.min(range?.end ?? bytes.length - 1, bytes.length - 1);
@@ -754,5 +759,86 @@ describe('UsageAggregationService retained sessions', () => {
     expect(retainedQueries).toEqual([
       expect.objectContaining({ workspaceIds: ['workspace-a'] }),
     ]);
+  });
+});
+
+async function finishRescan(service: UsageAggregationService) {
+  for (let attempt = 0; attempt < 2000 && service.rescanStatus().state === 'running'; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  expect(service.rescanStatus().state).not.toBe('running');
+  return service.rescanStatus();
+}
+
+describe('UsageAggregationService full rescan', () => {
+  it('bypasses session, record and deadline budgets and persists the completed inventory across restart', async () => {
+    const sessions = Array.from({ length: 505 }, (_, index) => summary(`s_${index}`, 'ws'));
+    const records = Object.fromEntries(sessions.map((item) => [scope('ws', item.id), [usageRecord(1), usageRecord(2)]]));
+    let clock = 0;
+    const f = fixture(sessions, records, () => clock, { sessionScanLimit: 1, wireRecordBudget: 1, deadlineMs: 1 });
+    expect((await query(f.service)).reliability.incomplete_reason).toBe('record_budget');
+    const started = f.service.startFullRescan();
+    expect(started).toMatchObject({ state: 'running', scanned_sessions: 0, scanned_records: 0, finished_at: null });
+    clock = 1_000_000;
+    const completed = await finishRescan(f.service);
+    expect(completed).toMatchObject({ state: 'completed', scanned_sessions: 505, total_sessions: 505, scanned_records: 1009, error: null });
+    const restarted = f.restart();
+    const response = await query(restarted);
+    expect(response.summary.session_count).toBe(505);
+    expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    expect(response.summary.tokens.input_other).toBe(1010);
+    const reads = [...f.reads.values()].reduce((sum, count) => sum + count, 0);
+    restarted.startFullRescan();
+    expect((await finishRescan(restarted)).scanned_records).toBe(0);
+    expect([...f.reads.values()].reduce((sum, count) => sum + count, 0)).toBe(reads);
+  });
+
+  it('reuses a running task and serves checkpoint reads without waiting for the scanner', async () => {
+    let block = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = fixture([summary('s', 'ws')], { [scope('ws', 's')]: [usageRecord(1)] }, () => 1,
+      {}, undefined, undefined, [], async () => { if (block) await gate; });
+    await query(f.service);
+    f.setWire(scope('ws', 's'), [usageRecord(1), usageRecord(2)]);
+    block = true;
+    const started = f.service.startFullRescan();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.service.rescanStatus()).toMatchObject({ state: 'running', total_sessions: 1, scanned_sessions: 0 });
+    expect(f.service.startFullRescan().started_at).toBe(started.started_at);
+    const response = await query(f.service);
+    expect(response.summary.tokens.input_other).toBe(1);
+    expect(response.reliability.complete).toBe(false);
+    release();
+    expect(await finishRescan(f.service)).toMatchObject({ state: 'completed', scanned_records: 1, scanned_sessions: 1 });
+    expect((await query(f.service)).summary.tokens.input_other).toBe(2);
+  });
+
+  it('reports incremental progress and completes a single session beyond the default 200k record budget', async () => {
+    const f = fixture([summary('s', 'ws')], {
+      [scope('ws', 's')]: Array.from({ length: 200_005 }, () => usageRecord(1)),
+    }, () => 1);
+    f.service.startFullRescan();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.service.rescanStatus()).toMatchObject({ state: 'running', scanned_sessions: 0, scanned_records: 1024, total_sessions: 1 });
+    expect(await finishRescan(f.service)).toMatchObject({ state: 'completed', scanned_records: 200_005 });
+    expect((await query(f.service)).summary.tokens.input_other).toBe(200_005);
+  }, 30_000);
+
+  it('reports failed checkpoints and permits a retry', async () => {
+    const f = fixture([summary('s', 'ws')], { [scope('ws', 's')]: [{ ...usageRecord(1), model: '' }] }, () => 1);
+    f.service.startFullRescan();
+    expect(await finishRescan(f.service)).toMatchObject({ state: 'failed', scanned_sessions: 1, total_sessions: 1 });
+    expect(f.service.rescanStatus().error).toContain('incomplete');
+    f.setWire(scope('ws', 's'), [usageRecord(1), usageRecord(2)]);
+    f.service.startFullRescan();
+    expect((await finishRescan(f.service)).state).toBe('completed');
+  });
+
+  it('uses a ten-second default deadline while preserving explicitly shorter budgets', async () => {
+    let clock = 0;
+    const f = fixture([summary('s', 'ws')], { [scope('ws', 's')]: [usageRecord(1)] }, () => clock,
+      {}, undefined, undefined, [], async () => { clock = 9000; });
+    expect((await query(f.service)).reliability.complete).toBe(true);
   });
 });
