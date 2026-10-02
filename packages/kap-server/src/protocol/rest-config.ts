@@ -21,7 +21,7 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
+import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -300,6 +300,7 @@ export const patchConfigRequestSchema = z.object({
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),
+  request_governance: requestGovernanceConfigPatchSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
 }).strict();

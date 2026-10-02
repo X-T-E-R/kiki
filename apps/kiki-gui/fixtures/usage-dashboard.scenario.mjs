@@ -342,6 +342,37 @@ export default {
   priceOverrides: {
     'gpt-5.1-codex': { input_cost_per_token: 1.25e-6, output_cost_per_token: 10e-6, cache_read_input_token_cost: 0.125e-6, currency: 'USD' },
   },
+  providers: [
+    { id: 'kimi', type: 'openai', has_api_key: true, status: 'connected', default_model: K2, models: [K2] },
+    { id: 'anthropic', type: 'anthropic', has_api_key: true, status: 'connected', default_model: SONNET, models: [SONNET] },
+    { id: 'openai', type: 'openai', has_api_key: true, status: 'connected', default_model: 'gpt-5.1-codex', models: ['gpt-5.1-codex'] },
+  ],
+  // `/usage/realtime`: three in flight against the kimi cap, one subagent
+  // queued behind it; one paused rule so the Limits list shows both states.
+  requestGovernance: {
+    domainId: 'this-service',
+    runtimeEpoch: 'ep_fixture_governance',
+    seq: 7,
+    asOf: new Date().toISOString(),
+    coverage: { native: 'managed', external: 'unmanaged' },
+    active: 3,
+    queued: 1,
+    dimensions: [
+      { dimension: 'model', id: K2, active: 2, queued: 1 },
+      { dimension: 'model', id: SONNET, active: 1, queued: 0 },
+      { dimension: 'provider', id: 'kimi', active: 2, queued: 1 },
+      { dimension: 'provider', id: 'anthropic', active: 1, queued: 0 },
+      { dimension: 'role', id: 'root/system', active: 2, queued: 0 },
+      { dimension: 'role', id: 'subagent', active: 1, queued: 1 },
+    ],
+    rules: [
+      { id: 'kimi-cap', resource: 'model_request', scope: 'global', providers: ['kimi'], subagentsOnly: false, maxConcurrent: 2, overflow: 'queue', enabled: true },
+      { id: 'session-focus', resource: 'model_request', scope: 'each_session', subagentsOnly: true, maxConcurrent: 1, overflow: 'reject', enabled: false },
+    ],
+    waiting: [
+      { attemptId: 'attempt-fixture-1', sessionId: ZETA, agentId: 'agent-research', modelId: K2, providerId: 'kimi', purpose: 'turn', waitedMs: 47_000, blockingRules: ['kimi-cap'] },
+    ],
+  },
   workspaces: [
     { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: ts(40 * DAY_MIN), last_opened_at: ts(3), session_count: 7, pinned: false },
     { id: DOCS_WS, root: 'C:/fixture-docs', name: 'docs-site', created_at: ts(20 * DAY_MIN), last_opened_at: ts(300), session_count: 2, pinned: false },

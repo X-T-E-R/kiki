@@ -704,6 +704,48 @@ describe('server-v2 /api/config', () => {
     expect(persisted).not.toContain('"explore"');
   });
 
+  it('writes request_governance rules through POST /config, live for the realtime route, replacing the rule list atomically', async () => {
+    await boot();
+    const configPath = join(home as string, 'config.toml');
+    const rules = [
+      { id: 'provider-cap', scope: 'global', providers: ['provider-a'], max_concurrent: 3, overflow: 'queue' },
+      { id: 'session-cap', scope: 'each_session', max_concurrent: 1, overflow: 'reject', subagents_only: true, enabled: false },
+    ];
+    await patchConfig({ request_governance: { rules } });
+
+    const persisted = await readFile(configPath, 'utf-8');
+    expect(persisted).toContain('[[request_governance.rules]]');
+    expect(persisted).toContain('max_concurrent = 3');
+    expect(persisted).toContain('enabled = false');
+
+    // The write lands in the live authority: the realtime route serves the new rules.
+    const realtime = await authedFetch(server as RunningServer, base, '/api/usage/realtime');
+    expect(realtime.status).toBe(200);
+    const snapshot = (await realtime.json()) as Envelope<{ rules: Record<string, unknown>[] }>;
+    expect(snapshot.code).toBe(0);
+    expect(snapshot.data.rules).toEqual([
+      expect.objectContaining({ id: 'provider-cap', maxConcurrent: 3, enabled: true }),
+      expect.objectContaining({ id: 'session-cap', scope: 'each_session', subagentsOnly: true, enabled: false }),
+    ]);
+
+    // A later write replaces the whole list: the removed rule leaves the file.
+    await patchConfig({ request_governance: { rules: [rules[0]] } });
+    expect(await readFile(configPath, 'utf-8')).not.toContain('session-cap');
+
+    const before = await readFile(configPath, 'utf-8');
+    const invalid = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_governance: { rules: [{ id: 'dup' }, { id: 'dup' }] } }),
+    });
+    expect((await invalid.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const unknownKey = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_governance: { rules: [{ id: 'cap', max_concurrency: 2 }] } }),
+    });
+    expect((await unknownKey.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(configPath, 'utf-8')).toBe(before);
+  });
+
   it('rejects unknown retry keys without persisting them', async () => {
     await boot('[retry]\nmax_attempts = 2\n');
     const configPath = join(home as string, 'config.toml');

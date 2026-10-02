@@ -82,7 +82,7 @@ export class RequestGovernanceService extends Disposable implements IRequestGove
 
   private blocking(attempt: RequestAttempt): RequestConcurrencyRule[] {
     return this.settings.rules.filter((rule) => {
-      if (rule.maxConcurrent === undefined || !this.matches(rule, attempt)) return false;
+      if (!rule.enabled || rule.maxConcurrent === undefined || !this.matches(rule, attempt)) return false;
       let count = 0;
       for (const active of this.active.values()) {
         if (this.matches(rule, active) && (rule.scope === 'global' || active.sessionId === attempt.sessionId)) count += 1;
@@ -92,7 +92,7 @@ export class RequestGovernanceService extends Disposable implements IRequestGove
   }
 
   private waitLimit(attempt: RequestAttempt): number {
-    return Math.min(this.settings.maxWaitMs, ...this.settings.rules.filter((rule) => this.matches(rule, attempt)).map((rule) => rule.maxWaitMs ?? Infinity));
+    return Math.min(this.settings.maxWaitMs, ...this.settings.rules.filter((rule) => rule.enabled && this.matches(rule, attempt)).map((rule) => rule.maxWaitMs ?? Infinity));
   }
 
   private admit(attempt: RequestAttempt): RequestPermit {

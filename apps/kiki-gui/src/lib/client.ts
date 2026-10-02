@@ -1105,6 +1105,31 @@ export class KikiClient {
     return this.run(() => this.rest.requestGovernance());
   }
 
+  /**
+   * Replaces the request limit rules (Usage → Limits). Add, edit, toggle, and
+   * delete all send the full list: the config write replaces the section's
+   * rule array wholesale and the change is live on the next request.
+   */
+  setRequestGovernanceRules(
+    rules: readonly import('@kiki/protocol').RequestGovernanceSnapshot['rules'][number][],
+  ): Promise<KikiConfigResponse> {
+    return this.patchConfig({
+      request_governance: {
+        rules: rules.map((rule) => ({
+          id: rule.id,
+          scope: rule.scope,
+          ...(rule.models !== undefined ? { models: [...rule.models] } : {}),
+          ...(rule.providers !== undefined ? { providers: [...rule.providers] } : {}),
+          subagents_only: rule.subagentsOnly,
+          ...(rule.maxConcurrent !== undefined ? { max_concurrent: rule.maxConcurrent } : {}),
+          overflow: rule.overflow,
+          ...(rule.maxWaitMs !== undefined ? { max_wait_ms: rule.maxWaitMs } : {}),
+          enabled: rule.enabled,
+        })),
+      },
+    });
+  }
+
   getUsageRescan(): Promise<import('@kiki/protocol').UsageRescanStatus> {
     return this.run(() => this.rest.usageRescan.status());
   }

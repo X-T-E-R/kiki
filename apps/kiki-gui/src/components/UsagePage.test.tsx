@@ -35,10 +35,13 @@ const startUsageRescan = vi.fn();
 const getSession = vi.fn();
 const listWorkspaces = vi.fn();
 const getRequestGovernance = vi.fn().mockResolvedValue({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] });
+const setRequestGovernanceRules = vi.fn().mockResolvedValue({});
+const listModels = vi.fn().mockResolvedValue({ items: [] });
+const listProviders = vi.fn().mockResolvedValue({ items: [] });
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
-  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, getRequestGovernance } }),
+  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -217,12 +220,12 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
-  it('opens live requests by default and switches between live, read-only limits and historical usage', async () => {
+  it('opens live requests by default and switches between live, limits and historical usage', async () => {
     const { container, root } = await renderPage('/usage');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(mainCalls()).toHaveLength(0);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="limits"]')!.click(); });
-    expect(container.textContent).toContain('Rules are read-only');
+    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(mainCalls().length).toBeGreaterThan(0);

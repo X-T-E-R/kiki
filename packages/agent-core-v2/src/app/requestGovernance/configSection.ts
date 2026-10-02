@@ -13,6 +13,9 @@ export const RequestConcurrencyRuleSchema = z.object({
   maxConcurrent: z.number().int().positive().optional(),
   overflow: z.enum(['queue', 'reject']).default('queue'),
   maxWaitMs: z.number().int().positive().optional(),
+  // A paused rule stays in the list but neither blocks nor shapes the wait
+  // budget; it is the GUI toggle's off state.
+  enabled: z.boolean().default(true),
 }).strict();
 
 export const RequestGovernanceConfigSchema = z.object({

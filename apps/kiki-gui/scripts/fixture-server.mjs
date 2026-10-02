@@ -519,6 +519,15 @@ function cloneScenarioData(value) {
   return copy;
 }
 
+/** One config-wire object with snake_case keys → the camel shape the snapshot serves. */
+function snakeToCamelKeys(value) {
+  const out = {};
+  for (const [key, entry] of Object.entries(value ?? {})) {
+    out[key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase())] = entry;
+  }
+  return out;
+}
+
 class FixtureServer {
   constructor() {
     this.scenario = null; // { name, data }
@@ -592,6 +601,10 @@ class FixtureServer {
     resetNotifications(this);
     this.autoCompactAgents = structuredClone(data.autoCompact?.agents ?? {});
     this.usageV2 = data.usageV2 ?? null;
+    // `/usage/realtime`: the request-governance snapshot. Rule edits through
+    // `POST /config` rewrite `this.requestGovernance.rules`, so the Limits
+    // panel's add / edit / toggle / delete all read back like the real server.
+    this.requestGovernance = structuredClone(data.requestGovernance ?? null);
     // Memory (`/api/memory/*`): `memory` seeds the settings section and the
     // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
     // mutate this state and append journal records, so the page's save / delete
@@ -1445,6 +1458,7 @@ class FixtureServer {
       // management domains distinct from the flat session/runtime routes.
       const advanced = path === '/usage'
         || path === '/usage/pricing'
+        || path === '/usage/realtime'
         || path === '/sessions/query'
         || path === '/mcp/servers'
         || path.startsWith('/mcp/servers/')
@@ -1484,6 +1498,12 @@ class FixtureServer {
     }
     if (path === '/usage' && method === 'GET') {
       return this.usageV2Response(res, query);
+    }
+    if (path === '/usage/realtime' && method === 'GET') {
+      if (this.requestGovernance === null) {
+        return this.envelope(res, null, 40404, 'no request governance fixture for this scenario');
+      }
+      return this.envelope(res, { ...structuredClone(this.requestGovernance), asOf: new Date().toISOString() });
     }
     if (path === '/usage/pricing' && method === 'GET') {
       return this.envelope(res, this.usagePricingResponse(query.getAll('model')));
@@ -1722,6 +1742,16 @@ class FixtureServer {
     if (path === '/config' && method === 'POST') {
       const patch = { ...(body ?? {}) };
       if (patch.request_identity === null) delete patch.request_identity;
+      // request_governance rules are the Limits panel's whole-list write; the
+      // realtime snapshot reflects them on the next poll, like the live
+      // config-section re-read on the real server.
+      if (patch.request_governance !== undefined && this.requestGovernance !== null) {
+        this.requestGovernance.rules = (patch.request_governance.rules ?? []).map((rule) => ({
+          resource: 'model_request', scope: 'global', subagentsOnly: false, overflow: 'queue', enabled: true,
+          ...snakeToCamelKeys(rule),
+        }));
+      }
+      delete patch.request_governance;
       // subagent keys arrive snake_cased and merge field-wise (the real server
       // converts and echoes the resolved section); keep them out of the
       // wholesale spread below.
