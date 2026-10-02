@@ -189,6 +189,7 @@ beforeEach(() => {
   connectionScope.id = 'local';
   // Workspace folds and the list scroll persist across mounts.
   localStorage.removeItem('kiki.sidebar.workspaceGroups');
+  localStorage.removeItem('kiki.sidebar.topLevelThreads');
   configureSpaceStorage(null);
 });
 
@@ -1285,6 +1286,43 @@ describe('session thread relations', () => {
     );
     const ids = nested.flatMap((entry) => entry.nodes.flatMap((node) => [node.session.id, ...node.children.map((child) => child.session.id)]));
     expect(ids.toSorted()).toEqual(['a', 'b']);
+  });
+
+  it('toggles thread display through its menu, persists it, and preserves creator metadata', async () => {
+    const child = thread('t1', 'root');
+    const items = [session('root'), child];
+    const props = { sessions: items, sessionGroups: [group('today', items)] };
+    const first = await mount(props);
+    const openMenu = async (container: HTMLDivElement) => {
+      await act(async () => { container.querySelector('[data-session-row="t1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+    };
+    await openMenu(first.container);
+    const promote = first.container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!;
+    expect(promote.textContent).toBe('Show at top level');
+    await act(async () => { promote.click(); });
+    expect(first.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
+    expect(first.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')?.textContent).toContain('root');
+    expect(child.metadata['created_by_session_id']).toBe('root');
+    expect(child.updated_at).toBe('2026-01-01T00:00:00.000Z');
+    await act(async () => { first.root.unmount(); });
+    const second = await mount(props);
+    expect(second.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
+    await openMenu(second.container);
+    const nest = second.container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!;
+    expect(nest.textContent).toBe('Show nested');
+    await act(async () => { nest.click(); });
+    expect(second.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).not.toBeNull();
+    const third = await mount(props);
+    expect(third.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).not.toBeNull();
+  });
+
+  it('does not offer a thread display toggle on ordinary or forked sessions', async () => {
+    const items = [session('root'), branch('forked', 'root')];
+    const { container } = await mount({ sessions: items, sessionGroups: [group('today', items)] });
+    for (const id of ['root', 'forked']) {
+      await act(async () => { container.querySelector(`[data-session-row="${id}"]`)!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+      expect(container.querySelector('[data-menu-item="thread-display"]')).toBeNull();
+    }
   });
 
   it('renders children as single indented rows with no spine, fold bar or thread glyph', async () => {

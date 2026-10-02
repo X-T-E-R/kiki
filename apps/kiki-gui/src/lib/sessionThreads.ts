@@ -83,7 +83,7 @@ interface TreeGroup<T> {
 function nestItems<T>(
   groups: readonly SessionGroup<T>[],
   sessionOf: (item: T) => Session | undefined,
-  options: { readonly crossGroups: boolean },
+  options: { readonly crossGroups: boolean; readonly topLevelIds?: ReadonlySet<string> },
 ): TreeGroup<T>[] {
   const groupOf = new Map<string, string>();
   const byId = new Map<string, { item: T; session: Session }>();
@@ -102,6 +102,7 @@ function nestItems<T>(
     const seen = new Set<string>([session.id]);
     let current = session;
     for (;;) {
+      if (options.topLevelIds?.has(current.id)) return current.id;
       const relation = sessionRelationOf(current);
       const parent = relation === undefined ? undefined : byId.get(relation.parentId);
       if (parent === undefined || seen.has(parent.session.id)) return current.id;
@@ -159,7 +160,7 @@ function toSessionNode(node: TreeNode<Session>): SessionTreeNode {
 
 export function nestSessionThreads(
   groups: readonly SessionGroup[],
-  options: { readonly crossGroups: boolean },
+  options: { readonly crossGroups: boolean; readonly topLevelIds?: ReadonlySet<string> },
 ): SessionTreeGroup[] {
   return nestItems<Session>(groups, (session) => session, options).map((group) => ({
     key: group.key,
@@ -200,7 +201,7 @@ function toConversationNode(node: TreeNode<ConversationListItem>): ConversationT
  */
 export function nestConversationItems(
   groups: readonly SessionGroup<ConversationListItem>[],
-  options: { readonly crossGroups: boolean },
+  options: { readonly crossGroups: boolean; readonly topLevelIds?: ReadonlySet<string> },
 ): ConversationTreeGroup[] {
   return nestItems<ConversationListItem>(groups, (item) => item.kind === 'session' ? item.session : undefined, options).map((group) => ({
     key: group.key,

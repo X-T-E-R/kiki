@@ -31,6 +31,7 @@ import {
   type SpaceBootHost,
 } from './spaceStorage';
 import { USAGE_FILTER_DEFAULTS, readStoredUsageFilters, writeStoredUsageFilters } from './usageV2';
+import { readTopLevelThreads, writeTopLevelThreads } from './threadDisplayMemory';
 
 // Matches the repo's other fs-driven GUI tests: vitest gives `import.meta.url`
 // a file URL here, while `new URL(..., import.meta.url)` does not.
@@ -44,6 +45,33 @@ afterEach(() => {
   configureSpaceStorage(null);
   clearInjectedSpace();
   localStorage.clear();
+});
+
+describe('thread display memory', () => {
+  it('persists top-level ids per connection and per space, including return to nesting', () => {
+    writeTopLevelThreads('local', new Set(['thread']));
+    writeTopLevelThreads('ssh:example.test', new Set(['remote-thread']));
+    expect([...readTopLevelThreads('local')]).toEqual(['thread']);
+    expect([...readTopLevelThreads('ssh:example.test')]).toEqual(['remote-thread']);
+    configureSpaceStorage({ homeId: 'other' });
+    expect([...readTopLevelThreads('local')]).toEqual([]);
+    writeTopLevelThreads('local', new Set(['other-thread']));
+    configureSpaceStorage(null);
+    expect([...readTopLevelThreads('local')]).toEqual(['thread']);
+    writeTopLevelThreads('local', new Set());
+    expect([...readTopLevelThreads('local')]).toEqual([]);
+    expect([...readTopLevelThreads('ssh:example.test')]).toEqual(['remote-thread']);
+  });
+
+  it('ignores malformed records and invalid ids', () => {
+    for (const raw of ['invalid', 'null', '[]', '42']) {
+      localStorage.setItem('kiki.sidebar.topLevelThreads', raw);
+      expect([...readTopLevelThreads('local')]).toEqual([]);
+    }
+    localStorage.setItem('kiki.sidebar.topLevelThreads', '{"local":["thread",null,1,""]}');
+    expect([...readTopLevelThreads('local')]).toEqual(['thread']);
+    expect([...readTopLevelThreads('__proto__')]).toEqual([]);
+  });
 });
 
 describe('active-space payload', () => {

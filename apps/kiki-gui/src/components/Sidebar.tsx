@@ -78,7 +78,8 @@ import { clampOverlayPosition } from '../lib/overlayPosition';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
-import { nestConversationItems, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
+import { nestConversationItems, sessionRelationOf, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
+import { readTopLevelThreads, writeTopLevelThreads } from '../lib/threadDisplayMemory';
 import { runToastAction } from '../lib/toasts';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
@@ -497,6 +498,7 @@ export function Sidebar({
   // survive a reload; they are per space and per connection (sidebarGroupMemory).
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).collapsed));
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).expanded));
+  const [topLevelThreads, setTopLevelThreads] = useState(() => readTopLevelThreads(scopeId));
   const memoryScope = useRef(scopeId);
   useEffect(() => {
     if (memoryScope.current === scopeId) return;
@@ -504,7 +506,17 @@ export function Sidebar({
     const memory = readWorkspaceGroupMemory(scopeId);
     setCollapsedGroups(new Set(memory.collapsed));
     setExpandedGroups(new Set(memory.expanded));
+    setTopLevelThreads(readTopLevelThreads(scopeId));
   }, [scopeId]);
+
+  const toggleThreadDisplay = (id: string) => {
+    const next = new Set(topLevelThreads);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    writeTopLevelThreads(scopeId, next);
+    setTopLevelThreads(next);
+    setMenu(null);
+  };
 
   // Bot homes and room member sessions never arrive here: the caller filters
   // them out (they keep their own addresses — a Bot row, the room's row),
@@ -898,8 +910,8 @@ export function Sidebar({
   // workspace and pinned buckets are meaningful, so nesting stays inside one.
   // Rooms never nest: a room has no creator session, and none names it parent.
   const sessionTree = useMemo(
-    () => nestConversationItems(sessionGroups, { crossGroups: groupBy !== 'workspace' }),
-    [sessionGroups, groupBy],
+    () => nestConversationItems(sessionGroups, { crossGroups: groupBy !== 'workspace', topLevelIds: topLevelThreads }),
+    [sessionGroups, groupBy, topLevelThreads],
   );
   // Temporary conversations stay out of the paged list (and its search and
   // grouping); they get their own block at the top while any exist. The key
@@ -1540,6 +1552,8 @@ export function Sidebar({
       {menuItem !== null && menuItem.kind === 'session' ? (
         <SessionMenu
           session={menuItem.session}
+          topLevel={topLevelThreads.has(menuItem.id)}
+          onToggleThreadDisplay={() => { toggleThreadDisplay(menuItem.id); }}
           scopeId={scopeId}
           activeSessionId={activeSessionId}
           x={menu!.x}
@@ -2886,6 +2900,8 @@ function SidebarFilterMenu({
  * be clamped inside the viewport on both axes (right-click near an edge). */
 function SessionMenu({
   session,
+  topLevel,
+  onToggleThreadDisplay,
   scopeId,
   activeSessionId,
   x,
@@ -2902,6 +2918,8 @@ function SessionMenu({
   onJoinRoom,
 }: {
   session: Session;
+  topLevel: boolean;
+  onToggleThreadDisplay: () => void;
   scopeId: string;
   /** The open conversation; the thread-reference entry needs one to insert into. */
   activeSessionId: string | undefined;
@@ -2982,6 +3000,14 @@ function SessionMenu({
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
+      {sessionRelationOf(session)?.kind === 'thread' ? (
+        <>
+          <button type="button" role="menuitem" data-menu-item="thread-display" className={itemClass} onClick={onToggleThreadDisplay}>
+            {topLevel ? t('menu.showNested') : t('menu.showTopLevel')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+        </>
+      ) : null}
       {archived ? (
         <button type="button" role="menuitem" className={itemClass} onClick={onRestore}>
           {t('menu.restore')}
