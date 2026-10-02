@@ -46,6 +46,10 @@ import type { Event2 } from '#/app/event/event2';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { SessionApprovalService } from '#/session/approval/approvalService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionQuestionService } from '#/session/question/question';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -1028,7 +1032,7 @@ describe('Codex app-server external executor', () => {
         expect(run.turn.signal.aborted).toBe(true);
         expect(harness.turnCancel).toHaveBeenCalled();
         expect(harness.pendingTurns.has(run.turn.id)).toBe(false);
-        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id);
+        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'codex-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
         expect(harness.execution.status()).toEqual({ state: 'idle' });
@@ -1100,6 +1104,42 @@ describe('Codex Kiki MCP approval under YOLO', () => {
 });
 
 describe('Codex native MCP elicitation', () => {
+  it('keeps sibling approvals pending when one MCP approval is cancelled during an active turn', async () => {
+    const ix = new TestInstantiationService();
+    ix.set(ISessionStateService, new SessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    interaction.acquireConsumer('test');
+    const harness = createHarness({ deferTurnCompletion: true, serverRequest: {
+      method: 'mcpServer/elicitation/request', params: {
+        threadId: 'thread-new', turnId: 'turn-1', serverName: 'example', mode: 'form', message: 'Allow?',
+        requestedSchema: { type: 'object', properties: {} },
+      },
+    } });
+    vi.spyOn(harness.interaction, 'cancelPendingForTurn').mockImplementation((turnId, agentId) => interaction.cancelPendingForTurn(turnId, agentId));
+    vi.spyOn(harness.approval, 'request').mockImplementation((req) => {
+      const primary = approvals.request({ ...req, id: 'primary' });
+      void approvals.request({ ...req, id: 'sibling', display: { kind: 'command', command: 'echo ok' } });
+      expect(interaction.listPending().map((entry) => entry.id)).toEqual(['primary', 'sibling']);
+      interaction.respond('primary', { decision: 'cancelled' });
+      return primary;
+    });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      void run.completion.catch(() => undefined);
+      expect(run.turn.signal.aborted).toBe(false);
+      expect(harness.serverResults).toEqual([{ action: 'cancel', content: null }]);
+      expect(interaction.listPending().map((entry) => entry.id)).toEqual(['sibling']);
+      expect(harness.interaction.cancelPendingForTurn).not.toHaveBeenCalled();
+      await harness.session.shutdown();
+      expect(interaction.listPending()).toEqual([]);
+    } finally {
+      await harness.session.shutdown();
+      ix.dispose();
+    }
+  });
   it('maps a real empty-schema MCP approval and does not require an absent itemId', async () => {
     const harness = createHarness({ serverRequest: { method: 'mcpServer/elicitation/request', params: {
       threadId: 'thread-new', turnId: 'turn-1', serverName: 'kiki-harness', mode: 'form',

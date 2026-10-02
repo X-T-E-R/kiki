@@ -29,7 +29,7 @@ export interface IAgentToolApprovalService {
 
   formatApprovalRejectionMessage(
     toolName: string,
-    result: Pick<ApprovalResponse, 'decision' | 'feedback'>,
+    result: Pick<ApprovalResponse, 'decision' | 'feedback' | 'cancellationReason'>,
   ): string;
 }
 

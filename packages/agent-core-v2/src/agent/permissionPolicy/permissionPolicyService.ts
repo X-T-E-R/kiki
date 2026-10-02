@@ -45,13 +45,13 @@ export class AgentPermissionPolicyService
     this.adjudicationPolicies = [
       this.instantiation.createInstance(UserConfiguredDenyPermissionPolicyService),
       this.instantiation.createInstance(WorktreeIsolationDenyPermissionPolicyService),
+      this.instantiation.createInstance(YoloModeApprovePermissionPolicyService),
       this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAskPermissionPolicyService),
       this.instantiation.createInstance(SensitiveFileAccessAskPermissionPolicyService),
       this.instantiation.createInstance(ExternalLinkAccessAskPermissionPolicyService),
       this.instantiation.createInstance(GitControlPathAccessAskPermissionPolicyService),
       this.instantiation.createInstance(AutoModeApprovePermissionPolicyService),
-      this.instantiation.createInstance(YoloModeApprovePermissionPolicyService),
     ];
     this.allowlistPolicies = [
       this.instantiation.createInstance(UserConfiguredAllowPermissionPolicyService),
@@ -69,7 +69,7 @@ export class AgentPermissionPolicyService
   ): Promise<PermissionPolicyEvaluation | undefined> {
     const adjudication = await evaluatePolicies(this.adjudicationPolicies, context);
     if (adjudication !== undefined) {
-      return adjudication.policyName === 'session-approval-history'
+      return adjudication.policyName === 'session-approval-history' || adjudication.policyName === 'yolo-mode-approve'
         ? adjudication : this.dangerousBashPolicy.upgradeApprove(adjudication, context);
     }
 

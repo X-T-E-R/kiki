@@ -201,8 +201,8 @@ describe('SessionInteractionService', () => {
     });
     svc.releaseConsumer('gui');
 
-    await expect(main).resolves.toEqual({ decision: 'cancelled' });
-    await expect(child).resolves.toEqual({ decision: 'cancelled' });
+    await expect(main).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
+    await expect(child).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
     expect(svc.hasConsumer()).toBe(false);
   });
 
@@ -266,12 +266,12 @@ describe('SessionInteractionService', () => {
 
     svc.releaseConsumer('wide');
 
-    await expect(pendingA).resolves.toEqual({ decision: 'cancelled' });
-    await expect(pendingMain).resolves.toEqual({ decision: 'cancelled' });
+    await expect(pendingA).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
+    await expect(pendingMain).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
     expect(svc.listPending('approval').map((entry) => entry.id)).toEqual(['b']);
 
     svc.releaseConsumer('child-b');
-    await expect(pendingB).resolves.toEqual({ decision: 'cancelled' });
+    await expect(pendingB).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
     expect(svc.listPending()).toEqual([]);
   });
 
@@ -295,8 +295,8 @@ describe('SessionInteractionService', () => {
     expect(svc.listPending('approval').map((entry) => entry.id)).toEqual(['child', 'main']);
 
     svc.releaseConsumer('gui');
-    await expect(child).resolves.toEqual({ decision: 'cancelled' });
-    await expect(main).resolves.toEqual({ decision: 'cancelled' });
+    await expect(child).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
+    await expect(main).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
   });
 
   it('onDidChangePending fires on request and on respond', async () => {
@@ -361,6 +361,30 @@ describe('SessionInteractionService', () => {
     disposables.add(svc.onDidResolve(() => count++));
     svc.respond('nope', 'x');
     expect(count).toBe(0);
+  });
+
+  it('cancels all pending interactions when the session interaction service closes', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    const main = svc.request<unknown, unknown>({ kind: 'approval', payload: {}, origin: { turnId: 0 } });
+    const child = svc.request<unknown, unknown>({ kind: 'question', payload: {}, origin: { agentId: 'child', turnId: 0 } });
+    disposables.dispose();
+    await expect(main).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
+    await expect(child).resolves.toEqual({ cancelled: true, reason: 'agent_closed' });
+  });
+
+  it('cancels only the named agent turn, treating an omitted agent as main', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    const requests = [undefined, 'main', 'child', 'sibling'].map((agentId, index) =>
+      svc.request<unknown, unknown>({ id: `a${index}`, kind: 'approval', payload: {}, origin: { agentId, turnId: 0 } }));
+    svc.cancelPendingForTurn(0);
+    await expect(requests[0]).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+    await expect(requests[1]).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+    expect(svc.listPending().map((entry) => entry.id)).toEqual(['a2', 'a3']);
+    svc.cancelPendingForTurn(0, 'child');
+    await expect(requests[2]).resolves.toEqual({ cancelled: true, reason: 'turn_ended' });
+    expect(svc.listPending().map((entry) => entry.id)).toEqual(['a3']);
+    svc.respond('a3', { decision: 'approved' });
+    await expect(requests[3]).resolves.toEqual({ decision: 'approved' });
   });
 
   it('cancelPendingForTurn clears pending interactions whose turn has ended (矛盾 c)', () => {

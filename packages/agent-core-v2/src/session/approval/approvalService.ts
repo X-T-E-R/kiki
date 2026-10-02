@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { LifecycleScope } from '#/app/scopes';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionInteractionService, isInteractionCancellation, type InteractionCancellation } from '#/session/interaction/interaction';
 
 import {
   type ApprovalRequest,
@@ -16,21 +19,46 @@ export class SessionApprovalService implements ISessionApprovalService {
   declare readonly _serviceBrand: undefined;
   private readonly sshCredentials = new Map<string, SshCredentialSubmission>();
 
-  constructor(@ISessionInteractionService private readonly interaction: ISessionInteractionService) {}
+  constructor(
+    @ISessionInteractionService private readonly interaction: ISessionInteractionService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
+  ) {}
 
   request(req: ApprovalRequest): Promise<ApprovalResponse> {
+    const automatic = this.yoloResponse(req);
+    if (automatic !== undefined) return Promise.resolve(automatic);
     const origin = { agentId: req.agentId, turnId: req.turnId };
-    if (!this.interaction.hasConsumer(origin)) return Promise.resolve({ decision: 'cancelled' });
-    return this.interaction.request<ApprovalRequest, ApprovalResponse>({
+    if (!this.interaction.hasConsumer(origin)) return Promise.resolve({ decision: 'cancelled', cancellationReason: 'no_consumer' });
+    return this.interaction.request<ApprovalRequest, ApprovalResponse | InteractionCancellation>({
       id: requestId(req),
       kind: 'approval',
       payload: req,
       origin,
-    });
+    }).then((response) => isInteractionCancellation(response)
+      ? { decision: 'cancelled', cancellationReason: response.reason }
+      : response);
+  }
+
+  private yoloResponse(req: ApprovalRequest): ApprovalResponse | undefined {
+    let yolo = false;
+    try {
+      yolo = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentLifecycleService)
+        .get(req.agentId ?? 'main')?.accessor.get(IAgentPermissionModeService).mode === 'yolo');
+    } catch {
+      return undefined;
+    }
+    if (!yolo) return undefined;
+    if (req.display.kind !== 'external_permission') return { decision: 'approved' };
+    const option = req.display.options.find((option) => option.kind === 'allow_once')
+      ?? req.display.options.find((option) => option.kind === 'allow_always');
+    return option === undefined
+      ? { decision: 'cancelled', feedback: 'The external provider supplied no approval option.' }
+      : { decision: 'approved', selectedOptionId: option.id };
   }
 
   enqueue(req: ApprovalRequest): ApprovalRequest & { readonly id: string } {
     const id = requestId(req);
+    if (this.yoloResponse(req) !== undefined) return { ...req, id };
     this.interaction.enqueue<ApprovalRequest>({
       id,
       kind: 'approval',

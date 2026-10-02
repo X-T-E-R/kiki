@@ -104,6 +104,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     super();
     this._register(
       this.onDidDispose((agentId) => {
+        for (const interaction of this.interaction.listPending(undefined, { agentId })) {
+          this.interaction.respond(interaction.id, { cancelled: true, reason: 'agent_closed' });
+        }
         for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
           disposables.get(agentId)?.dispose();
           disposables.delete(agentId);
@@ -182,7 +185,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (this.interactionBusDisposables.has(handle.id)) return;
     const d = handle.accessor
       .get(IEventBus)
-      .subscribe(TurnEnded, (e) => this.interaction.cancelPendingForTurn(e.turnId));
+      .subscribe(TurnEnded, (e) => this.interaction.cancelPendingForTurn(e.turnId, handle.id));
     this.interactionBusDisposables.set(handle.id, d);
   }
 

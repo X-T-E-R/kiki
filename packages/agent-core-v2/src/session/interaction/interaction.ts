@@ -71,7 +71,7 @@ export interface ISessionInteractionService {
   respond(id: string, response: unknown): void;
   listPending(kind?: InteractionKind, origin?: InteractionOrigin): readonly Interaction[];
   isRecentlyResolved(id: string): boolean;
-  cancelPendingForTurn(turnId: number): void;
+  cancelPendingForTurn(turnId: number, agentId?: string): void;
   readonly onDidChangePending: Event<InteractionPendingChangedEvent>;
   readonly onDidResolve: Event<InteractionResolution>;
 }

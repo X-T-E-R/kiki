@@ -382,7 +382,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (active === undefined) return false;
     const cancelled = active.turn.cancel(reason);
     void active.handle.cancel(reason);
-    this.#interaction.cancelPendingForTurn(active.turn.id);
+    this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
     return cancelled;
   }
 
@@ -453,7 +453,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     } finally {
       cleanup();
       if (this.#permissionContext?.turn === turn) this.#permissionContext = undefined;
-      this.#interaction.cancelPendingForTurn(turn.id);
+      this.#interaction.cancelPendingForTurn(turn.id, this.context.agent.id);
     }
   }
 
@@ -670,7 +670,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
             { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
       }), signal);
       if (response === undefined || response.decision === 'cancelled') {
-        this.#interaction.cancelPendingForTurn(active.turn.id);
         await responder.respond({ action: 'cancel', content: null });
       } else if (response.decision === 'approved') {
         const selected = response.selectedOptionId ?? 'once';

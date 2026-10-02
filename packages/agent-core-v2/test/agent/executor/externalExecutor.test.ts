@@ -72,6 +72,10 @@ import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { SessionApprovalService } from '#/session/approval/approvalService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionQuestionService, type QuestionResult } from '#/session/question/question';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -1700,6 +1704,47 @@ describe('ACP external executor', () => {
     expect(metadata?.losses).not.toContain('profile_as_user_preamble');
   });
 
+  it.each(['permission', 'elicitation', 'plan'] as const)(
+    'keeps sibling approvals pending while an active ACP turn cancels one %s request', async (kind) => {
+      const ix = new TestInstantiationService();
+      ix.set(ISessionStateService, new SessionStateService());
+      ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+      ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+      const interaction = ix.get(ISessionInteractionService);
+      const approvals = ix.get(ISessionApprovalService);
+      interaction.acquireConsumer('test');
+      const harness = createHarness({ deferTurnCompletion: true,
+        elicitation: kind === 'elicitation' ? { mode: 'form', sessionId: 'remote-2', message: 'Allow?',
+          requestedSchema: { type: 'object', properties: {} } } : undefined,
+        planApproval: kind === 'plan' ? { sessionId: 'remote-2', toolCallId: 'exit-plan', plan: '# Plan' } : undefined,
+      });
+      vi.spyOn(harness.interaction, 'cancelPendingForTurn').mockImplementation((turnId, agentId) => interaction.cancelPendingForTurn(turnId, agentId));
+      const request = vi.spyOn(harness.approval, 'request').mockImplementation((req) => {
+        if ((kind === 'permission' && request.mock.calls.length !== 1) ||
+            (kind !== 'permission' && request.mock.calls.length === 1)) {
+          return Promise.resolve({ decision: 'approved', selectedOptionId: 'allow-once' });
+        }
+        const primary = approvals.request({ ...req, id: 'primary' });
+        void approvals.request({ ...req, id: 'sibling', display: { kind: 'command', command: 'echo ok' } });
+        expect(interaction.listPending().map((entry) => entry.id)).toEqual(['primary', 'sibling']);
+        interaction.respond('primary', { decision: 'cancelled' });
+        return primary;
+      });
+      try {
+        const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+        void run.completion.catch(() => undefined);
+        expect(run.turn.signal.aborted).toBe(false);
+        expect(interaction.listPending().map((entry) => entry.id)).toEqual(['sibling']);
+        expect(harness.interaction.cancelPendingForTurn).not.toHaveBeenCalled();
+        await harness.session.shutdown();
+        expect(interaction.listPending()).toEqual([]);
+      } finally {
+        await harness.session.shutdown();
+        ix.dispose();
+      }
+    },
+  );
+
   it.each([
     ['unknown option', async () => ({ decision: 'approved', selectedOptionId: 'unknown' } as ApprovalResponse)],
     ['no consumer', undefined],
@@ -1863,7 +1908,7 @@ describe('ACP external executor', () => {
         expect(run.turn.signal.aborted).toBe(true);
         expect(harness.turnCancel).toHaveBeenCalled();
         expect(harness.pendingTurns.has(run.turn.id)).toBe(false);
-        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id);
+        expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'external-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
         expect(harness.execution.status()).toEqual({ state: 'idle' });

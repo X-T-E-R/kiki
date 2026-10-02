@@ -105,13 +105,6 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
           ),
         };
       case 'ask':
-        if (this.modeService.interactive === false) {
-          return this.resolvePermissionResolution(
-            this.nonInteractiveDenial(context, result),
-            context,
-            origin,
-          );
-        }
         return this.requestToolApproval(context, result, origin);
       case 'result':
         return { veto: result.result };
@@ -124,7 +117,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     origin: string,
     approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined> {
-    if (this.modeService.interactive === false) {
+    const yolo = this.modeService.mode === 'yolo';
+    if (!yolo && this.modeService.interactive === false) {
       return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
     }
     const name = context.toolCall.name;
@@ -166,7 +160,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       : undefined;
     context.signal.throwIfAborted();
     let userApprovalRequest = approvalRequest;
-    let automatedResponse: ApprovalResponse | undefined;
+    let automatedResponse: ApprovalResponse | undefined = yolo ? { decision: 'approved' } : undefined;
     if (reviewer !== undefined && reviewer.outcome !== 'ask' && approvalService !== undefined) {
       const proposed: ApprovalResponse = {
         decision: reviewer.outcome === 'allow' ? 'approved' : 'rejected',
@@ -190,7 +184,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     if (automatedResponse !== undefined) {
       response = automatedResponse;
     } else if (approvalService === undefined) {
-      response = { decision: 'cancelled' };
+      response = { decision: 'cancelled', cancellationReason: 'no_consumer' };
     } else {
       void this.dispatcher.dispatch(new PermissionApprovalRequested({ ...approvalContext, id: userApprovalRequest.id }));
       try {
@@ -268,7 +262,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       trace_id: context.trace?.traceId,
     });
 
-    const resolved = response.reviewer !== undefined && response.decision === 'rejected'
+    const resolved = response.cancellationReason !== undefined ||
+      (response.reviewer !== undefined && response.decision === 'rejected')
       ? undefined
       : result.resolveApproval?.(response);
     if (resolved !== undefined) {
@@ -285,17 +280,18 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
 
   formatApprovalRejectionMessage(
     toolName: string,
-    result: Pick<ApprovalResponse, 'decision' | 'feedback'>,
+    result: Pick<ApprovalResponse, 'decision' | 'feedback' | 'cancellationReason'>,
   ): string {
     const suffix =
       result.feedback !== undefined && result.feedback.length > 0
         ? ` Reason: ${result.feedback}`
         : '';
-    const prefix =
-      result.decision === 'cancelled'
+    const prefix = result.decision === 'cancelled'
+      ? result.cancellationReason === undefined
         ? `Tool "${toolName}" was not run because the approval request was cancelled.`
-        : `Tool "${toolName}" was not run because the user rejected the approval request.`;
-    if (this.usesWorkerRejectionGuidance()) {
+        : `Tool "${toolName}" was not run because the system cancelled the approval request (${result.cancellationReason}).`
+      : `Tool "${toolName}" was not run because the user rejected the approval request.`;
+    if (result.decision !== 'cancelled' && this.usesWorkerRejectionGuidance()) {
       return `${prefix}${suffix} Try a different approach — don't retry the same call, don't attempt to bypass the restriction.`;
     }
     return `${prefix}${suffix}`;
