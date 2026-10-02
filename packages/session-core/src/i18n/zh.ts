@@ -1100,6 +1100,7 @@ export const zh = {
   'transcript.annotation.openAria': '打开“{quote}”上的批注',
   'transcript.annotation.bubbleAria.one': '查看这条消息带有的 {count} 条批注',
   'transcript.annotation.bubbleAria.other': '查看这条消息带有的 {count} 条批注',
+  'transcript.annotation.bubbleSummary': '{count} 个标注',
   'transcript.annotation.notesAria': '这条消息的批注',
   'annotationTray.show': '定位',
   'annotationTray.edit': '编辑批注',

@@ -1113,6 +1113,7 @@ export const en = {
   'transcript.annotation.openAria': 'Open note on “{quote}”',
   'transcript.annotation.bubbleAria.one': 'View the {count} note on this message',
   'transcript.annotation.bubbleAria.other': 'View the {count} notes on this message',
+  'transcript.annotation.bubbleSummary': '{count} annotations',
   'transcript.annotation.notesAria': 'Notes on this message',
   'annotationTray.show': 'Show',
   'annotationTray.edit': 'Edit note',

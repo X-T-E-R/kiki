@@ -1,10 +1,12 @@
 /**
  * SentAnnotationsBubble — the notes a sent user message carried, folded into
- * one small bubble beside that message (annotations no longer mark the
- * timeline; only the composer's draft notes do). Clicking the bubble opens
- * the list: quote + comment per note. Edits and removals write the same local
- * overlay store the old timeline editor used, keyed by the carrying message's
- * id, so overrides made before this change keep applying.
+ * small bubbles beside that message (annotations no longer mark the timeline;
+ * only the composer's draft notes do). Up to three notes get one bubble each
+ * (pencil + a preview of the comment); more collapse into a single bubble
+ * reading "{count} annotations". Clicking a bubble opens the list: quote +
+ * comment per note. Edits and removals write the same local overlay store the
+ * old timeline editor used, keyed by the carrying message's id, so overrides
+ * made before this change keep applying.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -29,8 +31,22 @@ interface SentNote {
   readonly comment: string;
 }
 
+/** At most this many notes get their own bubble; past it they merge into one. */
+const MAX_NOTE_BUBBLES = 3;
+/** Comment preview length in code points before an ellipsis takes over. */
+const NOTE_PREVIEW_LENGTH = 7;
+
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/** First few characters of a comment, single line, ellipsized past the cap. */
+export function notePreviewText(comment: string): string {
+  const flat = oneLine(comment);
+  const characters = Array.from(flat);
+  return characters.length <= NOTE_PREVIEW_LENGTH
+    ? flat
+    : `${characters.slice(0, NOTE_PREVIEW_LENGTH).join('')}…`;
 }
 
 export function SentAnnotationsBubble({
@@ -40,7 +56,7 @@ export function SentAnnotationsBubble({
   readonly blockId: string;
   readonly annotations: readonly { quote: string; comment: string }[];
 }) {
-  const { tp } = useI18n();
+  const { t, tp } = useI18n();
   const overrides = useSyncExternalStore(
     subscribeAnnotationOverrides,
     getAnnotationOverridesSnapshot,
@@ -72,20 +88,64 @@ export function SentAnnotationsBubble({
 
   if (notes.length === 0) return null;
 
+  if (notes.length > MAX_NOTE_BUBBLES) {
+    return (
+      <NoteBubble
+        blockId={blockId}
+        notes={notes}
+        ariaLabel={tp('transcript.annotation.bubbleAria', notes.length)}
+        title={tp('transcript.annotation.bubbleAria', notes.length)}
+        label={t('transcript.annotation.bubbleSummary', { count: notes.length })}
+      />
+    );
+  }
+
+  return notes.map((note) => (
+    <NoteBubble
+      key={note.id}
+      blockId={blockId}
+      noteId={note.id}
+      notes={notes}
+      ariaLabel={t('transcript.annotation.openAria', { quote: oneLine(note.quote) })}
+      title={oneLine(note.comment)}
+      label={notePreviewText(note.comment)}
+    />
+  ));
+}
+
+function NoteBubble({
+  blockId,
+  noteId,
+  notes,
+  ariaLabel,
+  title,
+  label,
+}: {
+  readonly blockId: string;
+  readonly noteId?: string;
+  readonly notes: readonly SentNote[];
+  readonly ariaLabel: string;
+  readonly title: string;
+  readonly label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement>(null);
+
   return (
     <>
       <button
         ref={anchorRef}
         type="button"
         data-annotation-bubble={blockId}
+        data-annotation-bubble-note={noteId}
         aria-expanded={open}
-        aria-label={tp('transcript.annotation.bubbleAria', notes.length)}
-        title={tp('transcript.annotation.bubbleAria', notes.length)}
+        aria-label={ariaLabel}
+        title={title}
         onClick={() => { setOpen((value) => !value); }}
-        className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-medium text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
+        className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-medium text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
       >
         <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
-        {notes.length > 1 ? <span className="tabular-nums">{notes.length}</span> : null}
+        <span className="min-w-0 truncate">{label}</span>
       </button>
       {open ? (
         <SentNotesPopover
