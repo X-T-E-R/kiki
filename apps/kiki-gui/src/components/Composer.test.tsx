@@ -2553,6 +2553,168 @@ describe('Composer projected profile model menu', () => {
   });
 });
 
+describe('Composer send-timing menu', () => {
+  const sendButton = (container: HTMLDivElement) =>
+    container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
+  const menu = (container: HTMLDivElement) =>
+    container.querySelector<HTMLElement>('[data-send-timing-menu]');
+  const menuRow = (container: HTMLDivElement, timing: string) =>
+    container.querySelector<HTMLButtonElement>(`[data-send-timing="${timing}"]`)!;
+  const rowLabels = (container: HTMLDivElement) =>
+    [...container.querySelectorAll<HTMLElement>('[data-send-timing-menu] [data-menu-row]')]
+      .map((row) => row.textContent);
+
+  /** Hover the send button and wait out the open delay. */
+  const hoverOpen = async (container: HTMLDivElement) => {
+    await act(async () => {
+      container.querySelector('[data-send-timing-root]')!
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  };
+
+  it('stays closed while idle: every timing would start immediately', async () => {
+    const { container } = await renderComposer({ busy: false, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    expect(menu(container)).toBeNull();
+    await hoverOpen(container);
+    expect(menu(container)).toBeNull();
+    expect(sendButton(container).getAttribute('aria-haspopup')).toBeNull();
+  });
+
+  it('stays closed in queue-edit mode: the button is the edit confirm', async () => {
+    const { container } = await renderComposer({
+      busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn(),
+      queueEditing: true, onQueueEditConfirm: vi.fn(),
+    });
+    await hoverOpen(container);
+    expect(menu(container)).toBeNull();
+  });
+
+  it('stays closed where a busy plain send already steers (busySendsNow)', async () => {
+    const { container } = await renderComposer({ busy: true, busySendsNow: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    await hoverOpen(container);
+    expect(menu(container)).toBeNull();
+  });
+
+  it('opens on hover while busy and lists the plain send, send-now and both deferred timings', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    await hoverOpen(container);
+    expect(menu(container)).not.toBeNull();
+    expect(menu(container)!.getAttribute('aria-label')).toBe('Send timing');
+    expect(rowLabels(container)).toEqual([
+      'SendDefault timing: when idle',
+      'Send nowSteers into the running turn — read after the current step',
+      'Send after subagentsStarts once the running subagents finish',
+      'Send after tasksStarts once every running task finishes',
+    ]);
+  });
+
+  it('names a non-default configured timing on the plain row', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'tasks_done', onSendNow: vi.fn() });
+    await hoverOpen(container);
+    expect(rowLabels(container)[0]).toBe('SendDefault timing: after tasks');
+  });
+
+  it('omits the send-now row where no steer path is wired', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle' });
+    await hoverOpen(container);
+    expect(rowLabels(container)).toHaveLength(3);
+    expect(container.querySelector('[data-send-timing="now"]')).toBeNull();
+  });
+
+  it('plain row sends with the exact two-argument shape (no timing override)', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
+    await hoverOpen(container);
+    await click(menuRow(container, 'default'));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]).toEqual(['hello', []]);
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(menu(container)).toBeNull();
+  });
+
+  it.each(['subagents_done', 'tasks_done'] as const)('row %s sends once with that appendTiming', async (timing) => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
+    await hoverOpen(container);
+    await click(menuRow(container, timing));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]).toEqual(['hello', [], { appendTiming: timing }]);
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(menu(container)).toBeNull();
+  });
+
+  it('send-now row takes the steer path (onSendNow), never the queue', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
+    await hoverOpen(container);
+    await click(menuRow(container, 'now'));
+    expect(onSendNow).toHaveBeenCalledTimes(1);
+    expect(onSendNow.mock.calls[0]).toEqual(['hello', []]);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('a one-shot timing pick does not leak into the next plain send', async () => {
+    const onSend = vi.fn();
+    const { container, rerender } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow: vi.fn() });
+    await hoverOpen(container);
+    await click(menuRow(container, 'subagents_done'));
+    expect(onSend.mock.calls[0]).toEqual(['hello', [], { appendTiming: 'subagents_done' }]);
+    // The next send (as if the user typed again) goes out plain.
+    await rerender({ busy: true, value: 'again', sendTimingDefault: 'agent_idle', onSend, onSendNow: vi.fn() });
+    await click(sendButton(container));
+    expect(onSend.mock.calls[1]).toEqual(['again', []]);
+  });
+
+  it('opens from the keyboard: ↓ on the button focuses the first row, arrows walk, Escape refocuses the button', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    const button = sendButton(container);
+    expect(button.getAttribute('aria-haspopup')).toBe('menu');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(menu(container)).not.toBeNull();
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(menuRow(container, 'default'));
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(menuRow(container, 'now'));
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(menuRow(container, 'default'));
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(menu(container)).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('↑ on the button opens the menu focused on the last row', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    await act(async () => {
+      sendButton(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(menuRow(container, 'tasks_done'));
+  });
+
+  it('closes on a pointerdown outside and marks the button expanded only while open', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    await hoverOpen(container);
+    expect(menu(container)).not.toBeNull();
+    await act(async () => {
+      // jsdom has no PointerEvent constructor; the dismiss path only reads .target.
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    expect(menu(container)).toBeNull();
+    expect(sendButton(container).getAttribute('aria-expanded')).toBe('false');
+  });
+});
 
 describe('SSH host scope and message snapshots', () => {
   it('offers SSH preselection on /new without attempting a session join', async () => {
