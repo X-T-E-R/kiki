@@ -641,6 +641,7 @@ export const en = {
   'file.copyAbsolutePath': 'Copy absolute path',
   'file.showInFolder': 'Show in folder',
   'file.openDefaultApp': 'Open with default app',
+  'file.open': 'Open',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': 'Input actions',

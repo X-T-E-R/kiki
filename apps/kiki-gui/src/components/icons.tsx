@@ -52,6 +52,7 @@ export type IconName =
   | 'arrowRight'
   | 'arrowDown'
   | 'external'
+  | 'folder'
   | 'panel'
   | 'filter'
   | 'sliders'
@@ -203,6 +204,8 @@ const PATHS: Record<IconName, ReactNode> = {
   arrowRight: <path d="M3 8h10m-3.8-3.8L13 8l-3.8 3.8" />,
   arrowDown: <path d="M8 3v10m-3.8-3.8L8 13l3.8-3.8" />,
   external: <path d="M6.5 3H3.5a1 1 0 0 0-1 1v8.5a1 1 0 0 0 1 1H12a1 1 0 0 0 1-1V9.5M9.5 2.5h4v4M13.5 2.5 7.5 8.5" />,
+  // A folder with its tab: a place in the file manager.
+  folder: <path d="M13.5 11.3a1.2 1.2 0 0 1-1.2 1.2H3.7a1.2 1.2 0 0 1-1.2-1.2V3.9a1.2 1.2 0 0 1 1.2-1.2h2.7l1.3 1.9h4.6a1.2 1.2 0 0 1 1.2 1.2z" />,
   panel: (
     <>
       <rect x="2" y="3" width="12" height="10" rx="1.6" />

@@ -356,10 +356,13 @@ export function resolveFileHref(href: string, cwd: string | undefined): string |
   return resolveFileReference(href, cwd)?.path;
 }
 
-export type PreviewKind = 'image' | 'markdown' | 'text' | 'binary';
+export type PreviewKind = 'image' | 'markdown' | 'text' | 'video' | 'binary';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx']);
+// Common video containers. Playback still depends on the codecs the runtime's
+// HTML5 stack ships; an unplayable one degrades to the download fallback.
+const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi', 'mpg', 'mpeg', '3gp', 'ogv']);
 const TEXT_EXTS = new Set([
   'txt', 'log', 'csv', 'tsv', 'json', 'jsonc', 'jsonl', 'xml', 'yml', 'yaml', 'toml',
   'ini', 'cfg', 'conf', 'env', 'properties', 'lock',
@@ -395,6 +398,7 @@ export function previewKindOf(path: string): PreviewKind {
   if (IMAGE_EXTS.has(ext)) return 'image';
   if (MARKDOWN_EXTS.has(ext)) return 'markdown';
   if (TEXT_EXTS.has(ext)) return 'text';
+  if (VIDEO_EXTS.has(ext)) return 'video';
   // Extension-less files are usually scripts/config; the text view degrades
   // gracefully on the rare binary one.
   if (ext === '') return 'text';

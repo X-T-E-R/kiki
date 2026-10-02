@@ -4,8 +4,13 @@
  * menu (close / close others / close all), reorder by drag, and mark unsaved
  * buffers with a dot. Content routes by extension: images render at full
  * resolution (fit width or 100%, with the lightbox one click away),
- * markdown toggles rendered/source, code/text open in a CodeMirror view, and
- * unknown binaries get the download fallback. Text files are editable where a write
+ * markdown toggles rendered/source, code/text open in a CodeMirror view,
+ * common video containers play in a plain HTML5 player, and unknown binaries
+ * get the download fallback. Wherever the download anchor appears, the
+ * desktop opener pair — "open with default app" and "reveal in file
+ * manager" — appears beside it, gated on the same host capability as the tab
+ * context menu's entries; a reveal icon also rides the binary tab's caption
+ * strip. Text files are editable where a write
  * channel exists (desktop); everything degrades to read-only otherwise. Every
  * tab's view stays mounted while hidden so editor buffers survive tab
  * switches. Collapsing the panel hides it in place for the same reason: the
@@ -947,6 +952,91 @@ async function downloadHostFile(
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Desktop opener pair (reveal in the file manager / open with the default
+ * app), gated exactly like the tab context menu's entries: local scope plus a
+ * host implementing both. Failures surface as toasts, same as the menu items.
+ */
+function useFileOpeners(): { readonly reveal: (path: string) => void; readonly open: (path: string) => void } | null {
+  const host = useHost();
+  const { t } = useI18n();
+  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const { revealPath, openPath } = host;
+  return useMemo(() => {
+    if (remoteScope || revealPath === undefined || openPath === undefined) return null;
+    return {
+      reveal: (path: string) => { runToastAction(t('file.showInFolder'), () => revealPath(path)); },
+      open: (path: string) => { runToastAction(t('file.openDefaultApp'), () => openPath(path)); },
+    };
+  }, [remoteScope, revealPath, openPath, t]);
+}
+
+// The text/video header pill idiom, shared by the download anchor and its
+// opener siblings so the trio reads as one family.
+const HEADER_ACTION_CLASS =
+  'shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+
+// A quiet top-bar icon (binary tab's caption strip), matching the workspace's
+// borderless chrome buttons.
+const CAPTION_ACTION_CLASS =
+  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+
+// Secondary body button beside the accent download (binary tab body).
+const BODY_ACTION_CLASS =
+  'rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+
+/**
+ * The header action trio: the download anchor plus, where the desktop opener
+ * pair exists, "open with default app" and "reveal in file manager" sitting
+ * directly beside it. The opener pair never appears without the download
+ * anchor or on its own.
+ */
+function HeaderFileActions({ path, name }: { readonly path: string; readonly name: string }) {
+  const host = useHost();
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const openers = useFileOpeners();
+  return (
+    <>
+      <button
+        type="button"
+        title={t('media.download')}
+        aria-label={t('media.download')}
+        data-download-file
+        onClick={() => {
+          if (client !== undefined) void downloadHostFile(host, client, path, name);
+        }}
+        className={HEADER_ACTION_CLASS}
+      >
+        <Icon name="arrowDown" size={12} />
+      </button>
+      {openers !== null ? (
+        <>
+          <button
+            type="button"
+            title={t('file.openDefaultApp')}
+            data-open-default-app
+            onClick={() => { openers.open(path); }}
+            className={HEADER_ACTION_CLASS}
+          >
+            {t('file.open')}
+          </button>
+          <button
+            type="button"
+            title={t('file.showInFolder')}
+            aria-label={t('file.showInFolder')}
+            data-reveal-file
+            onClick={() => { openers.reveal(path); }}
+            className={HEADER_ACTION_CLASS}
+          >
+            <Icon name="folder" size={12} />
+          </button>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function PreviewSkillView({
   tabKey,
   name,
@@ -1053,6 +1143,8 @@ function PreviewTabView({
     >
       {kind === 'image' ? (
         <ImageTabView path={path} onOpenImage={onOpenImage} />
+      ) : kind === 'video' ? (
+        <VideoTabView path={path} />
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
@@ -1157,21 +1249,143 @@ function BinaryTabView({ path }: { readonly path: string }) {
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const name = basenameOf(path);
+  const openers = useFileOpeners();
   return (
     <>
-      <TabPathCaption path={path} />
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {path}
+        </span>
+        {openers !== null ? (
+          <button
+            type="button"
+            title={t('file.showInFolder')}
+            aria-label={t('file.showInFolder')}
+            data-reveal-file
+            onClick={() => { openers.reveal(path); }}
+            className={CAPTION_ACTION_CLASS}
+          >
+            <Icon name="folder" size={14} />
+          </button>
+        ) : null}
+      </div>
       <div className="flex flex-1 flex-col items-start gap-3 p-4">
         <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
-        <button
-          type="button"
-          onClick={() => {
-            const client = connection?.client;
-            if (client !== undefined) void downloadHostFile(host, client, path, name);
-          }}
-          className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
-        >
-          {t('media.download')}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            data-download-file
+            onClick={() => {
+              const client = connection?.client;
+              if (client !== undefined) void downloadHostFile(host, client, path, name);
+            }}
+            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
+          >
+            {t('media.download')}
+          </button>
+          {openers !== null ? (
+            <>
+              <button
+                type="button"
+                title={t('file.openDefaultApp')}
+                data-open-default-app
+                onClick={() => { openers.open(path); }}
+                className={BODY_ACTION_CLASS}
+              >
+                {t('file.open')}
+              </button>
+              <button
+                type="button"
+                data-reveal-file
+                onClick={() => { openers.reveal(path); }}
+                className={BODY_ACTION_CLASS}
+              >
+                {t('file.showInFolder')}
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Video tab: the file's own bytes in a plain HTML5 player — native controls,
+ * no frame around the picture, intrinsic size capped by the panel rather than
+ * stretched to fill it. A container the runtime cannot decode (codec missing)
+ * degrades to the binary fallback, whose opener buttons are the recovery.
+ */
+function VideoTabView({ path }: { readonly path: string }) {
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const name = basenameOf(path);
+  const [unplayable, setUnplayable] = useState(false);
+  const [state, setState] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'error' }
+    | { readonly status: 'ready'; readonly url: string; readonly size: number }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    setUnplayable(false);
+    if (client === undefined) {
+      setState({ status: 'error' });
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    setState({ status: 'loading' });
+    client.readHostFileBytes(path).then(
+      ({ bytes, mime }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
+      },
+      () => {
+        if (!cancelled) setState({ status: 'error' });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, path]);
+
+  if (unplayable) return <BinaryTabView path={path} />;
+
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {path}
+        </span>
+        {state.status === 'ready' ? (
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-video-meta>
+            {formatBytes(state.size)}
+          </span>
+        ) : null}
+        <HeaderFileActions path={path} name={name} />
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+        {state.status === 'loading' ? (
+          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('preview.loading')}
+          </p>
+        ) : state.status === 'error' ? (
+          <p className="text-[12.5px] text-danger">{t('preview.failed')}</p>
+        ) : (
+          <video
+            src={state.url}
+            controls
+            playsInline
+            aria-label={name}
+            data-preview-video
+            onError={() => { setUnplayable(true); }}
+            className="max-h-full max-w-full"
+          />
+        )}
       </div>
     </>
   );
@@ -1267,7 +1481,6 @@ function TextTabView({
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
   const showEditor = !markdown || mode === 'source';
-  const clientForDownload = client;
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
@@ -1335,18 +1548,7 @@ function TextTabView({
             {t('preview.save')}
           </button>
         ) : null}
-        <button
-          type="button"
-          title={t('media.download')}
-          onClick={() => {
-            if (clientForDownload !== undefined) {
-              void downloadHostFile(host, clientForDownload, path, name);
-            }
-          }}
-          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-        >
-          <Icon name="arrowDown" size={12} />
-        </button>
+        <HeaderFileActions path={path} name={name} />
       </div>
       {snap.conflict ? (
         <div
