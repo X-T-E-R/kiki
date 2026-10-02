@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { LogContext, LogPayload } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -96,10 +97,10 @@ function lastReminder(ctx: ReturnType<typeof testAgent>): string {
 }
 
 function pluginSessionStartMessages(ctx: ReturnType<typeof testAgent>) {
-  return ctx.context.get().filter(
-    (message) =>
-      message.origin?.kind === 'injection' && message.origin.variant === 'plugin_session_start',
-  );
+  return ctx.context.get().flatMap((message) => {
+    const source = capabilitySourceMessage(message, 'plugin_session_start');
+    return source === undefined ? [] : [source];
+  });
 }
 
 describe('plugin session-start dynamic injection', () => {
@@ -125,7 +126,13 @@ describe('plugin session-start dynamic injection', () => {
     expect(text).toContain('</plugin_session_start>');
     expect(ctx.context.get().at(-1)?.origin).toEqual({
       kind: 'injection',
-      variant: 'plugin_session_start',
+      variant: 'capability_delta',
+      disclosure: {
+        parts: [expect.objectContaining({
+          variant: 'plugin_session_start',
+          content: expect.stringContaining('<plugin_session_start plugin="superpowers" skill="using-superpowers">'),
+        })],
+      },
     });
   });
 
