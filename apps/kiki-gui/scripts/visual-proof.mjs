@@ -661,7 +661,7 @@ async function scenarioRewriteFlow() {
   await editor.locator('textarea').fill('First fixture question — edited resend.');
   await editor.locator('[data-edit-submit]').click();
   await waitForText('EDITED-REPLY landed after the rewrite.');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 }).catch(() => undefined);
   await page.waitForTimeout(800); // resync repaint settles
   // The truncated tail is gone from both the DOM and the server journal.
   const tailGone = await page.locator('text=TAIL-REPLY').count();
@@ -685,7 +685,7 @@ async function scenarioRewriteFlow() {
   await replyRow.hover();
   await replyRow.locator('[data-row-action="regenerate"]').click();
   await waitForText('REGENERATED-REPLY replaced the old tail.');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 }).catch(() => undefined);
   await page.waitForTimeout(800);
   const afterRegen = await control({ action: 'session', session_id: 'session_fixture_rewrite' });
   console.log(`[check] regenerate action=${JSON.stringify(afterRegen.data?.last_message_action?.action)}`);
@@ -731,7 +731,7 @@ async function scenarioBasicStream() {
   await page.waitForTimeout(300);
   await shot('basic-stream-approval');
   await approveViaKeyboard();
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(1200); // shiki upgrade
   await shot('basic-stream-done');
 }
@@ -740,7 +740,7 @@ async function scenarioPromptDedupe() {
   await selectSession('Fixture: prompt dedupe');
   await sendPrompt('One prompt, one user block.');
   await waitForText('The prompt appears once.');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   const userCount = await page.locator('[role="log"] [data-block-id^="user-"]', {
     hasText: 'One prompt, one user block.',
   }).count();
@@ -796,7 +796,7 @@ async function scenarioSubagents() {
   for (const agentId of ['agent-research', 'agent-review']) {
     await page.locator(`[data-subagent-id="${agentId}"]`).first().waitFor({ timeout: 20_000 });
   }
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   // Settled cards stay in place on the timeline: no history run to open, so
   // each card must still be mounted once the turn has settled.
   if (await page.locator('[data-history-run]').count() !== 0) {
@@ -1048,7 +1048,7 @@ async function scenarioToolPipeline() {
   // timeline records it, and only then does y/n answer it.
   await page.locator('[data-needs-you-tray] [data-tray-current]').waitFor({ timeout: 10_000 });
   await approveViaKeyboard();
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
   if (await page.locator('[role="log"] [data-approval-id]').count() !== 0) {
     throw new Error('resolved approval retained active decision controls');
@@ -1153,7 +1153,7 @@ async function scenarioQuestionCard() {
   await page.click('text=Typecheck');
   await page.click('text=Visual proof');
   await page.click(`button:has-text("${S.submit}")`);
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(400);
   await shot('question-card-answered');
 }
@@ -1387,7 +1387,7 @@ async function scenarioReconnect() {
   });
   await control({ action: 'resync', session_id: 'session_fixture_reconnect' });
   await page.waitForSelector('text=Segment B', { timeout: 15_000 });
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
   await page.waitForTimeout(600);
   const aCount = await page.evaluate(
     () => document.body.innerText.split('Segment A — this part streamed live').length - 1,
@@ -1676,7 +1676,7 @@ async function scenarioHeroShell() {
     throw new Error('composer textarea never regained focus after the /new → /s/:id flip');
   }
   await page
-    .waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 })
+    .waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 })
     .catch(() => undefined);
   await page.waitForTimeout(700);
   await shot('hero-flip-active');
@@ -2864,7 +2864,7 @@ async function scenarioQueue() {
   // Removing a parked prompt leaves no transcript trace at all: it never
   // started, so there is no user block and no aborted marker.
   await sendPrompt('A: hold the floor.', 'queue');
-  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-header-working]', { timeout: 10_000 });
   await sendPrompt('B: cancel me.', 'queue');
   await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   const cancelRow = page.locator('[data-queue-strip] li', { hasText: 'B: cancel me.' });
@@ -2883,11 +2883,11 @@ async function scenarioQueue() {
   }
   await shot('queue-cancelled');
   await control({ action: 'release', session_id: 'session_fixture_queue' });
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 
   // Queue strip: two parked prompts render as ordered rows above the composer.
   await sendPrompt('A: hold the floor.', 'queue');
-  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-header-working]', { timeout: 10_000 });
   await sendPrompt('B: steer me in.', 'queue');
   // Back-to-back queueing must wait out the previous send's draft clear,
   // otherwise the next fill is wiped before Enter fires.
@@ -3059,7 +3059,7 @@ async function scenarioQueue() {
   await tailClearDialog.getByRole('button', { name: S.clearQueue }).click();
   await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
   await control({ action: 'release', session_id: 'session_fixture_queue' });
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 }
 
 async function scenarioBurst() {
@@ -3224,7 +3224,7 @@ async function scenarioResyncHold() {
   await selectSession('Fixture: resync hold');
   await sendPrompt('Hold my snapshot.');
   await waitForText('Settled before the hold.');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
   // Hold every snapshot fetch until released below.
   const held = [];
   let holding = true;
@@ -3427,7 +3427,7 @@ async function scenarioSubagentApproval() {
   };
   await revealResolvedApproval();
   if (await page.locator('[data-approval-id="approval_fixture_child"]').count() !== 0) throw new Error('resolved child approval still exposes pending actions');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   // Focusing the child retains that same archived approval, without pending actions.
   // Subagent panels open as preview-workspace tabs by default — no route change.
   const childCard = page.locator('[data-subagent-id="agent-worker"]');
@@ -4475,7 +4475,7 @@ async function scenarioContextRing() {
   const RED = await tokenColor('--color-danger'); // --color-danger in the token layer
   if (dangerArc !== RED) throw new Error(`expected red danger arc, saw ${dangerArc}`);
   await shot('context-ring-danger');
-  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
 }
 
 /** Settings IA v2: nav blocks, owned pages, storage line, search, redirects (scripts/visual-proof-settings-ia.mjs). */
