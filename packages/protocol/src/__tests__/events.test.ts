@@ -449,6 +449,7 @@ describe('events / display re-exports', () => {
       last_opened_at: '2026-06-11T00:00:00.000Z',
       session_count: 1,
       pinned: false,
+      isGit: true,
     };
 
     const created = eventSchema.parse({
