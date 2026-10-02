@@ -337,7 +337,14 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
     setSaving(true);
     setFeedback(null);
     try {
-      const next = await client.requestIdentity.updateProfile(profile.id, { ...draft, overrides });
+      const committedDraft = {
+        ...draft,
+        version: draft.version.mode === 'fixed'
+          ? { mode: 'fixed' as const, value: draft.version.value.trim() }
+          : draft.version,
+      };
+      setDraft(committedDraft);
+      const next = await client.requestIdentity.updateProfile(profile.id, { ...committedDraft, overrides });
       queryClient.setQueryData(REQUEST_IDENTITY_QUERY_KEY, next);
       markSaved();
     } catch (error) {
@@ -416,7 +423,7 @@ function CustomProfileEditor({ profile, catalog, onDuplicate, onDeleted }: {
           {draft.version.mode === 'fixed' ? (
             <input className={`${INPUT} h-8 w-36 py-0 font-mono`} aria-label={t('st.identity.versionFixedAria')} data-identity-version
               value={draft.version.value} spellCheck={false}
-              onChange={(event) => { set({ version: { mode: 'fixed', value: event.target.value.trim() } }); }} />
+              onChange={(event) => { set({ version: { mode: 'fixed', value: event.target.value } }); }} />
           ) : null}
         </div>
         <Hint>{t('st.identity.versionHelp')}</Hint>

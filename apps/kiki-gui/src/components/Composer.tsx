@@ -594,6 +594,8 @@ export function Composer({
   ).sendShortcut;
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const [compositionText, setCompositionText] = useState<string | null>(null);
   // Custom right-click menu for the input (cut / copy / paste / select all).
   // Pasted images take the Ctrl+V attachment path (`addFiles`, bound below).
   const pasteFilesRef = useRef<(files: File[]) => void>(() => undefined);
@@ -1075,7 +1077,7 @@ export function Composer({
     lastCursorRef.current = cursor;
     requestAnimationFrame(() => {
       const node = textareaRef.current;
-      if (node !== null) {
+      if (node !== null && !composingRef.current) {
         const at = Math.min(cursor, node.value.length);
         node.focus();
         node.setSelectionRange(at, at);
@@ -1087,7 +1089,7 @@ export function Composer({
   // at the last caret of this session's main composer, as one undo step.
   const insertAtCaretRef = useRef<(snippet: string) => boolean>(() => false);
   insertAtCaretRef.current = (snippet: string) => {
-    if (disabled || queueEditing) return false;
+    if (disabled || queueEditing || composingRef.current) return false;
     const node = textareaRef.current;
     const focused = node !== null && document.activeElement === node;
     const selection = focused
@@ -1209,7 +1211,7 @@ export function Composer({
 
   /** Accept the highlighted slash item: skills keep composing args, actions run. */
   const acceptSlashItem = (item: SlashItem) => {
-    if (item.disabled === true) return;
+    if (item.disabled === true || composingRef.current) return;
     const trigger = menu?.kind === 'slash' ? menu : null;
     setMenu(null);
     if (item.kind === 'skill') {
@@ -1221,7 +1223,7 @@ export function Composer({
       // Caret to the end of the completed token after the controlled value lands.
       requestAnimationFrame(() => {
         const node = textareaRef.current;
-        if (node !== null) {
+        if (node !== null && !composingRef.current) {
           node.focus();
           node.setSelectionRange(completed.cursor, completed.cursor);
         }
@@ -1259,7 +1261,7 @@ export function Composer({
    * typed text kept as its args; caret after the token.
    */
   const insertSkillFromMenu = (item: SlashItem) => {
-    if (item.disabled === true) return;
+    if (item.disabled === true || composingRef.current) return;
     const rest = text.replace(/^\/\S*\s*/, '');
     const token = `/${item.name} `;
     const next = token + rest;
@@ -1268,7 +1270,7 @@ export function Composer({
     lastCursorRef.current = token.length;
     requestAnimationFrame(() => {
       const node = textareaRef.current;
-      if (node !== null) {
+      if (node !== null && !composingRef.current) {
         node.focus();
         node.setSelectionRange(token.length, token.length);
       }
@@ -1547,7 +1549,7 @@ export function Composer({
 
   /** `now`: join the running turn instead of queueing behind it (plain prompts only). */
   const send = (now = false, timing?: DeferredAppendTiming) => {
-    if (!canSend || slashCatalogPendingRef.current) return;
+    if (!canSend || slashCatalogPendingRef.current || composingRef.current) return;
     sendNowRef.current = now && onSendNow !== undefined;
     sendTimingRef.current = timing;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
@@ -1773,6 +1775,7 @@ export function Composer({
 
   /** Recompute the trigger-driven menu after any text/caret change. */
   const refreshMenu = (nextText: string, cursor: number) => {
+    if (composingRef.current) return;
     const slashTrigger = parseSlashTrigger(nextText, cursor);
     if (slashTrigger !== null) {
       setMenu({ kind: 'slash', ...slashTrigger });
@@ -1794,7 +1797,7 @@ export function Composer({
     // branches below used to run first) eats the commit key and leaves the
     // half-committed text stranded. keyCode 229 covers engines that skip the
     // isComposing flag on keydown.
-    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     // A thread link deletes as one token: Backspace/Delete touching it (or a
     // selection overlapping it) takes the whole link.
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
@@ -2513,7 +2516,24 @@ export function Composer({
             <textarea
               ref={textareaRef}
               rows={1}
-              value={text}
+              // A catalog/seat rerender can precede the browser's IME input
+              // event. Never restore an older controlled prop over preedit text.
+              value={composingRef.current ? textareaRef.current?.value ?? compositionText ?? text : text}
+              onCompositionStart={(event) => {
+                composingRef.current = true;
+                setCompositionText(event.currentTarget.value);
+                pushUndoSnapshot({ text, cursor: event.currentTarget.selectionStart });
+                historyIndexRef.current = null;
+              }}
+              onCompositionEnd={(event) => {
+                composingRef.current = false;
+                setCompositionText(null);
+                const node = event.currentTarget;
+                onChange(node.value);
+                lastCursorRef.current = node.selectionStart;
+                setSlashConfirm(null);
+                refreshMenu(node.value, node.selectionStart);
+              }}
               data-composer
               onScroll={(event) => {
                 const backdrop = threadRefBackdropRef.current;
@@ -2523,10 +2543,13 @@ export function Composer({
               disabled={disabled}
               onChange={(event) => {
                 // User edits only: programmatic value writes never fire this.
-                pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+                if (!composingRef.current && event.target.value !== text) {
+                  pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+                }
                 // An edit while browsing history ends the browse; the edited
                 // text stands (the pre-browse draft is superseded by it).
                 historyIndexRef.current = null;
+                if (composingRef.current) setCompositionText(event.target.value);
                 onChange(event.target.value);
                 lastCursorRef.current = event.target.selectionStart;
                 setSlashConfirm(null);

@@ -54,10 +54,13 @@ export function FontRoleField({ role, label, help, presets, presetValue, custom,
   const [draft, setDraft] = useState(() => (custom === undefined ? '' : firstFamily(custom)));
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const composingRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   // Another writer (Restore defaults, its undo, another window) moved the
   // stored family: follow it, and leave the field once it is cleared. An
   // empty field the user is still typing into stays open.
   useEffect(() => {
+    if (composingRef.current) return;
     if (custom !== undefined) {
       setEditing(true);
       if (firstFamily(custom) !== draftRef.current.trim()) setDraft(firstFamily(custom));
@@ -105,12 +108,21 @@ export function FontRoleField({ role, label, help, presets, presetValue, custom,
           <label htmlFor={inputId} className="block text-[12px] text-ink-soft">{t('st.font.nameLabel')}</label>
           <input
             id={inputId}
+            ref={inputRef}
             type="text"
-            value={draft}
+            value={composingRef.current ? inputRef.current?.value ?? draft : draft}
             spellCheck={false}
             autoComplete="off"
-            // Typing is the choice: it applies at once, like every control here.
-            onChange={(event) => { type(event.target.value); }}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false;
+              type(event.currentTarget.value);
+            }}
+            // Apply committed names immediately, but never clean IME preedit.
+            onChange={(event) => {
+              if (composingRef.current) setDraft(event.target.value);
+              else type(event.target.value);
+            }}
             placeholder={t(role === 'mono' ? 'st.font.placeholderMono' : 'st.font.placeholder')}
             className="h-8 w-full rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink"
           />

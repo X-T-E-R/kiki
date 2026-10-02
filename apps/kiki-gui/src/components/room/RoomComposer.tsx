@@ -43,8 +43,10 @@ export function RoomComposer({
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | undefined>(undefined);
+  const composingRef = useRef(false);
+  const [composing, setComposing] = useState(false);
 
-  const mention = mentionAtCaret(text, caret);
+  const mention = composing ? undefined : mentionAtCaret(text, caret);
   const options: MentionOption[] = mention === undefined ? [] : mentionOptions(
     members,
     mention.query,
@@ -63,13 +65,14 @@ export function RoomComposer({
   }, [text]);
 
   const insert = (option: MentionOption) => {
-    if (mention === undefined) return;
+    if (mention === undefined || composingRef.current) return;
     const next = `${text.slice(0, mention.start)}@${option.insert} ${text.slice(caret)}`;
     const nextCaret = mention.start + option.insert.length + 2;
     setText(next);
     setCaret(nextCaret);
     setActive(0);
     window.requestAnimationFrame(() => {
+      if (composingRef.current) return;
       textarea.current?.focus();
       textarea.current?.setSelectionRange(nextCaret, nextCaret);
     });
@@ -77,14 +80,16 @@ export function RoomComposer({
 
   const send = async () => {
     const trimmed = text.trim();
-    if (trimmed === '' || sending) return;
+    if (trimmed === '' || sending || composingRef.current) return;
     if (await onSend(trimmed)) {
       setText('');
       setCaret(0);
     }
   };
 
-  const syncCaret = () => { setCaret(textarea.current?.selectionStart ?? text.length); };
+  const syncCaret = () => {
+    if (!composingRef.current) setCaret(textarea.current?.selectionStart ?? text.length);
+  };
 
   return (
     <div className="relative" data-room-composer>
@@ -115,7 +120,18 @@ export function RoomComposer({
         <textarea
           ref={textarea}
           rows={1}
-          value={text}
+          value={composingRef.current ? textarea.current?.value ?? text : text}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            setComposing(true);
+          }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            setComposing(false);
+            setText(event.currentTarget.value);
+            setCaret(event.currentTarget.selectionStart);
+            setDismissedAt(undefined);
+          }}
           data-room-input
           aria-label={placeholder}
           placeholder={placeholder}
@@ -126,12 +142,13 @@ export function RoomComposer({
           aria-activedescendant={open ? `${listId}-${activeIndex}` : undefined}
           onChange={(event) => {
             setText(event.target.value);
+            if (composingRef.current) return;
             setCaret(event.target.selectionStart);
             setDismissedAt(undefined);
           }}
           onSelect={syncCaret}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
+            if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             if (open) {
               if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault();
