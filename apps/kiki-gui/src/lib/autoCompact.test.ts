@@ -45,18 +45,33 @@ describe('parseCompactInput', () => {
 });
 
 describe('bounds and clamping', () => {
-  it('mirrors the engine: ceil = U − R, floor = max(64k, roundUp8k(B + 32k))', () => {
-    expect(autoCompactBounds(status(550_000))).toEqual({ floor: 64_000, ceil: 500_000, locked: false });
+  it('mirrors the session clamp: ceil = max(U − R, floor(95% U)), keeping the resident floor', () => {
+    expect(autoCompactBounds(status(550_000))).toEqual({ floor: 64_000, ceil: 522_500, locked: false });
     expect(autoCompactBounds(status(550_000), 50_000).floor).toBe(88_000);
   });
 
-  it('locks a window too small to move the point', () => {
-    expect(autoCompactBounds(status(96_000)).locked).toBe(true);
+  it('reaches the exact 95% endpoint on a 358.6k window off the 8k grid', () => {
+    const bounds = autoCompactBounds(status(358_600));
+    expect(bounds.ceil).toBe(340_670);
+    expect(clampCompactTokens(340_670, bounds)).toEqual({ tokens: 340_670 });
+    expect(snapCompactTokens(340_670, bounds)).toBe(340_670);
+    expect(snapCompactTokens(400_000, bounds)).toBe(340_670);
+  });
+
+  it('keeps limit minus reserve at 1M and above when it already permits 95%', () => {
+    expect(autoCompactBounds(status(1_000_000)).ceil).toBe(950_000);
+    expect(autoCompactBounds(status(2_000_000)).ceil).toBe(1_950_000);
+    expect(autoCompactBounds(status(358_600, 10_000)).ceil).toBe(348_600);
+  });
+
+  it('locks only a window too small for the expanded session range', () => {
+    expect(autoCompactBounds(status(64_000)).locked).toBe(true);
+    expect(autoCompactBounds(status(96_000)).locked).toBe(false);
   });
 
   it('clamps and names the edge it clamped to', () => {
     const bounds = autoCompactBounds(status(550_000));
-    expect(clampCompactTokens(600_000, bounds)).toEqual({ tokens: 500_000, clamped: 'ceil' });
+    expect(clampCompactTokens(600_000, bounds)).toEqual({ tokens: 522_500, clamped: 'ceil' });
     expect(clampCompactTokens(10_000, bounds)).toEqual({ tokens: 64_000, clamped: 'floor' });
     expect(clampCompactTokens(300_000, bounds)).toEqual({ tokens: 300_000 });
     expect(snapCompactTokens(401_500, bounds)).toBe(400_000);

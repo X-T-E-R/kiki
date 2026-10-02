@@ -7,7 +7,8 @@
  *   - "window 550k"   legacy default 467.5k, 312k used (room left);
  *   - "past point"    session override 400k with 430k used (compacts next step);
  *   - "usable < window" a 300k usable limit on a 550k window (context_budget);
- *   - "tiny window"   a 96k window: floor above ceil, the point cannot move;
+ *   - "window 358.6k" legacy point 304.8k; explicit dragging reaches 340.7k (95%);
+ *   - "tiny window"   a 64k usable limit on a 96k window: no room to move;
  *   - "older engine"  the route 404s: the meter keeps its plain rows.
  */
 
@@ -44,12 +45,13 @@ export default {
     { provider: 'fixture', model: 'fixture/gateway-550', display_name: 'Gateway 550k', max_context_size: 550_000 },
     { provider: 'fixture', model: 'fixture/tiny-96k', display_name: 'Tiny 96k', max_context_size: 96_000 },
     { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 200_000, auto_compact: 140_000 },
+    { provider: 'fixture', model: 'fixture/window-358k', display_name: 'Window 358.6k', max_context_size: 358_600 },
   ],
   providers: [
-    { id: 'fixture', type: 'anthropic', has_api_key: true, status: 'connected', models: ['fixture/opus-5-5', 'fixture/gateway-550', 'fixture/tiny-96k', 'fixture/kiki-lite'] },
+    { id: 'fixture', type: 'anthropic', has_api_key: true, status: 'connected', models: ['fixture/opus-5-5', 'fixture/gateway-550', 'fixture/tiny-96k', 'fixture/kiki-lite', 'fixture/window-358k'] },
   ],
   workspaces: [
-    { id: WSID, root: 'C:/fixture/workshop', name: 'workshop', created_at: new Date(Date.now() - 7_200_000).toISOString(), last_opened_at: new Date().toISOString(), session_count: 5, pinned: false },
+    { id: WSID, root: 'C:/fixture/workshop', name: 'workshop', created_at: new Date(Date.now() - 7_200_000).toISOString(), last_opened_at: new Date().toISOString(), session_count: 6, pinned: false },
   ],
   agentProfiles: [
     { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
@@ -71,6 +73,7 @@ export default {
     session('session_fixture_compact_budget', 'Fixture: usable < window', 'fixture/gateway-550', 180_000, 550_000),
     session('session_fixture_compact_tiny', 'Fixture: tiny window', 'fixture/tiny-96k', 41_000, 96_000),
     session('session_fixture_compact_legacy', 'Fixture: older engine', 'fixture/opus-5-5', 120_000, 550_000),
+    session('session_fixture_compact_95', 'Fixture: window 358.6k', 'fixture/window-358k', 200_000, 358_600),
   ],
   snapshots: {
     session_fixture_compact_room: { messages: [], has_more: false },
@@ -78,11 +81,12 @@ export default {
     session_fixture_compact_budget: { messages: [], has_more: false },
     session_fixture_compact_tiny: { messages: [], has_more: false },
     session_fixture_compact_legacy: { messages: [], has_more: false },
+    session_fixture_compact_95: { messages: [], has_more: false },
   },
   autoCompact: {
     windows: {
       'fixture/gateway-550': { usable: 300_000 },
-      'fixture/tiny-96k': { reserved: 50_000 },
+      'fixture/tiny-96k': { usable: 64_000, reserved: 50_000 },
     },
     overrides: {
       session_fixture_compact_past: { main: { 'fixture/opus-5-5': 400_000 } },

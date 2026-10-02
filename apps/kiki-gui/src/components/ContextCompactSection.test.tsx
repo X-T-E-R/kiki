@@ -132,7 +132,7 @@ describe('ContextMeter with a compaction point', () => {
     expect(autoCompact.onCommit).toHaveBeenCalledWith(456_000);
   });
 
-  it('parses typed input, clamps to limit − reserve and says so', async () => {
+  it('parses typed input, clamps to the adjustable ceiling and says so', async () => {
     const autoCompact = wiring({
       onCommit: vi.fn(async (tokens: number | null) => result(status(tokens!, 'session'), status(467_500, 'legacy'))),
     });
@@ -149,8 +149,8 @@ describe('ContextMeter with a compaction point', () => {
     await type('73%');
     expect(autoCompact.onCommit).toHaveBeenLastCalledWith(401_500);
     await type('900k');
-    expect(autoCompact.onCommit).toHaveBeenLastCalledWith(500_000);
-    expect(container.querySelector('[data-compact-note]')?.textContent).toContain('Adjusted to 500k (limit minus reserve).');
+    expect(autoCompact.onCommit).toHaveBeenLastCalledWith(522_500);
+    expect(container.querySelector('[data-compact-note]')?.textContent).toContain('Adjusted to 522.5k (highest adjustable point).');
     await type('lots');
     expect(container.querySelector('[data-compact-note]')?.textContent).toContain('Enter tokens like 400k');
     expect(autoCompact.onCommit).toHaveBeenCalledTimes(2);
@@ -166,8 +166,36 @@ describe('ContextMeter with a compaction point', () => {
     expect(autoCompact.onCommit).toHaveBeenCalledWith(250_000);
   });
 
-  it('locks the slider when the window leaves no room', async () => {
-    const { container } = await render({ used: 41_000, limit: 96_000, autoCompact: wiring({ status: status(46_000, 'legacy', 96_000) }) });
+  it('drags a 358.6k window to exactly 95%, with only the final 5% hatched', async () => {
+    const autoCompact = wiring({ status: status(304_810, 'legacy', 358_600) });
+    const { container } = await render({ used: 100_000, limit: 358_600, autoCompact });
+    const slider = container.querySelector<HTMLInputElement>('[data-compact-slider]')!;
+    expect(slider.max).toBe('340670');
+    expect(slider.step).toBe('1');
+    expect(container.querySelector<HTMLElement>('[data-compact-reserve]')?.style.width).toBe('5%');
+    await act(async () => { setRange(slider, 340_670); });
+    expect(container.querySelector<HTMLElement>('[data-compact-thumb]')?.style.left).toBe('95%');
+    expect(container.querySelector('[data-compact-status]')?.textContent).toContain('Reserve 17.9k above the point.');
+    expect(autoCompact.onCommit).not.toHaveBeenCalled();
+    await act(async () => { slider.dispatchEvent(new MouseEvent('pointerup', { bubbles: true })); });
+    expect(autoCompact.onCommit).toHaveBeenCalledWith(340_670);
+  });
+
+  it('keeps 8k keyboard moves and reaches the exact ceiling with End', async () => {
+    vi.useFakeTimers();
+    const autoCompact = wiring({ status: status(304_000, 'session', 358_600) });
+    const { container } = await render({ used: 100_000, limit: 358_600, autoCompact });
+    const slider = container.querySelector<HTMLInputElement>('[data-compact-slider]')!;
+    await act(async () => { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(slider.value).toBe('312000');
+    await act(async () => { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })); });
+    expect(slider.value).toBe('340670');
+    await act(async () => { vi.advanceTimersByTime(600); });
+    expect(autoCompact.onCommit).toHaveBeenCalledWith(340_670);
+  });
+
+  it('locks the slider when the expanded window still leaves no room', async () => {
+    const { container } = await render({ used: 10_000, limit: 64_000, autoCompact: wiring({ status: status(14_000, 'legacy', 64_000) }) });
     expect(container.querySelector('[data-compact-slider]')).toBeNull();
     expect(container.textContent).toContain('The window is too small to move the compaction point.');
   });

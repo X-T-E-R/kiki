@@ -38,6 +38,29 @@ describe('auto_compact resolution', () => {
     expect(resolveAutoCompact(context(300_000, { profileAutoCompact: 1_000 }), undefined, 80_000).tokens).toBe(112_000);
   });
 
+  it('allows a 358.6k session to reach 95% without changing inherited targets or the reserve', () => {
+    const model = context(358_600);
+    expect(resolveAutoCompact(model, 340_670)).toMatchObject({
+      tokens: 340_670, source: 'session', reservedContextTokens: 50_000,
+    });
+    expect(resolveAutoCompact(model, 358_600).tokens).toBe(340_670);
+    expect(resolveAutoCompact(model).tokens).toBe(304_810);
+    for (const extra of [
+      { profileAutoCompact: 340_670 },
+      { modelAutoCompact: 340_670 },
+      { globalAutoCompact: '95%' },
+    ]) {
+      expect(resolveAutoCompact(context(358_600, extra)).tokens).toBe(308_600);
+    }
+  });
+
+  it('keeps the session reserve ceiling at 1M and above when it already permits 95%', () => {
+    expect(resolveAutoCompact(context(1_000_000), 1_000_000).tokens).toBe(950_000);
+    expect(resolveAutoCompact(context(2_000_000), 2_000_000).tokens).toBe(1_950_000);
+    expect(resolveAutoCompact(context(358_600, { reservedContextSize: 10_000 }), 358_600).tokens).toBe(348_600);
+    expect(resolveAutoCompact(context(64_000), 64_000).tokens).toBe(60_800);
+  });
+
   it('rejects formats at the wrong layer with a layer-specific error', () => {
     expect(LoopControlSchema.safeParse({ autoCompact: 400_000 }).error?.message).toContain('global loop_control.auto_compact');
     expect(LoopControlSchema.safeParse({ autoCompact: '85%' }).success).toBe(true);

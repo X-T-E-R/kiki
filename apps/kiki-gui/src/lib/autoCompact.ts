@@ -54,18 +54,20 @@ const FLOOR_HEADROOM = 32_000;
 export interface AutoCompactBounds {
   /** Lowest point the engine keeps (resident cost + headroom, at least 64k). */
   readonly floor: number;
-  /** Highest point: usable limit minus the reserve. */
+  /** Highest session point: at least 95% of the usable limit, or limit minus reserve. */
   readonly ceil: number;
   /** No room to move: the window is too small for an adjustable point. */
   readonly locked: boolean;
 }
 
 /**
- * Mirrors the engine's clamp so the slider stops where the server would
- * clamp anyway. `resident` is the system + tools estimate when known.
+ * Mirrors the engine's explicit session clamp: users may reach 95% even
+ * when that leaves less than the configured reserve. Defaults keep U − R.
+ * `resident` is the system + tools estimate when known.
  */
 export function autoCompactBounds(status: AutoCompactStatus, resident?: number): AutoCompactBounds {
-  const ceil = Math.max(0, status.effectiveMaxContextTokens - status.reservedContextTokens);
+  const usable = status.effectiveMaxContextTokens;
+  const ceil = Math.max(0, usable - status.reservedContextTokens, Math.floor(usable * 0.95));
   const wanted = Math.max(FLOOR_MIN, Math.ceil(((resident ?? 0) + FLOOR_HEADROOM) / AUTO_COMPACT_STEP) * AUTO_COMPACT_STEP);
   const floor = Math.min(ceil, wanted);
   return { floor, ceil, locked: ceil - floor < AUTO_COMPACT_STEP };
@@ -109,8 +111,10 @@ export function clampCompactTokens(
   return { tokens };
 }
 
-/** Snap a slider position to the 8k grid without leaving the bounds. */
+/** Snap to the 8k grid while keeping both exact endpoints reachable. */
 export function snapCompactTokens(tokens: number, bounds: AutoCompactBounds): number {
+  if (tokens >= bounds.ceil) return bounds.ceil;
+  if (tokens <= bounds.floor) return bounds.floor;
   const snapped = Math.round(tokens / AUTO_COMPACT_STEP) * AUTO_COMPACT_STEP;
   return Math.min(bounds.ceil, Math.max(bounds.floor, snapped));
 }

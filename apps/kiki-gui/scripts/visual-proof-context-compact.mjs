@@ -49,10 +49,10 @@ export function createContextCompactWalker({ page, shot, selectSession, resizeVi
     await expectSource('session');
     console.log(`[check] drag copy while held: ${during.split('\n')[0]}`);
 
-    // Typed input clamps to limit − reserve and says so.
+    // Typed session input clamps to the expanded 95% ceiling and says so.
     await page.fill('[data-compact-input]', '99%');
     await page.press('[data-compact-input]', 'Enter');
-    await page.waitForFunction(() => /500k/.test(document.querySelector('[data-compact-note]')?.textContent ?? ''), null, { timeout: 5000 });
+    await page.waitForFunction(() => /522\.5k/.test(document.querySelector('[data-compact-note]')?.textContent ?? ''), null, { timeout: 5000 });
     await shot(`context-compact-clamped-${theme}`);
     await page.fill('[data-compact-input]', '400k');
     await page.press('[data-compact-input]', 'Enter');
@@ -93,6 +93,28 @@ export function createContextCompactWalker({ page, shot, selectSession, resizeVi
     const limit = await page.locator('[data-compact-limit]').innerText();
     if (!/300k/.test(limit) || !/550k/.test(limit)) throw new Error(`usable/window label wrong: ${limit}`);
     await shot(`context-compact-budget-${theme}`);
+    await closeDetails();
+
+    // A real pointer drag must reach the off-grid 95% endpoint, not stop at 336k.
+    await selectSession('Fixture: window 358.6k');
+    await openDetails();
+    const endpoint = page.locator('[data-compact-slider]');
+    if (await endpoint.getAttribute('max') !== '340670') throw new Error('358.6k slider ceiling must be 340670');
+    const endpointBox = await endpoint.boundingBox();
+    if (endpointBox === null) throw new Error('358.6k slider not rendered');
+    await page.mouse.move(endpointBox.x + endpointBox.width / 2, endpointBox.y + endpointBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(endpointBox.x + endpointBox.width - 1, endpointBox.y + endpointBox.height / 2, { steps: 6 });
+    await page.mouse.up();
+    await expectSource('session');
+    await page.waitForFunction(() => {
+      const slider = document.querySelector('[data-compact-slider]');
+      const thumb = document.querySelector('[data-compact-thumb]');
+      const reserve = document.querySelector('[data-compact-reserve]');
+      return slider?.value === '340670' && thumb?.style.left === '95%' && reserve?.style.width === '5%';
+    }, null, { timeout: 5000 });
+    console.log('[check] 358.6k pointer drag saved 340670 tokens (95%); locked zone is 5%');
+    await shot(`context-compact-95-percent-${theme}`);
     await closeDetails();
 
     await selectSession('Fixture: tiny window');

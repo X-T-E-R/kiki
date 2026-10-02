@@ -765,7 +765,7 @@ export const zh = {
   'context.compact.usableOfWindow': '可用 {usable} / 窗口 {window}',
   'context.compact.locked': '窗口太小，无法再调整压缩点。',
   'context.compact.appliesNextStep': '从下一步开始生效，不会立即压缩。',
-  'context.compact.clampedCeil': '已调整到 {tokens}（上限减预留）。',
+  'context.compact.clampedCeil': '已调整到 {tokens}（可调上限）。',
   'context.compact.clampedFloor': '已调整到 {tokens}（这个模型的最低压缩点）。',
   'context.compact.inputInvalid': '请输入 400k、400000 这样的 token 数，或 73% 这样的比例。',
   'context.compact.inputLabel': '压缩点',

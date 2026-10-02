@@ -37,7 +37,7 @@ export function resolveAutoCompact(
   if (chosen !== undefined) {
     source = chosen[0];
     tokens = typeof chosen[1] === 'string' ? Math.round(usable * Number(chosen[1].slice(0, -1)) / 100) : chosen[1]!;
-    const ceil = usable - reserved;
+    const ceil = source === 'session' ? Math.max(usable - reserved, Math.floor(usable * 0.95)) : usable - reserved;
     const floor = Math.min(ceil, Math.max(64_000, Math.ceil(((systemAndToolsTokens ?? 0) + 32_000) / 8_000) * 8_000));
     tokens = Math.max(floor, Math.min(tokens, ceil));
   } else {

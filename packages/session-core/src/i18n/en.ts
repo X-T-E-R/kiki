@@ -777,7 +777,7 @@ export const en = {
   'context.compact.usableOfWindow': 'Usable {usable} / window {window}',
   'context.compact.locked': 'The window is too small to move the compaction point.',
   'context.compact.appliesNextStep': 'Changes apply from the next step. Nothing compacts right away.',
-  'context.compact.clampedCeil': 'Adjusted to {tokens} (limit minus reserve).',
+  'context.compact.clampedCeil': 'Adjusted to {tokens} (highest adjustable point).',
   'context.compact.clampedFloor': 'Adjusted to {tokens} (lowest point this model keeps).',
   'context.compact.inputInvalid': 'Enter tokens like 400k or 400000, or a share like 73%.',
   'context.compact.inputLabel': 'Compaction point',

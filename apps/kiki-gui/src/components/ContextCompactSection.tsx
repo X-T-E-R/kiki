@@ -285,7 +285,9 @@ export function ContextCompactSection({
             aria-describedby={noteId}
             min={bounds.floor}
             max={bounds.ceil}
-            step={AUTO_COMPACT_STEP}
+            // Native 8k stepping would make an off-grid 95% endpoint unreachable.
+            // Snap pointer moves ourselves; keyboard moves still use 8k steps.
+            step={1}
             value={Math.min(bounds.ceil, Math.max(bounds.floor, point))}
             disabled={pending}
             onChange={(event) => { setDraft(snapCompactTokens(Number(event.target.value), bounds)); }}
@@ -297,6 +299,10 @@ export function ContextCompactSection({
               let next: number | undefined;
               if (event.key === 'PageUp') next = point + pageStep;
               if (event.key === 'PageDown') next = point - pageStep;
+              if (event.key === 'ArrowRight' || event.key === 'ArrowUp') next = point + AUTO_COMPACT_STEP;
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') next = point - AUTO_COMPACT_STEP;
+              if (event.key === 'Home') next = bounds.floor;
+              if (event.key === 'End') next = bounds.ceil;
               if (next === undefined) return;
               event.preventDefault();
               const snapped = snapCompactTokens(next, bounds);
@@ -352,7 +358,7 @@ export function ContextCompactSection({
           >
             {statusLine}
             <span className="block text-ink-faint">
-              {t('context.compact.reserve', { tokens: formatCompactTokens(status.reservedContextTokens) })}
+              {t('context.compact.reserve', { tokens: formatCompactTokens(Math.min(status.reservedContextTokens, Math.max(0, usable - point))) })}
             </span>
           </p>
           <label htmlFor={inputId} className="sr-only">{t('context.compact.inputLabel')}</label>

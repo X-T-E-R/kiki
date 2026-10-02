@@ -3,7 +3,8 @@
  * (kap-server routes/autoCompact.ts). Mirrors the engine's resolution closely
  * enough for the GUI to exercise every state honestly:
  *   session override (per agent, per model) → profile → model → global % →
- *   legacy `min(0.85·U, U − R)`; explicit layers clamp to [floor, U − R].
+ *   legacy `min(0.85·U, U − R)`; defaults clamp to [floor, U − R], while
+ *   session overrides may reach max(U − R, floor(0.95·U)).
  * Writes land in the same fixture state the settings pages read (model
  * catalog, agent profiles, config.loop_control), so a saved default shows up
  * everywhere and later GETs resolve from it.
@@ -47,12 +48,11 @@ function resolve(server, session, agentId, { ignoreSession = false } = {}) {
   const usable = window.usable ?? entry?.max_input_size ?? entry?.max_context_size ?? 262_144;
   const reserved = window.reserved ?? loop.reserved ?? DEFAULT_RESERVED;
   const ceil = Math.max(0, usable - reserved);
-  const floor = Math.min(ceil, 64_000);
-  const clamp = (tokens) => Math.max(floor, Math.min(tokens, ceil));
+  const clamp = (tokens, ceiling = ceil) => Math.max(Math.min(ceiling, 64_000), Math.min(tokens, ceiling));
   const overrides = server.autoCompactOverrides.get(`${session.record.id}:${agentId}`) ?? {};
   const profile = server.agentProfiles.find((item) => item.name === profileName);
   const status = (tokens, source) => ({ tokens, source, effectiveMaxContextTokens: usable, reservedContextTokens: reserved });
-  if (!ignoreSession && overrides[modelId] !== undefined) return status(clamp(overrides[modelId]), 'session');
+  if (!ignoreSession && overrides[modelId] !== undefined) return status(clamp(overrides[modelId], Math.max(ceil, Math.floor(usable * 0.95))), 'session');
   const modelProfile = profile?.model_profiles?.find((item) => item.alias === modelId)?.auto_compact;
   if (modelProfile !== undefined) return status(clamp(modelProfile), 'profile');
   if (profile?.auto_compact !== undefined) return status(clamp(profile.auto_compact), 'profile');

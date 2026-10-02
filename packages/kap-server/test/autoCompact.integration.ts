@@ -74,6 +74,27 @@ describe('automatic compaction REST contract', () => {
     return result.data.id;
   }
 
+  it('accepts a 95% session override without changing the inherited reserve ceiling', async () => {
+    const id = await create();
+    const path = `/api/sessions/${id}/agents/main/auto-compact`;
+    const chosen = await request<AutoCompactWriteResult>(path, 'PATCH', { tokens: 522_500 });
+    expect(chosen.code, chosen.msg).toBe(0);
+    expect(chosen.data).toMatchObject({
+      effective: { source: 'session', tokens: 522_500, reservedContextTokens: 50_000 },
+      default: { source: 'legacy', tokens: 467_500 },
+    });
+    expect((await request<AutoCompactStatus>(path)).data.tokens).toBe(522_500);
+    expect((await request<AutoCompactWriteResult>(path, 'PATCH', { tokens: 550_000 })).data.effective.tokens).toBe(522_500);
+    const saved = await request<AutoCompactWriteResult>(path, 'PATCH', { tokens: 522_500, save: 'model' });
+    expect(saved.data).toMatchObject({
+      overrideCleared: false,
+      effective: { source: 'session', tokens: 522_500 },
+      default: { source: 'model', tokens: 500_000 },
+    });
+    const reset = await request<AutoCompactWriteResult>(path, 'PATCH', { tokens: null });
+    expect(reset.data.effective).toMatchObject({ source: 'model', tokens: 500_000 });
+  });
+
   it('persists a per-model session override and promotes model and global defaults', async () => {
     const id = await create();
     const path = `/api/sessions/${id}/agents/main/auto-compact`;
