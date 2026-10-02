@@ -105,7 +105,6 @@ export function ThreadConversationDialog({
             <span className="min-w-0 truncate">{title}</span>
             <EndpointState endpoint={peer} />
           </h2>
-          <p className="mt-0.5 text-[12px] text-ink-faint">{t('comms.pairHint')}</p>
         </div>
         {peerHref !== undefined ? (
           <button type="button" data-comms-open-peer className={`${LINK} mt-0.5 shrink-0`} onClick={() => { go(peerHref); }}>
