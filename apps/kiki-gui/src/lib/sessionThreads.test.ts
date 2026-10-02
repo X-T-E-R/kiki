@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
-import type { SessionGroup } from '@kiki/session-core/sessions';
+import { mergeConversationItems, type SessionGroup } from '@kiki/session-core/sessions';
 
-import { nestSessionThreads, sessionRelationOf } from './sessionThreads';
+import { nestConversationItems, nestSessionThreads, sessionRelationOf } from './sessionThreads';
 
 function session(id: string, metadata: Record<string, unknown> = {}): Session {
   return {
@@ -49,6 +49,20 @@ describe('sessionRelationOf', () => {
 });
 
 describe('nestSessionThreads', () => {
+  it('sorts parents by their own activity when a child becomes newest', () => {
+    const root = { ...session('root'), updated_at: '2026-09-27T00:00:00Z' };
+    const other = { ...session('other'), updated_at: '2026-09-28T12:00:00Z' };
+    const child = session('child', { created_by_session_id: 'root' });
+    for (const order of ['updated-desc', 'updated-asc'] as const) {
+      for (const stamp of ['2026-09-28T00:00:00Z', '2026-09-29T00:00:00Z']) {
+        const items = mergeConversationItems([root, other, { ...child, updated_at: stamp, busy: true, last_seq: 10 }], [], {}, order);
+        const tree = nestConversationItems([{ key: 'all', label: 'all', items }], { crossGroups: true });
+        expect(tree[0]?.nodes.map((node) => node.item.id)).toEqual(order === 'updated-desc' ? ['other', 'root'] : ['root', 'other']);
+        expect(tree[0]?.nodes.find((node) => node.item.id === 'root')?.children.map((node) => node.item.id)).toEqual(['child']);
+        expect(root.updated_at).toBe('2026-09-27T00:00:00Z');
+      }
+    }
+  });
   it('nests a thread under its creator and counts it in the group total', () => {
     const groups = [group('today', [
       session('root'),
@@ -68,6 +82,23 @@ describe('nestSessionThreads', () => {
     ])];
     expect(shape(nestSessionThreads(groups, { crossGroups: true })))
       .toEqual([{ key: 'today', rows: ['root', '>mid', '>leaf'] }]);
+  });
+
+  it('promotes a display root and its descendants without changing their relations', () => {
+    const mid = session('mid', { created_by_session_id: 'root' });
+    const groups = [group('today', [session('root'), mid, session('leaf', { created_by_session_id: 'mid' })])];
+    const promoted = nestSessionThreads(groups, { crossGroups: true, topLevelIds: new Set(['mid']) });
+    expect(shape(promoted)).toEqual([{ key: 'today', rows: ['root', 'mid', '>leaf'] }]);
+    expect(promoted[0]?.nodes[1]?.relation?.parentId).toBe('root');
+    expect(mid.metadata['created_by_session_id']).toBe('root');
+    expect(shape(nestSessionThreads(groups, { crossGroups: true, topLevelIds: new Set() })))
+      .toEqual([{ key: 'today', rows: ['root', '>mid', '>leaf'] }]);
+  });
+
+  it('keeps promoted threads in their own time bucket even while the parent is loaded', () => {
+    const groups = [group('today', [session('thread', { created_by_session_id: 'root' })]), group('week', [session('root')])];
+    expect(shape(nestSessionThreads(groups, { crossGroups: true, topLevelIds: new Set(['thread']) })))
+      .toEqual([{ key: 'today', rows: ['thread'] }, { key: 'week', rows: ['root'] }]);
   });
 
   it('follows the creator across time buckets but stays inside workspace buckets', () => {

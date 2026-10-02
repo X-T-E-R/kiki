@@ -55,11 +55,84 @@ async function openSession(page, link, sessionId) {
   await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
 }
 
+async function threadDisplayWalk(page, link, control, locale = 'en') {
+  const parentId = 'session_fixture_parent';
+  const childId = 'session_fixture_child';
+  const recentId = 'session_fixture_recent';
+  const prefix = `thread-order-${locale}`;
+  const nested = page.locator(`[data-session-threads="${parentId}"] [data-session-row="${childId}"]`);
+  const topLevel = () => page.locator('[data-session-row]').evaluateAll((rows) => rows
+    .filter((row) => row.closest('[data-session-threads]') === null)
+    .map((row) => row.dataset.sessionRow));
+  await openSession(page, link, childId);
+  if (await nested.count() !== 1 || JSON.stringify(await topLevel()) !== JSON.stringify([recentId, parentId])) {
+    throw new Error('initial parent order or nesting is wrong');
+  }
+  const before = (await control({ action: 'session', session_id: parentId })).data.record.updated_at;
+  const shots = [await shot(page, `${prefix}-before-activity`)];
+  await page.fill('textarea', 'Run the child review.');
+  await page.press('textarea', 'Control+Enter');
+  await page.waitForSelector('text=Child activity completed.', { timeout: 15_000 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await nested.waitFor({ timeout: 20_000 });
+  const after = (await control({ action: 'session', session_id: parentId })).data.record.updated_at;
+  const child = (await control({ action: 'session', session_id: childId })).data.record;
+  if (before !== after || child.updated_at <= before || JSON.stringify(await topLevel()) !== JSON.stringify([recentId, parentId])) {
+    throw new Error('child activity moved the parent or did not advance its own time');
+  }
+  shots.push(await shot(page, `${prefix}-after-activity`));
+  await nested.click({ button: 'right' });
+  const toggle = page.locator('[data-menu-item="thread-display"]');
+  if (await toggle.textContent() !== (locale === 'zh' ? '恢复顶层显示' : 'Show at top level')) throw new Error('missing promotion label');
+  shots.push(await shot(page, `${prefix}-menu`));
+  await toggle.click();
+  await nested.waitFor({ state: 'detached' });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const childRow = page.locator(`[data-session-row="${childId}"]`);
+  await childRow.waitFor({ timeout: 20_000 });
+  if (await nested.count() !== 0 || (await topLevel())[0] !== childId) throw new Error('promotion did not persist or sort independently');
+  if ((await control({ action: 'session', session_id: childId })).data.record.metadata.created_by_session_id !== parentId) {
+    throw new Error('promotion changed the creator relationship');
+  }
+  shots.push(await shot(page, `${prefix}-top-level`));
+  if (locale === 'zh') {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('[data-sidebar-menu]').click();
+  }
+  await childRow.click({ button: 'right' });
+  if (await toggle.textContent() !== (locale === 'zh' ? '恢复嵌套显示' : 'Show nested')) throw new Error('missing nesting label');
+  const menuBox = await page.locator('[data-session-menu]').boundingBox();
+  const viewport = page.viewportSize();
+  if (menuBox === null || menuBox.x < 0 || menuBox.y < 0 || menuBox.x + menuBox.width > viewport.width || menuBox.y + menuBox.height > viewport.height) {
+    throw new Error('thread menu overflows the viewport');
+  }
+  shots.push(await shot(page, `${prefix}-${locale === 'zh' ? 'narrow-menu' : 'return-menu'}`));
+  await toggle.click();
+  await nested.waitFor();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  if (locale === 'zh') await page.locator('[data-sidebar-menu]').click();
+  await nested.waitFor({ timeout: 20_000 });
+  shots.push(await shot(page, `${prefix}-nested-again`));
+  return shots;
+}
+
 /**
  * Smoke registry: name = fixture scenario, tags for later `--tag` selection.
  * Each walk asserts the one thing that makes the screen meaningful.
  */
 const SCENARIOS = [
+  {
+    name: 'thread-order',
+    tags: ['smoke', 'sidebar', 'threads'],
+    run: threadDisplayWalk,
+  },
+  {
+    name: 'thread-order-zh',
+    fixture: 'thread-order',
+    locale: 'zh',
+    tags: ['smoke', 'sidebar', 'threads', 'i18n', 'narrow'],
+    run: (page, link, control) => threadDisplayWalk(page, link, control, 'zh'),
+  },
   {
     name: 'hero-shell',
     tags: ['smoke', 'shell'],

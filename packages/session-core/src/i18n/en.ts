@@ -616,6 +616,8 @@ export const en = {
   'menu.rename': 'Rename…',
   'menu.pin': 'Pin to top',
   'menu.unpin': 'Unpin',
+  'menu.showTopLevel': 'Show at top level',
+  'menu.showNested': 'Show nested',
   'menu.archive': 'Archive',
   'menu.copyLink': 'Copy link',
   'menu.copyPath': 'Copy path',

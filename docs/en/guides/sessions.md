@@ -87,6 +87,8 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## GUI session recovery and activity
 
+In the sidebar, a thread created by another thread normally nests under its creator. To display it as a separate top-level row, open its row menu and choose **Show at top level**; choose **Show nested** to return it. This changes only the display, not the creator relationship. The choice survives a refresh or restart in the same browser or desktop space and server connection. When sorting by recent activity, each thread uses its own activity time; activity in a child thread does not move its parent ahead of other threads.
+
 When session recovery fails, the GUI keeps the history that was already loaded and shows the error together with a request ID when one is available. A **Retry now** button in the same area calls the recovery action directly.
 
 Resolved questions, approvals, markers, and background-task completion notices stay inline in the timeline at their original position, rendered as compact one-line entries; consecutive entries fold into an expandable "Activity history" row, while failed or cancelled entries always remain individually visible. The timeline focuses on unfinished work; completed task output remains available in task history. File references can be previewed, opened, or shown in their containing folder from the relevant session view.

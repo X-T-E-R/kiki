@@ -607,6 +607,8 @@ export const zh = {
   'menu.rename': '重命名…',
   'menu.pin': '置顶',
   'menu.unpin': '取消置顶',
+  'menu.showTopLevel': '恢复顶层显示',
+  'menu.showNested': '恢复嵌套显示',
   'menu.archive': '归档',
   'menu.copyLink': '复制链接',
   'menu.copyPath': '复制路径',
