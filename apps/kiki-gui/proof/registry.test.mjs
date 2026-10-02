@@ -9,7 +9,7 @@ import { scenarios } from '../scripts/visual-proof.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('the proof registry owns every GUI fixture scenario', () => {
-  assert.equal(scenarios.length, 74);
+  assert.equal(scenarios.length, 75);
   assert.ok(scenarios.some((entry) => entry.name === 'subagent-invocations'));
   assert.equal(new Set(scenarios.map((entry) => entry.name)).size, scenarios.length);
   for (const entry of scenarios) {
