@@ -1371,7 +1371,7 @@ describe('live and event chrome', () => {
       { type: 'config.update', modelAlias: 'example/new', time: 3000 },
     ]);
     const state = projectAgentTranscriptView(createViewState('model-switch'), 'main', snapshot);
-    const container = await renderTranscript(state.blocks);
+    const container = await renderTranscript([...state.blocks]);
     const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.modelSwitch"]');
     expect(dividers).toHaveLength(1);
     expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
