@@ -15,10 +15,12 @@ export function AppearancePreview() {
       data-appearance-preview
       // One scene, not a frame around a card: the window ground (canvas) is the
       // only container on wide screens, and on a phone — where the miniature
-      // has no sidebar to show — the sheet stands on the page by itself.
-      className="pointer-events-none flex select-none overflow-hidden rounded-[var(--kiki-sheet-radius)] sm:bg-canvas sm:p-2"
+      // has no sidebar to show — the page stands on the scene by itself. The
+      // conversation pane lies flush beside the sidebar, ruled off by the same
+      // hairline as the real window.
+      className="pointer-events-none flex select-none overflow-hidden rounded-[var(--kiki-sheet-radius)] sm:bg-canvas"
     >
-      <div aria-hidden className="hidden w-[168px] shrink-0 flex-col gap-0.5 py-1 pr-2 sm:flex">
+      <div aria-hidden className="hidden w-[168px] shrink-0 flex-col gap-0.5 py-1 pl-1 pr-2 sm:flex">
         <p className="px-2 pb-0.5 text-[12px] font-medium text-ink-soft">{t('sidebar.groupToday')}</p>
         <div className="flex items-start gap-2 rounded-lg bg-paper px-2 py-1.5 shadow-[var(--kiki-sheet-shadow)]">
           <span className="mt-[6px] h-[7px] w-[7px] shrink-0 rounded-full bg-accent" />
@@ -33,7 +35,7 @@ export function AppearancePreview() {
           <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{t('st.appearance.preview.time')}</span>
         </div>
       </div>
-      <div aria-hidden className="flex min-w-0 flex-1 flex-col gap-3 rounded-[var(--kiki-sheet-radius)] bg-paper px-4 pb-3 pt-4 shadow-[var(--kiki-sheet-shadow)]">
+      <div aria-hidden className="flex min-w-0 flex-1 flex-col gap-3 bg-paper px-4 pb-3 pt-4 sm:border-l sm:border-hairline">
         <div className="ml-auto max-w-[80%] rounded-xl bg-bubble-user px-3 py-1.5 text-[13px] text-ink">
           {t('st.appearance.preview.user')}
         </div>

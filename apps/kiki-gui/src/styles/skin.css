@@ -54,13 +54,13 @@
  *
  * The media lives in one fixed layer at z-index -1, under every block in
  * #root; the body paints the theme's canvas as the ground beneath it. The
- * reading surfaces (sidebar, conversation sheet, page sheet, inspector,
- * preview) become a wash of their own color at --kiki-surface-alpha. One frost
- * layer covers the scoped media, including stage padding and gaps between
- * sheets; blurring each sheet separately would leave those gaps sharp. The
- * text layer is solved in JS for WCAG AA over the media. Popovers,
- * dialogs, the composer card and dock sheets keep their solid fills: they
- * carry the controls a user must never misread. */
+ * reading surfaces (sidebar, conversation column, page, inspector, preview)
+ * become a wash of their own color at --kiki-surface-alpha. One frost layer
+ * covers the scoped media edge to edge; blurring each surface separately
+ * would stack filters where they meet. The text layer is solved in JS for
+ * WCAG AA over the media. Popovers, dialogs, the composer card and dock
+ * sheets keep their solid fills: they carry the controls a user must never
+ * misread. */
 [data-kiki-backdrop] {
   position: fixed;
   inset: 0;
@@ -70,7 +70,7 @@
   contain: strict;
 }
 /* Blur the media and scrim once, before any surface wash. The fixed scope
- * covers every gap without stacking extra opacity or changing sheet layout. */
+ * covers the whole area without stacking extra opacity or changing layout. */
 :root[data-kiki-bg] [data-kiki-backdrop]::after {
   content: '';
   position: absolute;

@@ -561,8 +561,9 @@ export function App() {
         onNewSession={() => { navigate('/new'); }}
       />
 
-      {/* Stage: the canvas-side frame; the routed page floats on it as one
-          raised sheet (the conversation route splits into its own sheets). */}
+      {/* Stage: the flat main column; the routed page fills it edge to edge
+          (the conversation route splits it into conversation / preview /
+          inspector panes). */}
       <div className="app-stage">
         {wsStatus !== 'open' && !isSettingsRoute ? (
           <div data-app-banner className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
