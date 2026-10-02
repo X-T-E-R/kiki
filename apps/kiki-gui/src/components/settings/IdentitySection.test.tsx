@@ -135,7 +135,7 @@ describe('IdentitySection', () => {
   it('shows a built-in identity read-only with the exact values it sends, unmasked', async () => {
     const container = await render();
     const detail = container.querySelector('[data-identity-detail="codex"]')!;
-    expect(detail.textContent).toContain('Built-in identities are read-only');
+    expect(detail.textContent).toContain('Built-in identity. Duplicate to customize.');
     expect(detail.querySelector('input')).toBeNull();
     const ua = container.querySelector('[data-preview-header="User-Agent"]')!;
     expect(ua.textContent).toContain('codex_cli_rs/0.159.2 (Linux 6.1; x86_64)');
@@ -168,6 +168,31 @@ describe('IdentitySection', () => {
     }));
   });
 
+  it('preserves a fixed-version IME draft verbatim and trims only on save', async () => {
+    const copy: RequestIdentityProfile = {
+      ...CODEX, id: 'custom:codex-1', builtin: false, label: 'Mine', version: { mode: 'fixed', value: '1.0.0' },
+    };
+    api.get.mockResolvedValue(catalog({ profiles: [CODEX, copy] }));
+    api.updateProfile.mockImplementation(async (_id: string, draft: RequestIdentityProfile) =>
+      catalog({ profiles: [CODEX, { ...copy, ...draft }] }));
+    const container = await render();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-identity-row="custom:codex-1"]')!.click(); });
+    const input = container.querySelector<HTMLInputElement>('[data-identity-version]')!;
+    await act(async () => {
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, ' 2.0.0 ');
+      input.setSelectionRange(2, 2);
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    });
+    expect(input.value).toBe(' 2.0.0 ');
+    expect(input.selectionStart).toBe(2);
+    await act(async () => { input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+    await act(async () => { button(container.querySelector('[data-settings-draft="identity-custom:codex-1"]')!, 'Save').click(); });
+    await settle();
+    expect(api.updateProfile).toHaveBeenCalledWith('custom:codex-1', expect.objectContaining({ version: { mode: 'fixed', value: '2.0.0' } }));
+    expect(input.value).toBe('2.0.0');
+  });
+
   it('keeps a server rejection under the editor instead of saving', async () => {
     const copy: RequestIdentityProfile = { ...CODEX, id: 'custom:codex-1', builtin: false, label: 'Mine' };
     api.get.mockResolvedValue(catalog({ profiles: [CODEX, copy] }));
@@ -187,7 +212,7 @@ describe('IdentitySection', () => {
     api.applyTrack.mockResolvedValue(catalog());
     const container = await render();
     const row = container.querySelector<HTMLElement>('[data-identity-track="codex_cli"]')!;
-    await act(async () => { button(row, 'Check npm').click(); });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-track-check="npm"]')!.click(); });
     await settle();
     expect(api.checkTrack).toHaveBeenCalledWith('codex_cli', 'npm');
     expect(api.applyTrack).not.toHaveBeenCalled();

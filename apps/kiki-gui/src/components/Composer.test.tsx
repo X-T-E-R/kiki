@@ -1790,6 +1790,63 @@ describe('Composer slash skill catalog', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('preserves the IME preedit value and caret before a slash across catalog rerenders', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onChange = vi.fn();
+    const props = { value: '/review tail', workspaceId: 'wd_fixture_0123456789ab', onChange };
+    const { container, rerender } = await renderComposer(props);
+    await openSlashMenu(container);
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.focus();
+      textarea.setSelectionRange(0, 0);
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    });
+    // The browser owns preedit text before the corresponding input/prop update.
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'ni/review tail');
+    textarea.setSelectionRange(2, 2);
+    await rerender(props);
+    expect(textarea.value).toBe('ni/review tail');
+    expect(textarea.selectionStart).toBe(2);
+    expect(textarea.selectionEnd).toBe(2);
+    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, '你/review tail');
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '你' }));
+    });
+    expect(onChange).toHaveBeenLastCalledWith('你/review tail');
+    expect(container.querySelector('[data-composer-menu]')).toBeNull();
+  });
+
+  it('defers slash recognition and menu keys until compositionend', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: '/rev', workspaceId: 'wd_fixture_0123456789ab', onChange });
+    await openSlashMenu(container);
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      for (const key of ['Tab', 'Enter', 'Escape', 'ArrowDown']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        textarea.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'ni/rev');
+      textarea.setSelectionRange(2, 2);
+      textarea.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keyup', { key: 'Home', bubbles: true }));
+    });
+    expect(onChange).not.toHaveBeenCalledWith('/review ');
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
+    expect(textarea.value).toBe('ni/rev');
+    expect(textarea.selectionStart).toBe(2);
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'ni' }));
+    });
+    expect(container.querySelector('[data-composer-menu]')).toBeNull();
+  });
+
   it('lets an open IME composition own Enter instead of accepting a slash row', async () => {
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onChange = vi.fn();

@@ -157,6 +157,34 @@ describe('room mention helpers', () => {
 });
 
 describe('RoomPage', () => {
+  it('preserves room IME preedit and caret across roster updates and defers mention keys', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await renderRoom(queryClient);
+    const input = container.querySelector<HTMLTextAreaElement>('[data-room-input]')!;
+    await act(async () => { type(input, '@'); });
+    expect(container.querySelector('[data-room-mentions]')).not.toBeNull();
+    await act(async () => {
+      input.focus();
+      input.setSelectionRange(0, 0);
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    });
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'ni@');
+    input.setSelectionRange(2, 2);
+    await act(async () => { queryClient.setQueryData(['rooms', 'release-031'], roomDoc({ name: 'Updated room' })); });
+    await flush();
+    expect(input.value).toBe('ni@');
+    expect(input.selectionStart).toBe(2);
+    await act(async () => { key(input, 'Enter'); key(input, 'Tab'); });
+    expect(rooms.postUserMessage).not.toHaveBeenCalled();
+    expect(input.value).toBe('ni@');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '你好@');
+      input.setSelectionRange(2, 2);
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '你好' }));
+    });
+    expect(input.value).toBe('你好@');
+    expect(input.selectionStart).toBe(2);
+  });
   it('invalidates the sidebar room summaries after a reply even without a room.changed push', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(['rooms', 'items'], [{ id: 'release-031', needsYou: true }]);

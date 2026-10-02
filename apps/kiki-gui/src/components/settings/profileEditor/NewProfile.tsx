@@ -43,8 +43,9 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
   const [prompt, setPrompt] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const taken = profiles.some((profile) => profile.name === name);
-  const validName = AGENT_NAME_PATTERN.test(name) && !taken;
+  const committedName = name.trim();
+  const taken = profiles.some((profile) => profile.name === committedName);
+  const validName = AGENT_NAME_PATTERN.test(committedName) && !taken;
   const sourceProfile = profiles.find((profile) => profile.name === source);
   const effectiveMain = main ?? (start === 'copy' ? sourceProfile?.main === true : false);
   const blankOk = start !== 'blank' || (description.trim() !== '' && prompt.trim() !== '');
@@ -58,7 +59,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
     setSaving(true); setFeedback(null);
     try {
       const body: CreateNamedAgentProfileRequest = {
-        workspace_id: workspaceId!, name, scope,
+        workspace_id: workspaceId!, name: committedName, scope,
         template: start === 'copy' ? `duplicate:${source}` : start === 'template' ? template : 'blank',
         ...(main !== undefined || start !== 'copy' ? { main: effectiveMain } : {}),
         ...(description.trim() !== '' ? { description: description.trim() } : {}),
@@ -108,7 +109,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
       <div className="space-y-1.5">
         <label htmlFor="new-profile-name" className="text-[12px] font-medium text-ink-soft">{t('st.agentManager.name')}</label>
         <input id="new-profile-name" className={`${INPUT} font-mono text-[13px]`} value={name} spellCheck={false}
-          aria-invalid={name !== '' && !validName} aria-describedby="new-profile-name-issue" onChange={(event) => setName(event.target.value.trim())} />
+          aria-invalid={name !== '' && !validName} aria-describedby="new-profile-name-issue" onChange={(event) => setName(event.target.value)} />
         {name !== '' && !validName ? <p id="new-profile-name-issue" role="alert" className="text-[12px] text-danger">
           {t(taken ? 'st.profiles.nameTaken' : 'st.agentManager.nameRequired', { name })}</p> : null}
       </div>

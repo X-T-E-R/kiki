@@ -441,6 +441,25 @@ describe('new profile', () => {
     });
   });
 
+  it('preserves profile-name preedit and trims the name at creation', async () => {
+    client.createAgentProfile.mockResolvedValue({ ...explore, name: 'helper', source: 'user' });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());
+    const input = sheet().querySelector<HTMLInputElement>('#new-profile-name')!;
+    await act(async () => {
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, ' helper ');
+      input.setSelectionRange(3, 3);
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    });
+    expect(input.value).toBe(' helper ');
+    expect(input.selectionStart).toBe(3);
+    await act(async () => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+    await act(async () => buttonIn(sheet(), 'Create agent').click());
+    await settle();
+    expect(client.createAgentProfile).toHaveBeenCalledWith(expect.objectContaining({ name: 'helper' }));
+  });
+
   it('refuses a taken or malformed name and a blank agent without instructions', async () => {
     await render();
     await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());

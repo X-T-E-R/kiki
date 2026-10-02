@@ -198,6 +198,31 @@ describe('AppearanceSection', () => {
     expect(container.querySelector('[data-font-custom]')).toBeNull();
   });
 
+  it('keeps font IME preedit raw and applies the cleaned committed family only at compositionend', async () => {
+    await pickFont('sans', '__custom');
+    const input = container.querySelector<HTMLInputElement>('[data-font-role="sans"] [data-font-custom] input')!;
+    await act(async () => {
+      input.focus();
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '  ni; Face');
+      input.setSelectionRange(4, 4);
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    });
+    expect(input.value).toBe('  ni; Face');
+    expect(input.selectionStart).toBe(4);
+    expect(readSkinPrefs().tweaks.fontSans).toBeUndefined();
+    // An unrelated settings update must not restore the previous font prop.
+    await act(async () => { writeSettings({ motion: 'reduce' }); });
+    expect(input.value).toBe('  ni; Face');
+    expect(input.selectionStart).toBe(4);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '  中文; Face');
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中文' }));
+    });
+    expect(input.value).toBe('中文 Face');
+    expect(readSkinPrefs().tweaks.fontSans).toContain('中文 Face');
+  });
+
   it('opens a settings dropdown toward the page, not past its right edge', async () => {
     const trigger = button('[data-font-role="sans"] [aria-haspopup="listbox"]');
     // A row control at the right edge of a 1024px viewport.
