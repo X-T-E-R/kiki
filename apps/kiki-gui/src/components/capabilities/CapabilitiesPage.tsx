@@ -72,17 +72,17 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
 /** Workspace choice shared by Skills and MCP; `?workspace=` wins. */
 export function useCapabilityWorkspace() {
   const { client } = useConnection();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const requested = params.get('workspace') ?? undefined;
-  const [workspaceId, setWorkspaceId] = useState('');
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
-  useEffect(() => {
-    if (workspaceId !== '' && sorted.some((workspace) => workspace.id === workspaceId)) return;
-    const picked = pickWorkspace(sorted, requested);
-    if (picked !== undefined) setWorkspaceId(picked.id);
-  }, [workspaceId, sorted, requested]);
-  const workspace = sorted.find((candidate) => candidate.id === workspaceId);
+  const workspace = pickWorkspace(sorted, requested);
+  const workspaceId = workspace?.id ?? '';
+  const setWorkspaceId = (next: string) => {
+    const updated = new URLSearchParams(params);
+    updated.set('workspace', next);
+    setParams(updated);
+  };
   return { workspaces: sorted, workspace, workspaceId, setWorkspaceId, query: workspacesQuery };
 }
 
@@ -108,6 +108,8 @@ export function WorkspacePicker({
         value={value}
         onChange={onChange}
         ariaLabel={t('cap.workspace')}
+        placement="auto"
+        align="end"
       />
     </div>
   );
@@ -119,7 +121,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const [params, setParams] = useSearchParams();
   const tab: CapabilityTab = isTab(params.get('tab')) ? params.get('tab') as CapabilityTab : 'plugins';
   const route = pluginsRouteFrom(params);
-  const { workspaces, workspace, workspaceId, setWorkspaceId } = useCapabilityWorkspace();
+  const { workspaces, workspace, workspaceId, setWorkspaceId, query: workspacesQuery } = useCapabilityWorkspace();
   const [addMenu, setAddMenu] = useState(false);
   const [adding, setAdding] = useState(false);
   const [install, setInstall] = useState<InstallRequest | null>(null);
@@ -151,6 +153,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['plugins'] });
     void queryClient.invalidateQueries({ queryKey: ['plugin-marketplace'] });
+    void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
     void queryClient.invalidateQueries({ queryKey: ['workspace-skills'] });
     void queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
     void queryClient.invalidateQueries({ queryKey: ['mcp-managed-servers'] });
@@ -217,15 +220,28 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 <WorkspacePicker id="capabilities-workspace" workspaces={workspaces} value={workspaceId} onChange={setWorkspaceId} />
               ) : null}
             </div>
-            <CapabilityTabBody
-              tab={tab}
-              route={route}
-              onRoute={setRoute}
-              workspaceId={workspaceId}
-              workspaceRoot={workspace?.root}
-              onOpenPanel={openPanel}
-              onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
-            />
+            {tab === 'skills' && workspacesQuery.isPending ? (
+              <p className="text-[13px] text-ink-faint" role="status" data-capability-workspaces-loading>{t('cap.loadingWorkspaces')}</p>
+            ) : tab === 'skills' && workspacesQuery.isError ? (
+              <div className="space-y-3" data-capability-workspaces-error>
+                <p className="text-[13px] text-danger" role="alert">{t('cap.workspacesFailed')}</p>
+                <button type="button" onClick={() => { void workspacesQuery.refetch(); }}
+                  disabled={workspacesQuery.isFetching}
+                  className="min-h-8 rounded-md bg-ink/[0.06] px-3 text-[13px] text-ink hover:bg-ink/[0.1] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-selected-ink">
+                  {t('common.retry')}
+                </button>
+              </div>
+            ) : (
+              <CapabilityTabBody
+                tab={tab}
+                route={route}
+                onRoute={setRoute}
+                workspaceId={workspaceId}
+                workspaceRoot={workspace?.root}
+                onOpenPanel={openPanel}
+                onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
+              />
+            )}
           </div>
         </div>
       </div>

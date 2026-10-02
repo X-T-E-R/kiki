@@ -352,7 +352,7 @@ const LITERALS = {
   noMatches: { en: 'No matches', zh: '没有匹配', anchor: 'select.noMatches' },
   terminalEmpty: { en: 'No terminals yet', zh: '还没有终端', anchor: 'term.empty' },
   capEmptyFilter: { en: 'No capabilities match', zh: '没有匹配', anchor: 'cap.emptyFilter' },
-  capNoWorkspace: { en: 'No workspace is registered', zh: '没有已注册的工作区', anchor: 'cap.noWorkspace' },
+  capNoWorkspace: { en: 'No workspace to show skills for yet', zh: '还没有可查看技能的工作区', anchor: 'cap.noWorkspace' },
   queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
   editNote: { en: 'Full replacement', zh: '完整替换语义', anchor: 'transcript.editAttachmentsNote' },
   compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
