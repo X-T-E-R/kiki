@@ -93,6 +93,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     usage: (query) => transport.json('/usage', { query }),
     requestGovernance: () => transport.json('/usage/realtime'),
+    usageRescan: {
+      status: () => transport.json('/usage/rescan'),
+      start: () => transport.json('/usage/rescan', { method: 'POST' }),
+    },
     usagePricing: {
       get: (models) => transport.json('/usage/pricing', { query: { model: models } }),
       set: (update) => transport.json('/usage/pricing', { method: 'PUT', body: update }),

@@ -191,3 +191,15 @@ export type ModelPriceOverride = z.infer<typeof modelPriceOverrideSchema>;
 export type UsagePricingQuery = z.infer<typeof usagePricingQuerySchema>;
 export type UsagePricingUpdate = z.infer<typeof usagePricingUpdateSchema>;
 export type UsagePricingResponse = z.infer<typeof usagePricingResponseSchema>;
+
+export const usageRescanStatusSchema = z.object({
+  state: z.enum(['idle', 'running', 'completed', 'failed']),
+  scanned_sessions: z.number().int().nonnegative(),
+  total_sessions: z.number().int().nonnegative(),
+  scanned_records: z.number().int().nonnegative(),
+  started_at: z.number().nonnegative().nullable(),
+  finished_at: z.number().nonnegative().nullable(),
+  error: z.string().nullable(),
+});
+
+export type UsageRescanStatus = z.infer<typeof usageRescanStatusSchema>;

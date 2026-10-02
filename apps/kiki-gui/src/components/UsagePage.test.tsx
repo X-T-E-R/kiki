@@ -30,13 +30,15 @@ afterAll(() => {
 });
 
 const getUsage = vi.fn();
+const getUsageRescan = vi.fn();
+const startUsageRescan = vi.fn();
 const getSession = vi.fn();
 const listWorkspaces = vi.fn();
 const getRequestGovernance = vi.fn().mockResolvedValue({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] });
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
-  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getSession, listWorkspaces, getRequestGovernance } }),
+  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, getRequestGovernance } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -202,6 +204,9 @@ function mainCalls() {
 beforeEach(() => {
   localStorage.clear();
   getUsage.mockReset();
+  getUsageRescan.mockReset();
+  startUsageRescan.mockReset();
+  getUsageRescan.mockResolvedValue({ state: 'idle', scanned_sessions: 0, total_sessions: 0, scanned_records: 0, started_at: null, finished_at: null, error: null });
   getSession.mockReset();
   listWorkspaces.mockReset();
   getUsage.mockImplementation(async (query: Record<string, unknown>) =>
@@ -723,5 +728,64 @@ describe('UsagePage (V2)', () => {
     const last = mainCalls().at(-1)?.[0] as Record<string, unknown>;
     expect(last['range']).toBe('custom');
     expect(last['end_at']).toBe(new Date(2026, 7, 28).getTime());
+  });
+});
+
+describe('UsagePage manual full rescan', () => {
+  it('starts without a confirmation, polls progress and refreshes history on completion', async () => {
+    vi.useFakeTimers();
+    try {
+      const running = { state: 'running', scanned_sessions: 3, total_sessions: 10, scanned_records: 900, started_at: 1, finished_at: null, error: null };
+      startUsageRescan.mockResolvedValue(running);
+      const { container, root } = await renderPage('/usage?panel=history', { flush: false });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const button = container.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')!;
+      expect(button.title).toContain('all historical');
+      await act(async () => { button.click(); });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(startUsageRescan).toHaveBeenCalledTimes(1);
+      expect(button.disabled).toBe(true);
+      expect(container.querySelector('progress')?.value).toBe(3);
+      expect(container.querySelector('progress')?.max).toBe(10);
+      expect(container.textContent).toContain('Scanning 3/10 sessions');
+      expect(container.textContent).toContain('900 records read');
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      const beforeCompletion = mainCalls().length;
+      getUsageRescan.mockResolvedValue({ ...running, state: 'completed', scanned_sessions: 10, finished_at: 2 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(container.textContent).toContain('Rescan complete · 10 sessions');
+      expect(container.querySelector('progress')).toBeNull();
+      expect(button.disabled).toBe(false);
+      expect(mainCalls().length).toBeGreaterThan(beforeCompletion);
+      const statusCalls = getUsageRescan.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(getUsageRescan.mock.calls.length).toBe(statusCalls);
+      await act(async () => { root.unmount(); });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('shows a failed task inline and allows another attempt', async () => {
+    getUsageRescan.mockResolvedValue({ state: 'failed', scanned_sessions: 2, total_sessions: 5, scanned_records: 12, started_at: 1, finished_at: 2, error: 'Checkpoint unavailable' });
+    const { container, root } = await renderPage();
+    expect(container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent).toContain('Checkpoint unavailable');
+    expect(container.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')?.disabled).toBe(false);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('distinguishes an unavailable progress request from a failed task', async () => {
+    getUsageRescan.mockRejectedValue(new Error('Connection unavailable'));
+    const { container, root } = await renderPage();
+    const alert = container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent;
+    expect(alert).toContain('the scan may still be running');
+    expect(alert).not.toContain('Rescan failed');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('does not mount the history action on live governance panels', async () => {
+    const { container, root } = await renderPage('/usage');
+    expect(container.querySelector('[data-usage-rescan]')).toBeNull();
+    expect(getUsageRescan).not.toHaveBeenCalled();
+    await act(async () => { root.unmount(); });
   });
 });

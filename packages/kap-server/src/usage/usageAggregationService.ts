@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import {
   AGENT_WIRE_RECORD_KEY,
@@ -15,7 +16,7 @@ import {
   type TokenUsage,
   type WireRecord,
 } from '@kiki/agent-core-v2';
-import type { UsageAggregateWire, UsageQuery, UsageResponse } from '@kiki/protocol';
+import type { UsageAggregateWire, UsageQuery, UsageResponse, UsageRescanStatus } from '@kiki/protocol';
 
 import { IModelPricingService } from '../pricing/modelPricingService';
 
@@ -29,7 +30,7 @@ const BOUNDARY_BYTES = 4 * 1024;
 const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
   wireRecordBudget: 200_000,
-  deadlineMs: 1_500,
+  deadlineMs: 10_000,
   cacheTtlMs: 0,
   cacheMaxEntries: 500,
   cacheMaxRecords: 200_000,
@@ -186,6 +187,79 @@ export class UsageAggregationService {
   private readonly limits: UsageAggregationLimits;
   private cachedRecordCount = 0;
   private cachedBytes = 0;
+  private rescan: UsageRescanStatus = {
+    state: 'idle', scanned_sessions: 0, total_sessions: 0, scanned_records: 0,
+    started_at: null, finished_at: null, error: null,
+  };
+  private fullScanKeys: ReadonlySet<string> | undefined;
+  private inventoryReady: Promise<void> | undefined;
+
+  rescanStatus(): UsageRescanStatus {
+    return { ...this.rescan };
+  }
+
+  startFullRescan(): UsageRescanStatus {
+    if (this.rescan.state === 'running') return this.rescanStatus();
+    this.rescan = {
+      state: 'running', scanned_sessions: 0, total_sessions: 0, scanned_records: 0,
+      started_at: this.now(), finished_at: null, error: null,
+    };
+    void this.runFullRescan().then(() => {
+      this.rescan = { ...this.rescan, state: 'completed', finished_at: this.now() };
+    }, (error: unknown) => {
+      this.rescan = {
+        ...this.rescan, state: 'failed', finished_at: this.now(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    });
+    return this.rescanStatus();
+  }
+
+  private async prepareInventory(): Promise<void> {
+    this.inventoryReady ??= (async () => {
+      try {
+        const bytes = await this.core.accessor.get(IFileSystemStorageService).read(PERSISTENCE_SCOPE, 'full-scan.json');
+        if (bytes === undefined) return;
+        const keys: unknown = JSON.parse(Buffer.from(bytes).toString('utf8'));
+        if (Array.isArray(keys) && keys.every((key) => typeof key === 'string')) {
+          this.fullScanKeys = new Set(keys);
+        }
+      } catch {}
+    })();
+    await this.inventoryReady;
+  }
+
+  private async runFullRescan(): Promise<void> {
+    await this.prepareInventory();
+    const listed = await this.listSessions(normalizeQuery({ include_archived: 'true' }, this.now()), {
+      remainingRecords: Infinity, deadlineAt: Infinity, sourcesComplete: true, incompleteReason: null,
+    }, true);
+    this.rescan = { ...this.rescan, total_sessions: listed.items.length };
+    const keys = new Set<string>();
+    for (const summary of listed.items) {
+      const key = sessionKey(summary);
+      await this.sessionFlights.get(key);
+      const flight = this.loadSessionIncremental(summary, Infinity, Infinity, () => {
+        this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 };
+      });
+      this.sessionFlights.set(key, flight);
+      let result: SessionLoadResult;
+      try {
+        result = await flight;
+      } finally {
+        if (this.sessionFlights.get(key) === flight) this.sessionFlights.delete(key);
+      }
+      this.cacheSession(key, result.persisted, result.session.complete);
+      this.rescan = { ...this.rescan, scanned_sessions: this.rescan.scanned_sessions + 1 };
+      if (!result.session.complete) throw new Error(`Usage checkpoint is incomplete for session ${summary.id}`);
+      keys.add(key);
+      await yieldToEventLoop();
+    }
+    await this.core.accessor.get(IFileSystemStorageService).write(
+      PERSISTENCE_SCOPE, 'full-scan.json', Buffer.from(JSON.stringify([...keys])), { atomic: true },
+    );
+    this.fullScanKeys = keys;
+  }
 
   constructor(
     private readonly core: Scope,
@@ -201,6 +275,7 @@ export class UsageAggregationService {
 
   async query(raw: UsageQuery): Promise<UsageResponse> {
     await this.core.accessor.get(IModelPricingService).ready;
+    await this.prepareInventory();
     const now = this.now();
     this.pruneExpired(now);
     const query = normalizeQuery(raw, now);
@@ -225,7 +300,10 @@ export class UsageAggregationService {
     }
     let ephemeralUsage: readonly EphemeralUsageTotal[] = [];
     if (budget.incompleteReason === null) {
-      sessions.push(...await this.readRetainedSessions(query, budget, listed.activeKeys, sessions.length));
+      const uncachedSessionCount = sessions.filter((session) => !this.fullScanKeys?.has(sessionKey(session.summary))).length;
+      for (const session of await this.readRetainedSessions(query, budget, listed.activeKeys, uncachedSessionCount)) {
+        sessions.push(session);
+      }
     }
     const retainedUsage = this.core.accessor.get(IRetainedUsageService);
     if (budget.incompleteReason === null && retainedUsage.listEphemeralUsage !== undefined) {
@@ -245,12 +323,14 @@ export class UsageAggregationService {
   private async listSessions(
     query: NormalizedQuery,
     budget: ScanBudget,
+    fullScan = false,
   ): Promise<ListedSessions> {
     const index = this.core.accessor.get(ISessionIndex);
     const items: SessionSummary[] = [];
     const activeKeys = new Set<string>();
     let before: string | undefined;
-    while (items.length <= this.limits.sessionScanLimit) {
+    let uncachedSessions = 0;
+    for (;;) {
       const page = await index.listRecent({
         workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
         includeArchived: true,
@@ -258,20 +338,24 @@ export class UsageAggregationService {
         before,
       });
       for (const item of page.items) {
-        activeKeys.add(sessionKey(item));
-        if (query.includeArchived || !item.archived) items.push(item);
-        if (items.length > this.limits.sessionScanLimit) break;
+        const key = sessionKey(item);
+        activeKeys.add(key);
+        if (!query.includeArchived && item.archived) continue;
+        if (!fullScan && !this.fullScanKeys?.has(key)) {
+          uncachedSessions += 1;
+          if (uncachedSessions > this.limits.sessionScanLimit) {
+            budget.incompleteReason = 'session_cap';
+            return { items, activeKeys };
+          }
+        }
+        items.push(item);
       }
-      if (items.length > this.limits.sessionScanLimit || page.nextCursor === undefined) break;
+      if (page.nextCursor === undefined) break;
       before = page.nextCursor;
       if (this.now() >= budget.deadlineAt) {
         budget.incompleteReason = 'deadline';
         break;
       }
-    }
-    if (items.length > this.limits.sessionScanLimit) {
-      budget.incompleteReason = 'session_cap';
-      return { items: items.slice(0, this.limits.sessionScanLimit), activeKeys };
     }
     return { items, activeKeys };
   }
@@ -282,6 +366,14 @@ export class UsageAggregationService {
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
     const cached = this.cache.get(cacheKey);
+    if (this.rescan.state === 'running') {
+      const persisted = cached?.persisted ?? await this.readPersistentSession(
+        this.core.accessor.get(IFileSystemStorageService), cacheKey,
+      );
+      const complete = await this.cacheIsCurrent(summary, persisted);
+      if (!complete) budget.sourcesComplete = false;
+      return { summary, records: persisted.records, complete, deleted: false };
+    }
     if (cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
       this.cache.delete(cacheKey);
       this.cache.set(cacheKey, cached);
@@ -329,6 +421,7 @@ export class UsageAggregationService {
     summary: SessionSummary,
     recordLimit: number,
     deadlineAt: number,
+    onScannedRecord?: () => void,
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
@@ -393,9 +486,10 @@ export class UsageAggregationService {
         recordLimit - scannedRecordCount,
         deadlineAt,
         this.now,
+        onScannedRecord,
       );
       scannedRecordCount += tail.scannedRecordCount;
-      records.push(...tail.records.map((record) => ({ ...record, sourceAgentId: agentId })));
+      for (const record of tail.records) records.push({ ...record, sourceAgentId: agentId });
       const nextOffset = tail.offset;
       agents[agentId] = {
         offset: nextOffset,
@@ -843,6 +937,7 @@ async function readWireTail(
   recordLimit: number,
   deadlineAt: number,
   now: () => number,
+  onScannedRecord?: () => void,
 ): Promise<WireTailResult> {
   if (startOffset >= size) {
     return {
@@ -883,6 +978,8 @@ async function readWireTail(
         pending = pending.subarray(newline + 1);
         offset += newline + 1;
         scannedRecordCount += 1;
+        onScannedRecord?.();
+        if (onScannedRecord !== undefined && scannedRecordCount % 1024 === 0) await yieldToEventLoop();
         if (line.length === 0) continue;
         let raw: WireRecord;
         try {

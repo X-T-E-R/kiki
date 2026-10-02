@@ -373,6 +373,12 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `POST /api/sessions:restore` | 批量恢复已归档会话，见下节 |
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
 
+### 全量重扫用量统计
+
+在用量页的历史区点击 **全量重扫用量统计**，扫描所有已索引会话，包括已归档会话。任务仅手动触发，可能耗时较久。`POST /api/usage/rescan` 无需请求体；运行中再次 POST 会返回同一个任务的当前进度。建议每秒轮询 `GET /api/usage/rescan`。两者沿用普通成功信封，`data` 包含 `state`（`idle`、`running`、`completed`、`failed`）、`scanned_sessions`、`total_sessions`、`scanned_records`、`started_at`、`finished_at` 和 `error`。时间为 epoch 毫秒或 `null`；未失败时 `error` 为 `null`。`scanned_records` 计入新读取的所有 wire 记录，包括非用量记录；检查点未变化时无需读取 wire。
+
+任务绕过会话、记录和时间扫描预算，保存增量检查点；运行中常规查询继续读取已提交检查点。常规查询的截止预算为 10 秒，冷扫描会话上限为 500、记录预算为 200,000。成功重扫的会话不再占用冷扫描会话名额：其键清单保存在 `cache/usage-aggregation-v1/full-scan.json`，用量仍保存在原有的逐会话检查点中。常规查询继续校验源指纹，并遵守记录和时间预算。已删除会话与临时用量账本保留常规查询预算。重扫完成不会补造供应商未返回的用量或缺失模型价格。任务进度仅在当前进程内保留，重启后回到 `idle`；检查点与完成会话清单跨重启保留。暂不支持取消。
+
 ### 用量计价
 
 `GET /api/usage/pricing` 返回配置中的模型 ID、已保存的覆盖，以及通过重复 `model` 查询参数指定的 ID。每个 `items` 项包含 `model`、配置的 `pricing_model`（未设时为 `null`）、`matched_key`、`source`（`override`、`litellm-cache`、`vendored` 或 `unknown`）和 `prices`（未知时为 `null`）。带路由前缀的模型按价格目录中的规范名匹配；价格是估算，不是代理的实际账单。服务器在 `<home>/model-pricing` 下刷新 LiteLLM 缓存，随包附带的 MIT 许可快照用于离线兜底。

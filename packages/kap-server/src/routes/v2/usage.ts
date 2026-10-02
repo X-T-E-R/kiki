@@ -1,5 +1,5 @@
 import { IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
-import { requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema } from '@kiki/protocol';
+import { requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { z } from 'zod';
@@ -13,6 +13,14 @@ import {
 } from '../../usage/usageAggregationService';
 
 interface V2UsageRouteHost {
+  post(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (
+      req: { id: string; body: unknown },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
   put(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
@@ -42,6 +50,20 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
   });
   app.get(realtime.path, realtime.options, realtime.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const service = new UsageAggregationService(core);
+  const rescanStatus = defineRoute({
+    method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
+    operationId: 'getUsageRescan', tags: ['usage'],
+  }, (req, reply) => {
+    reply.send(okEnvelope(service.rescanStatus(), req.id));
+  });
+  app.get(rescanStatus.path, rescanStatus.options, rescanStatus.handler as Parameters<V2UsageRouteHost['get']>[2]);
+  const rescanStart = defineRoute({
+    method: 'POST', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
+    operationId: 'startUsageRescan', tags: ['usage'],
+  }, (req, reply) => {
+    reply.send(okEnvelope(service.startFullRescan(), req.id));
+  });
+  app.post(rescanStart.path, rescanStart.options, rescanStart.handler as Parameters<V2UsageRouteHost['post']>[2]);
   const route = defineRoute(
     {
       method: 'GET',

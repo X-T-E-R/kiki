@@ -373,6 +373,12 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
 
+### Full usage rescan
+
+On the usage page's History tab, **Rescan all usage** scans every indexed session, including archived sessions. It runs only when requested and can take a while. `POST /api/usage/rescan` starts the task without a body; another POST while it is running returns the same task's current progress. Poll `GET /api/usage/rescan` about once per second. Both use the normal success envelope with `data` containing `state` (`idle`, `running`, `completed`, or `failed`), `scanned_sessions`, `total_sessions`, `scanned_records`, `started_at`, `finished_at`, and `error`. Times are epoch milliseconds or `null`; `error` is `null` unless the task failed. `scanned_records` counts newly read wire records, including non-usage records; unchanged checkpoints need no wire reads.
+
+The task bypasses session, record, and time scan budgets and saves incremental checkpoints. Regular queries continue serving committed checkpoints while it runs. The regular deadline is 10 seconds, with a 500-session cold-scan limit and a 200,000-record budget. Successfully rescanned sessions no longer consume the cold-session limit: their keys are saved in `cache/usage-aggregation-v1/full-scan.json`, and their usage remains in the existing per-session checkpoints. Regular queries still check source fingerprints and obey their record and time budgets. Deleted-session and temporary-usage ledgers retain their regular query budgets. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart; checkpoints and the completed inventory survive. Cancellation is not supported.
+
 ### Usage pricing
 
 `GET /api/usage/pricing` returns configured model IDs, saved overrides, and any IDs requested with repeated `model` query parameters. Each `items` entry contains `model`, the optional configured `pricing_model` (or `null`), `matched_key`, `source` (`override`, `litellm-cache`, `vendored`, or `unknown`), and `prices` (or `null`). Model IDs behind routing prefixes are matched against canonical catalog names; prices are estimates, not the proxy's invoice. The server refreshes its LiteLLM cache under `<home>/model-pricing`; the vendored MIT-licensed snapshot is the offline fallback.
