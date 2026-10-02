@@ -36,6 +36,7 @@ interface FileLockPayload {
 
 interface InspectedLock {
   readonly payload?: FileLockPayload;
+  readonly malformedText?: string;
   readonly active: boolean;
   readonly mine: boolean;
 }
@@ -129,7 +130,7 @@ function hookExit(): void {
   process.on('exit', releaseHeld);
 }
 
-/** Removes expired session locks whose recorded process is no longer their owner. */
+/** Removes dead or corrupted session locks only when no live watch protects them. */
 export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
   const directory = join(homeDir, 'session-locks');
   let entries: string[];
@@ -157,8 +158,7 @@ export async function isSessionLockActive(homeDir: string, scope: string): Promi
   const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
   const path = join(homeDir, 'session-locks', key);
   try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
-    return !isPayload(parsed) || await ownerProcessAlive(parsed);
+    return await new FileLock(path, {}, {}).isActive();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     return true;
@@ -166,7 +166,7 @@ export async function isSessionLockActive(homeDir: string, scope: string): Promi
 }
 
 /** Acquires a renewable local-filesystem lock with atomic create and process-live watch arbitration
- *  for stale takeover. Reclaims expired dead owners and releases only this instance's token.
+ *  for stale takeover. Reclaims dead or corrupted locks and releases only this instance's token.
  *  Retries an acquisition attempt when the filesystem reports a transient access denial
  *  (`EPERM`/`EACCES`/`EBUSY`), which is how Windows surfaces a concurrent release of the lock
  *  sidecars; a persistent denial is still reported as a permission failure. */
@@ -295,16 +295,27 @@ class FileLock implements IStorageLock {
     return (await this.inspect())?.payload;
   }
 
+  async isActive(): Promise<boolean> {
+    const current = await this.inspect();
+    if (current === null) return false;
+    if (current.payload !== undefined) return current.active;
+    return this.hasLiveForeignWatch();
+  }
+
   async reapIfDead(): Promise<boolean> {
     const seen = await this.inspect();
-    if (seen?.payload === undefined || seen.active) return false;
+    if (seen === null || seen.active) return false;
     this.token = `${process.pid}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await this.publishWatch(true);
     try {
       if (await this.hasLiveForeignWatch()) return false;
       const current = await this.inspect();
-      if (current?.active !== false || current.payload?.token !== seen.payload.token) return false;
+      if (
+        current?.active !== false ||
+        current.payload?.token !== seen.payload?.token ||
+        current.malformedText !== seen.malformedText
+      ) return false;
       try {
         await unlink(this.lockPath);
         return true;
@@ -390,7 +401,7 @@ class FileLock implements IStorageLock {
       for (let attempt = 0; ; attempt += 1) {
         const gate = await this.inspect();
         if (gate === null || gate.active || gate.mine) return false;
-        if (gate.payload !== undefined && await this.hasLiveForeignWatch(gate.payload.token)) return false;
+        if (await this.hasLiveForeignWatch(gate.payload?.token)) return false;
         try {
           await rename(bidPath, this.lockPath);
           break;
@@ -441,7 +452,7 @@ class FileLock implements IStorageLock {
       if (isPayload(parsed)) payload = parsed;
     } catch {
     }
-    if (payload === undefined) return { active: true, mine: false };
+    if (payload === undefined) return { malformedText: raw, active: false, mine: false };
     return {
       payload,
       active: await ownerProcessAlive(payload),

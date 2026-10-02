@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
@@ -48,6 +49,7 @@ describe('FileStorageService — stale takeover scheduling', () => {
     schedule.afterRename = undefined;
     schedule.afterReaddir = undefined;
     schedule.beforeUnlink = undefined;
+    schedule.beforeLink = undefined;
     if (directory !== undefined) await rm(directory, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     directory = undefined;
   });
@@ -145,19 +147,22 @@ describe('FileStorageService — stale takeover scheduling', () => {
     }
   });
 
-  it('does not let a paused stale-lock reaper unlink a new owner', async () => {
+  it.each(['dead owner', 'zero-filled', 'truncated'])('does not let a paused %s lock reaper unlink a new owner', async (kind) => {
     directory = await mkdtemp(join(tmpdir(), 'fss-reap-race-'));
     const lockDir = join(directory, 'session-locks');
     const lockPath = join(lockDir, 'session.lock');
     await mkdir(lockDir);
-    await writeFile(lockPath, JSON.stringify({
-      version: 1,
-      pid: 2_147_483_647,
-      processStartedAt: 0,
-      token: 'dead-owner',
-      acquiredAt: Date.now() - 10_000,
-      leaseMs: 1_000,
-    }));
+    const contents = kind === 'zero-filled' ? Buffer.alloc(188) : kind === 'truncated'
+      ? Buffer.from('{"version":1,"pid":')
+      : Buffer.from(JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        processStartedAt: 0,
+        token: 'dead-owner',
+        acquiredAt: Date.now() - 10_000,
+        leaseMs: 1_000,
+      }));
+    await writeFile(lockPath, contents);
     const expiredAt = new Date(Date.now() - 5_000);
     await utimes(lockPath, expiredAt, expiredAt);
 
@@ -178,7 +183,7 @@ describe('FileStorageService — stale takeover scheduling', () => {
       expect((await readdir(lockDir)).filter((entry) => entry.endsWith('.reap'))).toHaveLength(1);
       await expect(new FileStorageService(directory).acquireLock('session-locks', 'session.lock'))
         .rejects.toMatchObject({ code: 'storage.locked' });
-      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ token: 'dead-owner' });
+      expect(await readFile(lockPath)).toEqual(contents);
       resume();
       expect(await reaping).toBe(1);
       const replacement = await new FileStorageService(directory).acquireLock('session-locks', 'session.lock');
@@ -187,6 +192,23 @@ describe('FileStorageService — stale takeover scheduling', () => {
       resume();
       await reaping.catch(() => undefined);
     }
+  });
+
+  it('does not reap a malformed lock whose contents changed after inspection', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-malformed-reap-race-'));
+    const lockDir = join(directory, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir);
+    await writeFile(lockPath, Buffer.alloc(188));
+    const changed = Buffer.alloc(188, 1);
+    schedule.beforeLink = (_source, target) => {
+      if (target.endsWith('.reap')) writeFileSync(lockPath, changed);
+    };
+    expect(await cleanupExpiredSessionLocks(directory)).toBe(0);
+    expect(await readFile(lockPath)).toEqual(changed);
+    expect(await readdir(lockDir)).toEqual(['session.lock']);
+    schedule.beforeLink = undefined;
+    expect(await cleanupExpiredSessionLocks(directory)).toBe(1);
   });
 });
 

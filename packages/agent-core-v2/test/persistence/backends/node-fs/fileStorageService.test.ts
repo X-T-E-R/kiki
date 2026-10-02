@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
+import { cleanupExpiredSessionLocks, isSessionLockActive } from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 
 const isWin = process.platform === 'win32';
@@ -327,7 +328,86 @@ describe('FileStorageService — exclusive locks', () => {
     }
   }, 30_000);
 
-  it('cleans up dead locks immediately and leaves live and malformed locks alone', async () => {
+  it.each([
+    ['zero-filled', Buffer.alloc(188)],
+    ['truncated', '{"version":1,"pid":'],
+    ['invalid JSON', 'not JSON'],
+    ['invalid payload', '{"version":1}'],
+  ])('takes over and reaps a %s lock without a live watch', async (_kind, contents) => {
+    const scope = 'sessions/workspace/session';
+    const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, key);
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath, contents);
+    expect((await stat(lockPath)).size).toBe(Buffer.byteLength(contents));
+    expect(await isSessionLockActive(dir, scope)).toBe(false);
+
+    const svc = new FileStorageService(dir);
+    const lock = await svc.acquireLock('session-locks', key, { waitForMs: 1_000 });
+    try {
+      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+      expect(await isSessionLockActive(dir, scope)).toBe(true);
+    } finally {
+      await lock.release();
+    }
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await isSessionLockActive(dir, scope)).toBe(false);
+
+    await writeFile(lockPath, contents);
+    expect(await cleanupExpiredSessionLocks(dir)).toBe(1);
+    expect(await readdir(lockDir)).toEqual([]);
+    const replacement = await svc.acquireLock('session-locks', key);
+    await replacement.release();
+  });
+
+  it('reclaims a corrupted lock and corrupted watch when the named pid is dead', async () => {
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    const watchPath = `${lockPath}.watch-2147483647-orphan`;
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath, Buffer.alloc(188));
+    await writeFile(watchPath, Buffer.alloc(188));
+    const lock = await new FileStorageService(dir).acquireLock('session-locks', 'session.lock');
+    try {
+      await expect(readFile(watchPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+    } finally {
+      await lock.release();
+    }
+    expect(await readdir(lockDir)).toEqual([]);
+  });
+
+  it.each([false, true])('preserves a corrupted holder with a live watch (corrupted watch: %s)', async (corruptWatch) => {
+    const scope = 'sessions/workspace/session';
+    const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, key);
+    const svc = new FileStorageService(dir);
+    const held = await svc.acquireLock('session-locks', key, { renewIntervalMs: 15_000 });
+    const contents = Buffer.alloc((await stat(lockPath)).size);
+    try {
+      await writeFile(lockPath, contents);
+      if (corruptWatch) {
+        const watches = (await readdir(lockDir)).filter((entry) => entry.startsWith(`${key}.watch-`));
+        expect(watches).toHaveLength(1);
+        await writeFile(join(lockDir, watches[0]!), Buffer.alloc(188));
+      }
+      expect(await isSessionLockActive(dir, scope)).toBe(true);
+      await expect(svc.acquireLock('session-locks', key, { waitForMs: 100 }))
+        .rejects.toMatchObject({ code: 'storage.locked' });
+      expect(await cleanupExpiredSessionLocks(dir)).toBe(0);
+      expect(await readFile(lockPath)).toEqual(contents);
+    } finally {
+      await held.release();
+    }
+    expect(await readFile(lockPath)).toEqual(contents);
+    expect(await cleanupExpiredSessionLocks(dir)).toBe(1);
+    const replacement = await svc.acquireLock('session-locks', key);
+    await replacement.release();
+  });
+
+  it('cleans up dead and malformed locks immediately and leaves live locks alone', async () => {
     const lockDir = join(dir, 'session-locks');
     await mkdir(lockDir, { recursive: true });
     const payload = {
@@ -353,11 +433,11 @@ describe('FileStorageService — exclusive locks', () => {
     const expiredAt = new Date(Date.now() - 5_000);
     await Promise.all([utimes(dead, expiredAt, expiredAt), utimes(live, expiredAt, expiredAt)]);
 
-    expect(await cleanupExpiredSessionLocks(dir)).toBe(2);
+    expect(await cleanupExpiredSessionLocks(dir)).toBe(3);
     await expect(readFile(dead)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(live)).resolves.toBeDefined();
     await expect(readFile(fresh)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(malformed)).resolves.toBeDefined();
+    await expect(readFile(malformed)).rejects.toMatchObject({ code: 'ENOENT' });
     const replacement = await new FileStorageService(dir).acquireLock('session-locks', 'fresh-dead.lock');
     await replacement.release();
   });
