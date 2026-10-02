@@ -2090,30 +2090,108 @@ describe('message row actions', () => {
     expect(userStrip.getAttribute('data-row-actions-align')).toBe('right');
     expect(assistantStrip.getAttribute('data-row-actions-align')).toBe('left');
     for (const strip of [userStrip, assistantStrip]) {
-      expect(strip.className).not.toContain('absolute');
-      // Height is reserved whether or not the icons are revealed (no jitter)…
-      expect(strip.className).toContain('min-h-7');
-      // …and the strip's box reaches 4px up over the gap, while staying out of
-      // the pointer's way so the message keeps its clicks and its selection.
-      expect(strip.className).toContain('-mt-1');
-      expect(strip.className).toContain('pt-1');
+      // An overlay off the row's bottom edge: no reserved height, so an idle
+      // row carries no placeholder and a revealed strip never moves the text…
+      expect(strip.className).toContain('absolute');
+      expect(strip.className).toContain('top-full');
+      expect(strip.className).not.toContain('min-h-7');
+      // …and it only takes the pointer while revealed, so whatever it hangs
+      // over keeps its clicks and its text selection.
       expect(strip.className).toContain('pointer-events-none');
+      expect(strip.className).toContain('group-hover/msg:pointer-events-auto');
+      expect(strip.className).toContain('group-data-[actions-open]/msg:pointer-events-auto');
       // The open `⋯` must sit above the row's other chrome (a rotated chevron on
       // a collapsed message paints like a positioned box).
       expect(strip.className).toContain('z-20');
       expect(strip.className).toContain('opacity-0');
       expect(strip.className).toContain('group-hover/msg:opacity-100');
       expect(strip.className).toContain('group-focus-within/msg:opacity-100');
+      expect(strip.className).toContain('group-data-[actions-open]/msg:opacity-100');
     }
-    // A 14px glyph in a flat 28px box: no border, no pill, and the one element in
-    // the strip that takes the pointer.
+    // A 14px glyph in a flat 28px box: no border, no pill.
     const copyTile = userStrip.querySelector('[data-row-action="copy"]')!;
     expect(copyTile.className).toContain('h-7');
     expect(copyTile.className).toContain('w-7');
-    expect(copyTile.className).toContain('pointer-events-auto');
     expect(copyTile.className).toContain('hover:bg-ink/[0.04]');
     expect(copyTile.className).not.toContain('border');
     expect(copyTile.querySelector('svg')?.getAttribute('class')).toContain('h-3.5');
+  });
+
+  it('summons the strip with a tap on quiet message text when hover is unavailable', async () => {
+    // A coarse pointer has no hover: the row publishes `data-actions-open`
+    // after a tap on its quiet surface, and the strip's
+    // `group-data-[actions-open]/msg:` classes reveal the icons. The stub
+    // restores matchMedia by hand — `unstubAllGlobals` would also drop the
+    // file-wide ResizeObserver stand-in the scrolling tests still need.
+    const media = window as unknown as { matchMedia?: unknown };
+    const hadMatchMedia = 'matchMedia' in window;
+    const originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(hover: none)',
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    });
+    try {
+      const rowActions: TranscriptRowActions = {
+        disabled: false,
+        onEditMessage: () => undefined,
+        onRegenerate: () => undefined,
+        onFork: () => undefined,
+      };
+      const container = await renderTranscript(
+        [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
+        rowActions,
+      );
+      const row = () => container.querySelector('[data-block-id="user-m1"]')!;
+      expect(row().querySelector('[data-actions-open]')).toBeNull();
+
+      // A tap on the bubble text opens the strip; a second tap closes it.
+      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      expect(row().querySelector('[data-actions-open]')).not.toBeNull();
+      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      expect(row().querySelector('[data-actions-open]')).toBeNull();
+
+      // A tap on a tile acts on the tile — the toggle never swallows it, and
+      // the summon survives the edit round-trip.
+      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      expect(row().querySelector('[data-actions-open]')).not.toBeNull();
+      await act(async () => { click(row().querySelector('[data-row-action="edit"]')!); });
+      expect(row().querySelector('[data-edit-editor]')).not.toBeNull();
+      await act(async () => { click(row().querySelector('[data-edit-cancel]')!); });
+      expect(row().querySelector('[data-actions-open]')).not.toBeNull();
+
+      // A pointerdown outside the row closes an open strip.
+      await act(async () => {
+        document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+      });
+      expect(row().querySelector('[data-actions-open]')).toBeNull();
+    } finally {
+      if (hadMatchMedia) media.matchMedia = originalMatchMedia;
+      else delete media.matchMedia;
+    }
+  });
+
+  it('ignores quiet-surface taps when hover is available (desktop pointer)', async () => {
+    // jsdom has no matchMedia, which the hook treats as a fine pointer: the
+    // row's clicks keep their plain meaning and no `data-actions-open` appears.
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => { click(row.querySelector('[data-collapsible-content]')!); });
+    expect(row.querySelector('[data-actions-open]')).toBeNull();
   });
 
   it('folds the tiled icons into the ⋯ menu below sm', async () => {

@@ -3,22 +3,24 @@
  * RowActions.tsx pattern): copy and copy-link on every message row, edit-resend on settled
  * user messages, regenerate on the latest completed turn's final assistant
  * reply, fork on either anchor. Buttons hide until the row is hovered or
- * focused-within; touch layouts (`hover: none`) always show them.
+ * focused-within; on touch layouts (`hover: none`) a tap on the row's quiet
+ * surface summons them (`useMessageRowTapActions`).
  *
- * The strip is part of the row, not a chip floating over the text: it hangs
- * under the answer (flush left) or under the user bubble (flush right), keeps
- * its height whether or not it is revealed, and covers the gap above its icons
- * with its own hit area. Copy / edit / regenerate — the three that are used on
- * a normal pass through a conversation — are flat 28px tiles; copy-link and
- * fork sit behind the trailing `⋯`. Below `sm` the tiles fold into that same
- * `⋯` menu so the strip never crowds a narrow lane.
+ * The strip is an overlay, not a flow row: it hangs under the answer (flush
+ * left) or under the user bubble (flush right) from the row's bottom edge,
+ * reserves no height of its own, and revealing it never moves the text. It
+ * only takes the pointer while revealed, so the rows it hangs over keep their
+ * clicks and their selection. Copy / edit / regenerate — the three that are
+ * used on a normal pass through a conversation — are flat 28px tiles;
+ * copy-link and fork sit behind the trailing `⋯`. Below `sm` the tiles fold
+ * into that same `⋯` menu so the strip never crowds a narrow lane.
  *
  * The inline user-message editor also lives here: it replaces the bubble in
  * place (anything-llm's EditMessageForm shape), prefills the original text,
  * and warns that attachments are not carried over by a full-replacement edit.
  */
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -45,6 +47,49 @@ export function messageLinkHref(sessionId: string, agentId: string, blockId: str
   return `${base}?${new URLSearchParams({ block: blockId }).toString()}`;
 }
 
+/**
+ * Touch summon for a message row's action strip. Coarse pointers have no
+ * hover, so a tap on the row's quiet surface (its text, its padding — never a
+ * link, a button, an annotation mark, media, or an active selection) toggles
+ * `data-actions-open` on the row, and a tap anywhere outside the row closes
+ * it. Fine pointers never reach this: hover reveals the strip, and the
+ * `(hover: none)` check keeps desktop clicks inert.
+ */
+export function useMessageRowTapActions<T extends HTMLElement>() {
+  const [open, setOpen] = useState(false);
+  const rowRef = useRef<T>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const row = rowRef.current;
+      if (row === null || !(event.target instanceof Node) || !row.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => { window.removeEventListener('pointerdown', onPointerDown, true); };
+  }, [open]);
+
+  const onClick = (event: ReactMouseEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    if (typeof window.matchMedia !== 'function' || !window.matchMedia('(hover: none)').matches) return;
+    if (!(event.target instanceof Element)) return;
+    if (
+      event.target.closest(
+        'a, button, [role="button"], input, textarea, select, summary, [contenteditable], [data-row-actions], [data-annotation-ref], img, video, audio',
+      ) !== null
+    ) {
+      return;
+    }
+    const selection = window.getSelection();
+    if (selection !== null && !selection.isCollapsed) return;
+    setOpen((value) => !value);
+  };
+
+  return { rowRef, open, onClick };
+}
+
 export interface MessageRowActionsProps {
   /** Copy target; the copy button renders only when this is a non-empty string. */
   copyText?: string;
@@ -68,7 +113,7 @@ export interface MessageRowActionsProps {
 
 /** A row-action target: 14px glyph in a 28px box — no border, no pill. */
 const TILE =
-  'pointer-events-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
 const MENU_ITEM =
   'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40';
 
@@ -192,27 +237,32 @@ export function MessageRowActions({
     };
   }, [menuOpen]);
 
+  // Revealed by the row's hover / focus-within, or by the tap toggle a touch
+  // row publishes as `data-actions-open`. The pointer gate rides the same
+  // conditions: hidden icons never catch a click, and whatever the overlay
+  // hangs over keeps its clicks and its text selection.
   const visibility =
-    'opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
+    'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
 
   // Only copy-link and fork are menu-only, so the `⋯` trigger is needed at every
   // width while one of them exists; a strip of tiled actions alone folds it away
   // above `sm`, where those tiles are already on screen.
   const menuOnly = showLink || showFork;
 
-  // `-mt-1 pt-1`: the strip keeps its 28px of reserved row height while its own
-  // box reaches 4px up into the gap over it, and `pointer-events-none` keeps that
-  // overlap from stealing clicks or text selection from the message — only the
-  // controls take the pointer. The row's hover box covers the whole path, so the
-  // icons never flicker on the way in. `z-20` keeps the open `⋯` above the row's
-  // own chrome (a rotated chevron on a collapsed message paints like a positioned
-  // box and would otherwise show through the panel).
+  // `absolute top-full`: the strip hangs from the row's bottom edge into the
+  // gap under the message, so it reserves no height and revealing it moves
+  // nothing. It spans the row's full width: any path down from the text stays
+  // over a row descendant, so the row's hover holds all the way to the icons
+  // (a tile-width box would drop diagonal approaches mid-glide). `z-20` keeps
+  // the open `⋯` above the row's own chrome (a rotated chevron on a collapsed
+  // message paints like a positioned box and would otherwise show through the
+  // panel).
   return (
     <span
       ref={menuContainerRef}
       data-row-actions
       data-row-actions-align={align}
-      className={`${visibility} pointer-events-none relative z-20 -mt-1 flex min-h-7 max-w-full items-center gap-0.5 pt-1 ${
+      className={`${visibility} absolute top-full right-0 left-0 z-20 flex h-7 items-center gap-0.5 ${
         align === 'right' ? 'justify-end' : 'justify-start'
       }`}
     >

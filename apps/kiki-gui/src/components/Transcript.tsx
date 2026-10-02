@@ -158,7 +158,7 @@ import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
-import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink } from './RowActions';
+import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
@@ -322,6 +322,7 @@ const UserMessage = memo(function UserMessage({
   const outcomeActions = usePromptOutcomeActions();
   const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
+  const tapActions = useMessageRowTapActions<HTMLDivElement>();
   const { contentRef, contentId, isOverflowing, expanded, toggle } =
     useCollapsibleOverflow<HTMLDivElement>(block.text);
   const clipped = !expanded;
@@ -391,7 +392,13 @@ const UserMessage = memo(function UserMessage({
     [],
   );
   return (
-    <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
+    <div
+      ref={tapActions.rowRef}
+      data-actions-open={tapActions.open ? 'true' : undefined}
+      className="anim-enter group/msg relative flex flex-col items-end"
+      title={time.absoluteTime(block.createdAt)}
+      onClick={tapActions.onClick}
+    >
       {/* Meta line: the sender shows only when it is not the user (agent or
           peer-thread messages); the time stays quiet until hover/focus so the
           bubble reads as the user's own voice. */}
@@ -479,9 +486,9 @@ const UserMessage = memo(function UserMessage({
           </div>
         </div>
       )}
-      {/* Row actions hang under the bubble they belong to, flush right: the row
-          keeps their height whether or not they are revealed, and they never
-          sit over the bubble's own inline links. */}
+      {/* Row actions hang under the bubble they belong to, flush right: an
+          overlay off the row's bottom edge that reserves no height and never
+          sits over the bubble's own inline links. */}
       {(rowActions !== undefined || messageLink !== undefined) && !editing ? (
         <MessageRowActions
           align="right"
@@ -566,6 +573,7 @@ const AssistantMessage = memo(function AssistantMessage({
 }) {
   const { t, time } = useI18n();
   const messageLink = useMessageLink();
+  const tapActions = useMessageRowTapActions<HTMLDivElement>();
   const internalProse = useMessageViewContext().internalProse && block.text !== '';
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
@@ -580,7 +588,13 @@ const AssistantMessage = memo(function AssistantMessage({
     !block.streaming &&
     (block.text !== '' || (rowActions !== undefined && isLatestFinal));
   return (
-    <div className="anim-enter group/msg relative" title={time.absoluteTime(block.createdAt)}>
+    <div
+      ref={tapActions.rowRef}
+      data-actions-open={tapActions.open ? 'true' : undefined}
+      className="anim-enter group/msg relative"
+      title={time.absoluteTime(block.createdAt)}
+      onClick={tapActions.onClick}
+    >
       {/* Bot mode: plain prose never reaches the user; the process view marks
           it once, in the margin, without restyling the text itself. */}
       {internalProse ? (

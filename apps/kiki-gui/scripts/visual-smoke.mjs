@@ -214,7 +214,137 @@ const SCENARIOS = [
       return [await shot(page, 'hero-zh')];
     },
   },
+  {
+    name: 'row-actions',
+    fixture: 'subagents',
+    tags: ['smoke', 'transcript', 'agents'],
+    async run(page, link, control) {
+      return walkRowActions(page, link, control, 'en');
+    },
+  },
+  {
+    name: 'row-actions-zh',
+    fixture: 'subagents',
+    locale: 'zh',
+    tags: ['smoke', 'transcript', 'agents', 'i18n'],
+    async run(page, link, control) {
+      return walkRowActions(page, link, control, 'zh');
+    },
+  },
 ];
+
+/**
+ * Message-row actions and the ended-subagent row's trailing tiles. The strip
+ * stays invisible and reserves no height until its row is hovered, and the
+ * reveal must not move the row underneath it; the ended row carries icon
+ * tiles whose words live in the tooltip. Runs once per locale.
+ */
+async function walkRowActions(page, link, control, localeSuffix) {
+  await openSession(page, link, 'session_fixture_subagents');
+  await page.fill('textarea', 'Delegate the fixture work.');
+  await page.press('textarea', 'Control+Enter');
+  await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
+  // The fixture flow waits for its agents, so no late receipt ever lands:
+  // inject one — a subagent whose completion arrives after its dispatching
+  // turn reads as one ended row pointing back at the card on the page.
+  const at = new Date().toISOString();
+  await control({
+    action: 'emit_transcript',
+    session_id: 'session_fixture_subagents',
+    ops: [
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't9', ordinal: 9, state: 'completed', origin: { kind: 'task', taskId: 'task-agent-review' }, startedAt: at, endedAt: at } },
+      { op: 'step.upsert', turnId: 't9', step: { kind: 'step', stepId: 't9.1', turnId: 't9', ordinal: 1, state: 'completed', startedAt: at, endedAt: at } },
+      {
+        op: 'frame.upsert',
+        turnId: 't9',
+        stepId: 't9.1',
+        frame: {
+          kind: 'text',
+          frameId: 't9-notification',
+          role: 'user',
+          taskId: 'task-agent-review',
+          text: '<notification id="n9" category="task" type="task.completed" source_kind="background_task" source_id="task-agent-review">\nTitle: Background agent completed\nPresentation contract verified with no inline child tool cards.\n</notification>',
+        },
+      },
+      // An assistant reply in the same turn gives the hover pass a prose row
+      // with a left-aligned strip.
+      {
+        op: 'frame.upsert',
+        turnId: 't9',
+        stepId: 't9.1',
+        frame: { kind: 'text', frameId: 't9-answer', role: 'assistant', text: 'Reviewer receipt is in — the presentation contract holds, no inline child tool cards.' },
+      },
+    ],
+  });
+  const ended = page.locator('[data-subagent-ended]').first();
+  await ended.waitFor({ timeout: 20_000 });
+  await page.mouse.move(0, 0);
+  const shots = [];
+  // 1 · Idle: no strip shows anywhere, and the ended row reads as one quiet
+  // line with two glyph tiles.
+  await ended.scrollIntoViewIfNeeded();
+  shots.push(await shot(page, `row-actions-idle-${localeSuffix}`));
+  await ended.screenshot({ path: join(OUT, `row-actions-ended-${localeSuffix}.png`) });
+  shots.push(`row-actions-ended-${localeSuffix}.png`);
+  for (const [selector, icon] of [['[data-subagent-ended-dispatch]', 'arrowUp'], ['[data-agent-open]', 'external']]) {
+    const tile = ended.locator(selector).first();
+    if ((await tile.getAttribute('title') ?? '') === '') throw new Error(`${selector} lost its tooltip`);
+    if ((await tile.getAttribute('aria-label') ?? '') === '') throw new Error(`${selector} lost its accessible name`);
+    if (await tile.locator(`[data-icon="${icon}"]`).count() !== 1) throw new Error(`${selector} is not the ${icon} glyph`);
+  }
+  // 2 · Idle → hover: the strip fades in as an overlay and the reveal never
+  // moves anything — checked on the user bubble (right tiles, rows beneath
+  // it) and on the assistant reply (left tiles, the timeline's last row).
+  const scroller = page.locator('[data-transcript-scroll]');
+  const hoverPass = async (stripSelector, shotSuffix) => {
+    const strip = page.locator(stripSelector).first();
+    const row = strip.locator('xpath=ancestor::*[@data-block-id][1]');
+    await row.scrollIntoViewIfNeeded();
+    const idleOpacity = await strip.evaluate((el) => getComputedStyle(el).opacity);
+    if (Number(idleOpacity) > 0.05) throw new Error(`strip visible without hover: opacity=${idleOpacity}`);
+    const next = row.locator('xpath=following::*[@data-block-id][1]');
+    const parkedY = (await next.count()) > 0 ? await next.boundingBox() : null;
+    const parkedHeight = await scroller.evaluate((el) => el.scrollHeight);
+    await row.hover();
+    await page.waitForTimeout(300);
+    const hoverOpacity = await strip.evaluate((el) => getComputedStyle(el).opacity);
+    if (Number(hoverOpacity) < 0.95) throw new Error(`strip did not reveal on hover: opacity=${hoverOpacity}`);
+    const hoveredY = (await next.count()) > 0 ? await next.boundingBox() : null;
+    const hoveredHeight = await scroller.evaluate((el) => el.scrollHeight);
+    if (parkedY !== null && hoveredY !== null && Math.abs(hoveredY.y - parkedY.y) > 0.5) {
+      throw new Error(`row actions reveal shifted the next row: ${parkedY.y} → ${hoveredY.y}`);
+    }
+    if (hoveredHeight !== parkedHeight) {
+      throw new Error(`row actions reveal changed the timeline height: ${parkedHeight} → ${hoveredHeight}`);
+    }
+    shots.push(await shot(page, `row-actions-hover-${shotSuffix}-${localeSuffix}`));
+    const rowBox = await row.boundingBox();
+    if (rowBox !== null) {
+      await page.screenshot({
+        path: join(OUT, `row-actions-hover-closeup-${shotSuffix}-${localeSuffix}.png`),
+        clip: { x: rowBox.x, y: rowBox.y, width: rowBox.width, height: Math.min(rowBox.height + 56, 900 - rowBox.y) },
+      });
+      shots.push(`row-actions-hover-closeup-${shotSuffix}-${localeSuffix}.png`);
+    }
+    await page.mouse.move(0, 0);
+  };
+  await hoverPass('[data-row-actions-align="right"]', 'user');
+  await hoverPass('[data-row-actions-align="left"]', 'assistant');
+  // 3 · 390px: the ended row keeps its tiles and the strip still overlays.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  await ended.scrollIntoViewIfNeeded();
+  await ended.screenshot({ path: join(OUT, `row-actions-narrow-ended-${localeSuffix}.png`) });
+  shots.push(`row-actions-narrow-ended-${localeSuffix}.png`);
+  const narrowRow = page.locator('[data-row-actions-align="right"]').first()
+    .locator('xpath=ancestor::*[@data-block-id][1]');
+  await narrowRow.scrollIntoViewIfNeeded();
+  await narrowRow.hover();
+  await page.waitForTimeout(300);
+  shots.push(await shot(page, `row-actions-narrow-hover-${localeSuffix}`));
+  return shots;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
