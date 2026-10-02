@@ -14,11 +14,9 @@
 
 @theme {
   /* Surface ladder, darkest to lightest: canvas (the app ground the sidebar
-   * sits on) < paper (the page you read) < panel (inspector, preview and
-   * floating cards). The main area is flat — the page runs flush to the
-   * window edge and panes are told apart by the ladder and hairline rules;
-   * raised sheets are reserved for interior cards (composer, dialogs, the
-   * selected row). */
+   * sits on) < paper (the raised conversation sheet) < panel (inspector,
+   * preview and floating cards). Panes are told apart by this ladder and the
+   * gaps between sheets, not by rules. */
   /* Paper and ink-blue: a near-white warm sheet on a canvas only half a step
    * darker, so the page you read is the brightest thing on screen and the
    * frame stays paper rather than tan. Color is spent on two roles only
@@ -74,12 +72,12 @@
   --color-scrollbar-hover: #c4baa8;
   --color-term-scrollbar: #4a4238;
   --kiki-shadow-ink: 27 26 23;
-  /* Raised interior cards: a hairline ring plus a low, wide shadow — lift
-   * without a visible box. Dark swaps the shadow for a faint light ring
-   * (below). The page shell itself is flat and reads neither token. */
+  /* Raised sheets: a hairline ring plus a low, wide shadow — lift without a
+   * visible box. Dark swaps the shadow for a faint light ring (below). */
   --kiki-sheet-shadow: 0 0 0 1px rgb(27 26 23 / 0.06), 0 1px 2px rgb(27 26 23 / 0.04),
     0 8px 24px -14px rgb(27 26 23 / 0.14);
   --kiki-sheet-radius: 12px;
+  --kiki-stage-gap: 8px;
 
   /* The shell stays an inset well in both modes; its own text and surface
    * ladder follow each independently designed palette. */
@@ -378,22 +376,33 @@ body {
   width: var(--kiki-sidebar-width, 264px);
   flex-shrink: 0;
   flex-direction: column;
-  /* The sidebar IS the canvas; a single hairline rules it off the page. */
-  border-right: 1px solid var(--color-hairline);
+  /* The sidebar IS the canvas: no rule, no fill of its own — the raised
+   * sheet beside it carries the edge. */
   background-color: var(--color-canvas);
 }
 
-/* ---- stage: the flat column that holds banners and the routed page ----
- * The main column runs flush to the window edge (the sidebar supplies its
- * own hairline on the left), and the page — settings, the conversation and
- * its preview / inspector panes — fills it edge to edge. Panes split by
- * hairlines, not by floating sheets. */
+/* ---- stage: the canvas-side frame that holds the raised sheets ----
+ * Desktop: the main column is inset from the window edge by the stage gap
+ * (the sidebar supplies its own inner padding on the left), and every pane —
+ * the page sheet, or the conversation / preview / inspector panes — floats on
+ * the canvas as its own rounded sheet. Below md the sidebar is a drawer, so
+ * the stage collapses to an edge-to-edge single sheet. */
 .app-stage {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1;
   flex-direction: column;
+  gap: 6px;
+  padding: var(--kiki-stage-gap) var(--kiki-stage-gap) var(--kiki-stage-gap) 0;
+}
+
+/* Connection / restart banners ride the stage above the sheet as quiet
+ * rounded strips instead of full-bleed ruled bars. */
+.app-stage > [data-app-banner],
+.app-stage > [role='status'] {
+  border: none;
+  border-radius: 10px;
 }
 
 .app-sheet {
@@ -404,14 +413,34 @@ body {
   flex: 1;
   flex-direction: column;
   overflow: hidden;
+  border-radius: var(--kiki-sheet-radius);
   background-color: var(--color-paper);
+  box-shadow: var(--kiki-sheet-shadow);
 }
 
-/* The conversation route splits into its own panes (conversation, preview,
- * inspector), so the wrapper steps aside and lets the row carry them. */
+/* The conversation route splits into its own sheets (conversation, preview,
+ * inspector), so the wrapper steps aside and lets the row carry the gaps. */
 .app-sheet:has(> .conversation-shell) {
   overflow: visible;
+  border-radius: 0;
   background-color: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 767px) {
+  .app-stage {
+    padding: 0;
+    gap: 0;
+  }
+  .app-stage > [data-app-banner],
+  .app-stage > [role='status'] {
+    border-radius: 0;
+  }
+  .app-sheet,
+  .app-sheet:has(> .conversation-shell) {
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 /* Only the desktop flex panel exposes the resize grab handle; the mobile
@@ -471,20 +500,29 @@ body[data-pane-resizing='true'] {
   flex-shrink: 0;
   flex-direction: column;
   overflow-y: auto;
-  border-left: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
   /* The inspector's scroller (data-agent-panel-scroll) owns the gutter so
    * its sticky heading can run edge to edge. */
   padding: 0;
 }
 
+/* Desktop: the inspector is its own sheet beside the conversation, split
+ * from it by the stage gap instead of a rule. */
+@media (min-width: 1024px) {
+  .app-rail {
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: var(--kiki-sheet-shadow);
+  }
+}
+
 /* The rail's aside is a scroll container (`overflow: hidden` inline), so a
  * straddling strip would be clipped if it lived inside. The handle lives in
- * .app-rail-shell (sibling of the aside) and centers the 12px strip on the
- * boundary so it can be grabbed from the conversation side too. */
+ * .app-rail-shell (sibling of the aside) and fills the stage gap to its left,
+ * so it can be grabbed from the conversation side too; the 2px hover line
+ * sits centered in that gap. */
 .app-rail__resizer {
   position: absolute;
-  left: -6px;
+  left: -10px;
   top: 0;
   bottom: 0;
   z-index: 10;
@@ -497,8 +535,8 @@ body[data-pane-resizing='true'] {
   content: '';
   position: absolute;
   left: 5px;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   width: 2px;
   border-radius: 1px;
   background-color: transparent;
@@ -689,17 +727,23 @@ body[data-pane-resizing='true'] {
   min-height: 0;
 }
 
-/* The shell itself is transparent; the conversation column keeps its paper
- * ground so the seat's fade mask still resolves against the surface it sits
- * on. Preview and inspector panes split from it by their own hairlines. */
+/* Inside the stage the shell itself is transparent canvas; the conversation
+ * column, the preview workspace and the inspector each become a sheet, split
+ * by the stage gap. The column keeps its paper ground so the seat's fade
+ * mask still resolves against the surface it sits on. */
 .app-sheet > .conversation-shell {
   background: transparent;
 }
 
 @media (min-width: 768px) {
+  .app-sheet > .conversation-shell .conversation-row {
+    gap: var(--kiki-stage-gap);
+  }
   .app-sheet > .conversation-shell .conversation-center {
     overflow: hidden;
+    border-radius: var(--kiki-sheet-radius);
     background: var(--color-paper);
+    box-shadow: var(--kiki-sheet-shadow);
   }
 }
 
@@ -758,17 +802,27 @@ body[data-pane-resizing='true'] {
   height: 100%;
   flex-shrink: 0;
   flex-direction: column;
-  border-left: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
 }
 
-/* Desktop: it is the pane that yields first when the row runs out of room —
- * it shrinks from its stored width toward the 320px floor before the
- * conversation column drops under its reading minimum. */
+/* Desktop: a sheet of its own. It is the pane that yields first when the row
+ * runs out of room — it shrinks from its stored width toward the 320px floor
+ * before the conversation column drops under its reading minimum. */
 @media (min-width: 1024px) {
   .preview-workspace:not(.preview-workspace--overlay) {
     flex-shrink: 3;
     min-width: 320px;
+    overflow: hidden;
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: var(--kiki-sheet-shadow);
+  }
+  /* The sheet clips its corners, so the grab strip lives on its inner edge. */
+  .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer {
+    left: 0;
+    width: 8px;
+  }
+  .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer::after {
+    left: 0;
   }
   /* The inspector yields second, down to its own 240px floor. */
   .app-sheet > .conversation-shell .app-rail-shell {
@@ -820,8 +874,11 @@ body[data-pane-resizing='true'] {
     box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
     animation: kiki-sidebar-in 200ms ease-out both;
   }
-  /* With the sidebar folded away the header offers the menu button that
-   * brings it back. */
+  /* With the sidebar folded away the stage needs its own left margin, and
+   * the header offers the menu button that brings the sidebar back. */
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-stage {
+    padding-left: var(--kiki-stage-gap);
+  }
   html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) [data-sidebar-menu] {
     display: flex;
   }
@@ -849,7 +906,7 @@ body[data-pane-resizing='true'] {
 
 .preview-workspace__resizer {
   position: absolute;
-  left: -6px;
+  left: -10px;
   top: 0;
   bottom: 0;
   z-index: 10;
@@ -862,8 +919,8 @@ body[data-pane-resizing='true'] {
   content: '';
   position: absolute;
   left: 5px;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   width: 2px;
   border-radius: 1px;
   background-color: transparent;
