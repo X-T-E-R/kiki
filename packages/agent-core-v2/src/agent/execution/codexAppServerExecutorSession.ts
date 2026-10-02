@@ -670,7 +670,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
             { id: 'decline', label: 'Decline', kind: 'reject_once' }] },
       }), signal);
       if (response === undefined || response.decision === 'cancelled') {
-        this.#interaction.cancelPendingForTurn(active.turn.id, this.context.agent.id);
         await responder.respond({ action: 'cancel', content: null });
       } else if (response.decision === 'approved') {
         const selected = response.selectedOptionId ?? 'once';
