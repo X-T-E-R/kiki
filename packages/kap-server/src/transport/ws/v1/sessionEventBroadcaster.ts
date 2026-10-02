@@ -60,6 +60,7 @@ import { cachedMessageCount, captureContextMessageHistory } from '../../../servi
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
+import { recordSessionViewTiming } from '../../klient/sessionViewTiming';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -375,12 +376,13 @@ export class SessionEventBroadcaster {
         !state.transcriptSeeded.has(target) ||
         this.willSendTranscriptReset(state, transcriptGrades, prev);
       if (!needsSeed) return true;
+      const hadBaseline = state.transcriptSeeded.has(target);
       state.transcriptSeeded.delete(target);
       if (liveStore === undefined) return true;
       const seed: PendingTranscriptSeed = {
         generation,
         spec: transcriptGrades,
-        prev: streamChanged ? undefined : prev?.transcriptGrades,
+        prev: streamChanged || !hadBaseline ? undefined : prev?.transcriptGrades,
         transcriptSince: opts?.transcriptSince,
         store: liveStore,
         deferred,
@@ -524,20 +526,32 @@ export class SessionEventBroadcaster {
     seed: PendingTranscriptSeed,
   ): Promise<void> {
     const service = this.opts.transcriptService;
+    const startedAt = performance.now();
+    const admitted = admittedForHistory(seed);
+    const priority = new Set(Object.keys(seed.spec).filter((agentId) => agentId !== '*' &&
+      (gradeFor(seed.spec, agentId) === 'block' || gradeFor(seed.spec, agentId) === 'delta')));
+    const fields = { sessionId: state.sessionId, generation: seed.generation,
+      admittedAgents: admitted.size, priorityAgents: priority.size };
+    let firstDetail = false;
     try {
       if (service === undefined || !this.isTranscriptGeneration(state, target, seed.generation)) return;
+      const readyAt = performance.now();
       await service.whenReady(state.sessionId);
+      recordSessionViewTiming('main_ready', readyAt, fields);
       if (
         !this.isTranscriptGeneration(state, target, seed.generation) ||
         service.forSessionLive(state.sessionId) !== seed.store
       ) {
         return;
       }
-      await Promise.all(
-        [...admittedForHistory(seed)].map((agentId) =>
-          service.ensureAgentHistory(state.sessionId, agentId),
-        ),
-      );
+      const ensureHistory = async (agentId: string): Promise<void> => {
+        if (!admitted.has(agentId)) return;
+        const backfillAt = performance.now();
+        await service.ensureAgentHistory(state.sessionId, agentId);
+        recordSessionViewTiming('agent_backfill', backfillAt, { ...fields, agentId });
+        admitted.delete(agentId);
+      };
+      await Promise.all([...priority].map(ensureHistory));
       if (
         !this.isTranscriptGeneration(state, target, seed.generation) ||
         service.forSessionLive(state.sessionId) !== seed.store
@@ -548,13 +562,18 @@ export class SessionEventBroadcaster {
       const delivered = new Map<string, TranscriptCursor>();
       await target.drain?.();
       for (;;) {
-        for (const descriptor of seed.store.agents()) {
+        const descriptors = [...seed.store.agents()].toSorted((left, right) =>
+          Number(priority.has(right.agentId)) - Number(priority.has(left.agentId)));
+        for (const descriptor of descriptors) {
           if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
           const currentSpec = state.targets.get(target)?.transcriptGrades;
           if (currentSpec === undefined) return;
           const agentId = descriptor.agentId;
           const grade = gradeFor(currentSpec, agentId);
           if (grade === 'off') continue;
+          await ensureHistory(agentId);
+          if (!this.isTranscriptGeneration(state, target, seed.generation) ||
+              service.forSessionLive(state.sessionId) !== seed.store) return;
           const transcript = seed.store.getAgent(agentId);
           if (transcript === undefined) continue;
           const cursor = service.getTranscriptCursor(state.sessionId, agentId);
@@ -563,8 +582,9 @@ export class SessionEventBroadcaster {
           const since = sent ?? seed.transcriptSince?.[agentId] ?? seed.transcriptSince?.['*'];
           const gradeUpgrade = needsResetOnTransition(gradeFor(seed.prev, agentId), grade);
           const needsReset = seed.deferred || gradeUpgrade;
-          const upgradeWithinTarget = sent === undefined && seed.prev !== undefined && gradeUpgrade;
-          const catchup = since === undefined || upgradeWithinTarget
+          const detailBaselineRequired = sent === undefined && gradeUpgrade &&
+            (seed.prev !== undefined || grade === 'block' || grade === 'delta');
+          const catchup = since === undefined || detailBaselineRequired
             ? undefined
             : service.getOpsSince(state.sessionId, agentId, since);
           if (catchup?.complete === true) {
@@ -585,10 +605,16 @@ export class SessionEventBroadcaster {
             delivered.set(agentId, { seq: catchup.throughSeq, epoch: catchup.epoch });
           } else {
             if (since !== undefined || needsReset) {
+              const verifyAt = performance.now();
               await service.verifyTranscriptLiveCoverage(state.sessionId, agentId);
+              recordSessionViewTiming('agent_verify', verifyAt, { ...fields, agentId });
               if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
               if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return;
               await target.drain?.();
+              if (!firstDetail && priority.has(agentId)) {
+                firstDetail = true;
+                recordSessionViewTiming('first_detail_reset', startedAt, { ...fields, agentId });
+              }
             }
             delivered.set(agentId, cursor);
           }
@@ -604,6 +630,7 @@ export class SessionEventBroadcaster {
         });
         if (caughtUp) {
           state.transcriptSeeded.add(target);
+          recordSessionViewTiming('seed_ready', startedAt, fields);
           break;
         }
       }

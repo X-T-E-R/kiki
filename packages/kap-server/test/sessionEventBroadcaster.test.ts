@@ -3226,6 +3226,40 @@ describe('SessionEventBroadcaster', () => {
       expect(backfillSpy.mock.calls.map((call) => call[1])).toEqual(['main']);
     });
 
+    it.each([false, true])('delivers explicit detail before a blocked sibling backfill and preserves cancellation=%s', async (cancel) => {
+      const lc = new FakeLifecycle();
+      lc.addAgent('main');
+      lc.addAgent('sibling');
+      lc.addAgent('visible-child');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      const ensure = service.ensureAgentHistory.bind(service);
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      vi.spyOn(service, 'ensureAgentHistory').mockImplementation(async (sessionId, agentId) => {
+        if (agentId === 'sibling') await blocked;
+        await ensure(sessionId, agentId);
+      });
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const view = collectingTarget();
+      let finished = false;
+      const pending = bc.subscribe('s1', view.target, undefined, { '*': 'turn', main: 'off', 'visible-child': 'delta' })
+        .then(() => { finished = true; });
+      try {
+        await vi.waitFor(() => expect(transcriptEnvelopes(view.envelopes).some((frame) =>
+          (frame.payload as { agent_id: string }).agent_id === 'visible-child')).toBe(true));
+        expect(finished).toBe(false);
+        expect(transcriptEnvelopes(view.envelopes).map((frame) => (frame.payload as { agent_id: string }).agent_id)).toEqual(['visible-child']);
+        if (cancel) bc.unsubscribe('s1', view.target);
+      } finally {
+        release();
+        await pending;
+      }
+      const ids = transcriptEnvelopes(view.envelopes).map((frame) => (frame.payload as { agent_id: string }).agent_id);
+      expect(ids).toEqual(cancel ? ['visible-child'] : ['visible-child', 'sibling']);
+    });
+
     it.each(['turn', 'delta'] as const)('folds a roster agent explicitly requested at %s grade under a wildcard default', async (childGrade) => {
       const lc = new FakeLifecycle();
       lc.addAgent('main');
@@ -3794,6 +3828,35 @@ describe('SessionEventBroadcaster', () => {
       expect(ops.every((e) => e.volatile === true && e.seq === reset.seq)).toBe(true);
     });
 
+    it.each([false, true])('restores detail on a new target with an already-current summary cursor (deferred=%s)', async (deferTranscriptReset) => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      bc = makeBroadcasterWithTranscript();
+      const summary = collectingTarget();
+      await bc.subscribe('s1', summary.target, undefined, { main: 'turn' });
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      main.bus.emit(agentEvent('turn.step.started', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'hidden detail' }));
+      main.bus.emit(agentEvent('turn.step.completed', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      const cursor = (transcriptEnvelopes(summary.envelopes).at(-1)!.payload as { cursor: { epoch?: string; seq: number } }).cursor;
+      bc.unsubscribe('s1', summary.target);
+      const detail = collectingTarget();
+      await bc.subscribe('s1', detail.target, undefined, { main: 'delta' }, {
+        transcriptSince: { main: cursor }, deferTranscriptReset,
+      });
+      if (deferTranscriptReset) {
+        await bc.subscribe('s1', detail.target, undefined, { main: 'delta' }, {
+          transcriptSince: { main: cursor }, deferTranscriptReset: true,
+        });
+        await bc.flushTranscriptSeed('s1', detail.target);
+      }
+      const resets = transcriptEnvelopes(detail.envelopes).filter((frame) => frame.type === 'transcript.reset');
+      expect(resets).toHaveLength(1);
+      expect(JSON.stringify(resets[0]!.payload)).toContain('hidden detail');
+    });
+
     it('replays journaled batches instead of a reset when transcript_since is covered', async () => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');
@@ -3812,7 +3875,8 @@ describe('SessionEventBroadcaster', () => {
       main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'hi' }));
       main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
 
-      const second = collectingTarget();
+      first.envelopes.length = 0;
+      const second = first;
       await bc.subscribe('s1', second.target, undefined, { '*': 'delta' }, {
         transcriptSince: { main: cursor },
       });
@@ -3845,7 +3909,8 @@ describe('SessionEventBroadcaster', () => {
         }
       ).cursor;
 
-      const second = collectingTarget();
+      first.envelopes.length = 0;
+      const second = first;
       await bc.subscribe('s1', second.target, undefined, { '*': 'delta' }, {
         transcriptSince: { main: cursor },
       });

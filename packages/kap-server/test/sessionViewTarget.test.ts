@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
 import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
@@ -220,6 +221,71 @@ describe('SessionViewTarget', () => {
     expect(send.mock.calls.every(([frame]) => frame.data.generation === 2)).toBe(true);
     expect(errors).not.toHaveBeenCalled();
     connection.dispose();
+  });
+
+  it('prioritizes cold explicit detail over earlier summary keys without acknowledging unfinished reads', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const service = {
+      readColdRoster: vi.fn(async () => []),
+      readColdSnapshot: vi.fn(async (_sessionId, agentId) => {
+        if (agentId === 'sibling') await blocked;
+        return { ...new AgentTranscript(agentId).snapshot(), toolCallCountKnown: true };
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const broadcaster = { getCursor: vi.fn(async () => ({ seq: 7, epoch: 'session-epoch' })), unsubscribe: vi.fn() };
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7 }, transcriptGrades: { sibling: 'turn', 'visible-child': 'delta' } },
+    } });
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child' }),
+      }) })));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
+      expect(service.readColdSnapshot.mock.calls.map((call) => call[1])).toEqual(['visible-child', 'sibling']);
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) })));
+    expect(errors).not.toHaveBeenCalled();
+    connection.dispose();
+  });
+
+  it('publishes payload-free segmented cold attach timings only to diagnostic subscribers', async () => {
+    const timing = channel('kiki.session-view.timing');
+    const records: Array<Record<string, unknown>> = [];
+    const collect = (message: unknown): void => { records.push(message as Record<string, unknown>); };
+    timing.subscribe(collect);
+    const service = {
+      readColdRoster: vi.fn(async () => []),
+      readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('child').snapshot(), toolCallCountKnown: true })),
+    };
+    const connection = new SessionViewHttpConnection({
+      getCursor: async () => ({ seq: 7, epoch: 'session-epoch' }), unsubscribe: vi.fn(),
+    } as unknown as SessionEventBroadcaster, vi.fn(), vi.fn(),
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+        generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
+      } });
+      await vi.waitFor(() => expect(records.map((record) => record['stage'])).toEqual([
+        'attach_queue', 'cold_agent_read', 'first_detail_reset', 'attach_ready',
+      ]));
+      for (const record of records) {
+        expect(record['durationMs']).toEqual(expect.any(Number));
+        expect(Number(record['durationMs'])).toBeGreaterThanOrEqual(0);
+        expect(Object.keys(record).every((key) => ['stage', 'durationMs', 'sessionId', 'agentId', 'generation'].includes(key))).toBe(true);
+      }
+    } finally {
+      connection.dispose();
+      timing.unsubscribe(collect);
+    }
   });
 
   it('keeps an unverified empty cold baseline unknown instead of certifying a blank session', async () => {

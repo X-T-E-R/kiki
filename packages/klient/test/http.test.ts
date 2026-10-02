@@ -301,6 +301,29 @@ describe('http transport', () => {
     await klient.close();
     await expect(closed).rejects.toThrow('closed');
   });
+  it('invalidates upgraded explicit and wildcard cursors before attach and reconnect', async () => {
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 7 }, transcriptGrades: { '*': 'turn', main: 'delta' },
+      transcriptSince: { 'child-1': { seq: 3 }, 'child-2': { seq: 4 }, main: { seq: 5 } },
+    }, () => undefined);
+    try {
+      await tick(10);
+      subscription.setTranscriptGrades({ '*': 'turn', 'child-1': 'delta', main: 'delta' });
+      const input = () => (server.frames.findLast((frame) => frame['type'] === 'view_attach')!['data'] as { input: { transcriptSince: unknown } }).input;
+      expect(input().transcriptSince).toEqual({ 'child-2': { seq: 4 }, main: { seq: 5 } });
+      subscription.setTranscriptGrades({ '*': 'delta', main: 'delta' });
+      expect(input().transcriptSince).toEqual({ main: { seq: 5 } });
+      subscription.restart();
+      await tick(10);
+      expect(input().transcriptSince).toEqual({ main: { seq: 5 } });
+    } finally {
+      subscription.close();
+      await klient.close();
+    }
+  });
+
   it('reattaches ordered views on the shared socket and ignores old generations', async () => {
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://127.0.0.1:58627', fetch: vi.fn() as unknown as typeof fetch, WebSocket: fakeWebSocket(server) });

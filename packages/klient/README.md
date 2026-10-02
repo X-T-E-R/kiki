@@ -126,7 +126,15 @@ separate from each agent's transcript cursor. The subscription shares the HTTP
 transport's existing authenticated WebSocket, reattaches with the latest
 checkpoints, and delivers replay and transcript seeds before `ready`. Advance
 checkpoints only after applying the corresponding signals, using
-`updateSessionCursor` and `updateTranscriptCursor` on the subscription.
+`updateSessionCursor` and `updateTranscriptCursor` on the subscription. A cursor
+covers only the detail grade already applied: omit an agent's `transcriptSince`
+when requesting a higher grade. `setTranscriptGrades` removes upgraded cursors,
+including those affected by a wildcard upgrade. Wait for the requested baseline
+before treating a summary as a complete timeline or issuing detail catch-up.
+A new server target requesting `block` or `delta` receives a reset even with a
+current cursor; journal-only recovery requires an already-seeded target at a
+sufficient grade. Explicit `block`/`delta` targets are seeded before sibling
+summaries; `ready` still waits for all admitted agents.
 
 `resyncRequired` invalidates the session checkpoint. A transcript catch-up with
 `complete: false` or a changed epoch requires a new baseline, not ordinary-event
