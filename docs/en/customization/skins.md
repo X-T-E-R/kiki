@@ -149,11 +149,10 @@ Always end a stack with a CJK-capable family or a generic (`sans-serif`, `serif`
 ### Shape
 
 ```json
-{ "shape": { "radius": 14, "stageGap": 8, "spacing": 0.25 } }
+{ "shape": { "radius": 14, "spacing": 0.25 } }
 ```
 
-- `radius` — sheet corner radius in px (0–28)
-- `stageGap` — gap between the window edge and the floating sheets in px (0–24)
+- `radius` — corner radius for cards and panels in px (0–28); the window's page frame itself is flat
 - `spacing` — the density unit in rem (0.19–0.33; the default is `0.25`). This scales every padding and gap in the app at once, so small changes go a long way.
 
 ## What happens on errors
