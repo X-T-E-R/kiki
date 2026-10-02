@@ -92,10 +92,12 @@ const childScript = [
 export default {
   sessions: [
     sessionRecord(MAIN, { title: 'Fixture: steer' }),
+    sessionRecord('session_fixture_steer_queue', { title: 'Fixture: queued steer' }),
     sessionRecord(CHILD_SID, { title: 'Fixture: steer child' }),
   ],
   snapshots: {
     [MAIN]: { messages: [], has_more: false },
+    session_fixture_steer_queue: { messages: [], has_more: false },
     [CHILD_SID]: { messages: [], has_more: false },
   },
   // The composer's frozen profile-domain read: without a seeded profile the

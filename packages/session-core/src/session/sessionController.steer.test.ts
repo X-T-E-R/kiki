@@ -120,6 +120,51 @@ function deliveredOps(promptId: string): TranscriptOperation[] {
 }
 
 describe('send now (steer) — main agent', () => {
+  it('promotes a queued prompt on the same row through sending → waiting → delivery', async () => {
+    const { controller, client } = await open();
+    const promptId = 'queued-send-now';
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+    expect(steerRows(controller.getState())).toEqual([]);
+    expect(controller.getState().queuedPromptIds).toContain(promptId);
+    const steer = deferred<{ steered: true; prompt_ids: string[] }>();
+    client.steerPrompt.mockReturnValue(steer.promise);
+    const sent = controller.steerQueued(promptId);
+    expect(steerRows(controller.getState())).toEqual([
+      expect.objectContaining({ id: `user-${promptId}`, steerStatus: 'sending' }),
+    ]);
+    expect(controller.getState().queuedPromptIds).not.toContain(promptId);
+    await deliver(controller, opsEvent('main', [steeredOp(promptId)], 3));
+    expect(steerRows(controller.getState())).toHaveLength(1);
+    steer.resolve({ steered: true, prompt_ids: [promptId] });
+    await sent;
+    expect(steerRows(controller.getState())[0]).toMatchObject({ id: `user-${promptId}`, steerStatus: 'waiting' });
+    await deliver(controller, opsEvent('main', deliveredOps(promptId), 4));
+    expect(steerRows(controller.getState())).toEqual([
+      expect.objectContaining({ id: `user-${promptId}`, turnId: 't1' }),
+    ]);
+    expect(steerRows(controller.getState())[0]!.steerStatus).toBeUndefined();
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(client.submitPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it.each([new ApiError({ code: 40001, msg: 'needs its own turn', data: null }), new Error('network down')])(
+    'restores the queued preview if promoting it fails: %s', async (error) => {
+      const { controller, client } = await open();
+      const promptId = 'queued-send-now';
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+      client.steerPrompt.mockRejectedValue(error);
+      await expect(controller.steerQueued(promptId)).rejects.toBe(error);
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(steerRows(controller.getState())).toEqual([]);
+      expect(controller.getState().queuedPromptIds).toContain(promptId);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+      controller.close();
+    },
+  );
+
   it('shows the message on the very first publish, before the submit answers', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));

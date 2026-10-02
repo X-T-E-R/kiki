@@ -1836,7 +1836,25 @@ export class SessionController {
    */
   async steerQueued(promptId: string): Promise<void> {
     assertSessionWritable(this.state);
-    await this.client.steerPrompt(this.sessionId, promptId);
+    const queued = this.state.blocks.find((block) =>
+      block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
+    if (queued?.kind === 'user') {
+      this.setPendingSteer(MAIN_AGENT_ID, {
+        promptId,
+        text: queued.text,
+        media: queued.media,
+        createdAt: new Date().toISOString(),
+        phase: 'sending',
+      });
+    }
+    try {
+      await this.client.steerPrompt(this.sessionId, promptId);
+    } catch (error) {
+      this.clearPendingSteer(MAIN_AGENT_ID, promptId);
+      throw error;
+    }
+    const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
+    if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
     await this.refreshPrompts();
   }
 

@@ -38,6 +38,7 @@ import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/taskService';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
+import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -306,6 +307,68 @@ describe('server-v2 /api prompts', () => {
     }, { before: 'context-injector' });
     return child;
   }
+
+  it('projects a queued send-now message once at its step boundary live and after cold reopening', async () => {
+    const provider = createHttpServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({
+        id: 'chatcmpl-send-now',
+        choices: [{ index: 0, delta: { content: 'Message received.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })}\n\ndata: [DONE]\n\n`);
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${String(address.port)}/v1` });
+      await mutations.updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const loop = main.accessor.get(IAgentLoopService);
+      loop.hooks.onWillBeginStep.register('hold-send-now-delivery', async ({ step, signal }) => {
+        if (step === 1) await gate;
+        signal.throwIfAborted();
+      }, { before: 'context-injector' });
+      const active = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Start the turn.' }], profile: 'agent', model: 'stub' });
+      const queued = await client.submitPrompt(id, { prompt_id: 'queued-send-now', content: [{ type: 'text', text: 'Check the queued message.' }] });
+      expect(queued.status).toBe('queued');
+      await client.steerPrompt(id, queued.prompt_id);
+      expect(main.accessor.get(IAgentPromptService).list().pending).toHaveLength(0);
+      const beforeDelivery = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(agentTranscriptToBlocks(beforeDelivery).filter((block) => block.kind === 'user' && block.text === 'Check the queued message.')).toHaveLength(0);
+      release();
+      await loop.settled();
+      const context = main.accessor.get(IAgentContextMemoryService).get();
+      expect(context).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: queued.prompt_id, role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Check the queued message.' }] }),
+      ]));
+      const live = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      const rows = agentTranscriptToBlocks(live).filter((block) => block.kind === 'user' && block.text === 'Check the queued message.');
+      expect(rows).toEqual([expect.objectContaining({ id: `user-${queued.prompt_id}`, userMessageId: queued.prompt_id, turnId: expect.any(String) })]);
+      expect(active.status).toBe('running');
+      const turns = live.items.filter((item) => item.kind === 'turn');
+      expect(turns).toHaveLength(1);
+      expect(rows[0]?.kind === 'user' ? rows[0].turnId : undefined).toBe(turns[0]?.turnId);
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      expect(agentTranscriptToBlocks(cold).filter((block) => block.kind === 'user' && block.text === 'Check the queued message.')).toEqual(rows);
+    } finally {
+      release();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      }));
+    }
+  });
 
   it.each(['submit', 'steer'])('keeps cold browsing read-only then explicitly resumes for %s through the GUI client', async (firstAction) => {
     const id = await createSession(home as string);
