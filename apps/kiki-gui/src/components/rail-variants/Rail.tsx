@@ -647,7 +647,7 @@ export function Rail({
         aria-labelledby="rail-overview-title"
         className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
       >
-        <div data-rail-overview-well className="-mx-2 rounded-[10px] bg-ink/[0.025] px-2 pt-1 pb-3 ring-1 ring-hairline/70 ring-inset">
+        <div data-rail-overview-well className="pt-1 pb-3">
           <header data-rail-switchable-head className="flex h-9 items-center gap-1.5">
             <h3 id="rail-overview-title" className={INSPECTOR_HEAD}>{t('inspector.overview')}</h3>
             <button
