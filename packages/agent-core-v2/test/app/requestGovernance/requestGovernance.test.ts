@@ -114,6 +114,24 @@ describe('RequestGovernance', () => {
     second.release(); (await third).release();
     expect(service.snapshot().active).toBe(0);
   });
+
+  it('treats a disabled rule as absent and drains its queue when it is switched off', async () => {
+    const { service, update } = governor({ rules: [cap(1)] });
+    const permit = await service.acquire(attempt());
+    const queued = service.acquire(attempt());
+    expect(service.snapshot()).toMatchObject({ active: 1, queued: 1 });
+    update({ rules: [cap(1, { enabled: false })] });
+    (await queued).release();
+    expect(service.snapshot()).toMatchObject({ active: 1, queued: 0 });
+    // …and a disabled rule still rides along in the snapshot so a GUI can render it.
+    expect(service.snapshot().rules[0]).toMatchObject({ id: 'cap', enabled: false });
+    update({ rules: [cap(1)] });
+    const held = service.acquire(attempt('session-b'));
+    expect(service.snapshot()).toMatchObject({ active: 1, queued: 1 });
+    permit.release();
+    (await held).release();
+    expect(service.snapshot()).toMatchObject({ active: 0, queued: 0 });
+  });
   it('defers observer mutations until admission completes and preserves queued requests', async () => {
     const { service, update } = governor({ rules: [cap(1)] });
     const first = await service.acquire(attempt());

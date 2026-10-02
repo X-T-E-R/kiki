@@ -5,6 +5,7 @@ export const requestConcurrencyRuleSchema = z.object({
   models: z.array(z.string()).optional(), providers: z.array(z.string()).optional(),
   subagentsOnly: z.boolean(), maxConcurrent: z.number().int().positive().optional(),
   overflow: z.enum(['queue', 'reject']), maxWaitMs: z.number().positive().optional(),
+  enabled: z.boolean(),
 });
 export const requestGovernanceSnapshotSchema = z.object({
   domainId: z.string(), runtimeEpoch: z.string(), seq: z.number().int(), asOf: z.string(),
@@ -15,3 +16,30 @@ export const requestGovernanceSnapshotSchema = z.object({
   waiting: z.array(z.object({ attemptId: z.string(), sessionId: z.string().optional(), agentId: z.string().optional(), modelId: z.string(), providerId: z.string(), purpose: z.string(), waitedMs: z.number().nonnegative(), blockingRules: z.array(z.string()) })),
 });
 export type RequestGovernanceSnapshot = z.infer<typeof requestGovernanceSnapshotSchema>;
+
+/**
+ * Wire patch for the `request_governance` config section via `POST /config`.
+ * `rules` is the full list: the section merge replaces arrays wholesale, so
+ * an edit, a toggle, and a deletion all travel as the same complete write.
+ * Keys are the config-file snake_case shape; the server converts to the
+ * engine's camelCase section before validating it against the section schema.
+ */
+export const requestConcurrencyRulePatchSchema = z.object({
+  id: z.string().min(1),
+  scope: z.enum(['global', 'each_session']).optional(),
+  models: z.array(z.string().min(1)).min(1).optional(),
+  providers: z.array(z.string().min(1)).min(1).optional(),
+  subagents_only: z.boolean().optional(),
+  max_concurrent: z.number().int().positive().optional(),
+  overflow: z.enum(['queue', 'reject']).optional(),
+  max_wait_ms: z.number().int().positive().optional(),
+  enabled: z.boolean().optional(),
+}).strict();
+
+export const requestGovernanceConfigPatchSchema = z.object({
+  schema_version: z.literal(1).optional(),
+  max_wait_ms: z.number().int().positive().optional(),
+  max_queue_size: z.number().int().positive().optional(),
+  rules: z.array(requestConcurrencyRulePatchSchema).optional(),
+}).strict();
+export type RequestGovernanceConfigPatch = z.infer<typeof requestGovernanceConfigPatchSchema>;

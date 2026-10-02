@@ -193,6 +193,37 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'usage-governance',
+    fixture: 'usage-dashboard',
+    tags: ['smoke', 'usage'],
+    async run(page, link) {
+      await page.goto(link('/usage?panel=realtime'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-governance-active]', { timeout: 20_000 });
+      const shots = [await shot(page, 'usage-realtime')];
+      await page.locator('[data-usage-panel="limits"]').click();
+      await page.waitForSelector('[data-governance-rule="kimi-cap"]', { timeout: 20_000 });
+      shots.push(await shot(page, 'usage-limits'));
+      await page.locator('[data-governance-rule="kimi-cap"] button').first().click();
+      await page.waitForSelector('[data-governance-editor]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-limits-editor'));
+      await page.locator('[data-governance-editor] button[type="button"]', { hasText: 'Cancel' }).click();
+      // Delete both rules through their editors: the list empties into the
+      // guided empty state, whose action opens a fresh rule form.
+      for (const id of ['kimi-cap', 'session-focus']) {
+        await page.locator(`[data-governance-rule="${id}"] button`).first().click();
+        await page.locator('[data-governance-editor-delete]').click();
+        await page.locator('[data-confirm-action="confirm"]').click();
+        await page.waitForSelector(`[data-governance-rule="${id}"]`, { state: 'detached', timeout: 10_000 });
+      }
+      await page.waitForSelector('[data-governance-empty]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-limits-empty'));
+      await page.locator('[data-governance-add]').click();
+      await page.waitForSelector('[data-governance-editor]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-limits-new'));
+      return shots;
+    },
+  },
+  {
     name: 'first-run',
     tags: ['smoke', 'onboarding'],
     onboarding: false,
