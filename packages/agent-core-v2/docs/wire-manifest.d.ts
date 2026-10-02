@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (78 record types)
+// Index (81 record types)
 //   agent_message.delivered            (none)                                                                                      src/session/agentCollaboration/messageEvents.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                         src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                                                     src/agent/profile/profileOps.ts
@@ -47,6 +47,9 @@
 //   goal.clear                         goal, goalForkNotice                                                                        src/agent/goal/goalOps.ts
 //   goal.create                        goal, goalForkNotice                                                                        src/agent/goal/goalOps.ts
 //   goal.update                        goal                                                                                        src/agent/goal/goalOps.ts
+//   hook.observed                      (none)                                                                                      src/features/externalHooks/agent/hookState.ts
+//   hook.rules.configured              (none)                                                                                      src/features/externalHooks/agent/hookState.ts
+//   hook.step.prepared                 (none)                                                                                      src/features/externalHooks/agent/hookState.ts
 //   interaction.request                interaction                                                                                 src/session/interaction/interactionOps.ts
 //   interaction.resolved               interaction                                                                                 src/session/interaction/interactionOps.ts
 //   interruptionReminder.recorded      interruptionReminder                                                                        src/agent/interruptionReminder/interruptionReminderOps.ts
@@ -424,6 +427,50 @@ interface GoalUpdatePayload {
     wallClockBudgetMs?: number;
   };
   actor?: 'user' | 'model' | 'runtime' | 'system';
+}
+
+/**
+ * states: (none)
+ * owner: src/features/externalHooks/agent/hookState.ts
+ */
+interface HookObservedPayload {
+  _name: 'hook.observed';
+  hookId: string;
+  semanticRevision: string;
+  partition: string;
+  milestone: number;
+  eventId: string;
+  key: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/features/externalHooks/agent/hookState.ts
+ */
+interface HookRulesConfiguredPayload {
+  _name: 'hook.rules.configured';
+  rules: {
+    id: string;
+    semanticHash: string;
+    counterScope: 'agent' | 'turn';
+  }[];
+}
+
+/**
+ * states: (none)
+ * owner: src/features/externalHooks/agent/hookState.ts
+ */
+interface HookStepPreparedPayload {
+  _name: 'hook.step.prepared';
+  stepId: string;
+  logicalStepId: string;
+  turnId: number;
+  modelId: string;
+  targets: {
+    id: string;
+    partition: string;
+    semanticRevision: string;
+  }[];
 }
 
 /**
@@ -1374,6 +1421,9 @@ interface WirePayloadMap {
   "goal.clear": GoalClearPayload;
   "goal.create": GoalCreatePayload;
   "goal.update": GoalUpdatePayload;
+  "hook.observed": HookObservedPayload;
+  "hook.rules.configured": HookRulesConfiguredPayload;
+  "hook.step.prepared": HookStepPreparedPayload;
   "interaction.request": InteractionRequestPayload;
   "interaction.resolved": InteractionResolvedPayload;
   "interruptionReminder.recorded": InterruptionReminderRecordedPayload;

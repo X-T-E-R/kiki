@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 110 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 111 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -76,6 +76,7 @@
 //     cron                                            src/session/cron/cronOps.ts
 //     dateChange.seed                                 src/features/dateChange/dateChangeService.ts
 //     externalExecutor                                src/agent/execution/externalExecutorOps.ts
+//     externalHooks.clock                             src/features/externalHooks/agent/hookState.ts
 //     externalHooks.stopHookContinuationUsed          src/features/externalHooks/agent/agentExternalHooksService.ts
 //     fullCompaction                                  src/agent/fullCompaction/compactionOps.ts
 //     fullCompaction.activeTurnId                     src/agent/fullCompaction/fullCompactionService.ts
@@ -1694,6 +1695,16 @@ export interface AgentStateSnapshot {
         readonly responsesClientMetadata?: Readonly<Record<string, string>>;
         readonly onResponseHeaders?: (headers: Headers) => void;
       };
+      readonly attribution?: /* RequestAttribution — packages/agent-core-v2/src/kosong/model/requestAdmission.ts */ {
+        readonly logicalRequestId: string;
+        readonly sessionId?: string;
+        readonly agentId?: string;
+        readonly parentAgentId?: string;
+        readonly purpose: string;
+        readonly waitBudget: {
+          waitedMs: number;
+        };
+      };
     };
     readonly systemPrompt: string;
     readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
@@ -1709,6 +1720,11 @@ export interface AgentStateSnapshot {
           readonly fileIndex?: number;
           readonly line?: number;
         }[];
+        readonly diagnostic?: {
+          readonly code: 'deprecated';
+          readonly replacement: string;
+          readonly message: string;
+        };
       }[];
     };
     readonly promptPrepared: boolean;
@@ -1731,11 +1747,11 @@ export interface AgentStateSnapshot {
         };
       };
       requestIdentity?: /* RequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
-        preset?: 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'kimi_code';
+        preset?: 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'opencode_compatible' | 'kimi_code';
         profile?: string;
         overrides?: /* RequestIdentityOverrides — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
           lineage?: {
-            format?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build';
+            format?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
             sessionScope?: 'none' | 'shared_session' | 'agent_session';
             threadIdentity?: 'agent' | 'none';
             parentThread?: 'none' | 'immediate_agent';
@@ -1752,7 +1768,7 @@ export interface AgentStateSnapshot {
               mode: 'custom';
               value: string;
             };
-            userAgent?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'host';
+            userAgent?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode' | 'host';
           };
           request?: {
             logicalId?: 'none' | 'turn';
@@ -1782,7 +1798,7 @@ export interface AgentStateSnapshot {
     } | undefined;
     readonly requestIdentity: /* ResolvedRequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
       lineage: {
-        format: /* RequestIdentityLineageFormat — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build';
+        format: /* RequestIdentityLineageFormat — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
         sessionScope: 'none' | 'shared_session' | 'agent_session';
         threadIdentity: 'agent' | 'none';
         parentThread: 'none' | 'immediate_agent';
@@ -1799,7 +1815,7 @@ export interface AgentStateSnapshot {
           mode: 'custom';
           value: string;
         };
-        userAgent: /* RequestIdentityUserAgentMode — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'host';
+        userAgent: /* RequestIdentityUserAgentMode — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode' | 'host';
       };
       request: {
         logicalId: 'none' | 'turn';
@@ -1811,7 +1827,7 @@ export interface AgentStateSnapshot {
         messages: 'none' | 'metadata_user_id';
       };
       responsesMetadata: 'none' | 'codex';
-      preset: /* RequestIdentityPreset — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'kimi_code';
+      preset: /* RequestIdentityPreset — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'opencode_compatible' | 'kimi_code';
       profile: string;
     };
   }>;
@@ -2271,6 +2287,16 @@ export interface AgentStateSnapshot {
           }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
         };
       }) => Promise<string>;
+      readonly restrictModelsToMenu?: boolean;
+      readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly source: string;
+        readonly defaultAlias?: string;
+        readonly aliases: readonly string[];
+        readonly profileAliases?: readonly string[];
+        readonly identities: readonly string[];
+      };
+      readonly effectiveModelAliases?: readonly string[];
+      readonly modelMenuDiagnostics?: readonly string[];
       readonly modelConstraintProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'summarize' | 'auto' | 'fresh';
@@ -2438,6 +2464,7 @@ export interface AgentStateSnapshot {
         readonly allowKikiSubagents?: boolean;
         readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
         readonly modelAlias?: string;
+        readonly restrictModelsToMenu?: boolean;
         readonly thinkingEffort?: string;
         readonly preferredModels?: readonly string[];
         readonly discouragedModels?: readonly string[];
@@ -2889,6 +2916,7 @@ export interface AgentStateSnapshot {
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
+          readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
           readonly preferredModels?: readonly string[];
           readonly discouragedModels?: readonly string[];
@@ -3449,6 +3477,7 @@ export interface AgentStateSnapshot {
             readonly allowKikiSubagents?: boolean;
             readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
             readonly modelAlias?: string;
+            readonly restrictModelsToMenu?: boolean;
             readonly thinkingEffort?: string;
             readonly preferredModels?: readonly string[];
             readonly discouragedModels?: readonly string[];
@@ -3644,6 +3673,7 @@ export interface AgentStateSnapshot {
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
+          readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
           readonly preferredModels?: readonly string[];
           readonly discouragedModels?: readonly string[];
@@ -4033,6 +4063,37 @@ export interface AgentStateSnapshot {
   } | undefined;
   // src/features/externalHooks/agent/agentExternalHooksService.ts
   'externalHooks.stopHookContinuationUsed': boolean;
+  // src/features/externalHooks/agent/hookState.ts
+  // replayable · durable — folds: HookRulesConfigured, HookStepPrepared, ContextAppendLoopEvent, ContextAppendMessage, HookObserved
+  'externalHooks.clock': /* HooksState — packages/agent-core-v2/src/features/externalHooks/agent/hookState.ts */ {
+    readonly rules: Readonly<Record<string, /* HookRuleClock — packages/agent-core-v2/src/features/externalHooks/agent/hookState.ts */ {
+      readonly semanticHash: string;
+      readonly revision: number;
+      readonly counterScope: 'agent' | 'turn';
+      readonly buckets: Readonly<Record<string, /* HookBucket — packages/agent-core-v2/src/features/externalHooks/agent/hookState.ts */ {
+        readonly completed: number;
+        readonly delivered: number;
+        readonly lastStepId?: string;
+        readonly lastEventId?: string;
+      }>>;
+    }>>;
+    readonly revisionClock: number;
+    readonly completed: Readonly<Record<string, number>>;
+    readonly completedInTurn: Readonly<Record<string, number>>;
+    readonly turnId?: number;
+    readonly lastStepId?: string;
+    readonly prepared?: {
+      stepId: string;
+      logicalStepId: string;
+      turnId: number;
+      modelId: string;
+      targets: {
+        id: string;
+        partition: string;
+        semanticRevision: string;
+      }[];
+    };
+  };
   // src/features/plan/injection/planModeInjection.ts
   'plan.wasActive': boolean;
   // src/features/plan/planOps.ts

@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (46 sections · 1 overlay(s))
+# Index (47 sections · 1 overlay(s))
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -41,6 +41,7 @@
 #   plugins                         src/app/plugin/configSection.ts
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
+#   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
 #   sessionResidency                src/app/sessionManager/configSection.ts
@@ -277,12 +278,7 @@ extra_skill_dirs = []
 #   hooks: custom fromToml · custom toToml
 # ##########################################################################
 
-# one [[hooks]] table per entry:
-# [[hooks]]
-  # event: "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "PermissionRequest" | "PermissionResult" | "UserPromptSubmit" | "UserPromptQueued" | "TurnStarted" | "Stop" | "StopFailure" | "Interrupt" | "SessionStart" | "SessionEnd" | "SessionHeartbeat" | "SubagentStart" | "SubagentStop" | "TaskStarted" | "PreCompact" | "PostCompact" | "Notification"
-  # matcher: string
-  # command: string
-  # timeout: integer
+# hooks: object[] | object
 
 # ##########################################################################
 # identity
@@ -650,6 +646,19 @@ enter_approval_timeout_ms = 60000
     # oauth_host: string
   # env: record<string, string>
   # source: record<string, any>
+
+# ##########################################################################
+# requestGovernance (config.toml: request_governance)
+#   owner: src/app/requestGovernance/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[request_governance]
+schema_version = 1
+max_wait_ms = 300000
+max_queue_size = 1024
+rules = []
 
 # ##########################################################################
 # requestIdentity (config.toml: request_identity)
