@@ -13,6 +13,7 @@ import {
   IAppendLogStore,
   IConfigService,
   ILogService,
+  IModelService,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionInteractionService,
@@ -554,7 +555,7 @@ describe('GET /api/agents', () => {
 
   it('returns a durable capability snapshot after a child agent is disposed', async () => {
     await writeFile(join(home!, 'config.toml'), [
-      'default_model = "stub"',
+      'default_model = "stub"', '[subagent]', 'subagent_dispatch_policy = "advisory"',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
       'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
@@ -577,11 +578,11 @@ describe('GET /api/agents', () => {
       binding: { profile: 'explore', model: 'stub', thinking: 'low' },
     });
     const profile = child.accessor.get(IAgentProfileService);
-    await profile.setModel('stub-alt');
-    profile.setThinking('high');
     expect((await session.accessor.get(ISessionMetadata).read()).agents?.['agent-snapshot']).toMatchObject({
       model: 'stub', thinkingEffort: 'low',
     });
+    await profile.setModel('stub-alt');
+    profile.setThinking('high');
     const readCapabilities = async () => {
       const response = await authedFetch(server!, base,
         `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-snapshot`);
@@ -2198,6 +2199,7 @@ describe('GET /agents named resolution', () => {
         get: (token: unknown) => {
           if (token === IAgentProfileRegistry) return { entries: () => [registration] };
           if (token === IAgentExecutorRegistry) return { get: () => undefined };
+          if (token === IModelService) return { list: () => ({}), resolveId: () => undefined };
           if (token === IConfigService) return { ready: Promise.resolve(), get: () => undefined };
           if (token === ISessionManager) return { list: () => [session] };
           throw new Error('unexpected token');
