@@ -1223,7 +1223,7 @@ describe('live and event chrome', () => {
       'readme_kiki_worker injected',
     );
     const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
-    expect(meta?.textContent).toBe('profile worker · model axon/gpt-5.6-luna');
+    expect(meta?.textContent).toBe('worker · axon/gpt-5.6-luna');
     expect(meta?.getAttribute('title')).toBe(
       'Sender Agent: agent-244\nProfile: worker\nModel: axon/gpt-5.6-luna\nTask: readme_kiki_worker',
     );
@@ -1263,7 +1263,7 @@ describe('live and event chrome', () => {
         'readme_kiki_worker 注入',
       );
       const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
-      expect(meta?.textContent).toBe('角色 worker · 模型 axon/gpt-5.6-luna');
+      expect(meta?.textContent).toBe('worker · axon/gpt-5.6-luna');
       expect(meta?.getAttribute('title')).toBe(
         '发送方智能体：agent-244\n角色：worker\n模型：axon/gpt-5.6-luna\n任务：readme_kiki_worker',
       );
@@ -1302,7 +1302,7 @@ describe('live and event chrome', () => {
     // The model is on the roster row, the profile is not: the label stays
     // quiet about the missing half instead of inventing one.
     expect(container.querySelector('[data-agent-message-sender-meta="agent-900"]')?.textContent).toBe(
-      'model axon/gpt-5.6-luna',
+      'axon/gpt-5.6-luna',
     );
     expect(container.querySelector('[data-agent-message-sender="agent-900"]')?.getAttribute('title')).toBe(
       'Sender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
