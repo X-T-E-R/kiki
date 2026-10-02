@@ -3596,8 +3596,23 @@ async function scenarioTerminal() {
       const viewport = host?.querySelector('.xterm-viewport');
       return viewport?.style.backgroundColor ?? null;
     });
+  // A palette follows the stored preference, not an isolated attribute write.
+  // Dispatch the cross-tab settings notification so the mounted terminal and
+  // the skin sync both see the same live theme change, without a reload.
+  const flipTheme = async (theme) => {
+    await page.evaluate((next) => {
+      const key = 'kiki.settings';
+      const oldValue = localStorage.getItem(key);
+      const settings = oldValue === null ? {} : JSON.parse(oldValue);
+      const newValue = JSON.stringify({ ...settings, theme: next });
+      localStorage.setItem(key, newValue);
+      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue, storageArea: localStorage }));
+    }, theme);
+    await page.waitForFunction((next) => document.documentElement.dataset.theme === next, theme);
+  };
+  await page.evaluate(() => { window.__proofTerminalViewport = document.querySelector('[data-terminal-canvas]:not(.hidden) .xterm-viewport'); });
   const groundBefore = await terminalGround();
-  await page.evaluate(() => { document.documentElement.dataset['theme'] = 'dark'; });
+  await flipTheme('dark');
   let groundAfter = groundBefore;
   for (let i = 0; i < 40 && groundAfter === groundBefore; i += 1) {
     await sleep(100);
@@ -3610,9 +3625,12 @@ async function scenarioTerminal() {
   if (groundAfter === groundBefore) {
     throw new Error('mounted terminal did not follow the app theme flip');
   }
+  if (!await page.evaluate(() => document.querySelector('[data-terminal-canvas]:not(.hidden) .xterm-viewport') === window.__proofTerminalViewport)) {
+    throw new Error('terminal remounted during the live theme flip');
+  }
   await shot('terminal-theme-dark');
-  await page.evaluate(() => { document.documentElement.dataset['theme'] = 'light'; });
-  await page.waitForTimeout(300);
+  await flipTheme('light');
+  await page.waitForFunction((color) => document.querySelector('[data-terminal-canvas]:not(.hidden) .xterm-viewport')?.style.backgroundColor === color, groundBefore);
 
   // Kill tab 2 — the two-step confirm guards it.
   await page.locator('[data-terminal-kill]').nth(1).click();
