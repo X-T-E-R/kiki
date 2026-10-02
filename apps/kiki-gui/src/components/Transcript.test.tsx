@@ -1411,6 +1411,26 @@ describe('live and event chrome', () => {
     expect(items[2]).toBe('future_code');
   });
 
+  it('renders a projected image compression caption as a separate folded reminder, not user text', async () => {
+    const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost. The original is at "/example/original.png".';
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-image', prompt: `Look at this.\n<system>${caption}</system>`,
+      startedAt: '2026-01-01T00:00:00.000Z', steps: [],
+    }] });
+    const container = await renderTranscript(blocks);
+    const bubble = container.querySelector('.steer-bubble');
+    expect(bubble?.textContent).toBe('Look at this.');
+    const reminder = container.querySelector('[data-activity-row]');
+    expect(reminder?.textContent).toContain('System reminder');
+    expect(reminder?.textContent).toContain('Image compressed');
+    expect(reminder?.closest('.steer-bubble')).toBeNull();
+    expect(reminder?.textContent).not.toContain('<system>');
+    expect(reminder?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { click(reminder!.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(container.textContent).toContain('/example/original.png');
+    expect(bubble?.textContent).toBe('Look at this.');
+  });
+
   it('names an injected reminder by its first readable line and keeps the body folded', async () => {
     const container = await renderTranscript([
       {

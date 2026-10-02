@@ -116,6 +116,21 @@ function unknownChildBlock(agentId = CHILD_AGENT_ID): SubagentBlock {
 }
 
 describe('classifyTranscriptText', () => {
+  it('separates image compression captions from user text in occurrence order', () => {
+    const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost.';
+    const text = `Look at these.\n<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>\n<system>${caption} The original is at "/example/second.png".</system>`;
+    expect(classifyTranscriptText({ text, role: 'user', origin: { kind: 'user' } })).toMatchObject({
+      lane: 'you', text: 'Look at these.',
+      reminders: [caption, 'Daemon note.', `${caption} The original is at "/example/second.png".`],
+    });
+    expect(splitSystemReminders(`<system>${caption}</system>`)).toEqual({ text: '', reminders: [caption] });
+  });
+
+  it('preserves unrelated system envelopes and incomplete compression captions', () => {
+    const text = 'Literal <system>user-provided text</system>\n<system>Image compressed to fit model limits: unfinished';
+    expect(splitSystemReminders(text)).toEqual({ text, reminders: [] });
+  });
+
   it('splits system reminders and classifies user, skill, and shell lanes', () => {
     const split = splitSystemReminders('Do the thing.\n<system-reminder>\nDaemon note.\n</system-reminder>');
     expect(split.text).toBe('Do the thing.');
@@ -3951,6 +3966,16 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   }
 
+  it('keeps image captions and system reminders out of earlier failed prompt previews', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot([{
+      promptId: 'p-old-image', userMessageId: 'um-old-image', status: 'failed',
+      createdAt: '2026-01-01T04:00:00.000Z', finishedAt: '2026-01-01T04:01:00.000Z',
+      content: [{ type: 'text', text: '<system>Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.</system>\nReview this.\n<system-reminder>Daemon note.</system-reminder>' }],
+    }]));
+    const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
+    expect(earlier?.kind === 'notice' && earlier.earlierPromptOutcomes?.find((outcome) => outcome.promptId === 'p-old-image')?.text).toBe('Review this.');
+  });
+
   it('merges prompts settled outside the loaded window into one neutral row', () => {
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', windowedFailureSnapshot());
     const notices = projected.blocks.filter((block) => block.kind === 'notice');
@@ -4481,6 +4506,21 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Keep an eye on the nightly job.');
     expect(projected.blocks.filter((block) => block.kind === 'system')).toHaveLength(3);
     expect(projected.blocks.find((block) => block.kind === 'skill')).toMatchObject({ name: 'review' });
+  });
+
+  it('projects historical image captions outside the user block without changing the source', () => {
+    const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. The original is at "/example/original.png".';
+    const prompt = `Look at this.\n<system>${caption}</system>`;
+    const snapshot = emptySnapshot({ items: [{
+      kind: 'turn', turnId: 't-image', ordinal: 1, state: 'completed',
+      origin: { kind: 'user' }, prompt, startedAt: FIXED_AT, steps: [],
+    }] });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['Look at this.']);
+    expect(projected.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([
+      expect.objectContaining({ text: caption, turnId: 't-image' }),
+    ]);
+    expect(snapshot.items[0]).toMatchObject({ prompt });
   });
 
   it('keeps injected reminders as their own quiet rows, never empty', () => {
@@ -5082,6 +5122,37 @@ describe('queued prompt scheduling projection', () => {
       promptId: 'p-photo', text: '', content,
       media: [{ kind: 'image', url: 'https://example.test/photo.png', mime: undefined }],
     })]);
+  });
+
+  it('keeps captions and system reminders out of queued and running message updates', () => {
+    const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.';
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } };
+    const content = [{ type: 'text' as const, text: 'review' }, { type: 'text' as const, text: `<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>` }, image];
+    const echo = (status: 'queued' | 'running', parts = content) => ({
+      promptId: 'p-photo', userMessageId: 'um-photo', text: 'review', status, createdAt: FIXED_AT, content: parts,
+    });
+    let state = appendLocalUserMessage(createViewState('session_test'), echo('queued', [content[0]!, image]));
+    for (const status of ['queued', 'queued', 'running'] as const) {
+      state = appendLocalUserMessage(state, echo(status));
+      expect(state.blocks.filter((block) => block.kind === 'user')).toEqual([
+        expect.objectContaining({ text: 'review', promptStatus: status, media: [expect.objectContaining({ kind: 'image' })] }),
+      ]);
+      expect(state.blocks.filter((block) => block.kind === 'system-reminder').map((block) => block.text)).toEqual([caption, 'Daemon note.']);
+      if (status === 'queued') expect(queuedPromptPreviews(state)[0]).toMatchObject({ text: 'review', content });
+    }
+    const cleared = appendLocalUserMessage(state, echo('running', [content[0]!, image]));
+    expect(cleared.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([]);
+    expect(content[1]).toMatchObject({ type: 'text', text: `<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>` });
+  });
+
+  it('keeps an image-only prompt visible without making its caption a user bubble', () => {
+    const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.';
+    const state = appendLocalUserMessage(createViewState('session_test'), {
+      promptId: 'p-image', userMessageId: 'um-image', text: '', status: 'running', createdAt: FIXED_AT,
+      content: [{ type: 'text', text: `<system>${caption}</system>` }, { type: 'image', source: { kind: 'url', url: 'https://example.test/photo.png' } }],
+    });
+    expect(state.blocks.find((block) => block.kind === 'user')).toMatchObject({ text: '', media: [expect.objectContaining({ kind: 'image' })] });
+    expect(state.blocks.find((block) => block.kind === 'system-reminder')).toMatchObject({ text: caption });
   });
 
   it('updates exact queued parts even when their projected text and media match, then clears them on launch', () => {

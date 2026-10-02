@@ -1573,7 +1573,8 @@ function upsertPromptItemBlocks(
   mediaOverride?: readonly MediaRef[],
 ): readonly Block[] {
   const projection = projectMessageContent(item.content);
-  const text = projection.text;
+  const split = splitSystemReminders(projection.text);
+  const text = split.text;
   const media = mediaOverride ?? projection.media;
   const nextMedia = media.length === 0 ? undefined : media;
   const queuedContent = item.status === 'queued' ? item.content : undefined;
@@ -1591,19 +1592,23 @@ function upsertPromptItemBlocks(
     })
       ? undefined
       : item.status;
+    const reminders = reminderBlocks(item.user_message_id, item.created_at, split.reminders, existing.turnId);
+    const reminderPrefix = `reminder-${item.user_message_id}-`;
+    const isPromptReminder = (block: Block) => block.kind === 'system-reminder' && block.id.startsWith(reminderPrefix);
     if (
       existing.promptStatus === nextStatus &&
       existing.text === text &&
       sameMedia(existing.media, nextMedia) &&
-      transcriptValueEquals(existing.queuedContent, queuedContent)
+      transcriptValueEquals(existing.queuedContent, queuedContent) &&
+      transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
     ) {
       return blocks;
     }
-    const next = blocks.slice();
-    next[stableIndex] = { ...existing, text, promptStatus: nextStatus, media: nextMedia, queuedContent };
+    const next = blocks.filter((block) => !isPromptReminder(block));
+    const index = next.indexOf(existing);
+    next.splice(index, 1, { ...existing, text, promptStatus: nextStatus, media: nextMedia, queuedContent }, ...reminders);
     return next;
   }
-  const split = splitSystemReminders(text);
   const placeholderIndex =
     item.status === 'running'
       ? blocks.findLastIndex(
@@ -1616,7 +1621,7 @@ function upsertPromptItemBlocks(
       : -1;
   const additions = classifiedTextToBlocks({
     id: item.user_message_id,
-    classified: classifyTranscriptText({ text, role: 'user', origin: { kind: 'user' } }),
+    classified: classifyTranscriptText({ text: projection.text, role: 'user', origin: { kind: 'user' } }),
     createdAt: item.created_at,
     media,
     promptId: item.prompt_id,
@@ -1861,7 +1866,7 @@ function earlierPromptOutcomesBlock(prompts: readonly TerminalPrompt[]): NoticeB
   const outcomes: EarlierPromptOutcome[] = prompts
     .toSorted((a, b) => (timestampMs(a.finishedAt ?? a.createdAt) ?? 0) - (timestampMs(b.finishedAt ?? b.createdAt) ?? 0))
     .map((prompt) => {
-      const text = projectMessageContent(promptContentParts(prompt.content)).text.trim();
+      const text = splitSystemReminders(projectMessageContent(promptContentParts(prompt.content)).text).text;
       return {
         promptId: prompt.promptId,
         userMessageId: prompt.userMessageId,
