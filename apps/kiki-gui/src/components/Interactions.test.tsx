@@ -474,7 +474,8 @@ describe('QuestionCard', () => {
       expect(container.textContent).toContain('Question dismissed');
       expect(container.textContent).not.toContain('Question expired');
       await render(project('cancelled'));
-      expect(container.querySelector('[data-question-history] summary')?.textContent).toBe('Question expired');
+      expect(container.querySelector('[data-question-history] [data-activity-toggle]')?.textContent).toContain('Question expired');
+      expect(container.querySelector('[data-question-history] [aria-expanded="false"]')).not.toBeNull();
       expect(container.querySelector('button[aria-pressed]')).toBeNull();
       expect(onAnswer).not.toHaveBeenCalled();
       expect(onDismiss).not.toHaveBeenCalled();

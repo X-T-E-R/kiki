@@ -403,7 +403,7 @@ export interface ApprovalBlock {
 }
 
 export type QuestionOutcome =
-  | { readonly kind: 'answered'; readonly at: string }
+  | { readonly kind: 'answered'; readonly at: string; readonly answers?: Readonly<Record<string, string>> }
   | { readonly kind: 'dismissed'; readonly at: string }
   | { readonly kind: 'expired' };
 

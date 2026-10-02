@@ -71,6 +71,7 @@ import {
   type ToolBlock,
 } from './types';
 import { projectSendMessage } from '../messageView';
+import { questionAnswerTexts } from './questionAnswers';
 
 export type AgentTranscriptProjectionSource = {
   readonly agent_id: string;
@@ -513,6 +514,10 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         : {};
     const turnId = recordNumber(request, 'turnId', 'turn_id');
     const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
+    const questions = engineQuestionItems(request['questions']);
+    const response = typeof interaction.response === 'object' && interaction.response !== null
+      ? interaction.response as Record<string, unknown> : {};
+    const at = recordString(response, 'resolvedAt', 'resolved_at', 'dismissed_at') ?? createdAt;
     return {
       kind: 'question',
       id: `question-${interaction.interactionId}`,
@@ -521,16 +526,16 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         session_id: recordString(request, 'sessionId', 'session_id') ?? '',
         turn_id: turnId,
         tool_call_id: interaction.toolCallId ?? recordString(request, 'toolCallId', 'tool_call_id'),
-        questions: engineQuestionItems(request['questions']),
+        questions,
         created_at: createdAt,
       },
       outcome:
         interaction.state === 'pending'
           ? undefined
           : interaction.state === 'answered'
-            ? { kind: 'answered', at: createdAt }
+            ? { kind: 'answered', at, answers: questionAnswerTexts(questions, response['answers']) }
             : interaction.state === 'dismissed'
-              ? { kind: 'dismissed', at: createdAt }
+              ? { kind: 'dismissed', at }
               : { kind: 'expired' },
       originAgentId,
       originUnknown: originAgentId === undefined && agentId === MAIN_AGENT_ID,

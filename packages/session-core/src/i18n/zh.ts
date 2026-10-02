@@ -1428,6 +1428,7 @@ export const zh = {
   'ia.question.answered': '问题已回答',
   'ia.question.dismissed': '问题已忽略',
   'ia.question.expired': '问题已过期',
+  'ia.question.answerUnavailable': '这条记录中没有保存回答。',
   'ia.other': '其他',
   'ia.otherPlaceholder': '输入你的回答…',
   'ia.answerFailed': '回答发送失败：{detail}',

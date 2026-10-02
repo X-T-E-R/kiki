@@ -69,6 +69,7 @@ const MATRIX = {
   'models-page-empty': ['theme', 'width'],
   'native-ssh': ['theme', 'width'],
   'profile-editor': ['theme', 'width'],
+  'question-card': ['width'],
   'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
   skins: ['theme'],
@@ -1157,8 +1158,36 @@ async function scenarioQuestionCard() {
   await page.click('text=Visual proof');
   await page.click(`button:has-text("${S.submit}")`);
   await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 30_000 });
+  await page.locator('[data-history-fold] > div > [data-activity-toggle]').click();
+  await page.locator('[data-tool-semantic="AskUserQuestion"]').waitFor();
+  await page.mouse.move(5, 5);
   await page.waitForTimeout(400);
+  const geometry = await page.evaluate(() => {
+    const rows = [document.querySelector('[data-tool-semantic="AskUserQuestion"]'), document.querySelector('[data-question-history]')];
+    return rows.map((row) => {
+      const box = (element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; };
+      const detail = row.querySelector('[data-activity-detail]');
+      return { row: box(row.querySelector('[data-activity-toggle]')), detail: box(detail), meta: box(row.querySelector('[data-activity-meta]')), truncation: getComputedStyle(detail).textOverflow };
+    });
+  });
+  for (const part of ['row', 'detail', 'meta']) {
+    for (const edge of ['left', 'right']) {
+      if (Math.abs(geometry[0][part][edge] - geometry[1][part][edge]) > 1) throw new Error(`Question ${part} ${edge} differs: ${JSON.stringify(geometry)}`);
+    }
+  }
+  if (geometry.some((row) => row.truncation !== 'ellipsis' || row.detail.width < 60)) throw new Error(`Question excerpts are not readable: ${JSON.stringify(geometry)}`);
+  const overflow = await page.locator('[role="log"]').evaluate((log) => log.scrollWidth - log.clientWidth);
+  if (overflow > 1) throw new Error(`Question timeline overflows by ${overflow}px`);
+  console.log(`[check] question row alignment: ${JSON.stringify(geometry)}`);
   await shot('question-card-answered');
+  await page.locator('[data-question-history] [data-activity-toggle]').click();
+  await page.locator('[data-question-answer]', { hasText: 'Both (Recommended)' }).waitFor();
+  await page.locator('[data-question-answer]', { hasText: 'Typecheck, Visual proof' }).waitFor();
+  await page.locator('[data-tool-semantic="AskUserQuestion"] [data-activity-toggle]').click();
+  await page.mouse.move(5, 5);
+  await shot('question-card-expanded');
+  await page.locator('[data-question-history] [data-activity-toggle]').click();
+  if (await page.locator('[data-question-details]').count() !== 0) throw new Error('Question details did not collapse');
 }
 
 async function scenarioBusyRail() {

@@ -4123,3 +4123,34 @@ describe('SessionController transcript authority', () => {
   });
   });
 });
+
+
+it('keeps selected answers visible immediately after a successful question response', async () => {
+  const { controller, client, flushAll } = await openController();
+  const resolveQuestion = vi.fn(async () => undefined);
+  Object.assign(client, { resolveQuestion });
+  const interaction = {
+    interactionId: 'q-history', interactionKind: 'question' as const, state: 'pending' as const,
+    request: { createdAt: '2026-01-01T00:00:00.000Z', questions: [
+      { id: 'q1', question: 'Which checks?', options: [{ id: 'a', label: 'Typecheck' }, { id: 'b', label: 'Visual proof' }] },
+    ] },
+  };
+  try {
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ interactions: [interaction] }), 1));
+    flushAll();
+    await controller.answerQuestion('q-history', { q1: { kind: 'multi_with_other', option_ids: ['a', 'b'], other_text: 'Include mobile.' } });
+    expect(resolveQuestion).toHaveBeenCalledOnce();
+    expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({
+      outcome: { kind: 'answered', answers: { q1: 'Typecheck, Visual proof, Include mobile.' } },
+    });
+    controller.handleTranscript(opsEvent('main', [{ op: 'interaction.upsert', interaction: {
+      ...interaction, state: 'answered', response: { answers: { 'Which checks?': 'Typecheck, Visual proof, Include mobile.' } },
+    } }], 2));
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'question')).toMatchObject({
+      outcome: { kind: 'answered', answers: { q1: 'Typecheck, Visual proof, Include mobile.' } },
+    });
+  } finally {
+    controller.close();
+  }
+});
