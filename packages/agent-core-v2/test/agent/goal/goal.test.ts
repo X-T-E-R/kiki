@@ -2876,29 +2876,48 @@ describe('AgentGoalService TaskWait background scenarios', () => {
 });
 
 describe('AgentGoalService TaskWait guidance gating', () => {
-  it('shows the TaskWait guidance in the active-goal reminder when the flag is on', async () => {
-    const ctx = createTestAgent();
-    try {
-      ctx.configure();
-      await ctx.rpc.createGoal({ objective: 'finish bounded work' });
+  it.each(['subagents_done', 'tasks_done', undefined] as const)(
+    'matches the reminder and continuation guidance to follow-up timing %s', async (followUpTiming) => {
+      const ctx = createTestAgent();
+      try {
+        ctx.configure();
+        await ctx.rpc.createGoal({ objective: 'finish bounded work', followUpTiming });
 
-      ctx.mockNextResponse({ type: 'text', text: 'slice done' });
-      ctx.mockNextResponse({
-        type: 'function',
-        id: 'ug_1',
-        name: 'UpdateGoal',
-        arguments: JSON.stringify({ status: 'complete' }),
-      });
-      ctx.mockNextResponse({ type: 'text', text: 'done' });
+        ctx.mockNextResponse({ type: 'text', text: 'slice done' });
+        ctx.mockNextResponse({
+          type: 'function',
+          id: 'ug_1',
+          name: 'UpdateGoal',
+          arguments: JSON.stringify({ status: 'complete' }),
+        });
+        ctx.mockNextResponse({ type: 'text', text: 'done' });
 
-      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
-      await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(3));
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
+        await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(3));
 
-      expect(JSON.stringify(ctx.llmCalls[0])).toContain('re-invoked again and again');
-    } finally {
-      await ctx.dispose();
-    }
-  });
+        const reminder = ctx.llmCalls[0]!.history.at(-1);
+        const continuation = ctx.llmCalls[1]!.history.find((message) =>
+          JSON.stringify(message).includes('Continue working toward the active goal'),
+        );
+        expect(continuation).toBeDefined();
+        for (const message of [reminder, continuation]) {
+          const text = JSON.stringify(message);
+          expect(text).not.toContain('re-invoked again and again');
+          expect(text).toContain('end the turn normally to await');
+          if (followUpTiming === 'tasks_done') {
+            expect(text).toContain('finite background tasks');
+            expect(text).not.toContain('TaskWait');
+          } else {
+            expect(text).toContain('Background bash tasks do not delay goal follow-up');
+            expect(text).toContain('call TaskWait for that task');
+            expect(text).not.toContain('call TaskWait to wait for them');
+          }
+        }
+      } finally {
+        await ctx.dispose();
+      }
+    },
+  );
 
   it('hides TaskWait from the reminder, the continuation prompt, and the tools when the flag is off', async () => {
     const ctx = createTestAgent(appService(IFlagService, stubFlag(false)));
@@ -2920,6 +2939,8 @@ describe('AgentGoalService TaskWait guidance gating', () => {
 
       const allCalls = JSON.stringify(ctx.llmCalls);
       expect(allCalls).not.toContain('re-invoked again and again');
+      expect(allCalls).not.toContain('call TaskWait');
+      expect(allCalls).toContain('end the turn normally to await their completion notifications');
       for (const call of ctx.llmCalls) {
         expect(call.tools.map((tool) => tool.name)).not.toContain('TaskWait');
       }
@@ -3000,7 +3021,7 @@ describe('AgentGoalService TaskWait guidance gating', () => {
 
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(1));
-      expect(JSON.stringify(ctx.llmCalls[0])).toContain('re-invoked again and again');
+      expect(JSON.stringify(ctx.llmCalls[0])).toContain('call TaskWait for that task');
 
       await ctx.get(ISessionToolPolicy).setDisabledTools(['TaskWait']);
       settle({ result: 'bg result' });
@@ -3011,11 +3032,10 @@ describe('AgentGoalService TaskWait guidance gating', () => {
         JSON.stringify(message).includes('Continue working toward the active goal'),
       );
       expect(continuationPrompt).toBeDefined();
-      expect(JSON.stringify(continuationPrompt)).not.toContain('re-invoked again and again');
+      expect(JSON.stringify(continuationPrompt)).not.toContain('TaskWait');
       const freshReminder = continuationCall.history.at(-1);
       expect(JSON.stringify(freshReminder)).toContain('active goal');
-      expect(JSON.stringify(freshReminder)).not.toContain('re-invoked again and again');
-      expect((await ctx.rpc.getGoal({})).goal).toBeNull();
+      expect(JSON.stringify(freshReminder)).not.toContain('TaskWait');
       expect((await ctx.rpc.getGoal({})).goal).toBeNull();
     } finally {
       await ctx.dispose();

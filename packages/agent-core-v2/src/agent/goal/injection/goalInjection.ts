@@ -12,8 +12,15 @@ export interface GoalInjectionOptions {
   readonly shouldInject?: () => boolean;
 }
 
-export const GOAL_TASK_WAIT_GUIDANCE =
-  'If you are waiting for background sub-agents or bash tasks to finish, call TaskWait to wait for them inside this turn instead of ending the turn; ending the turn just gets you re-invoked again and again. You can also use the waiting time to do useful parallel work. Either way, make sure every goal turn is productive.';
+export function buildGoalFollowUpGuidance(goal: Pick<GoalSnapshot, 'followUpTiming'>, taskWaitEnabled: boolean): string {
+  if (goal.followUpTiming === 'tasks_done') {
+    return 'Goal follow-up waits for background sub-agents and finite background tasks to finish. Do useful independent work, or end the turn normally to await completion notifications; the goal will continue when those tasks settle. Long-running services do not delay goal follow-up.';
+  }
+  const guidance = 'Goal follow-up waits for background sub-agents to finish. Do useful independent work, or end the turn normally to await their completion notifications. Background bash tasks do not delay goal follow-up.';
+  return taskWaitEnabled
+    ? `${guidance} If a finite background bash task is a concrete dependency for your next goal action, call TaskWait for that task inside this turn to avoid repeated goal continuations while it is still running.`
+    : guidance;
+}
 
 export class GoalInjection extends Service {
   constructor(
@@ -26,7 +33,8 @@ export class GoalInjection extends Service {
         const goal = this.options.getGoal();
         if (goal === null) return undefined;
         const signature = JSON.stringify([goal.goalId, goal.objective, goal.completionCriterion, goal.status, goal.terminalReason,
-          goal.budget.turnBudget, goal.budget.tokenBudget, goal.budget.wallClockBudgetMs, isNearingBudget(goal)]);
+          goal.budget.turnBudget, goal.budget.tokenBudget, goal.budget.wallClockBudgetMs, isNearingBudget(goal),
+          goal.followUpTiming, this.options.isTaskWaitEnabled?.() === true]);
         if ((lastDisclosure as { signature?: string } | undefined)?.signature === signature) return undefined;
         const content = this.reminder();
         return content === undefined ? undefined : { content, disclosure: { signature } };
@@ -77,7 +85,7 @@ function buildGoalReminder(goal: GoalSnapshot, taskWaitEnabled: boolean): string
     progress: `${goal.turnsUsed} continuation turns, ${goal.tokensUsed} tokens, ${formatElapsed(goal.wallClockMs)} elapsed`,
     budgets_block: budgets.length > 0 ? `Budgets: ${budgets}.\n` : '',
     budget_guidance: isNearingBudget(goal) ? BUDGET_GUIDANCE_NEARING : BUDGET_GUIDANCE_WITHIN,
-    task_wait_guidance: taskWaitEnabled ? ` ${GOAL_TASK_WAIT_GUIDANCE}` : '',
+    follow_up_guidance: ` ${buildGoalFollowUpGuidance(goal, taskWaitEnabled)}`,
   });
 }
 

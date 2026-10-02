@@ -120,6 +120,20 @@ describe('GoalInjection content', () => {
     expect(text).toContain('<untrusted_objective>\nShip feature X\n</untrusted_objective>');
   });
 
+  it('refreshes follow-up guidance when the timing changes without changing the objective', async () => {
+    await goals.createGoal({ objective: 'work', followUpTiming: 'subagents_done' });
+    await injectDynamic(injector, true);
+    expect(lastGoalReminder(context)).toContain('Background bash tasks do not delay goal follow-up');
+
+    const goal = goals.getGoal().goal!;
+    await goals.updateGoal({ goalId: goal.goalId, followUpTiming: 'tasks_done' });
+    await injectDynamic(injector, false);
+
+    expect(lastGoalReminder(context)).toContain('finite background tasks');
+    expect(lastGoalReminder(context)).not.toContain('Background bash tasks do not delay goal follow-up');
+    expect(lastGoalReminder(context)).not.toContain('TaskWait');
+  });
+
   it('wraps the completion criterion when present', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({

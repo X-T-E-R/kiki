@@ -15,7 +15,7 @@ import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
-import { GoalInjection, GOAL_TASK_WAIT_GUIDANCE } from '#/agent/goal/injection/goalInjection';
+import { GoalInjection, buildGoalFollowUpGuidance } from '#/agent/goal/injection/goalInjection';
 import {
   IAgentLoopService,
   type AfterStepContext,
@@ -136,7 +136,8 @@ const GOAL_CONTINUATION_PROMPT = [
   'conversation context and your tools. Do not try to finish a broad goal in one turn unless the',
   'whole goal is genuinely small. Most goal turns should not call UpdateGoal: after completing a',
   'useful slice, if material work remains, end the turn normally without calling UpdateGoal so',
-  'the runtime can continue the goal in the next turn. Call UpdateGoal with `complete` only when',
+  'the runtime can continue the goal once its follow-up conditions are met. Call UpdateGoal with',
+  '`complete` only when',
   'all required work is done, any stated validation has passed, and there is no useful next',
   'action. Completion audit: before calling `complete`, verify the current state against the',
   'actual objective and every explicit requirement. Treat weak or indirect evidence as not',
@@ -1041,9 +1042,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       content: [
         {
           type: 'text',
-          text: this.isTaskWaitAvailable()
-            ? `${prompt} ${GOAL_TASK_WAIT_GUIDANCE}`
-            : prompt,
+          text: `${prompt} ${buildGoalFollowUpGuidance(state, this.isTaskWaitAvailable())}`,
         },
       ],
       toolCalls: [],
