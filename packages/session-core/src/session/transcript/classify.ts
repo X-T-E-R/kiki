@@ -10,11 +10,14 @@ export interface SplitSystemRemindersResult {
 
 export function splitSystemReminders(text: string): SplitSystemRemindersResult {
   const reminders: string[] = [];
-  const visible = text.replaceAll(/<system-reminder>([\s\S]*?)<\/system-reminder>/gi, (_match, body: string) => {
-    const reminder = body.trim();
-    if (reminder !== '') reminders.push(reminder);
-    return '';
-  });
+  const visible = text.replaceAll(
+    /<system-reminder>([\s\S]*?)<\/system-reminder>|<system>(Image compressed to fit model limits:[\s\S]*?)<\/system>/gi,
+    (_match, body: string | undefined, caption: string | undefined) => {
+      const reminder = (body ?? caption ?? '').trim();
+      if (reminder !== '') reminders.push(reminder);
+      return '';
+    },
+  );
   return {
     text: visible.replaceAll(/\n{3,}/g, '\n\n').trim(),
     reminders,
