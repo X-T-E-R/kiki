@@ -56,6 +56,8 @@ import { SessionRouteView } from './components/SessionView';
 import { PersonasPage } from './components/persona/PersonasPage';
 import { RoomPage } from './components/room/RoomPage';
 import { SettingsPage } from './components/SettingsPage';
+import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
+import { readSpaceViewRoute } from './lib/spaceViewState';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
 import { isBotOrRoomSession } from './components/bot/SidebarBotRoomGroups';
@@ -136,8 +138,14 @@ export async function runStartupUpdateCheck(
 }
 
 function RootRedirect() {
-  const lastSessionId = useMemo(() => readLastSessionId(), []);
-  return <Navigate to={lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new'} replace />;
+  const host = useHost();
+  const { scopeId } = useConnection();
+  const target = useMemo(() => {
+    const saved = host.kind === 'tauri' ? readSpaceViewRoute(scopeId) : undefined;
+    const lastSessionId = readLastSessionId();
+    return saved ?? (lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new');
+  }, [host.kind, scopeId]);
+  return <Navigate to={target} replace />;
 }
 
 export { isEditableTarget };
@@ -585,6 +593,7 @@ export function App() {
         ) : null}
         <RestartBanner />
         <div className="app-sheet">
+        <SpaceViewMemory />
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           {/* The conversation shell owns the composer mount across /new and
@@ -597,11 +606,13 @@ export function App() {
             <Route
               path="/s/:id/*"
               element={
-                <SessionRouteView
-                  sessionId={activeSessionId}
-                  onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
-                  sessions={sessions}
-                />
+                <SpaceViewState>
+                  <SessionRouteView
+                    sessionId={activeSessionId}
+                    onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+                    sessions={sessions}
+                  />
+                </SpaceViewState>
               }
             />
           </Route>
@@ -662,10 +673,10 @@ export function App() {
             path="/personas"
             element={<PersonasPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
-          <Route path="/r/:id" element={<RoomLinkRedirect />} />
+          <Route path="/r/:id" element={<SpaceViewState><RoomLinkRedirect /></SpaceViewState>} />
           <Route
             path="/rooms/:id"
-            element={<RoomPage sessions={sessions} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            element={<SpaceViewState><RoomPage sessions={sessions} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} /></SpaceViewState>}
           />
           <Route
             path="/capabilities"
@@ -675,7 +686,7 @@ export function App() {
               over SessionRouteView while the sidebar keeps the session active. */}
           <Route
             path="/s/:id/tasks"
-            element={<TasksPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            element={<SpaceViewState><TasksPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} /></SpaceViewState>}
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>

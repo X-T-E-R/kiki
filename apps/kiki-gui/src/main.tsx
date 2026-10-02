@@ -10,6 +10,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { HostProvider, hostAdapter } from './host';
 import { initializeSpaceStorage } from './lib/spaceStorage';
+import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import './index.css';
 import './styles/motion.css';
 import './styles/new-session.css';
@@ -31,6 +32,7 @@ async function start(): Promise<void> {
     startTokenPreview();
   }
   await initializeSpaceStorage(hostAdapter);
+  restoreSpaceViewAtBoot(hostAdapter);
   const [
     { App },
     { AppErrorBoundary },

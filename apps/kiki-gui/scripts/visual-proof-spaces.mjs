@@ -105,14 +105,15 @@ async function walk(context) {
   await page.click('[data-space-new]');
   await page.waitForSelector('[data-space-create]');
   await page.fill('[data-space-name]', 'Client B');
-  await page.click('[data-space-color="#1d4ed8"]');
+  await page.click('[data-space-color="#4c64a9"]');
   await page.click('[data-space-inherit-credentials="isolated"]');
   await shot('spaces-create');
-  // Create without opening, so the list can be checked first.
+  // Create-and-open enters a space with no remembered page yet.
   const create = await page.evaluate(() => document.querySelector('[data-space-path]')?.value);
   expect(typeof create === 'string' && create.endsWith('client-b'), `suggested path ${create}`);
   await page.click('[data-space-create-submit]');
-  await waitReload(page, '[data-space-list]');
+  await waitReload(page, '[data-space-switcher]');
+  expect(new URL(page.url()).pathname === '/new', 'a new space must open its own start page');
   const state = (await control({ action: 'space_state' })).data;
   const created = state.items.find((item) => item.name === 'Client B');
   expect(created !== undefined && created.credentials === 'isolated', 'Client B was not created as isolated');

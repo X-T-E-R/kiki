@@ -32,6 +32,7 @@ import {
 } from './spaceStorage';
 import { USAGE_FILTER_DEFAULTS, readStoredUsageFilters, writeStoredUsageFilters } from './usageV2';
 import { readTopLevelThreads, writeTopLevelThreads } from './threadDisplayMemory';
+import { isSpaceViewRoute, markSpaceViewRoute, readSpaceViewRoute, restoreSpaceViewAtBoot, writeSpaceViewRoute } from './spaceViewState';
 
 // Matches the repo's other fs-driven GUI tests: vitest gives `import.meta.url`
 // a file URL here, while `new URL(..., import.meta.url)` does not.
@@ -45,6 +46,110 @@ afterEach(() => {
   configureSpaceStorage(null);
   clearInjectedSpace();
   localStorage.clear();
+  sessionStorage.clear();
+  window.history.replaceState(null, '', '/');
+  vi.restoreAllMocks();
+});
+
+describe('space view memory', () => {
+  it('remembers each space and connection independently, with page queries and hashes', () => {
+    writeSpaceViewRoute('/s/session-a/tasks?filter=running#task');
+    writeSpaceViewRoute('/s/remote', 'ssh:example.test');
+    configureSpaceStorage({ homeId: 'space-b' });
+    expect(readSpaceViewRoute()).toBeUndefined();
+    writeSpaceViewRoute('/settings/ai?tab=defaults');
+    expect(readSpaceViewRoute('ssh:example.test')).toBeUndefined();
+    configureSpaceStorage(null);
+    expect(readSpaceViewRoute()).toBe('/s/session-a/tasks?filter=running#task');
+    expect(readSpaceViewRoute('ssh:example.test')).toBe('/s/remote');
+  });
+
+  it('replaces an inherited session URL before the target space boots and restores on return', () => {
+    window.history.replaceState(null, '', '/s/session-a');
+    writeSpaceViewRoute('/s/session-a');
+    markSpaceViewRoute('/s/session-a');
+    configureSpaceStorage({ homeId: 'space-b' });
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/new');
+    window.history.replaceState(null, '', '/usage?range=month');
+    writeSpaceViewRoute('/usage?range=month');
+    markSpaceViewRoute('/usage?range=month');
+    configureSpaceStorage(null);
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/s/session-a');
+    configureSpaceStorage({ homeId: 'space-b' });
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/usage?range=month');
+  });
+
+  it('handles native switches and new windows without a GUI enterSpace call', () => {
+    writeSpaceViewRoute('/board?workspace=example');
+    window.history.replaceState(null, '', '/s/foreign');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/board?workspace=example');
+  });
+
+  it('keeps same-space refresh and browser deep links intact', () => {
+    writeSpaceViewRoute('/usage');
+    markSpaceViewRoute('/usage');
+    window.history.replaceState(null, '', '/s/explicit');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/s/explicit');
+    configureSpaceStorage({ homeId: 'space-b' });
+    restoreSpaceViewAtBoot({ kind: 'browser' });
+    expect(window.location.pathname).toBe('/s/explicit');
+    restoreSpaceViewAtBoot({ kind: 'vscode' });
+    expect(window.location.pathname).toBe('/s/explicit');
+  });
+
+  it('keeps the existing space-scoped last-session preference until a page is remembered', () => {
+    localStorage.setItem('kiki.lastSessionId', 'legacy-a');
+    configureSpaceStorage({ homeId: 'space-b' });
+    window.history.replaceState(null, '', '/s/legacy-a');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/new');
+    configureSpaceStorage(null);
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/s/legacy-a');
+  });
+
+  it.each(['/s/session-a', '/activity'])('preserves native notification activity from %s', (source) => {
+    markSpaceViewRoute(source);
+    configureSpaceStorage({ homeId: 'space-b' });
+    writeSpaceViewRoute('/s/session-b');
+    window.history.replaceState(null, '', '/activity');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/activity');
+  });
+
+  it('restores the target view when the source space was already on activity', () => {
+    markSpaceViewRoute('/activity');
+    configureSpaceStorage({ homeId: 'space-b' });
+    writeSpaceViewRoute('/s/session-b');
+    window.history.replaceState({ idx: 1, key: 'activity' }, '', '/activity');
+    restoreSpaceViewAtBoot({ kind: 'tauri' });
+    expect(window.location.pathname).toBe('/s/session-b');
+  });
+
+  it('ignores corrupt, external, unsupported and credential-bearing saved routes', () => {
+    for (const value of ['invalid', 'null', '[]', '{"local":42}', '{"local":"/removed"}']) {
+      localStorage.setItem('kiki.viewRoute', value);
+      expect(readSpaceViewRoute()).toBeUndefined();
+    }
+    for (const route of ['/', '/removed', '//example.test/s/a', '/\\\\example.test/s/a', 'https://example.test/s/a', '/new?token=secret', '/new#token=secret', '/new?server=http://example.test']) {
+      expect(isSpaceViewRoute(route), route).toBe(false);
+    }
+    expect(readSpaceViewRoute('__proto__')).toBeUndefined();
+  });
+
+  it('falls back safely when storage is unavailable', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('full'); });
+    window.history.replaceState(null, '', '/s/foreign');
+    expect(() => writeSpaceViewRoute('/usage')).not.toThrow();
+    expect(() => restoreSpaceViewAtBoot({ kind: 'tauri' })).not.toThrow();
+    expect(window.location.pathname).toBe('/new');
+  });
 });
 
 describe('thread display memory', () => {
