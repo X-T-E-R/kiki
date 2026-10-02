@@ -190,6 +190,18 @@ describe('RightRail fixed and switchable parts', () => {
     expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
   });
 
+  it('keeps the overview flat in both modes without removing the chapter spacing', async () => {
+    const rail = await renderRail();
+    for (const mode of ['default', 'cockpit'] as const) {
+      await choose(rail, mode);
+      const well = rail.querySelector('[data-rail-overview-well]')!;
+      expect(well.className).not.toMatch(/(?:^|\s)(?:rounded|bg|border|ring|shadow)(?:-|\s|$)/);
+      expect(well.querySelector('#rail-overview-title')).not.toBeNull();
+      expect(well.querySelector<HTMLElement>('[data-panel-props="overview"]')?.dataset['panelMode']).toBe(mode);
+      expect(well.closest('[data-rail-switchable]')?.classList.contains('py-4')).toBe(true);
+    }
+  });
+
   it('lifts the overview into view only when cockpit is chosen with the block outside the viewport', async () => {
     const rail = await renderRail();
     const slot = rail.querySelector<HTMLElement>('[data-rail-agent-panel-slot]')!;
