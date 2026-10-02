@@ -741,6 +741,8 @@ export interface KikiClientOptions {
   readonly token?: string;
   /** Per-request deadline; defaults to 30 seconds. */
   readonly timeoutMs?: number;
+  /** Refresh connection-scoped attention data after an acknowledged user action. */
+  readonly onSessionMutation?: (sessionId: string) => void;
 }
 
 export type AgentTranscriptFrame =
@@ -1011,8 +1013,10 @@ export class KikiClient {
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
+  private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
   constructor(options: KikiClientOptions) {
+    this.onSessionMutation = options.onSessionMutation;
     this.baseUrl = options.baseUrl;
     this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
     this.klient = createKlient({
@@ -1021,7 +1025,31 @@ export class KikiClient {
       timeoutMs: options.timeoutMs,
       onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
     });
-    this.sessions = createSessionTransport(this.klient);
+    const sessions = createSessionTransport(this.klient);
+    // Controllers consume this transport directly, not the convenience methods below.
+    this.sessions = {
+      ...sessions,
+      submitPrompt: (...args) => this.runSessionMutation(args[0], () => sessions.submitPrompt(...args)),
+      editMessage: (...args) => this.runSessionMutation(args[0], () => sessions.editMessage(...args)),
+      regenerateMessage: (...args) => this.runSessionMutation(args[0], () => sessions.regenerateMessage(...args)),
+      abortPrompt: (...args) => this.runSessionMutation(args[0], () => sessions.abortPrompt(...args)),
+      abortTurn: (...args) => this.runSessionMutation(args[0], () => sessions.abortTurn(...args)),
+      movePrompt: (...args) => this.runSessionMutation(args[0], () => sessions.movePrompt(...args)),
+      replacePrompt: (...args) => this.runSessionMutation(args[0], () => sessions.replacePrompt(...args)),
+      timingPrompt: (...args) => this.runSessionMutation(args[0], () => sessions.timingPrompt(...args)),
+      steerPrompt: (...args) => this.runSessionMutation(args[0], () => sessions.steerPrompt(...args)),
+      resolveApproval: (...args) => this.runSessionMutation(args[0], () => sessions.resolveApproval(...args)),
+      resolveQuestion: (...args) => this.runSessionMutation(args[0], () => sessions.resolveQuestion(...args)),
+      dismissQuestion: (...args) => this.runSessionMutation(args[0], () => sessions.dismissQuestion(...args)),
+      cancelTask: (...args) => this.runSessionMutation(args[0], () => sessions.cancelTask(...args)),
+    };
+  }
+
+  /** Also used by specialized approval routes that bypass the session transport. */
+  async runSessionMutation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const result = await operation();
+    this.onSessionMutation?.(sessionId);
+    return result;
   }
 
   sessionView(sessionId: string): SessionViewFacade {

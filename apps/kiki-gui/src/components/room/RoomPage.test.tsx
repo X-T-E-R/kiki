@@ -111,12 +111,11 @@ async function flush(): Promise<void> {
   }
 }
 
-async function renderRoom(): Promise<HTMLDivElement> {
+async function renderRoom(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     flushSync(() => {
       root.render(
@@ -158,6 +157,20 @@ describe('room mention helpers', () => {
 });
 
 describe('RoomPage', () => {
+  it('invalidates the sidebar room summaries after a reply even without a room.changed push', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['rooms', 'items'], [{ id: 'release-031', needsYou: true }]);
+    rooms.postUserMessage.mockResolvedValue({ id: 'reply', kind: 'message', from: 'user', text: 'Continue', mentions: [], at: '2026-01-01T00:00:00Z' });
+    const container = await renderRoom(queryClient);
+    expect(queryClient.getQueryState(['rooms', 'items'])?.isInvalidated).toBe(false);
+    const input = container.querySelector<HTMLTextAreaElement>('[data-room-input]')!;
+    await act(async () => { type(input, 'Continue'); });
+    await act(async () => { key(input, 'Enter'); });
+    await flush();
+    expect(rooms.postUserMessage).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryState(['rooms', 'items'])?.isInvalidated).toBe(true);
+  });
+
   it('marks only the successfully loaded room log high-water as read', async () => {
     rooms.log.mockResolvedValue({ entries: [], lastSeq: 7 });
     await renderRoom();

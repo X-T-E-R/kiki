@@ -94,6 +94,13 @@ export function handleGlobalConnectionFrame(
   return true;
 }
 
+export function refreshSessionAttention(queryClient: Pick<QueryClient, 'invalidateQueries'>, sessionId: string): void {
+  void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  void queryClient.invalidateQueries({ queryKey: ['rooms'] });
+  void queryClient.invalidateQueries({ queryKey: ['activity-prompts', sessionId] });
+  void queryClient.invalidateQueries({ queryKey: ['activity-tasks', sessionId] });
+}
+
 interface ConnectionValue {
   readonly scopeId: string;
   readonly sshLabel: string | null;
@@ -619,7 +626,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (endpoint === null || token === null) return;
-    const instance = new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs });
+    const instance = new KikiClient({
+      baseUrl: endpoint,
+      token,
+      timeoutMs: requestTimeoutMs,
+      onSessionMutation: (sessionId) => { refreshSessionAttention(queryClient, sessionId); },
+    });
     setClients({ endpoint, token, scopeId, client: instance });
     const controllers = controllersRef.current;
     return () => {
@@ -627,7 +639,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       controllers.evictScope(instance);
       void instance.klient.close();
     };
-  }, [endpoint, token, scopeId, requestTimeoutMs]);
+  }, [endpoint, token, scopeId, requestTimeoutMs, queryClient]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {

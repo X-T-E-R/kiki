@@ -1,9 +1,7 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import type { Session } from '@kiki/protocol';
+import { buildConversationInbox } from '@kiki/session-core/sessions';
 import { createKlient } from '@kiki/klient/http';
-
-function transcriptView(sessionId: string, validate = false) {
-  return createKlient({ endpoint: 'http://example.test', validate }).session(sessionId).view;
-}
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -17,6 +15,11 @@ import {
   type AgentTranscriptResponse,
 } from './client';
 import { isMemoryToolName, parseMemoryWriteResult } from '../components/MemoryToolRow';
+import { refreshSessionAttention } from '../state/connection';
+
+function transcriptView(sessionId: string, validate = false) {
+  return createKlient({ endpoint: 'http://example.test', validate }).session(sessionId).view;
+}
 
 function resumeResponse(url: string | URL, init?: RequestInit): Response | undefined {
   if (!String(url).endsWith('/api/klient/call')) return undefined;
@@ -60,6 +63,63 @@ describe('KikiClient cold-session actions', () => {
     try {
       await expect(invoke(client)).rejects.toMatchObject({ code: 40901 });
       expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+});
+
+describe('sidebar activity mutation refresh', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+  type Mutations = Pick<KikiClient, 'resolveApproval' | 'resolveQuestion' | 'dismissQuestion' | 'submitPrompt'>;
+  const actions = [
+    { name: 'approve', invoke: (client: Mutations) => client.resolveApproval('s1', 'a1', { decision: 'approved' }), result: { resolved: true, resolved_at: '2026-01-01T00:00:00Z' } },
+    { name: 'reject', invoke: (client: Mutations) => client.resolveApproval('s1', 'a1', { decision: 'rejected' }), result: { resolved: true, resolved_at: '2026-01-01T00:00:00Z' } },
+    { name: 'answer', invoke: (client: Mutations) => client.resolveQuestion('s1', 'q1', { answers: {}, method: 'click' }), result: { resolved: true, resolved_at: '2026-01-01T00:00:00Z' } },
+    { name: 'dismiss', invoke: (client: Mutations) => client.dismissQuestion('s1', 'q1'), result: { dismissed: true, dismissed_at: '2026-01-01T00:00:00Z' } },
+    { name: 'reply', invoke: (client: Mutations) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] }), result: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00Z' } },
+  ];
+  const cases = actions.flatMap((action) => ['facade', 'controller transport'].map((source) => ({ ...action, source })));
+
+  it.each(cases)('refreshes the cached bell/inbox immediately after $name via $source succeeds, without advancing the poll clock', async ({ invoke, result, source }) => {
+    vi.useFakeTimers();
+    const start = Date.now();
+    let pending = true;
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      if (resumed !== undefined) return resumed;
+      pending = false;
+      return Response.json({ code: 0, msg: 'success', data: result });
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const read = vi.fn(async () => ({ items: [{ id: 's1', title: 'Example', workspace_id: 'example', updated_at: '2026-01-01T00:00:00Z', busy: true, pending_interaction: pending ? 'approval' : 'none', last_seq: 4 } as Session] }));
+    const observer = new QueryObserver(queryClient, { queryKey: ['sessions', false], queryFn: read });
+    const unsubscribe = observer.subscribe(() => {});
+    const client = new KikiClient({ baseUrl: 'http://example.test', onSessionMutation: (id) => { refreshSessionAttention(queryClient, id); } });
+    const inbox = () => buildConversationInbox(observer.getCurrentResult().data?.items ?? [], [], { s1: 4 });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(inbox().total).toBe(1);
+      await invoke(source === 'facade' ? client : client.sessions);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(inbox().total).toBe(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(Date.now()).toBe(start);
+    } finally {
+      unsubscribe();
+      queryClient.clear();
+      await client.klient.close();
+    }
+  });
+
+  it.each(actions)('does not refresh or clear activity when $name fails', async ({ invoke }) => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const resumed = resumeResponse(url, init);
+      return resumed ?? Response.json({ code: 40001, msg: 'request failed', data: null });
+    }));
+    const onSessionMutation = vi.fn();
+    const client = new KikiClient({ baseUrl: 'http://example.test', onSessionMutation });
+    try {
+      await expect(invoke(client)).rejects.toBeInstanceOf(ApiError);
+      expect(onSessionMutation).not.toHaveBeenCalled();
     } finally { await client.klient.close(); }
   });
 });

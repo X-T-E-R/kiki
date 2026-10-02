@@ -21,7 +21,8 @@ import { sshHostFromAction } from './SshApprovalBody';
 
 const submitApproval = vi.fn(async () => ({ resolved: true as const }));
 // ApprovalCard reads the optional connection (for "always allow"); the SSH body reads the required one.
-const connection = { client: { klient: { rest: { ssh: { submitApproval } } } } };
+const runSessionMutation = vi.fn(async (_sessionId: string, operation: () => Promise<unknown>) => operation());
+const connection = { client: { runSessionMutation, klient: { rest: { ssh: { submitApproval } } } } };
 vi.mock('../../state/connection', () => ({
   useConnection: () => connection,
   useOptionalConnection: () => connection,
@@ -35,7 +36,7 @@ beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
   env.IS_REACT_ACT_ENVIRONMENT = true;
 });
-beforeEach(() => { submitApproval.mockClear(); });
+beforeEach(() => { submitApproval.mockClear(); runSessionMutation.mockClear(); });
 afterEach(() => {
   act(() => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
@@ -99,6 +100,7 @@ describe('SSH approval card', () => {
     expect(view.textContent).toContain('bastion');
     await click(view.querySelector('[data-ssh-submit]'));
     expect(submitApproval).toHaveBeenCalledWith('s1', 'a1', { decision: 'approved' });
+    expect(runSessionMutation).toHaveBeenCalledWith('s1', expect.any(Function));
     expect(resolveGeneric).not.toHaveBeenCalled();
   });
 

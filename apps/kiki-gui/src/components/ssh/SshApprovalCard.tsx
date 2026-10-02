@@ -48,7 +48,7 @@ export function SshApprovalCard({ block, ssh, originAgentName }: {
     setFailed(false);
     const sessionId = block.request.session_id !== '' ? block.request.session_id : routeSessionId;
     if (sessionId === undefined) { setBusy(null); setFailed(true); return; }
-    void sshApi(client).submitApproval(sessionId, approvalId, body)
+    void client.runSessionMutation(sessionId, () => sshApi(client).submitApproval(sessionId, approvalId, body))
       .then(() => { if (epochRef.current === epoch) setAnswered(body.decision); })
       .catch(() => { if (epochRef.current === epoch) setFailed(true); })
       .finally(() => { if (epochRef.current === epoch) setBusy(null); });

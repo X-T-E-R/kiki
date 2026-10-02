@@ -4,7 +4,7 @@ import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, SESSION_INDEX_RETRY_LIMIT, isEdita
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
-import { handleGlobalConnectionFrame } from './state/connection';
+import { handleGlobalConnectionFrame, refreshSessionAttention } from './state/connection';
 
 // App pulls the whole route tree; only the SessionView branch needs xterm
 // (no `self` under node) and none of it is under test here.
@@ -166,6 +166,19 @@ describe('conversation shell fallback phase', () => {
   it('opens /new as the hero and a session route as settling until its seat registers', () => {
     expect(resolveFallbackPhase(true)).toBe('hero');
     expect(resolveFallbackPhase(false)).toBe('settling');
+  });
+});
+
+describe('connection-level activity refresh', () => {
+  it('refreshes sessions, room summaries and the affected activity queries without unrelated session polling', () => {
+    const queryClient = { invalidateQueries: vi.fn(async () => undefined) };
+    refreshSessionAttention(queryClient, 'example-session');
+    expect(queryClient.invalidateQueries.mock.calls).toEqual([
+      [{ queryKey: ['sessions'] }],
+      [{ queryKey: ['rooms'] }],
+      [{ queryKey: ['activity-prompts', 'example-session'] }],
+      [{ queryKey: ['activity-tasks', 'example-session'] }],
+    ]);
   });
 });
 

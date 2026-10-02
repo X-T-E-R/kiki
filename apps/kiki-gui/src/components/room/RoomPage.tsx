@@ -192,7 +192,7 @@ function RoomView({
     log.refresh();
     void queryClient.invalidateQueries({ queryKey: roomQueryKey(room.id) });
     void queryClient.invalidateQueries({ queryKey: roomUsageQueryKey(room.id) });
-    void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY, exact: true });
+    void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
   };
   const applyRoom = (next: RoomDocument) => {
     queryClient.setQueryData(roomQueryKey(room.id), next);
