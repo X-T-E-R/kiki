@@ -105,6 +105,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly lastRecordTime?: number;
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
+  readonly modelAlias?: string;
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
   readonly deliveries?: readonly [string, MessageDelivery][];
@@ -154,6 +155,7 @@ export class TranscriptWireAdapter {
   #lastRecordTime: number | undefined;
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
+  #modelAlias: string | undefined;
 
   constructor(
     readonly agentId: string,
@@ -199,6 +201,7 @@ export class TranscriptWireAdapter {
       lastRecordTime: this.#lastRecordTime,
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
+      modelAlias: this.#modelAlias,
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
       deliveries: [...this.#deliveries],
@@ -254,6 +257,7 @@ export class TranscriptWireAdapter {
     this.#lastRecordTime = checkpoint.lastRecordTime;
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
+    this.#modelAlias = checkpoint.modelAlias;
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
@@ -336,6 +340,14 @@ export class TranscriptWireAdapter {
   }
 
   private operations(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+    if (record.type === 'profile.bind' || record.type === 'config.update') {
+      const to = stringOf(record['modelAlias']);
+      if (to === undefined || to.length === 0) return [];
+      const from = this.#modelAlias;
+      this.#modelAlias = to;
+      if (from === undefined || from === to) return [];
+      return [this.marker(record, ordinal, 'model.switch', { from, to })];
+    }
     if (record.type === 'turn.prompt') return this.turnPrompt(record, ordinal);
     if (record.type === 'turn.steer') return this.turnSteer(record, ordinal);
     if (record.type === 'context.append_message') return this.legacyMessage(record, ordinal);
@@ -654,6 +666,7 @@ export class TranscriptWireAdapter {
         receiptVerification: transcriptTaskSchema.shape.receiptVerification.safeParse(info?.['receiptVerification']).data ?? previous?.receiptVerification,
         name: stringOf(info?.['collaborationTaskName']) ?? previous?.name,
         subagentName: stringOf(info?.['profile']) ?? previous?.subagentName,
+        model: stringOf(info?.['model']) ?? previous?.model,
         description: stringOf(info?.['description']) ?? previous?.description,
         agentId,
         outputTail: stringOf(record['outputTail']) ?? previous?.outputTail ?? '',
@@ -749,6 +762,7 @@ export class TranscriptWireAdapter {
           detached,
           name: stringOf(record['name']),
           subagentName: stringOf(record['subagentName']),
+          model: stringOf(record['model']) ?? previous?.model,
           description: stringOf(record['description']) ?? previous?.description,
           agentId: subagentId,
           outputTail: previous?.outputTail ?? '',
@@ -1004,6 +1018,7 @@ export class TranscriptWireAdapter {
     record: TranscriptWireRecord,
     ordinal: number,
     marker: string,
+    payload: unknown = record,
   ): TranscriptOperation {
     return {
       op: 'marker.upsert',
@@ -1011,7 +1026,7 @@ export class TranscriptWireAdapter {
         kind: 'marker',
         markerId: `wire:v2:${record.type}:${factId(record, ordinal)}`,
         marker,
-        payload: record,
+        payload,
         at: isoOf(record.time),
       },
     };
@@ -2085,6 +2100,8 @@ export function transcriptFactsFromWire(
 
 function durableRecord(type: string): boolean {
   return (
+    type === 'config.update' ||
+    type === 'profile.bind' ||
     type === 'turn.prompt' ||
     type === 'turn.ended' ||
     type === 'task.notified' ||

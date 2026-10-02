@@ -21,6 +21,7 @@ export const KNOWN_MARKERS = [
   'cron.fired',
   'notice',
   'hook',
+  'model.switch',
 ] as const;
 
 /**

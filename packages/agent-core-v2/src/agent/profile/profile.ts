@@ -245,7 +245,7 @@ export interface IAgentProfileService {
     readonly allowModelChange?: boolean;
     readonly allowParentNotify?: boolean;
     readonly callerConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
-  }): Promise<() => void>;
+  }): Promise<() => void | Promise<void>>;
   publishBindingAdvisories(): void;
   republishStatus(): void;
   getModel(): string;

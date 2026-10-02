@@ -296,6 +296,7 @@ export const transcriptTaskSchema = z.object({
   receiptVerification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
   name: z.string().optional(),
   subagentName: z.string().optional(),
+  model: z.string().optional(),
   description: z.string().optional(),
   agentId: agentIdSchema.optional(),
   outputTail: z.string(),

@@ -95,7 +95,7 @@ describe('delegation context at bind', () => {
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({});
     assertOutbound('REPLACEMENT BODY');
-    (await profile.prepareResumeBinding({ modelAlias: 'replacement-model', allowModelChange: true }))();
+    await (await profile.prepareResumeBinding({ modelAlias: 'replacement-model', allowModelChange: true }))();
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await requester.request({});
     assertOutbound('REPLACEMENT BODY');

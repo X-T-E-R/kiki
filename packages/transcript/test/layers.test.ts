@@ -3950,3 +3950,46 @@ describe('AgentTranscriptDraft differential replay', () => {
     expect(gaps).toHaveLength(2);
   });
 });
+
+describe('wire model binding facts', () => {
+  it('emits only alias changes and never copies configuration prompts', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    expect(adapter.add({ type: 'profile.bind', modelAlias: 'example/old' })).toEqual([]);
+    expect(adapter.add({ type: 'config.update', modelAlias: 'example/old', thinkingEffort: 'high' })).toEqual([]);
+    expect(adapter.add({ type: 'config.update', thinkingEffort: 'low' })).toEqual([]);
+    const facts = adapter.add({ type: 'config.update', modelAlias: 'example/new', systemPrompt: 'private prompt'.repeat(1000), time: 1000 });
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.durability).toBe('durable');
+    expect(facts[0]?.operations).toEqual([{
+      op: 'marker.upsert', item: {
+        kind: 'marker', markerId: expect.any(String), marker: 'model.switch',
+        payload: { from: 'example/old', to: 'example/new' }, at: new Date(1000).toISOString(),
+      },
+    }]);
+    expect(adapter.add({ type: 'config.update', modelAlias: 'example/new' })).toEqual([]);
+    expect(adapter.add({ type: 'config.update', modelAlias: '' })).toEqual([]);
+  });
+
+  it('covers subsequent profile binds and restores the effective alias across checkpoint tails', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    adapter.add({ type: 'profile.bind', modelAlias: 'example/old' });
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(adapter.checkpoint());
+    expect(restored.add({ type: 'profile.bind', modelAlias: 'example/old' })).toEqual([]);
+    const ops = restored.add({ type: 'profile.bind', modelAlias: 'example/new' }).flatMap((fact) => fact.operations);
+    expect(ops).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({
+      marker: 'model.switch', payload: { from: 'example/old', to: 'example/new' },
+    }) })]);
+  });
+
+  it('preserves the dispatch model through task updates and schema validation', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    adapter.add({ type: 'task.started', info: { taskId: 'task-a', kind: 'subagent', agentId: 'child', status: 'running', model: 'example/old' } });
+    const spawn = adapter.add({ type: 'subagent.spawned', subagentId: 'child', taskId: 'task-a', parentToolCallId: 'tool-a', runInBackground: true });
+    const update = spawn.flatMap((fact) => fact.operations).find((op) => op.op === 'task.upsert');
+    expect(update?.op === 'task.upsert' && update.task.model).toBe('example/old');
+    expect(transcriptOperationSchema.parse(update)).toMatchObject({ task: { model: 'example/old' } });
+    const resume = adapter.add({ type: 'subagent.spawned', subagentId: 'child', taskId: 'task-b', parentToolCallId: 'tool-b', runInBackground: true, model: 'example/new' });
+    expect(resume.flatMap((fact) => fact.operations)).toContainEqual(expect.objectContaining({ task: expect.objectContaining({ model: 'example/new' }) }));
+  });
+});

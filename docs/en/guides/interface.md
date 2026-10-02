@@ -4,7 +4,7 @@ The Kiki desktop app and the browser GUI (the same interface used in a browser) 
 
 ## Conversation view
 
-The conversation view shows the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices. Resolved questions, approvals, markers, and completion notices stay inline at their original position as compact one-line entries; consecutive entries fold into an expandable "Activity history" row, while failed or cancelled entries always remain individually visible. File references can be previewed, opened, or shown in their containing folder.
+The conversation view shows the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices. Resolved questions, approvals, markers, and completion notices stay inline at their original position as compact one-line entries; consecutive entries fold into an expandable "Activity history" row, while failed or cancelled entries always remain individually visible. File references can be previewed, opened, or shown in their containing folder. Reopening a session or loading an agent's saved history shows model changes as dividers naming the previous and new model; changing only thinking effort does not add a divider.
 
 ## Input box
 
