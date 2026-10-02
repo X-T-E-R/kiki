@@ -28,7 +28,7 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
         if (event.key === 'Enter' && w.__steer.pressFrame < 0) w.__steer.pressFrame = w.__steer.frames.length;
       }, { capture: true });
       document.addEventListener('click', (event) => {
-        const target = event.target instanceof Element ? event.target.closest('button[data-send-ready]') : null;
+        const target = event.target instanceof Element ? event.target.closest('button[data-send-ready], [data-queue-strip] button') : null;
         if (target !== null && w.__steer.pressFrame < 0) w.__steer.pressFrame = w.__steer.frames.length;
       }, { capture: true });
       const tick = () => {
@@ -36,7 +36,7 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
         const rows = [...(root?.querySelectorAll('[data-block-id^="user-"]') ?? [])]
           .filter((row) => row.textContent?.includes(text) && row.parentElement?.closest('[data-block-id^="user-"]') === null);
         w.__steer.frames.push(rows.length);
-        if (document.querySelector('[data-queue-strip]')?.textContent?.includes(text)) w.__steer.queued += 1;
+        if (w.__steer.pressFrame >= 0 && document.querySelector('[data-queue-strip]')?.textContent?.includes(text)) w.__steer.queued += 1;
         if (!w.__steer.stop) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
@@ -96,17 +96,35 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
     await control({ action: 'release', session_id: sessionId });
   }
 
-  async function main() {
-    await page.goto(url('/s/session_fixture_steer'), { waitUntil: 'domcontentloaded' });
+  async function main(queued = false) {
+    const sessionId = queued ? 'session_fixture_steer_queue' : 'session_fixture_steer';
+    await page.goto(url(`/s/${sessionId}`), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
     await page.fill('textarea', 'Run the tests and fix what fails.');
     await page.press('textarea', 'Enter');
     await page.locator('[role="log"] >> text=Running the suite first.').waitFor({ timeout: 15_000 });
     await page.waitForTimeout(300);
-    await proveSteer('main', '[role="log"]', 'session_fixture_steer', async () => {
+    if (queued) {
       await page.fill('textarea', STEER_TEXT);
-      await page.press('textarea', 'Control+Enter');
+      await page.press('textarea', 'Enter');
+      await page.locator('[data-header-toggle="queue"]').click();
+      await page.locator('[data-queue-strip]', { hasText: STEER_TEXT }).waitFor();
+      await page.locator('[data-queue-item]', { hasText: STEER_TEXT }).hover();
+    }
+    await proveSteer(queued ? 'queue' : 'main', '[role="log"]', sessionId, async () => {
+      if (queued) await page.locator('[data-queue-strip] button[title]').filter({ hasText: /Send now|立即发送/ }).click();
+      else {
+        await page.fill('textarea', STEER_TEXT);
+        await page.press('textarea', 'Control+Enter');
+      }
     });
+    if (queued) {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      const row = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: STEER_TEXT });
+      await row.waitFor();
+      if ((await row.count()) !== 1) throw new Error('queue: reopened transcript lost or doubled the message');
+      await shot(name('queue-reopened'));
+    }
   }
 
   async function child() {
@@ -131,6 +149,7 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
 
   return async () => {
     await main();
+    await main(true);
     await child();
   };
 }
