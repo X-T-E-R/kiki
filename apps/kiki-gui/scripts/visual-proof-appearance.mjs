@@ -148,7 +148,7 @@ async function renderedContrast(page, selectors) {
     const rect = element.getBoundingClientRect();
     return { selector, x: rect.x, y: rect.y, w: rect.width, h: rect.height, color: getComputedStyle(element).color };
   }).filter(Boolean), selectors);
-  await page.addStyleTag({ content: '*, *::placeholder { color: transparent !important; caret-color: transparent !important; } svg, img:not([data-kiki-backdrop-item]) { visibility: hidden !important; }' });
+  const hiddenTextStyle = await page.addStyleTag({ content: '*, *::placeholder { color: transparent !important; caret-color: transparent !important; } svg, img:not([data-kiki-backdrop-item]) { visibility: hidden !important; }' });
   const results = [];
   const viewport = page.viewportSize();
   for (const box of boxes) {
@@ -159,7 +159,9 @@ async function renderedContrast(page, selectors) {
     const png = await page.screenshot({ clip: { x, y, width: w, height: h } });
     results.push({ ...box, png: png.toString('base64') });
   }
-  await page.evaluate(() => { document.querySelectorAll('style').forEach((node) => { if (node.textContent?.includes('color: transparent !important')) node.remove(); }); });
+  // Remove only this probe: matching CSS text also catches background-color
+  // declarations in Vite's real stylesheet and would strip the app's styles.
+  await hiddenTextStyle.evaluate((node) => node.remove());
   return page.evaluate(async (entries) => {
     const lum = ([r, g, b]) => {
       const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
@@ -598,57 +600,73 @@ async function scenarioGeometry(page) {
   await clearBackground(page);
 }
 
-/** Main timeline, shared rail and the default embedded subagent tab at two dial values. */
+const surfaceAlpha = (color) => color === null ? null : color === 'rgba(0, 0, 0, 0)' ? 0 : color.includes('/') ? Number.parseFloat(color.split('/')[1]) : color.startsWith('rgba') ? Number.parseFloat(color.split(',')[3]) : 1;
+
+async function regressionBackground(page, dial, assist, scope = 'window') {
+  await setLocalBackground(page, join(MEDIA, 'vivid-anime.jpg'), 'image/jpeg', { scope, opacity: 1, surfaceOpacity: dial, blur: 0, surfaceBlur: 0, scrim: 0 });
+  await page.evaluate((assist) => {
+    const prefs = JSON.parse(localStorage.getItem('kiki.background'));
+    localStorage.setItem('kiki.background', JSON.stringify({ ...prefs, assist }));
+  }, assist);
+}
+
+/** Main timeline, shared rail, embedded subagent tab and every routed page sheet. */
 async function scenarioRegression(page) {
+  const results = [];
   await fetch(`${fixtureUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'subagent-invocations' }) });
   const path = '/s/session_fixture_subagent_invocations';
   await open(page, path, '[role="log"]');
   await page.setViewportSize({ width: 1440, height: 900 });
-  await setTheme(page, 'light');
-  for (const assist of [false, true]) {
-    for (const dial of [0.3, 0.9]) {
-      await setLocalBackground(page, join(MEDIA, 'bright-sky.jpg'), 'image/jpeg', { opacity: 1, surfaceOpacity: dial, blur: 20, surfaceBlur: 0, scrim: 0 });
-      await page.evaluate((assist) => {
-        const prefs = JSON.parse(localStorage.getItem('kiki.background'));
-        localStorage.setItem('kiki.background', JSON.stringify({ ...prefs, assist }));
-      }, assist);
-      await open(page, path, '[role="log"]');
-      if (await page.locator('[data-session-rail]').count() === 0) await page.locator('[data-rail-toggle]').click();
-      await page.locator('[data-rail-pinned]').waitFor();
-      const tag = `${assist ? 'assist' : 'off'}-dial${Math.round(dial * 100)}`;
-      await shot(page, `regression-main-rail-${tag}`);
-      await page.locator('[data-agent-open="agent-lead"]').first().click();
-      await page.locator('[data-agent-tab-workspace="agent-lead"] [role="log"]').waitFor();
-      await page.waitForTimeout(300);
-      await shot(page, `regression-subagent-rail-${tag}`);
-      const colors = await page.evaluate(() => {
-        const read = (selector) => {
-          const element = document.querySelector(selector);
-          return element === null ? null : getComputedStyle(element).backgroundColor;
-        };
-        return { pinned: read('[data-rail-pinned]'), owner: read('[data-rail-owner]'), footer: read('[data-session-rail] .sticky.bottom-0'), tab: read('[data-agent-tab-workspace]'), header: read('[data-agent-tab-workspace] header'), relations: read('[data-agent-tab-workspace] [data-agent-relations-surface]') };
-      });
-      console.log(`[info] ${tag} surfaces ${JSON.stringify(colors)}`);
-      const alpha = (color) => color === null ? null : color === 'rgba(0, 0, 0, 0)' ? 0 : color.includes('/') ? Number.parseFloat(color.split('/')[1]) : color.startsWith('rgba') ? Number.parseFloat(color.split(',')[3]) : 1;
-      for (const key of ['pinned', 'owner']) check(alpha(colors[key]) === (assist ? 0 : dial), `${tag}: ${key} uses the rail wash without an opaque band`);
-      check(alpha(colors.tab) === dial, `${tag}: agent tab uses the requested paper wash`);
-      check(alpha(colors.header) !== 1 && alpha(colors.relations) !== 1, `${tag}: agent header and relations are not opaque`);
-      await open(page, `${path}/agent/agent-lead`, '[role="log"]');
-      await shot(page, `regression-agent-route-${tag}`);
-      const relationColor = await page.locator('[data-agent-relations-surface]').evaluate((node) => getComputedStyle(node).backgroundColor);
-      check(alpha(relationColor) !== 1, `${tag}: routed agent relations share the session header wash`);
-      // The bare-provider fullscreen branch has this hook but no preview-workspace class.
-      const bareColor = await page.evaluate(() => {
-        const probe = document.createElement('aside');
-        probe.dataset.kikiPreviewProof = '';
-        probe.setAttribute('data-preview-workspace', '');
-        probe.className = 'fixed inset-0 bg-panel';
-        document.body.append(probe);
-        const color = getComputedStyle(probe).backgroundColor;
-        probe.remove();
-        return color;
-      });
-      check(alpha(bareColor) === (assist ? (await layerVars(page)).solid / 100 : dial), `${tag}: bare-provider fullscreen gets the preview wash`);
+  for (const theme of ['light', 'dark']) {
+    await setTheme(page, theme);
+    for (const assist of [false, true]) {
+      for (const dial of [0.3, 0.9]) {
+        await regressionBackground(page, dial, assist);
+        await open(page, path, '[role="log"]');
+        if (await page.locator('[data-session-rail]').count() === 0) await page.locator('[data-rail-toggle]').click();
+        await page.locator('[data-rail-pinned]').waitFor();
+        const tag = `${theme}-${assist ? 'assist' : 'off'}-dial${Math.round(dial * 100)}`;
+        const rail = await page.locator('.app-rail').evaluate((node) => {
+          const style = getComputedStyle(node);
+          return { color: style.backgroundColor, filter: style.backdropFilter };
+        });
+        check(surfaceAlpha(rail.color) === dial, `${tag}: rail honors the exact dial, not the solved text floor (${rail.color})`);
+        check(assist ? rail.filter.includes('blur(6px)') : rail.filter === 'none', `${tag}: rail assist uses frost without an opacity floor (${rail.filter})`);
+        await shot(page, `regression-main-rail-${tag}`);
+        const contrast = await renderedContrast(page, ['.app-rail .text-ink-soft', '.app-rail .text-ink-faint']);
+        console.log(`[info] ${tag} rail contrast ${JSON.stringify(contrast)}`);
+        results.push({ surface: 'rail', theme, assist, dial, ...rail, contrast });
+        await page.locator('[data-agent-open="agent-lead"]').first().click();
+        await page.locator('[data-agent-tab-workspace="agent-lead"] [role="log"]').waitFor();
+        await page.waitForTimeout(300);
+        await shot(page, `regression-subagent-rail-${tag}`);
+        const colors = await page.evaluate(() => {
+          const read = (selector) => {
+            const element = document.querySelector(selector);
+            return element === null ? null : getComputedStyle(element).backgroundColor;
+          };
+          return { pinned: read('[data-rail-pinned]'), owner: read('[data-rail-owner]'), footer: read('[data-session-rail] .sticky.bottom-0'), tab: read('[data-agent-tab-workspace]'), header: read('[data-agent-tab-workspace] header'), relations: read('[data-agent-tab-workspace] [data-agent-relations-surface]') };
+        });
+        console.log(`[info] ${tag} surfaces ${JSON.stringify(colors)}`);
+        for (const key of ['pinned', 'owner']) check(surfaceAlpha(colors[key]) === (assist ? 0 : dial), `${tag}: ${key} uses the rail wash without an opaque band`);
+        check(surfaceAlpha(colors.tab) === dial, `${tag}: agent tab uses the requested paper wash`);
+        check(surfaceAlpha(colors.header) !== 1 && surfaceAlpha(colors.relations) !== 1, `${tag}: agent header and relations are not opaque`);
+        await open(page, `${path}/agent/agent-lead`, '[role="log"]');
+        await shot(page, `regression-agent-route-${tag}`);
+        const relationColor = await page.locator('[data-agent-relations-surface]').evaluate((node) => getComputedStyle(node).backgroundColor);
+        check(surfaceAlpha(relationColor) !== 1, `${tag}: routed agent relations share the session header wash`);
+        // The bare-provider fullscreen branch has this hook but no preview-workspace class.
+        const bareColor = await page.evaluate(() => {
+          const probe = document.createElement('aside');
+          probe.setAttribute('data-preview-workspace', '');
+          probe.className = 'fixed inset-0 bg-panel';
+          document.body.append(probe);
+          const color = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return color;
+        });
+        check(surfaceAlpha(bareColor) === dial, `${tag}: bare-provider fullscreen honors the preview dial`);
+      }
     }
   }
   await fetch(`${fixtureUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'busy-rail' }) });
@@ -664,9 +682,63 @@ async function scenarioRegression(page) {
     const footer = page.locator('[data-tasks-scroll] .sticky.bottom-0');
     await footer.waitFor();
     const color = await footer.evaluate((node) => getComputedStyle(node).backgroundColor);
-    check(assist ? color === 'rgba(0, 0, 0, 0)' : color.includes('/ 0.3)'), `tasks footer ${assist ? 'assist' : 'off'} uses rail wash (${color})`);
+    check(surfaceAlpha(color) === (assist ? 0 : 0.3), `tasks footer ${assist ? 'assist' : 'off'} uses rail wash (${color})`);
     await shot(page, `regression-tasks-footer-${assist ? 'assist' : 'off'}`);
   }
+  const pages = [
+    ['activity-inbox', '/activity', '[data-activity-page]'],
+    ['memory', '/memory', '[data-memory-page]'],
+    ['usage-dashboard', '/usage', '.app-sheet > .bg-paper'],
+    ['marketing-r01-en', '/board', '[data-task-board-page]'],
+    ['marketing-r01-en', '/cron', '[data-cron-page]'],
+    ['personas', '/personas', '[data-personas-page]'],
+    ['capabilities', '/capabilities', '[data-capabilities-page]'],
+    ['bot-mode', '/rooms/release-031', '[data-room-page]'],
+  ];
+  for (const [scenario, route, ready] of pages) {
+    await fetch(`${fixtureUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: scenario }) });
+    for (const theme of ['light', 'dark']) {
+      await setTheme(page, theme);
+      for (const assist of [false, true]) {
+        for (const dial of [0.3, 0.9]) {
+          await regressionBackground(page, dial, assist);
+          await open(page, route, ready);
+          const tag = `${route.split('/')[1]}-${theme}-${assist ? 'assist' : 'off'}-dial${Math.round(dial * 100)}`;
+          const surfaces = await page.evaluate(() => {
+            const sheet = document.querySelector('.app-sheet');
+            const style = getComputedStyle(sheet);
+            return { color: style.backgroundColor, filter: style.backdropFilter, roots: [...sheet.querySelectorAll(':scope > .bg-paper, [data-task-board-container]')].map((node) => getComputedStyle(node).backgroundColor) };
+          });
+          check(surfaceAlpha(surfaces.color) === dial, `${tag}: page sheet honors the exact dial (${surfaces.color})`);
+          check(surfaces.roots.length > 0 && surfaces.roots.every((color) => surfaceAlpha(color) === 0), `${tag}: page roots do not cover or double the sheet wash`);
+          check(assist ? surfaces.filter.includes('blur(6px)') : surfaces.filter === 'none', `${tag}: page assist uses frost (${surfaces.filter})`);
+          results.push({ surface: route, theme, assist, dial, ...surfaces });
+          await shot(page, `regression-page-${tag}`);
+        }
+      }
+    }
+    // Main scope uses the same wash; sidebar-only and no media leave the page solid.
+    for (const scope of ['main', 'sidebar']) {
+      await regressionBackground(page, 0.3, true, scope);
+      await open(page, route, ready);
+      const colors = await page.evaluate(() => [document.querySelector('.app-sheet'), document.querySelector('.app-sheet > .bg-paper')].map((node) => getComputedStyle(node).backgroundColor));
+      check(scope === 'main' ? surfaceAlpha(colors[0]) === 0.3 && surfaceAlpha(colors[1]) === 0 : colors.every((color) => surfaceAlpha(color) === 1), `${route}: ${scope} scope keeps the page on its intended ground`);
+    }
+    await clearBackground(page);
+    await open(page, route, ready);
+    const plain = await page.locator('.app-sheet > .bg-paper').evaluate((node) => getComputedStyle(node).backgroundColor);
+    check(surfaceAlpha(plain) === 1, `${route}: no media preserves the original paper root`);
+  }
+  await regressionBackground(page, 0.3, true);
+  await open(page, '/rooms/release-031', '[data-room-page]');
+  // Playwright's emulateMedia does not expose reduced transparency.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+  await page.waitForFunction(() => matchMedia('(prefers-reduced-transparency: reduce)').matches);
+  check(await page.locator('.app-sheet').evaluate((node) => getComputedStyle(node).backdropFilter === 'none'), 'reduced transparency disables the page reading frost');
+  await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+  await cdp.detach();
+  writeFileSync(join(OUT, 'regression.json'), JSON.stringify(results, null, 2));
 }
 
 const browser = await chromium.launch();

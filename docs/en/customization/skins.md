@@ -203,6 +203,8 @@ Settings → Appearance → Appearance packs lists installed packs with their pr
 - `background.media` names 1–12 files; with more than one, `interval` (seconds) turns them into a carousel. `poster` is the still shown while a video is paused.
 - The background dials are `fit` (`cover` `contain` `tile` `center`), `alignment` (`center` `top` `bottom` `left` `right` `topLeft` `topRight` `bottomLeft` `bottomRight`), `opacity` (0–1), `blur` (0–40), `brightness` (0.4–1.4), `scrim` (0–0.9), `scope` (`window` `main` `sidebar`), `surfaceOpacity` (0.3–1) and `surfaceBlur` (0–32). The names follow Windows Terminal's background settings.
 
+`surfaceOpacity` controls the sheet wash on every GUI page and the inspector within the chosen background scope. Readability assist keeps local text washes in the conversation and settings, and frosts other page sheets and the inspector without raising their opacity. At low opacity, text over a busy picture can be harder to read even with assist on; raise `surfaceOpacity` for stronger separation. Dialogs, popovers and the composer card keep solid fills.
+
 The built-in `kiki-appearance` skill walks an agent through making a pack: the format, the contrast rules for each color, media sizes and encoding, packaging, and the usual mistakes.
 
 ### What a pack can and cannot contain
