@@ -3299,7 +3299,7 @@ describe('ConfigService persistence guards', () => {
     ix.set(IConfigService, new SyncDescriptor(ConfigService));
     const config = ix.get(IConfigService);
     await config.ready;
-    return { config, disposables, storage };
+    return { config, disposables, storage, ix };
   }
 
   async function overwrite(storage: InMemoryStorageService, toml: string): Promise<void> {
@@ -3319,6 +3319,49 @@ describe('ConfigService persistence guards', () => {
     expect(isError2(error)).toBe(true);
     expect((error as Error2).code).toBe(ErrorCodes.CONFIG_PERSIST_BLOCKED);
   }
+
+  it('reconciles missed watch events, retries a half-written file and stops on disposal', async () => {
+    vi.useFakeTimers();
+    const { config, disposables, storage, ix } = await createGuardedConfig('[thinking]\nenabled = true\n');
+    const read = vi.spyOn(ix.get(IAtomicTomlDocumentStore), 'getText');
+    try {
+      await overwrite(storage, '[thinking]\nenabled = ');
+      await vi.advanceTimersByTimeAsync(10_600);
+      expect(config.get<ThinkingConfig>(THINKING_SECTION).enabled).toBe(true);
+      expect(config.diagnostics().some((diagnostic) => diagnostic.severity === 'error')).toBe(false);
+      await overwrite(storage, '[thinking]\nenabled = false\n');
+      await vi.advanceTimersByTimeAsync(600);
+      expect(config.get<ThinkingConfig>(THINKING_SECTION).enabled).toBe(false);
+      disposables.dispose();
+      const reads = read.mock.calls.length;
+      await overwrite(storage, '[thinking]\nenabled = true\n');
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(read).toHaveBeenCalledTimes(reads);
+    } finally {
+      disposables.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the last disk writer and logs when an external edit races with a settings CAS', async () => {
+    const { config, disposables, storage, ix } = await createGuardedConfig('[thinking]\nenabled = true\n');
+    const store = ix.get(IAtomicTomlDocumentStore);
+    const compare = store.compareAndSetText.bind(store);
+    const warn = vi.spyOn(ix.get(ILogService), 'warn');
+    const external = '[thinking]\nenabled = false\neffort = "high"\n';
+    vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+      if (key === 'config.toml') await overwrite(storage, external);
+      return compare(scope, key, expected, next);
+    });
+    try {
+      await expect(config.set(THINKING_SECTION, { effort: 'low' })).rejects.toMatchObject({
+        code: ErrorCodes.CONFIG_INVALID, details: { reason: 'write_conflict' },
+      });
+      expect(await stored(storage)).toBe(external);
+      expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ enabled: false, effort: 'high' });
+      expect(warn).toHaveBeenCalledWith('config write conflicted with an external edit; using latest disk values', { domains: [THINKING_SECTION] });
+    } finally { disposables.dispose(); }
+  });
 
   it('refuses to persist when the initial load fails and keeps the file untouched', async () => {
     const broken = '[providers\nbroken';

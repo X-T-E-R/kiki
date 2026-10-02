@@ -58,7 +58,7 @@ export async function writeConfigDocument(
     throw error;
   }
   if (!published) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, 'Configuration changed while writing. Reload settings and retry.');
+    throw new Error2(ErrorCodes.CONFIG_INVALID, 'Configuration changed while writing. Reload settings and retry.', { details: { reason: 'write_conflict' } });
   }
   return next;
 }

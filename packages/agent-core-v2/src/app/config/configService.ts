@@ -318,6 +318,10 @@ export class ConfigService extends Disposable implements IConfigService {
   private lastDiagnosticsSnapshot = '[]';
   private readonly configKey: string;
   private tainted = false;
+  private watchTimer: ReturnType<typeof setTimeout> | undefined;
+  private watchCandidate: string | undefined;
+  private watchRetries = 0;
+  private watchClosed = false;
 
   constructor(
     @IConfigRegistry private readonly registry: IConfigRegistry,
@@ -341,19 +345,101 @@ export class ConfigService extends Disposable implements IConfigService {
       }
       await this.load('load');
     })();
+    const changed = (): void => {
+      this.watchRetries = 0;
+      this.scheduleWatchReload();
+    };
     for (const key of [this.configKey, CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
-      this._register(this.documentStore.watch(CONFIG_SCOPE, key)(() => {
-        void this.reload();
-      }));
+      this._register(this.documentStore.watch(CONFIG_SCOPE, key)(changed));
     }
     const baseStore = this.bootstrap.baseConfigDocumentStore;
     if (baseStore !== undefined) {
       for (const key of ['config.toml', CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
-        this._register(baseStore.watch(CONFIG_SCOPE, key)(() => {
-          void this.reload();
-        }));
+        this._register(baseStore.watch(CONFIG_SCOPE, key)(changed));
       }
     }
+    const refresh = setInterval(() => {
+      if (this.watchTimer === undefined) this.scheduleWatchReload();
+    }, 10_000);
+    refresh.unref?.();
+    this._register({ dispose: () => {
+      this.watchClosed = true;
+      clearTimeout(this.watchTimer);
+      clearInterval(refresh);
+    } });
+  }
+
+  private scheduleWatchReload(): void {
+    if (this.watchClosed) return;
+    clearTimeout(this.watchTimer);
+    this.watchTimer = setTimeout(() => {
+      this.watchTimer = undefined;
+      void this.refreshWatchedConfiguration().catch((error) => {
+        if (!this.watchClosed) this.log.warn('config hot reload failed', { error: describeUnknownError(error) });
+      });
+    }, 200);
+    this.watchTimer.unref?.();
+  }
+
+  private async refreshWatchedConfiguration(): Promise<void> {
+    await this.ready;
+    await this.enqueueStateTransition(async () => {
+      if (this.watchClosed) return;
+      try {
+        const read = async (store: IAtomicTomlDocumentStore, key: string, inheritConfig = true, shared = true) => {
+          const snapshots = await Promise.all([key, CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY].map((name, index) =>
+            (index === 0 ? inheritConfig : shared)
+              ? readConfigDocumentSnapshot(store, name, { recoverMissing: false })
+              : Promise.resolve({ data: {}, text: undefined })));
+          const [config, credentials, legacy] = snapshots;
+          if (legacy!.text !== undefined && credentials!.text !== undefined && legacy!.text !== credentials!.text) {
+            throw new Error('Old and new credentials.toml differ');
+          }
+          return {
+            text: snapshots.map((snapshot) => snapshot.text),
+            data: mergeConfigCredentials(shared ? config!.data : splitConfigCredentials(config!.data).config, credentials!.text === undefined ? legacy!.data : credentials!.data),
+            empty: config!.text === undefined || config!.text.trim().length === 0,
+          };
+        };
+        const home = await read(this.documentStore, this.configKey);
+        const baseStore = this.bootstrap.baseConfigDocumentStore;
+        const base = baseStore === undefined ? undefined : await read(baseStore, 'config.toml', this.bootstrap.space?.inherit.config !== false, this.bootstrap.space?.inherit.credentials !== 'isolated');
+        const baseData = base?.data ?? this.baseSnake;
+        if (this.watchClosed) return;
+        if (!this.tainted && deepEqual(home.data, this.homeSnake) && deepEqual(baseData, this.baseSnake)) {
+          this.watchCandidate = undefined;
+          this.watchRetries = 0;
+          return;
+        }
+        const candidate = JSON.stringify([home.text, base?.text]);
+        if (candidate !== this.watchCandidate) {
+          this.watchCandidate = candidate;
+          this.watchRetries = 0;
+          this.scheduleWatchReload();
+          return;
+        }
+        if ((home.empty && Object.keys(this.homeSnake).length > 0) && this.watchRetries++ < 5) {
+          this.scheduleWatchReload();
+          return;
+        }
+        await this.load('reload');
+        if (this.tainted && this.watchRetries++ < 5) {
+          this.scheduleWatchReload();
+          return;
+        }
+        this.watchCandidate = undefined;
+        this.watchRetries = 0;
+      } catch (error) {
+        if (this.watchRetries++ < 5) {
+          this.scheduleWatchReload();
+          return;
+        }
+        this.watchRetries = 0;
+        this.watchCandidate = undefined;
+        this.log.warn('config hot reload retry budget exhausted; reloading latest disk state', { error: describeUnknownError(error) });
+        await this.load('reload');
+      }
+    });
   }
 
   get<T = unknown>(domain: string): T {
@@ -1059,7 +1145,15 @@ export class ConfigService extends Disposable implements IConfigService {
     replaceSecrets = false,
   ): Promise<void> {
     this.assertPersistable();
-    await this.persistDomainsGuarded(this.documentStore, domains, rebase, replaceSecrets);
+    try {
+      await this.persistDomainsGuarded(this.documentStore, domains, rebase, replaceSecrets);
+    } catch (error) {
+      if (error instanceof Error2 && error.details?.['reason'] === 'write_conflict') {
+        this.log.warn('config write conflicted with an external edit; using latest disk values', { domains });
+        await this.load('reload');
+      }
+      throw error;
+    }
     this.invalidateFresh();
   }
 
@@ -1099,6 +1193,9 @@ export class ConfigService extends Disposable implements IConfigService {
       );
     }
     const stagedRawSnake = cloneRecord(mergeConfigCredentials(config, credentials));
+    if (!deepEqual(stagedRawSnake, this.homeSnake)) {
+      this.log.warn('config changed externally before settings write; rebasing on latest disk values', { domains });
+    }
     const stagedRaw = transformTomlData(stagedRawSnake, this.registry);
     rebase(stagedRaw, stagedRawSnake);
     for (const domain of domains) {

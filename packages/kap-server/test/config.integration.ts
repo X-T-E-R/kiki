@@ -1,8 +1,10 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ConfigChanged, IEventService } from '@kiki/agent-core-v2';
+import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v2';
+import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
+import type { RequestAttempt } from '@kiki/agent-core-v2/kosong/model/requestAdmission';
 import { configResponseSchema, type ConfigResponse } from '../src/protocol/rest-config';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -704,6 +706,58 @@ describe('server-v2 /api/config', () => {
     expect(persisted).not.toContain('"explore"');
   });
 
+  it('retains the last good configuration while an external editor writes an incomplete document', async () => {
+    await boot('default_permission_mode = "auto"\n');
+    const configPath = join(home as string, 'config.toml');
+    const config = server!.core.accessor.get(IConfigService);
+    await writeFile(configPath, 'default_permission_mode = "');
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect((await getConfig()).default_permission_mode).toBe('auto');
+    expect(config.diagnostics().some((diagnostic) => diagnostic.severity === 'error')).toBe(false);
+    await writeFile(configPath, 'default_permission_mode = "yolo"\n');
+    await vi.waitFor(() => { expect(config.get('defaultPermissionMode')).toBe('yolo'); }, { timeout: 5000 });
+    await writeFile(configPath, '');
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(config.get('defaultPermissionMode')).toBe('yolo');
+    await writeFile(configPath, 'default_permission_mode = "auto"\n');
+    await vi.waitFor(() => { expect(config.get('defaultPermissionMode')).toBe('auto'); }, { timeout: 5000 });
+  });
+
+  it('hot reloads external governance additions, edits and removals into running admission', async () => {
+    await boot('default_permission_mode = "auto"\n');
+    const configPath = join(home as string, 'config.toml');
+    const governor = server!.core.accessor.get(IRequestGovernance);
+    let next = 0;
+    const attempt = (): RequestAttempt => ({
+      logicalRequestId: `request-${next}`, attemptId: `attempt-${next++}`,
+      modelId: 'example/model-a', providerId: 'example-provider',
+      sessionId: `session-${next}`, agentId: 'main', purpose: 'turn', waitBudget: { waitedMs: 0 },
+    });
+    const first = await Promise.all(Array.from({ length: 4 }, () => governor.acquire(attempt())));
+    expect(governor.snapshot()).toMatchObject({ active: 4, queued: 0 });
+    first.pop()!.release();
+    const toml = (cap: number) => `default_permission_mode = "yolo"\n[request_governance]\n[[request_governance.rules]]\nid = "example-global-cap"\nscope = "global"\nmodels = ["example/model-a", "example/model-b"]\nmax_concurrent = ${cap}\noverflow = "queue"\n`;
+    await writeFile(configPath, toml(3));
+    await vi.waitFor(() => { expect(governor.snapshot().rules[0]?.maxConcurrent).toBe(3); }, { timeout: 5000 });
+    expect((await getConfig()).default_permission_mode).toBe('yolo');
+    const active = first;
+    const fourth = governor.acquire(attempt());
+    expect(governor.snapshot()).toMatchObject({ active: 3, queued: 1 });
+    await writeFile(`${configPath}.editor-save`, toml(4));
+    await rename(`${configPath}.editor-save`, configPath);
+    await vi.waitFor(() => { expect(governor.snapshot()).toMatchObject({ active: 4, queued: 0 }); }, { timeout: 5000 });
+    const fourthPermit = await fourth;
+    await writeFile(configPath, toml(1));
+    await vi.waitFor(() => { expect(governor.snapshot().rules[0]?.maxConcurrent).toBe(1); }, { timeout: 5000 });
+    const fifth = governor.acquire(attempt());
+    expect(governor.snapshot()).toMatchObject({ active: 4, queued: 1 });
+    await writeFile(configPath, 'default_permission_mode = "auto"\n');
+    await vi.waitFor(() => { expect(governor.snapshot()).toMatchObject({ active: 5, queued: 0, rules: [] }); }, { timeout: 5000 });
+    (await fifth).release();
+    fourthPermit.release();
+    active.forEach((permit) => { permit.release(); });
+  });
+
   it('writes request_governance rules through POST /config, live for the realtime route, replacing the rule list atomically', async () => {
     await boot();
     const configPath = join(home as string, 'config.toml');
@@ -711,7 +765,17 @@ describe('server-v2 /api/config', () => {
       { id: 'provider-cap', scope: 'global', providers: ['provider-a'], max_concurrent: 3, overflow: 'queue' },
       { id: 'session-cap', scope: 'each_session', max_concurrent: 1, overflow: 'reject', subagents_only: true, enabled: false },
     ];
+    const config = server!.core.accessor.get(IConfigService);
+    const changes: string[] = [];
+    const subscription = config.onDidChangeConfiguration((event) => {
+      if (event.domain === 'requestGovernance') changes.push(event.source);
+    });
     await patchConfig({ request_governance: { rules } });
+    const sequence = server!.core.accessor.get(IRequestGovernance).snapshot().seq;
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(changes).toEqual(['set']);
+    expect(server!.core.accessor.get(IRequestGovernance).snapshot().seq).toBe(sequence);
+    subscription.dispose();
 
     const persisted = await readFile(configPath, 'utf-8');
     expect(persisted).toContain('[[request_governance.rules]]');
