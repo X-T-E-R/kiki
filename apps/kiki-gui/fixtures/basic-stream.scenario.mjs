@@ -52,6 +52,23 @@ export default {
   snapshots: {
     [SID]: { messages: [], has_more: false },
   },
+  // The composer's frozen profile-domain read: without a seeded profile the
+  // unseeded default leaves the model domain "unknown" and send disabled.
+  agentPanel: {
+    context: 'live',
+    owner: { profile: 'agent', agent_id: 'main' },
+    available: true,
+    profile: {
+      name: 'agent',
+      description: 'Fixture general-purpose agent.',
+      source: 'builtin',
+      model: 'fixture/kiki-pro',
+      thinking_effort: 'high',
+      profile_source: 'registered',
+      subagent_policy: 'advisory',
+    },
+    targets: [],
+  },
   onPrompt: [
     turnStart(1),
     workChanged(true),
