@@ -118,10 +118,42 @@ prompt_overrides:
 
 `files` entries are TOML paths relative to `KIKI_HOME` (no absolute paths, no `..`), each with `schema_version = 1` and a `[fields]` table. Layering: global < model < profile < profile-model (`model_profiles[].prompt_overrides`). The field ids and the global `[prompt]` section are documented in the installed docs under `configuration/config-files.md#prompt`.
 
+### Minimal inherited override
+
+`inherit` requires an empty body **and** at least one `prompt_overrides.fields` entry or `prompt_overrides.files` path. The lower-priority same-name profile must exist. A model/tools-only file or `prompt_overrides: {}` does not satisfy this contract; do not invent a prompt-field change just to pass validation.
+
+```markdown
+---
+name: agent
+description: Main agent with a custom subagent handoff notice
+system_prompt_mode: inherit
+prompt_overrides:
+  fields:
+    delegation.sub.notice: "Return one compact receipt: result, evidence, open risks."
+---
+```
+
+### Model/tools-only override
+
+For a main-agent profile that should keep the effective default prompt, leave the mode at `replace` and use `${base_prompt}` as the non-empty body:
+
+```markdown
+---
+name: agent
+description: Main agent with a configured model and read-only tools
+model_alias: your-configured-model
+tools: [Read, Grep, Glob]
+---
+
+${base_prompt}
+```
+
+For an existing self-contained subagent, retain its prompt body when changing only model/tools fields. `${base_prompt}` is the effective default prompt, not an arbitrary lower-priority same-name subagent's prompt.
+
 ## Best practices
 
 - **Default replace is the trap.** If the role should keep the default environment, skills, or plugin scaffolding, use `prepend` / `append` / `inherit`, or place `${base_prompt}` deliberately — don't assume anything is merged for you.
-- **Field-only tweak? Don't fork the prompt.** To change a built-in role's model, tools, or a few prompt fields, use `system_prompt_mode: inherit` with an empty body instead of copying the stock prompt text.
+- **Prompt-field tweak? Don't fork the prompt.** Use `system_prompt_mode: inherit` with an empty body and non-empty `prompt_overrides` to keep a lower-priority same-name prompt. For model/tools-only changes, use the non-empty-body approach above instead.
 - **Write `description` and `whenToUse` for the dispatcher.** State the task shapes this role owns and what it returns; the main agent chooses roles from that text alone.
 - **Prefer soft fields by default.** Users usually need soft preferences, especially for main-agent profiles. Use `preferred_models`, `preferred_efforts`, and `discouraged_models` for guidance while keeping executable alternatives available. Use hard fields only when the user explicitly requests enforcement. If a safety or cost red line seems to need a hard limit, explain the reason and consequences and obtain the user's consent before adding it; never silently write a hard constraint.
 - **Choose menu policy by intent.** Prefer `restrict_models_to_menu: true` only when `model_profiles` is already a complete permitted menu (plus the declared default), with per-model recipes and one candidate source for GUI and dispatch; avoid duplicating an equivalent `allowed_models` list. For cost, speed, or experience-based advice that should leave alternatives open, keep the switch off and use soft `preferred_*` / `discouraged_models`. For an independent budget, compliance, deployment, or descendant-tree boundary, use hard `allowed_models` / `deny_models` without inventing menu entries; these can intersect with a restricted menu. Keep general-purpose or example-only menus off, and never bulk-enable or automatically migrate existing profiles. Obtain consent before adding this hard ceiling, just as for other hard rules.

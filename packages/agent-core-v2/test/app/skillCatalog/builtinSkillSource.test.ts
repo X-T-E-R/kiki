@@ -8,6 +8,7 @@ import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/exam
 import { BuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { BUILTIN_PRODUCT_SKILLS_SECTION } from '#/app/skillCatalog/configSection';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
 
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
@@ -73,6 +74,30 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
     expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
     expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it('ships loadable inherit and model/tools-only profile examples', () => {
+    const content = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile')?.content ?? '';
+    const examples = [...content.matchAll(/```markdown\n([\s\S]*?)```/g)].map((match, index) =>
+      parseAgentFileText({ path: `/examples/profile-${index}.md`, source: 'user', text: match[1]! }),
+    );
+    const inherited = examples.find((example) => example.systemPromptMode === 'inherit');
+    expect(inherited).toBeDefined();
+    expect(inherited?.prompt).toBe('');
+    expect(inherited?.promptOverrides?.fields).toEqual({
+      'delegation.sub.notice': 'Return one compact receipt: result, evidence, open risks.',
+    });
+    const modelOnly = examples.find((example) => example.prompt === '${base_prompt}');
+    expect(modelOnly).toBeDefined();
+    expect(modelOnly?.modelAlias).toBe('your-configured-model');
+    expect(modelOnly?.tools).toEqual(['Read', 'Grep', 'Glob']);
+    expect(modelOnly?.promptOverrides).toBeUndefined();
+    expect(content).toContain('do not invent a prompt-field change just to pass validation');
+    expect(content).toContain('For an existing self-contained subagent, retain its prompt body');
+    expect(content).not.toContain("To change a built-in role's model, tools, or a few prompt fields, use `system_prompt_mode: inherit` with an empty body");
+    const invalid = '---\nname: agent\ndescription: Model-only override\nmodel_alias: your-configured-model\nsystem_prompt_mode: inherit\n---\n';
+    expect(() => parseAgentFileText({ path: '/examples/invalid.md', source: 'user', text: invalid }))
+      .toThrow('"prompt_overrides"');
   });
 
   it('teaches literal hard model rules and separately named soft preferences', () => {
