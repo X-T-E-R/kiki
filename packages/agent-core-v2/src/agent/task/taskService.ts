@@ -1995,7 +1995,7 @@ function agentRecoveryGuidance(info: AgentTaskInfo): string[] {
   return [
     `If continuation is still appropriate, use AgentRun(resume="${escapeXmlTags(agentId)}", prompt="First inspect the existing work and side effects of any tool call whose result was not observed; continue without blindly repeating it.").`,
     `Use agent_id ("${escapeXmlTags(agentId)}"), NOT source_id / task_id ("${escapeXmlTags(info.taskId)}") for resume.`,
-    'Use background=true for background continuation, or omit background for a synchronous receipt. The prior context is retained, but a missing tool result does not mean the action had no side effects.',
+    'Omitted background defaults to background for main and foreground for subagents. Use background=true for background continuation, or background=false explicitly for a synchronous receipt. The prior context is retained, but a missing tool result does not mean the action had no side effects.',
   ];
 }
 

@@ -1707,7 +1707,7 @@ describe('AgentRun and dispatch parity golden', () => {
   it('appends the main profile notice to a foreground receipt', async () => {
     const { lane } = mainProfileLane();
     const pending = lane.runInternal({
-      prompt: 'work', description: 'Main profile foreground', profile: 'solo',
+      prompt: 'work', description: 'Main profile foreground', profile: 'solo', background: false,
     });
     await complete(lane, 0, 'foreground result');
     const result = await pending;
@@ -2513,6 +2513,7 @@ describe('AgentRun and dispatch parity golden', () => {
       profile: 'coder',
       name: 'receipt_child',
       model_alias: 'parity-model',
+      background: false,
     });
     await complete(internal, 0, 'text result');
     const result = await pending;
@@ -2539,6 +2540,7 @@ describe('AgentRun and dispatch parity golden', () => {
       prompt: 'inspect failure',
       description: 'Inspect failure',
       profile: 'coder',
+      background: false,
     });
     await vi.waitFor(() => { expect(internal.taskRecords.has('task_1')).toBe(true); });
     const record = internal.taskRecords.get('task_1')!;

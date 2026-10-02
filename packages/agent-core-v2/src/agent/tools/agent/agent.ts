@@ -60,7 +60,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .boolean()
       .optional()
       .describe(
-        'If true, return immediately and deliver the result through automatic completion notification. An interactive main agent (root) can end its turn while the subagent runs. Omit when the result must be returned synchronously in the same turn.',
+        'Omitted: main runs in background; subagents wait in foreground, including resume and goal mode. Set false explicitly for a genuine same-turn dependency, or true to return a task receipt and receive automatic completion notification. New steer input releases a main foreground wait without stopping the child.',
       ),
     model_alias: z
       .string()
@@ -107,7 +107,7 @@ export const SubagentToolInputSchema = z.preprocess(
 export type SubagentToolInput = z.infer<typeof SubagentToolInputSchema>;
 
 export const BACKGROUND_AGENT_UNAVAILABLE =
-  'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled.';
+  'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled. Main defaults to background when background is omitted; no foreground fallback was attempted. Enable those tools, or retry with background:false for a genuine synchronous dependency.';
 export const RESUME_WITH_TYPE_UNAVAILABLE =
   'Cannot set profile when continuing an existing agent. Pass only resume with the name or agent id.';
 export const USER_INTERRUPTED_SUBAGENT_MESSAGE =

@@ -37,7 +37,7 @@ import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProj
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IModelService } from '#/kosong/model/model';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import {
   subagentParentAgentId,
   subagentProfileName,
@@ -108,6 +108,7 @@ export class SubagentTool implements ISubagentTool {
   readonly parameters: Record<string, unknown> = SUBAGENT_TOOL_PARAMETERS;
 
   private readonly callerAgentId: string;
+  private readonly isMainCaller: boolean;
   private readonly canRunInBackground: () => boolean;
   private readonly notifiedMainProfiles = new Set<string>();
   private catalogReady = false;
@@ -129,6 +130,7 @@ export class SubagentTool implements ISubagentTool {
     @IModelService private readonly models: IModelService,
   ) {
     this.callerAgentId = scopeContext.agentId;
+    this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
     this.canRunInBackground = () =>
       this.toolPolicy.isToolActive('TaskList') &&
       this.toolPolicy.isToolActive('TaskOutput') &&
@@ -255,7 +257,8 @@ export class SubagentTool implements ISubagentTool {
         ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
         : args.profile_file ?? requestedRoute ?? requestedProfileName
           ?? resolveDefaultSubagentProfileName(this.config) ?? RESUMED_LABEL;
-    const prefix = args.background === true ? 'Launching background' : 'Launching';
+    const runInBackground = args.background ?? this.isMainCaller;
+    const prefix = runInBackground ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
     let filePath: string | undefined;
@@ -276,11 +279,11 @@ export class SubagentTool implements ISubagentTool {
         kind: 'agent_call',
         agent_name: profileNameForDisplay,
         prompt: args.prompt,
-        background: args.background,
+        background: runInBackground,
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy),
+      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground),
     };
   }
 
@@ -452,13 +455,13 @@ export class SubagentTool implements ISubagentTool {
 
   private async execution(
     args: SubagentToolInput,
-    { toolCallId, signal, turnId }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal, turnId }: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
+    runInBackground: boolean,
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
-      const runInBackground = args.background === true;
       const runLabel = args.description;
       const requestedProfileName = args.profile?.length ? args.profile : undefined;
       const requestedRoute = args.route?.trim();
@@ -573,13 +576,27 @@ export class SubagentTool implements ISubagentTool {
         };
       }
 
-      const release = await this.tasks.waitForForegroundRelease(taskId);
-      if (release === 'detached' || release === 'timeout_detached') {
-        return {
-          output: this.withMainProfileNotice(handle, formatBackgroundAgentResult(taskId, handle, runLabel)),
-        };
+      const foregroundTaskId = taskId;
+      const detachForSteer = (): void => {
+        if (!signal.aborted) this.tasks.detach(foregroundTaskId);
+      };
+      const foregroundSteerSignal = this.isMainCaller ? steerSignal : undefined;
+      foregroundSteerSignal?.addEventListener('abort', detachForSteer, { once: true });
+      try {
+        if (foregroundSteerSignal?.aborted === true) detachForSteer();
+        const release = await this.tasks.waitForForegroundRelease(taskId);
+        if (release === 'detached' || release === 'timeout_detached') {
+          const output = formatBackgroundAgentResult(taskId, handle, runLabel);
+          return {
+            output: this.withMainProfileNotice(handle, foregroundSteerSignal?.aborted === true
+              ? `${output}\nNew input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.`
+              : output),
+          };
+        }
+        return await this.formatForegroundResult(taskId, handle, timeoutMs);
+      } finally {
+        foregroundSteerSignal?.removeEventListener('abort', detachForSteer);
       }
-      return await this.formatForegroundResult(taskId, handle, timeoutMs);
     } catch (error) {
       if (isError2(error) && error.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED) {
         return { output: JSON.stringify({ code: error.code, message: error.message, details: error.details }), isError: true };
