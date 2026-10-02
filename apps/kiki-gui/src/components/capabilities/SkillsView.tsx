@@ -160,12 +160,14 @@ function SkillRow({
   ) : skill.disable_model_invocation === true ? (
     <Tag>{t('cap.skills.manualOnly')}</Tag>
   ) : null;
-  const description = skill.description === '' ? skill.path : skill.description;
+  const description = skill.description;
   const body = compact ? (
     <span className="flex min-w-0 flex-1 items-center gap-2">
       <span className="shrink-0 truncate text-[13px] font-medium text-ink max-w-[45%]">{skill.name}</span>
       {tag}
-      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+      {description !== '' ? (
+        <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+      ) : null}
     </span>
   ) : (
     <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
@@ -173,7 +175,9 @@ function SkillRow({
         <span className="shrink-0 truncate text-[13px] font-medium text-ink max-w-[45%]">{skill.name}</span>
         {tag}
       </span>
-      <span className="min-w-0 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+      {description !== '' ? (
+        <span className="min-w-0 truncate text-[12px] text-ink-faint" title={description}>{description}</span>
+      ) : null}
     </span>
   );
   return (

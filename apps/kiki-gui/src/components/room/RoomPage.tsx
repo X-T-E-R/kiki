@@ -549,12 +549,12 @@ function RoomLogView({
             face={questionSessionPersona === undefined ? undefined : faceOf(questionSessionPersona)} />
         ) : null}
         {working.length > 0 ? (
-          <div className="mt-4"><PresenceLine text={t('message.working', { name: working.join('、') })} /></div>
+          <div className="mt-4"><PresenceLine text={t('room.working', { name: working.join(t('room.listSeparator')) })} /></div>
         ) : null}
         {queued.length > 0 ? (
           <p role="status" data-room-queued className={`${working.length > 0 ? 'mt-1' : 'mt-4'} flex min-h-6 items-center gap-2 text-[12.5px] text-ink-faint`}>
             <span className={`${MESSAGE_FACE} flex justify-center`}><Icon name="hold" size={12} /></span>
-            <span className="min-w-0 truncate">{t('room.threadBusy', { name: queued.join('、') })}</span>
+            <span className="min-w-0 truncate">{t('room.threadBusy', { name: queued.join(t('room.listSeparator')) })}</span>
           </p>
         ) : null}
       </div>
