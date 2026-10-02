@@ -25,7 +25,7 @@
  * never reconstructed. Nothing here derives a number the server did not send.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -227,10 +227,30 @@ function FilterBar({
   // locally with an inline error instead of being sent (the server answers
   // 40001 and the page would degrade to a load failure).
   const [rangeInvalid, setRangeInvalid] = useState(false);
+  const [actionsOnRangeRow, setActionsOnRangeRow] = useState(false);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const rangeRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const filter = filterRef.current;
+    const range = rangeRef.current;
+    const actions = actionsRef.current;
+    if (filter === null || range === null || actions === null) return;
+    const measure = () => {
+      const gap = Number.parseFloat(getComputedStyle(filter).columnGap) || 0;
+      const needed = range.getBoundingClientRect().width + actions.getBoundingClientRect().width + gap;
+      setActionsOnRangeRow(needed > 0 && needed <= filter.clientWidth);
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
+    for (const element of [filter, range, actions]) observer?.observe(element);
+    return () => { observer?.disconnect(); };
+  }, []);
   const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger';
   return (
-    <div data-usage-filters className="space-y-3 border-b border-hairline pt-1 pb-4">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+    <div ref={filterRef} data-usage-filters data-actions-row={actionsOnRangeRow ? 'range' : 'secondary'} className="flex flex-wrap items-start gap-x-5 gap-y-3 border-b border-hairline pt-1 pb-4">
+      <div className={actionsOnRangeRow ? 'max-w-full shrink-0' : 'w-full'}>
+      <div ref={rangeRef} className="flex w-max max-w-full flex-wrap items-center gap-x-5 gap-y-2">
         <AxisGroup
           label={t('usage.axis.range')}
           dataAxis="range"
@@ -301,7 +321,8 @@ function FilterBar({
           </div>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      </div>
+      <div className={`flex max-w-full shrink-0 flex-wrap items-center gap-x-5 gap-y-2 ${actionsOnRangeRow ? 'order-2 w-full' : ''}`}>
         <label className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
           <span className="relative min-w-0">
@@ -337,6 +358,8 @@ function FilterBar({
           onChange={(dimension) => { onChange({ ...filters, dimension }); }}
           labelFor={(option) => t(`usage.dimension.${option}`)}
         />
+      </div>
+      <div ref={actionsRef} className="ml-auto max-w-full shrink-0">
         <UsageRescanControl>
           <Toggle
             label={t('usage.includeArchived')}

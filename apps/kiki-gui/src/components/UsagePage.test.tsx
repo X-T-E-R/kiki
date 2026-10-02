@@ -774,6 +774,50 @@ describe('UsagePage (V2)', () => {
 });
 
 describe('UsagePage manual full rescan', () => {
+  it('moves the same rescan control between rows based on available space without squeezing the range', async () => {
+    let width = 1104;
+    let rangeWidth = 520;
+    let measure = () => {};
+    const originalObserver = globalThis.ResizeObserver;
+    const disconnect = vi.fn();
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return new DOMRect(0, 0, this.querySelector('[data-axis="range"]') ? rangeWidth : 220, 32);
+    });
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { measure = callback; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    try {
+      getUsageRescan.mockResolvedValue({ state: 'running', scanned_sessions: 3, total_sessions: 10, scanned_records: 900, started_at: 1, finished_at: null, error: null });
+      const { container, root } = await renderPage();
+      const filter = container.querySelector<HTMLElement>('[data-usage-filters]')!;
+      const button = container.querySelector('[data-usage-rescan-start]');
+      const progress = container.querySelector('progress');
+      expect(filter.dataset['actionsRow']).toBe('range');
+      width = 700;
+      await act(async () => { measure(); });
+      expect(filter.dataset['actionsRow']).toBe('secondary');
+      width = 1104;
+      rangeWidth = 940;
+      await act(async () => { measure(); });
+      expect(filter.dataset['actionsRow']).toBe('secondary');
+      rangeWidth = 520;
+      await act(async () => { measure(); });
+      expect(filter.dataset['actionsRow']).toBe('range');
+      expect(container.querySelector('[data-usage-rescan-start]')).toBe(button);
+      expect(container.querySelector('progress')).toBe(progress);
+      expect(getUsageRescan).toHaveBeenCalledTimes(1);
+      await act(async () => { root.unmount(); });
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      clientWidth.mockRestore();
+      bounds.mockRestore();
+      vi.stubGlobal('ResizeObserver', originalObserver);
+    }
+  });
+
   it('places the action beside archived sessions without a standalone hint', async () => {
     const { container, root } = await renderPage();
     const control = container.querySelector('[data-usage-filters] [data-usage-rescan]')!;
