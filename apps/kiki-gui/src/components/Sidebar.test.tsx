@@ -21,6 +21,7 @@ import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
   readLayoutPreferences,
+  writeLayoutPreferences,
   resetSessionSeen,
 } from '@kiki/session-core/settings';
 import { HostProvider, browserHost, type HostAdapter } from '../host';
@@ -1841,4 +1842,21 @@ describe('collapsed icon rail', () => {
     expect(container.querySelector('[data-session-sidebar]')?.getAttribute('data-sidebar-collapsed')).toBe('true');
     expect(container.querySelector('[data-session-list]')).toBeNull();
   });
+});
+
+it('keeps time-group headings in nonshrinking normal flow instead of overlaying long session titles', async () => {
+  writeLayoutPreferences({ sidebarCollapsed: false });
+  const one = { ...session('one'), title: 'A very long session title '.repeat(10) };
+  const two = { ...session('two'), title: 'Another long title '.repeat(10) };
+  const { container } = await mount({ sessions: [one, two], groupBy: 'time', sessionGroups: [
+    { key: 'today', label: 'Today', items: [one] },
+    { key: 'week', label: 'Last 7 days', items: [two] },
+  ] });
+  for (const heading of container.querySelectorAll<HTMLElement>('[data-session-group]')) {
+    expect(heading.classList.contains('sticky')).toBe(false);
+    expect(heading.classList.contains('shrink-0')).toBe(true);
+    expect(heading.classList.contains('min-h-7')).toBe(true);
+    expect(heading.querySelector('span')?.classList.contains('truncate')).toBe(true);
+  }
+  expect(container.querySelectorAll('[data-session-group]')).toHaveLength(2);
 });

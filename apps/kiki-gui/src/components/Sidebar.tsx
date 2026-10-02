@@ -1278,7 +1278,7 @@ export function Sidebar({
             role="group"
             aria-label={t('ephemeral.group')}
           >
-            <p data-session-group="ephemeral" className="sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink">
+            <p data-session-group="ephemeral" className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
               <span className="min-w-0 truncate">{t('ephemeral.group')}</span>
             </p>
             {ephemeralSessions.map((session) => (
@@ -1425,7 +1425,7 @@ export function Sidebar({
               </div>
             );
           }
-          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink';
+          const headerClass = 'flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink';
           return (
             <div
               key={group.key}
