@@ -24,6 +24,24 @@ const FULL = `${SEGMENT_A} ${SEGMENT_B}`;
 export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: reconnect' })],
   snapshots: { [SID]: { messages: [] } },
+  // The composer's frozen profile-domain read: without a seeded profile the
+  // unseeded default leaves the model domain "unknown" and send disabled, so
+  // the prompt this walk drops the socket mid-stream is never sent at all.
+  agentPanel: {
+    context: 'live',
+    owner: { profile: 'agent', agent_id: 'main' },
+    available: true,
+    profile: {
+      name: 'agent',
+      description: 'Fixture general-purpose agent.',
+      source: 'builtin',
+      model: 'fixture/kiki-pro',
+      thinking_effort: 'high',
+      profile_source: 'registered',
+      subagent_policy: 'advisory',
+    },
+    targets: [],
+  },
   onPrompt: [
     turnStart(1),
     workChanged(true),
