@@ -138,6 +138,7 @@ export async function initializeSpaceStorage(
 /** Keys that point at the active space's own data. */
 export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.lastSessionId',
+  'kiki.viewRoute',
   'kiki.drafts',
   'kiki.composerStates',
   'kiki.newSessionDraft',
@@ -162,6 +163,7 @@ export const SPACE_SCOPED_KEY_PREFIXES = ['kiki.draft.new.'] as const;
 /** Application-level preferences that stay shared across spaces. */
 export const GLOBAL_STORAGE_KEYS = [
   'kiki.locale',
+  'kiki.viewRouteOwner',
   'kiki.settings',
   'kiki.layout',
   'kiki.desktopPrefs',
