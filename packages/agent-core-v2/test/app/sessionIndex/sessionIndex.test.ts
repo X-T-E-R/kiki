@@ -839,6 +839,36 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(2);
   });
 
+  it('projects and advances the generation through withExclusive after a zero-filled lock', async () => {
+    await seedSession('before-restart', { title: 'before', createdAt: 1, updatedAt: 2 });
+    const lockDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
+    const lockPath = join(lockDir, 'session-index.lock');
+    await fsp.mkdir(lockDir, { recursive: true });
+    await fsp.writeFile(lockPath, Buffer.alloc(188));
+    expect((await fsp.stat(lockPath)).size).toBe(188);
+
+    const store = build();
+    const exclusive = vi.spyOn(queryStore, 'withExclusive');
+    try {
+      expect(await store.prepare()).toMatchObject({ state: 'ready', generation: 1 });
+      expect(exclusive).toHaveBeenCalled();
+      expect(await queryStore.listKeys(sessionCollection(1))).toEqual(['before-restart']);
+      await expect(fsp.readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await seedSession('after-restart', { title: 'after', createdAt: 3, updatedAt: 4 });
+      await fsp.writeFile(lockPath, Buffer.alloc(188));
+      await store.reprojectNow();
+      expect(store.status()).toMatchObject({ state: 'ready', generation: 2 });
+      expect((await queryStore.listKeys(sessionCollection(2))).toSorted())
+        .toEqual(['after-restart', 'before-restart']);
+      const page = await store.listRecent({ workspaceIds: [workspaceId] });
+      expect(page.items.map((s) => s.id)).toEqual(['after-restart', 'before-restart']);
+      await expect(fsp.readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      exclusive.mockRestore();
+    }
+  }, 10_000);
+
   it('prepare skips stray files and state-less directories instead of failing the projection', async () => {
     await seedSession('active', { title: 'hello', createdAt: 1, updatedAt: 2 });
     await fsp.writeFile(join(sessionsDir, 'workspace.json'), '{}');
