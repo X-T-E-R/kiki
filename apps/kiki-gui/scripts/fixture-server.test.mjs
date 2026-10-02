@@ -41,3 +41,20 @@ test('each fixture server owns its scenario data', async () => {
     await second.stop();
   }
 });
+
+test('automatic workspace fixture previews globals without leaking project profiles or workspace identities', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'auto-workspace-profiles' });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.http.address().port}/api/agents?unscoped=true`, {
+      headers: { authorization: 'Bearer kiki-fixture-token' },
+    });
+    const body = await response.json();
+    assert.equal(body.code, 0);
+    assert.equal(body.data.complete, true);
+    assert.deepEqual(body.data.items.map((item) => item.name), ['agent', 'auto-lead']);
+    assert.ok(body.data.items.every((item) => item.workspace_id === undefined && item.workspace_ids === undefined));
+    assert.deepEqual(server.workspaces, []);
+  } finally {
+    await server.stop();
+  }
+});

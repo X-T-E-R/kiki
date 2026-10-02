@@ -865,9 +865,10 @@ class FixtureServer {
     return { builtin: 0, extra: 10, user: 20, workspace: 30 }[profile.source] ?? 0;
   }
 
-  effectiveAgentProfiles(workspaceId) {
+  effectiveAgentProfiles(workspaceId, unscoped = false) {
     const byName = new Map();
     for (const profile of this.agentProfilesWithDisabled(workspaceId)) {
+      if (unscoped && (profile.source === 'workspace' || profile.private === true)) continue;
       const entries = byName.get(profile.name) ?? [];
       entries.push(profile);
       byName.set(profile.name, entries);
@@ -1889,6 +1890,11 @@ class FixtureServer {
     // disabled flag; `effective=true` returns only the enabled same-name
     // winners for the requested workspace or cwd.
     if (path === '/agents') {
+      if (query.get('unscoped') === 'true') {
+        const items = this.effectiveAgentProfiles(undefined, true)
+          .map((profile) => ({ ...profile, workspace_id: undefined, workspace_ids: undefined }));
+        return this.envelope(res, { items, complete: true });
+      }
       let workspaceId;
       const requestedWorkspace = query.get('workspace_id');
       if (requestedWorkspace !== null) workspaceId = requestedWorkspace;

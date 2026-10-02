@@ -12,7 +12,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
-import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import { IUserAgentProfileLoader } from './userAgentProfileLoader';
 import { IPluginAgentProfileLoader } from './pluginAgentProfileLoader';
@@ -34,7 +34,7 @@ export class PluginAgentProfileLoaderService
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
-    registry?: IAgentProfileRegistry,
+    @IAgentProfileRegistry registry: IAgentProfileRegistry,
   ) {
     super(log, registry);
     this._register(

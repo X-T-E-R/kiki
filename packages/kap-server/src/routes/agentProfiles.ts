@@ -20,6 +20,7 @@ import {
   executorCapabilities,
   expandExecutorText,
   IConfigService,
+  IInstantiationService,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionManager,
@@ -58,6 +59,7 @@ import {
   type NamedAgentProfile,
 } from '@kiki/protocol';
 import { z } from 'zod';
+import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
@@ -68,6 +70,24 @@ import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
 import { registerAntigravityRoutes } from './antigravity';
+
+const unscopedCatalogs = new WeakMap<Scope, ReturnType<typeof createUnscopedAgentProfileCatalog>>();
+
+async function unscopedProfileCatalog(core: Scope) {
+  let preview = unscopedCatalogs.get(core);
+  if (preview === undefined) {
+    const instantiation = core.accessor.get(IInstantiationService);
+    preview = createUnscopedAgentProfileCatalog(instantiation);
+    unscopedCatalogs.set(core, preview);
+    const owned = preview;
+    instantiation.onWillDispose(() => {
+      unscopedCatalogs.delete(core);
+      owned.dispose();
+    });
+  }
+  await preview.catalog.ready;
+  return preview;
+}
 
 export interface AgentProfilesRouteHost {
   get(
@@ -362,6 +382,13 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
       const workspaceId = req.query.workspace_id;
+      if (req.query.unscoped === true) {
+        const { registry: previewRegistry, catalog } = await unscopedProfileCatalog(core);
+        const items = projectEffectiveNamedAgentProfiles(core, previewRegistry.entries(), catalog, disabledNamed, executors)
+          .map((item) => ({ ...item, workspace_id: undefined, workspace_ids: undefined }));
+        reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
+        return;
+      }
       if (workspaceId === undefined && req.query.cwd === undefined) {
         const items = projectNamedAgentProfiles(
           core,
@@ -386,25 +413,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           entry.workspaceKey === undefined || entry.workspaceKey === resolvedWorkspaceId
         );
         const catalogs = new Map([[resolvedWorkspaceId, { catalog, snapshot: catalog.snapshot() }]]);
-        const effectiveProfiles = new Map(catalog.list().map((profile) => [profile.name, profile]));
-        const defaultProfile = catalog.snapshot().defaultProfile;
-        if (defaultProfile?.main === true) effectiveProfiles.set(defaultProfile.name, defaultProfile);
         const items = req.query.effective === true
-          ? [...effectiveProfiles.values()].map((profile) => {
-              const inspection = catalog.inspect(profile.name);
-              const registration = entries.find((entry) =>
-                (inspection === undefined || entry.sourceId === inspection.sourceId && entry.priority === inspection.priority)
-                && entry.contribution.profiles.some((candidate) => sameProfileDefinition(candidate, profile))
-              );
-              const item = toNamedAgentProfile(core, registration ?? {
-                sourceId: inspection?.sourceId ?? BUILTIN_AGENT_PROFILE_SOURCE_ID,
-                priority: inspection?.priority ?? 0,
-                workspaceKey: resolvedWorkspaceId,
-                contribution: { profiles: [profile] },
-              }, profile, disabledNamed, undefined,
-              { catalog, snapshot: catalog.snapshot() }, executors);
-              return profile === defaultProfile && profile.main === true ? { ...item, disabled: false } : item;
-            }).toSorted(compareNamedAgentProfiles)
+          ? projectEffectiveNamedAgentProfiles(core, entries, catalog, disabledNamed, executors, resolvedWorkspaceId)
           : projectNamedAgentProfiles(core, entries, disabledNamed,
               req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
@@ -710,6 +720,34 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     updateRoute.options,
     updateRoute.handler as Parameters<AgentProfilesRouteHost['patch']>[2],
   );
+}
+
+function projectEffectiveNamedAgentProfiles(
+  core: Scope,
+  entries: readonly AgentProfileRegistration[],
+  catalog: ISessionAgentProfileCatalog & { snapshot(): AgentProfileCatalogSnapshot },
+  disabledNamed: ReadonlySet<string>,
+  executors: IAgentExecutorRegistry,
+  workspaceKey?: string,
+): NamedAgentProfile[] {
+  const snapshot = catalog.snapshot();
+  const profiles = new Map(catalog.list().map((profile) => [profile.name, profile]));
+  const defaultProfile = snapshot.defaultProfile;
+  if (defaultProfile?.main === true) profiles.set(defaultProfile.name, defaultProfile);
+  return [...profiles.values()].map((profile) => {
+    const inspection = catalog.inspect(profile.name);
+    const registration = entries.find((entry) =>
+      (inspection === undefined || entry.sourceId === inspection.sourceId && entry.priority === inspection.priority)
+      && entry.contribution.profiles.some((candidate) => sameProfileDefinition(candidate, profile))
+    );
+    const item = toNamedAgentProfile(core, registration ?? {
+      sourceId: inspection?.sourceId ?? BUILTIN_AGENT_PROFILE_SOURCE_ID,
+      priority: inspection?.priority ?? 0,
+      workspaceKey,
+      contribution: { profiles: [profile] },
+    }, profile, disabledNamed, undefined, { catalog, snapshot }, executors);
+    return profile === defaultProfile && profile.main === true ? { ...item, disabled: false } : item;
+  }).toSorted(compareNamedAgentProfiles);
 }
 
 interface SessionAgentProfileCatalogProjection {

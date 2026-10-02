@@ -222,6 +222,89 @@ describe('GET /api/agents', () => {
     expect((await unknown.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
   });
 
+  it('previews user profiles before any workspace exists and binds them in an automatic workspace', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"', '[providers.stub]', 'type = "openai"',
+      'base_url = "http://127.0.0.1:9999"', 'api_key = "YOUR_API_KEY"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'auto-lead.md'), [
+      '---', 'name: auto-lead', 'description: Automatic workspace lead', 'main: true',
+      'model_alias: stub', '---', 'Lead the task.', '',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const readPreview = async () => listNamedAgentProfilesResponseSchema.parse(
+      ((await (await authedFetch(server!, base, '/api/agents?unscoped=true')).json()) as Envelope<unknown>).data,
+    );
+    const preview = await readPreview();
+    expect(preview.complete).toBe(true);
+    expect(preview.items.find((item) => item.name === 'auto-lead')).toMatchObject({
+      source: 'user', main: true, disabled: false, pinned_model_alias: 'stub',
+    });
+    expect(preview.items.every((item) => item.workspace_id === undefined && item.workspace_ids === undefined)).toBe(true);
+    const workspaces = await (await authedFetch(server, base, '/api/workspaces')).json() as Envelope<{ items: unknown[] }>;
+    expect(workspaces.data.items).toEqual([]);
+    expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toEqual([]);
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent_config: { profile: 'auto-lead' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const session = server.core.accessor.get(ISessionManager).get(created.data.id)!;
+    expect(session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService).data().profileName).toBe('auto-lead');
+    const cwd = join(home!, 'manual-project');
+    await mkdir(join(cwd, '.kiki', 'agents'), { recursive: true });
+    await writeFile(join(cwd, '.kiki', 'agents', 'project-only.md'), '---\nname: project-only\ndescription: Project lead\nmain: true\n---\nProject only.\n');
+    const scoped = await (await authedFetch(server, base, `/api/agents?cwd=${encodeURIComponent(cwd)}&effective=true`)).json() as Envelope<unknown>;
+    expect(listNamedAgentProfilesResponseSchema.parse(scoped.data).items.some((item) => item.name === 'project-only')).toBe(true);
+    const manual = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd }, agent_config: { profile: 'project-only' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(manual.code).toBe(0);
+    expect(server.core.accessor.get(ISessionManager).get(manual.data.id)!.accessor.get(IAgentLifecycleService)
+      .get('main')!.accessor.get(IAgentProfileService).data().profileName).toBe('project-only');
+    expect((await readPreview()).items.some((item) => item.name === 'project-only')).toBe(false);
+  });
+
+  it('keeps unscoped previews effective across SYSTEM.md, global extras, disable state and private profiles', async () => {
+    const extra = join(home!, 'global-agents');
+    await writeFile(join(home!, 'config.toml'), [
+      `extra_agent_dirs = [${JSON.stringify(extra.replaceAll('\\', '/'))}, "relative-agents"]`,
+      'skip_builtin_profile_installation = ["agent"]',
+      'disabled_named_profiles = ["disabled-lead", "agent"]',
+    ].join('\n'));
+    const file = (name: string, fields = '') => `---\nname: ${name}\ndescription: Example lead\nmain: true\n${fields}---\nLead the task.\n`;
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await mkdir(extra, { recursive: true });
+    await mkdir(join(home!, 'relative-agents'), { recursive: true });
+    await writeFile(join(home!, 'SYSTEM.md'), '---\ndescription: User default\nmain: true\n---\nUser default instructions.\n');
+    await writeFile(join(home!, 'agents', 'shared-lead.md'), file('shared-lead'));
+    await writeFile(join(home!, 'agents', 'disabled-lead.md'), file('disabled-lead'));
+    await writeFile(join(home!, 'agents', 'private-lead.md'), file('private-lead', 'private: true\n'));
+    await writeFile(join(extra, 'shared-lead.md'), file('shared-lead'));
+    await writeFile(join(extra, 'extra-lead.md'), file('extra-lead'));
+    await writeFile(join(home!, 'relative-agents', 'relative-lead.md'), file('relative-lead'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const read = async () => listNamedAgentProfilesResponseSchema.parse(
+      ((await (await authedFetch(server!, base, '/api/agents?unscoped=true')).json()) as Envelope<unknown>).data,
+    );
+    const preview = await read();
+    expect(preview.items.filter((item) => item.name === 'shared-lead')).toMatchObject([{ source: 'extra' }]);
+    expect(preview.items.find((item) => item.name === 'extra-lead')).toMatchObject({ source: 'extra' });
+    expect(preview.items.find((item) => item.name === 'agent')).toMatchObject({ source: 'user', main: true, disabled: false });
+    expect(preview.items.some((item) => ['disabled-lead', 'private-lead', 'relative-lead'].includes(item.name))).toBe(false);
+    expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toEqual([]);
+    expect(server.core.accessor.get(IAgentProfileRegistry).entries().some((entry) => entry.workspaceKey === '__unscoped_profile_preview__')).toBe(false);
+    await writeFile(join(home!, 'agents', 'new-lead.md'), file('new-lead'));
+    await vi.waitFor(async () => {
+      expect((await read()).items.some((item) => item.name === 'new-lead')).toBe(true);
+    }, { timeout: 5000 });
+  });
+
   it('lists executor capabilities and round-trips a file profile spawn constraint patch', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     const profilePath = join(home!, 'agents', 'reviewer.md');

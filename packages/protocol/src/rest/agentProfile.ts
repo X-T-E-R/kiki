@@ -177,11 +177,15 @@ const absoluteCwdSchema = z.string().trim().min(1).refine(
 export const listNamedAgentProfilesQuerySchema = z.object({
   expand: booleanQueryParam,
   effective: booleanQueryParam,
+  unscoped: booleanQueryParam,
   workspace_id: z.string().trim().min(1).optional(),
   cwd: absoluteCwdSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.workspace_id !== undefined && value.cwd !== undefined) {
     context.addIssue({ code: 'custom', message: 'workspace_id and cwd are mutually exclusive' });
+  }
+  if (value.unscoped === true && (value.workspace_id !== undefined || value.cwd !== undefined || value.expand === true || value.effective === true)) {
+    context.addIssue({ code: 'custom', message: 'unscoped cannot be combined with workspace_id, cwd, expand or effective' });
   }
   if (value.effective === true && value.workspace_id === undefined && value.cwd === undefined) {
     context.addIssue({ code: 'custom', message: 'effective requires workspace_id or cwd' });

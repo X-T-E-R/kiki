@@ -6,7 +6,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
-import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -55,7 +55,7 @@ export class InheritedAgentProfileLoaderService
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
-    registry?: IAgentProfileRegistry,
+    @IAgentProfileRegistry registry: IAgentProfileRegistry,
   ) {
     super(log, registry);
     this.watchReady = this.watchInheritedRoots();

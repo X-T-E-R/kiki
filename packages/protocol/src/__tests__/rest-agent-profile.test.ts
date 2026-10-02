@@ -89,6 +89,13 @@ describe('named agent profile REST protocol', () => {
     expect(JSON.stringify(parsed)).not.toContain('private dynamic context');
   });
 
+  it('accepts a workspace-free preview and rejects mixed preview scopes', () => {
+    expect(listNamedAgentProfilesQuerySchema.parse({ unscoped: 'true' })).toEqual({ unscoped: true });
+    for (const scope of [{ workspace_id: 'wd_a' }, { cwd: '/project' }, { expand: true }, { effective: true }]) {
+      expect(listNamedAgentProfilesQuerySchema.safeParse({ unscoped: true, ...scope }).success).toBe(false);
+    }
+  });
+
   it('parses merged workspace applicability and the expanded-list query flag', () => {
     expect(listNamedAgentProfilesQuerySchema.parse({
       expand: '1',
