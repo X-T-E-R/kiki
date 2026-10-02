@@ -3062,6 +3062,62 @@ async function scenarioQueue() {
   await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 }
 
+async function scenarioSendTiming() {
+  const SID = 'session_fixture_send_timing';
+  await selectSession('Fixture: send timing');
+  await page.fill('textarea', 'Run the suite.');
+  const send = page.locator('button[data-send-ready]');
+  await send.hover();
+  await page.waitForTimeout(250);
+  if (await page.locator('[data-send-timing-menu]').count() !== 0) throw new Error('idle composer offered busy send timings');
+  await send.click();
+  await page.locator('[data-header-working]').waitFor();
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  await page.fill('textarea', 'After the subagents.');
+  await page.locator('textarea').hover();
+  await send.hover();
+  const menu = page.locator('[data-send-timing-menu]');
+  await menu.waitFor();
+  for (const timing of ['default', 'now', 'subagents_done', 'tasks_done']) {
+    await menu.locator(`[data-send-timing="${timing}"]`).waitFor();
+  }
+  await shot('send-timing-hover');
+  const promptResponse = (text) => page.waitForResponse((response) => response.request().method() === 'POST' && response.request().postData()?.includes(text));
+  let submitted = promptResponse('After the subagents.');
+  await menu.locator('[data-send-timing="subagents_done"]').click();
+  await submitted;
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  let state = await control({ action: 'session', session_id: SID });
+  if (state.data.last_prompt_submission.append_timing !== 'subagents_done') throw new Error(`subagent timing did not reach the prompt wire: ${JSON.stringify(state.data.last_prompt_submission)}`);
+
+  await resizeViewport(390);
+  await page.fill('textarea', 'After all tasks.');
+  await send.focus();
+  await page.keyboard.press('ArrowUp');
+  await menu.waitFor();
+  if (!await menu.locator('[data-send-timing="tasks_done"]').evaluate((node) => node === document.activeElement)) throw new Error('ArrowUp did not focus the last timing');
+  const box = await menu.boundingBox();
+  if (box === null || box.x < -1 || box.x + box.width > 391) throw new Error('send timing menu overflows the mobile viewport');
+  await shot('send-timing-keyboard-390');
+  submitted = promptResponse('After all tasks.');
+  await page.keyboard.press('Enter');
+  await submitted;
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  state = await control({ action: 'session', session_id: SID });
+  if (state.data.last_prompt_submission.append_timing !== 'tasks_done') throw new Error('task timing did not reach the prompt wire');
+
+  // Each explicit timing applies once: the ordinary send keeps the configured default.
+  await page.fill('textarea', 'Use the default timing again.');
+  submitted = promptResponse('Use the default timing again.');
+  await send.click();
+  await submitted;
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  state = await control({ action: 'session', session_id: SID });
+  if (state.data.last_prompt_submission.append_timing !== 'agent_idle') throw new Error('one-shot timing changed the default send');
+  await openQueueStrip();
+  await shot('send-timing-queued-390');
+}
+
 async function scenarioBurst() {
   // Instrument BEFORE the app boots: count WS messages, wrap fetch to time
   // prompt POSTs, and collect longtasks. The runner already reloaded once for
@@ -5355,6 +5411,7 @@ const BODIES = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
   ['queue', scenarioQueue],
+  ['send-timing', scenarioSendTiming],
   ['steer', scenarioSteer],
   ['subagents', scenarioSubagents],
   ['subagent-invocations', scenarioSubagentInvocations],
