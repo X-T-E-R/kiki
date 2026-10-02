@@ -192,7 +192,19 @@ describe('Composer notes pill', () => {
     await click(pills[0]!);
     const rows = container.querySelectorAll('[data-composer-note]');
     expect(rows).toHaveLength(2);
-    await click(rows[0]!.querySelector('[data-composer-note-locate]')!);
+    const locate = rows[0]!.querySelector<HTMLButtonElement>('[data-composer-note-locate]')!;
+    expect(locate.textContent).toBe('');
+    expect(locate.getAttribute('aria-label')).toBe('Show');
+    expect(locate.title).toBe('Show');
+    expect(locate.querySelector('[data-icon="arrowUpRight"]')?.getAttribute('aria-hidden')).toBe('true');
+    expect(locate.parentElement?.classList.contains('ml-auto')).toBe(true);
+    expect(locate.parentElement?.classList.contains('justify-end')).toBe(true);
+    for (const action of rows[0]!.querySelectorAll<HTMLButtonElement>('button')) {
+      expect(action.classList.contains('w-7')).toBe(true);
+      expect(action.classList.contains('min-h-7')).toBe(true);
+      expect(action.classList.contains('justify-center')).toBe(true);
+    }
+    await click(locate);
     expect(onLocate).toHaveBeenCalledWith(notes[0]);
     await click(rows[1]!.querySelector('[data-composer-note-remove]')!);
     expect(onRemove).toHaveBeenCalledWith('n2');

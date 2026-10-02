@@ -4016,6 +4016,28 @@ async function scenarioSelectionAnnotate() {
     throw new Error(`notes did not accumulate: ${await noteRows.count()}`);
   }
   await shot('selection-annotate-notes');
+  const actionRows = await noteRows.evaluateAll((rows) => rows.map((row) => {
+    const buttons = [...row.querySelectorAll('button')];
+    return buttons.map((button) => {
+      const box = button.getBoundingClientRect();
+      return { width: box.width, height: box.height, centerY: box.y + box.height / 2, right: box.right };
+    });
+  }));
+  for (const actions of actionRows) {
+    if (actions.length !== 3 || actions.some((action) =>
+      action.width !== 28 || action.height !== 28 || Math.abs(action.centerY - actions[0].centerY) > 0.5)) {
+      throw new Error(`note actions must be aligned 28px icon buttons: ${JSON.stringify(actions)}`);
+    }
+  }
+  if (Math.abs(actionRows[0][2].right - actionRows[1][2].right) > 0.5) {
+    throw new Error(`note action groups must share a right edge: ${JSON.stringify(actionRows)}`);
+  }
+  const locateNote = noteRows.nth(0).locator('[data-composer-note-locate]');
+  if ((await locateNote.innerText()).trim() !== '' || await locateNote.locator('[data-icon="arrowUpRight"]').count() !== 1) {
+    throw new Error('note locate must use the existing jump icon without visible text');
+  }
+  await locateNote.hover();
+  await shot('selection-annotate-notes-hover');
 
   // A4: notes are individually removable; the other one stays.
   await noteRows.nth(1).getByRole('button', { name: S.removeAnnotation }).click();

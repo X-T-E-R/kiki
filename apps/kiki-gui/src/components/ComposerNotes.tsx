@@ -210,7 +210,7 @@ function NoteRow({
       ) : (
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={note.comment}>{note.comment}</span>
       )}
-      <span className="flex shrink-0 items-center">
+      <span className="ml-auto flex shrink-0 items-center justify-end">
         {editing ? (
           <>
             <button type="button" data-composer-note-save disabled={!canSave} onClick={() => { onSave(trimmed); }} className={`${ROW_ACTION} text-accent-ink disabled:opacity-40`}>
@@ -223,8 +223,10 @@ function NoteRow({
         ) : (
           <>
             {onLocate !== undefined ? (
-              <button type="button" data-composer-note-locate onClick={onLocate} className={ROW_ACTION}>
-                {t('annotationTray.show')}
+              <button type="button" data-composer-note-locate onClick={onLocate}
+                aria-label={t('annotationTray.show')} title={t('annotationTray.show')}
+                className={`${ROW_ACTION} w-7 justify-center px-0 pointer-coarse:w-10`}>
+                <Icon name="arrowUpRight" size={12} />
               </button>
             ) : null}
             {onStartEdit !== undefined ? (
