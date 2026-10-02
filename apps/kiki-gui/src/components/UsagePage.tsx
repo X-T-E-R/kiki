@@ -13,8 +13,10 @@
  *     cache-hit metrics; a bucket opens its session/turn drilldown;
  *   - detail tabs: Sessions (server-ranked by cost, the "most expensive
  *     session" drilldown), the breakdown (share, tokens, cache hit per key,
- *     agent trees, provider/role rollups), and the 5h rhythm;
- *   - the data-reliability card, always visible.
+ *     agent trees, provider/role rollups), and the 5h rhythm.
+ *
+ * Reliability has one disclosure above the totals; details and missing-price
+ * model lists stay collapsed until requested. Full rescans live in the filters.
  *
  * Honesty rules: the no-query state is local today; an explicit all-history
  * query surfaces the server's `defaulted_to_all_history` flag; cost is an
@@ -29,7 +31,6 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import type { Session, Workspace } from '@kiki/protocol';
 
-import type { I18nKey } from '@kiki/session-core/i18n';
 import { readLastSessionId } from '@kiki/session-core/settings';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -65,6 +66,7 @@ import { Toggle } from './controls';
 import { PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
 import { UsageRescanControl } from './usage/UsageRescanControl';
+import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
 import { segmentClass } from './WorkspaceScopeControl';
 import { Icon } from './icons';
 import { DimensionBreakdown } from './usage/UsageBreakdown';
@@ -98,15 +100,6 @@ const VIEW_TO_DETAIL_TAB: Record<UsageDetailView, DetailTab> = {
   five_hour: 'fiveHour',
 };
 
-const INCOMPLETE_REASON_KEYS: Record<
-  NonNullable<UsageResponseWire['reliability']['incomplete_reason']>,
-  I18nKey
-> = {
-  session_cap: 'usage.incomplete.sessionCap',
-  record_budget: 'usage.incomplete.recordBudget',
-  deadline: 'usage.incomplete.deadline',
-};
-
 const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
 const NOTICE_SOFT = 'rounded-lg border border-hairline bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink-soft';
 
@@ -131,44 +124,6 @@ function localDateKey(nowMs: number): string {
   return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
     .map((part) => String(part).padStart(2, '0'))
     .join('-');
-}
-
-type UsageCoverage = NonNullable<UsageResponseWire['reliability']['usage_coverage']>;
-
-function UsageAccountingNotices({
-  coverage,
-  knownSubtotal,
-}: {
-  coverage: UsageCoverage | undefined;
-  knownSubtotal: boolean;
-}) {
-  const { t } = useI18n();
-  if (
-    (coverage?.missing_records ?? 0) === 0 &&
-    (coverage?.legacy_zero_records ?? 0) === 0 &&
-    !knownSubtotal
-  ) {
-    return null;
-  }
-  return (
-    <div data-usage-accounting-notices className="space-y-1.5">
-      {coverage !== undefined && coverage.missing_records > 0 ? (
-        <p data-usage-accounting-missing className={NOTICE_AMBER}>
-          {t('usage.accounting.missing', { count: coverage.missing_records })}
-        </p>
-      ) : null}
-      {coverage !== undefined && coverage.legacy_zero_records > 0 ? (
-        <p data-usage-accounting-legacy-zero className={NOTICE_AMBER}>
-          {t('usage.accounting.legacyZero', { count: coverage.legacy_zero_records })}
-        </p>
-      ) : null}
-      {knownSubtotal ? (
-        <p data-usage-accounting-known-subtotal className={NOTICE_SOFT}>
-          {t('usage.accounting.knownSubtotal')}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +229,7 @@ function FilterBar({
   const [rangeInvalid, setRangeInvalid] = useState(false);
   const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger';
   return (
-    <div data-usage-filters className="space-y-3 rounded-xl border border-hairline bg-panel/70 p-3 sm:p-4">
+    <div data-usage-filters className="space-y-3 border-b border-hairline pt-1 pb-4">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <AxisGroup
           label={t('usage.axis.range')}
@@ -382,13 +337,13 @@ function FilterBar({
           onChange={(dimension) => { onChange({ ...filters, dimension }); }}
           labelFor={(option) => t(`usage.dimension.${option}`)}
         />
-        <div className="ml-auto">
+        <UsageRescanControl>
           <Toggle
             label={t('usage.includeArchived')}
             checked={filters.includeArchived}
             onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
           />
-        </div>
+        </UsageRescanControl>
       </div>
     </div>
   );
@@ -407,9 +362,9 @@ function Kpi({ label, value, hint, dataValue, children }: {
 }) {
   const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
-    <section className="flex min-w-0 flex-col rounded-xl border border-hairline bg-panel p-4">
-      <p className="text-[12px] text-ink-faint">{label}</p>
-      <p {...valueProps} className="mt-1.5 truncate font-display text-[28px] leading-none font-semibold tracking-tight text-ink tabular-nums">
+    <section className="flex min-w-0 flex-col py-3">
+      <p className="text-[11.5px] text-ink-faint">{label}</p>
+      <p {...valueProps} className="mt-2 truncate font-mono text-[26px] leading-none tracking-tight text-ink tabular-nums">
         {value}
       </p>
       {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
@@ -434,11 +389,7 @@ function KpiRow({ summary }: { readonly summary: UsageResponseWire['summary'] })
         label={t('usage.kpi.estimatedCost')}
         dataValue="data-usage-summary-cost"
         value={totalUnknown ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-        hint={summary.cost_unknown ? (
-          <span className="text-amber-ink">
-            {summary.cost_usd_estimated > 0 ? t('usage.kpi.partialUnknown') : t('usage.kpi.pricingUnknown')}
-          </span>
-        ) : summary.session_count > 0 && !totalUnknown ? (
+        hint={!summary.cost_unknown && summary.session_count > 0 && !totalUnknown ? (
           <span className="text-ink-faint">
             {t('usage.kpi.perSession', { cost: formatCostUsd(summary.cost_usd_estimated / summary.session_count) })}
           </span>
@@ -690,75 +641,6 @@ function FiveHourTab({
 }
 
 // ---------------------------------------------------------------------------
-// Reliability card — always visible
-// ---------------------------------------------------------------------------
-
-function ReliabilityCard({ reliability }: { reliability: UsageResponseWire['reliability'] }) {
-  const { t, locale, tp } = useI18n();
-  const formatMs = (ms: number | null) =>
-    ms === null
-      ? null
-      : new Date(ms).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-  const earliest = formatMs(reliability.coverage.earliest_at);
-  const latest = formatMs(reliability.coverage.latest_at);
-  const partial = reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0;
-  const rows: { label: string; value: ReactNode }[] = [
-    {
-      label: t('usage.reliability.coverage'),
-      value: earliest !== null && latest !== null ? `${earliest} → ${latest}` : t('usage.reliability.coverageEmpty'),
-    },
-    { label: t('usage.reliability.scanned'), value: formatGrouped(reliability.scanned_sessions) },
-    { label: t('usage.reliability.incomplete'), value: formatGrouped(reliability.incomplete_sessions) },
-    {
-      label: t('usage.reliability.unknownPrices'),
-      value: reliability.unknown_price_models.length > 0 ? (
-        <span className="font-mono text-amber-ink">{reliability.unknown_price_models.join(', ')}</span>
-      ) : (
-        t('usage.reliability.none')
-      ),
-    },
-    {
-      label: t('usage.reliability.deleted'),
-      value: reliability.includes_deleted_sessions
-        ? t('usage.reliability.deleted.included')
-        : t('usage.reliability.deleted.excluded'),
-    },
-  ];
-  return (
-    <UsageCard
-      title={t('usage.reliability.title')}
-      aside={(
-        <span
-          data-usage-reliability-state={partial ? 'partial' : 'complete'}
-          className={`rounded-full px-2 py-0.5 text-[11.5px] font-medium ${partial ? 'bg-amber-card text-amber-ink' : 'bg-success/10 text-success'}`}
-        >
-          {partial ? t('usage.reliability.partial') : t('usage.reliability.complete')}
-        </span>
-      )}
-    >
-      <p className="mb-3 text-[12px] text-ink-faint">{t('usage.reliability.costSource')}</p>
-      <dl className="grid grid-cols-1 gap-x-8 gap-y-2 text-[12.5px] sm:grid-cols-2" data-usage-reliability>
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-3 border-b border-dashed border-hairline pb-1.5">
-            <dt className="shrink-0 text-ink-faint">{row.label}</dt>
-            <dd className="min-w-0 truncate text-right font-mono text-ink-soft tabular-nums">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-      {reliability.incomplete_reason !== null ? (
-        <p className="mt-3 text-[12px] text-amber-ink">{tp('usage.sessionChip', reliability.incomplete_sessions)}</p>
-      ) : null}
-    </UsageCard>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -891,10 +773,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const reliability = firstPage?.reliability;
   const unpricedCount = reliability?.unknown_price_models.length ?? 0;
   const [pricingOpen, setPricingOpen] = useState(false);
-  const summaryHasUnknownSubtotal = summary !== undefined && hasUnknownTokenSubtotal(summary);
   const showAllHistoryChip = firstPage?.query.range.defaulted_to_all_history === true;
-  const incompleteReason = reliability?.incomplete_reason ?? null;
-  const showIncomplete = incompleteReason !== null || (reliability?.incomplete_sessions ?? 0) > 0;
   const breakdownTabLabel = t(`usage.dimension.${filters.dimension}`);
   const tabs = [
     ['sessions', t('usage.tab.sessions')],
@@ -926,7 +805,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           {panel !== 'history' ? <RequestGovernanceView view={panel} /> : <>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
-          <UsageRescanControl />
           {usageQuery.isPending ? (
             <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -948,35 +826,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             </div>
           ) : firstPage !== undefined ? (
             <>
-              {showAllHistoryChip || summary?.cost_unknown === true ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {showAllHistoryChip ? (
-                    <span data-usage-all-history className="rounded-md bg-ink/[0.05] px-2 py-0.5 text-[12px] font-medium text-ink-soft">
-                      {t('usage.allHistoryChip')}
-                    </span>
-                  ) : null}
-                  {summary?.cost_unknown === true ? (
-                    <span className="rounded-full border border-amber-rule/40 bg-amber-card px-3 py-0.5 text-[12px] font-medium text-amber-ink">
-                      {t('usage.kpi.partialUnknown')}
-                    </span>
-                  ) : null}
+              <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
+                <div className="min-w-0 flex-1">
+                  <UsageReliabilityDetails summary={firstPage.summary} reliability={firstPage.reliability} />
                 </div>
-              ) : null}
-
-              {showIncomplete ? (
-                <p data-usage-incomplete className={NOTICE_AMBER}>
-                  {incompleteReason !== null ? t(INCOMPLETE_REASON_KEYS[incompleteReason]) : null}
-                  {reliability !== undefined && reliability.incomplete_sessions > 0
-                    ? ` ${t('usage.incomplete.sessions', { count: reliability.incomplete_sessions })}`
-                    : ''}
-                </p>
-              ) : null}
-              {reliability !== undefined && reliability.unknown_price_models.length > 0 ? (
-                <p className={NOTICE_SOFT}>
-                  {t('usage.partialCost', { models: reliability.unknown_price_models.join(', ') })}
-                </p>
-              ) : null}
-              <UsageAccountingNotices coverage={reliability?.usage_coverage} knownSubtotal={summaryHasUnknownSubtotal} />
+                {showAllHistoryChip ? (
+                  <span data-usage-all-history className="py-2 text-[11.5px] text-ink-faint">
+                    {t('usage.allHistoryChip')}
+                  </span>
+                ) : null}
+              </div>
 
               {summary !== undefined ? <KpiRow summary={summary} /> : null}
 
@@ -1066,7 +925,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 )}
               </UsageCard>
 
-              {reliability !== undefined ? <ReliabilityCard reliability={reliability} /> : null}
             </>
           ) : null}
           </>}

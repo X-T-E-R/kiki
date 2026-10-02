@@ -197,6 +197,15 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
   return { container, root };
 }
 
+async function openReliability(container: HTMLElement) {
+  const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('[data-usage-reliability]')).toBeNull();
+  await act(async () => { toggle.click(); });
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(container.querySelector('[data-usage-reliability]')?.id).toBe(toggle.getAttribute('aria-controls'));
+}
+
 /** Calls to the main paged query (it requests the 25-row session page). */
 function mainCalls() {
   return getUsage.mock.calls.filter(
@@ -229,7 +238,7 @@ describe('UsagePage (V2)', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(mainCalls().length).toBeGreaterThan(0);
-    expect(container.querySelector('[data-usage-reliability]')).not.toBeNull();
+    await openReliability(container);
     await act(async () => { root.unmount(); });
   });
 
@@ -243,7 +252,7 @@ describe('UsagePage (V2)', () => {
       dimension: 'model',
     });
     expect(container.querySelector('[data-usage-all-history]')).toBeNull();
-    expect(container.querySelector('[data-usage-reliability]')).not.toBeNull();
+    await openReliability(container);
     expect(container.textContent).toContain('Deleted sessions are not included');
   });
 
@@ -367,14 +376,38 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('flags partially-unknown pricing on the cost KPI', async () => {
-    getUsage.mockImplementation(async () =>
-      usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
-    );
-    const { container } = await renderPage();
-    expect(container.textContent).toContain('partially unknown');
-    expect(container.textContent).toContain('mystery-1');
-    expect(container.textContent).toContain('Estimated cost');
+  it.each([
+    ['en', 'Some usage is unknown', 'Rescan all'],
+    ['zh', '部分用量未知', '全量重扫'],
+  ])('collapses all reliability warnings into one disclosure in %s', async (locale, label, action) => {
+    localStorage.setItem('kiki.locale', locale);
+    getUsage.mockImplementation(async () => usageResponse({
+      costUnknown: true,
+      tokensUnknown: true,
+      unknownPriceModels: ['example-model-a', 'example-model-b'],
+      incompleteReason: 'record_budget',
+      incompleteSessions: 4,
+      usageCoverage: { known_records: 21, missing_records: 5, legacy_zero_records: 0 },
+    }));
+    const { container, root } = await renderPage();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
+    expect(toggle.textContent).toBe(label);
+    expect(container.textContent?.split(label).length).toBe(2);
+    expect(container.querySelector('[data-usage-rescan-start]')?.textContent).toBe(action);
+    expect(container.textContent).not.toContain('example-model-a');
+    expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
+    expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
+    expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
+    await openReliability(container);
+    expect(container.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('example-model-a');
+    expect(container.querySelector('[data-usage-incomplete]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-reliability] [data-usage-accounting-known-subtotal]')).not.toBeNull();
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('example-model-a');
+    expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
+    await act(async () => { root.unmount(); });
   });
 
   it.each([
@@ -412,6 +445,7 @@ describe('UsagePage (V2)', () => {
         expect(sessionTokens).toContain('—');
         expect(sessionCost).toContain('—');
         expect(container.querySelector('[data-usage-trend] [data-bucket]')?.getAttribute('title')).toContain('—');
+        await openReliability(container);
         expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
       } else {
         expect(summaryTokens).not.toContain('—');
@@ -456,6 +490,7 @@ describe('UsagePage (V2)', () => {
     );
     const { container } = await renderPage();
     expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
+    await openReliability(container);
     expect(container.querySelector('[data-usage-accounting-legacy-zero]')).not.toBeNull();
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toContain('—');
   });
@@ -474,6 +509,7 @@ describe('UsagePage (V2)', () => {
       }),
     );
     const { container } = await renderPage('/usage?view=breakdown&dimension=model');
+    await openReliability(container);
     expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
     expect(container.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
@@ -487,9 +523,12 @@ describe('UsagePage (V2)', () => {
       usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
     );
     const { container } = await renderPage();
-    expect(container.textContent).toContain('partially unknown');
-    expect(container.textContent).toContain('mystery-1');
+    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('Some usage is unknown');
+    expect(container.textContent).not.toContain('mystery-1');
+    expect(container.textContent).not.toContain('partially unknown');
     expect(container.textContent).toContain('Estimated cost');
+    await openReliability(container);
+    expect(container.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('mystery-1');
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
   });
@@ -499,9 +538,9 @@ describe('UsagePage (V2)', () => {
       usageResponse({ defaulted: true, incompleteReason: 'session_cap', incompleteSessions: 4 }),
     );
     const { container } = await renderPage();
-    expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain(
-      'Session scan cap reached',
-    );
+    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('Some usage is unknown');
+    await openReliability(container);
+    expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain('session limit');
     expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain('4 sessions');
   });
 
@@ -735,6 +774,16 @@ describe('UsagePage (V2)', () => {
 });
 
 describe('UsagePage manual full rescan', () => {
+  it('places the action beside archived sessions without a standalone hint', async () => {
+    const { container, root } = await renderPage();
+    const control = container.querySelector('[data-usage-filters] [data-usage-rescan]')!;
+    expect(control.querySelector('[role="switch"]')).not.toBeNull();
+    expect(control.querySelector('[data-usage-rescan-start]')?.textContent).toBe('Rescan all');
+    expect(container.querySelectorAll('[data-usage-rescan-start]')).toHaveLength(1);
+    expect(container.textContent).not.toContain('this may take a while');
+    await act(async () => { root.unmount(); });
+  });
+
   it('starts without a confirmation, polls progress and refreshes history on completion', async () => {
     vi.useFakeTimers();
     try {
@@ -748,41 +797,53 @@ describe('UsagePage manual full rescan', () => {
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(startUsageRescan).toHaveBeenCalledTimes(1);
       expect(button.disabled).toBe(true);
-      expect(container.querySelector('progress')?.value).toBe(3);
+      expect(button.textContent).toBe('Rescanning…');
+      expect(container.querySelector('[data-usage-filters] progress')?.getAttribute('value')).toBe('3');
       expect(container.querySelector('progress')?.max).toBe(10);
-      expect(container.textContent).toContain('Scanning 3/10 sessions');
-      expect(container.textContent).toContain('900 records read');
+      expect(container.textContent).toContain('3/10 sessions');
+      expect(container.textContent).not.toContain('900 records read');
+      expect(container.querySelector('[data-usage-rescan] [role="status"]')?.getAttribute('title')).toBe('900 records read');
       expect(container.querySelector('[role="dialog"]')).toBeNull();
       const beforeCompletion = mainCalls().length;
       getUsageRescan.mockResolvedValue({ ...running, state: 'completed', scanned_sessions: 10, finished_at: 2 });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(container.textContent).toContain('Rescan complete · 10 sessions');
+      expect(container.textContent).toContain('Rescanned 10 sessions');
       expect(container.querySelector('progress')).toBeNull();
       expect(button.disabled).toBe(false);
       expect(mainCalls().length).toBeGreaterThan(beforeCompletion);
       const statusCalls = getUsageRescan.mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-      expect(getUsageRescan.mock.calls.length).toBe(statusCalls);
+      expect(getUsageRescan).toHaveBeenCalledTimes(statusCalls);
       await act(async () => { root.unmount(); });
     } finally { vi.useRealTimers(); }
   });
 
-  it('shows a failed task inline and allows another attempt', async () => {
-    getUsageRescan.mockResolvedValue({ state: 'failed', scanned_sessions: 2, total_sessions: 5, scanned_records: 12, started_at: 1, finished_at: 2, error: 'Checkpoint unavailable' });
+  it('shows a human failure message without raw diagnostics and allows another attempt', async () => {
+    getUsageRescan.mockResolvedValue({ state: 'failed', scanned_sessions: 2, total_sessions: 5, scanned_records: 12, started_at: 1, finished_at: 2, error: 'Checkpoint unavailable for instance-example' });
     const { container, root } = await renderPage();
-    expect(container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent).toContain('Checkpoint unavailable');
+    expect(container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent).toBe('Rescan failed. Try again.');
+    expect(container.textContent).not.toContain('Checkpoint');
+    expect(container.textContent).not.toContain('instance-example');
     expect(container.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')?.disabled).toBe(false);
     await act(async () => { root.unmount(); });
   });
 
-  it('distinguishes an unavailable progress request from a failed task', async () => {
-    getUsageRescan.mockRejectedValue(new Error('Connection unavailable'));
-    const { container, root } = await renderPage();
-    const alert = container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent;
-    expect(alert).toContain('the scan may still be running');
-    expect(alert).not.toContain('Rescan failed');
-    await act(async () => { root.unmount(); });
+  it('recovers an unavailable progress request without claiming the rescan failed', async () => {
+    vi.useFakeTimers();
+    try {
+      getUsageRescan.mockRejectedValueOnce(new Error('Connection unavailable'));
+      const { container, root } = await renderPage('/usage?panel=history', { flush: false });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const alert = container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent;
+      expect(alert).toBe('Progress unavailable. Reconnecting…');
+      expect(alert).not.toContain('Rescan failed');
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(getUsageRescan).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-usage-rescan] [role="alert"]')).toBeNull();
+      await act(async () => { root.unmount(); });
+    } finally { vi.useRealTimers(); }
   });
 
   it('does not mount the history action on live governance panels', async () => {
