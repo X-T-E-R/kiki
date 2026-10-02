@@ -531,6 +531,7 @@ export interface MemoryEntry {
   readonly reason: string;
   readonly superseded_by?: string;
   readonly supersedes?: string;
+  readonly supersedes_revision?: string;
   readonly revision: string;
 }
 

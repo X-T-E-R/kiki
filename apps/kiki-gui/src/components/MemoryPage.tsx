@@ -21,8 +21,11 @@
  * `auto` there is nothing pending, so there is no tab.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemorySources, type MemorySource } from './useMemorySources';
+import { MemoryHistorySnapshot, MemoryReadView } from './MemoryHistory';
+import { MemorySharingControls } from './MemorySharingControls';
 import { useSearchParams, type To } from 'react-router-dom';
 
 import type { Workspace } from '@kiki/protocol';
@@ -106,7 +109,7 @@ function LeafGlyph({ className }: { readonly className?: string }) {
 }
 
 export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: MemoryPageProps) {
-  const { t, tp, locale } = useI18n();
+  const { t, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const { scope, setScope } = useWorkspaceScope(workspaceOptions);
@@ -131,6 +134,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
     staleTime: 15_000,
   });
   const settings = settingsQuery.data;
+  const memorySources = useMemorySources({ workspaceId: scope, workspaces: workspaceOptions, persona, settings });
   const globalEnabled = settings?.enabled === true;
   const workspaceOverride = scope === undefined ? null : settings?.workspaces[scope] ?? null;
   const scopeEnabled = scope === undefined ? globalEnabled : globalEnabled && workspaceOverride !== false;
@@ -156,7 +160,7 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
   return (
     <div data-memory-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('memory.title')} onToggleSidebar={onToggleSidebar} />
-      <div data-memory-status className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-hairline px-4 py-2 text-[12px] text-ink-soft lg:px-6" role="status">
+      <div data-memory-status className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-[12px] text-ink-soft lg:px-6" role="status">
         <span>{settingsQuery.isPending ? t('memory.loading') : settingsQuery.isError
           ? t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })
           : t(globalEnabled ? 'st.memory.enabled' : 'st.memory.disabled')}</span>
@@ -175,14 +179,14 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
         />
       ) : (
         <>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2 lg:px-6">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 lg:px-6 [&_[role=group]]:border-0 [&_button]:ring-0 [&_button]:shadow-none [&_[data-memory-scope]>button]:shrink-0">
             <WorkspaceScopeControl
               workspaces={workspaceOptions}
               value={scope}
               onChange={(next) => { setScope(next); }}
               dataAttribute="data-memory-scope"
             />
-            <PersonaMemoryScope personas={personas} value={persona?.id} workspaceId={scope} onChange={setPersona} />
+            <PersonaMemoryScope personas={personas} value={persona?.id} onChange={setPersona} />
             {scope !== undefined ? (
               <div className="flex min-w-0 items-center gap-2" data-memory-workspace-switch>
                 <span className="shrink-0 text-[12px] text-ink-faint">{t('memory.ws.label')}</span>
@@ -207,19 +211,25 @@ export function MemoryPage({ workspaceOptions, onNavigate, onToggleSidebar }: Me
               </div>
             ) : null}
           </div>
-          {persona !== undefined ? (
-            <p data-memory-persona-intro className="shrink-0 border-b border-hairline px-4 py-2 text-[12.5px] leading-relaxed text-ink-soft lg:px-6">
-              {t('persona.memoryIntro', { name: persona.name })}
-              <span className="ml-2 font-mono text-[11px] text-ink-faint">{storagePath(target)}</span>
-            </p>
-          ) : null}
-          <MemoryScopeView
-            key={targetKey(target)}
-            target={target}
-            enabled={scopeEnabled}
-            review={settings?.approval === 'review'}
-            onOpenSession={(sessionId) => { onNavigate(`/s/${sessionId}`); }}
-          />
+          {persona !== undefined && memorySources.personaSnapshot !== undefined ? <MemorySharingControls key={persona.id} snapshot={memorySources.personaSnapshot} /> : null}
+          {personasQuery.isError || memorySources.error !== null ? (
+            <div role="alert" className="px-4 py-6 text-[13px] text-danger lg:px-6">
+              <p>{t('memory.loadFailed')}</p>
+              <p className="mt-1">{errorText(locale, personasQuery.error ?? memorySources.error)}</p>
+              <button type="button" onClick={() => { void personasQuery.refetch(); memorySources.retry(); }} className="mt-2 underline">{t('common.retry')}</button>
+            </div>
+          ) : (personaParam !== undefined && personasQuery.isPending) || memorySources.loading ? (
+            <p role="status" className="px-4 py-8 text-[13px] text-ink-faint lg:px-6">{t('memory.loading')}</p>
+          ) : (
+            <MemoryScopeView
+              key={targetKey(target)}
+              target={target}
+              sources={memorySources.sources}
+              enabled={scopeEnabled}
+              review={settings?.approval === 'review'}
+              onOpenSession={(sessionId) => { onNavigate(`/s/${sessionId}`); }}
+            />
+          )}
         </>
       )}
     </div>
@@ -270,11 +280,13 @@ function MemoryIntro({
 
 function MemoryScopeView({
   target,
+  sources,
   enabled,
   review,
   onOpenSession,
 }: {
   readonly target: MemoryTarget;
+  readonly sources: readonly MemorySource[];
   readonly enabled: boolean;
   readonly review: boolean;
   readonly onOpenSession: (sessionId: string) => void;
@@ -290,16 +302,22 @@ function MemoryScopeView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
-  const listKey = ['memory', targetKey(target), { search, typeFilter, showInactive }] as const;
-  const listQuery = useQuery({
-    queryKey: listKey,
-    queryFn: () => client.listMemory(target, {
+  const lists = useQueries({ queries: sources.map((source) => ({
+    queryKey: ['memory', targetKey(source.target), { search, typeFilter, showInactive }],
+    queryFn: () => client.listMemory(source.target, {
       query: search,
       type: typeFilter === 'all' ? undefined : typeFilter,
       include_inactive: showInactive,
     }),
     staleTime: 5_000,
-  });
+  })) });
+  const listQuery = {
+    isPending: lists.some((query) => query.isPending),
+    isError: lists.some((query) => query.isError),
+    error: lists.find((query) => query.isError)?.error,
+    data: lists.every((query) => query.data !== undefined) ? true : undefined,
+    refetch: () => Promise.all(lists.map((query) => query.refetch())),
+  };
   const inboxQuery = useQuery({
     queryKey: ['memory-inbox', targetKey(target)],
     queryFn: () => client.memoryInbox(target),
@@ -308,20 +326,24 @@ function MemoryScopeView({
   });
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['memory', targetKey(target)] });
-    void queryClient.invalidateQueries({ queryKey: ['memory-inbox', targetKey(target)] });
+    void queryClient.invalidateQueries({ queryKey: ['memory'] });
+    void queryClient.invalidateQueries({ queryKey: ['memory-journal'] });
+    void queryClient.invalidateQueries({ queryKey: ['memory-related'] });
+    void queryClient.invalidateQueries({ queryKey: ['memory-inbox'] });
   };
-
-  const entries = useMemo(
-    () => (listQuery.data?.items ?? []).filter((entry) => entry.status !== 'pending'),
-    [listQuery.data],
-  );
+  const groups = sources.map((source, index) => ({
+    ...source,
+    entries: (lists[index]?.data?.items ?? []).filter((entry) => entry.status !== 'pending'),
+  }));
+  const entries = groups.flatMap((source) => source.entries.map((entry) => ({
+    entry, source, key: `${targetKey(source.target)}:${entry.id}`,
+  })));
   const inbox = inboxQuery.data ?? [];
-  // A selection that filtered out of view drops back to the list.
+  // Namespace is part of identity: copied/imported memories can share an id.
+  const selected = entries.find((item) => item.key === selectedId);
   useEffect(() => {
-    if (selectedId !== null && !entries.some((entry) => entry.id === selectedId)) setSelectedId(null);
-  }, [entries, selectedId]);
-  const selected = entries.find((entry) => entry.id === selectedId);
+    if (!listQuery.isPending && selectedId !== null && selected === undefined) setSelectedId(null);
+  }, [listQuery.isPending, selectedId, selected]);
   const filtersActive = search.trim() !== '' || typeFilter !== 'all' || showInactive;
 
   const detail = creating ? (
@@ -330,21 +352,21 @@ function MemoryScopeView({
       entry={undefined}
       onDone={(entry) => {
         setCreating(false);
-        if (entry !== undefined) setSelectedId(entry.id);
+        if (entry !== undefined) setSelectedId(`${targetKey(target)}:${entry.id}`);
         refresh();
       }}
     />
   ) : selected !== undefined ? (
     <MemoryDetail
-      target={target}
-      entry={selected}
+      key={selected.key}
+      target={selected.source.target}
+      sourceLabel={selected.source.label}
+      entry={selected.entry}
       onOpenSession={onOpenSession}
       onChanged={refresh}
       onClosed={() => { setSelectedId(null); }}
     />
-  ) : (
-    <p className="py-8 text-[13px] text-ink-faint">{t('memory.detail.none')}</p>
-  );
+  ) : null;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8 lg:px-6" data-memory-console>
@@ -395,9 +417,9 @@ function MemoryScopeView({
                 onChange={(event) => { setSearch(event.target.value); }}
                 placeholder={t('memory.search.placeholder')}
                 aria-label={t('memory.search.aria')}
-                className="h-8 w-full max-w-64 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+                className="h-8 w-full max-w-56 rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-selected-ink"
               />
-              <div role="group" aria-label={t('memory.filter.aria')} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+              <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
                 {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
                   const active = candidate === typeFilter;
                   return (
@@ -407,7 +429,7 @@ function MemoryScopeView({
                       data-memory-type-filter={candidate}
                       aria-pressed={active}
                       onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                      className={segmentClass(active, 'h-7 px-3 text-[13px]')}
+                      className={`h-8 rounded-md px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
                     >
                       {t(`memory.type.${candidate}`)}
                     </button>
@@ -466,30 +488,33 @@ function MemoryScopeView({
                 )}
               </div>
             ) : (
-              <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(240px,0.85fr)_minmax(0,1.5fr)]" data-memory-list-detail>
-                <ul
-                  data-memory-list
-                  className={`-mx-2 flex min-w-0 flex-col gap-0.5 ${
-                    selected !== undefined || creating ? 'max-md:hidden' : ''
-                  }`}
-                >
-                  {entries.map((entry) => (
-                    <li key={entry.id}>
-                      <MemoryListRow
-                        entry={entry}
-                        active={entry.id === selectedId}
-                        onOpen={() => { setCreating(false); setSelectedId(entry.id); }}
-                      />
-                    </li>
+              <div className={`grid min-w-0 gap-8 ${detail !== null ? 'md:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.5fr)]' : 'max-w-[720px]'}`} data-memory-list-detail>
+                <div data-memory-list className={`min-w-0 space-y-7 ${detail !== null ? 'max-md:hidden' : ''}`}>
+                  {groups.filter((group) => group.entries.length > 0).map((group) => (
+                    <section key={targetKey(group.target)} data-memory-source={targetKey(group.target)} aria-label={group.label}>
+                      <h2 className="mb-2 flex items-center gap-2 text-[12px] font-medium text-ink-soft">
+                        {group.label}<span className="font-mono text-[11px] font-normal text-ink-faint">{group.entries.length}</span>
+                      </h2>
+                      <ul className="-mx-3 space-y-1">
+                        {group.entries.map((entry) => {
+                          const key = `${targetKey(group.target)}:${entry.id}`;
+                          return (
+                            <li key={key}>
+                              <MemoryListRow entry={entry} active={key === selectedId} onOpen={() => { setCreating(false); setSelectedId(key); }} />
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
                   ))}
-                </ul>
-                <div className={`min-w-0 md:border-l md:border-hairline md:pl-6 ${selected === undefined && !creating ? 'max-md:hidden' : ''}`}>
+                </div>
+                <div className={`min-w-0 ${detail === null ? 'hidden' : ''}`}>
                   {selected !== undefined || creating ? (
                     <button
                       type="button"
                       data-memory-detail-back
                       onClick={() => { setSelectedId(null); setCreating(false); }}
-                      className="mb-2 text-[13px] text-ink-soft underline underline-offset-2 md:hidden"
+                      className="mb-4 text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                     >
                       {t('memory.back')}
                     </button>
@@ -531,8 +556,8 @@ function MemoryListRow({
       data-memory-row={entry.id}
       aria-current={active ? 'true' : undefined}
       onClick={onOpen}
-      className={`flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
-        active ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
+      className={`flex w-full min-w-0 flex-col gap-1.5 rounded-lg px-3 py-3 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+        active ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.03]'
       }`}
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -561,12 +586,14 @@ const FIELD_LABEL = 'text-[12px] font-medium text-ink-soft';
 function MemoryDetail({
   target,
   entry,
+  sourceLabel,
   onOpenSession,
   onChanged,
   onClosed,
 }: {
   readonly target: MemoryTarget;
   readonly entry: MemoryEntry;
+  readonly sourceLabel: string;
   readonly onOpenSession: (sessionId: string) => void;
   readonly onChanged: () => void;
   readonly onClosed: () => void;
@@ -643,38 +670,29 @@ function MemoryDetail({
   });
 
   const history = journalQuery.data ?? [];
+  const inactive = entry.status === 'archived' || entry.status === 'superseded';
+  const [editing, setEditing] = useState(false);
 
   return (
-    <div data-memory-detail={entry.id} className="min-w-0 space-y-4">
-      <MemoryEditor target={target} entry={entry} onDone={() => { onChanged(); }} />
+    <div data-memory-detail={entry.id} className="min-w-0 space-y-6">
+      {editing && !inactive ? <MemoryEditor target={target} entry={entry} onDone={() => { setEditing(false); onChanged(); }} />
+        : <MemoryReadView entry={entry} target={target} sourceLabel={sourceLabel} />}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
-        <button
-          type="button"
-          data-memory-pin
-          disabled={pinMutation.isPending}
-          onClick={() => { pinMutation.mutate(); }}
-          className={SECONDARY_BUTTON}
-        >
-          {t(entry.pinned ? 'memory.unpin' : 'memory.pin')}
-        </button>
-        <button
-          type="button"
-          data-memory-delete
-          disabled={deleteMutation.isPending}
-          onClick={() => { setConfirmDelete(true); }}
-          className={DANGER_GHOST_BUTTON}
-        >
+      <div className="flex flex-wrap items-center gap-3">
+        {!inactive ? <>
+          <button type="button" data-memory-edit onClick={() => { setEditing(!editing); }} className="text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink">
+            {t(editing ? 'common.close' : 'memory.edit')}
+          </button>
+          <button type="button" data-memory-pin disabled={pinMutation.isPending} onClick={() => { pinMutation.mutate(); }} className="text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink disabled:opacity-60">
+            {t(entry.pinned ? 'memory.unpin' : 'memory.pin')}
+          </button>
+        </> : null}
+        <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { setConfirmDelete(true); }} className={DANGER_GHOST_BUTTON}>
           {t('memory.delete')}
         </button>
         {entry.source.session !== undefined ? (
-          <button
-            type="button"
-            data-memory-source-session
-            title={t('memory.openSource')}
-            onClick={() => { onOpenSession(entry.source.session!); }}
-            className="text-[12px] text-ink-soft underline underline-offset-2 transition-colors hover:text-ink"
-          >
+          <button type="button" data-memory-source-session title={t('memory.openSource')} onClick={() => { onOpenSession(entry.source.session!); }}
+            className="text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink">
             {t('memory.openSource')}
           </button>
         ) : null}
@@ -682,28 +700,27 @@ function MemoryDetail({
 
       <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
         <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
-        {history.length === 0 ? (
-          <p className="mt-1.5 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
-        ) : (
-          <ul className="mt-1.5 space-y-px">
+        {journalQuery.isPending ? <p role="status" className="mt-2 text-[12px] text-ink-faint">{t('memory.loading')}</p>
+          : journalQuery.isError ? <div role="alert" className="mt-2 text-[12px] text-danger">
+            <p>{t('memory.loadFailed')}</p>
+            <button type="button" onClick={() => { void journalQuery.refetch(); }} className="mt-1 underline">{t('common.retry')}</button>
+          </div>
+          : history.length === 0 ? <p className="mt-2 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
+          : <ul className="mt-2 space-y-1">
             {[...history].reverse().map((record) => (
-              <li key={`${record.operationId}:${record.at}`} className="flex min-w-0 items-center gap-2 py-1 text-[12px] text-ink-faint">
-                <span className="min-w-0 flex-1 truncate">
-                  {historyLabel(record.action, t)}
-                  {' · '}
-                  {t(`memory.writer.${record.writer}`)}
-                  {' · '}
-                  <RelativeTime at={record.at} />
-                </span>
-                <UndoButton
-                  record={record}
-                  busy={undoMutation.isPending}
-                  onUndo={() => { undoMutation.mutate(record.operationId); }}
-                />
+              <li key={`${record.operationId}:${record.at}`} className="min-w-0">
+                <details className="group" data-memory-history-record={record.operationId}>
+                  <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-2 text-[12px] text-ink-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
+                    <Icon name="chevron" size={12} className="shrink-0 group-open:rotate-90" />
+                    <span>{historyLabel(record.action, t)}</span>
+                    <span className="ml-auto text-ink-faint"><RelativeTime at={record.at} /></span>
+                  </summary>
+                  <MemoryHistorySnapshot record={record} history={history} current={entry} target={target} sourceLabel={sourceLabel} />
+                  <div className="pb-3 pl-5"><UndoButton record={record} busy={undoMutation.isPending} onUndo={() => { undoMutation.mutate(record.operationId); }} /></div>
+                </details>
               </li>
             ))}
-          </ul>
-        )}
+          </ul>}
       </section>
 
       <ConfirmDialog
