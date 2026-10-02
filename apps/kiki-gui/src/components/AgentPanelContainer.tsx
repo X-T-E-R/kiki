@@ -105,7 +105,7 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
  */
 export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
 
-export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', waitingIds, onOpenAgent }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, waitingIds, onOpenAgent }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
@@ -113,6 +113,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   part?: AgentPanelPart;
   /** The overview part's body: the standard figures or the cockpit instruments. */
   overviewMode?: RailMode;
+  renderOverview?: (body: React.ReactNode, scopeSwitch: React.ReactNode) => React.ReactNode;
   /** Agents waiting on the user (cockpit lanes set them apart). */
   waitingIds?: ReadonlySet<string>;
   /** Cockpit lane rows open that agent. */
@@ -257,22 +258,23 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     tools: data?.tools,
   });
   if (part === 'overview') {
+    const cockpit = (
+      <CockpitOverview
+        agentId={agentId}
+        forest={forest}
+        blocks={state.blocks}
+        waitingIds={waitingIds ?? NO_WAITING}
+        contextUsed={facts.contextUsed}
+        contextLimit={facts.contextLimit}
+        compactPoint={facts.compactPoint}
+        figures={facts.figures}
+        turns={facts.turns}
+        toolCalls={facts.toolCalls}
+        onOpenAgent={onOpenAgent}
+      />
+    );
     return <div data-agent-panel-container data-agent-panel-part="overview" data-overview-mode={overviewMode}>
-      {overviewMode === 'cockpit' ? (
-        <CockpitOverview
-          agentId={agentId}
-          forest={forest}
-          blocks={state.blocks}
-          waitingIds={waitingIds ?? NO_WAITING}
-          contextUsed={facts.contextUsed}
-          contextLimit={facts.contextLimit}
-          compactPoint={facts.compactPoint}
-          figures={facts.figures}
-          turns={facts.turns}
-          toolCalls={facts.toolCalls}
-          onOpenAgent={onOpenAgent}
-        />
-      ) : (
+      {overviewMode === 'cockpit' ? (renderOverview === undefined ? cockpit : renderOverview(cockpit, null)) : (
         <InspectorOverview
           contextUsed={facts.contextUsed}
           contextLimit={facts.contextLimit}
@@ -281,6 +283,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
           treeFigures={facts.treeFigures}
           scope={facts.treeFigures === undefined ? 'agent' : scope}
           onScope={setScope}
+          renderLayout={renderOverview}
           setupLine={facts.setupLine}
           startedAt={facts.startedAt}
           turns={facts.turns}

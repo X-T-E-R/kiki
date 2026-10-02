@@ -106,9 +106,14 @@ afterEach(async () => {
   element.remove();
 });
 
-async function render(agentId: string, options: { routed?: SessionViewState; forest?: AgentForest; visible?: boolean; part?: 'all' | 'work' | 'usage' | 'overview' | 'profile' } = {}) {
+async function render(agentId: string, options: {
+  routed?: SessionViewState; forest?: AgentForest; visible?: boolean;
+  part?: 'all' | 'work' | 'usage' | 'overview' | 'profile';
+  overviewMode?: 'default' | 'cockpit';
+  renderOverview?: Parameters<typeof AgentPanelContainer>[0]['renderOverview'];
+} = {}) {
   await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider>
-    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} part={options.part} />
+    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} part={options.part} overviewMode={options.overviewMode} renderOverview={options.renderOverview} />
   </I18nProvider></MemoryRouter></QueryClientProvider>));
   for (let i = 0; i < 5; i++) await act(async () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
@@ -511,4 +516,55 @@ it('keeps the notes section out when no live controller owns the session', async
   harness.holder.value = null;
   await render('main', { part: 'work' });
   expect(element.querySelector('[data-agent-notes-section]')).toBeNull();
+});
+
+const renderOverviewLayout = (body: React.ReactNode, scopeSwitch: React.ReactNode) => (
+  <><header data-overview-test-head><h3>Overview</h3>{scopeSwitch}</header><div data-overview-test-body>{body}</div></>
+);
+
+it.each([
+  ['zh', '本智能体', '全树', '整棵智能体树'],
+  ['en', 'This agent', 'Tree', 'Whole tree'],
+])('renders the %s short scope labels in the supplied header and keeps the scope interactive', async (locale, agentLabel, treeLabel, fullTreeLabel) => {
+  localStorage.setItem('kiki.locale', locale);
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: {
+      main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 120, totalCostUsd: 0.05 },
+      child: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 250, totalCostUsd: 0.10 },
+    },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
+  const head = element.querySelector('[data-overview-test-head]')!;
+  const agent = head.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')!;
+  const tree = head.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')!;
+  expect(agent.textContent).toBe(agentLabel);
+  expect(tree.textContent).toBe(treeLabel);
+  expect(tree.getAttribute('aria-label')).toBe(fullTreeLabel);
+  expect(tree.title).toBe(fullTreeLabel);
+  expect(head.querySelector('[role="radiogroup"]')?.classList.contains('min-w-0')).toBe(true);
+  expect(agent.classList.contains('truncate')).toBe(true);
+  expect(tree.classList.contains('shrink-0')).toBe(true);
+  expect(element.querySelector('[data-overview-test-body] [role="radiogroup"]')).toBeNull();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  await act(async () => { tree.click(); });
+  expect(tree.getAttribute('aria-checked')).toBe('true');
+  expect(agent.getAttribute('aria-checked')).toBe('false');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
+  await act(async () => { agent.click(); });
+  expect(agent.getAttribute('aria-checked')).toBe('true');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+});
+
+it('keeps the supplied overview header without a scope switch for children and cockpit mode', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [], metrics: {},
+  });
+  await render('child', { part: 'overview', renderOverview: renderOverviewLayout });
+  expect(element.querySelector('[data-overview-test-head] h3')).not.toBeNull();
+  expect(element.querySelector('[role="radiogroup"]')).toBeNull();
+  await render('main', { part: 'overview', overviewMode: 'cockpit', renderOverview: renderOverviewLayout });
+  expect(element.querySelector('[data-overview-test-head] h3')).not.toBeNull();
+  expect(element.querySelector('[role="radiogroup"]')).toBeNull();
+  expect(element.querySelector('[data-cockpit-overview]')).not.toBeNull();
 });

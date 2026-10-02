@@ -4795,6 +4795,7 @@ export const en = {
   'inspector.locate': 'Show in timeline',
   'inspector.budget': 'Usage',
   'inspector.scopeAgent': 'This agent',
+  'inspector.scopeTree': 'Tree',
   'inspector.scopeAria': 'Usage scope',
   'inspector.cached': '{pct}% cached',
   'inspector.tokensShort': '{tokens} tokens',

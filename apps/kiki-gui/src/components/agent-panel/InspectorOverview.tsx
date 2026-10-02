@@ -42,6 +42,7 @@ export interface InspectorOverviewProps {
   readonly startedAt?: string;
   readonly turns?: number;
   readonly toolCalls?: number;
+  readonly renderLayout?: (body: ReactNode, scopeSwitch: ReactNode) => ReactNode;
 }
 
 function compactTokens(value: number): string {
@@ -95,6 +96,7 @@ export const InspectorOverview = memo(function InspectorOverview({
   startedAt,
   turns,
   toolCalls,
+  renderLayout,
 }: InspectorOverviewProps) {
   const { t, tp } = useI18n();
   const age = useAge(startedAt);
@@ -113,20 +115,29 @@ export const InspectorOverview = memo(function InspectorOverview({
       ? contextUsed >= compactPoint ? 'danger' : contextUsed >= compactPoint * 0.8 ? 'warn' : 'ok'
       : pct !== undefined && pct >= 80 ? 'danger' : pct !== undefined && pct >= 50 ? 'warn' : 'ok';
   const barTone = level === 'danger' ? 'bg-danger' : level === 'warn' ? 'bg-amber-rule' : 'bg-ink-soft';
-  const scopeButton = (value: 'agent' | 'tree', label: string) => (
+  const scopeButton = (value: 'agent' | 'tree', label: string, fullLabel = label) => (
     <button
       type="button"
       role="radio"
       aria-checked={scope === value}
+      aria-label={fullLabel}
+      title={fullLabel}
       data-usage-scope={value}
       onClick={() => { onScope(value); }}
-      className={`h-7 rounded-md px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+      className={`h-7 min-w-0 truncate rounded-md px-1 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${value === 'tree' ? 'shrink-0' : ''} ${
         scope === value ? 'text-ink' : 'text-ink-faint hover:text-ink-soft'
       }`}
     >
       {label}
     </button>
   );
+  const scopeSwitch = treeFigures !== undefined ? (
+    <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="ml-auto flex min-w-0 flex-nowrap items-baseline justify-end whitespace-nowrap">
+      {scopeButton('agent', t('inspector.scopeAgent'))}
+      <span aria-hidden className="shrink-0 text-[12px] text-hairline-strong">/</span>
+      {scopeButton('tree', t('inspector.scopeTree'), t('inspector.treeTotal'))}
+    </div>
+  ) : null;
   const figureCells = [
     shown.costUsd !== undefined
       ? <Figure key="cost" data-overview-fact="cost" value={costText(shown.costUsd)} label={t('inspector.cost')} title={`$${shown.costUsd.toFixed(4)}`} />
@@ -152,15 +163,9 @@ export const InspectorOverview = memo(function InspectorOverview({
     toolCalls !== undefined && toolCalls > 0 ? tp('inspector.toolCalls', toolCalls) : undefined,
     !tree && shown.compactions !== undefined && shown.compactions > 0 ? tp('inspector.compactions', shown.compactions) : undefined,
   ].filter((part): part is string => part !== undefined);
-  return (
+  const body = (
     <section data-inspector-overview className="space-y-3">
-      {treeFigures !== undefined ? (
-        <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="-my-1 -mr-1.5 flex items-center justify-end">
-          {scopeButton('agent', t('inspector.scopeAgent'))}
-          <span aria-hidden className="text-[12px] text-hairline-strong">/</span>
-          {scopeButton('tree', t('inspector.treeTotal'))}
-        </div>
-      ) : null}
+      {renderLayout === undefined ? scopeSwitch : null}
 
       {contextUsed !== undefined ? (
         <div data-overview-context={level} className="space-y-1.5">
@@ -234,4 +239,5 @@ export const InspectorOverview = memo(function InspectorOverview({
       ) : null}
     </section>
   );
+  return renderLayout === undefined ? body : renderLayout(body, scopeSwitch);
 });

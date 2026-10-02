@@ -478,6 +478,25 @@ export function Rail({
   }, [focusedAgentId]);
 
   const agentPanelKey = `${state.sessionId}:${focusedAgentId}`;
+  const renderOverview = (body: React.ReactNode, scopeSwitch: React.ReactNode) => (
+    <>
+      <header data-rail-switchable-head className="flex h-9 min-w-0 flex-nowrap items-baseline gap-1.5 py-1">
+        <h3 id="rail-overview-title" className={`${INSPECTOR_HEAD} whitespace-nowrap leading-7`}>{t('inspector.overview')}</h3>
+        <button
+          type="button"
+          data-rail-open-usage
+          onClick={() => { void navigate(usageSessionDeepLink(state.sessionId)); }}
+          title={t('inspector.usage')}
+          aria-label={t('inspector.usage')}
+          className={`flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9 ${FOCUS_RING}`}
+        >
+          <Icon name="arrowUpRight" size={12} />
+        </button>
+        {scopeSwitch}
+      </header>
+      <div id="rail-overview-body" data-rail-switchable-body>{body}</div>
+    </>
+  );
   return (
     <div className="app-rail-shell">
       <div
@@ -636,8 +655,8 @@ export function Rail({
       ) : null}
 
       {/* 5 · 概览, the one block that follows the 标准 / 驾驶舱 preference.
-          The switch lives in the rail head (always visible); this head keeps
-          only the title and the usage link. The body mounts once the slot
+          The mode switch lives in the rail head (always visible); this head
+          keeps the title, usage link and scope switch. The body mounts once the slot
           scrolls into view (it starts the capability and compaction-point
           reads). */}
       <section
@@ -648,34 +667,20 @@ export function Rail({
         className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
       >
         <div data-rail-overview-well className="pt-1 pb-3">
-          <header data-rail-switchable-head className="flex h-9 items-center gap-1.5">
-            <h3 id="rail-overview-title" className={INSPECTOR_HEAD}>{t('inspector.overview')}</h3>
-            <button
-              type="button"
-              data-rail-open-usage
-              onClick={() => { void navigate(usageSessionDeepLink(state.sessionId)); }}
-              title={t('inspector.usage')}
-              aria-label={t('inspector.usage')}
-              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9 ${FOCUS_RING}`}
-            >
-              <Icon name="arrowUpRight" size={12} />
-            </button>
-          </header>
-          <div id="rail-overview-body" data-rail-switchable-body>
-            {panelSlot.mounted ? (
-              <AgentPanelContainer
-                key={`overview:${agentPanelKey}`}
-                state={state}
-                forest={forest}
-                agentId={focusedAgentId}
-                visible={panelSlot.visible}
-                part="overview"
-                overviewMode={mode}
-                waitingIds={waitingAgentIds}
-                onOpenAgent={onOpenSubagent}
-              />
-            ) : null}
-          </div>
+          {panelSlot.mounted ? (
+            <AgentPanelContainer
+              key={`overview:${agentPanelKey}`}
+              state={state}
+              forest={forest}
+              agentId={focusedAgentId}
+              visible={panelSlot.visible}
+              part="overview"
+              overviewMode={mode}
+              renderOverview={renderOverview}
+              waitingIds={waitingAgentIds}
+              onOpenAgent={onOpenSubagent}
+            />
+          ) : renderOverview(null, null)}
         </div>
       </section>
 

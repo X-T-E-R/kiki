@@ -22,8 +22,13 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
 }));
 
 vi.mock('./AgentPanelContainer', () => ({
-  AgentPanelContainer: ({ part = 'all', agentId, overviewMode }: { part?: string; agentId: string; overviewMode?: string }) =>
-    <div data-panel-props={part} data-panel-agent={agentId} data-panel-mode={overviewMode} />,
+  AgentPanelContainer: ({ part = 'all', agentId, overviewMode, renderOverview }: {
+    part?: string; agentId: string; overviewMode?: string;
+    renderOverview?: (body: React.ReactNode, scopeSwitch: React.ReactNode) => React.ReactNode;
+  }) => {
+    const body = <div data-panel-props={part} data-panel-agent={agentId} data-panel-mode={overviewMode} />;
+    return renderOverview === undefined ? body : renderOverview(body, overviewMode === 'cockpit' ? null : <div data-usage-scope-switch />);
+  },
 }));
 
 const forest = buildAgentForest([], [
@@ -202,6 +207,21 @@ describe('RightRail fixed and switchable parts', () => {
     }
   });
 
+  it('places the overview scope beside its title and usage link, outside the controlled body', async () => {
+    const rail = await renderRail();
+    const head = rail.querySelector('[data-rail-switchable-head]')!;
+    expect(head.querySelector('#rail-overview-title')).not.toBeNull();
+    expect(head.querySelector('[data-rail-open-usage]')).not.toBeNull();
+    expect(head.querySelector('[data-usage-scope-switch]')).not.toBeNull();
+    expect(head.classList.contains('items-baseline')).toBe(true);
+    expect(head.classList.contains('flex-nowrap')).toBe(true);
+    expect(head.querySelector('#rail-overview-title')?.classList.contains('whitespace-nowrap')).toBe(true);
+    expect(rail.querySelector('#rail-overview-body [data-usage-scope-switch]')).toBeNull();
+    await choose(rail, 'cockpit');
+    expect(rail.querySelector('[data-rail-switchable-head] #rail-overview-title')).not.toBeNull();
+    expect(rail.querySelector('[data-usage-scope-switch]')).toBeNull();
+  });
+
   it('lifts the overview into view only when cockpit is chosen with the block outside the viewport', async () => {
     const rail = await renderRail();
     const slot = rail.querySelector<HTMLElement>('[data-rail-agent-panel-slot]')!;
@@ -268,10 +288,13 @@ describe('RightRail shared chapters', () => {
       // (which starts the capability read) waits for its slot to scroll in.
       expect(rail.querySelector('[data-panel-props="work"]')).not.toBeNull();
       expect(rail.querySelector('[data-panel-props="overview"]')).toBeNull();
+      expect(rail.querySelectorAll('#rail-overview-title')).toHaveLength(1);
+      expect(rail.querySelector('[data-rail-switchable-head] [data-rail-open-usage]')).not.toBeNull();
       await act(async () => {
         notify?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       });
       expect(rail.querySelector('[data-panel-props="overview"]')).not.toBeNull();
+      expect(rail.querySelectorAll('#rail-overview-title')).toHaveLength(1);
       const mounted = mounts[0];
       await act(async () => { mounted?.root.unmount(); });
       mounts.shift();

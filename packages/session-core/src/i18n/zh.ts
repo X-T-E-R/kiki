@@ -4728,6 +4728,7 @@ export const zh = {
   'inspector.locate': '在时间线中定位',
   'inspector.budget': '用量',
   'inspector.scopeAgent': '本智能体',
+  'inspector.scopeTree': '全树',
   'inspector.scopeAria': '用量范围',
   'inspector.cached': '缓存 {pct}%',
   'inspector.tokensShort': '{tokens} tokens',
