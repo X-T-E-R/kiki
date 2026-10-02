@@ -15,17 +15,25 @@ import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolCon
 const typeSchema = z.enum(['user', 'feedback', 'project', 'reference']);
 const scopeSchema = z.enum(['global', 'workspace', 'persona', 'persona_workspace']);
 const writeSchema = z.object({
-  action: z.enum(['create', 'update', 'supersede', 'archive']),
-  scope: scopeSchema.optional(),
-  type: typeSchema,
-  title: z.string().min(1).max(200),
-  body: z.string().min(1).max(1_500),
-  reason: z.string().min(1),
-  id: z.string().optional(),
-  expected_revision: z.string().optional(),
+  action: z.enum(['create', 'update', 'supersede', 'archive']).describe('Prefer update for an existing rule. Use supersede for a distinct replacement record, archive for obsolete or fully covered entries, and create only for genuinely new guidance. Supersede creates a new ID; update keeps the target ID.'),
+  scope: scopeSchema.optional().describe('Target scope. For update, supersede, or archive, explicitly use the existing entry\'s original scope (MemorySearch hit.scope.kind). Global targets require global. Omitted scope resolves to the bound persona, otherwise workspace; it is not inferred from id. Persona scopes require a bound persona.'),
+  type: typeSchema.describe('feedback: how to work; user: user information; project: durable project facts absent from repository records; reference: pointers. Required for every action. Preserve the target type when archiving.'),
+  title: z.string().min(1).max(200).describe('Stable title for the rule or subject, 1–200 characters. Keep related revisions under the same topic. Required for every action; preserve the original title when archiving.'),
+  body: z.string().min(1).max(1_500).describe('Complete current rule, 1–1,500 characters: affirmative wording, applicability, action or value, necessary exceptions, and known effective date. Update replaces the full body. Required even for archive, where the target\'s full original body is preserved as history.'),
+  reason: z.string().min(1).describe('Why this change is justified, including the user instruction or current evidence and any consolidation or retirement rationale. Put change history and retired values here rather than in the active rule body. Required for every action.'),
+  id: z.string().optional().describe('Existing target ID for update, supersede, or archive; required for those actions. For supersede, this is the predecessor, not the new entry. Omit for create.'),
+  expected_revision: z.string().optional().describe('Latest target revision from MemoryRead or MemorySearch; required for update, supersede, and archive. On conflict, confirm scope, reread, and reconcile before retrying.'),
 }).strict();
-const searchSchema = z.object({ query: z.string().min(1).max(200), scope: scopeSchema.optional(), type: typeSchema.optional(), include_superseded: z.boolean().optional() }).strict();
-const readSchema = z.object({ id: z.string().optional(), ids: z.array(z.string()).min(1).max(10).optional() }).strict();
+const searchSchema = z.object({
+  query: z.string().min(1).max(200).describe('Short subject, title, or alias query, up to 200 characters and 10 whitespace-separated words. Search related wording before creating a new entry; a single empty result does not establish that no related rule exists.'),
+  scope: scopeSchema.optional().describe('Search only this visible scope. Omit to search all scopes visible to the current persona. This search default differs from MemoryWrite\'s default destination.'),
+  type: typeSchema.optional().describe('Optional memory-type filter. Omit when locating a rule whose saved type is unknown.'),
+  include_superseded: z.boolean().optional().describe('Include replaced entries for historical lookup. Defaults to active entries only. Archived and pending entries remain excluded; check each result\'s status.'),
+}).strict();
+const readSchema = z.object({
+  id: z.string().optional().describe('One saved entry ID. Supply id or ids. Read returns full content and revision, but not the owning scope.'),
+  ids: z.array(z.string()).min(1).max(10).optional().describe('Saved entry IDs to read together, 1–10. Use for related entries before consolidation; check each entry\'s status and preserve distinct conditions.'),
+}).strict();
 function publicScopes(session: ISessionContext, persona: MemoryPersonaContext | undefined): readonly MemoryScope[] {
   const shared = persona?.shared ?? ['global', 'workspace'];
   return [
@@ -72,7 +80,7 @@ export const IMemoryWriteTool = createDecorator<IMemoryWriteTool>('memoryWriteTo
 export class MemoryWriteTool implements IMemoryWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryWrite';
-  readonly description = 'Save or change durable memory eligible for scoped startup recall and on-demand retrieval. Persist only preferences, rules, or decisions useful across tasks, not one-off requests. Write without asking when the user states a preference, corrects how you work, sets, tightens, relaxes, or revokes a standing rule or limit (models, concurrency, tools, process), or settles a decision meant to outlast this task. When such a rule changes, `update` or `supersede` the existing entry, or `archive` a revoked one, in the same turn; do not leave a stale value active. `update`, `supersede`, and `archive` need `id` and `expected_revision` from MemorySearch or MemoryRead. Types: `feedback` for how to work, `user` for who the user is, `project` for project facts the repository does not record, `reference` for pointers. Keep one fact per entry, written as a dated declarative statement close to the user\'s words; never store secrets, task progress, or facts the repository already holds. With a bound persona, omitted scope saves to that persona memory; otherwise it saves to the workspace. Honor explicit user scope. Use `workspace` for project-specific facts or working rules; use `global` only when a rule is meant to apply across workspaces, not merely because it concerns models or concurrency. Keep persona-specific rules in the bound persona scope. A `pending` receipt means awaiting review, not active memory; do not claim it is an effective standing rule. Storage review does not suspend a direct user instruction for the current task.';
+  readonly description = 'Maintain durable memory for scoped recall. When the user establishes or changes guidance useful across tasks, reconcile existing entries in the same turn. Search by subject before creating; read related entries in full before modifying them. Reuse a full, current read already in view.\n\nPrefer `update` for a complete revision of an existing rule. Consolidate overlapping entries with the same scope and applicability into one retained entry, then `archive` fully covered entries after the retained content is active. Use `supersede` when a separate replacement record is useful; it creates a new ID and, when active, marks the specified predecessor superseded. Archive revoked or obsolete guidance. Create only genuinely new guidance; leave an already complete rule unchanged.\n\nWrite the full current rule affirmatively, including its conditions and known effective date. Keep the rule and its qualifications together, with change history in `reason`. For `update`, `supersede`, and `archive`, provide the target\'s original `scope`, `id`, and latest `expected_revision`. A global target requires `scope: "global"`. Omitted scope defaults to the bound persona, otherwise workspace; it is never inferred from ID. Take the scope string from MemorySearch\'s `scope.kind` or a known write receipt; MemoryRead currently omits it. On lookup or revision errors, confirm scope and reread the target before retrying.\n\nEvery action requires `type`, `title`, `body`, and `reason`. Update replaces the full content. For archive, preserve the target\'s full type/title/body and put the retirement or consolidation rationale in reason. Respect the user\'s scope: workspace for project-specific guidance, global for guidance across workspaces, and the bound persona scope for persona-specific guidance. Types: feedback for how to work, user for who the user is, project for durable project facts absent from repository records, reference for pointers. Keep secrets out, task progress in task notes, and repository-owned facts in their authoritative files. A pending receipt awaits review; it is not active memory. Direct user instructions still govern the current task.';
   readonly parameters = toInputJsonSchema(writeSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -109,7 +117,7 @@ export const IMemorySearchTool = createDecorator<IMemorySearchTool>('memorySearc
 export class MemorySearchTool implements IMemorySearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemorySearch';
-  readonly description = 'Search saved memory visible to this persona when a task depends on an earlier preference, decision, or rule missing or only partially shown, and before MemoryWrite to find an entry to update instead of duplicating it. Reuse relevant entries already complete and current in view; do not re-search for greetings or unrelated tasks. Returns up to 8 active hits with `id`, `revision`, and a snippet; read omitted details with MemoryRead before relying on them. `include_superseded` also shows replaced entries, not current rules.';
+  readonly description = 'Find saved guidance visible to this persona when relevant details are missing, and find existing entries to maintain before creating memory. Search by subject and likely aliases, including related rules with different wording. Reuse entries already complete and current in view. Omitted scope searches all visible scopes; an explicit scope narrows the search.\n\nReturns up to 8 active hits with id, revision, scope, status, and a body snippet of up to 200 characters. Read related entries with MemoryRead before merging, replacing, or relying on omitted conditions. Retain each hit\'s `scope.kind` for MemoryWrite; MemoryRead currently omits scope. These ranked hits are not a complete inventory: narrow or rephrase a query when a known entry is missing. Use short queries of at most 10 whitespace-separated words. `include_superseded` also returns replaced entries for historical lookup; archived and pending entries are excluded. Historical hits are not current rules.';
   readonly parameters = toInputJsonSchema(searchSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -138,7 +146,7 @@ export const IMemoryReadTool = createDecorator<IMemoryReadTool>('memoryReadTool'
 export class MemoryReadTool implements IMemoryReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryRead';
-  readonly description = 'Read full saved memory entries visible to this persona by `id` or `ids` (up to 10) when a startup preview or search snippet is truncated or may omit conditions needed for the task. Includes the `revision` that update, supersede, and archive require. Pending entries are not active memory and are not returned.';
+  readonly description = 'Read full saved memory by `id` or `ids` (up to 10) across scopes visible to this persona. Use it to recover omitted conditions and inspect existing entries before an update, replacement, merge, or archive; reuse a full, current read already in view. Returns the entry\'s revision for `expected_revision`.\n\nCheck status: archived and superseded entries can be returned as history, while pending entries are excluded. Read does not return scope; retain the original scope from MemorySearch\'s `scope.kind` or a known write receipt and pass it explicitly to MemoryWrite. If the scope is unknown, recover it through search before modifying the entry. An unavailable entry is returned with `missing: true`.';
   readonly parameters = toInputJsonSchema(readSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,

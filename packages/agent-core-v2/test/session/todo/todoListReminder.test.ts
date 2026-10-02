@@ -155,6 +155,10 @@ describe('continuity cadence', () => {
     expect(tracker.evaluate(input)?.disclosure.triggers).toEqual(['T2']);
     expect(tracker.evaluate(input)?.disclosure.triggers).not.toContain('T2');
     expect(new TodoListReminderTracker().evaluate({ ...input, history: [] })?.disclosure.triggers).not.toContain('T2');
+    const memoryReminder = new TodoListReminderTracker().evaluate({ ...input, memoryAvailable: true });
+    expect(memoryReminder?.content).toContain('prefer update, use affirmative current-rule wording');
+    expect(memoryReminder?.content).toContain('retire covered or obsolete entries under the existing approval policy');
+    expect(new TodoListReminderTracker().evaluate(input)?.content).not.toContain('MemoryWrite');
     const summary: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' }, content: [{ type: 'text', text: '## Working notes\ngoal: task\nnext: finish\n\n## Notes metadata\nrevision 2\n\n## User input since notes\n(none)' }] };
     expect(new TodoListReminderTracker().evaluate({ ...base, epoch: 1, history: [summary] })).toBeUndefined();
   });
@@ -177,6 +181,8 @@ describe('continuity cadence', () => {
     const result = new TodoListReminderTracker().evaluate({ ...base, active: false, memoryAvailable: true, history });
     expect(result?.disclosure.triggers).toEqual(['E1']);
     expect(result?.content).toContain('approval policy');
+    expect(result?.content).toContain('entry as the complete current rule');
+    expect(result?.content).toContain('Put the correction history in reason');
     expect(new TodoListReminderTracker().evaluate({ ...base, humanAuthorized: false, history })).toBeUndefined();
   });
   it('retrieves named earlier artifacts without treating unrelated notes as coverage', () => {

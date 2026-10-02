@@ -286,6 +286,40 @@ describe('renderPromptTemplateResult', () => {
 });
 
 describe('renderSystemPromptResult', () => {
+  it('renders memory maintenance in update-first order with scope and approval safeguards', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    const memory = prompt.split('## Memory Across Sessions\n')[1]!.split('# Working Environment')[0]!;
+    const choices = [
+      'leave it unchanged',
+      'Prefer `update`',
+      'consolidate into one existing entry',
+      'Use `supersede`',
+      'Use `create` for genuinely new guidance',
+    ];
+    const positions = choices.map((choice) => memory.indexOf(choice));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b));
+    for (const guidance of [
+      'search for the same subject and likely aliases',
+      'Read related entries in full',
+      'preserving its valid conditions and exceptions',
+      'Preserve distinct scope-specific rules and independent conditions',
+      'affirmative statement of the current rule',
+      'If the body would exceed 1,500 characters, split it by independently maintainable rules and keep retrieval pointers',
+      'preserve every condition that changes the required action',
+      'Preserve the strength of permissions and limits',
+      'Put correction history, merge rationale, and retired values in `reason`',
+      'clearly labeled confirmation date',
+      'One-off requests and temporary exceptions belong in task notes',
+      'A global target requires `scope: "global"`',
+      'MemoryRead currently omits scope',
+      'Confirm scope and refresh the entry after a lookup or revision error rather than creating a duplicate',
+      'Treat archived and superseded entries as history',
+      'A pending change awaits review',
+      'retire covered entries only after the retained content is confirmed active',
+    ]) expect(memory).toContain(guidance);
+  });
+
   it('keeps the fieldized default template byte-for-byte identical', () => {
     const context = {
       cwd: '/work',
