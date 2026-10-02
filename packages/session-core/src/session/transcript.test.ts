@@ -5254,3 +5254,41 @@ describe('durable subagent turn outcomes', () => {
     expect(forestFor(resumed).byId[CHILD_AGENT_ID]?.turnOutcome).toBeUndefined();
   });
 });
+
+
+describe('question history answers', () => {
+  const questions = [{ id: 'q1', question: 'Which checks?', options: [
+    { id: 'a', label: 'Typecheck' }, { id: 'b', label: 'Visual proof' },
+  ] }];
+
+  it.each([
+    { name: 'saved text keyed by question', answers: { 'Which checks?': 'Typecheck, Visual proof' }, expected: 'Typecheck, Visual proof' },
+    { name: 'single click', answers: { q1: { kind: 'single', option_id: 'a' } }, expected: 'Typecheck' },
+    { name: 'multiple selections', answers: { q1: { kind: 'multi', option_ids: ['a', 'b'] } }, expected: 'Typecheck, Visual proof' },
+    { name: 'selections and a note', answers: { q1: { kind: 'multi_with_other', option_ids: ['b'], other_text: 'Include mobile.' } }, expected: 'Visual proof, Include mobile.' },
+    { name: 'free text', answers: { q1: { kind: 'other', text: 'Read the appendix.' } }, expected: 'Read the appendix.' },
+  ])('preserves $name across projection and replay', ({ answers, expected }) => {
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'interaction.upsert', interaction: {
+      interactionId: 'question-history', interactionKind: 'question', state: 'answered',
+      request: { questions, createdAt: FIXED_AT }, response: { answers, resolved_at: FIXED_AT_1 },
+    } }]);
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', transcript.snapshot());
+    expect(state.blocks.find((block) => block.kind === 'question')).toMatchObject({
+      outcome: { kind: 'answered', at: FIXED_AT_1, answers: { q1: expected } },
+    });
+    const replay = projectAgentTranscriptView(createViewState('session_test'), 'main', transcript.snapshot());
+    expect(replay.blocks).toEqual(state.blocks);
+  });
+
+  it.each([undefined, {}, { q1: { kind: 'skipped' } }, { q1: { kind: 'single', option_id: 'missing-option' } }, { q1: true }])('does not invent missing answers from %j', (answers) => {
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'interaction.upsert', interaction: {
+      interactionId: 'question-history', interactionKind: 'question', state: 'answered',
+      request: { questions, createdAt: FIXED_AT }, response: { answers },
+    } }]);
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', transcript.snapshot());
+    const block = state.blocks.find((entry) => entry.kind === 'question');
+    expect(block?.kind === 'question' && block.outcome?.kind === 'answered' ? block.outcome.answers : 'wrong state').toBeUndefined();
+  });
+});

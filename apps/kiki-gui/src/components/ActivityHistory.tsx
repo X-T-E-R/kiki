@@ -12,7 +12,9 @@
  * column keeps a long run readable without a lid on it.
  */
 
-import { memo } from 'react';
+import { memo, useState } from 'react';
+import { Markdown } from './Markdown';
+import { useFindReveal } from './timeline/findReveal';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type {
@@ -91,6 +93,8 @@ export const HistoryLine = memo(function HistoryLine({
   originName?: string;
 }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  useFindReveal(node.id, expanded, setExpanded);
   // The icon names the KIND of record (a decision gate, a question asked);
   // the label already states the outcome, so the picture never doubles as
   // a success tick. Only a refusal tints the line.
@@ -124,14 +128,41 @@ export const HistoryLine = memo(function HistoryLine({
   }
   return (
     <ActivityRow
-      attrs={{ 'data-history-line': true }}
+      attrs={{ 'data-history-line': true, 'data-question-history': node.kind === 'question' ? node.outcome?.kind : undefined }}
       glyph={<Icon name={icon} />}
       tone={tone}
       label={stateLabel}
       title={stateTitle}
-      detail={originName === undefined ? text : `${originName} · ${text}`}
+      detail={<span title={text}>{originName === undefined ? text : `${originName} · ${text}`}</span>}
       meta={at === undefined ? undefined : <RelativeTime at={at} />}
-    />
+      layout={node.kind === 'question' ? 'question' : undefined}
+      expanded={node.kind === 'question' ? expanded : undefined}
+      onToggle={node.kind === 'question' ? () => { setExpanded((value) => !value); } : undefined}
+    >
+      {node.kind === 'question' && expanded ? (
+        <div data-question-details className="space-y-4 py-2 pl-[26px] pr-2 text-[13px]">
+          {node.request.questions.map((item) => {
+            const answer = node.outcome?.kind === 'answered' ? node.outcome.answers?.[item.id] : undefined;
+            return (
+              <div key={item.id} className="min-w-0 space-y-1">
+                {item.header === undefined ? null : <p className="text-[12px] text-ink-faint">{item.header}</p>}
+                <p className="break-words font-medium text-ink-soft">{item.question}</p>
+                {item.body === undefined ? null : <div className="text-ink-soft"><Markdown text={item.body} /></div>}
+                {node.outcome?.kind === 'answered' ? (
+                  <p data-question-answer className={`whitespace-pre-wrap break-words ${answer === undefined ? 'text-ink-faint' : 'text-ink'}`}>
+                    {answer ?? t('ia.question.answerUnavailable')}
+                  </p>
+                ) : (
+                  <ul className="space-y-1 text-ink-faint">
+                    {item.options.map((option) => <li key={option.id} className="break-words">{option.label}</li>)}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 

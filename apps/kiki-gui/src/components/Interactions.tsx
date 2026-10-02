@@ -31,6 +31,7 @@ import { useOptionalConnection } from '../state/connection';
 import { reviewerLabel, reviewerTooltip } from './approvalReviewer';
 import { DisclosureChevron, Icon } from './icons';
 import { Markdown } from './Markdown';
+import { HistoryLine } from './ActivityHistory';
 import { SshApprovalCard } from './ssh/SshApprovalCard';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'allow-rule' | 'reject-once';
@@ -907,25 +908,7 @@ export function QuestionCard({
   const [sent, setSent] = useState<null | 'answered' | 'dismissed'>(null);
 
   if (block.outcome !== undefined) {
-    const label =
-      block.outcome.kind === 'answered'
-        ? t('ia.question.answered')
-        : block.outcome.kind === 'dismissed'
-          ? t('ia.question.dismissed')
-          : t('ia.question.expired');
-    return (
-      <details className="anim-enter text-[12px] text-ink-faint" data-question-history>
-        <summary className="min-h-7 cursor-pointer font-medium">{label}</summary>
-        <div className="mt-2 space-y-2 text-ink-soft">
-          {block.request.questions.map((item) => <div key={item.id}>
-            <p className="break-words">{item.question}</p>
-            <ul className="mt-1 list-inside list-disc text-[12px]">
-              {item.options.map((option) => <li key={option.id}>{option.label}</li>)}
-            </ul>
-          </div>)}
-        </div>
-      </details>
-    );
+    return <HistoryLine node={block} originName={originAgentName} />;
   }
 
   const answerFor = (id: string): QuestionItemAnswer =>

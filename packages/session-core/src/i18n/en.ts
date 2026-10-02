@@ -1439,6 +1439,7 @@ export const en = {
   'ia.question.answered': 'Question answered',
   'ia.question.dismissed': 'Question dismissed',
   'ia.question.expired': 'Question expired',
+  'ia.question.answerUnavailable': 'The answer is not available in this record.',
   'ia.other': 'Other',
   'ia.otherPlaceholder': 'Type your answer…',
   'ia.answerFailed': 'Could not send the answers: {detail}',

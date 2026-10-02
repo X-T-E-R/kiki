@@ -63,6 +63,7 @@ import {
   type TranscriptDetailKind,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
+import { questionAnswerTexts } from './transcript/questionAnswers';
 import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
@@ -2058,7 +2059,9 @@ export class SessionController {
     const at = new Date().toISOString();
     try {
       await this.client.resolveQuestion(this.sessionId, questionId, { answers, method: 'click' });
-      this.setState(markQuestionOutcome(this.state, questionId, { kind: 'answered', at }));
+      const block = this.state.blocks.find((entry) => entry.kind === 'question' && entry.request.question_id === questionId);
+      const texts = block?.kind === 'question' ? questionAnswerTexts(block.request.questions, answers) : undefined;
+      this.setState(markQuestionOutcome(this.state, questionId, { kind: 'answered', at, answers: texts }));
     } catch (error) {
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_ALREADY_RESOLVED) {
         this.setState(markQuestionOutcome(this.state, questionId, { kind: 'answered', at }));

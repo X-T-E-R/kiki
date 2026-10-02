@@ -517,10 +517,11 @@ ${engineError}`;
         detail={semanticDetail}
         expanded={expanded}
         onToggle={() => { setExpanded((value) => !value); }}
-        meta={fact}
+        layout={block.name === 'AskUserQuestion' ? 'question' : undefined}
+        meta={block.name === 'AskUserQuestion' ? <span className="inline-flex items-center gap-1">{fact}<StatusIcon block={block} /></span> : fact}
         metaWidth="auto"
-        status={<StatusIcon block={block} />}
-        aside={<SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
+        status={block.name === 'AskUserQuestion' ? undefined : <StatusIcon block={block} />}
+        aside={block.name === 'AskUserQuestion' ? undefined : <SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
       >
         {expanded ? (
           <SemanticBody

@@ -7,6 +7,8 @@ import type { ApprovalBlock, Block, NoticeBlock, QuestionBlock } from '@kiki/ses
 import { HistoryLine, isMarkerNotice, revealSubagentCard } from './ActivityHistory';
 import { ResyncStatusBanner } from './agent-workspace';
 import { I18nProvider } from '../i18n';
+import { MemoryRouter } from 'react-router-dom';
+import { ToolCard } from './ToolCard';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 
@@ -144,4 +146,80 @@ it('shows the actual resync error and runs manual retry without a false retrying
   await act(async () => container.querySelector('button')!.click());
   expect(retry).toHaveBeenCalledTimes(1);
   await act(async () => root.unmount());
+});
+
+
+describe('question history disclosure', () => {
+  it.each(['en', 'zh'])('shares the tool row grid and truncation in %s', (locale) => {
+    localStorage.setItem('kiki.locale', locale);
+    const host = document.createElement('div');
+    const args = { questions: answeredQuestion.request.questions };
+    host.innerHTML = renderToStaticMarkup(<MemoryRouter><I18nProvider>
+      <ToolCard block={{ kind: 'tool', id: 'ask', toolCallId: 'ask', name: 'AskUserQuestion',
+        args, argsText: JSON.stringify(args), display: undefined, description: undefined,
+        status: 'done', output: { answers: { 'Go one level deeper?': 'Yes' } }, isError: false,
+        durationMs: undefined, progressText: undefined }} />
+      <HistoryLine node={answeredQuestion} />
+    </I18nProvider></MemoryRouter>);
+    const rows = [...host.querySelectorAll('[data-activity-layout="question"]')];
+    expect(rows).toHaveLength(2);
+    const classes = (selector: string) => rows.map((row) => row.querySelector(selector)?.getAttribute('class'));
+    expect(classes('[data-activity-toggle]')[0]).toBe(classes('[data-activity-toggle]')[1]);
+    expect(classes('[data-activity-detail]')[0]).toBe(classes('[data-activity-detail]')[1]);
+    expect(classes('[data-activity-meta]')[0]).toBe(classes('[data-activity-meta]')[1]);
+    expect(classes('[data-activity-detail]')[0]).toContain('min-w-0 flex-1 truncate');
+    expect(rows[0]?.querySelector('[data-activity-detail]')?.parentElement?.className).toContain('md:grid-cols-[8rem_minmax(0,1fr)]');
+    expect(host.querySelector('[data-tool-jump-slot]')).toBeNull();
+    localStorage.removeItem('kiki.locale');
+  });
+
+  it.each(['answered', 'dismissed', 'expired'] as const)('expands and collapses %s questions without a card', async (kind) => {
+    localStorage.setItem('kiki.locale', 'en');
+    const node: QuestionBlock = { ...answeredQuestion,
+      request: { ...answeredQuestion.request, questions: [{ ...answeredQuestion.request.questions[0]!, body: 'Read the supporting examples first.' }] },
+      outcome: kind === 'expired' ? { kind } : kind === 'dismissed' ? { kind, at: '2026-09-06T00:05:00Z' }
+        : { kind, at: '2026-09-06T00:05:00Z', answers: { 'qi-1': 'Yes\nInclude the appendix.' } } };
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<I18nProvider><HistoryLine node={node} originName="Writer" /></I18nProvider>));
+      const toggle = container.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(container.querySelector('[data-question-details]')).toBeNull();
+      expect(toggle.textContent).toContain('Writer');
+      await act(async () => toggle.click());
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      const details = container.querySelector('[data-question-details]')!;
+      expect(details.textContent).toContain('Go one level deeper?');
+      expect(details.textContent).toContain('Read the supporting examples first.');
+      expect(details.className).not.toMatch(/border|shadow|bg-/);
+      if (kind === 'answered') {
+        expect(details.querySelector('[data-question-answer]')?.textContent).toBe('Yes\nInclude the appendix.');
+        expect(details.textContent).not.toContain('No');
+      } else {
+        expect(details.textContent).toContain('YesNo');
+        expect(details.querySelector('[data-question-answer]')).toBeNull();
+      }
+      await act(async () => toggle.click());
+      expect(container.querySelector('[data-question-details]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      localStorage.removeItem('kiki.locale');
+    }
+  });
+
+  it('does not mistake every offered option for the answer in an older record', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<I18nProvider><HistoryLine node={answeredQuestion} /></I18nProvider>));
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-activity-toggle]')!.click());
+      expect(container.querySelector('[data-question-answer]')?.textContent).toBe('The answer is not available in this record.');
+      expect(container.querySelector('[data-question-details]')?.textContent).not.toContain('Yes');
+    } finally {
+      await act(async () => root.unmount());
+      localStorage.removeItem('kiki.locale');
+    }
+  });
 });

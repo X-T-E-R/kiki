@@ -114,6 +114,8 @@ export interface ActivityRowProps {
   /** data-* hooks and ids the tests and proofs address. */
   readonly attrs?: Record<string, string | number | boolean | undefined>;
   readonly className?: string;
+  /** Question tools and their receipts share label, excerpt and trailing columns. */
+  readonly layout?: 'question';
   /** Rendered inside a read-run's spine: the hover wash stops at the spine. */
   readonly nested?: boolean;
 }
@@ -144,9 +146,12 @@ export function ActivityRow({
   aside,
   attrs,
   className = '',
+  layout,
   nested = false,
 }: ActivityRowProps) {
   const interactive = onToggle ?? onOpen;
+  const heading = <span className={`shrink-0 font-sans text-[13px] font-medium ${LABEL_TONE[tone]}`}>{label}</span>;
+  const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[12px] ${DETAIL_TONE[tone]}`}>{detail}</span>;
   const inner = (
     <>
       {/* The glyph column is a fixed 18px box so drawn icons, status dots and
@@ -154,17 +159,17 @@ export function ActivityRow({
       <span aria-hidden className={`flex h-4 w-[18px] shrink-0 items-center justify-center ${GLYPH_TONE[tone]}`}>
         {glyph}
       </span>
-      <span className={`shrink-0 font-sans text-[13px] font-medium ${LABEL_TONE[tone]}`}>{label}</span>
-      {detail === undefined ? (
-        <span className="min-w-0 flex-1" />
-      ) : (
-        <span className={`min-w-0 flex-1 truncate font-sans text-[12px] ${DETAIL_TONE[tone]}`}>{detail}</span>
-      )}
+      {layout === 'question' ? (
+        <span className="grid min-w-0 flex-1 gap-x-2 md:grid-cols-[8rem_minmax(0,1fr)] md:[&:lang(zh)]:grid-cols-[4.5rem_minmax(0,1fr)]">
+          {heading}{excerpt}
+        </span>
+      ) : <>{heading}{detail === undefined ? <span className="min-w-0 flex-1" /> : excerpt}</>}
       {stats === undefined ? null : <span className={STATS_COLUMN}>{stats}</span>}
-      {meta === undefined ? null : (
+      {meta === undefined && layout !== 'question' ? null : (
         <span
+          data-activity-meta
           title={metaTitle}
-          className={metaWidth === 'auto' ? META_COLUMN_AUTO : metaWidth === 'wide' ? META_COLUMN_WIDE : META_COLUMN}
+          className={layout === 'question' ? META_COLUMN_WIDE : metaWidth === 'auto' ? META_COLUMN_AUTO : metaWidth === 'wide' ? META_COLUMN_WIDE : META_COLUMN}
         >
           {meta}
         </span>
@@ -175,7 +180,7 @@ export function ActivityRow({
       {onToggle === undefined || chevronInGlyph ? null : (
         <DisclosureChevron
           open={expanded === true}
-          className={`text-ink-faint ${expanded === true ? '' : 'opacity-0 group-hover/act:opacity-100 group-focus-visible/act:opacity-100'}`}
+          className={`text-ink-faint ${expanded === true || layout === 'question' ? '' : 'opacity-0 group-hover/act:opacity-100 group-focus-visible/act:opacity-100'}`}
         />
       )}
     </>
@@ -191,7 +196,7 @@ export function ActivityRow({
     : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
   const shell = `group/act flex min-h-[26px] min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
-    <div data-activity-row title={title} className={`anim-enter ${className}`} {...attrs}>
+    <div data-activity-row data-activity-layout={layout} title={title} className={`anim-enter ${className}`} {...attrs}>
       <div className="flex items-center gap-1">
         {interactive === undefined ? (
           <div className={shell}>{inner}</div>
