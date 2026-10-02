@@ -1,6 +1,6 @@
 ---
 name: kiki-appearance
-description: Create, fix, or package a Kiki appearance pack or skin file (GUI colors plus background picture or video). Use when the user wants a custom look for the Kiki window, a pack from their own art, or to repair one that will not install. Do not use merely to switch light/dark or pick an existing skin.
+description: Create, fix, or package Kiki appearance packs or skin files (GUI colors and picture/video backgrounds), including your own art or install failures. Do not use merely to switch light/dark or pick an existing skin.
 ---
 
 # Kiki appearance packs (kiki-appearance)

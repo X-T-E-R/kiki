@@ -1,6 +1,6 @@
 ---
 name: kiki-profile
-description: Create, modify, or repair Kiki agent profile files and SYSTEM.md. Use only when the user wants to author a main-agent or subagent profile, change profile frontmatter, loading precedence, tool/model policy, prompt body, or prompt_overrides. Do not use merely to select, dispatch, inspect, or discuss an existing agent.
+description: Create, modify, or repair Kiki main/subagent profiles or SYSTEM.md (frontmatter, loading precedence, tool/model policy, prompt body, prompt_overrides). Do not use merely to select, dispatch, inspect, or discuss an existing agent.
 ---
 
 # Kiki profile authoring (kiki-profile)

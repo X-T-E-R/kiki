@@ -1,6 +1,6 @@
 ---
 name: tool-workflows
-description: Detailed Kiki built-in tool workflows and recovery cases. Use when the user asks how to use Kiki's file, shell, background-task, delegation, plan, search, or goal tools, or when a tool's compact description is insufficient to resolve a multi-step workflow. Do not invoke for a routine single tool call whose schema and result already answer the question.
+description: Kiki file, shell, background-task, delegation, plan, search, and goal tool workflows/recovery when a tool's compact description is insufficient. Do not invoke for a routine single tool call resolved by its schema/result.
 ---
 
 # Built-in tool workflows

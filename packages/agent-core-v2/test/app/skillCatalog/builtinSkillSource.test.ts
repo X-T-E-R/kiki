@@ -55,6 +55,13 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(NEUTRAL_SKILLS).toEqual([]);
   });
 
+  it.each(BUILTIN_SKILLS)('keeps $name description within 250 characters and complete in the model listing', (skill) => {
+    expect(skill.description.length).toBeLessThanOrEqual(250);
+    const catalog = new InMemorySkillCatalog();
+    catalog.registerBuiltinSkill(skill);
+    expect(catalog.getModelSkillListing()).toContain(`- ${skill.name}: ${skill.description}`);
+  });
+
   it('keeps kiki-ops broad but narrowly limited to Kiki product operations', () => {
     const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops');
     expect(ops?.metadata.disableModelInvocation).not.toBe(true);
