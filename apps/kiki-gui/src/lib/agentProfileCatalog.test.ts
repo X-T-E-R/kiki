@@ -19,19 +19,22 @@ afterEach(() => {
 });
 
 describe('loadAgentProfileCatalog', () => {
-  it('excludes workspace registrations from the unscoped create catalog without changing the global view', async () => {
+  it('requests a workspace-free effective preview instead of filtering the loaded global registrations', async () => {
     const items = [
       { name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] },
+      { name: 'lead', source: 'user', main: true, disabled: false, routes: [], workspace_ids: ['wd_a'] },
       { name: 'scoped', source: 'workspace', main: true, disabled: false, routes: [], workspace_id: 'wd_a' },
-      { name: 'merged', source: 'workspace', main: true, disabled: false, routes: [], workspace_ids: ['wd_a'] },
     ];
-    const listNamedAgentProfiles = vi.fn().mockResolvedValue({ items, complete: true });
+    const previewItems = [{ ...items[1], workspace_ids: undefined }];
+    const listNamedAgentProfiles = vi.fn().mockImplementation((query) =>
+      Promise.resolve({ items: query?.unscoped ? previewItems : items, complete: true })
+    );
     const client = { listNamedAgentProfiles } as unknown as Pick<KikiClient, 'listNamedAgentProfiles'>;
 
     const unscoped = await loadAgentProfileCatalog(client, { mode: 'unscoped' });
-    expect(unscoped.items.map((item) => item.name)).toEqual(['agent']);
+    expect(unscoped.items.map((item) => item.name)).toEqual(['lead']);
     expect(await loadAgentProfileCatalog(client, { mode: 'global' })).toEqual({ items, complete: true });
-    expect(listNamedAgentProfiles.mock.calls).toEqual([[], []]);
+    expect(listNamedAgentProfiles.mock.calls).toEqual([[{ unscoped: true }], []]);
     expect(agentProfileCatalogQueryKey({ mode: 'unscoped' })).not.toEqual(agentProfileCatalogQueryKey({ mode: 'global' }));
   });
 

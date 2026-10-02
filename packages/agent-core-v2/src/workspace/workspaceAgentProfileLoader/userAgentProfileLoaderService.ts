@@ -21,7 +21,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
-import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import { userAgentRoots, userAgentRootWatchPlans } from './internal/agentRoots';
 import { loadSystemMdProfile } from './internal/systemFile';
@@ -63,7 +63,7 @@ export class UserAgentProfileLoaderService
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IShippedAgentProfileManager private readonly shippedManager: IShippedAgentProfileManager,
-    registry?: IAgentProfileRegistry,
+    @IAgentProfileRegistry registry: IAgentProfileRegistry,
   ) {
     super(log, registry);
     this.defaultProfile = builtin.getDefault();

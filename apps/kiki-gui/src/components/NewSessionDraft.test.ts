@@ -366,13 +366,15 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { void state.send('Wait for the profile catalog', []); });
     expect(client.createSession).not.toHaveBeenCalled();
 
-    catalog.resolve({ items: [profile('agent')] });
+    catalog.resolve({ items: [profile('agent'), { ...profile('auto-lead'), source: 'user' }] });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
-    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith();
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({ unscoped: true });
+    await act(async () => { state.setAgentProfile('auto-lead'); });
+    state = await settleDraft((value) => value.agentProfile === 'auto-lead');
     const body = await sentBody(state);
     expect(body.workspace_id).toBeUndefined();
     expect(body.metadata).toBeUndefined();
-    expect(body.agent_config?.profile).toBe('agent');
+    expect(body.agent_config?.profile).toBe('auto-lead');
   });
 
   it('blocks creation until an initial agent is validated and then sends its workspace pins', async () => {
@@ -1015,7 +1017,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.workspaceId).toBe(AUTO_WORKSPACE_ID);
     expect(state.autoWorkspace).toBe(true);
     expect(state.agentProfile).toBe('workspace-choice');
-    expect(client.listNamedAgentProfiles.mock.calls.at(-1)).toEqual([]);
+    expect(client.listNamedAgentProfiles.mock.calls.at(-1)).toEqual([{ unscoped: true }]);
     await act(async () => { state.setAgentProfile('agent'); });
     state = await settleDraft((value) => value.agentProfile === 'agent' && value.modelOverride === undefined);
     const body = await sentBody(state);

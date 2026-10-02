@@ -8,7 +8,8 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
-import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { isAbsolute } from 'pathe';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import {
   configuredAgentRoots,
@@ -45,6 +46,7 @@ export class ExtraAgentProfileLoaderService
 
   protected readonly sourceId = 'extra';
   protected readonly priority = AGENT_PROFILE_SOURCE_PRIORITY.extra;
+  protected readonly globalOnly: boolean = false;
 
   private readonly watchDebounce = this._register(new TimeoutTimer());
   private readonly watchResources = this._register(new DisposableStore());
@@ -61,7 +63,7 @@ export class ExtraAgentProfileLoaderService
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
-    registry?: IAgentProfileRegistry,
+    @IAgentProfileRegistry registry: IAgentProfileRegistry,
   ) {
     super(log, registry);
     this._register(
@@ -82,7 +84,10 @@ export class ExtraAgentProfileLoaderService
 
   protected async load(): Promise<AgentProfileContribution> {
     await this.configService.ready;
-    const dirs = this.configService.get<ExtraAgentDirsConfig>(EXTRA_AGENT_DIRS_SECTION) ?? [];
+    const configured = this.configService.get<ExtraAgentDirsConfig>(EXTRA_AGENT_DIRS_SECTION) ?? [];
+    const dirs = this.globalOnly
+      ? configured.filter((dir) => isAbsolute(dir) || dir === '~' || dir.startsWith('~/') || dir.startsWith('~\\'))
+      : configured;
     await this.updateAgentRootWatches(dirs);
     return profilesFromDiscovery(
       await discoverAgentFiles(

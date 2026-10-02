@@ -57,7 +57,9 @@ export async function loadAgentProfileCatalog(
         catalog.effective ? { cwd: catalog.cwd, effective: true } : { cwd: catalog.cwd },
       );
     }
-    return client.listNamedAgentProfiles();
+    return catalog.mode === 'unscoped'
+      ? client.listNamedAgentProfiles({ unscoped: true })
+      : client.listNamedAgentProfiles();
   };
   const unscoped = (response: ListNamedAgentProfilesResponse): ListNamedAgentProfilesResponse =>
     catalog.mode === 'unscoped'
