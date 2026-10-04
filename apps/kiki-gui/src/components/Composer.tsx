@@ -64,6 +64,7 @@ import {
 import { errorText, issueText, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import {
   composerEnterAction,
+  catalogModelSupportsEffort,
   projectedProfileModelState,
   projectedProfileModelRuleSource,
   resolveCatalogModel,
@@ -860,7 +861,7 @@ export function Composer({
     && !agentProfileOptions.some((item) => item.value === agentProfile);
   const invalidModel = engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
   const invalidEffort = engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
-    && effort !== undefined && !selectedModel.support_efforts?.includes(effort);
+    && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
   const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
 
   // The composer mount now survives route changes (the conversation shell owns
@@ -2269,7 +2270,7 @@ export function Composer({
           {modelDomainState === 'unknown' && frozenMenuQuery.isError ? <button type="button" className="min-h-9 underline" onClick={() => { void frozenMenuQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
-          {invalidEffort ? <button type="button" className="underline" onClick={() => { onChangeEffort(resolveSelectedEffort(selectedModel?.support_efforts, undefined, selectedModel?.default_effort)); }}>{t('selection.resetEffort')}</button> : null}
+          {invalidEffort && selectedModel?.default_effort !== undefined && catalogModelSupportsEffort(selectedModel, selectedModel.default_effort) ? <button type="button" className="underline" onClick={() => { onChangeEffort(selectedModel.default_effort); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
         {modelDomainState === 'warning' ? <p data-model-menu-warning role="status" className="mb-2 px-1 text-[11.5px] text-ink-soft">
           {t('selection.modelMenuWarning', { source: modelRuleSource })}

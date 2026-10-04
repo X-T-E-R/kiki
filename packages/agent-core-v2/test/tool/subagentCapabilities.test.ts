@@ -66,6 +66,14 @@ describe('subagent capability final bindings', () => {
     return normalizeAgentProfile({ name: 'helper', modelAlias: 'example', systemPrompt: () => '', ...fields });
   }
 
+  it('projects a model-only profile default and the same missing-default error as dispatch', () => {
+    model = { ...model, supportEfforts: undefined, defaultEffort: 'high' };
+    expect(project(helper())[0]).toMatchObject({ defaultsAvailable: true, thinkingEffort: 'high', effortSource: 'model' });
+    model = { ...model, defaultEffort: undefined };
+    expect(project(helper())[0]).toMatchObject({ defaultsAvailable: false, unavailableReason: expect.stringContaining('no resolvable default') });
+    expect(project(helper({ thinkingEffort: 'low' }))[0]).toMatchObject({ defaultsAvailable: true, thinkingEffort: 'low' });
+  });
+
   it('shares effective-domain calculation while preserving frozen declarations and main model policy', () => {
     services.models.list = () => ({ example: {}, cheap: {}, outside: {} });
     vi.spyOn(services.models, 'resolveId').mockImplementation((alias) => alias === 'fast' ? 'example' : alias);
@@ -198,11 +206,11 @@ describe('subagent capability final bindings', () => {
     });
     model = { ...model, defaultEffort: undefined };
     expect(project(helper())[0]).toMatchObject({
-      thinkingEffort: 'low', effortSource: 'config', defaultsAvailable: true,
+      defaultsAvailable: false, unavailableReason: expect.stringContaining('no resolvable default'),
     });
   });
 
-  it('CAP-R1 reports an always-thinking adjustment as a route pin advisory', () => {
+  it('CAP-R1 rejects an off route pin for an always-thinking model without replacing the pin', () => {
     model = { ...model, alwaysThinking: true };
     const profile = helper();
     const route = (effort: string): ResolvedAgentProfileRoute => ({
@@ -212,11 +220,8 @@ describe('subagent capability final bindings', () => {
     });
     const conflict = project(profile, route('off')).find((item) => item.route !== undefined);
     expect(conflict).toMatchObject({
-      route: 'helper.route', defaultsAvailable: true, thinkingEffort: 'low',
-      bindingAdvisories: [expect.objectContaining({
-        code: 'effort_pin_overridden',
-        ruleSource: 'route:helper.route.thinking_effort',
-      })],
+      route: 'helper.route', defaultsAvailable: false,
+      unavailableReason: expect.stringContaining('off'),
     });
     expect(project(profile, route('low')).find((item) => item.route !== undefined)).toMatchObject({
       defaultsAvailable: true, thinkingEffort: 'low',

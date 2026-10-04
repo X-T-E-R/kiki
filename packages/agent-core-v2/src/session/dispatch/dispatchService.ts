@@ -28,6 +28,7 @@ import { fillLeasePins, spawnConstraintOrigin } from '#/app/agentProfileCatalog/
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
+import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
 import { ILogService } from '#/_base/log/log';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
@@ -740,10 +741,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     const resolver = modelAliasResolverForExecutor(profile.executor, this.models);
     if (input.resolvedBinding !== undefined) {
       const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
-      if (native) this.modelCatalog.get(model);
+      const thinking = native
+        ? resolveThinkingEffortForModel(input.resolvedBinding.thinking, undefined, this.modelCatalog.get(model), false, true)
+        : input.resolvedBinding.thinking;
       return {
         model,
-        thinking: input.resolvedBinding.thinking,
+        thinking,
         selection: input.resolvedBinding.selection ?? {
           model: { source: 'dispatch-explicit', requestedValue: input.resolvedBinding.model },
           thinking: input.resolvedBinding.thinking === undefined ? undefined : {
@@ -775,7 +778,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       { modelAlias: caller.modelAlias, thinkingEffort: caller.effectiveThinkingLevel ?? caller.thinkingLevel },
     );
     const binding = native ? canonicalizeSubagentBinding(resolved, this.models) : resolved;
-    if (native) this.modelCatalog.get(binding.model);
+    const thinking = native
+      ? resolveThinkingEffortForModel(binding.thinking, undefined, this.modelCatalog.get(binding.model), false, true)
+      : binding.thinking;
     const modelSource = input.modelAlias !== undefined ? 'dispatch-explicit' as const
       : selection.route?.lockedModelAlias !== undefined ? 'route-default' as const
         : target.lease?.modelAlias !== undefined ? 'caller-lease-default' as const
@@ -792,6 +797,7 @@ export class SessionDispatchService implements ISessionDispatchService {
             : binding.thinking !== undefined ? 'profile-default' as const : 'model-default' as const;
     return {
       ...binding,
+      thinking,
       selection: {
         model: { source: modelSource, requestedValue: resolved.displayModel },
         thinking: {

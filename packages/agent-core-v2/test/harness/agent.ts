@@ -199,6 +199,7 @@ import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { TurnPrompt } from '#/agent/loop/turnOps';
 import { type CognitionConfig, IModelService, type ModelsSection, type ModelUsagePolicy } from '#/kosong/model/model';
+import type { GenerationParameters } from '#/kosong/contract/generationParameters';
 import {
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
@@ -270,6 +271,7 @@ interface ModelConfigForConfig {
   readonly capabilities?: readonly string[];
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly parameters?: GenerationParameters;
   readonly usage?: ModelUsagePolicy;
   readonly cognition?: CognitionConfig;
   readonly promptOverrides?: PromptOverrides;
@@ -2702,6 +2704,7 @@ function configWithProvider(
         maxContextSize:
           maxContextSize === undefined || maxContextSize <= 0 ? 1_000_000 : maxContextSize,
         capabilities: capabilityNames(modelCapabilities),
+        defaultEffort: modelCapabilities?.thinking ? 'on' : 'off',
       },
     },
     defaultProvider: providerName,

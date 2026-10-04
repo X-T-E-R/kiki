@@ -169,6 +169,7 @@ export function toProtocolModel(
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType ?? model.providerType);
   const effectiveCapabilities = modelCapabilityNames(model.capabilities);
+  if (model.alwaysThinking) effectiveCapabilities.push('always_thinking');
   return {
     id: model.id,
     provider_id: model.providerName,
@@ -182,7 +183,7 @@ export function toProtocolModel(
         ? undefined
         : effectiveCapabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
-    default_effort: model.defaultEffort,
+    default_effort: model.preferredThinkingEffort ?? model.overrides?.defaultEffort ?? model.defaultEffort,
     service_tier: model.serviceTier,
     pricing_model: record.pricingModel,
     parameters: parametersToWire(record.parameters),

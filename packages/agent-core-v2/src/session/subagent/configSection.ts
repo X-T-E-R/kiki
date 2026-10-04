@@ -210,7 +210,7 @@ export function resolveInheritedModelAlias(
 }
 
 export const SUBAGENT_MODEL_UNBOUND_HINT =
-  'Pin model_alias on the agent profile (or its route or the caller lease), pass a concrete model name as model_alias with the dispatch, or configure [subagent].default_model. AgentRun does not accept model_alias: "inherit"; caller inheritance must be configured by the profile, route, or caller lease.';
+  'Provide both a concrete model_alias and effort with the dispatch, or bind a model on the profile, route, caller lease, or [subagent].default_model together with a resolvable default thinking effort. AgentRun does not accept model_alias: "inherit"; caller inheritance must be configured by the profile, route, or caller lease.';
 
 export function subagentModelUnboundMessage(target?: SubagentBindingTarget): string {
   const named =
@@ -277,7 +277,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides must satisfy allowed_models, deny_models, and allowed_efforts in every scope. Deviations from preferred_models, discouraged_models, preferred_efforts, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. AgentRun does not accept model_alias: "inherit". To select a model explicitly, specify a concrete configured model name; otherwise omit model_alias to use the target default. Caller inheritance configured by a profile, route, or caller lease remains supported. Executable explicit overrides must satisfy allowed_models, deny_models, and allowed_efforts in every scope. Deviations from preferred_models, discouraged_models, preferred_efforts, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, provide both model_alias and effort. Effort may be omitted only when the selected model has a resolvable default.',
   );
   return lines.join('\n');
 }

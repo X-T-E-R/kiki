@@ -186,6 +186,7 @@ describe('subagent model selection', () => {
     expect((thrown as Error2).code).toBe(ErrorCodes.MODEL_NOT_CONFIGURED);
     expect((thrown as Error2).message).toContain('No model is bound for agent profile "reviewer"');
     expect((thrown as Error2).message).toContain(SUBAGENT_MODEL_UNBOUND_HINT);
+    expect((thrown as Error2).message).toContain('both a concrete model_alias and effort');
     expect((thrown as Error2).details?.['profile']).toBe('reviewer');
   });
 

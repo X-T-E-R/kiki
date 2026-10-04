@@ -102,6 +102,7 @@ function nativeResumeOptions() {
           maxContextSize: 1_000_000,
           capabilities: ['thinking'],
           supportEfforts: ['low', 'high'],
+          defaultEffort: 'high',
         },
         [RESUME_NEW_MODEL]: {
           provider: RESUME_PROVIDER,
@@ -109,6 +110,7 @@ function nativeResumeOptions() {
           maxContextSize: 1_000_000,
           capabilities: ['thinking'],
           supportEfforts: ['low', 'high'],
+          defaultEffort: 'high',
         },
       },
     },
@@ -966,7 +968,7 @@ describe('AgentProfileService.bind', () => {
     const alias = 'canonical-model';
     const canonicalId = `test-provider/${alias}`;
     ctx = createTestAgent({ initialConfig: { defaultModel: alias, models: {
-      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000 },
+      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000, defaultEffort: 'off' },
     } } }, hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(normalizeAgentProfile({
         name: DEFAULT_AGENT_PROFILE_NAME, main: true, systemPrompt: () => 'main profile',
@@ -1006,6 +1008,9 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, catalog),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, capabilities: ['thinking'], supportEfforts: ['low', 'high'], defaultEffort: 'high' },
+    } };
     await ctx.get(IConfigService).set('defaultModel', '', ConfigTarget.Memory);
     const svc = ctx.get(IAgentProfileService);
 
@@ -1195,6 +1200,7 @@ describe('AgentProfileService.bind', () => {
       maxContextSize: 1_000_000,
       capabilities: ['thinking'],
       supportEfforts: ['low', 'high'],
+      defaultEffort: 'high',
     });
     const { profile, toolPolicy } = profileServices(ctx);
 
@@ -1270,7 +1276,78 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('binds a routed profile as detached when its pinned effort is adjusted by the model', async () => {
+  it.each(['main', 'sub'] as const)('uses shared effort with main-only usage overrides and preserves profile/call priority (%s)', async (delegationPosition) => {
+    const configured = resumeProfile();
+    const options = nativeResumeOptions();
+    const build = (profile: AgentProfile) => createTestAgent({ initialConfig: { ...options.initialConfig, models: {
+      ...options.initialConfig.models,
+      [RESUME_OLD_MODEL]: { ...options.initialConfig.models[RESUME_OLD_MODEL], supportEfforts: ['low', 'medium', 'high', 'max'],
+        parameters: { thinkingEffort: 'high' }, usage: { main: { thinkingEffort: 'low' } } },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(profile)));
+    ctx = build(configured);
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: configured.name, delegationPosition });
+    expect(svc.data().thinkingLevel).toBe(delegationPosition === 'main' ? 'low' : 'high');
+    expect((await ctx.get(IModelCatalog).listModels()).find((model) => model.id === RESUME_OLD_MODEL)?.default_effort).toBe('high');
+    await svc.bind({ profile: configured.name, thinking: 'max', delegationPosition });
+    expect(svc.data().thinkingLevel).toBe('max');
+    await ctx.dispose();
+    ctx = build(resumeProfile({ thinkingEffort: 'medium' }));
+    await ctx.get(IAgentProfileService).bind({ profile: configured.name, delegationPosition });
+    expect(ctx.get(IAgentProfileService).data().thinkingLevel).toBe('medium');
+  });
+
+  it('keeps a legal on binding through journal persistence and a cold restore', async () => {
+    const options = nativeResumeOptions();
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false, initialConfig: { ...options.initialConfig, models: {
+      ...options.initialConfig.models,
+      [RESUME_OLD_MODEL]: { ...options.initialConfig.models[RESUME_OLD_MODEL], supportEfforts: ['off', 'on'], defaultEffort: 'on' },
+    } } }, hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    ctx = build();
+    await ctx.get(IAgentProfileService).bind({ profile: 'resume-profile', delegationPosition: 'sub' });
+    expect(ctx.get(IAgentProfileService).data().thinkingLevel).toBe('on');
+    await ctx.get(IWireService).flush();
+    expect(persistence.records.some((record) => JSON.stringify(record).includes('"thinkingEffort":"on"'))).toBe(true);
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    expect(ctx.get(IAgentProfileService).data()).toMatchObject({ modelAlias: RESUME_OLD_MODEL, thinkingLevel: 'on', effectiveThinkingLevel: 'on' });
+    await expect(ctx.get(IAgentProfileService).prepareResumeBinding({})).resolves.toMatchObject({ model: RESUME_OLD_MODEL, thinking: 'on' });
+  });
+
+  it('uses a concrete model default without fabricating on when binding a model-only child', async () => {
+    const configured = resumeProfile();
+    const options = nativeResumeOptions();
+    options.initialConfig.models[RESUME_OLD_MODEL] = {
+      ...options.initialConfig.models[RESUME_OLD_MODEL], supportEfforts: [],
+      ...{ defaultEffort: 'high' },
+    };
+    ctx = createTestAgent(options, hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: configured.name, delegationPosition: 'sub' });
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_OLD_MODEL, thinkingLevel: 'high', effectiveThinkingLevel: 'high' });
+    const saved = JSON.parse(JSON.stringify(svc.data())) as ProfileBindingSnapshot;
+    svc.applyBindingSnapshot(saved);
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_OLD_MODEL, thinkingLevel: 'high' });
+  });
+
+  it.each(['main', 'sub'] as const)('rejects a model-only child when the model has no resolvable default effort (%s)', async (delegationPosition) => {
+    const configured = resumeProfile();
+    const options = nativeResumeOptions();
+    const { defaultEffort: _default, ...withoutDefault } = options.initialConfig.models[RESUME_OLD_MODEL];
+    ctx = createTestAgent({ initialConfig: { ...options.initialConfig, models: { ...options.initialConfig.models, [RESUME_OLD_MODEL]: withoutDefault } } }, hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
+    const svc = ctx.get(IAgentProfileService);
+    const before = svc.data();
+    await expect(svc.bind({ profile: configured.name, delegationPosition })).rejects.toThrow(/default.*effort|effort.*default/i);
+    expect(svc.data()).toEqual(before);
+    await expect(svc.bind({ profile: configured.name, thinking: 'high', delegationPosition })).resolves.toBeUndefined();
+    expect(svc.data().thinkingLevel).toBe('high');
+  });
+
+  it('rejects an unsupported routed profile effort instead of replacing the authored pin', async () => {
     const alias = 'kimi-code/kimi-for-coding';
     ctx = createTestAgent(
       {
@@ -1294,15 +1371,9 @@ describe('AgentProfileService.bind', () => {
     );
     const profile = ctx.get(IAgentProfileService);
 
-    await expect(profile.bind({ route: 'reviewer.ui-k3' })).resolves.toBeUndefined();
-    expect(profile.data()).toMatchObject({
-      profileName: 'reviewer',
-      routeId: 'reviewer.ui-k3',
-      lockedThinkingEffort: 'ultra',
-      thinkingEffortSource: 'adjusted',
-      routeDetached: true,
-    });
-    expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
+    const before = profile.data();
+    await expect(profile.bind({ route: 'reviewer.ui-k3' })).rejects.toThrow(/ultra.*not supported/);
+    expect(profile.data()).toEqual(before);
   });
 
   it.each(['sub'] as const)('enforces the frozen menu for %s binding, switches and resume without mutation', async (delegationPosition) => {
@@ -1705,7 +1776,7 @@ describe('AgentProfileService.bind', () => {
   it.each(['main', 'sub'] as const)('applies profile tier over model defaults for %s bindings', async (delegationPosition) => {
     const configured = normalizeAgentProfile({ name: 'tier-helper', modelAlias: 'tier-model', serviceTier: 'flex', systemPrompt: () => '' });
     ctx = createTestAgent({ initialConfig: { models: {
-      'tier-model': { provider: 'test-provider', model: 'tier-model', maxContextSize: 1000, serviceTier: 'priority' },
+      'tier-model': { provider: 'test-provider', model: 'tier-model', maxContextSize: 1000, serviceTier: 'priority', defaultEffort: 'off' },
     } } }, hostEnvironmentServices(homeDir, hostPathClass),
     sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)));
     const profile = ctx.get(IAgentProfileService);
@@ -1727,7 +1798,7 @@ describe('AgentProfileService.bind', () => {
     });
     const options = nativeResumeOptions();
     const models = {
-      [RESUME_OLD_MODEL]: { ...options.initialConfig.models[RESUME_OLD_MODEL], maxContextSize: 1000, maxInputSize: 800, maxOutputSize: 400, supportEfforts: ['low', 'medium', 'high'] },
+      [RESUME_OLD_MODEL]: { ...options.initialConfig.models[RESUME_OLD_MODEL], maxContextSize: 1000, maxInputSize: 800, maxOutputSize: 400, supportEfforts: ['low', 'medium', 'high'], defaultEffort: 'low' },
       [RESUME_NEW_MODEL]: { ...options.initialConfig.models[RESUME_NEW_MODEL], maxContextSize: 6000, supportEfforts: ['low', 'medium', 'high', 'max'], overrides: { defaultEffort: 'max', requestParams: { seed: 42, temperature: 0.2 } } },
     };
     ctx = createTestAgent({ initialConfig: {
@@ -1849,7 +1920,7 @@ describe('AgentProfileService.bind', () => {
     const alias = 'canonical-model';
     const canonicalId = `test-provider/${alias}`;
     ctx = createTestAgent({ initialConfig: { models: {
-      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000 },
+      [canonicalId]: { provider: 'test-provider', model: alias, maxContextSize: 1_000_000, defaultEffort: 'off' },
     } } }, hostEnvironmentServices(homeDir, hostPathClass));
     const svc = ctx.get(IAgentProfileService);
 
@@ -1889,7 +1960,7 @@ describe('AgentProfileService.bind', () => {
   it('setModel changes only the model of a route-only binding and keeps its route lock', async () => {
     ctx = createTestAgent({ initialConfig: { models: {
       'other-model': { provider: 'test-provider', model: 'other-model', maxContextSize: 1_000_000,
-        capabilities: ['thinking'], supportEfforts: ['low', 'high'] },
+        capabilities: ['thinking'], supportEfforts: ['low', 'high'], defaultEffort: 'high' },
     } } }, hostEnvironmentServices(homeDir, hostPathClass));
     const svc = ctx.get(IAgentProfileService);
     const snapshot: ProfileBindingSnapshot = {
@@ -2025,6 +2096,7 @@ describe('AgentProfileService.bind', () => {
               maxContextSize: 1_000_000,
               capabilities: ['thinking'],
               supportEfforts: ['low', 'high'],
+              defaultEffort: 'high',
             },
           },
         },
@@ -2061,6 +2133,7 @@ describe('AgentProfileService.bind', () => {
               maxContextSize: 1_000_000,
               capabilities: ['thinking'],
               supportEfforts: ['low', 'high'],
+              defaultEffort: 'high',
             },
           },
         },

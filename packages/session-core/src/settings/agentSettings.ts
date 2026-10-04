@@ -28,6 +28,20 @@ export function resolveSelectedEffort(
   return efforts[0];
 }
 
+export function catalogModelSupportsEffort(model: {
+  readonly support_efforts?: readonly string[];
+  readonly default_effort?: string;
+  readonly capabilities?: readonly string[];
+  readonly effective_capabilities?: readonly string[];
+}, effort: string): boolean {
+  const capabilities = model.effective_capabilities ?? model.capabilities ?? [];
+  if (effort === 'off') return !capabilities.includes('always_thinking');
+  const efforts = model.support_efforts ?? [];
+  if (efforts.length > 0) return efforts.includes(effort);
+  if (model.default_effort === effort) return true;
+  return capabilities.includes('thinking') || capabilities.includes('always_thinking');
+}
+
 /**
  * Composer-side mirror of the engine's `resolveModelId` over the `/models`
  * catalog: an exact key wins first, a bare id matches any `provider/id` key

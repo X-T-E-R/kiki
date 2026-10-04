@@ -2573,12 +2573,12 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
   });
 
-  it('preserves an incompatible effort and provides an explicit reset even on a model without efforts', async () => {
+  it('preserves an incompatible effort without inventing a reset for a model with no default', async () => {
     const onChangeEffort = vi.fn();
     const { container } = await renderComposer({ effort: 'high', value: 'hello', onChangeEffort });
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('high');
-    await click(container.querySelector('[data-selection-diagnostic] button')!);
-    expect(onChangeEffort).toHaveBeenCalledWith(undefined);
+    expect(container.querySelector('[data-selection-diagnostic] button')).toBeNull();
+    expect(onChangeEffort).not.toHaveBeenCalled();
   });
 });
 

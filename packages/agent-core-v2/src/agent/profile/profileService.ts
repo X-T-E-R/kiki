@@ -622,7 +622,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (requestedAlias === undefined || requestedAlias === '') {
       throw new ProfileError(
         ProfileErrors.codes.MODEL_NOT_CONFIGURED,
-        `model is required to bind profile "${selection.baseProfile.name}" (no default model configured)`,
+        `model and thinking effort are required to bind profile "${selection.baseProfile.name}" (no default model configured). Provide both model and thinking, or configure a model with a resolvable default effort.`,
       );
     }
     const alias = this.resolveModelId(requestedAlias);
@@ -654,7 +654,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
     });
-    const thinkingLevel = this.resolveThinkingEffort(requestedThinking, model);
+    const thinkingLevel = this.resolveThinkingEffort(requestedThinking, model, true);
     const normalizedRequestedThinking = requestedThinking === undefined
       ? undefined
       : normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
@@ -1022,6 +1022,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ? this.resolveThinkingEffort(
           resolveProfileThinkingDefault(this.profileState.boundProfile ?? this.resolveActiveProfile(), modelAlias, (id) => this.models.resolveId(id)),
           this.resolveUsageModel(modelAlias),
+          true,
         )
       : complete.thinkingEffort);
     return { ok: true, binding: { modelAlias, thinkingEffort } };
@@ -1387,8 +1388,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   ): void {
     const normalized = normalizeRequestedThinkingEffort(requested);
     const efforts = model?.supportEfforts ?? [];
-    const declared = normalized === 'on' || normalized === 'off' ||
-      efforts.length === 0 || efforts.includes(normalized ?? '');
+    const declared = normalized === 'off'
+      ? model?.alwaysThinking !== true
+      : efforts.length === 0 || efforts.includes(normalized ?? '');
     if (normalized !== undefined && declared && this.supportsThinkingEffort(normalized, model)) return;
     const supported = efforts.length === 0 ? 'off' : ['off', ...efforts].join(', ');
     throw new ProfileError(
@@ -2401,7 +2403,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         const candidate = requested ?? (changedModel
           ? resolveProfileThinkingDefault(this.profileState.boundProfile ?? this.resolveActiveProfile(), alias, (id) => this.models.resolveId(id))
           : this.modelAlias === undefined ? undefined : this.thinkingLevel);
-        payload.thinkingEffort = this.resolveThinkingEffort(candidate, model);
+        payload.thinkingEffort = this.resolveThinkingEffort(candidate, model,
+          changedModel && (this.profileName !== undefined || this.routeId !== undefined) || requested !== undefined && model !== undefined);
         if (changed.thinkingEffortAdjusted === undefined && candidate !== undefined) {
           const normalized = normalizeRequestedThinkingEffort(candidate) ?? candidate.trim().toLowerCase();
           const adjusted = normalized !== payload.thinkingEffort;
@@ -2608,12 +2611,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private resolveThinkingEffort(
     requested: string | undefined,
     model: Model | undefined,
+    requireModelDefault = false,
   ): ThinkingEffort {
     return resolveThinkingEffortForModel(
       requested,
       this.config.get<ThinkingConfig>(THINKING_SECTION),
       model,
       this.strictThinkingValidation(model),
+      requireModelDefault,
     );
   }
 

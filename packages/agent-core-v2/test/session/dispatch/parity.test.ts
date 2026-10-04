@@ -1102,7 +1102,7 @@ function createLane(
   });
   ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id), list: () => ({ 'parity-model': {}, 'main-model': {}, 'other-model': {}, 'next-model': {} }) });
   ix.stub(IModelCatalog, {
-    get: options.modelCatalogGet ?? ((id: string) => ({ id }) as Model),
+    get: options.modelCatalogGet ?? ((id: string) => ({ id, capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, defaultEffort: 'high' }) as Model),
     getRequester: (id: string) => ({
       model: { id } as Model,
       request: async function* () {},

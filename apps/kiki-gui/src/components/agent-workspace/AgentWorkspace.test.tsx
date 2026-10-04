@@ -772,6 +772,45 @@ const EFFORT_CATALOG = {
   ],
 };
 
+it.each([
+  { effort: 'high', defaultEffort: 'high', supportEfforts: undefined },
+  { effort: 'low', defaultEffort: undefined, supportEfforts: undefined },
+  { effort: 'on', defaultEffort: 'on', supportEfforts: ['off', 'on'] },
+  { effort: 'off', defaultEffort: undefined, supportEfforts: ['low', 'high'] },
+])('shows effective child effort $effort without a spurious warning or backend rewrite', async ({ effort, defaultEffort, supportEfforts }) => {
+  harness.listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro',
+    capabilities: ['thinking'], support_efforts: supportEfforts, default_effort: defaultEffort }] });
+  await renderWorkspace({ forest: testForest('running', true, { model: 'fixture/kiki-pro', thinkingEffort: effort }) });
+  await settle();
+  expect(header.querySelector('[data-agent-effort]')?.textContent).toContain(effort);
+  expect(dock.textContent).not.toContain('unavailable for this model');
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'continue');
+  expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.disabled).toBe(false);
+  expect(harness.setAgentEffort).not.toHaveBeenCalled();
+  expect(harness.setAgentModel).not.toHaveBeenCalled();
+});
+
+it('preserves an invalid saved on binding and offers explicit recovery rather than rewriting it', async () => {
+  harness.listModels.mockResolvedValue(EFFORT_CATALOG);
+  await renderWorkspace({ forest: testForest('running', true, { model: 'fixture/kiki-pro', thinkingEffort: 'on' }) });
+  await settle();
+  expect(header.querySelector('[data-agent-effort]')?.textContent).toContain('on');
+  expect(dock.textContent).toContain('Effort “on” is unavailable for this model');
+  expect(dock.textContent).toContain('Use model default effort');
+  expect(harness.setAgentEffort).not.toHaveBeenCalled();
+  expect(harness.setAgentModel).not.toHaveBeenCalled();
+});
+
+it('does not invent a default recovery effort when the child model has none', async () => {
+  harness.listModels.mockResolvedValue({ items: [{ ...EFFORT_CATALOG.items[0], default_effort: undefined }] });
+  await renderWorkspace({ forest: testForest('running', true, { model: 'fixture/kiki-pro', thinkingEffort: 'on' }) });
+  await settle();
+  expect(dock.textContent).toContain('Effort “on” is unavailable for this model');
+  expect(dock.textContent).not.toContain('Use model default effort');
+  expect(harness.setAgentEffort).not.toHaveBeenCalled();
+});
+
 it('applies a picked thinking effort through the agent facade and refreshes the agent read', async () => {
   harness.listModels.mockResolvedValue(EFFORT_CATALOG);
   harness.setAgentEffort.mockResolvedValue(undefined);

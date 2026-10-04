@@ -11,7 +11,7 @@ import type { IConfigService } from '#/app/config/config';
 import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
-import { requiresStrictThinkingValidation, resolveThinkingEffortForModel, type ThinkingConfig } from '#/kosong/model/thinking';
+import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveInheritedModelAlias, resolveSubagentBinding } from '#/session/subagent/configSection';
 import { pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
@@ -145,14 +145,9 @@ export function projectSubagentCapabilities(
       const executor = services.executors.resolve(profile.executor, profile.executorOptions);
       if (native) {
         const model = services.modelCatalog.get(resolved.model);
-        const defaults = services.config.get<ThinkingConfig>('thinking');
-        thinking = resolveThinkingEffortForModel(thinking, defaults, model,
-          requiresStrictThinkingValidation(services.protocols, model.protocol, model.providerType));
+        thinking = resolveThinkingEffortForModel(thinking, undefined, model, false, true);
         assertSubagentModelNotDenied(services.config, resolved.model, services.models);
-        effortSource ??= model.overrides?.defaultEffort?.trim() ? 'model'
-          : defaults?.enabled === false ? 'config'
-            : model.defaultEffort?.trim() ? 'model'
-              : defaults?.effort !== undefined || defaults?.enabled !== undefined ? 'config' : 'model';
+        effortSource ??= 'model';
       } else {
         const validated = services.executors.validateBinding(executor.descriptor.id, executor.options, {
           modelAlias: resolved.model,
@@ -281,7 +276,7 @@ function capabilityFailure(error: unknown): {
 } {
   if (isError2(error)) {
     if (error.code === ErrorCodes.MODEL_NOT_CONFIGURED) return {
-      reason: 'No default model is bound; pass model_alias explicitly',
+      reason: 'No default model is bound; provide both model_alias and effort',
       reasonCode: 'model_not_configured',
     };
     if (error.code === ErrorCodes.SCOPED_PROFILE_UNAVAILABLE) return {
@@ -293,7 +288,8 @@ function capabilityFailure(error: unknown): {
       reasonCode: 'binding_constraints_unsatisfied',
     };
     if (error.code === ErrorCodes.CONFIG_INVALID || error.code === ErrorCodes.ROUTE_BINDING_CONFLICT) return {
-      reason: 'Default binding does not satisfy model, effort, or executor constraints',
+      reason: error.details?.['requiredParameter'] === 'effort' || error.details?.['thinkingEffort'] !== undefined
+        ? error.message : 'Default binding does not satisfy model, effort, or executor constraints',
       reasonCode: 'binding_constraints_unsatisfied',
     };
   }

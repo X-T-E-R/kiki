@@ -605,7 +605,7 @@ export const en = {
   'selection.catalogError': 'Could not validate choices: {detail}. Your selections are preserved.',
   'selection.profileInvalid': 'Profile “{value}” is unavailable in this directory. Choose an enabled profile.',
   'selection.modelInvalid': 'Model “{value}” is no longer available. Choose another model.',
-  'selection.effortInvalid': 'Effort “{value}” is unavailable for this model. Choose another effort or reset it.',
+  'selection.effortInvalid': 'Effort “{value}” is unavailable for this model. Choose a supported effort.',
   'selection.resetEffort': 'Use model default effort',
   'selection.workspaceInvalid': 'Workspace “{value}” is unavailable. Choose a workspace or an absolute directory.',
   // ---- shared ----

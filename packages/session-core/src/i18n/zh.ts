@@ -598,7 +598,7 @@ export const zh = {
   'selection.catalogError': '无法校验选择：{detail}。已保留原选择。',
   'selection.profileInvalid': '配置档“{value}”在此目录不可用，请重选一个已启用的配置档。',
   'selection.modelInvalid': '模型“{value}”已不可用，请重选模型。',
-  'selection.effortInvalid': '思考强度“{value}”不适用于此模型，请重选或重置。',
+  'selection.effortInvalid': '思考强度“{value}”不适用于此模型，请重选支持的思考强度。',
   'selection.resetEffort': '使用模型默认思考强度',
   'selection.workspaceInvalid': '工作区“{value}”不可用，请重选工作区或绝对目录。',
   // ---- shared ----

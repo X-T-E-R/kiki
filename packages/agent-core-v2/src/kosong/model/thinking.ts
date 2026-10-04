@@ -1,3 +1,5 @@
+import { Error2 } from '#/_base/errors/errors';
+import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import type { ThinkingEffort } from '#/kosong/contract/provider';
 import type { IProtocolAdapterRegistry, Protocol } from '#/kosong/protocol/protocol';
 
@@ -161,7 +163,27 @@ export function resolveThinkingEffortForModel(
   defaults: ThinkingDefaults | undefined,
   model: ModelThinkingMetadata | undefined,
   strictValidation = false,
+  requireModelDefault = false,
 ): ThinkingEffort {
+  if (requireModelDefault) {
+    const effort = normalizeRequestedThinkingEffort(requested)
+      ?? normalizeRequestedThinkingEffort(model?.preferredThinkingEffort)
+      ?? normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort)
+      ?? normalizeRequestedThinkingEffort(model?.defaultEffort);
+    if (effort === undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE,
+        'The selected model has no resolvable default thinking effort. Provide effort explicitly or configure a model default.',
+        { details: { requiredParameter: 'effort' } });
+    }
+    const efforts = effortsFor(model);
+    if (model === undefined || effort === 'off' && model.alwaysThinking === true
+      || effort !== 'off' && (efforts.length > 0 ? !efforts.includes(effort) : !modelSupportsThinking(model))) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE,
+        `Thinking effort "${effort}" is not supported by the selected model. Provide a supported effort or correct its default.`,
+        { details: { thinkingEffort: effort, supportedEfforts: [...efforts] } });
+    }
+    return effort;
+  }
   const modelDefault = normalizeRequestedThinkingEffort(model?.preferredThinkingEffort)
     ?? normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort);
   const configured = modelDefault
