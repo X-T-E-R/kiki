@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- Preserve URL media inputs when running plugin tools.
+
 - [`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Open built-in skills as read-only SKILL.md preview tabs using their embedded content instead of treating `builtin://` URIs as host files. File-backed skills still open from their real paths.
 
 - [`05e33fe`](https://github.com/X-T-E-R/kiki/commit/05e33fe90c5b330ae2925236d7355fb4b613bd8a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Replace the remaining "Kimi Code" product strings with Kiki across the TUI banner, dialogs, CLI help and doctor output, web/server API titles, plugin descriptions, and the Nix package (which now installs `kiki`), keeping Kimi only for the provider platform and upstream credits.
