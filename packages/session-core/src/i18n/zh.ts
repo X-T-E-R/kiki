@@ -1117,6 +1117,8 @@ export const zh = {
   'harness.fromHandshake': '来自引擎最近一次与 Kiki 的握手。',
   'harness.manage': '管理外部引擎',
   'composer.engineNoImages': '本会话的 {engine} 不接收图片。',
+  'composer.pastePathUnavailable': '剪贴板没有提供这个文件的完整路径。请复制路径文本，或用「附加文件」上传。',
+  'composer.pasteDraftChanged': '读取剪贴板时草稿已改变，请在当前光标处重新粘贴。',
   'composer.engineModelTitle': '{model} — 由智能体档案设置，{engine} 提供',
   'composer.engineModelDefault': '引擎默认',
   'composer.abortTitle': '停止此轮',

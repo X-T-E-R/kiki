@@ -27,6 +27,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEv
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
+import { pastedMediaType } from '../lib/pastedFiles';
 
 /** Whether the async Clipboard read API is present (secure context). */
 export function clipboardReadSupported(): boolean {
@@ -54,6 +55,7 @@ export function useComposerContextMenu({
   onChange,
   onPastePlainText,
   onPasteFiles,
+  onPasteContent,
 }: {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   /** Controlled value setter — paste/cut must route through it so React re-renders. */
@@ -62,6 +64,8 @@ export function useComposerContextMenu({
   onPastePlainText?: (text: string) => void;
   /** Clipboard images, as files; absent leaves images out of the menu's paste. */
   onPasteFiles?: (files: File[]) => void;
+  /** Shared paste policy; reads browser content only if native file-copy data is absent. */
+  onPasteContent?: (read: () => Promise<{ text: string; files: File[] }>) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
@@ -161,12 +165,18 @@ export function useComposerContextMenu({
       const files: File[] = [];
       let text = '';
       for (const item of items) {
-        const imageType = item.types.find((type) => type.startsWith('image/'));
-        if (imageType !== undefined) {
-          const blob = await item.getType(imageType);
-          const ext = imageType.slice('image/'.length).replace('jpeg', 'jpg').replace(/\+.*$/, '');
-          files.push(new File([blob], `image.${ext}`, { type: imageType }));
-          continue;
+        const mediaType = item.types.find((type) => pastedMediaType({ name: '', type }) !== null);
+        if (mediaType !== undefined) {
+          const blob = await item.getType(mediaType);
+          const ext = mediaType.split('/')[1]?.replace('jpeg', 'jpg').replace(/\+.*$/, '') ?? 'bin';
+          files.push(new File([blob], `${mediaType.split('/')[0]}.${ext}`, { type: mediaType }));
+        } else {
+          const fileType = item.types.find((type) => !type.startsWith('text/'));
+          if (fileType !== undefined) {
+            // Metadata-only sentinel: Composer explains the missing path,
+            // without reading or uploading unsupported clipboard contents.
+            files.push(new File([], 'clipboard-file', { type: fileType }));
+          }
         }
         if (text === '' && item.types.includes('text/plain')) {
           text = await (await item.getType('text/plain')).text();
@@ -235,6 +245,12 @@ export function useComposerContextMenu({
 
   const handlePaste = useCallback(async () => {
     if (anchor === null) return;
+    if (onPasteContent !== undefined) {
+      if (restoreSelection() === null) return;
+      closeMenu();
+      await onPasteContent(async () => (await readClipboardItems()) ?? { text: await readClipboard(), files: [] });
+      return;
+    }
     const rich = onPasteFiles !== undefined ? await readClipboardItems() : null;
     const text = rich !== null ? rich.text : await readClipboard();
     const el = restoreSelection();
@@ -254,7 +270,7 @@ export function useComposerContextMenu({
       }
     }
     closeMenu();
-  }, [anchor, closeMenu, readClipboard, readClipboardItems, restoreSelection, onPastePlainText, onPasteFiles]);
+  }, [anchor, closeMenu, readClipboard, readClipboardItems, restoreSelection, onPastePlainText, onPasteFiles, onPasteContent]);
 
   const handleSelectAll = useCallback(() => {
     const el = restoreSelection();

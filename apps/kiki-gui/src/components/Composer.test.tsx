@@ -20,7 +20,9 @@ import { PERMISSION_MODES } from '../lib/permissionModes';
 import { Composer } from './Composer';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
 
-const { selectFilesNative, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
+const { selectFilesNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
+  readClipboardFiles: vi.fn(),
+  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234' },
   selectFilesNative: vi.fn(),
   onFileDrop: vi.fn(),
   desktopRuntime: { value: false },
@@ -42,6 +44,10 @@ const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', host
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
+    connectionId: connectionScope.id,
+    connectionSource: connectionScope.source,
+    scopeId: connectionScope.source,
+    config: { url: connectionScope.url },
     client: {
       listModels,
       listSessionSkills,
@@ -59,7 +65,7 @@ vi.mock('../state/connection', () => ({
 vi.mock('../host', () => ({
   useHost: () =>
     desktopRuntime.value
-      ? { kind: 'tauri', pickFiles: selectFilesNative, onFileDrop }
+      ? { kind: 'tauri', pickFiles: selectFilesNative, readClipboardFiles, onFileDrop }
       : { kind: 'browser' },
 }));
 vi.mock('../host/vscode', () => ({
@@ -97,6 +103,10 @@ beforeEach(() => {
   sshAdd.mockReset().mockResolvedValue({});
   sshRemove.mockReset().mockResolvedValue({});
   selectFilesNative.mockReset();
+  readClipboardFiles.mockReset().mockResolvedValue(null);
+  connectionScope.id = null;
+  connectionScope.source = 'desktop';
+  connectionScope.url = 'http://127.0.0.1:1234';
   onFileDrop.mockReset().mockImplementation((_callback: (drop: HostFileDrop) => void) => () => {});
   desktopRuntime.value = false;
   vscodeRuntime.value = false;
@@ -1447,6 +1457,145 @@ describe('Composer attachment button', () => {
     expect(read).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();
     expect(container.textContent).toContain('At most 8 attachments per message.');
+  });
+});
+
+async function dispatchClipboardPaste(target: Element, files: File[] = [], text = '') {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { files, getData: () => text } });
+  await act(async () => { target.dispatchEvent(event); });
+  await settle();
+  return event;
+}
+
+describe('Composer file clipboard policy', () => {
+  it.each(['keyboard', 'menu'])('inserts native large-file paths without upload through %s paste', async (gesture) => {
+    desktopRuntime.value = true;
+    const path = 'C:\\fixtures\\large report.bin';
+    readClipboardFiles.mockResolvedValue({ paths: [path], media: [] });
+    Object.assign(navigator, { clipboard: { readText: vi.fn(), writeText: vi.fn(), read: vi.fn() } });
+    const onSend = vi.fn();
+    const { container } = await renderStatefulComposer({ onSend });
+    await settle();
+    const textarea = composerTextarea(container);
+    await typeText(textarea, 'review old end');
+    textarea.setSelectionRange(7, 10);
+    if (gesture === 'keyboard') {
+      const file = new File(['not the real contents'], 'large report.bin');
+      Object.defineProperty(file, 'size', { value: 60 * 1024 * 1024 });
+      await dispatchClipboardPaste(textarea, [file]);
+    } else {
+      await act(async () => { textarea.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+      await click(container.querySelector('[data-menu-action="paste"]')!);
+      await settle();
+      expect(navigator.clipboard.read).not.toHaveBeenCalled();
+    }
+    expect(textarea.value).toBe(`review "${path}" end`);
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-attachment-error]')).toBeNull();
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith(`review "${path}" end`, []);
+  });
+
+  it('never invents a browser file path or uploads an ordinary file, and keeps mixed text', async () => {
+    const { container } = await renderStatefulComposer();
+    await settle();
+    const textarea = composerTextarea(container);
+    await dispatchClipboardPaste(textarea, [new File(['private'], 'report.pdf', { type: 'application/pdf' })], 'caption');
+    expect(textarea.value).toBe('caption');
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('full path');
+    expect(container.querySelector<HTMLButtonElement>('[data-send-ready]')!.disabled).toBe(false);
+    await click(container.querySelector('[data-attachment-error] button')!);
+    expect(container.querySelector('[data-attachment-error]')).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it('sends the preserved text despite a rejected file and clears its obsolete error', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderStatefulComposer({ onSend });
+    await settle();
+    const textarea = composerTextarea(container);
+    await dispatchClipboardPaste(textarea, [new File(['pdf'], 'report.pdf', { type: 'application/pdf' })], 'caption');
+    expect(container.querySelector('[data-attachment-error]')).not.toBeNull();
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('caption', []);
+    expect(container.querySelector('[data-attachment-error]')).toBeNull();
+  });
+
+  it('keeps supported images and videos on the attachment path, not ordinary uploads', async () => {
+    const onChangeAttachments = vi.fn();
+    const { container } = await renderComposer({ onChangeAttachments });
+    await dispatchClipboardPaste(composerTextarea(container), [
+      new File(['png'], 'shot.png', { type: 'image/png' }),
+      new File(['mp4'], 'clip.mp4', { type: 'video/mp4' }),
+      new File(['binary'], 'huge.bin'),
+    ]);
+    expect(uploadFile).toHaveBeenCalledTimes(1);
+    expect(uploadFile.mock.calls[0]?.[0].name).toBe('clip.mp4');
+    expect(onChangeAttachments).toHaveBeenCalled();
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('full path');
+  });
+
+  it('clears a failed attachment on a successful subsequent paste without locking text sends', async () => {
+    desktopRuntime.value = true;
+    const onSend = vi.fn();
+    const { container } = await renderStatefulComposer({ onSend });
+    const textarea = composerTextarea(container);
+    await typeText(textarea, 'keep this draft');
+    selectFilesNative.mockResolvedValue([{ name: 'huge.bin', size: 60 * 1024 * 1024, type: '', read: vi.fn() }]);
+    await clickAttach(container);
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('50.0 MB');
+    readClipboardFiles.mockResolvedValue({ paths: ['C:/fixtures/success.txt'], media: [] });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    await dispatchClipboardPaste(textarea);
+    expect(container.querySelector('[data-attachment-error]')).toBeNull();
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('keep this draft C:/fixtures/success.txt', []);
+  });
+
+  it('preserves ordinary desktop text and path paste while editing a queued prompt', async () => {
+    desktopRuntime.value = true;
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: 'draft', onChange, queueEditing: true });
+    const textarea = composerTextarea(container);
+    textarea.setSelectionRange(5, 5);
+    await dispatchClipboardPaste(textarea, [], ' text');
+    expect(onChange).toHaveBeenCalledWith('draft text');
+    readClipboardFiles.mockResolvedValue({ paths: ['C:/fixtures/report.txt'], media: [] });
+    await dispatchClipboardPaste(textarea);
+    expect(onChange).toHaveBeenCalledWith('draft C:/fixtures/report.txt');
+    expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  it.each(['ssh', 'remote', 'manual'] as const)('inserts original local paths as draft text in a %s workspace without uploading or reading files', async (source) => {
+    desktopRuntime.value = true;
+    connectionScope.source = source;
+    connectionScope.id = source === 'remote' ? 'remote-fixture' : null;
+    if (source === 'manual') connectionScope.url = 'https://example.test';
+    readClipboardFiles.mockResolvedValue({ paths: ['C:/fixtures/report.pdf'], media: [] });
+    const onChange = vi.fn();
+    const { container } = await renderComposer({ value: 'draft', onChange });
+    const textarea = composerTextarea(container);
+    textarea.setSelectionRange(5, 5);
+    await dispatchClipboardPaste(textarea);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('draft C:/fixtures/report.pdf');
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(selectFilesNative).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-attachment-error]')).toBeNull();
+  });
+
+  it('preserves edits made while the native clipboard read is pending', async () => {
+    desktopRuntime.value = true;
+    const pending = deferred<{ paths: string[]; media: [] }>();
+    readClipboardFiles.mockReturnValue(pending.promise);
+    const { container } = await renderStatefulComposer();
+    const textarea = composerTextarea(container);
+    await dispatchClipboardPaste(textarea);
+    await typeText(textarea, 'new draft');
+    await act(async () => { pending.resolve({ paths: ['C:/fixtures/report.txt'], media: [] }); });
+    expect(textarea.value).toBe('new draft');
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('draft changed');
   });
 });
 

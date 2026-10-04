@@ -15,6 +15,8 @@ mod desktop_log;
 mod space_badge;
 mod space_shortcut;
 mod remote_space;
+mod clipboard_files;
+use clipboard_files::read_clipboard_file_paths;
 use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
 

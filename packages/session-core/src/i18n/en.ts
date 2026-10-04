@@ -1130,6 +1130,8 @@ export const en = {
   'harness.fromHandshake': 'From the engine’s last handshake with Kiki.',
   'harness.manage': 'Manage engines',
   'composer.engineNoImages': '{engine} does not take images in this session.',
+  'composer.pastePathUnavailable': 'The clipboard did not provide this file’s full path. Copy its path as text, or use Attach to upload it.',
+  'composer.pasteDraftChanged': 'The draft changed while reading the clipboard. Paste again at the current cursor.',
   'composer.engineModelTitle': '{model} — set on the profile, served by {engine}',
   'composer.engineModelDefault': 'Engine default',
   'composer.abortTitle': 'Stop this turn',

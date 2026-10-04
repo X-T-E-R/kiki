@@ -189,6 +189,32 @@ describe('useComposerContextMenu clipping behaviours', () => {
     expect(clipboard.readText).not.toHaveBeenCalled();
   });
 
+  it('preserves text and supported media on the same clipboard item', async () => {
+    const { clipboard } = mockClipboard('');
+    const png = new Blob(['png'], { type: 'image/png' });
+    const getType = vi.fn((type: string) => Promise.resolve(type === 'text/plain' ? { text: async (): Promise<string> => 'caption' } : png));
+    Object.assign(clipboard, { read: async () => [{ types: ['image/png', 'text/plain'], getType }] });
+    const onPasteFiles = vi.fn();
+    const { container } = await mount(undefined, onPasteFiles);
+    await openMenu(container, 6, 11);
+    await act(async () => { (container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
+    expect(onPasteFiles.mock.calls[0]?.[0][0].type).toBe('image/png');
+    expect(container.querySelector('textarea')!.value).toBe('hello caption');
+  });
+
+  it('signals unsupported file data without reading its body', async () => {
+    const { clipboard } = mockClipboard('');
+    const getType = vi.fn();
+    Object.assign(clipboard, { read: async () => [{ types: ['application/pdf'], getType }] });
+    const onPasteFiles = vi.fn();
+    const { container } = await mount(undefined, onPasteFiles);
+    await openMenu(container, 6, 11);
+    await act(async () => { (container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
+    expect(getType).not.toHaveBeenCalled();
+    expect(onPasteFiles.mock.calls[0]?.[0][0]).toMatchObject({ type: 'application/pdf', size: 0 });
+    expect(container.querySelector('textarea')!.value).toBe('hello world');
+  });
+
   it('falls back to readText when the rich read is refused', async () => {
     const { clipboard } = mockClipboard('plain');
     Object.assign(clipboard, { read: vi.fn(() => Promise.reject(new Error('denied'))) });

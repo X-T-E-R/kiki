@@ -25,6 +25,7 @@ macro_rules! app_commands {
             show_main_window,
             send_desktop_notification,
             write_host_file_text,
+            read_clipboard_file_paths,
             reveal_host_path,
             open_host_path,
             open_external_url,

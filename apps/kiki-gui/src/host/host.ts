@@ -132,6 +132,11 @@ interface HostCapabilities {
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;
+  /** OS file-copy clipboard, distinct from text and screenshot clipboard data. */
+  readClipboardFiles?: () => Promise<{
+    readonly paths: readonly string[];
+    readonly media: readonly HostSelectedFile[];
+  } | null>;
   /**
    * Subscribe to native OS file drops. Present only where the shell owns
    * drag-and-drop (the desktop runtime); the returned function unsubscribes.

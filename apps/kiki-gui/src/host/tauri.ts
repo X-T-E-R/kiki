@@ -16,6 +16,7 @@ import type {
 } from './host';
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
+import { pastedMediaType } from '../lib/pastedFiles';
 
 let remoteWorkspaceActive = false;
 
@@ -252,6 +253,30 @@ export const tauriHost: TauriHostAdapter = {
         };
       }),
     );
+  },
+  async readClipboardFiles() {
+    const copied = await invoke<string[] | null>('read_clipboard_file_paths');
+    if (copied === null) return null;
+    const paths: string[] = [];
+    const media: HostSelectedFile[] = [];
+    const { stat, readFile } = await import('@tauri-apps/plugin-fs');
+    for (const path of copied) {
+      const name = path.replaceAll('\\', '/').split('/').at(-1) ?? path;
+      const type = pastedMediaType({ name, type: '' });
+      if (type === null) {
+        paths.push(path);
+        continue;
+      }
+      const info = await stat(path);
+      if (info.isDirectory) {
+        paths.push(path);
+        continue;
+      }
+      media.push({ name, size: info.size, type, async read() {
+        return new File([await readFile(path)], name, { type });
+      } });
+    }
+    return { paths, media };
   },
   async pickDirectories() {
     requireLocalWorkspace();

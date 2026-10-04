@@ -84,6 +84,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type ModelSwitchMode, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
+import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
@@ -608,7 +609,7 @@ export function Composer({
     }
   }
   const vscodeConversationId = vscodeConversationRef.current?.key;
-  const { client, connectionId, localClient } = useConnection();
+  const { client, connectionId, scopeId, localClient } = useConnection();
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
   const remoteRecords = useRemoteConnections(localClient);
@@ -628,10 +629,13 @@ export function Composer({
   const composingRef = useRef(false);
   const [compositionText, setCompositionText] = useState<string | null>(null);
   // Custom right-click menu for the input (cut / copy / paste / select all).
-  // Pasted images take the Ctrl+V attachment path (`addFiles`, bound below).
-  const pasteFilesRef = useRef<(files: File[]) => void>(() => undefined);
+  // Keyboard and menu paste share the native file-copy / browser media policy.
+  type ClipboardContent = { text: string; files: File[] };
+  const pasteContentRef = useRef<(read: () => Promise<ClipboardContent>) => Promise<void>>(async () => {});
+  const pasteDraftRef = useRef({ text, sessionId, connectionId, scopeId });
+  pasteDraftRef.current = { text, sessionId, connectionId, scopeId };
   const { onContextMenu: onComposerContextMenu, menu: composerContextMenu } =
-    useComposerContextMenu({ textareaRef, onChange, onPasteFiles: (files) => { pasteFilesRef.current(files); } });
+    useComposerContextMenu({ textareaRef, onChange, onPasteContent: (read) => pasteContentRef.current(read) });
   // Event handlers can run several times before a controlled prop rerender.
   // Keep a synchronous attachment baseline alongside the rendered value so
   // same-tick paste/drop batches reserve against one another.
@@ -1201,6 +1205,7 @@ export function Composer({
    * they never land here.
    */
   const recordSubmission = () => {
+    setAttachmentError(null);
     if (historyKey !== undefined) pushInputHistory(historyKey, text);
     historyIndexRef.current = null;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
@@ -1416,7 +1421,7 @@ export function Composer({
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled || queueEditing;
 
-  /** Paste/attach-picker entry point: whitelisted images stay image parts; everything else uploads. */
+  /** Explicit attachments and preclassified clipboard media: images stay image parts; other attachments upload. */
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
     if (disabledRef.current) return;
     const images: SelectedAttachmentFile[] = [];
@@ -1434,17 +1439,58 @@ export function Composer({
     if (images.length > 0) addImageFiles(images);
     if (uploads.length > 0) addUploadFiles(uploads);
   };
-  pasteFilesRef.current = (files) => {
-    if (queueEditing) return;
-    addFiles(readyAttachmentFiles(files));
+  pasteContentRef.current = async (read) => {
+    const node = textareaRef.current;
+    if (node === null || node.disabled) return;
+    setAttachmentError(null);
+    const draft = pasteDraftRef.current;
+    const selection = { start: node?.selectionStart ?? lastCursorRef.current, end: node?.selectionEnd ?? lastCursorRef.current };
+    try {
+      const native = await host.readClipboardFiles?.();
+      const browser = native == null ? await read() : null;
+      const latest = pasteDraftRef.current;
+      if (textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
+      if (latest.text !== draft.text) {
+        setAttachmentError(t('composer.pasteDraftChanged'));
+        return;
+      }
+      const paths = [...(native?.paths ?? [])];
+      const media = [...(native?.media ?? [])];
+      let missingPaths = false;
+      for (const file of browser?.files ?? []) {
+        const type = pastedMediaType(file);
+        if (type !== null) {
+          media.push({ name: file.name, size: file.size, type, read: () => Promise.resolve(file.type === type ? file : new File([file], file.name, { type })) });
+        } else {
+          const path = (file as File & { path?: unknown }).path;
+          if (typeof path === 'string' && /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(path)) paths.push(path);
+          else missingPaths = true;
+        }
+      }
+      let next = { text: draft.text, cursor: selection.start };
+      const plain = browser?.text ?? '';
+      if (plain !== '') {
+        next = { text: draft.text.slice(0, selection.start) + plain + draft.text.slice(selection.end), cursor: selection.start + plain.length };
+      }
+      if (paths.length > 0) {
+        next = insertDroppedPaths(next.text, plain === '' ? selection : { start: next.cursor, end: next.cursor }, paths);
+      }
+      if (next.text !== draft.text) {
+        pushUndoSnapshot({ text: draft.text, cursor: selection.start });
+        historyIndexRef.current = null;
+        applyTextChange(next.text, next.cursor);
+      }
+      if (media.length > 0) addFiles(media);
+      if (missingPaths) setAttachmentError(t('composer.pastePathUnavailable'));
+    } catch (error) {
+      setAttachmentError(errorText(locale, error));
+    }
   };
 
   /**
-   * The explicit attachment path. Paste was the only way in, which is
-   * undiscoverable; the desktop shell opens its native dialog and the browser
-   * falls back to a hidden file input. Both land in `addFiles`, so caps,
-   * error text and chip rendering are the paste path's, verbatim. (Dropped
-   * files are not attachments — they insert their paths as draft text.)
+   * Explicit Attach keeps its upload meaning for all files. The desktop shell
+   * opens its native dialog; the browser uses a hidden input. Clipboard media
+   * shares the same caps and chips, while ordinary pasted files insert paths.
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
@@ -2541,7 +2587,14 @@ export function Composer({
             </div>
           ) : null}
           {attachmentError !== null ? (
-            <p role="alert" className="px-3 pt-1.5 text-[12px] text-danger">{attachmentError}</p>
+            <div role="alert" data-attachment-error className="flex items-start gap-2 px-3 pt-1.5 text-[12px] text-danger">
+              <p className="min-w-0 flex-1">{attachmentError}</p>
+              <button type="button" aria-label={t('common.close')} title={t('common.close')}
+                className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-paper hover:text-ink"
+                onClick={() => { setAttachmentError(null); textareaRef.current?.focus(); }}>
+                <Icon name="close" size={14} />
+              </button>
+            </div>
           ) : null}
           {slashConfirm !== null ? (
             <div
@@ -2664,6 +2717,7 @@ export function Composer({
               data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
               onChange={(event) => {
+                setAttachmentError(null);
                 // User edits only: programmatic value writes never fire this.
                 if (!composingRef.current && event.target.value !== text) {
                   pushUndoSnapshot({ text, cursor: lastCursorRef.current });
@@ -2699,10 +2753,12 @@ export function Composer({
                 if (event.currentTarget.disabled) refocusOnEnableRef.current = true;
               }}
               onPaste={(event) => {
+                setAttachmentError(null);
                 const files = [...event.clipboardData.files];
-                if (files.length === 0) return;
+                if (files.length === 0 && host.readClipboardFiles === undefined) return;
+                const plain = event.clipboardData.getData('text/plain');
                 event.preventDefault();
-                addFiles(readyAttachmentFiles(files));
+                void pasteContentRef.current(async () => ({ text: plain, files }));
               }}
               placeholder={
                 disabled

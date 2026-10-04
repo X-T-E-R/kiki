@@ -166,6 +166,34 @@ describe('native desktop bridge', () => {
     expect(readFile).toHaveBeenCalledWith('C:/small.txt');
   });
 
+  it('returns ordinary clipboard paths without stat or content reads, including large files', async () => {
+    invoke.mockResolvedValue(['C:/fixtures/large.bin', 'C:/fixtures/report.pdf']);
+    await expect(tauriHost.readClipboardFiles()).resolves.toEqual({ paths: ['C:/fixtures/large.bin', 'C:/fixtures/report.pdf'], media: [] });
+    expect(invoke).toHaveBeenCalledWith('read_clipboard_file_paths');
+    expect(stat).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('classifies copied supported media lazily and keeps unsupported image formats as paths', async () => {
+    invoke.mockResolvedValue(['C:/fixtures/shot.png', 'C:/fixtures/clip.mp4', 'C:/fixtures/logo.svg', 'C:/fixtures/folder.png']);
+    stat.mockResolvedValueOnce({ size: 4 }).mockResolvedValueOnce({ size: 5 }).mockResolvedValueOnce({ isDirectory: true });
+    readFile.mockResolvedValue(new Uint8Array([1]));
+    vi.stubGlobal('File', class { constructor(_bytes: unknown, public name: string, public options: unknown) {} });
+    const copied = await tauriHost.readClipboardFiles();
+    expect(copied?.paths).toEqual(['C:/fixtures/logo.svg', 'C:/fixtures/folder.png']);
+    expect(copied?.media.map(({ name, type }) => [name, type])).toEqual([['shot.png', 'image/png'], ['clip.mp4', 'video/mp4']]);
+    expect(readFile).not.toHaveBeenCalled();
+    await copied?.media[1]?.read();
+    expect(readFile).toHaveBeenCalledExactlyOnceWith('C:/fixtures/clip.mp4');
+  });
+
+  it('distinguishes no OS files from failed clipboard reads', async () => {
+    invoke.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('clipboard busy'));
+    await expect(tauriHost.readClipboardFiles()).resolves.toBeNull();
+    await expect(tauriHost.readClipboardFiles()).rejects.toThrow('clipboard busy');
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it('delivers native file drops in CSS pixels and unregisters the listener', async () => {
     type DragDropProbeEvent =
       | { payload: { type: 'over'; position: { x: number; y: number } } }
