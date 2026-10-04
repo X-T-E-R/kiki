@@ -698,7 +698,7 @@ describe('acp-server builtin slash commands (local execution, no LLM turn)', () 
     expect(stopReason).toBe('end_turn');
     expect(chunk).toContain(`Session: ${sessionId}`);
     expect(chunk).toContain('Model: fake');
-    expect(chunk).toContain('Mode: default');
+    expect(chunk).toContain('Mode: auto');
     expect(chunk).toContain(`Working directory: ${homeDir}`);
     expect(scripted!.callCount()).toBe(0);
   }, 30_000);
