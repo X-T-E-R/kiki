@@ -126,7 +126,7 @@ export function isPeerFrameAllowed(frame: KlientFrame): boolean {
  * payload schemas preserve public receipt errors and discard unregistered fields.
  * Unknown types, wrong scopes and invalid payloads never enter the peer socket.
  */
-export function projectPeerBusEvent(scope: KlientFrame['scope'], event: unknown): unknown | undefined {
+export function projectPeerBusEvent(scope: KlientFrame['scope'], event: unknown): unknown {
   if (event === null || typeof event !== 'object') return undefined;
   const { type, payload } = event as { type?: unknown; payload?: unknown };
   if (scope === 'core') {

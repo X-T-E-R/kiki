@@ -207,6 +207,18 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     expect(manager.status('dev').state).toBe('idle');
   });
 
+  it.each([new Error('trust callback failed'), 'trust callback failed'])('preserves verification errors and wraps non-Error rejection causes: %s', async (failure) => {
+    const { path } = await fixture();
+    const { port } = await startServer(key());
+    const manager = new SshConnectionManager(async () => host(port, path, () => Promise.reject(failure)));
+    managers.push(manager);
+    const caught: unknown = await manager.get('dev').catch((error: unknown) => error);
+    expect(caught).toBeInstanceOf(Error);
+    if (failure instanceof Error) expect(caught).toBe(failure);
+    else expect(caught).toMatchObject({ message: 'SSH host verification failed', cause: failure });
+    expect(await readFile(path, 'utf8').catch(() => '')).toBe('');
+  });
+
   it('denies an unknown key and rejects a changed key even when autoTrustFirstKey is enabled', async () => {
     const { path } = await fixture();
     const first = await startServer(key());

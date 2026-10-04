@@ -4,8 +4,6 @@ import type {
   HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
-  HttpRestPersonaCardInput,
-  HttpRestPersonaImportInput,
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
@@ -39,7 +37,6 @@ import type {
   Task,
   UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
-  PersonaCardFormat,
   PersonaImportPreview,
   PersonaImportResponse,
   PersonaSnapshot,

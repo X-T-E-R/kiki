@@ -27,8 +27,8 @@ const pack = {
   },
 };
 
-const bytes = (...values: number[]) => new Uint8Array([...values, ...new Array(16).fill(0)]);
-const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+const bytes = (...values: number[]) => new Uint8Array([...values, ...Array.from({ length: 16 }, () => 0)]);
+const ascii = (text: string) => Array.from(text, (char) => char.charCodeAt(0));
 
 describe('parseAppearancePack', () => {
   it('accepts a two-variant pack and lists every referenced file once', () => {

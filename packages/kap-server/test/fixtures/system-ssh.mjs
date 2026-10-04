@@ -20,8 +20,10 @@ if (!args.includes('-N')) {
     socket.on('close', () => target.destroy()); target.on('close', () => socket.destroy());
   });
   server.on('error', () => process.exit(255));
-  server.listen(Number(parts[1]), '127.0.0.1', async () => {
-    await log({ kind: 'tunnel', port: Number(parts[1]), pid: process.pid });
-    if (!config.noReady) process.stderr.write('debug1: Local forwarding listening on 127.0.0.1 port ' + parts[1] + '.\n');
+  server.listen(Number(parts[1]), '127.0.0.1', () => {
+    void (async () => {
+      await log({ kind: 'tunnel', port: Number(parts[1]), pid: process.pid });
+      if (!config.noReady) process.stderr.write('debug1: Local forwarding listening on 127.0.0.1 port ' + parts[1] + '.\n');
+    })();
   });
 }

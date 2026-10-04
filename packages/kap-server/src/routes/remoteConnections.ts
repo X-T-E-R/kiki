@@ -72,12 +72,12 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
     reply.raw.once('close', stop);
     try {
-      const lease = manager.lease(id, AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = lease.release;
+      const lease = manager.lease(id, AbortSignal.any([controller.signal, AbortSignal.timeout(30000)])); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       const cap = ['snapshot', 'transcript', 'content', 'catchUp', 'transcriptPage', 'transcriptDetail', 'transcriptDetails', 'transcriptOps'].includes(input.operation) ? SESSION_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap);
-      return reply.code(response.status).send(body);
-    } catch (error) { if (error instanceof AdmissionError) return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
+      return await reply.code(response.status).send(body);
+    } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
     finally { reply.raw.off('close', stop); release(); }
   });
   app.register(async (uploads) => {
@@ -87,7 +87,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {};
       reply.raw.once('close', stop);
       try {
-        const lease = manager.lease(id, controller.signal); release = lease.release;
+        const lease = manager.lease(id, controller.signal); release = () => lease.release();
         const chunks = req.raw[Symbol.asyncIterator]();
         const upload = Readable.from((async function* () {
           for (;;) {
@@ -97,8 +97,8 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
           }
         })());
         const response = await manager.forward(id, { operation: 'fileUpload' }, lease.signal, upload as unknown as NonNullable<RequestInit['body']>, req.headers['content-type']);
-        return reply.code(response.status).send(await readBoundedJsonBody(response, 8192));
-      } catch (error) { if (error instanceof AdmissionError) return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
+        return await reply.code(response.status).send(await readBoundedJsonBody(response, 8192));
+      } catch (error) { if (error instanceof AdmissionError) return await reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
       finally { reply.raw.off('close', stop); release(); }
     });
   });
@@ -109,10 +109,10 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     const cleanup = () => { release(); reply.raw.off('close', stop); };
     reply.raw.once('close', stop);
     try {
-      const lease = manager.lease(id, controller.signal); release = lease.release;
+      const lease = manager.lease(id, controller.signal); release = () => lease.release();
       const response = await manager.forward(id, input, lease.signal);
       for (const name of ['etag', 'content-range', 'accept-ranges', 'content-disposition', 'cache-control']) { const value = response.headers.get(name); if (value !== null) reply.header(name, value); }
-      if (response.status === 304 || response.status === 204) { cleanup(); return reply.code(response.status).send(); }
+      if (response.status === 304 || response.status === 204) { cleanup(); return await reply.code(response.status).send(); }
       if (response.body === null) throw new AdmissionError(502, 'empty_download');
       const reader = response.body.getReader();
       const stream = Readable.from((async function* () {
@@ -129,7 +129,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); cleanup(); }
       })());
       stream.once('close', cleanup);
-      return reply.code(response.status).type(response.headers.get('content-type') ?? 'application/octet-stream').send(stream);
+      return await reply.code(response.status).type(response.headers.get('content-type') ?? 'application/octet-stream').send(stream);
     } catch (error) { cleanup(); if (error instanceof AdmissionError) return reply.code(error.status).send(errEnvelope(40101, error.reason, req.id)); throw error; }
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: BROKER_WS_MESSAGE_BYTES });
@@ -156,7 +156,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     };
     target.once('open', () => local.resume());
     local.on('message', (data) => {
-      const frame = decodeJsonFrame(data.toString());
+      const frame = decodeJsonFrame((Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString());
       if (frame === undefined || !isPeerFrameAllowed(frame)) { local.close(1008, 'operation not allowed'); target.terminate(); return; }
       send(target, data);
     });

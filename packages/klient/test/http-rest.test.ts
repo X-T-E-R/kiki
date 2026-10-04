@@ -8,6 +8,12 @@ import { createConnectionTransport } from '../src/transports/http/connections.js
 import { RPCError } from '../src/core/errors.js';
 import { threadCommunicationMessageSchema } from '../src/contract/global/threads.js';
 
+function jsonRequestBody(body: unknown): unknown {
+  expect(body).toEqual(expect.any(String));
+  if (typeof body !== 'string') throw new Error('Expected a JSON request body.');
+  return JSON.parse(body);
+}
+
 function envelope(data: unknown, code = 0): Response {
   return new Response(JSON.stringify({ code, msg: code === 0 ? 'success' : 'failed', data }), {
     status: 200,
@@ -51,7 +57,7 @@ describe('HTTP REST domains', () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const projected = { personaId: 'example', boundRevision: 'old', latestRevision: 'new', hasUpdate: true, overrides: { model: 'chosen' } };
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
       return envelope(projected);
     });
@@ -76,7 +82,7 @@ describe('HTTP REST domains', () => {
       expect(new URL(String(input)).pathname).toBe('/api/agents/example%2Fhelper/model-menu:preview');
       expect(init?.method).toBe('POST');
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
-      expect(JSON.parse(String(init?.body))).toEqual(request);
+      expect(jsonRequestBody(init?.body)).toEqual(request);
       return envelope(projected);
     });
     const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
@@ -105,7 +111,7 @@ describe('HTTP REST domains', () => {
   it('inspects a workspace path through the authenticated REST facade', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: JSON.parse(String(init?.body)) });
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: jsonRequestBody(init?.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
       return envelope({ isGit: true });
     });
@@ -145,7 +151,7 @@ describe('HTTP REST domains', () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET',
-        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+        body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
       return envelope({ items: [], overrides: {} });
     });
@@ -163,7 +169,7 @@ describe('HTTP REST domains', () => {
   it('exposes shortcut read, replacement and scoped reset with explicit client platform', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      calls.push({ path: new URL(String(input)).pathname + new URL(String(input)).search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ path: new URL(String(input)).pathname + new URL(String(input)).search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       return envelope({ preferences: { version: 1, overrides: {} }, bindings: {}, conflicts: [] });
     });
     const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
@@ -182,7 +188,7 @@ describe('HTTP REST domains', () => {
     const calls: { path: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      calls.push({ path: url.pathname + url.search, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ path: url.pathname + url.search, body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       if (url.pathname === '/api/catalog/providers') return envelope({ items: [] });
       if (url.pathname === '/api/oauth/usage') return envelope({ kind: 'error', message: 'Not signed in' });
       if (url.pathname === '/api/providers:import_catalog') return envelope({ provider: { id: 'example' }, models_imported: 2 });
@@ -247,7 +253,7 @@ describe('HTTP REST domains', () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const path = new URL(String(input)).pathname;
-      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       if (path === '/api/homes' && init?.method === 'GET') return envelope({ items: [{ id: 'main', name: 'Main space', path: '/main', primary: true }] });
       if (path === '/api/homes' || path === '/api/homes:attach') return envelope({ id: 'h-abc', name: 'Secret', path: '/space' });
       if (path.endsWith('/ssh-copy-candidates')) return envelope({ hosts: [{ hostId: 'prod', name: 'Production', credential_kinds: ['password'] }] });
@@ -289,7 +295,7 @@ describe('HTTP REST domains', () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       calls.push({ path: url.pathname + url.search, method: init?.method ?? 'GET',
-        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+        body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       return envelope(url.pathname.endsWith('/resume') ? { session_id: 'session-kiki', executor_id: 'claude-acp', created: true }
         : url.search ? { root: '/vendor/projects', exists: true, items: [], truncated: false, unreadable_files: 0, resume_enabled: true }
           : { summary: { id: 'external:claude:source' }, messages: [], warnings: ['transcript_sampled'] });
@@ -311,7 +317,7 @@ describe('HTTP REST domains', () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/agents/reviewer%2Fcodex/executor-prompt:preview');
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual({ executor: 'codex-app-server', workspace: 'wd-1' });
+      expect(jsonRequestBody(init?.body)).toEqual({ executor: 'codex-app-server', workspace: 'wd-1' });
       return envelope({ executor: 'codex-app-server', delivery: { requested: 'append', actual: 'append', downgraded: false },
         blocks: [{ id: 'body', text: 'Review code' }], text: 'Review code' });
     });
@@ -330,7 +336,7 @@ describe('HTTP REST domains', () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET',
-        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+        body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       if (url.pathname.endsWith(':gc')) return envelope({ candidates: [] });
       if (url.pathname.endsWith(':remove')) return envelope({ outcome: 'removed' });
       if (url.pathname.endsWith(':inspect')) return envelope({ failed: false });
@@ -360,7 +366,7 @@ describe('HTTP REST domains', () => {
     const calls: { url: string; method: string; body?: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
       if (url.pathname.endsWith(':status')) return envelope({ hostId: 'dev', state: 'idle', generation: 0 });
       if (url.pathname === '/api/ssh/connection-approval') return envelope({ enabled: init?.method !== 'PUT' });
@@ -452,7 +458,7 @@ describe('HTTP REST domains', () => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
       const path = new URL(String(input)).pathname;
       seen.push({ path, method: init?.method ?? 'GET',
-        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+        body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       return envelope(path === '/api/executors' ? { items: [] }
         : path.endsWith(':health') ? { items: [] }
           : { provider_id: 'gateway/one', ok: true, checked_at: 1, duration_ms: 1 });
@@ -996,7 +1002,7 @@ describe('fixed connection transport error normalization', () => {
     Object.assign(new Error('untyped adapter failure'), { name: 'RPCError', code: 40301 }),
   ])('keeps non-RPCError failures as network code -1: %s', async (failure) => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`http://example.test/api/remote-connections/${connectionId}/call`);
+      expect(input).toBe(`http://example.test/api/remote-connections/${connectionId}/call`);
       expect(init?.redirect).toBe('error');
       throw failure;
     });

@@ -35,7 +35,7 @@ const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000;
 const execFileAsync = promisify(execFile);
 
-function pidAlive(pid: unknown): boolean {
+function pidAlive(pid: unknown): pid is number {
   if (!pid || typeof pid !== 'number') return false;
   try {
     process.kill(pid, 0);

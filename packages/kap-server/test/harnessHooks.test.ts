@@ -23,14 +23,16 @@ describe('process-local harness hooks', () => {
     const script = join(directory, 'hook.mjs');
     await writeFile(script, HARNESS_HOOK_SCRIPT);
     const calls: unknown[] = [];
-    const server = createServer(async (request, response) => {
-      let body = '';
-      for await (const chunk of request) body += chunk;
-      calls.push(JSON.parse(body));
-      expect(request.url).toBe('/api/klient/delegation/context/hook');
-      expect(request.headers.authorization).toBe('Bearer fixture-token');
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ code: 0, data: { content: 'Keep the working notes.' } }));
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        calls.push(JSON.parse(body));
+        expect(request.url).toBe('/api/klient/delegation/context/hook');
+        expect(request.headers.authorization).toBe('Bearer fixture-token');
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ code: 0, data: { content: 'Keep the working notes.' } }));
+      })();
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     try {

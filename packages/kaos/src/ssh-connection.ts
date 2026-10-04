@@ -142,7 +142,7 @@ export class SshConnectionManager {
       const knownHosts = new SshKnownHosts(host.knownHostsFiles);
       const jump = openProxy(host);
       proxy = jump?.proxy;
-      let verificationError: unknown;
+      let verificationError: Error | undefined;
       const connection = await SSHKaos.create({
         host: host.hostname,
         port: host.port,
@@ -157,7 +157,7 @@ export class SshConnectionManager {
             if (host.autoTrustFirstKey) return true;
             return host.trustUnknown?.(key) ?? false;
           }).then(done, (error: unknown) => {
-            verificationError = error;
+            verificationError = error instanceof Error ? error : new Error('SSH host verification failed', { cause: error });
             done(false);
           });
         }) satisfies HostVerifier,

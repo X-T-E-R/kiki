@@ -72,6 +72,7 @@ describe('SessionController transcript detail', () => {
     deliver(resetEvent('main', emptySnapshot(), 2));
     expect(controller.getState().contentRefs).toEqual([root]);
     await expect(controller.loadContentSegment('main', root)).resolves.toBe(true);
+    expect(content.mock.contexts[0]).toBe(view.transcript);
     expect(controller.getState().session?.title).toBe('abcdef');
     expect(controller.getState().contentRefs).toEqual([]);
     controller.close();
@@ -82,12 +83,13 @@ describe('SessionController transcript detail', () => {
     const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
       .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'task', items: [pageTask('task-shell', 'stale page output'), pageTask('task-b', 'page b')], has_more: true, next_cursor: 'next-page', total: 3 })
       .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'task', items: [pageTask('task-c', 'page c')], has_more: false, total: 3 });
-    const { controller, deliver } = harness(undefined, undefined, entities);
+    const { controller, deliver, view } = harness(undefined, undefined, entities);
     await controller.open();
     deliver(resetEvent('main', emptySnapshot({ tasks: [shellTask('live output', false)], items: windowed().items }), 2));
     expect(entities).not.toHaveBeenCalled();
     await expect(controller.loadTranscriptEntities('main', 'task')).resolves.toBe(true);
     expect(entities).toHaveBeenCalledTimes(1);
+    expect(entities.mock.contexts[0]).toBe(view.transcript);
     expect(shellOf(controller)?.output).toBe('live output');
     expect(controller.getState().globalCoverage?.tasks).toEqual({ returned: 2, total: 3, hasMore: true });
     await expect(controller.loadTranscriptEntities('main', 'task')).resolves.toBe(true);
@@ -196,7 +198,7 @@ describe('SessionController transcript detail', () => {
     const detail = vi.fn()
       .mockRejectedValueOnce(new Error('network down'))
       .mockImplementationOnce(() => new Promise<SessionViewTranscriptDetail>((resolve) => { settle = resolve; }));
-    const { controller, deliver } = harness(detail);
+    const { controller, deliver, view } = harness(detail);
     await controller.open();
     deliver(resetEvent('main', windowed(), 2, true));
     const key = transcriptDetailKey('task', 'task-shell');
@@ -213,6 +215,7 @@ describe('SessionController transcript detail', () => {
     await expect(retry).resolves.toBe(true);
     await expect(joined).resolves.toBe(true);
     expect(detail).toHaveBeenCalledTimes(2);
+    expect(detail.mock.contexts).toEqual([view.transcript, view.transcript]);
     expect(detail).toHaveBeenLastCalledWith({ agentId: 'main', kind: 'task', id: 'task-shell' });
     expect(controller.getState().detailLoads[key]).toBeUndefined();
     expect(shellOf(controller)).toMatchObject({ output: 'line 1\nline 2\n…tail line', outputDetail: undefined });

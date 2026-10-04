@@ -121,7 +121,7 @@ export function fuzzyMatch(target: string, query: string): { score: number; rang
   const hay = target.toLowerCase();
   const at = hay.indexOf(needle);
   if (at !== -1) {
-    const wordStart = at === 0 || /[\s/\._\-:]/.test(hay[at - 1] ?? '');
+    const wordStart = at === 0 || /[\s/._\-:]/.test(hay[at - 1] ?? '');
     return { score: 1000 - Math.min(at, 200) + (wordStart ? 100 : 0), ranges: [[at, at + needle.length]] };
   }
   // Multi-word queries: every word must appear as a substring.

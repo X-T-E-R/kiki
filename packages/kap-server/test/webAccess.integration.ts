@@ -33,7 +33,8 @@ describe('shared daemon Web access', () => {
   async function owner(path: string, method = 'GET', body?: unknown) {
     const headers: Record<string, string> = { authorization: `Bearer ${server.localOwnerToken}` };
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const init: RequestInit = { method, headers, body: body === undefined ? undefined : JSON.stringify(body) };
+    const response = await fetch(base + path, init);
     const result = await response.json() as { code: number; data: any; msg: string };
     expect(response.status, result.msg).toBe(200); expect(result.code, result.msg).toBe(0); return result.data;
   }
@@ -139,10 +140,10 @@ describe('shared daemon Web access', () => {
     for (const origin of [undefined, 'null', browser.origin.replace('http:', 'https:'), browser.origin + '0']) {
       const headers: Record<string, string> = { cookie: browser.cookie }; if (origin !== undefined) headers['origin'] = origin;
       const ws = new WebSocket(browser.origin.replace('http:', 'ws:') + '/api/klient/events', { headers }); sockets.push(ws);
-      await new Promise<void>((resolve, reject) => { ws.once('open', () => reject(new Error('unexpected open'))); ws.once('error', () => resolve()); });
+      await expect(new Promise<void>((resolve, reject) => { ws.once('open', () => reject(new Error('unexpected open'))); ws.once('error', () => resolve()); })).resolves.toBeUndefined();
     }
     const ws = new WebSocket(browser.origin.replace('http:', 'ws:') + '/api/klient/events', { headers: { cookie: browser.cookie, origin: browser.origin, authorization: 'Bearer invalid' } }); sockets.push(ws);
-    await new Promise<void>((resolve, reject) => { ws.once('open', () => reject(new Error('unexpected open'))); ws.once('error', () => resolve()); });
+    await expect(new Promise<void>((resolve, reject) => { ws.once('open', () => reject(new Error('unexpected open'))); ws.once('error', () => resolve()); })).resolves.toBeUndefined();
   });
   it('executes a browser prompt on the same daemon while Web off does not cancel its agent turn', async () => {
     let release!: () => void; let received!: () => void;

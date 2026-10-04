@@ -972,7 +972,7 @@ export class AcpProcessClient {
     if (options.requireResume === true) {
       throw new AcpClientError(AcpClientErrorCode.SessionOpenFailed, 'The requested external session cannot be resumed or loaded', {
         details: {
-          resumeSupported: this.#capabilities.sessionCapabilities?.resume != null,
+          resumeSupported: this.#capabilities.sessionCapabilities?.resume !== undefined && this.#capabilities.sessionCapabilities.resume !== null,
           loadSupported: this.#capabilities.loadSession === true,
         },
       });

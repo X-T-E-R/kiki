@@ -12,7 +12,7 @@ const recent = new Map<string, { expires: number; version: number; result: Promi
 const cacheMs = process.env['KIKI_SEARCH_QUERY_CACHE_MS'] === '0' ? 0 : 500;
 const send = (event: QueryEvent): void => port.postMessage(event);
 send({ type: 'ready' });
-port.on('message', async (message: QueryRequest) => {
+const handleMessage = async (message: QueryRequest): Promise<void> => {
   if (message.type === 'close') {
     reader?.close();
     port.close();
@@ -45,4 +45,5 @@ port.on('message', async (message: QueryRequest) => {
   } catch (error) {
     send({ id: message.id, type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
-});
+};
+port.on('message', (message: QueryRequest) => { void handleMessage(message); });

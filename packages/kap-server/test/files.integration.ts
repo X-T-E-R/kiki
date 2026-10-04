@@ -587,10 +587,9 @@ describe('persona avatar HTTP lifecycle', () => {
   const definition = { id: 'avatar-bot', name: 'Avatar Bot', description: 'A test persona' };
 
   async function request(r: RunningServer, path: string, init: RequestInit = {}): Promise<Response> {
-    return fetch(`http://127.0.0.1:${r.port}/api${path}`, {
-      ...init,
-      headers: { ...init.headers, authorization: `Bearer ${r.localOwnerToken}` },
-    });
+    const headers = new Headers(init.headers);
+    headers.set('authorization', `Bearer ${r.localOwnerToken}`);
+    return fetch(`http://127.0.0.1:${r.port}/api${path}`, { ...init, headers });
   }
 
   async function createPersona(r: RunningServer): Promise<unknown> {

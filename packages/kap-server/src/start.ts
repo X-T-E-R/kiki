@@ -500,7 +500,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   app.addHook('onResponse', async () => {
     if (shutdownController.signal.aborted) app.server.closeIdleConnections();
   });
-  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, (error) => {
+  const leaseRegistry = new LeaseRegistry(opts.leaseTtlMs, Date.now, () => {
     logger.warn({ event_type: 'lease_expiry_cleanup_failed' }, 'lease resource expiry cleanup failed');
   });
   let notifications: NotificationService | undefined;

@@ -1232,7 +1232,7 @@ export class SessionController {
    * `detailLoads`; a retry is just another call.
    */
   async loadTranscriptDetail(agentId: string, kind: TranscriptDetailKind, id: string): Promise<boolean> {
-    const read = this.view.transcript.detail;
+    const read = this.view.transcript.detail?.bind(this.view.transcript);
     const key = transcriptDetailKey(kind, id);
     if (this.closed || read === undefined) return false;
     const inFlight = this.detailReads.get(`${agentId}/${key}`);
@@ -1262,7 +1262,7 @@ export class SessionController {
   }
 
   async loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
-    const read = this.view.transcript.content;
+    const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) return false;
     const key = `content:${JSON.stringify(ref)}`;
     const requestKey = `${agentId}/${key}`;
@@ -1316,7 +1316,7 @@ export class SessionController {
   }
 
   async loadTranscriptEntities(agentId: string, kind: import('@kiki/transcript').TranscriptDetailListResponse['kind']): Promise<boolean> {
-    const read = this.view.transcript.entities;
+    const read = this.view.transcript.entities?.bind(this.view.transcript);
     const key = `entities:${kind}`;
     const requestKey = `${agentId}/${key}`;
     if (this.closed || read === undefined || this.entityPageCursors.get(requestKey) === null) return false;

@@ -37,7 +37,8 @@ it('reads a Web-off daemon reply through live transcript delivery and bounded pa
     const owner = async (path: string, method = 'GET', body?: unknown) => {
       const headers: Record<string, string> = { authorization: `Bearer ${ownerToken}` };
       if (body !== undefined) headers['content-type'] = 'application/json';
-      const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const init: RequestInit = { method, headers, body: body === undefined ? undefined : JSON.stringify(body) };
+      const response = await fetch(base + path, init);
       const result = await response.json() as { code: number; data: any; msg: string };
       expect(response.status, result.msg).toBe(200);
       expect(result.code, result.msg).toBe(0);

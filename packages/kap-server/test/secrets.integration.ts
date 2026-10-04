@@ -77,11 +77,12 @@ describe('server-v2 /api/secrets:reveal', () => {
 
   async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, auth = true): Promise<{ status: number; text: string; body: Envelope<T> }> {
     const headers: Record<string, string> = body === undefined ? {} : { 'content-type': 'application/json' };
-    const res = await fetch(`${base}/api${path}`, {
+    const init: RequestInit = {
       method,
       headers: auth ? authHeaders(server as RunningServer, headers) : headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    };
+    const res = await fetch(`${base}/api${path}`, init);
     const text = await res.text();
     return { status: res.status, text, body: JSON.parse(text) as Envelope<T> };
   }

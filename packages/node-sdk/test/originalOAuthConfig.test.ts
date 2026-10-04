@@ -27,7 +27,7 @@ user_id = "user-a"
   const path = join(dir, 'config.toml');
   try {
     await writeConfigFile(path, config);
-    expect((await readConfigFile(path)).providers['managed:openai-codex']!.oauth!.source).toEqual(source);
+    expect(readConfigFile(path).providers['managed:openai-codex']!.oauth!.source).toEqual(source);
     const text = await readFile(path, 'utf8');
     expect(text).toContain('home_dir');
     expect(text).not.toContain('homeDir');

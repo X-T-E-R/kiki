@@ -382,8 +382,8 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
   const bridge = new SpaceThreadBridge(core, admission, connections, transcript); await bridge.ready();
   const hook = admission.onDidChange(() => bridge.onAdmissionChange());
   app.addHook('preClose', async () => { hook.dispose(); await bridge.close(); });
-  const respond = async (req: FastifyRequest, reply: FastifyReply, work: () => Promise<unknown> | unknown) => {
-    try { return reply.send(okEnvelope(await work(), req.id)); }
+  const respond = async (req: FastifyRequest, reply: FastifyReply, work: () => unknown) => {
+    try { return await reply.send(okEnvelope(await work(), req.id)); }
     catch (error) {
       if (error instanceof ContentChangedError) return reply.code(409).send(errEnvelope(40922, error.message, req.id));
       if (error instanceof ThreadMailboxBacklogError) return reply.code(429).send(errEnvelope(42901, 'bridge_queue_or_rate_limit', req.id));

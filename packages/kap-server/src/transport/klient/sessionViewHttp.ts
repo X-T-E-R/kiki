@@ -53,7 +53,7 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
         signal.throwIfAborted();
         return readContentSegment(snapshot, parsed.data.ref);
       });
-      return reply.send(data === undefined ? { code: 40401, msg: 'content unavailable', data: null, request_id: req.id } : okEnvelope(data, req.id));
+      return await reply.send(data === undefined ? { code: 40401, msg: 'content unavailable', data: null, request_id: req.id } : okEnvelope(data, req.id));
     } catch (error) {
       if (error instanceof ContentChangedError) return reply.send({ code: 40922, msg: error.message, data: null, request_id: req.id });
       throw error;
@@ -91,7 +91,7 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
       const data = await withReplyCloseSignal(reply, (signal) =>
         readSessionViewTranscriptPage(service, sessionId, { ...parsed.data, signal }),
       );
-      return reply.send(data === undefined
+      return await reply.send(data === undefined
         ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
         : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
     } catch (error) {

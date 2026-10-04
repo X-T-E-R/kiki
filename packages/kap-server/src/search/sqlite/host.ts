@@ -201,7 +201,7 @@ export class SqliteSearchHost {
       const release = (): void => { this.readerLoads[slot]!--; this.releaseQuerySlot(); };
       const timer = setTimeout(() => {
         this.timeouts++;
-        this.failReader(new Error('query worker watchdog timed out'));
+        void this.failReader(new Error('query worker watchdog timed out'));
       }, this.options.queryTimeoutMs ?? 10_000);
       this.queries.set(id, { resolve: (value) => resolve({ ...value, stale: this.snapshot().stale }), reject, timer, release });
       const request: QueryRequest = { id, type: 'search', query, pageToken, budgets };
@@ -418,11 +418,11 @@ export class SqliteSearchHost {
       worker.on('error', (error) => {
         clearTimeout(opening);
         reject(error);
-        this.failReader(error);
+        void this.failReader(error);
       });
       worker.on('exit', () => {
         clearTimeout(opening);
-        if (this.readers.includes(worker)) this.failReader(new Error('query worker exited'));
+        if (this.readers.includes(worker)) void this.failReader(new Error('query worker exited'));
       });
     });
   }

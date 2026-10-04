@@ -263,12 +263,16 @@ describe('SSH connector consumed by real source KAP/broker/thread bridge', () =>
       const list = await main.accessor.get(IListThreadsTool).resolveExecution({ bridge_id: link.grant.id });
       if (!('execute' in list)) throw new Error('ThreadList rejected');
       const result = await list.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'ssh-list' });
-      expect(JSON.parse(String(result.output)).threads.map((entry: { ref: ThreadRef }) => entry.ref)).toEqual([{ ...targetRef, bridgeId: link.grant.id, connectionId: descriptor.id }]);
+      expect(result.output).toEqual(expect.any(String));
+      if (typeof result.output !== 'string') throw new Error('Expected ThreadList JSON output');
+      expect(JSON.parse(result.output).threads.map((entry: { ref: ThreadRef }) => entry.ref)).toEqual([{ ...targetRef, bridgeId: link.grant.id, connectionId: descriptor.id }]);
       const thread = { host_id: targetRef.hostId, workspace_id: targetRef.workspaceId, session_id: targetRef.sessionId, bridge_id: link.grant.id, connection_id: descriptor.id };
       const send = await main.accessor.get(ISendMessageToThreadTool).resolveExecution({ thread, content: 'Explicit SSH bridge message', idempotency_key: 'ssh-message-key' });
       if (!('execute' in send)) throw new Error('ThreadSend rejected');
       const receipt = await send.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'ssh-send' });
-      expect(JSON.parse(String(receipt.output)).delivery).toBe('pending');
+      expect(receipt.output).toEqual(expect.any(String));
+      if (typeof receipt.output !== 'string') throw new Error('Expected ThreadSend JSON output');
+      expect(JSON.parse(receipt.output).delivery).toBe('pending');
       const mailbox = await f.target.core.accessor.get(IThreadMailboxStore).readMessages({ group: `session:${targetRef.sessionId}`, limit: 10 });
       expect(mailbox.items).toHaveLength(1); expect(mailbox.items[0]!.message.producer).toMatchObject({ kind: 'bridged_peer', source: sourceRef, location: 'network' });
       expect(f.target.core.accessor.get(ISessionManager).get(targetRef.sessionId)).toBeUndefined();

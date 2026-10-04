@@ -20,11 +20,13 @@ it('keeps real ThreadCreate bindings on GUI entry, running continuation and cold
   const home = await mkdtemp(join(tmpdir(), 'created-thread-binding-'));
   const requests: Record<string, unknown>[] = [];
   let pending: ServerResponse | undefined;
-  const provider = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    requests.push(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
-    pending = response;
+  const provider = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
+      pending = response;
+    })();
   });
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const address = provider.address();

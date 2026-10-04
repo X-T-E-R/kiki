@@ -293,7 +293,10 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     const local = await peerSocket(b, b.localOwnerToken);
     const frames = { peer: [] as Record<string, unknown>[], local: [] as Record<string, unknown>[] };
     for (const [name, socket] of [['peer', peer], ['local', local]] as const) {
-      socket.on('message', (data) => { frames[name].push(JSON.parse(data.toString()) as Record<string, unknown>); });
+      socket.on('message', (data) => {
+        const text = (Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString();
+        frames[name].push(JSON.parse(text) as Record<string, unknown>);
+      });
       socket.send(JSON.stringify({ type: 'subscribe', id: 'core', scope: 'core', event: 'events' }));
       socket.send(JSON.stringify({ type: 'subscribe', id: 'agent', scope: 'agent', sessionId: session.id, agentId: agent.id, event: 'events' }));
     }

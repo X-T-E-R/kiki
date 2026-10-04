@@ -66,10 +66,11 @@ describe('relay-v1 REST and cold wire contract', () => {
   });
 
   async function request<T>(path: string, method = 'GET', body?: unknown): Promise<Envelope<T>> {
-    const response = await fetch(`${base}${path}`, {
+    const init: RequestInit = {
       method, headers: authHeaders(server!, body === undefined ? {} : { 'content-type': 'application/json' }),
       body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    };
+    const response = await fetch(`${base}${path}`, init);
     expect(response.status).toBe(200);
     return response.json() as Promise<Envelope<T>>;
   }
