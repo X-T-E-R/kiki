@@ -9,7 +9,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
-import { inspectAgentRuntime, type IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import {
   ToolAccesses,
   type AgentTool,
@@ -38,7 +38,7 @@ import {
   isModelAcceptedImageMime,
 } from '#/agent/media/image-format-policy';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
+import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import {
   MAX_MEDIA_BYTES,

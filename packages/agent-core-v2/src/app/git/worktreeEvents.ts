@@ -10,8 +10,5 @@ export interface WorktreeChangedPayload {
 
 export class WorktreeChanged extends Event2<{ readonly payload: WorktreeChangedPayload }> {
   static override readonly type = 'session.worktree.changed';
-}
-
-export interface WorktreeChanged {
-  readonly payload: WorktreeChangedPayload;
+  declare readonly payload: WorktreeChangedPayload;
 }

@@ -590,9 +590,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         trace_id: traceId,
       };
       turnTelemetry.track2('turn_ended', ended);
-      if (!(await this.recoverPersistence())) {
-        throw new TurnPersistenceError(turn.id, result ?? { type: 'failed', steps: 0, error: this.finalization?.error }, this.finalization?.error);
-      }
+      await this.persistTurnEnd(turn, result);
+    }
+  }
+
+  private async persistTurnEnd(turn: Turn, result: TurnResult | undefined): Promise<void> {
+    if (!(await this.recoverPersistence())) {
+      throw new TurnPersistenceError(turn.id, result ?? { type: 'failed', steps: 0, error: this.finalization?.error }, this.finalization?.error);
     }
   }
 

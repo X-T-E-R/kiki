@@ -116,11 +116,11 @@ export class ManagedAdapterService implements IManagedAdapterService {
             ? { active: installation }
             : { active: installation, previous: current.active });
         this.progress.delete(id);
-        return this.status(id);
       } catch (error) {
         this.progress.set(id, { phase: 'failed', error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
+      return this.status(id);
     });
   }
 

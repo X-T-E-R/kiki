@@ -373,7 +373,8 @@ describe('AskUserQuestionTool', () => {
     const { tool, telemetryTrack } = makeTool({ request: async () => ({ cancelled: true, reason }) });
     const result = await executeTool(tool, { turnId: 0, toolCallId: 'call_question', args: input(), signal });
     expect(result.isError).toBe(true);
-    expect(JSON.parse(String(result.output))).toMatchObject({ cancelled: true, reason });
+    expect(typeof result.output).toBe('string');
+    expect(JSON.parse(result.output as string)).toMatchObject({ cancelled: true, reason });
     expect(telemetryTrack).not.toHaveBeenCalledWith('question_dismissed', expect.anything());
   });
 

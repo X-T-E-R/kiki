@@ -460,7 +460,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     await this.storage.write(this.scope(id), key, textEncoder.encode(text), { atomic: true });
   }
 
-  private async readJson(id: string, key: string, limit: number): Promise<unknown | undefined> {
+  private async readJson(id: string, key: string, limit: number): Promise<unknown> {
     const text = await this.readRaw(id, key, limit);
     if (text === undefined) return undefined;
     try {
@@ -493,7 +493,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     for (const [key, data] of files) await this.storage.write(scope, key, data, { atomic: true });
   }
 
-  private async cleanupImportedMemory(id: string): Promise<unknown | undefined> {
+  private async cleanupImportedMemory(id: string): Promise<unknown> {
     try {
       const result = await this.deleteMemory(id);
       if (result.status !== 'committed') throw new Error(result.error ?? 'memory cleanup failed');
@@ -809,7 +809,7 @@ function isAvatarShape(value: unknown): value is PersonaAvatarShape {
 }
 
 function ascii(data: Uint8Array, offset: number, text: string): boolean {
-  return [...text].every((char, index) => data[offset + index] === char.codePointAt(0));
+  return Array.from(text).every((char, index) => data[offset + index] === char.codePointAt(0));
 }
 
 function memoryScopeLabel(scope: { readonly kind: string; readonly workspaceId?: string }): string {

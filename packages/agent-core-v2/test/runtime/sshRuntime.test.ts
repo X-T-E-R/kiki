@@ -28,6 +28,7 @@ import type { BeforeResolveToolContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionApprovalService } from '#/session/approval/approval';
@@ -182,6 +183,7 @@ async function approvedPreparationFixture() {
       reg.definePartialInstance(IAgentScopeContext, { get agentId() { return agentId; } });
       reg.definePartialInstance(ISessionContext, { sessionId: 'session', workspaceId: 'workspace' });
       reg.define(ISessionStateService, SessionStateService);
+      reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session', createdAt: 0, updatedAt: 0, archived: false }), update: async () => {} });
       reg.definePartialInstance(ISessionApprovalService, {
         request: async () => ({ decision }), takeSshCredential: () => undefined, clearSshCredential: () => {},
       });
@@ -272,7 +274,7 @@ describe('approved SSH tool preparation', () => {
       await f.writeInventory();
       expect(f.registry.current('ssh:dev')).toBeUndefined();
       const result = await f.bash();
-      expect(result.isError, String(result.output)).not.toBe(true);
+      expect(result.isError).not.toBe(true);
       expect(result.output).toContain('host: dev\nexample-host');
       expect(f.exec).toHaveBeenCalledWith(['/bin/sh', '-c', "cd '/home/tester' && hostname"], expect.any(Object));
       expect(f.registry.current('ssh:dev')).toBeDefined();

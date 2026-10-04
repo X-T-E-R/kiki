@@ -38,7 +38,7 @@ import {
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
+import { matchesGlobRuleSubject } from '#/tool/rule-match';
 import globDescription from './glob.md?raw';
 import {
   type GlobInput,

@@ -175,9 +175,16 @@ describe('FileStorageService — exclusive locks', () => {
     const first = new FileStorageService(dir);
     const second = new FileStorageService(dir);
     const held = await first.acquireLock('session-locks', 'session.lock');
-    const pending = second.acquireLock('session-locks', 'session.lock', { waitForMs: 1_000 });
-    setTimeout(() => void held.release(), 50);
+    let acquired = false;
+    const pending = second.acquireLock('session-locks', 'session.lock', { waitForMs: 1_000 }).then((lock) => {
+      acquired = true;
+      return lock;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(acquired).toBe(false);
+    await held.release();
     const replacement = await pending;
+    expect(acquired).toBe(true);
     await replacement.release();
   });
 

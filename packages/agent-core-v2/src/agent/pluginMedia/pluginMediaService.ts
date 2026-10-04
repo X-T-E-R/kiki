@@ -39,7 +39,8 @@ export class AgentPluginMediaService extends Service implements IAgentPluginMedi
         const input = mediaGenerateInputSchema.parse(raw);
         if (admittedRequest === undefined || JSON.stringify(input.request) !== JSON.stringify(admittedRequest)) throw new Error('Media input changed after tool/path admission. Retry with the current request.');
         const snapshot = await this.identities.snapshot({ agentId: this.agent.agentId, turnKey: `media:${input.request_id ?? requestId}`, parentAgentId: this.agent.parentAgentId, compactionWindow: 0, logicalIdKind: 'uuidv4' });
-        const { setTurnState: _setter, ...identity } = snapshot;
+        const identity = { ...snapshot };
+        Reflect.deleteProperty(identity, 'setTurnState');
         const job = await this.media.start({ ...input, request_id: input.request_id ?? requestId }, {
           sessionId: this.session.sessionId, agentId: this.agent.agentId, mediaScope: this.session.scope('media'), identity, parentAgentId: this.agent.parentAgentId,
         });

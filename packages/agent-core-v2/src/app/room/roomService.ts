@@ -241,7 +241,7 @@ export class RoomService extends Disposable implements IRoomService {
     const host = input.host ?? roomMemberId(members[0]!);
     if (!members.some((member) => roomMemberId(member) === host)) invalid('Room host must be a member.');
     const mode = input.mode ?? 'mention';
-    if (mode !== 'mention') invalid(`Unsupported room mode '${mode}'.`);
+    if (mode !== 'mention') invalid(`Unsupported room mode '${String(mode)}'.`);
     const budget = normalizeBudget(input.budget, this.defaultRoomBudget());
     const workspace = requiredText(input.workspace, 'Room workspace');
     return this.withRoomLock(id, async () => {
@@ -334,7 +334,7 @@ export class RoomService extends Disposable implements IRoomService {
     const current = await this.requireRoom(roomId);
     const name = input.name === undefined ? current.name : requiredText(input.name, 'Room name');
     const mode = input.mode ?? current.mode;
-    if (mode !== 'mention') invalid(`Unsupported room mode '${mode}'.`);
+    if (mode !== 'mention') invalid(`Unsupported room mode '${String(mode)}'.`);
     const workspace = input.workspace === undefined ? current.workspace : requiredText(input.workspace, 'Room workspace');
     const budget = input.budget === undefined ? current.budget : normalizeBudget({ ...current.budget, ...input.budget });
     const requested = input.members === undefined ? current.members : validateMemberInputs(input.members, 0);

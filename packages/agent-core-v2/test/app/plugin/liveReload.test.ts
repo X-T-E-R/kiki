@@ -8,6 +8,7 @@ import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } 
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IOAuthService } from '#/app/auth/auth';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
 import { IPluginHostService, PluginHostService } from '#/app/plugin/pluginHostService';
@@ -16,6 +17,8 @@ import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { LifecycleScope } from '#/app/scopes';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IAgentPluginToolService, AgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
+import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -25,6 +28,7 @@ import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import type { PluginTool } from '#/app/plugin/contributions';
 import type { RunnableToolExecution, ToolUpdate } from '#/tool/toolContract';
+import { textOutput } from '../../tool/textOutput';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 
@@ -75,9 +79,9 @@ function definition(version: number): PluginTool {
   };
 }
 
-async function writePlugin(source: string, id: string, version: number) {
+async function writePlugin(source: string, id: string, version: number, mediaInputs?: true) {
   await mkdir(source, { recursive: true });
-  const tool = definition(version);
+  const tool = { ...definition(version), mediaInputs };
   await writeFile(path.join(source, 'kimi.plugin.json'), JSON.stringify({
     name: id, version: `${version}.0.0`,
     'x-kiki': { engines: { kiki: '^0.4.0' }, permissions: {}, entry: './entry.mjs', tools: [tool] },
@@ -96,7 +100,7 @@ export function register(api) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
-    return { output: JSON.stringify({ version: ${version}, value: args.${version === 1 ? 'value' : 'message'}, pid: process.pid,
+    return { output: JSON.stringify({ version: ${version}, value: args.${version === 1 ? 'value' : 'message'}, request: args.request, pid: process.pid,
       asset: await readFile(new URL('./asset.txt', import.meta.url), 'utf8') }) };
   });
 }
@@ -109,9 +113,9 @@ async function install(plugins: IPluginService, source: string, consent?: boolea
   return plan;
 }
 
-function liveAgent() {
+function liveAgent(media?: IAgentPluginMediaService) {
   const session = host.child(LifecycleScope.Session, 'continuing-session');
-  const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent');
+  const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent', media === undefined ? [] : [stubPair(IAgentPluginMediaService, media)]);
   return {
     registry: agent.accessor.get(IAgentToolRegistryService),
     pluginTools: agent.accessor.get(IAgentPluginToolService),
@@ -147,6 +151,9 @@ beforeEach(async () => {
   host = createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(path.join(root, 'home'))),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(IOAuthService, {} as IOAuthService),
+    stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
+    stubPair(IAgentPluginMediaService, { api: () => undefined } as unknown as IAgentPluginMediaService),
     stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), get: () => ({}), replace: async () => {} } as unknown as IConfigService),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
     stubPair(IAgentRuntimeService, { inspect: () => runtime, acquire: () => ({ runtime, dispose() {} }) } as unknown as IAgentRuntimeService),
@@ -163,6 +170,25 @@ afterEach(async () => {
 });
 
 describe('plugin changes in an existing live agent', () => {
+  it('validates media request identity before creating input snapshots', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const snapshotInput = vi.fn<IAgentPluginMediaService['snapshotInput']>(async (ref) => ref);
+    const { registry, pluginTools } = liveAgent({ snapshotInput, api: () => ({}) } as unknown as IAgentPluginMediaService);
+    await pluginTools.ready();
+    const source = path.join(root, 'media-source');
+    await writePlugin(source, 'media-tool', 1, true);
+    await install(plugins, source, true);
+    await plugins.setPluginEnabled({ id: 'media-tool', enabled: true });
+    const request = { kind: 'image', prompt: 'fixture', images: [{ url: 'https://example.test/image.png' }] };
+    await expect(invoke(registry, 'media-tool', { request_id: { invalid: true }, request })).rejects.toThrow();
+    expect(snapshotInput).not.toHaveBeenCalled();
+    const result = await invoke(registry, 'media-tool', { request_id: 'media-request', request });
+    expect(JSON.parse(textOutput(result.output))).toMatchObject({ request });
+    expect(snapshotInput).toHaveBeenCalledWith(request.images[0], 'media-request/0', expect.anything(), expect.any(AbortSignal));
+    snapshotInput.mockClear();
+    await invoke(registry, 'media-tool', { request });
+    expect(snapshotInput).toHaveBeenCalledWith(request.images[0], 'continuing-call/0', expect.anything(), expect.any(AbortSignal));
+  });
   it('installs, enables, applies source and schema edits, disables and removes without recreating the agent', async () => {
     const plugins = host.app.accessor.get(IPluginService);
     const { registry, pluginTools } = liveAgent();
@@ -176,27 +202,27 @@ describe('plugin changes in an existing live agent', () => {
     await plugins.setPluginEnabled({ id: 'live-tool', enabled: true });
     expect(registry.list()).toMatchObject([{ name: 'plugin__live_tool__echo', description: 'Echo v1', parameters: definition(1).parameters }]);
     const v1 = await invoke(registry, 'live-tool', { value: 'first' });
-    expect(JSON.parse(String(v1.output))).toMatchObject({ version: 1, value: 'first', asset: 'asset-v1' });
+    expect(JSON.parse(textOutput(v1.output))).toMatchObject({ version: 1, value: 'first', asset: 'asset-v1' });
     const oldExecution = await registry.resolve('plugin__live_tool__echo')!.resolveExecution({ value: 'stale' }) as RunnableToolExecution;
     await writePlugin(source, 'live-tool', 2);
     await plugins.reloadPlugins();
     expect(registry.list()[0]?.parameters).toEqual(definition(1).parameters);
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { value: 'managed' })).output))).toMatchObject({ version: 1 });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { value: 'managed' })).output))).toMatchObject({ version: 1 });
     const update = await install(plugins, source);
     expect(update.consentRequired).toBe(false);
     expect(registry.list()[0]?.parameters).toEqual(definition(2).parameters);
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { message: 'next' })).output))).toMatchObject({ version: 2, value: 'next', asset: 'asset-v2' });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { message: 'next' })).output))).toMatchObject({ version: 2, value: 'next', asset: 'asset-v2' });
     await expect(oldExecution.execute({ turnId: 1, toolCallId: 'stale-call', signal: new AbortController().signal })).rejects.toThrow('changed');
     const managed = (await plugins.getPluginInfo({ id: 'live-tool' })).root;
     await writeFile(path.join(source, 'kimi.plugin.json'), '{bad manifest');
     await expect(plugins.previewPlugin({ source })).rejects.toThrow();
     expect(await readFile(path.join(managed, 'asset.txt'), 'utf8')).toBe('asset-v2');
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { message: 'still works' })).output))).toMatchObject({ version: 2 });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { message: 'still works' })).output))).toMatchObject({ version: 2 });
     await plugins.setPluginEnabled({ id: 'live-tool', enabled: false });
     expect(registry.resolve('plugin__live_tool__echo')).toBeUndefined();
     await expect(host.app.accessor.get(IPluginHostService).execute('live-tool', 'echo', {}, new AbortController().signal)).rejects.toThrow('not enabled');
     await plugins.setPluginEnabled({ id: 'live-tool', enabled: true });
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { message: 'again' })).output))).toMatchObject({ version: 2 });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { message: 'again' })).output))).toMatchObject({ version: 2 });
     await plugins.removePlugin({ id: 'live-tool' });
     expect(registry.resolve('plugin__live_tool__echo')).toBeUndefined();
     await expect(host.app.accessor.get(IPluginHostService).execute('live-tool', 'echo', {}, new AbortController().signal)).rejects.toMatchObject({ code: 'plugin.not_found' });
@@ -215,7 +241,7 @@ describe('plugin changes in an existing live agent', () => {
     await install(plugins, other, true);
     await plugins.setPluginEnabled({ id: 'other-tool', enabled: true });
     const daemon = await daemonCommands(plugins);
-    const otherPid = JSON.parse(String((await invoke(registry, 'other-tool', { value: 'before' })).output)).pid;
+    const otherPid = JSON.parse(textOutput((await invoke(registry, 'other-tool', { value: 'before' })).output)).pid;
     const started = deferred();
     const gate = path.join(root, 'release');
     const active = invoke(registry, 'live-tool', { value: 'in flight', gate }, () => started.resolve());
@@ -234,19 +260,19 @@ describe('plugin changes in an existing live agent', () => {
     const queued = invoke(registry, 'live-tool', { value: 'queued' }, () => { queuedStarted = true; })
       .then((value) => value, (error: unknown) => error);
     const during = await invoke(registry, 'other-tool', { value: 'during' });
-    expect(JSON.parse(String(during.output))).toMatchObject({ pid: otherPid, value: 'during' });
+    expect(JSON.parse(textOutput(during.output))).toMatchObject({ pid: otherPid, value: 'during' });
     expect(queuedStarted).toBe(false);
     await writeFile(gate, 'release');
     const result = await activeResult;
     expect(result).not.toBeInstanceOf(Error);
-    expect(JSON.parse(String((result as { output: string }).output))).toMatchObject({ version: 1, value: 'in flight', asset: 'asset-v1' });
+    expect(JSON.parse(textOutput((result as { output: string }).output))).toMatchObject({ version: 1, value: 'in flight', asset: 'asset-v1' });
     await update;
     expect(await queued).toMatchObject({ message: expect.stringContaining('definition changed') });
     expect(queuedStarted).toBe(false);
     expect(applied).toBe(true);
     expect(registry.list().find((tool) => tool.name === 'plugin__live_tool__echo')?.parameters).toEqual(definition(2).parameters);
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { message: 'after' })).output))).toMatchObject({ version: 2, asset: 'asset-v2' });
-    expect(JSON.parse(String((await invoke(registry, 'other-tool', { value: 'after' })).output))).toMatchObject({ pid: otherPid });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { message: 'after' })).output))).toMatchObject({ version: 2, asset: 'asset-v2' });
+    expect(JSON.parse(textOutput((await invoke(registry, 'other-tool', { value: 'after' })).output))).toMatchObject({ pid: otherPid });
     expect(daemon.controller.resync).toHaveBeenCalledOnce();
     expect(daemon.refreshAgentCommands).toHaveBeenCalledOnce();
     expect(daemon.refreshSkillCommands).toHaveBeenCalledWith('continuing-session');
@@ -277,11 +303,11 @@ describe('plugin changes in an existing live agent', () => {
     await writeFile(gate, 'release');
     const result = await active;
     expect(result).not.toBeInstanceOf(Error);
-    expect(JSON.parse(String((result as { output: string }).output))).toMatchObject({ version: 1, value: operation });
+    expect(JSON.parse(textOutput((result as { output: string }).output))).toMatchObject({ version: 1, value: operation });
     await mutation;
     expect(applied).toBe(true);
     if (operation === 'disable') expect(registry.list()).toEqual([]);
-    else expect(JSON.parse(String((await invoke(registry, 'live-tool', { value: 'continued' })).output))).toMatchObject({ version: 1, value: 'continued' });
+    else expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { value: 'continued' })).output))).toMatchObject({ version: 1, value: 'continued' });
   });
 
   it('releases the change gate and resumes the restored managed version after an install persistence failure', async () => {
@@ -299,6 +325,6 @@ describe('plugin changes in an existing live agent', () => {
     await expect(plugins.installPlugin({ source, fingerprint: plan.fingerprint })).rejects.toThrow('fixture persistence failed');
     expect((await plugins.getPluginInfo({ id: 'live-tool' })).version).toBe('1.0.0');
     expect(registry.list()[0]?.parameters).toEqual(definition(1).parameters);
-    expect(JSON.parse(String((await invoke(registry, 'live-tool', { value: 'restored' })).output))).toMatchObject({ version: 1, value: 'restored', asset: 'asset-v1' });
+    expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { value: 'restored' })).output))).toMatchObject({ version: 1, value: 'restored', asset: 'asset-v1' });
   });
 });

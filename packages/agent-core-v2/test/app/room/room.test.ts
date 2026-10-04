@@ -114,7 +114,7 @@ function fakeMeta(id: string): ISessionMetadata {
   };
 }
 
-function setup(enabled = true, wakeError?: unknown, flatListing = false): {
+function setup(enabled = true, wakeError?: Error, flatListing = false): {
   service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;

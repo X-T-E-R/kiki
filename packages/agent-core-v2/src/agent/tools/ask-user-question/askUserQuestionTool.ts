@@ -215,7 +215,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
             multiSelect: q.multi_select,
           })),
         },
-        { signal, agentId: this.scopeContext.agentId, detached: args.background === true, onAccepted: admission?.accepted },
+        { signal, agentId: this.scopeContext.agentId, detached: args.background === true, onAccepted: admission === undefined ? undefined : () => admission.accepted() },
       );
       const result = room === undefined
         ? await request()

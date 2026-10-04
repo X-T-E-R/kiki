@@ -1434,7 +1434,8 @@ describe('AgentRun tool execution contract', () => {
       prompt: 'Inspect the fixture', description: 'Inspect fixture', profile: 'explore', model_alias: 'provider/smart',
     });
     expect(overridden.isError).not.toBe(true);
-    const advisoryLine = String(overridden.output).split('\n').find((line) => line.startsWith('binding_advisories: '));
+    expect(typeof overridden.output).toBe('string');
+    const advisoryLine = (overridden.output as string).split('\n').find((line) => line.startsWith('binding_advisories: '));
     expect(advisoryLine).toBeDefined();
     expect(JSON.parse(advisoryLine!.slice('binding_advisories: '.length))).toContainEqual(expect.objectContaining({
       code: 'model_not_preferred',

@@ -1,4 +1,4 @@
-import { mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
+import { mediaGenerateInputSchema, mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
 import { type IDisposable } from '#/_base/di/lifecycle';
@@ -142,10 +142,13 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
               await current.runtime.fs!.stat(target.path).then(() => false, () => true);
             approvedPaths.push(missingCreate ? current.runtime.path.dirname(target.path) : target.path);
           }
+          const requestId = refs.length === 0 ? context.toolCallId : mediaGenerateInputSchema.shape.request_id.parse(resolvedArgs['request_id']) ?? context.toolCallId;
           for (const [index, ref] of refs.entries()) {
-            const snapshot = await this.media!.snapshotInput(ref, `${String(resolvedArgs['request_id'] ?? context.toolCallId)}/${index}`, current.runtime.fs!, context.signal);
-            for (const key of Object.keys(ref)) Reflect.deleteProperty(ref, key);
-            Object.assign(ref, snapshot);
+            const snapshot = await this.media!.snapshotInput(ref, `${requestId}/${index}`, current.runtime.fs!, context.signal);
+            if (snapshot !== ref) {
+              for (const key of Object.keys(ref)) Reflect.deleteProperty(ref, key);
+              Object.assign(ref, snapshot);
+            }
           }
           if (admittedRequest !== undefined) resolvedArgs['request'] = admittedRequest;
           return await this.hosts.execute(pluginId, definition.name, resolvedArgs, context.signal, context.onUpdate, {

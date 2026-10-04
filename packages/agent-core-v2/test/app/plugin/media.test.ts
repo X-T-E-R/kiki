@@ -235,7 +235,8 @@ describe('media provider persisted vertical slice', () => {
     const hosts = target.app.accessor.get(IPluginHostService);
     const api = { generate: async () => service.run((await start(service, 'bridge-1', 'sync')).job_id), media: async () => service.capabilities({}) };
     const output = await hosts.execute('kiki-media', 'generate', { request: { kind: 'image', prompt: 'sync' } }, new AbortController().signal, undefined, { media: api });
-    expect(JSON.parse(String(output.output))).toMatchObject({ type: 'media_generation', job: { state: 'succeeded' } });
+    expect(typeof output.output).toBe('string');
+    expect(JSON.parse(output.output as string)).toMatchObject({ type: 'media_generation', job: { state: 'succeeded' } });
     expect(await hosts.list()).toMatchObject([{ pluginId: 'kiki-media', definition: { name: 'generate', disclosure: 'inline' } }, { pluginId: 'kiki-media', definition: { name: 'media', disclosure: 'deferred' } }]);
   });
 });

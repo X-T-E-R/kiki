@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ts } from 'ts-morph';
 
 import { EVENT2_REGISTRY } from '#/app/event/event2';
 
@@ -535,6 +536,47 @@ function spend(budget: Budget): boolean {
 
 const TS_BUDGET = (): Budget => ({ remaining: 24 });
 
+function sourceTypeReference(name: string, file: string, visited = new Set<string>()): string | undefined {
+  if (visited.has(file)) return undefined;
+  visited.add(file);
+  const source = readCached(file);
+  if (new RegExp(`export\\s+(?:type|interface|class|enum)\\s+${escapeRegExp(name)}\\b`).test(source)) {
+    const specifier = relative(dirname(MANIFEST_PATH), file).replaceAll('\\', '/').replace(/\.ts$/, '');
+    return `import('${specifier}').${name}`;
+  }
+  const specifier = findImportSource(file, name);
+  if (specifier !== undefined) {
+    const target = resolveModuleFile(file, specifier);
+    if (target !== undefined) return sourceTypeReference(name, target, visited);
+    if (!specifier.startsWith('.') && !specifier.startsWith('#/')) return `import('${specifier}').${name}`;
+  }
+  for (const match of source.matchAll(/export\s+\*\s+from\s*'([^']+)'/g)) {
+    const target = resolveModuleFile(file, match[1]!);
+    if (target === undefined) continue;
+    const reference = sourceTypeReference(name, target, visited);
+    if (reference !== undefined) return reference;
+  }
+  return undefined;
+}
+
+function qualifyCappedType(text: string, file: string): string {
+  const prefix = 'type Payload = ';
+  const source = ts.createSourceFile('payload.ts', prefix + text, ts.ScriptTarget.Latest, true);
+  const edits: { start: number; end: number; text: string }[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+      const reference = sourceTypeReference(node.typeName.text, file);
+      if (reference !== undefined) edits.push({ start: node.typeName.getStart(source) - prefix.length, end: node.typeName.end - prefix.length, text: reference });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  for (const edit of edits.toSorted((a, b) => b.start - a.start)) {
+    text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  }
+  return text;
+}
+
 const _fileCache = new Map<string, string>();
 
 function readCached(file: string): string {
@@ -695,11 +737,11 @@ function summarizeTsTypeExpr(
   if (members.length > 1) {
     return spend(budget)
       ? summarizeTsUnion(members, file, budget, charBudget, depth)
-      : truncate(text, 80);
+      : qualifyCappedType(truncate(text, 80), file);
   }
   const intersections = splitTopLevel(text, ['&']);
   if (intersections.length > 1) {
-    if (!spend(budget)) return truncate(text, 80);
+    if (!spend(budget)) return qualifyCappedType(truncate(text, 80), file);
     const sides = intersections.map((m) => summarizeTsTypeExpr(m, file, budget, charBudget, depth + 1));
     if (sides.every((side) => typeof side !== 'string' && !Array.isArray(side))) {
       return Object.assign({}, ...sides) as SketchDict;
@@ -722,7 +764,7 @@ function summarizeTsTypeExpr(
     const summary = summarizeTsType(text, file, budget);
     if (summary !== undefined) return summary;
   }
-  return truncate(text, 80);
+  return qualifyCappedType(truncate(text, 80), file);
 }
 
 function summarizeTsIndexedAccess(
@@ -868,7 +910,7 @@ function friendlyZodExpr(expr: string, ownerFile: string, depth = 0): Sketch {
       }
     }
   }
-  return truncate(text, 80);
+  return qualifyCappedType(truncate(text, 80), ownerFile);
 }
 
 function friendlyZodUnion(body: string, ownerFile: string, depth: number): string {

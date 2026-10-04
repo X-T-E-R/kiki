@@ -10,7 +10,7 @@ let frame = 'main';
 const commands = [];
 const server = net.createServer(socket => {
   let line = '';
-  socket.on('data', async chunk => {
+  const onData = async chunk => {
     line += chunk;
     if (!line.includes('\n')) return;
     const command = JSON.parse(line.split('\n')[0]);
@@ -29,14 +29,16 @@ const server = net.createServer(socket => {
       case 'click': { if (command.selector === '#lose-response') { socket.destroy(); return; } data = { clicked: true, targetId: active?.targetId, frame }; break; }
       case 'upload': { const values = []; for (const path of command.files ?? []) values.push(await readFile(path, 'utf8')); data = { uploaded: values.length, values }; break; }
       case 'download': await writeFile(command.path, `download-from-${id}`); data = { path: command.path }; break;
-      case 'close': data = { closed: true }; setTimeout(async () => {
-        await Promise.all(['pid', 'port', 'version', 'config'].map(extension => rm(join(directory, `${session}.${extension}`), { force: true })));
-        server.close(); process.exit(0);
+      case 'close': data = { closed: true }; setTimeout(() => {
+        void Promise.all(['pid', 'port', 'version', 'config'].map(extension => rm(join(directory, `${session}.${extension}`), { force: true }))).then(() => {
+          server.close(); process.exit(0);
+        });
       }, 150); break;
       default: data = { action: command.action, targetId: active?.targetId, frame };
     }
     socket.end(JSON.stringify({ success: true, data }) + '\n');
-  });
+  };
+  socket.on('data', chunk => { void onData(chunk); });
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 await Promise.all([

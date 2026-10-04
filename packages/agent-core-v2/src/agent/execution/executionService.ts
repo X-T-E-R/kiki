@@ -1,5 +1,5 @@
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
-import { Disposable } from '#/_base/di/lifecycle';
+import { markAsDisposed, trackDisposable } from '#/_base/di/lifecycle';
 import {
   registerScopedService,
   ScopeActivation,
@@ -52,7 +52,7 @@ interface ActiveRun {
   turnId?: number;
 }
 
-export class AgentExecutionService extends Disposable implements IAgentExecutionService {
+export class AgentExecutionService implements IAgentExecutionService {
   declare readonly _serviceBrand: undefined;
 
   readonly hooks = createHooks<{ onWillRun: AgentExecutionRunContext }, 'onWillRun'>([
@@ -79,7 +79,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     @IAgentLoopService private readonly loop: IAgentLoopService,
     @IAgentPromptService private readonly prompt: IAgentPromptService,
   ) {
-    super();
+    trackDisposable(this);
     states.contributeState(externalExecutorKey);
     const accessor: ServicesAccessor = {
       get: (id) => instantiation.invokeFunction((services) => services.get(id)),
@@ -249,11 +249,11 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     return this.shutdownPromise;
   }
 
-  override async dispose(): Promise<void> {
+  async dispose(): Promise<void> {
     try {
       await this.shutdown(new Error('Agent execution service disposed'));
     } finally {
-      super.dispose();
+      markAsDisposed(this);
     }
   }
 

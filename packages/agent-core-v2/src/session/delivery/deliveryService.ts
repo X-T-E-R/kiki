@@ -57,7 +57,7 @@ export class SessionDeliveryService extends Service implements ISessionDeliveryS
 
   async set(mode: SessionDeliveryMode): Promise<void> {
     await this.ready;
-    if (mode !== 'reply' && mode !== 'message') throw new TypeError(`Invalid session delivery mode: ${mode}`);
+    if (mode !== 'reply' && mode !== 'message') throw new TypeError(`Invalid session delivery mode: ${String(mode)}`);
     if (mode === this.current) return;
     const previous = this.current;
     try {

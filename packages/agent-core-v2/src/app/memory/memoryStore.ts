@@ -113,6 +113,11 @@ function encode(entry: Omit<MemoryEntry, 'revision'>): string {
   const { body, ...meta } = entry;
   return `---\n${JSON.stringify(meta, null, 2)}\n---\n${body}\n`;
 }
+function metadataText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Date) return String(value);
+  throw new Error('Invalid memory metadata');
+}
 function decode(raw: string): MemoryEntry {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(raw);
   if (match === null) throw new Error('Invalid memory frontmatter');
@@ -124,9 +129,9 @@ function decode(raw: string): MemoryEntry {
     id: meta['id'], type: meta['type'] as MemoryType, title: redactMemorySecrets(meta['title']),
     body: redactMemorySecrets(body),
     status: meta['status'] as MemoryStatus, pinned: meta['pinned'] === true,
-    created: String(meta['created'] ?? ''), updated: String(meta['updated'] ?? ''),
+    created: metadataText(meta['created']), updated: metadataText(meta['updated']),
     source: source && typeof source === 'object' && ['user', 'agent', 'consolidator', 'import'].includes(source.writer) ? source : { writer: 'import' },
-    reason: redactMemorySecrets(String(meta['reason'] ?? '')),
+    reason: redactMemorySecrets(metadataText(meta['reason'])),
     superseded_by: typeof meta['superseded_by'] === 'string' ? meta['superseded_by'] : undefined,
     supersedes: typeof meta['supersedes'] === 'string' ? meta['supersedes'] : undefined,
     supersedes_revision: typeof meta['supersedes_revision'] === 'string' ? meta['supersedes_revision'] : undefined,

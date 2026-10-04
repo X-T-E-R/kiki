@@ -167,7 +167,7 @@ describe('print bootstrap scoped Cron scheduling', () => {
       main = { id: 'main', kind: LifecycleScope.Agent, dispose: () => {}, accessor: { get: <T,>(id: ServiceIdentifier<T>): T => {
         if (id === IAgentPromptService) return { enqueue } as T;
         if (id === IEventDispatcher) return { dispatch: async () => {} } as T;
-        throw new Error(`Unexpected agent service ${id}`);
+        throw new Error(`Unexpected agent service ${id.toString()}`);
       } } };
       opened = { id: 'print-owner', kind: LifecycleScope.Session, accessor: session.accessor, dispose: () => {} };
       created.fire(undefined as never);

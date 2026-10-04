@@ -52,7 +52,8 @@ describe('plugin host lifecycle', () => {
     try {
       const result = await host.execute('fixture_echo', { context: true }, new AbortController().signal, undefined,
         { token: 'plugin-only' }, { workspaceRoot: fixture, approvedPaths: [fixture], imageIn: true });
-      expect(JSON.parse(String(result.output))).toEqual({ workspaceRoot: fixture, approvedPaths: [fixture], imageIn: true, settings: { token: 'plugin-only' } });
+      expect(typeof result.output).toBe('string');
+      expect(JSON.parse(result.output as string)).toEqual({ workspaceRoot: fixture, approvedPaths: [fixture], imageIn: true, settings: { token: 'plugin-only' } });
       await expect(host.execute('fixture_echo', { image: true }, new AbortController().signal)).resolves.toMatchObject({ output: [
         { type: 'text', text: 'preview' }, { type: 'image_url', imageUrl: { url: 'data:image/png;base64,aGVsbG8=' } },
       ] });

@@ -766,7 +766,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           throw error;
         }
         const status = findAPIStatusError(error);
-        await sleepForRetry(status?.retryAfterMs == null ? retryBackoffDelay(retryCount) : Math.min(status.retryAfterMs, 60_000), signal);
+        await sleepForRetry(status?.retryAfterMs === undefined || status.retryAfterMs === null ? retryBackoffDelay(retryCount) : Math.min(status.retryAfterMs, 60_000), signal);
         retryCount += 1;
       }
     }

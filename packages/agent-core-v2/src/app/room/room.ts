@@ -121,7 +121,7 @@ export interface RoomMessage {
   readonly id: string;
   readonly at: string;
   readonly kind: 'message';
-  readonly from: 'user' | string;
+  readonly from: string;
   readonly username?: string;
   readonly text: string;
   readonly idempotencyKey?: string;

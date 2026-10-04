@@ -887,7 +887,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         })
       : undefined;
     let prompt: IAgentPromptService;
-    let handle: PromptHandle;
+    let handle: PromptHandle | undefined;
     try {
       if (message.producer.kind === 'bridged_peer') {
         if (await this.requireConnector().beforeDelivery(message) === 'pending') {
@@ -937,16 +937,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const input = { id: message.messageId, message: { id: message.messageId, role: 'user' as const,
         content: [{ type: 'text' as const, text }], toolCalls: [], origin } };
       const prior = prompt.lookup(message.messageId, input);
-      if (prior !== undefined && prior.phase !== 'pending') return this.acknowledgeClaim(claim);
-      handle = await prompt.enqueue(input);
+      if (prior === undefined || prior.phase === 'pending') handle = await prompt.enqueue(input);
     } catch (error) {
       if (roomReceipt !== undefined) this.rejectRoomDelivery(message.messageId, error);
       if (this.closing) return 'pending';
       return this.recordUndeliverable(claim, error);
     }
+    if (handle === undefined) return this.acknowledgeClaim(claim);
+    const enqueued = handle;
     if (roomReceipt !== undefined) {
       roomReceipt.cancelPending = () => {
-        if (handle.state === 'pending') prompt.abort(handle.id, new Error('Queued room delivery cancelled.'));
+        if (enqueued.state === 'pending') prompt.abort(enqueued.id, new Error('Queued room delivery cancelled.'));
       };
       this.trackRoomPromptOutcome(message.messageId, handle);
     }

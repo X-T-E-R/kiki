@@ -2,14 +2,14 @@ import { execFileSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import { IWorktreeService } from '#/app/git/worktreeModel';
+import { IWorktreeService, type WorktreeRecord } from '#/app/git/worktreeModel';
 import { WorktreeService } from '#/app/git/worktreeService';
 import { IEventService } from '#/app/event/event';
 import { WORKTREE_SECTION, worktreeConfigSchema } from '#/app/git/worktreeConfig';
@@ -21,6 +21,31 @@ import type { Runtime } from '#/runtime/runtime';
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
+
+describe('worktree outcome persistence', () => {
+  it('propagates retained-outcome persistence failure without retrying it as a removal failure', async () => {
+    const record: WorktreeRecord = { id: 'fixture', version: 1, path: tmpdir(), branch: 'fixture', branchCreated: false,
+      repo: { fingerprint: 'fixture', commonDir: tmpdir(), sourceRoot: tmpdir(), workspaceId: 'fixture' },
+      base: { mode: 'head', ref: 'HEAD', commit: 'fixture' }, owner: { kind: 'session', sessionId: 'fixture' }, state: 'ready', createdAt: 1, updatedAt: 1 };
+    const failure = new Error('outcome persistence unavailable');
+    const update = vi.fn(async () => { throw failure; });
+    const disposables = new DisposableStore();
+    const ix = createServices(disposables, { additionalServices: (reg) => {
+      reg.definePartialInstance(IBootstrapService, { homeDir: tmpdir() });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: <T>() => undefined as T });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: async <T>() => ({ version: 1, records: { fixture: record } }) as T, update });
+      reg.definePartialInstance(IRuntimeResolver, {});
+      reg.definePartialInstance(ISessionIndex, {});
+      reg.definePartialInstance(ISessionManager, {});
+      reg.definePartialInstance(IEventService, {});
+      reg.define(IWorktreeService, WorktreeService);
+    } });
+    try {
+      await expect(ix.get(IWorktreeService).remove('fixture')).rejects.toBe(failure);
+      expect(update).toHaveBeenCalledOnce();
+    } finally { disposables.dispose(); }
+  });
+});
 
 describe('managed worktree removal', () => {
   let root: string;

@@ -126,7 +126,7 @@ export class SshHostService extends Disposable implements ISshHostService {
   }
 
   async removeSessionTransients(sessionId: string): Promise<void> {
-    for (const entry of [...this.transient.values()]) {
+    for (const entry of Array.from(this.transient.values())) {
       if (entry.sessionId !== sessionId) continue;
       await this.removeTransient(entry.record.id, entry.workspaceId, sessionId);
     }
@@ -305,7 +305,7 @@ export class SshHostService extends Disposable implements ISshHostService {
   }
 
   private async notifyHostsChanged(workspaceId?: string): Promise<void> {
-    await Promise.all([...this.hostListeners].map((listener) => listener(workspaceId)));
+    await Promise.all([...this.hostListeners].map((listener) => Promise.resolve(listener(workspaceId))));
   }
 
   private async fingerprint(id: string, workspaceId?: string): Promise<string> {

@@ -11,7 +11,7 @@ const HOOK_EVENTS = new Set([
 ]);
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
-async function readJson(file: string): Promise<unknown | undefined> {
+async function readJson(file: string): Promise<unknown> {
   try { return JSON.parse(await readFile(file, 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
 }

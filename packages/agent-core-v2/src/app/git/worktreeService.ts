@@ -258,40 +258,44 @@ export class WorktreeService implements IWorktreeService {
       return { outcome };
     };
     if (record.state === 'removed') return { outcome: 'removed' };
+    return finish(await this.removeOutcome(id, record, request, trigger, dryRun));
+  }
+
+  private async removeOutcome(id: string, record: WorktreeRecord, request: WorktreeRemovalRequest, trigger: 'user' | 'gc', dryRun: boolean): Promise<WorktreeRemovalOutcome> {
     try {
       await assertUnlinkedAncestors(record.path);
       if (pathKey(record.path) === pathKey(record.repo.sourceRoot) ||
-        !insidePath(record.path, join(this.config.get<WorktreeConfig>(WORKTREE_SECTION).root || join(this.bootstrap.homeDir, 'worktrees'), record.repo.fingerprint))) return finish('retained_unowned');
-      if (this.manager.list().some((session) => insidePath(session.accessor.get(ISessionContext).cwd, record.path))) return finish('retained_in_use');
+        !insidePath(record.path, join(this.config.get<WorktreeConfig>(WORKTREE_SECTION).root || join(this.bootstrap.homeDir, 'worktrees'), record.repo.fingerprint))) return 'retained_unowned';
+      if (this.manager.list().some((session) => insidePath(session.accessor.get(ISessionContext).cwd, record.path))) return 'retained_in_use';
       const summary = await this.sessions.get(record.owner.sessionId);
-      if (summary !== undefined && !summary.archived) return finish('retained_in_use');
-      if (!await pathExists(record.path)) return finish('retained_unowned');
+      if (summary !== undefined && !summary.archived) return 'retained_in_use';
+      if (!await pathExists(record.path)) return 'retained_unowned';
       const controlDir = await readWorktreePointer(record.path);
-      if (controlDir === undefined || !insidePath(controlDir, join(record.repo.commonDir, 'worktrees'))) return finish('retained_unowned');
+      if (controlDir === undefined || !insidePath(controlDir, join(record.repo.commonDir, 'worktrees'))) return 'retained_unowned';
       await assertUnlinkedAncestors(controlDir);
       const marker = await readOwnerMarker(join(controlDir, 'kiki-owner.json')).catch(() => undefined) as
         { version?: unknown; worktreeId?: unknown; sessionId?: unknown; createdAt?: unknown } | undefined;
-      if (marker?.version !== 1 || marker.worktreeId !== id || marker.sessionId !== record.owner.sessionId || marker.createdAt !== record.createdAt) return finish('retained_unowned');
+      if (marker?.version !== 1 || marker.worktreeId !== id || marker.sessionId !== record.owner.sessionId || marker.createdAt !== record.createdAt) return 'retained_unowned';
       const commonDir = resolve(record.path, await this.git(record.repo.workspaceId, record.path, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-      if (pathKey(commonDir) !== pathKey(record.repo.commonDir)) return finish('retained_unowned');
+      if (pathKey(commonDir) !== pathKey(record.repo.commonDir)) return 'retained_unowned';
       const listed = parseWorktreeList(await this.git(record.repo.workspaceId, record.repo.sourceRoot, ['worktree', 'list', '--porcelain']))
         .find((item) => pathKey(item.path) === pathKey(record.path));
-      if (listed === undefined) return finish('retained_unowned');
-      if (listed.lock !== undefined && listed.lock !== `kiki:${id}`) return finish('retained_foreign_lock');
+      if (listed === undefined) return 'retained_unowned';
+      if (listed.lock !== undefined && listed.lock !== `kiki:${id}`) return 'retained_foreign_lock';
       const previous = record.lastInspection;
       const inspection = await this.measure(record);
-      if (inspection.failed) return finish('failed');
+      if (inspection.failed) return 'failed';
       const loss = { dirty: inspection.dirtyFiles > 0, ignored: inspection.ignoredNonDisposable.length > 0, unpushed: inspection.unpushedCommits > 0 };
       if (trigger === 'user' && request.confirmLoss !== undefined && (previous === undefined || previous.failed ||
         previous.dirtyFiles !== inspection.dirtyFiles || previous.untrackedFiles !== inspection.untrackedFiles ||
         previous.unpushedCommits !== inspection.unpushedCommits || JSON.stringify(previous.ignoredNonDisposable) !== JSON.stringify(inspection.ignoredNonDisposable) ||
         Object.entries(loss).some(([key, value]) => request.confirmLoss?.[key as keyof typeof loss] !== value))) throw new Error('worktree inspection changed; inspect again before confirming loss');
-      if (loss.dirty && request.confirmLoss?.dirty !== true) return finish('retained_dirty');
-      if (loss.unpushed && request.confirmLoss?.unpushed !== true) return finish('retained_unpushed');
-      if (loss.ignored && request.confirmLoss?.ignored !== true) return finish('retained_ignored');
+      if (loss.dirty && request.confirmLoss?.dirty !== true) return 'retained_dirty';
+      if (loss.unpushed && request.confirmLoss?.unpushed !== true) return 'retained_unpushed';
+      if (loss.ignored && request.confirmLoss?.ignored !== true) return 'retained_ignored';
       if (trigger === 'user' && request.confirmLoss !== undefined &&
         (previous?.inspectedAt === undefined || Date.now() - previous.inspectedAt > 30_000)) throw new Error('worktree inspection expired; inspect again before confirming loss');
-      if (dryRun) return { outcome: 'removed' };
+      if (dryRun) return 'removed';
       await this.save({ ...record, state: 'removing', updatedAt: Date.now() });
       await this.git(record.repo.workspaceId, record.path, ['fsmonitor--daemon', 'stop'], true);
       await assertUnlinkedAncestors(record.path);
@@ -308,11 +312,11 @@ export class WorktreeService implements IWorktreeService {
           await this.git(record.repo.workspaceId, record.repo.sourceRoot, ['branch', '-d', record.branch], true);
         }
       }
-      return finish('removed');
+      return 'removed';
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('worktree inspection ')) throw error;
       const code = (error as NodeJS.ErrnoException).code;
-      return finish(['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(code ?? '') ? 'failed_busy' : 'failed');
+      return ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(code ?? '') ? 'failed_busy' : 'failed';
     }
   }
 

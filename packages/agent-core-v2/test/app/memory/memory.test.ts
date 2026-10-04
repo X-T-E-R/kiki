@@ -79,6 +79,25 @@ afterEach(async () => {
 });
 
 describe('memory persistence and snapshot', () => {
+  it.each(['created', 'updated', 'reason'])('rejects object-valued %s metadata instead of stringifying it', async (field) => {
+    const { store, storage } = start();
+    const { entry } = await create(store);
+    const raw = `---\n${JSON.stringify({ ...entry, [field]: { unexpected: true } })}\n---\n${entry.body}\n`;
+    await storage.write(`memory/workspaces/${workspaceId}`, `entries/${entry.id}.md`, new TextEncoder().encode(raw));
+    await expect(store.get(workspace, entry.id)).rejects.toThrow('Invalid memory metadata');
+  });
+
+  it('preserves scalar and YAML timestamp metadata conversions and null defaults', async () => {
+    const { store, storage } = start();
+    const { entry } = await create(store);
+    const scope = `memory/workspaces/${workspaceId}`;
+    const key = `entries/${entry.id}.md`;
+    const raw = `---\nid: ${entry.id}\ntype: project\ntitle: Fixture\nstatus: active\ncreated: 2026-10-04T00:00:00.000Z\nupdated: 42\nreason: true\n---\nbody\n`;
+    await storage.write(scope, key, new TextEncoder().encode(raw));
+    expect(await store.get(workspace, entry.id)).toMatchObject({ created: new Date('2026-10-04T00:00:00.000Z').toString(), updated: '42', reason: 'true' });
+    await storage.write(scope, key, new TextEncoder().encode(`---\n${JSON.stringify({ ...entry, created: null, updated: null, reason: null })}\n---\nbody\n`));
+    expect(await store.get(workspace, entry.id)).toMatchObject({ created: '', updated: '', reason: '' });
+  });
   it('enables memory by default while honoring a workspace-level disable', () => {
     const defaults = MemoryConfigSchema.parse({});
     expect(defaults.enabled).toBe(true);

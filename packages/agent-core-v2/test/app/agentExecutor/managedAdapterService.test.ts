@@ -145,7 +145,7 @@ describe('managed ACP adapter installation', () => {
     const childPath = fileURLToPath(new URL('./managedAdapterInstallChild.ts', import.meta.url));
     const children = ['0.84.1', '0.84.2'].map((version) => {
       const child = fork(childPath, [home, version], {
-        execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+        execArgv: ['--import', new URL('../../../../../build/register-raw-text-loader.mjs', import.meta.url).href, '--import', 'tsx'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       });
       let stderr = '';
       child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
@@ -161,6 +161,7 @@ describe('managed ACP adapter installation', () => {
         child.once('error', reject);
         child.once('exit', (code) => { if (code !== 0) reject(new Error(stderr || `child exited ${code}`)); });
       });
+      void completed.catch(() => undefined);
       return { child, ready, completed };
     });
     try {

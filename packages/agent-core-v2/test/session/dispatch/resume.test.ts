@@ -132,7 +132,7 @@ describe('AgentRun new_window shape', () => {
     expect(SubagentToolInputSchema.safeParse({ prompt: '', description: '', resume: CHILD, allow_model_change: false, new_window: true }).success).toBe(false);
     const schema = toInputJsonSchema(SubagentToolInputSchema, addSubagentBindingSchemaConstraints);
     expect(schema['properties']).toHaveProperty('new_window');
-    expect(schema['allOf']).toContainEqual({ if: { required: ['new_window'] }, then: { required: ['resume'] } });
+    expect(schema['allOf']).toContainEqual(JSON.parse('{"if":{"required":["new_window"]},"then":{"required":["resume"]}}'));
   });
 });
 

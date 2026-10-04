@@ -162,7 +162,7 @@ describe('permission reviewer', () => {
     const noTarget = { ...context, toolCall: { ...context.toolCall, name: 'Edit' }, args: { path: '/workspace/file' } };
     expect(await reviewPermission(dependencies(reviewer), noTarget, 'ask', {})).toBeUndefined();
     const waiting = { getRequester: () => ({ request: async function* () {
-      await new Promise<never>(() => {});
+      yield await new Promise<never>(() => {});
     } }) } as unknown as IModelCatalog;
     const timed = { ...dependencies(reviewer), catalog: waiting };
     expect(await reviewPermission(timed, context, 'ask', {})).toBeUndefined();

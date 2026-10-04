@@ -143,11 +143,15 @@ export async function atomicCreate(filePath: string, content: string): Promise<v
     await link(tmpPath, filePath);
     await syncDir(dirname(filePath));
   } finally {
-    try {
-      await unlink(tmpPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+    await removeCreateTemporary(tmpPath);
+  }
+}
+
+async function removeCreateTemporary(tmpPath: string): Promise<void> {
+  try {
+    await unlink(tmpPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 

@@ -117,7 +117,8 @@ describe('TodoListTool', () => {
     const invoke = (args: object) => executeTool(fixture.tool, { turnId: 2, step: 4, toolCallId: 'notes', args, signal });
     await invoke({ notes: { goal: 'g'.repeat(1500), directives: 'd'.repeat(1500), evidence: 'e'.repeat(1500), files: 'f'.repeat(1500), decided: 'c'.repeat(1400) } });
     const result = await invoke({ notes: { next: 'run tests' } });
-    expect(String(result.output).length).toBeLessThan(300);
+    expect(typeof result.output).toBe('string');
+    expect((result.output as string).length).toBeLessThan(300);
     expect(receipt(result.output)).toMatchObject({ changed: ['notes.next'], section_chars: { next: 9 }, notes_chars: 7409 });
     expect((await invoke({})).output).toContain('d'.repeat(1500));
     fixture.dispose();

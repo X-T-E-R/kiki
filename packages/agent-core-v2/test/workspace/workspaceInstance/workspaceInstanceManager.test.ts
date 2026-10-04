@@ -420,7 +420,7 @@ function sshManagerFixture() {
     return [{ id: 'dev', name: 'Dev', source: 'kiki' }];
   });
   const refreshRuntimeHosts = vi.fn(async (workspaceId: string) => {
-    await Promise.all([...listeners].map((listener) => listener(workspaceId)));
+    await Promise.all([...listeners].map(async (listener) => { await listener(workspaceId); }));
   });
   const connect = vi.fn(async () => { throw new Error('unexpected network connection'); });
   const ix = createServices(disposables, {

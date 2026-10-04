@@ -193,7 +193,7 @@ interface ConfigUpdatePayload {
   renderGeneration?: number;
   agentsMdPaths?: string[];
   disallowedTools?: string[];
-  disabledToolGroups?: TOOL_GROUP_ID_SCHEMA[];
+  disabledToolGroups?: import('@kiki/agent-profiles/toolGroups').TOOL_GROUP_ID_SCHEMA[];
 }
 
 /**
@@ -244,13 +244,13 @@ interface ContextAppendMessagePayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: BundledSkillActivation[], originalInput?: ContentPart[] } | SkillActivationOrigin | PluginCommandOrigin | InjectionOrigin | ShellCommandOrigin | CompactionSummaryOrigin | SystemTriggerOrigin | TaskOrigin | CronJobOrigin | CronMissedOrigin | HookResultOrigin | RetryOrigin | PeerThreadOrigin | BridgedPeerOrigin | AgentMessageOrigin | PersonaGreetingOrigin | RoomMessageOrigin | undefined;
+    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
     memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
-    source?: ContextMessageSource;
-    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
+    source?: import('../src/agent/contextMemory/types').ContextMessageSource;
+    toolCallSources?: Readonly<Record<string, import('../src/agent/contextMemory/types').ContextMessageSource>>;
   };
   delivery?: {
     deliveryId: string;
@@ -741,7 +741,7 @@ interface ProfileBindPayload {
   activeToolNames?: string[];
   toolAllowPolicies?: string[][];
   disallowedTools: string[];
-  disabledToolGroups?: TOOL_GROUP_ID_SCHEMA[];
+  disabledToolGroups?: import('@kiki/agent-profiles/toolGroups').TOOL_GROUP_ID_SCHEMA[];
   subagentPolicy?: 'advisory' | 'strict';
   subagentDeclaration?: import('#/app/agentProfileCatalog/agentProfileCatalog').SubagentDeclaration;
   canSpawnSubagents?: boolean;
@@ -765,7 +765,7 @@ interface ProfileDynamicSnapshotPayload {
   enabled: boolean;
   revision: number;
   /** SystemPromptContext */
-  context: AgentProfileContext & { agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
+  context: import('@kiki/agent-profiles/agentProfile').AgentProfileContext & { agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
   content: string;
   hash: string;
 }
@@ -831,12 +831,12 @@ interface PromptCompletedPayload {
             details?: Readonly<Record<string, unknown>>;
             retryable: boolean;
             cause?: {
-              code: ErrorCode;
+              code: import('../src/errors').ErrorCode;
               message: string;
               name?: string;
               details?: Readonly<Record<string, unknown>>;
               retryable: boolean;
-              cause?: ErrorPayload;
+              cause?: import('../src/_base/errors/serialize').ErrorPayload;
             };
           };
         };
@@ -878,13 +878,13 @@ interface PromptEnqueuedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: BundledSkillActivation[], originalInput?: ContentPart[] } | SkillActivationOrigin | PluginCommandOrigin | InjectionOrigin | ShellCommandOrigin | CompactionSummaryOrigin | SystemTriggerOrigin | TaskOrigin | CronJobOrigin | CronMissedOrigin | HookResultOrigin | RetryOrigin | PeerThreadOrigin | BridgedPeerOrigin | AgentMessageOrigin | PersonaGreetingOrigin | RoomMessageOrigin | undefined;
+    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
     memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
-    source?: ContextMessageSource;
-    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
+    source?: import('../src/agent/contextMemory/types').ContextMessageSource;
+    toolCallSources?: Readonly<Record<string, import('../src/agent/contextMemory/types').ContextMessageSource>>;
   };
   /** PromptExecutionBinding */
   execution?: {
@@ -1011,8 +1011,8 @@ interface PromptOutcomeCommittedPayload {
   terminal: {
     promptId: string;
     turnId?: number;
-    state: PromptCompletion['state'];
-    result?: Extract<TurnResult, { type: 'completed' }> | { type: 'failed', steps: number, error: import('#/_base/errors/serialize').ErrorPayload } | { type: 'cancelled', steps: number, reason: import('#/_base/errors/serialize').ErrorPayload };
+    state: import('../src/agent/prompt/prompt').PromptCompletion['state'];
+    result?: Extract<import('../src/agent/loop/loop').TurnResult, { type: 'completed' }> | { type: 'failed', steps: number, error: import('#/_base/errors/serialize').ErrorPayload } | { type: 'cancelled', steps: number, reason: import('#/_base/errors/serialize').ErrorPayload };
   };
 }
 
@@ -1047,13 +1047,13 @@ interface PromptReplacedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: BundledSkillActivation[], originalInput?: ContentPart[] } | SkillActivationOrigin | PluginCommandOrigin | InjectionOrigin | ShellCommandOrigin | CompactionSummaryOrigin | SystemTriggerOrigin | TaskOrigin | CronJobOrigin | CronMissedOrigin | HookResultOrigin | RetryOrigin | PeerThreadOrigin | BridgedPeerOrigin | AgentMessageOrigin | PersonaGreetingOrigin | RoomMessageOrigin | undefined;
+    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
     memoryReceipt?: import('#/tool/toolContract').MemoryWriteReceipt;
-    source?: ContextMessageSource;
-    toolCallSources?: Readonly<Record<string, ContextMessageSource>>;
+    source?: import('../src/agent/contextMemory/types').ContextMessageSource;
+    toolCallSources?: Readonly<Record<string, import('../src/agent/contextMemory/types').ContextMessageSource>>;
   };
   /** PromptExecutionBinding */
   execution?: {
@@ -1427,12 +1427,12 @@ interface TurnEndedPayload {
             details?: Readonly<Record<string, unknown>>;
             retryable: boolean;
             cause?: {
-              code: ErrorCode;
+              code: import('../src/errors').ErrorCode;
               message: string;
               name?: string;
               details?: Readonly<Record<string, unknown>>;
               retryable: boolean;
-              cause?: ErrorPayload;
+              cause?: import('../src/_base/errors/serialize').ErrorPayload;
             };
           };
         };
@@ -1458,7 +1458,7 @@ interface TurnPromptPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | InjectionOrigin | ShellCommandOrigin | CompactionSummaryOrigin | SystemTriggerOrigin | TaskOrigin | CronJobOrigin | CronMissedOrigin | HookResultOrigin | RetryOrigin | PeerThreadOrigin | BridgedPeerOrigin | AgentMessageOrigin | PersonaGreetingOrigin | RoomMessageOrigin;
+  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
   managed?: boolean;
 }
 
@@ -1478,7 +1478,7 @@ interface TurnSteerPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | InjectionOrigin | ShellCommandOrigin | CompactionSummaryOrigin | SystemTriggerOrigin | TaskOrigin | CronJobOrigin | CronMissedOrigin | HookResultOrigin | RetryOrigin | PeerThreadOrigin | BridgedPeerOrigin | AgentMessageOrigin | PersonaGreetingOrigin | RoomMessageOrigin;
+  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
   managed?: boolean;
 }
 

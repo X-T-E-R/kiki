@@ -90,7 +90,7 @@ describe('kiki-computer fixed MCP adoption', () => {
     const source = path.join(root, 'tar-source', 'fixture');
     await mkdir(source, { recursive: true });
     for (const [name, content] of Object.entries(files)) await writeFile(path.join(source, name), content);
-    const stream = await createTar({ gzip: true, cwd: path.dirname(source) }, ['fixture']);
+    const stream = createTar({ gzip: true, cwd: path.dirname(source) }, ['fixture']);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) chunks.push(chunk);
     const bytes = Buffer.concat(chunks);
@@ -139,7 +139,7 @@ describe('kiki-computer fixed MCP adoption', () => {
   it('allows only pinned release asset redirect origins and verifies the final bytes', async () => {
     const bytes = await zipBytes();
     const { ctx } = fixture(root, bytes);
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url).startsWith('https://github.com/')
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => (url instanceof Request ? url.url : String(url)).startsWith('https://github.com/')
       ? new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/fixture.zip' } })
       : new Response(new Uint8Array(bytes))) as unknown as typeof fetch;
     await createKikiComputerEntry({ ...ctx, fetchImpl }).install(() => {});

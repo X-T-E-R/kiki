@@ -13,7 +13,6 @@ import {
   camelToSnake,
   cloneRecord,
   isPlainObject,
-  plainObjectToToml,
   setDefined,
   snakeToCamel,
   transformPlainObject,
