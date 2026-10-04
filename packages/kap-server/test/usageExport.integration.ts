@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
+import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { AGENT_WIRE_RECORD_KEY, IBootstrapService, IFileSystemStorageService, IRetainedUsageService, ISessionIndex, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
@@ -84,6 +85,40 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     expect(tokens.input_other).toBe(Number.MAX_SAFE_INTEGER);
     expect(() => { addTokens(tokens, { input_other: 1, input_cache_read: 0, input_cache_creation: 0, output: 0 }); }).toThrow('unsafe-token-sum');
     expect(() => { addTokens(tokens, { input_other: 0, input_cache_read: 1, input_cache_creation: 0, output: 0 }); }).toThrow('unsafe-token-total');
+  });
+
+  it('preserves NUL-qualified source ids across projection pages when SQLite text results truncate', async () => {
+    const f = await fixture();
+    const ids = Array.from({ length: 33 }, (_, n) => `source-${String(n).padStart(2, '0')}-附件`);
+    for (const [n, id] of ids.entries()) {
+      f.add(id);
+      await f.write(id, 'main', [record(T + 1, n + 1)]);
+    }
+    const all = StatementSync.prototype.all;
+    let truncatedPages = 0;
+    const read = vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (this: StatementSync, ...args) {
+      const rows = all.apply(this, args);
+      if (rows.some((row) => typeof row['id'] === 'string' && row['id'].includes('\0'))) {
+        if (++truncatedPages > 8) throw new Error('projection keyset repeated a truncated source id');
+        return rows.map((row) => ({ ...row, id: String(row['id']).split('\0')[0]! }));
+      }
+      return rows;
+    });
+    try {
+      const d = await destination(f.service);
+      const preview = await f.service.preview(d.id);
+      expect(preview.source_complete).toBe(true);
+      expect(preview.total_buckets).toBe(1);
+      expect(preview.items[0]!.bucket!.tokens.input_other).toBe(561);
+      await enable(f.service, d.id);
+      await f.service.scan(true);
+      expect(f.store.preview(d.id).items).toEqual(preview.items);
+      const db = new DatabaseSync(join(f.home, 'export.sqlite'), { readOnly: true });
+      try {
+        const row = db.prepare('SELECT origins FROM versions WHERE dest=?').get(d.id) as { origins: string };
+        expect(JSON.parse(row.origins)).toEqual(ids.map((id) => `work\0${id}`));
+      } finally { db.close(); }
+    } finally { read.mockRestore(); }
   });
 
   it('conserves all four tokens with subagents, active/retained replacement and explicit ephemeral opt-in; no content escapes', async () => {

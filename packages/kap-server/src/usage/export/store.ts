@@ -7,6 +7,7 @@ import { contributionSchema, digest, normalizePublicModel, opaqueId, publicBucke
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 interface Row { [key: string]: string | number | null }
+interface SourceRow { id: Uint8Array; workspace: string; kind: string; data: string }
 interface PrivateDestination { destination: UsageExportDestination; identityKey: string }
 interface ProjectionPlan { buckets: Map<string, ReturnType<typeof publicBucket>>; origins: Map<string, Set<string>>; destinationStamp: string; sourceGeneration: string | null }
 interface ProjectionAccumulator { contribution: Contribution; pricingVersions: Set<string> }
@@ -122,7 +123,7 @@ export class UsageExportStore {
   refreshDestination(id: string): void { this.transaction(() => { this.publishDestination(id); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
   async refreshDestinationAsync(id: string): Promise<void> { const plan = await this.projectionPlan(id); this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
   private projectionStamp(destination: UsageExportDestination): string { return digest({ scope: destination.scope, stream: destination.stream_id, target: destination.target, account: destination.account_fingerprint, enabled: destination.enabled, consent: destination.consent_fingerprint }); }
-  private accumulateProjection(row: Row, destination: UsageExportDestination, identityKey: string, groups: Map<string, ProjectionAccumulator>, origins: Map<string, Set<string>>): void {
+  private accumulateProjection(row: SourceRow, destination: UsageExportDestination, identityKey: string, groups: Map<string, ProjectionAccumulator>, origins: Map<string, Set<string>>): void {
     if (destination.scope.excluded_workspace_ids.includes(String(row['workspace'])) || (row['kind'] === 'ephemeral' && !destination.scope.include_ephemeral)) return;
     const buckets: unknown = JSON.parse(String(row['data'])); if (!Array.isArray(buckets)) throw new Error('invalid-stored-contribution');
     for (const value of buckets) {
@@ -137,7 +138,7 @@ export class UsageExportStore {
         addTokens(group.contribution.tokens, bucket.tokens); addQuality(group.contribution.quality, bucket.quality); group.pricingVersions.add(bucket.pricing_version);
         group.contribution.cost = group.contribution.cost === null || bucket.cost === null ? null : group.contribution.cost + bucket.cost;
       }
-      const related = origins.get(key) ?? new Set<string>(); related.add(String(row['id'])); origins.set(key, related);
+      const related = origins.get(key) ?? new Set<string>(); related.add(Buffer.from(row.id).toString('utf8')); origins.set(key, related);
     }
   }
   private finishProjection(groups: Map<string, ProjectionAccumulator>, identityKey: string): ProjectionPlan['buckets'] {
@@ -145,17 +146,17 @@ export class UsageExportStore {
   }
   private projected(id: string): Map<string, ReturnType<typeof publicBucket>> {
     const { destination, identityKey } = this.privateDestination(id); const groups = new Map<string, ProjectionAccumulator>(); this.projectedOrigins.clear();
-    for (const row of this.db.prepare('SELECT id,workspace,kind,data FROM sources').iterate() as Iterable<Row>) this.accumulateProjection(row, destination, identityKey, groups, this.projectedOrigins);
+    for (const row of this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources').iterate() as Iterable<SourceRow>) this.accumulateProjection(row, destination, identityKey, groups, this.projectedOrigins);
     return this.finishProjection(groups, identityKey);
   }
   private async projectionPlan(id: string, run?: string, override?: UsageExportDestination): Promise<ProjectionPlan> {
     const saved = this.privateDestination(id); const destination = override ?? saved.destination; const identityKey = saved.identityKey; const sourceGeneration = this.meta('source-generation');
     const groups = new Map<string, ProjectionAccumulator>(); const origins = new Map<string, Set<string>>(); let cursor = '';
     for (;;) {
-      const rows = (run === undefined ? this.db.prepare('SELECT id,workspace,kind,data FROM sources WHERE id>? ORDER BY id LIMIT 16').all(cursor) : this.db.prepare('SELECT id,workspace,kind,data FROM staging WHERE run=? AND id>? UNION ALL SELECT id,workspace,kind,data FROM sources WHERE id>? AND id NOT IN (SELECT id FROM staging WHERE run=?) ORDER BY id LIMIT 16').all(run, cursor, cursor, run)) as Row[];
+      const rows = (run === undefined ? this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources WHERE id>? ORDER BY id LIMIT 16').all(cursor) : this.db.prepare('SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM staging WHERE run=? AND id>? UNION ALL SELECT CAST(id AS BLOB) AS id,workspace,kind,data FROM sources WHERE id>? AND id NOT IN (SELECT id FROM staging WHERE run=?) ORDER BY id LIMIT 16').all(run, cursor, cursor, run)) as unknown as SourceRow[];
       if (rows.length === 0) break;
       for (const row of rows) this.accumulateProjection(row, destination, identityKey, groups, origins);
-      cursor = String(rows.at(-1)!['id']); await yieldToEventLoop();
+      cursor = Buffer.from(rows.at(-1)!.id).toString('utf8'); await yieldToEventLoop();
     }
     if (sourceGeneration !== this.meta('source-generation') || this.projectionStamp(saved.destination) !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed');
     return { buckets: this.finishProjection(groups, identityKey), origins, sourceGeneration, destinationStamp: this.projectionStamp(saved.destination) };
