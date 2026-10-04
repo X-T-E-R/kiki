@@ -25,6 +25,10 @@ describe('resolvePnpmInvocation', () => {
       command: 'C:\\node\\node.exe',
       args: ['C:\\node\\node_modules\\corepack\\dist\\pnpm.js'],
     });
+    expect(resolvePnpmInvocation({}, 'linux', '/usr/bin/node', () => true)).toEqual({
+      command: '/usr/bin/node',
+      args: ['/usr/bin/node_modules/corepack/dist/pnpm.js'],
+    });
   });
 
   it('uses the platform shim when the active Node installation has no Corepack', () => {

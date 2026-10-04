@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { posix, resolve, win32 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { run } from './exec.mjs';
@@ -18,7 +18,8 @@ export function resolvePnpmInvocation(
 ) {
   const cliPath = env.npm_execpath?.trim();
   if (cliPath) return { command: nodePath, args: [cliPath] };
-  const corepackPnpmPath = resolve(dirname(nodePath), 'node_modules', 'corepack', 'dist', 'pnpm.js');
+  const path = platform === 'win32' ? win32 : posix;
+  const corepackPnpmPath = path.resolve(path.dirname(nodePath), 'node_modules', 'corepack', 'dist', 'pnpm.js');
   if (fileExists(corepackPnpmPath)) {
     return { command: nodePath, args: [corepackPnpmPath] };
   }

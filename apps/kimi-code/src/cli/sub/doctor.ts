@@ -289,7 +289,7 @@ const MAX_AGENT_SCAN_DEPTH = 8;
 interface ParsedAgentFile {
   readonly path: string;
   readonly name: string;
-  readonly subagents?: readonly string[];
+  readonly allowedSubagents?: readonly string[];
   readonly modelAlias?: string;
   readonly parserWarnings: readonly string[];
 }
@@ -414,7 +414,7 @@ async function checkAgentProfiles(
           parsedFiles.push({
             path: entryPath,
             name: agent.name,
-            subagents: agent.subagents,
+            allowedSubagents: agent.allowedSubagents,
             modelAlias: agent.modelAlias,
             parserWarnings,
           });
@@ -454,11 +454,11 @@ async function checkAgentProfiles(
       if (diagnostic?.kind === 'warning') warnings.push(diagnostic.message);
     }
     const missingSubagents =
-      file.subagents?.includes('*') === true
+      file.allowedSubagents?.includes('*') === true
         ? []
-        : (file.subagents?.filter((name) => !discoveredNames.has(name)) ?? []);
+        : (file.allowedSubagents?.filter((name) => !discoveredNames.has(name)) ?? []);
     if (missingSubagents.length > 0) {
-      errors.push(`subagents references unknown agent profiles: ${missingSubagents.join(', ')}.`);
+      errors.push(`allowed_subagents references unknown agent profiles: ${missingSubagents.join(', ')}.`);
     }
     warnings.push(...file.parserWarnings);
 
@@ -492,7 +492,7 @@ async function checkAgentProfiles(
 }
 
 /**
- * Names a `subagents` reference may resolve to without a project/user file: the profiles registered
+ * Names an `allowed_subagents` reference may resolve to without a project/user file: the profiles registered
  * in-process plus the ones the product ships. The shipped profiles are installed as low-priority
  * files under `<agent root>/builtin/` rather than contributed to the profile registry, so they are
  * read from the shipped originals here.

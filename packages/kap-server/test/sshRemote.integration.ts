@@ -41,7 +41,7 @@ async function fixture(options: { running?: boolean; noReady?: boolean; failQuer
   const config = { running: options.running ?? true, noReady: options.noReady, failQuery: options.failQuery, log,
     bootstrap: { url: `http://127.0.0.1:${address.port}`, token, serverId, identity: target, serverVersion: 'fixture-version', dangerousBypassAuth: false, buildChannel: 'stable' } };
   await writeFile(configPath, JSON.stringify(config));
-  const process = new SystemSshProcess({ executable: globalThis.process.execPath, prefix: [resolve('test/fixtures/system-ssh.mjs'), configPath], timeoutMs: 1200 });
+  const process = new SystemSshProcess({ executable: globalThis.process.execPath, prefix: [resolve(import.meta.dirname, 'fixtures/system-ssh.mjs'), configPath], timeoutMs: 1200 });
   const connector = new SshRemoteConnector({ process, serverVersion: 'fixture-version' }); connectors.push(connector);
   const record: SshRemoteRecord = { id: randomUUID(), target, transport: { kind: 'ssh', profile: profile() } };
   const events = async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as { kind: string; pid?: number; port?: number; args?: string[] });
@@ -184,7 +184,7 @@ async function realKapSshFixture() {
   } };
   await writeFile(configPath, JSON.stringify(config));
   const makeConnector = () => new SshRemoteConnector({ process: new SystemSshProcess({ executable: process.execPath,
-    prefix: [resolve('test/fixtures/system-ssh.mjs'), configPath], timeoutMs: 3000 }), serverVersion: 'fixture-version' });
+    prefix: [resolve(import.meta.dirname, 'fixtures/system-ssh.mjs'), configPath], timeoutMs: 3000 }), serverVersion: 'fixture-version' });
   const connector = makeConnector(); const source = await boot(sourceHome, connector);
   const events = async () => (await readFile(config.log, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as { kind: string });
   const plan = () => ownerCall<SshRemotePlan>(source, '/api/remote-connections/ssh/plan', profile());

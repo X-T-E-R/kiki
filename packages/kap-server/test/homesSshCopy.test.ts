@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IBootstrapService, ISshHostService, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IConfigRegistry, IConfigService, ILogService, ISshHostService, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerHomesRoutes } from '../src/routes/homes';
@@ -14,7 +14,9 @@ const account = (workspaceId: string | undefined, hostId: string) => JSON.string
 
 describe('main-space SSH credential copying', () => {
   let root: string | undefined;
+  const cleanups: Array<() => Promise<void>> = [];
   afterEach(async () => {
+    for (const close of cleanups.splice(0)) await close();
     if (root) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     root = undefined;
   });
@@ -24,9 +26,12 @@ describe('main-space SSH credential copying', () => {
     const main = root;
     const child = join(root, 'cold-space');
     const routes = new Map<string, Route>();
-    const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map((method) => [method,
-      (path: string, _options: unknown, handler: Route) => { routes.set(`${method.toUpperCase()} ${path}`, handler); },
-    ]));
+    const app = {
+      ...Object.fromEntries(['get', 'post', 'patch', 'delete'].map((method) => [method,
+        (path: string, _options: unknown, handler: Route) => { routes.set(`${method.toUpperCase()} ${path}`, handler); },
+      ])),
+      addHook: (_name: 'onClose', handler: () => Promise<void>) => { cleanups.push(handler); },
+    };
     const saved = new Map<string, string>();
     const writes: Array<{ home: string; id?: string; key: string; kind: string; value: string }> = [];
     let failAfter = Infinity;
@@ -36,6 +41,9 @@ describe('main-space SSH credential copying', () => {
     ];
     const scope = { accessor: { get: (token: unknown) => {
       if (token === IBootstrapService) return { homeDir: main, spaceId: undefined };
+      if (token === IConfigService) return { ready: Promise.resolve(), getAll: () => ({}), origins: () => ({}), onDidChangeConfiguration: () => ({ dispose: () => undefined }) };
+      if (token === IConfigRegistry) return { listSections: () => [] };
+      if (token === ILogService) return { error: () => undefined };
       if (token === IWorkspaceService) return { list: async () => [{ id: 'workspace-1' }] };
       if (token === ISshHostService) return { list: async (workspaceId?: string) => workspaceId === undefined ? hosts.slice(0, 1) : hosts };
       throw new Error('Unexpected service');

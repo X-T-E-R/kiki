@@ -1,4 +1,4 @@
-import type { Client, SFTPWrapper, Stats as SFTPStats } from 'ssh2';
+import { Client, type SFTPWrapper, type Stats as SFTPStats } from 'ssh2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KaosFileExistsError } from '#/errors';
@@ -133,11 +133,7 @@ function createMockSftp(state: MockSFTP): SFTPWrapper {
 }
 
 function createMockClient(): Client {
-  return {
-    end(): void {
-      // no-op
-    },
-  } as unknown as Client;
+  return new Client();
 }
 
 /**

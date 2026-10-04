@@ -10,6 +10,9 @@ import { captureProcessWrite, ExitCalled, mockProcessExit } from '../helpers/pro
 
 type CreateKimiDeviceId = typeof createKimiDeviceIdFn;
 
+const ttyDescriptors = [process.stdin, process.stdout].map((stream) => ({
+  stream, descriptor: Object.getOwnPropertyDescriptor(stream, 'isTTY'),
+}));
 const uncaughtExceptionListeners = new Set(process.listeners('uncaughtException'));
 const unhandledRejectionListeners = new Set(process.listeners('unhandledRejection'));
 const sigtermListeners = new Set(process.listeners('SIGTERM'));
@@ -139,10 +142,10 @@ vi.mock('../../src/tui/theme/detect', () => ({
   detectTerminalTheme: mocks.detectTerminalTheme,
 }));
 
-vi.mock('node:child_process', () => ({
-  execFileSync: mocks.execFileSync,
-  spawnSync: mocks.spawnSync,
-}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: mocks.execFileSync, spawnSync: mocks.spawnSync };
+});
 
 vi.mock('../../src/utils/process/resolve-command', () => ({
   resolveCommandPath: mocks.resolveCommandPath,
@@ -150,6 +153,9 @@ vi.mock('../../src/utils/process/resolve-command', () => ({
 
 describe('runShell', () => {
   beforeEach(() => {
+    for (const stream of [process.stdin, process.stdout]) {
+      Object.defineProperty(stream, 'isTTY', { configurable: true, value: true });
+    }
     // Pin region to cn: the telemetry endpoint assertion below must not
     // follow the dev machine's own login/marker state.
     vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
@@ -175,6 +181,10 @@ describe('runShell', () => {
     }
     for (const listener of process.stderr.listeners('error') as Array<(error: Error) => void>) {
       if (!stderrErrorListeners.has(listener)) process.stderr.off('error', listener);
+    }
+    for (const { stream, descriptor } of ttyDescriptors) {
+      if (descriptor === undefined) Reflect.deleteProperty(stream, 'isTTY');
+      else Object.defineProperty(stream, 'isTTY', descriptor);
     }
     vi.clearAllMocks();
     vi.unstubAllEnvs();

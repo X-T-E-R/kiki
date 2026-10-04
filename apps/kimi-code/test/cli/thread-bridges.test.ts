@@ -7,7 +7,9 @@ import { createKlient } from '@kiki/klient/http';
 import { registerKikiCommands } from '../../src/kiki/register';
 
 it('registers and runs bridge owner management through the real CLI and daemon without GUI authority', async () => {
-  const root = await mkdtemp(resolve('../..', '.tmp/bridge-cli-')); const servers: RunningServer[] = [];
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp');
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(join(scratch, 'bridge-cli-')); const servers: RunningServer[] = [];
   const clients: ReturnType<typeof createKlient>[] = [];
   const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const run = async (...args: string[]) => {

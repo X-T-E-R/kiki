@@ -54,20 +54,25 @@ async function startServer(hostKey: string, port = 0, holdExec = false, keyboard
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept();
-        session.on('exec', (acceptExec, _reject, info) => {
-          const channel = acceptExec();
-          if (info.command.includes('KIKI_SSH_ENV')) {
-            channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/bash\n');
-            channel.exit(0);
-            channel.end();
-            return;
-          }
-          channel.write('hello from SSH\n');
-          if (holdExec) pendingExec.push(channel);
-          else {
-            channel.exit(0);
-            channel.end();
-          }
+        session.on('exec', (acceptExec, rejectExec, info) => {
+          if (info.command.includes('reject-exec')) { rejectExec(); return; }
+          const respond = (): void => {
+            const channel = acceptExec();
+            if (info.command.includes('KIKI_SSH_ENV')) {
+              channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/bash\n');
+              channel.exit(0);
+              channel.end();
+              return;
+            }
+            channel.write('hello from SSH\n');
+            if (holdExec) pendingExec.push(channel);
+            else {
+              channel.exit(0);
+              channel.end();
+            }
+          };
+          if (holdExec) setTimeout(respond, 60);
+          else respond();
         });
         session.on('sftp', (acceptSftp) => {
           const channel = acceptSftp();
@@ -196,12 +201,28 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     const manager = new SshConnectionManager(async () => ({ ...host(port, path), autoTrustFirstKey: true }), 20);
     managers.push(manager);
     const connection = await manager.get('dev');
-    const process = await connection.withCwd('/home/tester').exec('sleep', '10');
+    const opening = connection.withCwd('/home/tester').exec('sleep', '10');
+    expect(connection.activeProcesses).toBe(1);
+    const process = await opening;
     expect(connection.activeProcesses).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 90));
     expect(manager.status('dev').state).toBe('ready');
     finishExec();
     expect(await process.wait()).toBe(0);
+    expect(connection.activeProcesses).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect(manager.status('dev').state).toBe('idle');
+  });
+
+  it('releases pending exec activity when the server rejects the request', async () => {
+    const { path } = await fixture();
+    const { port } = await startServer(key());
+    const manager = new SshConnectionManager(async () => ({ ...host(port, path), autoTrustFirstKey: true }), 20);
+    managers.push(manager);
+    const connection = await manager.get('dev');
+    const opening = connection.exec('reject-exec');
+    expect(connection.activeProcesses).toBe(1);
+    await expect(opening).rejects.toThrow('Unable to exec');
     expect(connection.activeProcesses).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 90));
     expect(manager.status('dev').state).toBe('idle');

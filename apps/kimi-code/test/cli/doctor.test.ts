@@ -309,9 +309,14 @@ model_profiles:
 service_tier: priority
 request_params:
   seed: 42
-subagents:
+can_spawn_subagents: true
+allowed_subagents:
   - general
   - explore
+preferred_subagents:
+  - explore
+deny_subagents:
+  - coder
 `,
     );
     const { deps, stdout, stderr } = makeDeps();
@@ -332,7 +337,7 @@ subagents:
       `
 name: reviewer
 description: Reviews changes
-subagents:
+allowed_subagents:
   - '*'
   - coder
 `,
@@ -560,7 +565,7 @@ description: Custom explore
       `
 name: reviewer
 description: Reviews changes
-subagents:
+allowed_subagents:
   - missing-agent
 `,
     );
@@ -572,7 +577,17 @@ subagents:
     expect(stdout.join('')).toBe('');
     const err = stderr.join('');
     expect(err).toContain(`ERROR agents       ${agentPath}`);
-    expect(err).toContain('subagents references unknown agent profiles: missing-agent.');
+    expect(err).toContain('allowed_subagents references unknown agent profiles: missing-agent.');
+  });
+
+  it.each(['subagents', 'subagent_policy'])('rejects removed delegation field %s with the four-key migration', async (field) => {
+    await writeValidConfig();
+    await writeAgentFile('reviewer.md', `name: reviewer\ndescription: Reviews changes\n${field}: []`);
+    const { deps, stderr } = makeDeps();
+
+    expect(await handleDoctor(deps, {})).toBe(1);
+    expect(stderr.join('')).toContain(`Frontmatter field "${field}"`);
+    expect(stderr.join('')).toContain('has been removed; use allowed_subagents, preferred_subagents, deny_subagents, and can_spawn_subagents');
   });
 
   it('fails when a profile still declares the removed model_preference field', async () => {

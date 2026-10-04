@@ -1032,11 +1032,17 @@ export class SSHKaos implements Kaos {
 
   private async _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
     const command = SSHKaos._buildExecCommand(args, this._cwd, env);
-    const channel = await clientExec(this._client, command);
-    const process = new SSHProcess(channel);
     this._activity.count += 1;
-    void process.wait().finally(() => { this._activity.count -= 1; });
-    return process;
+    try {
+      const channel = await clientExec(this._client, command);
+      const process = new SSHProcess(channel);
+      const release = (): void => { this._activity.count -= 1; };
+      void process.wait().then(release, release);
+      return process;
+    } catch (error) {
+      this._activity.count -= 1;
+      throw error;
+    }
   }
 
   // ── SSH lifecycle ──────────────────────────────────────────────────

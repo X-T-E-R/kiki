@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('#/utils/process/resolve-command', () => ({
   resolveCommandPath: mocks.resolveCommandPath,
 }));
-vi.mock('node:child_process', () => ({ spawnSync: mocks.spawnSync }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: mocks.spawnSync };
+});
 
 const originalEnv = { ...process.env };
 let tempHome: string | undefined;
@@ -74,15 +77,11 @@ describe('detectFdPath', () => {
     mkdirSync(getBinDir(), { recursive: true });
 
     const binaryPath = join(getBinDir(), process.platform === 'win32' ? 'fd.exe' : 'fd');
-    if (process.platform === 'win32') {
-      // Creating a real Windows PE executable in a unit test is not practical;
-      // the asset-name tests still cover Windows selection logic.
-      return;
-    }
-
-    writeFileSync(binaryPath, '#!/bin/sh\necho fd 10.4.2\n');
-    chmodSync(binaryPath, 0o755);
+    writeFileSync(binaryPath, 'fixture fd binary');
+    mocks.spawnSync.mockReturnValue({ status: 0 });
 
     expect(detectFdPath()).toBe(binaryPath);
+    expect(mocks.spawnSync).toHaveBeenCalledWith(binaryPath, ['--version'], { stdio: 'ignore' });
+    expect(mocks.resolveCommandPath).not.toHaveBeenCalled();
   });
 });
