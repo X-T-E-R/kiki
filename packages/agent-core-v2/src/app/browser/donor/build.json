@@ -19,7 +19,7 @@
   "lockSha256": "f1f1980cf6802f2fe1f6543645c91779f95531156690a452f0342da35e4aa92f",
   "artifactName": "agent-browser.exe",
   "artifactSha256": "1a333ab6c97f06a8da7c30a3829bbd4d98888e7c8145954ac2142c0205e78417",
-  "artifactStatus": "local isolated candidate; packaged-resource extraction tested, not published or installed in user home",
+  "artifactStatus": "versioned Windows x64 distribution resource; packaged-resource extraction tested, not installed in user home",
   "packaging": "Windows SEA collectNativeAssets includes the verified binary, LICENSE, NOTICE, build.json and patch; stage binary via KIKI_BROWSER_ARTIFACT_DIR or apps/kimi-code/vendor/agent-browser/win32-x64 before building. Runtime uses the existing verified native-asset cache and passes the extracted path as a typed host argument.",
   "reproduction": [
     "Extract the verified fixed archive into a fresh isolated source directory.",
