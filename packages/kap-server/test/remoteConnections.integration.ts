@@ -2,9 +2,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { createConnection } from 'node:net';
+import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { Event2, IEventService, IEventBus, ISessionManager, ISessionMetadata, ISessionIndex, IModelService, IAgentLifecycleService, IAgentContextMemoryService } from '@kiki/agent-core-v2';
+import { Event2, IEventService, IEventBus, ISessionManager, ISessionMetadata, ISessionIndex, IModelService, IAgentLifecycleService, IAgentContextMemoryService, IFileService } from '@kiki/agent-core-v2';
 import { writePrivateFile } from '../src/services/auth/privateFiles';
 import { randomUUID } from 'node:crypto';
 import { createKlient, createConnectionKlient } from '@kiki/klient/http';
@@ -15,7 +18,12 @@ import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 const servers: RunningServer[] = []; const homes: string[] = []; const sockets: WebSocket[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.terminate();
-  for (const server of servers.splice(0).toReversed()) await server.close();
+  for (const server of servers.splice(0).toReversed()) {
+    const started = performance.now();
+    console.log(`[remote-close] port=${server.port} begin`);
+    await server.close();
+    console.log(`[remote-close] port=${server.port} complete elapsedMs=${Math.round(performance.now() - started)}`);
+  }
   for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 async function boot(home?: string, disableAuth = false, port = 0): Promise<RunningServer> {
@@ -160,24 +168,99 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     expect((await call(restored, '/api/meta', undefined, restored.authTokenService.getToken(), credential.grant)).status).toBe(200);
   });
   it('streams explicit attachments above the JSON page budget through the fixed broker', async () => {
-    const a = await boot(); const b = await boot(); const { record } = await connect(a, b);
+    const started = performance.now();
+    const phase = (stage: string) => console.log(`[attachment-stream] ${stage} elapsedMs=${Math.round(performance.now() - started)}`);
+    phase('boot-source'); const a = await boot();
+    phase('boot-target'); const b = await boot();
+    phase('connect'); const { record } = await connect(a, b);
     const bytes = Buffer.from('附件😀'.repeat(250000));
     const form = new FormData(); form.set('file', new Blob([bytes], { type: 'application/octet-stream' }), 'large.bin');
+    phase('upload');
     const uploaded = await fetch(endpoint(a) + `/api/remote-connections/${record.id}/upload`, { method: 'POST', headers: { authorization: `Bearer ${a.localOwnerToken}` }, body: form });
+    phase('upload-headers');
     const envelope = await uploaded.json() as { code: number; data: { id: string; size: number } };
     expect(uploaded.status).toBe(200); expect(envelope.code).toBe(0); expect(envelope.data.size).toBe(bytes.length);
+    phase('download');
     const downloaded = await call(a, `/api/remote-connections/${record.id}/download`, { operation: 'file', params: { fileId: envelope.data.id } });
-    expect(downloaded.status).toBe(200);
+    phase('download-headers'); expect(downloaded.status).toBe(200);
     const reader = downloaded.body!.getReader(); const chunks: Buffer[] = [];
     for (;;) { const next = await reader.read(); if (next.done) break; chunks.push(Buffer.from(next.value)); }
-    reader.releaseLock(); expect(Buffer.concat(chunks)).toEqual(bytes);
+    reader.releaseLock(); expect(Buffer.concat(chunks)).toEqual(bytes); expect(chunks.length).toBeGreaterThan(1);
+    phase(`download-complete bytes=${bytes.length} chunks=${chunks.length}`);
     const direct = await call(b, `/api/files/${envelope.data.id}`); expect(Buffer.from(await direct.arrayBuffer())).toEqual(bytes);
+    phase('direct-complete');
     expect((await call(a, `/api/remote-connections/${record.id}/call`, { operation: 'file', params: { fileId: envelope.data.id } })).status).toBe(400);
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(a.remoteConnections.list()[0]?.activeLeases).toBe(1);
+    const store = b.core.accessor.get(IFileService); const get = store.get.bind(store);
+    let returned = false;
+    const reading = vi.spyOn(store, 'get').mockImplementation(async (id) => {
+      const file = await get(id);
+      return { ...file, stream: (range) => {
+        const source = file.stream(range);
+        return Readable.from((async function* () {
+          try { for await (const chunk of source) { yield chunk; await delay(50); } }
+          finally { source.destroy(); returned = true; }
+        })());
+      } };
+    });
+    try {
+      phase('cancel-download');
+      const cancelled = await call(a, `/api/remote-connections/${record.id}/download`, { operation: 'file', params: { fileId: envelope.data.id } });
+      const cancelReader = cancelled.body!.getReader();
+      const first = await cancelReader.read(); expect(first.done).toBe(false);
+      expect(Buffer.from(first.value!)).toEqual(bytes.subarray(0, first.value!.byteLength));
+      expect(returned).toBe(false);
+      expect(a.remoteConnections.list()[0]?.activeLeases).toBe(2);
+      await cancelReader.cancel(); cancelReader.releaseLock();
+      await vi.waitFor(() => { expect(returned).toBe(true); expect(a.remoteConnections.list()[0]?.activeLeases).toBe(1); });
+      phase('cancel-complete');
+    } finally { reading.mockRestore(); }
     await a.remoteConnections.enable(record.id, false);
     expect(a.remoteConnections.list()[0]?.activeLeases).toBe(0);
+    phase('disabled');
   });
+  it('closes an empty TCP preconnection while preserving an active attachment response', async () => {
+    const b = await boot(); const store = b.core.accessor.get(IFileService);
+    const bytes = Buffer.from('valid-request-附件😀'.repeat(100000));
+    const meta = await store.save(Readable.from([bytes]), 'active.bin');
+    const get = store.get.bind(store); let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const reading = vi.spyOn(store, 'get').mockImplementation(async (id) => {
+      const file = await get(id);
+      return { ...file, stream: (range) => Readable.from((async function* () {
+        let first = true;
+        for await (const chunk of file.stream(range)) {
+          yield chunk;
+          if (first) { first = false; await released; }
+        }
+      })()) };
+    });
+    const accepted = once(b.app.server, 'connection');
+    const empty = createConnection({ host: '127.0.0.1', port: b.port }); empty.on('error', () => {});
+    const emptyClosed = new Promise<void>((resolve) => { empty.once('close', () => resolve()); });
+    let closing: Promise<void> | undefined; let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.all([once(empty, 'connect'), accepted]);
+      expect(empty.bytesWritten).toBe(0);
+      const response = await call(b, `/api/files/${meta.id}`); expect(response.status).toBe(200);
+      const reader = response.body!.getReader(); const first = await reader.read();
+      expect(first.done).toBe(false);
+      const chunks = [Buffer.from(first.value!)]; let closed = false;
+      closing = b.close().then(() => { closed = true; });
+      await delay(50); expect(closed).toBe(false);
+      release();
+      for (;;) { const next = await reader.read(); if (next.done) break; chunks.push(Buffer.from(next.value)); }
+      reader.releaseLock(); expect(Buffer.concat(chunks)).toEqual(bytes);
+      await Promise.race([closing, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('empty TCP preconnection blocked listener close')), 3000); })]);
+      await emptyClosed;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      release(); empty.destroy(); await closing; await b.close(); reading.mockRestore();
+      servers.splice(servers.indexOf(b), 1);
+    }
+  });
+
   it('keeps identical session ids in different target homes separate and pauses all purposes on home drift', async () => {
     const a = await boot(); const b = await boot(); const c = await boot(); const sessionId = randomUUID();
     const bs = await b.core.accessor.get(ISessionManager).create({ sessionId, workDir: homes[1]! });

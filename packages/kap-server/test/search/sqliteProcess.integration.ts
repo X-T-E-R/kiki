@@ -210,7 +210,11 @@ it('elects one writer across hosts sharing the same database and leaves the othe
 });
 
 it('keeps old rows searchable through memory-budget backoff without restarting the parent', async () => {
+  const started = performance.now();
+  const phase = (stage: string) => console.log(`[sqlite-budget] ${stage} elapsedMs=${Math.round(performance.now() - started)}`);
+  phase('fixture-open');
   const { host, home, database } = await fixture();
+  phase('seed-sync');
   const dir = join(home, 's1');
   await mkdir(join(dir, 'agents', 'main'), { recursive: true });
   await writeFile(join(dir, 'agents', 'main', 'wire.jsonl'), JSON.stringify({
@@ -219,26 +223,33 @@ it('keeps old rows searchable through memory-budget backoff without restarting t
   }) + '\n');
   host.sync([{ id: 's1', dir, workspaceId: 'example', updatedAt: time }]);
   await waitFor(() => host.snapshot().pendingSessions === 0);
-  await host.close();
+  phase('seed-close'); await host.close();
   hosts.pop();
-  const states: string[] = [];
+  const states: string[] = []; let lastState = '';
   const starving = new SqliteSearchHost({ database, indexerHardMb: 64, indexerSoftMb: 32,
     backoffMs: [50, 50, 50], memoryBackoffMs: [50, 50, 50],
-    onStateChange: (snapshot) => states.push(snapshot.reason ?? snapshot.state) });
+    onStateChange: (snapshot) => {
+      states.push(snapshot.reason ?? snapshot.state);
+      const state = JSON.stringify({ state: snapshot.state, reason: snapshot.reason,
+        pid: snapshot.indexerPid, terminal: snapshot.indexerTerminal,
+        aboveBudget: (snapshot.indexerRss ?? 0) > 64 * 1048576 });
+      if (state !== lastState) { lastState = state; phase(`state=${state} rss=${snapshot.indexerRss ?? 0}`); }
+    } });
   hosts.push(starving);
-  await starving.open();
-  await waitFor(() => states.includes('indexer_backoff'));
-  expect((await starving.search(query)).stale).toBe(true);
-  await waitFor(() => starving.snapshot().reason === 'memory_budget', 60_000);
+  phase('starving-open'); await starving.open();
+  phase('wait-backoff'); await waitFor(() => states.includes('indexer_backoff'));
+  phase('search-backoff'); expect((await starving.search(query)).stale).toBe(true);
+  phase('wait-memory-budget'); await waitFor(() => starving.snapshot().reason === 'memory_budget', 60_000);
   expect(states.indexOf('indexer_backoff')).toBeLessThan(states.indexOf('memory_budget'));
-  const result = await starving.search(query);
+  phase('search-memory-budget'); const result = await starving.search(query);
   expect(result.rows.map((hit) => hit.value.text)).toEqual(['needle here']);
   expect(result.stale).toBe(true);
-  await waitFor(() => starving.snapshot().indexerTerminal &&
+  phase('wait-terminal'); await waitFor(() => starving.snapshot().indexerTerminal &&
     starving.snapshot().indexerPid === undefined, 60_000);
   await starving.open();
   expect(starving.snapshot().indexerPid).toBeUndefined();
   starving.retryIndexer();
   expect(starving.snapshot().indexerPid).toBeGreaterThan(0);
   expect(process.pid).toBeGreaterThan(0);
+  phase('retry-started');
 });

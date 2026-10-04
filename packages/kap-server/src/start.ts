@@ -497,6 +497,19 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
   registerWebAccessRoutes(app, web);
   const shutdownController = new AbortController();
+  const unrequestedSockets = new Set<Socket>();
+  app.server.on('connection', (socket) => {
+    if (shutdownController.signal.aborted) { socket.destroy(); return; }
+    unrequestedSockets.add(socket);
+    socket.once('close', () => unrequestedSockets.delete(socket));
+  });
+  const claimSocket = (request: IncomingMessage): void => { unrequestedSockets.delete(request.socket); };
+  app.server.on('request', claimSocket);
+  app.server.on('upgrade', claimSocket);
+  shutdownController.signal.addEventListener('abort', () => {
+    for (const socket of unrequestedSockets) socket.destroy();
+    unrequestedSockets.clear();
+  }, { once: true });
   app.addHook('onResponse', async () => {
     if (shutdownController.signal.aborted) app.server.closeIdleConnections();
   });
