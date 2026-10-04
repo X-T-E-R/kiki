@@ -660,7 +660,9 @@ export function defineKlientConformance(
       const flags = target.app.accessor.get(importFlags);
       flags.setConfigOverrides({ plugin_import: true });
       try {
-        expect(await target.klient.global.imports.sources()).toEqual([]);
+        const sources = await target.klient.global.imports.sources();
+        expect(sources.map((source) => source.id).toSorted()).toEqual(['claude-code', 'codex', 'custom', 'grok', 'opencode', 'pi']);
+        expect(sources.every((source) => source.pluginId === 'kiki-history')).toBe(true);
         expect(await target.klient.global.imports.jobs()).toEqual({ items: [], cursor: null });
         expect(await target.klient.global.imports.archives()).toEqual({ items: [], cursor: null });
       } finally { flags.setConfigOverrides({}); }

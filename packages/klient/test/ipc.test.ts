@@ -245,6 +245,7 @@ describe('ipc transport specifics', () => {
   });
 
   it('returns the underlying requester iterator when a stream is cancelled', async () => {
+    await setup();
     // Cancelling must stop the engine-side request, not just the frame pump:
     // the HTTP transport's `active.cancel()` already aborts and returns.
     let requestSignal: AbortSignal | undefined;
@@ -283,6 +284,7 @@ describe('ipc transport specifics', () => {
   });
 
   it('returns the underlying requester iterator when the socket disconnects', async () => {
+    await setup();
     let requestSignal: AbortSignal | undefined;
     let released: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => { released = resolve; });
