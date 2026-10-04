@@ -230,8 +230,9 @@ describe('peer-thread routes', () => {
     const service = makeService();
     vi.mocked(service.waitThreads).mockImplementation(() => new Promise(() => undefined));
     const { route } = setup(service);
-    const raw = new EventEmitter() as EventEmitter & { destroyed: boolean };
+    const raw = new EventEmitter() as EventEmitter & { destroyed: boolean; destroy(): void };
     raw.destroyed = false;
+    raw.destroy = vi.fn(() => { raw.destroyed = true; raw.emit('close'); });
     const response = { ...reply(), raw };
     const pending = route('post', '/threads::wait').handler(
       request({ body: { threads: [{ thread: targetWire }], timeout_ms: 60_000 } }),
@@ -240,6 +241,8 @@ describe('peer-thread routes', () => {
     raw.emit('close');
     await pending;
     expect(response.send).not.toHaveBeenCalled();
+    expect(raw.destroy).toHaveBeenCalledOnce();
+    expect(raw.listenerCount('close')).toBe(0);
   });
 
   it('reads durable communication over authenticated REST and peer-only history search', { timeout: 30_000 }, async () => {

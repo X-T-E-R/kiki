@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http';
 import {
   IThreadCommunicationService,
   type Scope,
@@ -232,7 +233,7 @@ export function registerThreadsRoutes(
     },
     async (req, reply) => {
       const abortableReq = req as typeof req & { readonly raw?: AbortEvents };
-      const abortableReply = reply as typeof reply & { readonly raw?: AbortEvents };
+      const abortableReply = reply as typeof reply & { readonly raw?: ServerResponse };
       const requestAbort = createRequestAbort(
         abortableReq.raw,
         abortableReply.raw,
@@ -265,6 +266,7 @@ export function registerThreadsRoutes(
         if (requestAbort.signal.aborted) return;
         reply.send(mapError(error, req.id));
       } finally {
+        if (requestAbort.signal.aborted) abortableReply.raw?.destroy();
         requestAbort.dispose();
       }
     },
